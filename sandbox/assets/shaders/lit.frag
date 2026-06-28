@@ -23,6 +23,15 @@ uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
 uniform vec3 uAlbedo;
 
+// Terrain palette (uColorMode == 1).
+uniform vec3  uColorSand;
+uniform vec3  uColorGrass;
+uniform vec3  uColorRock;
+uniform vec3  uColorSnow;
+uniform float uSnowLevel;      // world height at which snow appears
+uniform float uRockSlope;      // slope (normal.y) below which faces turn to rock
+uniform float uSlopeSharpness; // blend width of the rock transition
+
 int selectCascade() {
     for (int i = 0; i < uCascadeCount; ++i) {
         if (vViewDepth < uCascadeSplits[i]) return i;
@@ -52,17 +61,22 @@ float computeShadow(int layer, vec3 N, vec3 L) {
     return shadow / 9.0;
 }
 
-// Height- and slope-based palette (sand -> grass -> rock -> snow).
+// Height- and slope-based palette. `slope` is the upward component of the
+// surface normal: 1.0 = flat ground, ~0.0 = a vertical face.
 vec3 terrainColor(float height, float slope) {
-    vec3 sand  = vec3(0.76, 0.70, 0.48);
-    vec3 grass = vec3(0.23, 0.42, 0.16);
-    vec3 rock  = vec3(0.38, 0.34, 0.30);
-    vec3 snow  = vec3(0.92, 0.94, 0.98);
+    // 0 on steep faces -> 1 on flat ground.
+    float flatness = smoothstep(uRockSlope - uSlopeSharpness,
+                                uRockSlope + uSlopeSharpness, slope);
 
-    vec3 c = mix(sand, grass, smoothstep(-3.0, 2.0, height));
-    c = mix(c, snow, smoothstep(7.0, 11.0, height));
-    c = mix(rock, c, smoothstep(0.45, 0.78, slope)); // steep faces -> rock
-    return c;
+    // Base ground by height.
+    vec3 ground = mix(uColorSand, uColorGrass, smoothstep(-3.0, 2.0, height));
+
+    // Snow settles on high ground, but only where it's flat enough to hold.
+    float snowMask = smoothstep(uSnowLevel - 2.0, uSnowLevel + 2.0, height) * flatness;
+    ground = mix(ground, uColorSnow, snowMask);
+
+    // Steep faces are bare rock regardless of height.
+    return mix(uColorRock, ground, flatness);
 }
 
 void main() {

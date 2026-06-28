@@ -37,9 +37,24 @@ int main() {
         Mesh    cube    = Mesh::cube();
         Texture texture = Texture::checkerboard(256, 8);
 
+        // Slope/height-driven terrain palette, exposed as material parameters.
+        struct TerrainLook {
+            glm::vec3 sand{0.76f, 0.70f, 0.48f};
+            glm::vec3 grass{0.23f, 0.42f, 0.16f};
+            glm::vec3 rock{0.38f, 0.34f, 0.30f};
+            glm::vec3 snow{0.92f, 0.94f, 0.98f};
+            float snowLevel     = 9.0f;
+            float rockSlope     = 0.62f; // flatter than this -> rock
+            float slopeSharpness = 0.14f;
+        } look;
+
         // Materials describe surface appearance; the renderer feeds in lighting.
         Material terrainMat(lit);
-        terrainMat.set("uColorMode", 1);
+        terrainMat.set("uColorMode", 1)
+                  .set("uColorSand", look.sand)
+                  .set("uColorGrass", look.grass)
+                  .set("uColorRock", look.rock)
+                  .set("uColorSnow", look.snow);
 
         Material cubeMat(lit);
         cubeMat.set("uColorMode", 2).setTexture("uTexture", texture, 0);
@@ -76,10 +91,10 @@ int main() {
             // --- Input ---------------------------------------------------
             if (input.isKeyDown(GLFW_KEY_ESCAPE)) window.requestClose();
 
-            const bool look = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
-                              && !gui.wantsMouse();
-            if (look != input.isCursorLocked()) input.setCursorLocked(look);
-            if (look) {
+            const bool mouseLook = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
+                                   && !gui.wantsMouse();
+            if (mouseLook != input.isCursorLocked()) input.setCursorLocked(mouseLook);
+            if (mouseLook) {
                 const glm::vec2 d = input.mouseDelta();
                 camera.processMouse(d.x, d.y);
             }
@@ -122,8 +137,25 @@ int main() {
                         streamer.update(camera.position());
                     }
                 }
+                if (ImGui::CollapsingHeader("Terrain material (slope)", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::SliderFloat("Rock slope",   &look.rockSlope, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Slope blend",  &look.slopeSharpness, 0.02f, 0.4f);
+                    ImGui::SliderFloat("Snow level",   &look.snowLevel, 0.0f, 25.0f);
+                    ImGui::ColorEdit3("Grass", &look.grass.x);
+                    ImGui::ColorEdit3("Rock",  &look.rock.x);
+                    ImGui::ColorEdit3("Snow",  &look.snow.x);
+                }
             }
             ImGui::End();
+
+            // Push the (possibly edited) slope/height palette into the material.
+            terrainMat.set("uColorSand", look.sand)
+                      .set("uColorGrass", look.grass)
+                      .set("uColorRock", look.rock)
+                      .set("uColorSnow", look.snow)
+                      .set("uSnowLevel", look.snowLevel)
+                      .set("uRockSlope", look.rockSlope)
+                      .set("uSlopeSharpness", look.slopeSharpness);
 
             // --- Submit + render ----------------------------------------
             int fbW = 0, fbH = 0;
