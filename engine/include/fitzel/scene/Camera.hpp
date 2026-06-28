@@ -25,8 +25,12 @@ public:
     void setPosition(const glm::vec3& p) { m_position = p; }
 
     const glm::vec3& front() const { return m_front; }
+    const glm::vec3& up()    const { return m_up; }
+    const glm::vec3& right() const { return m_right; }
 
-    float fov() const { return m_fovDegrees; }
+    float fov()       const { return m_fovDegrees; }
+    float nearPlane() const { return m_near; }
+    float farPlane()  const { return m_far; }
 
     float moveSpeed   = 3.0f;   // units per second
     float mouseSens   = 0.1f;   // degrees per pixel
@@ -43,6 +47,8 @@ private:
     float m_yaw;
     float m_pitch;
     float m_fovDegrees = 60.0f;
+    float m_near       = 0.1f;
+    float m_far        = 600.0f;
 };
 
 } // namespace fitzel

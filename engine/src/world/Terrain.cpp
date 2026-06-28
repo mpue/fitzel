@@ -7,110 +7,125 @@
 
 namespace fitzel {
 
-namespace {
-
-// fBm height in world units for a given (x, z) using the supplied params.
-float sampleNoise(const TerrainParams& p, float x, float z) {
+float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
     const float n = stb_perlin_fbm_noise3(
-        x * p.frequency + p.seed, 0.0f, z * p.frequency + p.seed,
-        p.lacunarity, p.gain, p.octaves);
-    return n * p.heightScale;
+        worldX * s.frequency + s.seed, 0.0f, worldZ * s.frequency + s.seed,
+        s.lacunarity, s.gain, s.octaves);
+    return n * s.heightScale;
 }
 
-} // namespace
+TerrainChunk TerrainChunk::generate(const TerrainSettings& s, glm::ivec2 coord) {
+    TerrainChunk chunk;
+    chunk.m_coord = coord;
 
-Terrain Terrain::generate(const TerrainParams& params) {
-    Terrain terrain;
-    terrain.m_params = params;
+    const int   verts  = std::max(2, s.resolution + 1);
+    const float step   = s.chunkSize / static_cast<float>(s.resolution);
+    const float originX = coord.x * s.chunkSize;
+    const float originZ = coord.y * s.chunkSize;
 
-    const int   res  = std::max(2, params.resolution);
-    const float half = params.worldSize * 0.5f;
-    const float step = params.worldSize / static_cast<float>(res - 1);
+    // World-space height sampler; used for both positions and normals so chunk
+    // edges line up exactly with their neighbours.
+    auto height = [&](float wx, float wz) { return terrainHeight(s, wx, wz); };
 
-    // 1) Sample the heightfield.
-    auto& heights = terrain.m_heights;
-    heights.resize(static_cast<std::size_t>(res) * res);
-    for (int z = 0; z < res; ++z) {
-        for (int x = 0; x < res; ++x) {
-            const float wx = -half + x * step;
-            const float wz = -half + z * step;
-            heights[static_cast<std::size_t>(z) * res + x] = sampleNoise(params, wx, wz);
-        }
-    }
-
-    auto h = [&](int x, int z) -> float {
-        x = std::clamp(x, 0, res - 1);
-        z = std::clamp(z, 0, res - 1);
-        return heights[static_cast<std::size_t>(z) * res + x];
-    };
-
-    // 2) Build vertices with normals from central differences.
     std::vector<Vertex> vertices;
-    vertices.reserve(static_cast<std::size_t>(res) * res);
-    for (int z = 0; z < res; ++z) {
-        for (int x = 0; x < res; ++x) {
-            const float wx = -half + x * step;
-            const float wz = -half + z * step;
+    vertices.reserve(static_cast<std::size_t>(verts) * verts);
+    for (int z = 0; z < verts; ++z) {
+        for (int x = 0; x < verts; ++x) {
+            const float wx = originX + x * step;
+            const float wz = originZ + z * step;
 
-            const float hl = h(x - 1, z);
-            const float hr = h(x + 1, z);
-            const float hd = h(x, z - 1);
-            const float hu = h(x, z + 1);
+            // Central differences in world space (continuous across chunks).
+            const float hl = height(wx - step, wz);
+            const float hr = height(wx + step, wz);
+            const float hd = height(wx, wz - step);
+            const float hu = height(wx, wz + step);
             const glm::vec3 normal =
                 glm::normalize(glm::vec3(hl - hr, 2.0f * step, hd - hu));
 
             Vertex v;
-            v.position = {wx, h(x, z), wz};
+            v.position = {wx, height(wx, wz), wz};
             v.normal   = normal;
-            v.uv       = {static_cast<float>(x) / (res - 1),
-                          static_cast<float>(z) / (res - 1)};
+            v.uv       = {static_cast<float>(x) / s.resolution,
+                          static_cast<float>(z) / s.resolution};
             vertices.push_back(v);
         }
     }
 
-    // 3) Triangulate the grid.
     std::vector<std::uint32_t> indices;
-    indices.reserve(static_cast<std::size_t>(res - 1) * (res - 1) * 6);
-    for (int z = 0; z < res - 1; ++z) {
-        for (int x = 0; x < res - 1; ++x) {
-            const std::uint32_t i0 = static_cast<std::uint32_t>(z * res + x);
+    indices.reserve(static_cast<std::size_t>(s.resolution) * s.resolution * 6);
+    for (int z = 0; z < verts - 1; ++z) {
+        for (int x = 0; x < verts - 1; ++x) {
+            const std::uint32_t i0 = static_cast<std::uint32_t>(z * verts + x);
             const std::uint32_t i1 = i0 + 1;
-            const std::uint32_t i2 = i0 + res;
+            const std::uint32_t i2 = i0 + verts;
             const std::uint32_t i3 = i2 + 1;
             indices.insert(indices.end(), {i0, i2, i1, i1, i2, i3});
         }
     }
 
-    terrain.m_mesh = Mesh::create(vertices, indices);
-    return terrain;
+    chunk.m_mesh = Mesh::create(vertices, indices);
+    return chunk;
 }
 
-float Terrain::heightAt(float worldX, float worldZ) const {
-    const int   res  = std::max(2, m_params.resolution);
-    const float half = m_params.worldSize * 0.5f;
-    const float step = m_params.worldSize / static_cast<float>(res - 1);
+TerrainStreamer::TerrainStreamer(const TerrainSettings& settings, int radius)
+    : m_settings(settings), m_radius(std::max(0, radius)) {}
 
-    // Map world space to grid space.
-    const float gx = (worldX + half) / step;
-    const float gz = (worldZ + half) / step;
-    if (gx < 0.0f || gz < 0.0f || gx > res - 1 || gz > res - 1) {
-        return 0.0f;
+std::int64_t TerrainStreamer::key(glm::ivec2 c) {
+    return (static_cast<std::int64_t>(c.x) << 32) ^
+           (static_cast<std::uint32_t>(c.y));
+}
+
+glm::ivec2 TerrainStreamer::chunkCoordOf(const glm::vec3& pos) const {
+    return {static_cast<int>(std::floor(pos.x / m_settings.chunkSize)),
+            static_cast<int>(std::floor(pos.z / m_settings.chunkSize))};
+}
+
+int TerrainStreamer::update(const glm::vec3& cameraPos) {
+    const glm::ivec2 c = chunkCoordOf(cameraPos);
+    if (c == m_center && !m_dirty) {
+        return 0;
+    }
+    m_center = c;
+    m_dirty  = false;
+
+    // Drop chunks outside the radius.
+    for (auto it = m_chunks.begin(); it != m_chunks.end();) {
+        const glm::ivec2 cc = it->second.coord();
+        if (std::abs(cc.x - c.x) > m_radius || std::abs(cc.y - c.y) > m_radius) {
+            it = m_chunks.erase(it);
+        } else {
+            ++it;
+        }
     }
 
-    const int x0 = static_cast<int>(gx);
-    const int z0 = static_cast<int>(gz);
-    const int x1 = std::min(x0 + 1, res - 1);
-    const int z1 = std::min(z0 + 1, res - 1);
-    const float tx = gx - x0;
-    const float tz = gz - z0;
+    // Generate any missing chunks within the radius.
+    int generated = 0;
+    for (int dz = -m_radius; dz <= m_radius; ++dz) {
+        for (int dx = -m_radius; dx <= m_radius; ++dx) {
+            const glm::ivec2 cc{c.x + dx, c.y + dz};
+            const std::int64_t k = key(cc);
+            if (m_chunks.find(k) == m_chunks.end()) {
+                m_chunks.emplace(k, TerrainChunk::generate(m_settings, cc));
+                ++generated;
+            }
+        }
+    }
 
-    auto at = [&](int x, int z) {
-        return m_heights[static_cast<std::size_t>(z) * res + x];
-    };
+    refreshVisible();
+    return generated;
+}
 
-    const float top = glm::mix(at(x0, z0), at(x1, z0), tx);
-    const float bot = glm::mix(at(x0, z1), at(x1, z1), tx);
-    return glm::mix(top, bot, tz);
+void TerrainStreamer::rebuild() {
+    m_chunks.clear();
+    m_dirty = true;
+}
+
+void TerrainStreamer::refreshVisible() {
+    m_visible.clear();
+    m_visible.reserve(m_chunks.size());
+    for (const auto& [k, chunk] : m_chunks) {
+        m_visible.push_back(&chunk);
+    }
 }
 
 } // namespace fitzel

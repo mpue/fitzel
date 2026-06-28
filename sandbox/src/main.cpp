@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
@@ -16,41 +17,52 @@ int main() {
         Window window(WindowConfig{
             .width  = 1280,
             .height = 720,
-            .title  = "Fitzel - Terrain & Shadows",
+            .title  = "Fitzel - Infinite Terrain, CSM, Materials",
             .vsync  = true,
         });
 
-        Input  input(window);                 // before Gui (callback chaining)
+        Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
-        Camera camera({0.0f, 16.0f, 42.0f}, -90.0f, -20.0f);
+        Camera camera({0.0f, 45.0f, 90.0f}, -90.0f, -25.0f);
+        camera.moveSpeed = 20.0f;
 
-        Shader lit   = Shader::fromFiles("assets/shaders/lit.vert",
-                                         "assets/shaders/lit.frag");
-        Shader depth = Shader::fromFiles("assets/shaders/depth.vert",
-                                         "assets/shaders/depth.frag");
-        if (!lit.isValid() || !depth.isValid()) {
-            std::fprintf(stderr, "Failed to load shaders\n");
+        Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
+                                       "assets/shaders/lit.frag");
+        if (!lit.isValid()) {
+            std::fprintf(stderr, "Failed to load lit shader\n");
             return 1;
         }
 
-        // Scene content.
-        TerrainParams terrainParams;
-        Terrain  terrain = Terrain::generate(terrainParams);
-        Mesh     cube    = Mesh::cube();
-        Texture  texture = Texture::checkerboard(256, 8);
-        ShadowMap shadow(2048);
+        // Shared assets.
+        Mesh    cube    = Mesh::cube();
+        Texture texture = Texture::checkerboard(256, 8);
+
+        // Materials describe surface appearance; the renderer feeds in lighting.
+        Material terrainMat(lit);
+        terrainMat.set("uColorMode", 1);
+
+        Material cubeMat(lit);
+        cubeMat.set("uColorMode", 2).setTexture("uTexture", texture, 0);
+
+        // World streaming + renderer with cascaded shadows.
+        TerrainSettings settings;
+        TerrainStreamer streamer(settings, /*radius=*/4);
+        Renderer        renderer(2048, 4);
+        DirectionalLight light;
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
 
         std::puts("[Fitzel] WASD/QE = move, hold RMB = look, ESC = quit");
 
-        // Tweakable state.
-        glm::vec3 lightDir{0.5f, 1.0f, 0.35f};
-        glm::vec3 lightColor{1.0f, 0.97f, 0.9f};
-        bool      wireframe   = false;
-        bool      animateCube = true;
+        // A scatter of shadow-casting cubes resting on the terrain.
+        std::vector<glm::vec2> cubeSpots;
+        for (int z = -2; z <= 2; ++z)
+            for (int x = -2; x <= 2; ++x)
+                if ((x + z) % 2 == 0)
+                    cubeSpots.emplace_back(x * 34.0f + 7.0f, z * 34.0f - 5.0f);
 
+        TerrainSettings uiSettings = settings; // editable copy for the panel
         double lastTime = window.time();
 
         while (window.isOpen()) {
@@ -81,102 +93,76 @@ int main() {
                 if (input.isKeyDown(GLFW_KEY_Q)) camera.processKeyboard(Camera::Direction::Down, dt);
             }
 
+            // Stream terrain chunks around the camera.
+            streamer.update(camera.position());
+
             // --- UI ------------------------------------------------------
-            bool regenerate = false;
             gui.beginFrame();
             if (ImGui::Begin("Fitzel")) {
                 ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate,
                             1000.0f / ImGui::GetIO().Framerate);
-                ImGui::Text("Camera: %.1f, %.1f, %.1f",
+                ImGui::Text("Camera: %.0f, %.0f, %.0f",
                             camera.position().x, camera.position().y, camera.position().z);
-                ImGui::SliderFloat("Move speed", &camera.moveSpeed, 1.0f, 40.0f);
+                ImGui::Text("Loaded chunks: %d", streamer.loadedChunkCount());
+                ImGui::SliderFloat("Move speed", &camera.moveSpeed, 2.0f, 80.0f);
 
-                if (ImGui::CollapsingHeader("Lighting", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::SliderFloat3("Light dir", &lightDir.x, -1.0f, 1.0f);
-                    ImGui::ColorEdit3("Light color", &lightColor.x);
+                if (ImGui::CollapsingHeader("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::SliderFloat3("Light dir", &light.direction.x, -1.0f, 1.0f);
+                    ImGui::ColorEdit3("Light color", &light.color.x);
+                    ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                 }
                 if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::SliderFloat("Height",    &terrainParams.heightScale, 0.0f, 20.0f);
-                    ImGui::SliderFloat("Frequency", &terrainParams.frequency, 0.005f, 0.15f, "%.3f");
-                    ImGui::SliderInt  ("Octaves",   &terrainParams.octaves, 1, 8);
-                    ImGui::SliderFloat("Seed",      &terrainParams.seed, 0.0f, 100.0f);
-                    regenerate = ImGui::Button("Regenerate");
+                    ImGui::SliderFloat("Height",    &uiSettings.heightScale, 0.0f, 30.0f);
+                    ImGui::SliderFloat("Frequency", &uiSettings.frequency, 0.003f, 0.05f, "%.3f");
+                    ImGui::SliderInt  ("Octaves",   &uiSettings.octaves, 1, 8);
+                    ImGui::SliderFloat("Seed",      &uiSettings.seed, 0.0f, 100.0f);
+                    if (ImGui::Button("Regenerate")) {
+                        streamer.settings() = uiSettings;
+                        streamer.rebuild();
+                        streamer.update(camera.position());
+                    }
                 }
-                ImGui::Separator();
-                ImGui::Checkbox("Wireframe", &wireframe);
-                ImGui::SameLine();
-                ImGui::Checkbox("Animate cube", &animateCube);
             }
             ImGui::End();
 
-            if (regenerate) {
-                terrain = Terrain::generate(terrainParams);
-            }
-
-            // --- Scene transforms ---------------------------------------
-            static float cubeAngle = 0.0f;
-            if (animateCube) cubeAngle += dt * 0.6f;
-            const float bob = std::sin(static_cast<float>(now)) * 1.5f;
-            const float groundY = terrain.heightAt(0.0f, 0.0f);
-
-            glm::mat4 cubeModel(1.0f);
-            cubeModel = glm::translate(cubeModel, {0.0f, groundY + 9.0f + bob, 0.0f});
-            cubeModel = glm::rotate(cubeModel, cubeAngle,
-                                    glm::normalize(glm::vec3(0.4f, 1.0f, 0.2f)));
-            cubeModel = glm::scale(cubeModel, glm::vec3(3.0f));
-
-            const glm::mat4 terrainModel(1.0f);
-
-            // Light frustum bounds the whole terrain.
-            const float     radius = terrainParams.worldSize * 0.72f;
-            const glm::vec3  center{0.0f, 1.0f, 0.0f};
-            const glm::mat4  lightSpace = shadow.lightSpaceMatrix(lightDir, center, radius);
-
+            // --- Submit + render ----------------------------------------
             int fbW = 0, fbH = 0;
             window.framebufferSize(fbW, fbH);
+            renderer.setViewport(fbW, fbH);
 
-            // --- Pass 1: depth from the light's POV ----------------------
-            shadow.begin();
-            depth.bind();
-            depth.setMat4("uLightSpace", lightSpace);
-            depth.setMat4("uModel", terrainModel);
-            terrain.mesh().draw();
-            depth.setMat4("uModel", cubeModel);
-            cube.draw();
-            shadow.end(fbW, fbH);
-
-            // --- Pass 2: lit scene with shadows --------------------------
-            glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
             glClearColor(0.55f, 0.70f, 0.92f, 1.0f); // sky
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            const glm::mat4 viewProj =
-                camera.projectionMatrix(window.aspectRatio()) * camera.viewMatrix();
+            renderer.begin(camera, window.aspectRatio(), light);
 
-            lit.bind();
-            lit.setMat4("uViewProj", viewProj);
-            lit.setMat4("uLightSpace", lightSpace);
-            lit.setVec3("uViewPos", camera.position());
-            lit.setVec3("uLightDir", lightDir);
-            lit.setVec3("uLightColor", lightColor);
-            lit.setInt("uShadowMap", 1);
-            lit.setInt("uTexture", 0);
-            shadow.bindDepthTexture(1);
+            for (const TerrainChunk* chunk : streamer.visibleChunks()) {
+                renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f));
+            }
 
-            // Terrain (height/slope palette).
-            lit.setMat4("uModel", terrainModel);
-            lit.setInt("uColorMode", 1);
-            terrain.mesh().draw();
+            // Static cubes resting on the ground.
+            for (const glm::vec2& spot : cubeSpots) {
+                const float gy = streamer.heightAt(spot.x, spot.y);
+                glm::mat4 m(1.0f);
+                m = glm::translate(m, {spot.x, gy + 2.0f, spot.y});
+                m = glm::scale(m, glm::vec3(4.0f));
+                renderer.submit(cube, cubeMat, m);
+            }
 
-            // Cube (textured), our shadow caster.
-            lit.setMat4("uModel", cubeModel);
-            lit.setInt("uColorMode", 2);
-            texture.bind(0);
-            cube.draw();
+            // One floating, spinning cube to show shadows cast onto terrain.
+            {
+                const float gy  = streamer.heightAt(0.0f, 0.0f);
+                const float bob = std::sin(static_cast<float>(now)) * 2.0f;
+                glm::mat4 m(1.0f);
+                m = glm::translate(m, {0.0f, gy + 14.0f + bob, 0.0f});
+                m = glm::rotate(m, static_cast<float>(now) * 0.6f,
+                                glm::normalize(glm::vec3(0.4f, 1.0f, 0.2f)));
+                m = glm::scale(m, glm::vec3(6.0f));
+                renderer.submit(cube, cubeMat, m);
+            }
 
-            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            renderer.end();
+
             gui.endFrame();
-
             window.swapBuffers();
         }
     } catch (const std::exception& e) {

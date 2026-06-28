@@ -4,8 +4,11 @@ add_library(fitzel STATIC
     src/graphics/Shader.cpp
     src/graphics/Mesh.cpp
     src/graphics/Texture.cpp
+    src/graphics/Material.cpp
     src/graphics/ShadowMap.cpp
+    src/graphics/CascadedShadowMap.cpp
     src/graphics/stb_image_impl.cpp
+    src/render/Renderer.cpp
     src/scene/Camera.cpp
     src/world/Terrain.cpp
     src/ui/Gui.cpp

@@ -1,53 +1,67 @@
 #version 330 core
 
-in vec3 vWorldPos;
-in vec3 vNormal;
-in vec2 vUV;
-in vec4 vLightSpacePos;
+#define MAX_CASCADES 4
+
+in vec3  vWorldPos;
+in vec3  vNormal;
+in vec2  vUV;
+in float vViewDepth;
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
 uniform vec3 uLightDir;    // direction *towards* the light, world space
 uniform vec3 uLightColor;
 
-uniform sampler2D uShadowMap; // unit 1
-uniform sampler2D uTexture;   // unit 0
+// Shadows (cascaded).
+uniform sampler2DArray uShadowMap;
+uniform mat4  uLightSpace[MAX_CASCADES];
+uniform float uCascadeSplits[MAX_CASCADES];
+uniform int   uCascadeCount;
+
+// Surface.
+uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
 uniform vec3 uAlbedo;
 
-// Percentage-closer filtering: average 9 taps for soft shadow edges.
-float computeShadow(vec4 lsPos, vec3 N, vec3 L) {
-    vec3 proj = lsPos.xyz / lsPos.w;
-    proj = proj * 0.5 + 0.5;
-    if (proj.z > 1.0) {
-        return 0.0; // beyond the light frustum's far plane -> lit
+int selectCascade() {
+    for (int i = 0; i < uCascadeCount; ++i) {
+        if (vViewDepth < uCascadeSplits[i]) return i;
     }
+    return uCascadeCount - 1;
+}
 
-    float bias    = max(0.0025 * (1.0 - dot(N, L)), 0.0008);
+float computeShadow(int layer, vec3 N, vec3 L) {
+    vec4 lsPos = uLightSpace[layer] * vec4(vWorldPos, 1.0);
+    vec3 proj  = lsPos.xyz / lsPos.w;
+    proj = proj * 0.5 + 0.5;
+    if (proj.z > 1.0) return 0.0;
+
+    float bias = max(0.0025 * (1.0 - dot(N, L)), 0.0008);
+    bias *= 1.0 + float(layer) * 0.6; // coarser cascades need more bias
+
+    vec2  texel   = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
     float current = proj.z;
-    vec2  texel   = 1.0 / vec2(textureSize(uShadowMap, 0));
-
-    float shadow = 0.0;
+    float shadow  = 0.0;
     for (int x = -1; x <= 1; ++x) {
         for (int y = -1; y <= 1; ++y) {
-            float closest = texture(uShadowMap, proj.xy + vec2(x, y) * texel).r;
+            float closest = texture(uShadowMap,
+                                    vec3(proj.xy + vec2(x, y) * texel, float(layer))).r;
             shadow += (current - bias > closest) ? 1.0 : 0.0;
         }
     }
     return shadow / 9.0;
 }
 
-// Height- and slope-based terrain palette (sand -> grass -> rock -> snow).
+// Height- and slope-based palette (sand -> grass -> rock -> snow).
 vec3 terrainColor(float height, float slope) {
     vec3 sand  = vec3(0.76, 0.70, 0.48);
     vec3 grass = vec3(0.23, 0.42, 0.16);
     vec3 rock  = vec3(0.38, 0.34, 0.30);
     vec3 snow  = vec3(0.92, 0.94, 0.98);
 
-    vec3 c = mix(sand, grass, smoothstep(-1.0, 1.5, height));
-    c = mix(c, snow, smoothstep(4.0, 6.5, height));
-    // Steep faces (small upward normal) become rock.
-    c = mix(rock, c, smoothstep(0.45, 0.78, slope));
+    vec3 c = mix(sand, grass, smoothstep(-3.0, 2.0, height));
+    c = mix(c, snow, smoothstep(7.0, 11.0, height));
+    c = mix(rock, c, smoothstep(0.45, 0.78, slope)); // steep faces -> rock
     return c;
 }
 
@@ -63,10 +77,11 @@ void main() {
     else                      albedo = uAlbedo;
 
     float diff      = max(dot(N, L), 0.0);
-    float specPower = (uColorMode == 1) ? 0.15 : 0.5; // terrain is less shiny
+    float specPower = (uColorMode == 1) ? 0.15 : 0.5;
     float spec      = pow(max(dot(N, H), 0.0), 48.0) * specPower;
 
-    float shadow  = computeShadow(vLightSpacePos, N, L);
+    int   layer   = selectCascade();
+    float shadow  = computeShadow(layer, N, L);
     float ambient = 0.30;
 
     vec3 color = albedo * ambient

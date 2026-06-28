@@ -16,7 +16,7 @@ glm::mat4 Camera::viewMatrix() const {
 }
 
 glm::mat4 Camera::projectionMatrix(float aspect) const {
-    return glm::perspective(glm::radians(m_fovDegrees), aspect, 0.1f, 100.0f);
+    return glm::perspective(glm::radians(m_fovDegrees), aspect, m_near, m_far);
 }
 
 void Camera::processKeyboard(Direction dir, float deltaSeconds) {
