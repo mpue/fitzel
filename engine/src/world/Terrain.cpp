@@ -8,10 +8,29 @@
 namespace fitzel {
 
 float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
-    const float n = stb_perlin_fbm_noise3(
-        worldX * s.frequency + s.seed, 0.0f, worldZ * s.frequency + s.seed,
-        s.lacunarity, s.gain, s.octaves);
-    return n * s.heightScale;
+    // 1) Domain warp: displace the sample point by a low-frequency noise field
+    //    so features bend and meander instead of looking grid-aligned.
+    const float wf = s.warpFrequency;
+    const float wx = worldX + s.warpStrength *
+        stb_perlin_fbm_noise3(worldX * wf, 0.0f, worldZ * wf, 2.0f, 0.5f, 4);
+    const float wz = worldZ + s.warpStrength *
+        stb_perlin_fbm_noise3((worldX + 101.7f) * wf, 0.0f,
+                              (worldZ + 57.1f) * wf, 2.0f, 0.5f, 4);
+
+    const float f = s.frequency;
+
+    // 2) Rolling base terrain (signed fBm).
+    const float base = stb_perlin_fbm_noise3(
+        wx * f + s.seed, 0.0f, wz * f + s.seed, s.lacunarity, s.gain, s.octaves);
+
+    // 3) Sharp mountain ridges (ridged multifractal), raised on the highlands so
+    //    ranges grow out of higher ground rather than the whole field.
+    const float ridge = stb_perlin_ridge_noise3(
+        wx * f * 1.9f + s.seed, 0.0f, wz * f * 1.9f + s.seed,
+        2.0f, 0.5f, 1.0f, s.octaves);
+    const float mask = glm::smoothstep(-0.1f, 0.55f, base);
+
+    return base * s.heightScale + ridge * s.ridgeScale * mask;
 }
 
 TerrainChunk TerrainChunk::generate(const TerrainSettings& s, glm::ivec2 coord) {

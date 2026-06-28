@@ -91,11 +91,15 @@ look, scroll to zoom, ESC to quit.
   log/uniform blend); each cascade is fit to its sub-frustum and rendered into a
   layer of a 2048² depth `GL_TEXTURE_2D_ARRAY`. The lit pass selects a cascade by
   view-space depth and samples it with a 3×3 PCF kernel + slope/cascade-scaled bias.
-- **Terrain streaming**: chunks are generated from world-space fBm Perlin noise, so
-  neighbours tile seamlessly (shared edges sample the same continuous field, incl.
-  normals). The streamer regenerates the ring as the camera crosses chunk borders.
+- **Terrain streaming**: chunks are generated from world-space noise, so neighbours
+  tile seamlessly (shared edges sample the same continuous field, incl. normals).
+  The streamer regenerates the ring as the camera crosses chunk borders.
+- **Terrain detail**: the height field combines domain warping (organic, non-grid
+  shapes), a rolling fBm base, and a ridged-multifractal mountain layer masked onto
+  the highlands. `lit.frag` adds close-up micro-detail via a procedural value-noise
+  normal bump and albedo break-up.
 - **Terrain colour** is procedural (sand → grass → rock → snow) by world height and
-  slope, computed in `lit.frag`.
+  slope — steep faces turn to rock, snow only settles on flat high ground.
 
 Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.

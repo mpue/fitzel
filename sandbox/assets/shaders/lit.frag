@@ -32,6 +32,10 @@ uniform float uSnowLevel;      // world height at which snow appears
 uniform float uRockSlope;      // slope (normal.y) below which faces turn to rock
 uniform float uSlopeSharpness; // blend width of the rock transition
 
+// Procedural micro-detail (uColorMode == 1).
+uniform float uDetailScale;    // frequency of the close-up detail
+uniform float uDetailStrength; // how strongly it perturbs the normal
+
 int selectCascade() {
     for (int i = 0; i < uCascadeCount; ++i) {
         if (vViewDepth < uCascadeSplits[i]) return i;
@@ -61,6 +65,34 @@ float computeShadow(int layer, vec3 N, vec3 L) {
     return shadow / 9.0;
 }
 
+// --- Cheap procedural value-noise fBm for surface micro-detail -------------
+float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1, 0));
+    float c = hash21(i + vec2(0, 1));
+    float d = hash21(i + vec2(1, 1));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+float detailFbm(vec2 p) {
+    float sum = 0.0, amp = 0.5;
+    for (int i = 0; i < 4; ++i) {
+        sum += amp * vnoise(p);
+        p   *= 2.0;
+        amp *= 0.5;
+    }
+    return sum;
+}
+
 // Height- and slope-based palette. `slope` is the upward component of the
 // surface normal: 1.0 = flat ground, ~0.0 = a vertical face.
 vec3 terrainColor(float height, float slope) {
@@ -81,14 +113,32 @@ vec3 terrainColor(float height, float slope) {
 
 void main() {
     vec3 N = normalize(vNormal);
+
+    // Add fine surface detail to the terrain: perturb the normal with a
+    // high-frequency noise gradient (bump mapping) and break up the albedo.
+    float detail = 0.0;
+    if (uColorMode == 1) {
+        vec2  p  = vWorldPos.xz * uDetailScale;
+        float e  = 0.75;
+        detail   = detailFbm(p);
+        float dX = detailFbm(p + vec2(e, 0.0)) - detail;
+        float dZ = detailFbm(p + vec2(0.0, e)) - detail;
+        N = normalize(N - vec3(dX, 0.0, dZ) * uDetailStrength);
+    }
+
     vec3 L = normalize(uLightDir);
     vec3 V = normalize(uViewPos - vWorldPos);
     vec3 H = normalize(L + V);
 
     vec3 albedo;
-    if (uColorMode == 1)      albedo = terrainColor(vWorldPos.y, N.y);
-    else if (uColorMode == 2) albedo = texture(uTexture, vUV).rgb;
-    else                      albedo = uAlbedo;
+    if (uColorMode == 1) {
+        albedo = terrainColor(vWorldPos.y, N.y);
+        albedo *= 0.88 + 0.24 * detail; // subtle tonal variation
+    } else if (uColorMode == 2) {
+        albedo = texture(uTexture, vUV).rgb;
+    } else {
+        albedo = uAlbedo;
+    }
 
     float diff      = max(dot(N, L), 0.0);
     float specPower = (uColorMode == 1) ? 0.15 : 0.5;

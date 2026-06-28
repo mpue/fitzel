@@ -43,9 +43,11 @@ int main() {
             glm::vec3 grass{0.23f, 0.42f, 0.16f};
             glm::vec3 rock{0.38f, 0.34f, 0.30f};
             glm::vec3 snow{0.92f, 0.94f, 0.98f};
-            float snowLevel     = 9.0f;
-            float rockSlope     = 0.62f; // flatter than this -> rock
+            float snowLevel      = 16.0f;
+            float rockSlope      = 0.62f; // flatter than this -> rock
             float slopeSharpness = 0.14f;
+            float detailScale    = 0.35f; // micro-detail frequency
+            float detailStrength = 1.5f;  // normal-perturbation strength
         } look;
 
         // Materials describe surface appearance; the renderer feeds in lighting.
@@ -128,6 +130,8 @@ int main() {
                 }
                 if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Height",    &uiSettings.heightScale, 0.0f, 30.0f);
+                    ImGui::SliderFloat("Ridges",    &uiSettings.ridgeScale, 0.0f, 50.0f);
+                    ImGui::SliderFloat("Warp",      &uiSettings.warpStrength, 0.0f, 40.0f);
                     ImGui::SliderFloat("Frequency", &uiSettings.frequency, 0.003f, 0.05f, "%.3f");
                     ImGui::SliderInt  ("Octaves",   &uiSettings.octaves, 1, 8);
                     ImGui::SliderFloat("Seed",      &uiSettings.seed, 0.0f, 100.0f);
@@ -140,7 +144,9 @@ int main() {
                 if (ImGui::CollapsingHeader("Terrain material (slope)", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Rock slope",   &look.rockSlope, 0.0f, 1.0f);
                     ImGui::SliderFloat("Slope blend",  &look.slopeSharpness, 0.02f, 0.4f);
-                    ImGui::SliderFloat("Snow level",   &look.snowLevel, 0.0f, 25.0f);
+                    ImGui::SliderFloat("Snow level",   &look.snowLevel, 0.0f, 40.0f);
+                    ImGui::SliderFloat("Detail scale",    &look.detailScale, 0.05f, 1.0f);
+                    ImGui::SliderFloat("Detail strength", &look.detailStrength, 0.0f, 4.0f);
                     ImGui::ColorEdit3("Grass", &look.grass.x);
                     ImGui::ColorEdit3("Rock",  &look.rock.x);
                     ImGui::ColorEdit3("Snow",  &look.snow.x);
@@ -155,7 +161,9 @@ int main() {
                       .set("uColorSnow", look.snow)
                       .set("uSnowLevel", look.snowLevel)
                       .set("uRockSlope", look.rockSlope)
-                      .set("uSlopeSharpness", look.slopeSharpness);
+                      .set("uSlopeSharpness", look.slopeSharpness)
+                      .set("uDetailScale", look.detailScale)
+                      .set("uDetailStrength", look.detailStrength);
 
             // --- Submit + render ----------------------------------------
             int fbW = 0, fbH = 0;

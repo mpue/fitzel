@@ -15,13 +15,19 @@ namespace fitzel {
 // because they sample the same function (including across shared edges).
 struct TerrainSettings {
     float chunkSize   = 64.0f;  // world units per chunk side
-    int   resolution  = 64;     // quads per side (vertices = resolution + 1)
-    float heightScale = 14.0f;
+    int   resolution  = 96;     // quads per side (vertices = resolution + 1)
+    float heightScale = 14.0f;  // amplitude of the rolling base
     float frequency   = 0.012f;
     int   octaves     = 6;
     float lacunarity  = 2.0f;
     float gain        = 0.5f;
     float seed        = 0.0f;
+
+    // Mountain ridges layered on top of the base (ridged multifractal).
+    float ridgeScale     = 24.0f;
+    // Domain warping bends the noise field for organic, non-grid-aligned shapes.
+    float warpStrength   = 14.0f; // world units of displacement
+    float warpFrequency  = 0.01f;
 };
 
 // World-space terrain height at (x, z) for the given settings. Continuous and
