@@ -1,0 +1,13 @@
+# Normalize line endings: store as LF in the repo, check out native on Windows.
+* text=auto
+
+# Sources and assets are always LF.
+*.cpp   text eol=lf
+*.hpp   text eol=lf
+*.h     text eol=lf
+*.cmake text eol=lf
+*.txt   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.vert  text eol=lf
+*.frag  text eol=lf

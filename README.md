@@ -32,7 +32,7 @@ fitzel/
 │   ├── include/fitzel/     # public API (<fitzel/...>)
 │   └── src/                # implementation
 └── sandbox/                # example app linking the engine
-    ├── src/main.cpp        # textured, lit cube with a fly camera
+    ├── src/main.cpp        # procedural terrain + shadow-mapped cube
     └── assets/shaders/     # GLSL shaders (copied next to the binary)
 ```
 
@@ -68,14 +68,27 @@ The engine exposes a small, RAII-based core to build on:
 - `fitzel::Mesh`    — VAO/VBO/EBO wrapper with interleaved `Vertex` data; `Mesh::cube()`.
 - `fitzel::Texture` — 2D textures from file (stb), raw pixels, or a checkerboard.
 - `fitzel::Camera`  — first-person fly camera producing view/projection matrices.
+- `fitzel::ShadowMap` — depth FBO + light-space matrix for directional shadows.
+- `fitzel::Terrain` — procedural fBm heightmap terrain (Perlin noise) → Mesh.
 - `fitzel::Gui`     — Dear ImGui context + GLFW/OpenGL3 backends; call ImGui:: directly.
 
-The sandbox demonstrates all of these: a textured, lit cube you can fly around
-with a live ImGui panel (FPS, light direction, rotation speed, background color,
-wireframe). Controls: WASD + Q/E to move, hold right mouse to look, scroll to
-zoom, ESC to quit.
+The sandbox ties it together: a procedurally generated landscape lit by a
+directional light with **shadow mapping** (PCF-filtered) and **Blinn-Phong**
+shading, plus a textured cube that casts a shadow onto the terrain. A live
+ImGui panel tweaks the light, regenerates the terrain (height / frequency /
+octaves / seed), and toggles wireframe. Controls: WASD + Q/E to move, hold
+right mouse to look, scroll to zoom, ESC to quit.
+
+### Rendering notes
+
+- **Shadows**: a depth-only pass renders the scene from the light's POV into a
+  2048² depth texture (`ShadowMap`); the lit pass samples it with a 3×3 PCF
+  kernel and a slope-scaled bias. Polygon-offset during the depth pass keeps
+  shadow acne off the flat terrain.
+- **Terrain colour** is procedural (sand → grass → rock → snow) based on world
+  height and slope, computed in `lit.frag`.
 
 Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.
-Natural next steps: a material/render abstraction, model loading (glTF/OBJ),
-and a scene graph.
+Natural next steps: cascaded shadow maps, a material/render abstraction, model
+loading (glTF/OBJ), and a scene graph.

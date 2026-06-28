@@ -6,5 +6,7 @@
 #include "fitzel/graphics/Shader.hpp"
 #include "fitzel/graphics/Mesh.hpp"
 #include "fitzel/graphics/Texture.hpp"
+#include "fitzel/graphics/ShadowMap.hpp"
 #include "fitzel/scene/Camera.hpp"
+#include "fitzel/world/Terrain.hpp"
 #include "fitzel/ui/Gui.hpp"
