@@ -67,12 +67,20 @@ int main() {
         Texture texGround = Texture::fromFile(texDir + "/aerial_rocks_01_diff_4k.jpg");
         Texture texCliff  = Texture::fromFile(texDir + "/rocky_terrain_02_diff_4k.jpg");
         Texture texSnow   = Texture::fromFile(texDir + "/snow_02_diff_4k.jpg");
+        // Matching triplanar normal maps. PolyHaven ships these as DWAA-compressed
+        // EXR (which most loaders, incl. tinyexr, can't decode), so they're
+        // converted to PNG once (see README); no vertical flip.
+        Texture texSandN   = Texture::fromFile(texDir + "/coast_sand_01_nor_gl_4k.png", false);
+        Texture texGroundN = Texture::fromFile(texDir + "/aerial_rocks_01_nor_gl_4k.png", false);
+        Texture texCliffN  = Texture::fromFile(texDir + "/rocky_terrain_02_nor_gl_4k.png", false);
+        Texture texSnowN   = Texture::fromFile(texDir + "/snow_02_nor_gl_4k.png", false);
         if (!texSand.isValid() || !texGround.isValid() ||
             !texCliff.isValid() || !texSnow.isValid()) {
             std::fprintf(stderr, "Warning: some terrain textures failed to load from %s\n",
                          texDir.c_str());
         }
-        float texScale = 0.08f; // world units -> texture tiling
+        float texScale       = 0.08f; // world units -> texture tiling
+        float normalStrength = 1.0f;
 
         // Materials describe surface appearance; the renderer feeds in lighting.
         Material terrainMat(lit);
@@ -80,7 +88,11 @@ int main() {
                   .setTexture("uTexSand", texSand, 6)
                   .setTexture("uTexGround", texGround, 3)
                   .setTexture("uTexCliff", texCliff, 4)
-                  .setTexture("uTexSnow", texSnow, 5);
+                  .setTexture("uTexSnow", texSnow, 5)
+                  .setTexture("uTexSandN", texSandN, 8)
+                  .setTexture("uTexGroundN", texGroundN, 9)
+                  .setTexture("uTexCliffN", texCliffN, 10)
+                  .setTexture("uTexSnowN", texSnowN, 11);
 
         Material cubeMat(lit);
         cubeMat.set("uColorMode", 2).setTexture("uTexture", texture, 0);
@@ -324,6 +336,7 @@ int main() {
                 }
                 if (ImGui::CollapsingHeader("Terrain material (slope)", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Texture scale", &texScale, 0.02f, 0.2f, "%.3f");
+                    ImGui::SliderFloat("Normal strength", &normalStrength, 0.0f, 1.0f);
                     ImGui::SliderFloat("Rock slope",    &look.rockSlope, 0.0f, 1.0f);
                     ImGui::SliderFloat("Slope blend",   &look.slopeSharpness, 0.02f, 0.4f);
                     ImGui::SliderFloat("Snow level",    &look.snowLevel, 0.0f, 40.0f);
@@ -339,7 +352,8 @@ int main() {
                       .set("uDetailScale", look.detailScale)
                       .set("uDetailStrength", look.detailStrength)
                       .set("uTexScale", texScale)
-                      .set("uSandLevel", waterLevel + 1.0f);
+                      .set("uSandLevel", waterLevel + 1.0f)
+                      .set("uNormalStrength", normalStrength);
 
             // --- Submit the opaque scene once ---------------------------
             int fbW = 0, fbH = 0;

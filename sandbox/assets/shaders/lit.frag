@@ -64,6 +64,13 @@ uniform sampler2D uTexSnow;    // high, flat snow
 uniform float     uTexScale;   // world units -> texture tiling
 uniform float     uSandLevel;  // height below which sand dominates
 
+// Matching triplanar normal maps (OpenGL convention).
+uniform sampler2D uTexSandN;
+uniform sampler2D uTexGroundN;
+uniform sampler2D uTexCliffN;
+uniform sampler2D uTexSnowN;
+uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal map
+
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
 uniform float uDetailStrength; // how strongly it perturbs the normal
@@ -137,6 +144,42 @@ vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale) {
     return cx * bw.x + cy * bw.y + cz * bw.z;
 }
 
+// Triplanar normal mapping (Whiteout blend): reorient each plane's tangent-space
+// normal onto the geometry normal, then blend by the (squared) normal.
+vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale) {
+    vec3 bw = pow(abs(n), vec3(4.0));
+    bw /= (bw.x + bw.y + bw.z);
+    vec3 tx = texture(nmap, wp.zy * scale).xyz * 2.0 - 1.0;
+    vec3 ty = texture(nmap, wp.xz * scale).xyz * 2.0 - 1.0;
+    vec3 tz = texture(nmap, wp.xy * scale).xyz * 2.0 - 1.0;
+    tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
+    ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
+    tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
+    return normalize(tx.zyx * bw.x + ty.xzy * bw.y + tz.xyz * bw.z);
+}
+
+// Normal-mapped surface normal, blended across the same material masks as the
+// albedo (masks derived from the smooth geometry normal `n`).
+vec3 terrainNormal(vec3 wp, vec3 n, float detail) {
+    float flatness = smoothstep(uRockSlope - uSlopeSharpness,
+                                uRockSlope + uSlopeSharpness, n.y);
+    vec3 sandN   = triplanarNormal(uTexSandN,   wp, n, uTexScale * 1.4);
+    vec3 groundN = triplanarNormal(uTexGroundN, wp, n, uTexScale);
+    vec3 cliffN  = triplanarNormal(uTexCliffN,  wp, n, uTexScale * 0.7);
+    vec3 snowN   = triplanarNormal(uTexSnowN,   wp, n, uTexScale);
+
+    float sandH     = uSandLevel + (detail - 0.5) * 3.0;
+    float groundMix = smoothstep(sandH, sandH + 5.0, wp.y);
+    vec3  lowN      = mix(sandN, groundN, groundMix);
+
+    float snowH    = uSnowLevel + (detail - 0.5) * 6.0;
+    float snowMask = smoothstep(snowH - 2.5, snowH + 2.5, wp.y) * flatness;
+
+    vec3 baseN = mix(cliffN, lowN, flatness);
+    baseN = mix(baseN, snowN, snowMask);
+    return normalize(mix(n, baseN, uNormalStrength));
+}
+
 // Height- and slope-based terrain albedo from three triplanar textures.
 // `slope` is the upward component of the surface normal: 1 = flat, ~0 = vertical.
 vec3 terrainAlbedo(vec3 wp, vec3 n, float detail) {
@@ -180,23 +223,9 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 }
 
 void main() {
-    vec3 N = normalize(vNormal);
+    vec3 N = normalize(vNormal); // smooth geometry normal (drives material masks)
 
-    // Add fine surface detail to the terrain: perturb the normal with a
-    // high-frequency noise gradient (bump mapping) and break up the albedo.
-    float detail = 0.0;
-    if (uColorMode == 1) {
-        vec2  p  = vWorldPos.xz * uDetailScale;
-        float e  = 0.75;
-        detail   = detailFbm(p);
-        float dX = detailFbm(p + vec2(e, 0.0)) - detail;
-        float dZ = detailFbm(p + vec2(0.0, e)) - detail;
-        N = normalize(N - vec3(dX, 0.0, dZ) * uDetailStrength);
-    }
-
-    vec3 L = normalize(uLightDir);
-    vec3 V = normalize(uViewPos - vWorldPos);
-    vec3 H = normalize(L + V);
+    float detail = (uColorMode == 1) ? detailFbm(vWorldPos.xz * uDetailScale) : 0.0;
 
     vec3 albedo;
     if (uColorMode == 1) {
@@ -207,6 +236,15 @@ void main() {
         albedo = uAlbedo;
     }
     albedo = pow(albedo, vec3(2.2)); // sRGB -> linear for correct lighting
+
+    // Detailed normal from the triplanar normal maps, for lighting.
+    if (uColorMode == 1) {
+        N = terrainNormal(vWorldPos, N, detail);
+    }
+
+    vec3 L = normalize(uLightDir);
+    vec3 V = normalize(uViewPos - vWorldPos);
+    vec3 H = normalize(L + V);
 
     float diff      = max(dot(N, L), 0.0);
     float specPower = (uColorMode == 1) ? 0.15 : 0.5;

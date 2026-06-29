@@ -96,9 +96,11 @@ hold right mouse to look, scroll to zoom, ESC to quit.
   screen position) and an analytic **lens flare**, then applies **ACES filmic
   tonemapping** + exposure + gamma. Authored sRGB colours are linearised on use and
   the sun is an HDR radiance, so highlights bloom and the sun reads as a sun.
-- **Terrain texturing**: four PBR albedo sets (sand / rocky ground / cliff / snow)
-  are **triplanar-mapped** (projected on the three world axes, blended by the normal)
-  so steep faces don't stretch, and blended by height + slope.
+- **Terrain texturing**: four PBR sets (sand / rocky ground / cliff / snow) are
+  **triplanar-mapped** (projected on the three world axes, blended by the normal) so
+  steep faces don't stretch, and blended by height + slope. Each contributes an albedo
+  *and a normal map* (triplanar Whiteout blend) for surface relief. EXR images load via
+  **tinyexr**.
 - **Water**: planar reflection/refraction (rendered at half-res, distortion hides it)
   with multi-octave animated normals, **Schlick Fresnel**, depth-tinted refraction and
   a sharp HDR sun glint that the bloom picks up.
@@ -106,11 +108,21 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 
 ### Terrain textures (not in the repo)
 
-The terrain albedo textures are large and **git-ignored**. Drop these 4K diffuse
-JPGs from [Poly Haven](https://polyhaven.com/textures) into `textures/`:
-`coast_sand_01_diff_4k.jpg`, `aerial_rocks_01_diff_4k.jpg`,
-`rocky_terrain_02_diff_4k.jpg`, `snow_02_diff_4k.jpg`. CMake injects the folder path
-at build time (`FITZEL_TEXTURE_DIR`).
+The terrain textures are large and **git-ignored**. Drop these 4K sets from
+[Poly Haven](https://polyhaven.com/textures) into `textures/`: `coast_sand_01`,
+`aerial_rocks_01`, `rocky_terrain_02`, `snow_02` — the `*_diff_4k.jpg` (albedo) and a
+`*_nor_gl_4k.png` (OpenGL normal map) for each. CMake injects the folder path at build
+time (`FITZEL_TEXTURE_DIR`).
+
+Poly Haven ships the normal maps as **DWAA-compressed EXR**, which most loaders can't
+decode. Convert them to PNG once (any tool); e.g. with Python:
+
+```python
+import imageio.v2 as iio, numpy as np
+for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
+    img = np.clip(iio.imread(f"textures/{n}_nor_gl_4k.exr")[:, :, :3], 0, 1)
+    iio.imwrite(f"textures/{n}_nor_gl_4k.png", (img*255+0.5).astype(np.uint8))
+```
 
 - **Cascaded shadows**: the camera frustum is split into 4 depth ranges (practical
   log/uniform blend); each cascade is fit to its sub-frustum and rendered into a
