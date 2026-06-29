@@ -22,6 +22,21 @@ uniform float uFogDensity;
 uniform float uFogHeightFalloff;
 uniform float uFogHeight;
 
+uniform float uExposure;
+uniform int   uTonemap;
+
+vec3 acesTonemap(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+vec3 toOutput(vec3 c) {
+    if (uTonemap == 1) {
+        c = acesTonemap(c * uExposure);
+        c = pow(c, vec3(1.0 / 2.2));
+    }
+    return c;
+}
+
 // --- Value-noise fBm (for ripples) -----------------------------------------
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 345.45));
@@ -77,8 +92,8 @@ void main() {
     vec3  V = normalize(uCameraPos - vWorldPos);
     float fresnel = pow(clamp(dot(V, N), 0.0, 1.0), 0.6);
 
-    // Tint the refracted (underwater) color toward the water color.
-    refractCol = mix(refractCol, uWaterColor, 0.4);
+    // Tint the refracted (underwater) color toward the water color (linear).
+    refractCol = mix(refractCol, pow(uWaterColor, vec3(2.2)), 0.4);
 
     vec3 color = mix(reflectCol, refractCol, fresnel);
 
@@ -101,5 +116,5 @@ void main() {
     float sunAmt = pow(max(dot(rd, normalize(uLightDir)), 0.0), 4.0);
     color = mix(color, mix(uFogColor, uFogSunColor, sunAmt), clamp(fog, 0.0, 1.0));
 
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(toOutput(color), 1.0);
 }

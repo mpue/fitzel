@@ -20,6 +20,22 @@ uniform float uFogDensity;
 uniform float uFogHeightFalloff;
 uniform float uFogHeight;
 
+// Output color management.
+uniform float uExposure;
+uniform int   uTonemap; // 1 = ACES tonemap + gamma (final), 0 = linear
+
+vec3 acesTonemap(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+vec3 toOutput(vec3 c) {
+    if (uTonemap == 1) {
+        c = acesTonemap(c * uExposure);
+        c = pow(c, vec3(1.0 / 2.2));
+    }
+    return c;
+}
+
 // Shadows (cascaded).
 uniform sampler2DArray uShadowMap;
 uniform mat4  uLightSpace[MAX_CASCADES];
@@ -165,6 +181,7 @@ void main() {
     } else {
         albedo = uAlbedo;
     }
+    albedo = pow(albedo, vec3(2.2)); // sRGB -> linear for correct lighting
 
     float diff      = max(dot(N, L), 0.0);
     float specPower = (uColorMode == 1) ? 0.15 : 0.5;
@@ -178,5 +195,5 @@ void main() {
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 
-    FragColor = vec4(color, 1.0);
+    FragColor = vec4(toOutput(color), 1.0);
 }

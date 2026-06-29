@@ -120,6 +120,9 @@ int main() {
         float fogDensity = 0.0065f;
         float fogFalloff = 0.03f;
 
+        // Tonemapping exposure.
+        float exposure = 1.0f;
+
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
 
@@ -179,18 +182,26 @@ int main() {
             const glm::vec3 sunCol =
                 glm::mix(glm::vec3(1.0f, 0.97f, 0.9f), glm::vec3(1.0f, 0.55f, 0.26f), lowSun);
             light.direction = sunDir;
-            light.color   = sunCol * (0.12f + 0.95f * dayF);
-            light.ambient = glm::mix(glm::vec3(0.04f, 0.05f, 0.09f),
-                                     glm::vec3(0.34f, 0.37f, 0.42f), dayF);
+            // HDR radiance: the sun is much brighter than 1 so tonemapping
+            // produces highlights and contrast instead of a flat look.
+            light.color   = sunCol * (0.12f + 0.95f * dayF) * 3.4f;
+            light.ambient = glm::mix(glm::vec3(0.015f, 0.02f, 0.04f),
+                                     glm::vec3(0.12f, 0.14f, 0.18f), dayF);
+            renderer.setExposure(exposure);
 
             // Atmospheric fog, tinted by time of day to match the sky horizon.
+            // Colours are authored in sRGB and linearised for the linear-space
+            // blend (tonemapping converts back on output).
             Fog fog;
             fog.height        = waterLevel;
             fog.density       = fogDensity;
             fog.heightFalloff = fogFalloff;
-            fog.color    = glm::mix(glm::vec3(0.03f, 0.04f, 0.09f),
-                                    glm::vec3(0.70f, 0.82f, 0.95f), dayF);
-            fog.sunColor = glm::mix(fog.color, glm::vec3(1.0f, 0.72f, 0.45f), 0.6f * dayF);
+            const glm::vec3 hazeDisp =
+                glm::mix(glm::vec3(0.03f, 0.04f, 0.09f), glm::vec3(0.62f, 0.74f, 0.92f), dayF);
+            const glm::vec3 sunHazeDisp =
+                glm::mix(hazeDisp, glm::vec3(1.0f, 0.62f, 0.34f), 0.7f * dayF);
+            fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
+            fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
 
             // --- UI ------------------------------------------------------
@@ -215,6 +226,7 @@ int main() {
                     ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
                     ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.03f, "%.4f");
                     ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
+                    ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
                     ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                 }
                 if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -298,7 +310,8 @@ int main() {
             const glm::mat4  mainVP = proj * view;
 
             // Fullscreen sky + volumetric clouds for a given view.
-            auto drawSky = [&](const glm::mat4& invViewProj, const glm::vec3& eye) {
+            auto drawSky = [&](const glm::mat4& invViewProj, const glm::vec3& eye,
+                               bool tonemap) {
                 glDisable(GL_DEPTH_TEST);
                 glDepthMask(GL_FALSE);
                 glDisable(GL_CULL_FACE);
@@ -314,6 +327,8 @@ int main() {
                 sky.setFloat("uCloudSpeed", cloudSpeed);
                 sky.setFloat("uCloudBottom", cloudBottom);
                 sky.setFloat("uCloudTop", cloudTop);
+                sky.setFloat("uExposure", exposure);
+                sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
                 glDepthMask(GL_TRUE);
                 glEnable(GL_DEPTH_TEST);
@@ -328,12 +343,14 @@ int main() {
             const glm::mat4 reflView = view * mirror;
             const glm::vec3 reflEye{camPos.x, 2.0f * waterLevel - camPos.y, camPos.z};
 
+            // Reflection/refraction render LINEAR (tonemap=false) so the water
+            // shader can sample and tonemap them once at the end.
             reflectRT.bind();
             glClear(GL_DEPTH_BUFFER_BIT);
-            drawSky(glm::inverse(proj * reflView), reflEye);
+            drawSky(glm::inverse(proj * reflView), reflEye, false);
             glCullFace(GL_FRONT); // mirroring flips winding
             renderer.renderScene(reflView, proj, reflEye,
-                                 glm::vec4(0, 1, 0, -waterLevel + 0.1f));
+                                 glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
             glCullFace(GL_BACK);
 
             // 2) Refraction: scene only, clipping above water (deep-water clear).
@@ -342,13 +359,13 @@ int main() {
                          waterColor.b * 0.5f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             renderer.renderScene(view, proj, camPos,
-                                 glm::vec4(0, -1, 0, waterLevel + 0.1f));
+                                 glm::vec4(0, -1, 0, waterLevel + 0.1f), false);
 
-            // 3) Main pass: sky + full scene, no clipping.
+            // 3) Main pass: sky + full scene, tonemapped to the backbuffer.
             RenderTarget::unbind(fbW, fbH);
             glClear(GL_DEPTH_BUFFER_BIT);
-            drawSky(glm::inverse(mainVP), camPos);
-            renderer.renderScene(view, proj, camPos, Renderer::kNoClip);
+            drawSky(glm::inverse(mainVP), camPos, true);
+            renderer.renderScene(view, proj, camPos, Renderer::kNoClip, true);
 
             // 4) The water surface: a large quad following the camera, sampling
             //    the reflection/refraction targets with Fresnel + ripples.
@@ -371,6 +388,8 @@ int main() {
             water.setFloat("uFogDensity", fog.density);
             water.setFloat("uFogHeightFalloff", fog.heightFalloff);
             water.setFloat("uFogHeight", fog.height);
+            water.setFloat("uExposure", exposure);
+            water.setInt("uTonemap", 1);
             water.setInt("uReflection", 0);
             water.setInt("uRefraction", 1);
             reflectRT.bindColorTexture(0);

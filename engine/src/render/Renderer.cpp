@@ -121,7 +121,8 @@ void Renderer::prepareShadows() {
 }
 
 void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
-                           const glm::vec3& eye, const glm::vec4& clipPlane) {
+                           const glm::vec3& eye, const glm::vec4& clipPlane,
+                           bool tonemap) {
     const glm::mat4 viewProj = proj * view;
     const int cascades = m_csm.cascadeCount();
 
@@ -156,6 +157,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uFogDensity", m_fog.density);
         s->setFloat("uFogHeightFalloff", m_fog.heightFalloff);
         s->setFloat("uFogHeight", m_fog.height);
+        s->setFloat("uExposure", m_exposure);
+        s->setInt("uTonemap", tonemap ? 1 : 0);
         s->setInt("uCascadeCount", cascades);
         s->setInt("uShadowMap", kShadowMapUnit);
 

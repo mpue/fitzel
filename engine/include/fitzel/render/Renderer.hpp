@@ -49,6 +49,7 @@ public:
 
     void begin(const Camera& camera, float aspect, const DirectionalLight& light);
     void setFog(const Fog& fog) { m_fog = fog; }
+    void setExposure(float exposure) { m_exposure = exposure; }
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model);
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 
@@ -59,7 +60,8 @@ public:
     // eye position and world-space clip plane into the currently bound target
     // (does not clear). Pass kNoClip to disable clipping.
     void renderScene(const glm::mat4& view, const glm::mat4& proj,
-                     const glm::vec3& eye, const glm::vec4& clipPlane);
+                     const glm::vec3& eye, const glm::vec4& clipPlane,
+                     bool tonemap = true);
 
     // A clip plane that keeps every fragment (effectively no clipping).
     static const glm::vec4 kNoClip;
@@ -86,6 +88,7 @@ private:
     float            m_aspect = 1.0f;
     DirectionalLight m_light;
     Fog              m_fog;
+    float            m_exposure = 1.0f;
     int              m_vpWidth   = 1;
     int              m_vpHeight  = 1;
     int              m_lastDrawn  = 0;

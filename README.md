@@ -91,6 +91,13 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 
 ### Rendering notes
 
+- **Colour management**: lighting runs in linear space (authored sRGB colours are
+  linearised on use), the sun is an HDR radiance, and each final on-screen write
+  applies **ACES filmic tonemapping** + exposure + gamma. The off-screen
+  reflection/refraction passes render *linear* (untonemapped) so the water shader
+  samples and tonemaps once. This is what gives the image contrast and highlights
+  instead of a flat look.
+
 - **Cascaded shadows**: the camera frustum is split into 4 depth ranges (practical
   log/uniform blend); each cascade is fit to its sub-frustum and rendered into a
   layer of a 2048² depth `GL_TEXTURE_2D_ARRAY`. The lit pass selects a cascade by

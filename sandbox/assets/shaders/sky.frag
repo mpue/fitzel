@@ -18,7 +18,22 @@ uniform float uCloudSpeed;   // wind speed
 uniform float uCloudBottom;  // slab altitudes (world units)
 uniform float uCloudTop;
 
+uniform float uExposure;
+uniform int   uTonemap;
+
 const float PI = 3.14159265;
+
+vec3 acesTonemap(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+vec3 toOutput(vec3 c) {
+    if (uTonemap == 1) {
+        c = acesTonemap(c * uExposure);
+        c = pow(c, vec3(1.0 / 2.2));
+    }
+    return c;
+}
 
 // --- 3D value-noise fBm ----------------------------------------------------
 float hash13(vec3 p) {
@@ -67,10 +82,13 @@ vec3 skyColor(vec3 dir) {
                            normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0);
     col += vec3(0.85, 0.35, 0.10) * lowSun * pow(toSun, 3.0) * (1.0 - h);
 
-    // Sun disk + glow.
+    // The gradient colours are authored in sRGB -> linearise for the pipeline.
+    col = pow(col, vec3(2.2));
+
+    // Sun disk + glow (HDR linear radiance, added after linearisation).
     float sd = max(dot(dir, uSunDir), 0.0);
-    col += uSunColor * pow(sd, 8.0) * 0.4;          // glow
-    col += uSunColor * smoothstep(0.9995, 0.9998, sd) * 6.0; // disk
+    col += uSunColor * pow(sd, 8.0) * 0.5;            // glow
+    col += uSunColor * smoothstep(0.9995, 0.9998, sd) * 8.0; // disk
     return col;
 }
 
@@ -108,8 +126,8 @@ vec4 renderClouds(vec3 ro, vec3 rd) {
     float cosA  = dot(rd, uSunDir);
     float phase = mix(phaseHG(cosA, 0.2), phaseHG(cosA, -0.15), 0.5);
 
-    vec3 ambient = mix(vec3(0.10, 0.13, 0.20), vec3(0.55, 0.62, 0.75),
-                       smoothstep(-0.1, 0.2, uSunDir.y));
+    vec3 ambient = pow(mix(vec3(0.10, 0.13, 0.20), vec3(0.55, 0.62, 0.75),
+                       smoothstep(-0.1, 0.2, uSunDir.y)), vec3(2.2));
 
     float T = 1.0;
     vec3  col = vec3(0.0);
@@ -149,5 +167,5 @@ void main() {
     vec4 clouds = renderClouds(uCameraPos, dir);
     col = col * (1.0 - clouds.a) + clouds.rgb;
 
-    FragColor = vec4(col, 1.0);
+    FragColor = vec4(toOutput(col), 1.0);
 }
