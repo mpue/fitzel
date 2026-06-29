@@ -15,6 +15,9 @@ uniform vec3  uSunColor;    // linear sun tint
 uniform float uBloom;       // bloom intensity
 uniform float uRays;        // god-ray intensity
 
+uniform sampler2D uAO;      // screen-space ambient occlusion
+uniform float uAoStrength;
+
 // HSV colour grade (applied to the final image).
 uniform float uHueShift;    // degrees
 uniform float uSaturation;
@@ -57,6 +60,10 @@ vec3 aces(vec3 x) {
 void main() {
     vec2 uv  = vNdc * 0.5 + 0.5;
     vec3 hdr = texture(uHdr, uv).rgb;
+
+    // Ambient occlusion darkens creases/valleys (bilinear-upscaled half-res AO).
+    float ao = mix(1.0, texture(uAO, uv).r, uAoStrength);
+    hdr *= ao;
 
     // --- Bloom: gaussian-weighted blur of the bright pass --------------
     vec3  bloom = vec3(0.0);

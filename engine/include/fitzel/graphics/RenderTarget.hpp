@@ -11,7 +11,10 @@ class RenderTarget {
 public:
     enum class Format { RGBA8, RGBA16F };
 
-    RenderTarget(int width, int height, Format format = Format::RGBA8);
+    // `depthAsTexture` attaches a sampleable depth texture (for SSAO etc.)
+    // instead of a write-only depth renderbuffer.
+    RenderTarget(int width, int height, Format format = Format::RGBA8,
+                 bool depthAsTexture = false);
     ~RenderTarget();
 
     RenderTarget(const RenderTarget&)            = delete;
@@ -25,6 +28,7 @@ public:
     static void unbind(int viewportWidth, int viewportHeight);
 
     void bindColorTexture(std::uint32_t unit) const;
+    void bindDepthTexture(std::uint32_t unit) const; // valid if created with depthAsTexture
 
     int width()  const { return m_width; }
     int height() const { return m_height; }
@@ -33,6 +37,7 @@ private:
     std::uint32_t m_fbo       = 0;
     std::uint32_t m_colorTex  = 0;
     std::uint32_t m_depthRbo  = 0;
+    std::uint32_t m_depthTex  = 0;
     int           m_width     = 0;
     int           m_height    = 0;
 };

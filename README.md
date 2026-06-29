@@ -104,6 +104,9 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 - **Water**: planar reflection/refraction (rendered at half-res, distortion hides it)
   with multi-octave animated normals, **Schlick Fresnel**, depth-tinted refraction and
   a sharp HDR sun glint that the bloom picks up.
+- **SSAO**: the HDR pass writes a depth texture; a half-res screen-space ambient
+  occlusion pass reconstructs view position/normal from depth and samples a hemisphere
+  kernel; the composite multiplies it into the scene to darken creases and valleys.
 - On laptops the app exports `NvOptimusEnablement` so it runs on the discrete GPU.
 
 ### Terrain textures (not in the repo)

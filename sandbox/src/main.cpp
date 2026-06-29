@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdio>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -152,9 +153,33 @@ int main() {
         }
         int hdrW = 0, hdrH = 0;
         window.framebufferSize(hdrW, hdrH);
-        RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F);
+        RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F, /*depthTex=*/true);
         float bloomIntensity = 0.35f;
         float rayIntensity   = 0.5f;
+
+        // SSAO (half-res), reconstructing position/normal from the HDR depth.
+        Shader ssao = Shader::fromFiles("assets/shaders/sky.vert",
+                                        "assets/shaders/ssao.frag");
+        if (!ssao.isValid()) { std::fprintf(stderr, "Failed to load ssao shader\n"); return 1; }
+        RenderTarget ssaoRT(hdrW / 2, hdrH / 2);
+        {
+            std::mt19937 rng(1337u);
+            std::uniform_real_distribution<float> d(0.0f, 1.0f);
+            ssao.bind();
+            const int kn = 24;
+            for (int i = 0; i < kn; ++i) {
+                glm::vec3 s(d(rng) * 2.0f - 1.0f, d(rng) * 2.0f - 1.0f, d(rng));
+                s = glm::normalize(s) * d(rng);
+                const float t = static_cast<float>(i) / kn;
+                s *= glm::mix(0.1f, 1.0f, t * t); // cluster samples near the origin
+                ssao.setVec3("uKernel[" + std::to_string(i) + "]", s);
+            }
+            ssao.setInt("uKernelSize", kn);
+        }
+        float ssaoStrength = 0.7f;
+        float ssaoRadius   = 1.5f;
+        float ssaoBias     = 0.03f;
+        float ssaoPower    = 1.6f;
 
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
@@ -309,6 +334,8 @@ int main() {
                     ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
                     ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
                     ImGui::SliderFloat("Sun rays",   &rayIntensity, 0.0f, 1.5f);
+                    ImGui::SliderFloat("SSAO",       &ssaoStrength, 0.0f, 1.0f);
+                    ImGui::SliderFloat("SSAO radius",&ssaoRadius, 0.2f, 4.0f);
                     ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                     ImGui::SeparatorText("Colour grade (HSV)");
                     ImGui::SliderFloat("Hue",        &hueShift, -180.0f, 180.0f, "%.0f");
@@ -447,7 +474,8 @@ int main() {
             // 3) Main pass: sky + full scene rendered LINEAR into the HDR buffer
             //    (tonemapping happens in the composite pass).
             if (hdrRT.width() != fbW || hdrRT.height() != fbH) {
-                hdrRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA16F);
+                hdrRT  = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA16F, true);
+                ssaoRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
             }
             hdrRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -483,6 +511,25 @@ int main() {
             refractRT.bindColorTexture(1);
             waterMesh.draw();
 
+            // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
+            ssaoRT.bind();
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glDisable(GL_CULL_FACE);
+            ssao.bind();
+            hdrRT.bindDepthTexture(0);
+            ssao.setInt("uDepth", 0);
+            ssao.setMat4("uProjection", proj);
+            ssao.setMat4("uInvProjection", glm::inverse(proj));
+            ssao.setFloat("uRadius", ssaoRadius);
+            ssao.setFloat("uBias", ssaoBias);
+            ssao.setFloat("uPower", ssaoPower);
+            fsQuad.draw();
+            glDepthMask(GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+            glEnable(GL_CULL_FACE);
+
             // --- Composite: bloom + god rays + lens flare + tonemap ------
             // Project the sun to screen space for the rays/flare.
             const glm::vec4 sunClip = mainVP * glm::vec4(camPos + sunDir * 3000.0f, 1.0f);
@@ -503,6 +550,9 @@ int main() {
             composite.bind();
             hdrRT.bindColorTexture(0);
             composite.setInt("uHdr", 0);
+            ssaoRT.bindColorTexture(2);
+            composite.setInt("uAO", 2);
+            composite.setFloat("uAoStrength", ssaoStrength);
             composite.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
             composite.setFloat("uAspect", aspect);
             composite.setFloat("uExposure", exposure);
