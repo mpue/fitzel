@@ -19,6 +19,17 @@ struct DirectionalLight {
     glm::vec3 ambient{0.30f, 0.33f, 0.38f}; // sky/fill light
 };
 
+// Atmospheric fog: exponential height fog + aerial perspective. `color` is the
+// distance haze (match it to the sky horizon); `sunColor` tints the in-scatter
+// when looking toward the sun.
+struct Fog {
+    glm::vec3 color{0.70f, 0.82f, 0.95f};
+    glm::vec3 sunColor{1.0f, 0.75f, 0.5f};
+    float     density       = 0.006f;
+    float     heightFalloff = 0.03f;
+    float     height        = 0.0f;
+};
+
 // A high-level renderer that drives cascaded shadow mapping and a forward lit
 // pass. The app submits (mesh, material, model) tuples between begin() and
 // end(); the renderer renders all cascades, then the lit scene, feeding the
@@ -37,6 +48,7 @@ public:
     void setViewport(int width, int height);
 
     void begin(const Camera& camera, float aspect, const DirectionalLight& light);
+    void setFog(const Fog& fog) { m_fog = fog; }
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model);
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 
@@ -73,6 +85,7 @@ private:
     const Camera*    m_camera = nullptr;
     float            m_aspect = 1.0f;
     DirectionalLight m_light;
+    Fog              m_fog;
     int              m_vpWidth   = 1;
     int              m_vpHeight  = 1;
     int              m_lastDrawn  = 0;

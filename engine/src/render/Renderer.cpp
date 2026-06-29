@@ -151,6 +151,11 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setVec3("uLightDir", m_light.direction);
         s->setVec3("uLightColor", m_light.color);
         s->setVec3("uAmbient", m_light.ambient);
+        s->setVec3("uFogColor", m_fog.color);
+        s->setVec3("uFogSunColor", m_fog.sunColor);
+        s->setFloat("uFogDensity", m_fog.density);
+        s->setFloat("uFogHeightFalloff", m_fog.heightFalloff);
+        s->setFloat("uFogHeight", m_fog.height);
         s->setInt("uCascadeCount", cascades);
         s->setInt("uShadowMap", kShadowMapUnit);
 

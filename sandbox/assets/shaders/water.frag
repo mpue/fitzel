@@ -15,6 +15,13 @@ uniform vec3  uWaterColor;
 uniform float uWaveStrength; // ripple distortion amount
 uniform float uWaveScale;    // ripple frequency
 
+// Atmospheric fog (matches lit.frag).
+uniform vec3  uFogColor;
+uniform vec3  uFogSunColor;
+uniform float uFogDensity;
+uniform float uFogHeightFalloff;
+uniform float uFogHeight;
+
 // --- Value-noise fBm (for ripples) -----------------------------------------
 float hash21(vec2 p) {
     p = fract(p * vec2(123.34, 345.45));
@@ -80,6 +87,19 @@ void main() {
     vec3  H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 120.0);
     color += uLightColor * spec * 0.7;
+
+    // Atmospheric fog so distant water blends into the horizon haze.
+    vec3  toFrag = vWorldPos - uCameraPos;
+    float dist   = length(toFrag);
+    vec3  rd     = toFrag / max(dist, 1e-4);
+    float b = uFogHeightFalloff;
+    float c = uFogDensity * exp(-(uCameraPos.y - uFogHeight) * b);
+    float od = (abs(rd.y) > 1e-4)
+             ? c * (1.0 - exp(-b * rd.y * dist)) / (b * rd.y)
+             : c * dist;
+    float fog = 1.0 - exp(-max(od, 0.0));
+    float sunAmt = pow(max(dot(rd, normalize(uLightDir)), 0.0), 4.0);
+    color = mix(color, mix(uFogColor, uFogSunColor, sunAmt), clamp(fog, 0.0, 1.0));
 
     FragColor = vec4(color, 1.0);
 }

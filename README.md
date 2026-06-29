@@ -81,8 +81,8 @@ The engine exposes a small, RAII-based core to build on:
 The sandbox ties it together: an **infinite, streamed procedural landscape** under a
 **day/night sky with volumetric clouds**, lit by a directional sun with **cascaded
 shadow mapping** (PCF) and **Blinn-Phong** shading, cubes that cast shadows onto the
-terrain, and a **planar-reflective water plane** (reflecting sky + clouds) flooding
-the valleys. The renderer exposes both a one-call path
+terrain, **atmospheric fog** (aerial perspective), and a **planar-reflective water
+plane** (reflecting sky + clouds) flooding the valleys. The renderer exposes both a one-call path
 (`begin()` → `submit()` → `end()`) and multi-pass building blocks
 (`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`) used to render the
 reflection/refraction passes. A live ImGui panel tweaks the light, cascade split,
@@ -117,6 +117,10 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 - **Volumetric clouds**: the sky pass raymarches a cloud slab (3D value-noise fBm
   density with a height falloff), with a secondary light-march toward the sun for
   self-shadowing and a Henyey-Greenstein phase for the silver lining.
+- **Atmospheric fog**: exponential height fog + aerial perspective applied in
+  `lit.frag`/`water.frag`. Distant geometry fades into a horizon haze whose colour
+  tracks the time of day (and warms toward the sun via in-scatter), giving depth and
+  hiding the streaming edge; valleys and water pick up ground mist.
 - **Water**: planar reflection + refraction. The scene is rendered twice off-screen
   (a mirror-matrix camera with the underwater half clipped for the reflection, the
   above-water half clipped for the refraction), then the water surface blends the two

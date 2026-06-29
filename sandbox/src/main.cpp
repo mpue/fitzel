@@ -116,6 +116,10 @@ int main() {
         float cloudBottom   = 140.0f;
         float cloudTop      = 320.0f;
 
+        // Atmospheric fog.
+        float fogDensity = 0.0065f;
+        float fogFalloff = 0.03f;
+
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
 
@@ -179,6 +183,16 @@ int main() {
             light.ambient = glm::mix(glm::vec3(0.04f, 0.05f, 0.09f),
                                      glm::vec3(0.34f, 0.37f, 0.42f), dayF);
 
+            // Atmospheric fog, tinted by time of day to match the sky horizon.
+            Fog fog;
+            fog.height        = waterLevel;
+            fog.density       = fogDensity;
+            fog.heightFalloff = fogFalloff;
+            fog.color    = glm::mix(glm::vec3(0.03f, 0.04f, 0.09f),
+                                    glm::vec3(0.70f, 0.82f, 0.95f), dayF);
+            fog.sunColor = glm::mix(fog.color, glm::vec3(1.0f, 0.72f, 0.45f), 0.6f * dayF);
+            renderer.setFog(fog);
+
             // --- UI ------------------------------------------------------
             gui.beginFrame();
             if (ImGui::Begin("Fitzel")) {
@@ -192,18 +206,16 @@ int main() {
                             renderer.lastDrawn(), renderer.lastCulled());
                 ImGui::SliderFloat("Move speed", &camera.moveSpeed, 2.0f, 80.0f);
 
-                if (ImGui::CollapsingHeader("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::SliderFloat3("Light dir", &light.direction.x, -1.0f, 1.0f);
-                    ImGui::ColorEdit3("Light color", &light.color.x);
-                    ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
-                }
-                if (ImGui::CollapsingHeader("Sky & clouds", ImGuiTreeNodeFlags_DefaultOpen)) {
+                if (ImGui::CollapsingHeader("Sky, clouds & atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
                     ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
                     ImGui::SliderFloat("Coverage",    &cloudCoverage, 0.0f, 1.0f);
                     ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
                     ImGui::SliderFloat("Cloud scale", &cloudScale, 0.001f, 0.006f, "%.4f");
                     ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
+                    ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.03f, "%.4f");
+                    ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
+                    ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                 }
                 if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Level",      &waterLevel, -15.0f, 15.0f);
@@ -354,6 +366,11 @@ int main() {
             water.setVec3("uWaterColor", waterColor);
             water.setFloat("uWaveStrength", waveStrength);
             water.setFloat("uWaveScale", waveScale);
+            water.setVec3("uFogColor", fog.color);
+            water.setVec3("uFogSunColor", fog.sunColor);
+            water.setFloat("uFogDensity", fog.density);
+            water.setFloat("uFogHeightFalloff", fog.heightFalloff);
+            water.setFloat("uFogHeight", fog.height);
             water.setInt("uReflection", 0);
             water.setInt("uRefraction", 1);
             reflectRT.bindColorTexture(0);

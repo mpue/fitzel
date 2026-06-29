@@ -13,6 +13,13 @@ uniform vec3 uLightDir;    // direction *towards* the light, world space
 uniform vec3 uLightColor;
 uniform vec3 uAmbient;     // sky/fill light (drives day/night darkening)
 
+// Atmospheric fog (aerial perspective + exponential height fog).
+uniform vec3  uFogColor;
+uniform vec3  uFogSunColor;
+uniform float uFogDensity;
+uniform float uFogHeightFalloff;
+uniform float uFogHeight;
+
 // Shadows (cascaded).
 uniform sampler2DArray uShadowMap;
 uniform mat4  uLightSpace[MAX_CASCADES];
@@ -112,6 +119,24 @@ vec3 terrainColor(float height, float slope) {
     return mix(uColorRock, ground, flatness);
 }
 
+// Apply exponential height fog with sun-tinted in-scatter to a shaded colour.
+vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
+    vec3  toFrag = worldPos - eye;
+    float dist   = length(toFrag);
+    vec3  rd     = toFrag / max(dist, 1e-4);
+
+    float b = uFogHeightFalloff;
+    float c = uFogDensity * exp(-(eye.y - uFogHeight) * b);
+    float od;
+    if (abs(rd.y) > 1e-4) od = c * (1.0 - exp(-b * rd.y * dist)) / (b * rd.y);
+    else                  od = c * dist;
+    float fog = 1.0 - exp(-max(od, 0.0));
+
+    float sunAmt = pow(max(dot(rd, normalize(lightDir)), 0.0), 4.0);
+    vec3  fogCol = mix(uFogColor, uFogSunColor, sunAmt);
+    return mix(color, fogCol, clamp(fog, 0.0, 1.0));
+}
+
 void main() {
     vec3 N = normalize(vNormal);
 
@@ -150,6 +175,8 @@ void main() {
 
     vec3 color = albedo * uAmbient
                + (1.0 - shadow) * uLightColor * (albedo * diff + spec);
+
+    color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 
     FragColor = vec4(color, 1.0);
 }
