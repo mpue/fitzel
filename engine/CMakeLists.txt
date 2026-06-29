@@ -21,12 +21,15 @@ target_include_directories(fitzel
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
 )
 
+find_package(Threads REQUIRED)
+
 target_link_libraries(fitzel
     PUBLIC
         glfw
         glad_gl_core_33
         glm::glm
         imgui
+        Threads::Threads
     PRIVATE
         stb_headers
 )

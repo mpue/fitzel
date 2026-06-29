@@ -1,5 +1,7 @@
 #include "fitzel/graphics/Mesh.hpp"
 
+#include <algorithm>
+#include <limits>
 #include <utility>
 
 #include <glad/gl.h>
@@ -17,7 +19,9 @@ Mesh::Mesh(Mesh&& other) noexcept
       m_vbo(std::exchange(other.m_vbo, 0)),
       m_ebo(std::exchange(other.m_ebo, 0)),
       m_vertexCount(std::exchange(other.m_vertexCount, 0)),
-      m_indexCount(std::exchange(other.m_indexCount, 0)) {}
+      m_indexCount(std::exchange(other.m_indexCount, 0)),
+      m_boundsMin(other.m_boundsMin),
+      m_boundsMax(other.m_boundsMax) {}
 
 Mesh& Mesh::operator=(Mesh&& other) noexcept {
     if (this != &other) {
@@ -30,8 +34,14 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         m_ebo         = std::exchange(other.m_ebo, 0);
         m_vertexCount = std::exchange(other.m_vertexCount, 0);
         m_indexCount  = std::exchange(other.m_indexCount, 0);
+        m_boundsMin   = other.m_boundsMin;
+        m_boundsMax   = other.m_boundsMax;
     }
     return *this;
+}
+
+Mesh Mesh::create(const MeshData& data) {
+    return create(data.vertices, data.indices);
 }
 
 Mesh Mesh::create(const std::vector<Vertex>& vertices,
@@ -39,6 +49,18 @@ Mesh Mesh::create(const std::vector<Vertex>& vertices,
     Mesh mesh;
     mesh.m_vertexCount = static_cast<std::uint32_t>(vertices.size());
     mesh.m_indexCount  = static_cast<std::uint32_t>(indices.size());
+
+    // Local-space AABB for frustum culling.
+    constexpr float inf = std::numeric_limits<float>::max();
+    glm::vec3 lo{inf}, hi{-inf};
+    for (const Vertex& v : vertices) {
+        lo = glm::min(lo, v.position);
+        hi = glm::max(hi, v.position);
+    }
+    if (!vertices.empty()) {
+        mesh.m_boundsMin = lo;
+        mesh.m_boundsMax = hi;
+    }
 
     glGenVertexArrays(1, &mesh.m_vao);
     glBindVertexArray(mesh.m_vao);

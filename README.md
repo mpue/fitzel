@@ -70,7 +70,7 @@ The engine exposes a small, RAII-based core to build on:
 - `fitzel::Camera`  — first-person fly camera producing view/projection matrices.
 - `fitzel::Material` — a `Shader` plus named uniform/texture parameters (`apply()`).
 - `fitzel::Renderer` — forward renderer driving cascaded shadows + a lit pass over
-  submitted `(mesh, material, model)` tuples.
+  submitted `(mesh, material, model)` tuples, with per-pass frustum culling.
 - `fitzel::CascadedShadowMap` — frustum-split directional shadows in a depth array.
 - `fitzel::ShadowMap` — single-cascade depth FBO (simpler alternative to CSM).
 - `fitzel::RenderTarget` — off-screen color+depth FBO for render-to-texture passes.
@@ -96,7 +96,12 @@ hold right mouse to look, scroll to zoom, ESC to quit.
   view-space depth and samples it with a 3×3 PCF kernel + slope/cascade-scaled bias.
 - **Terrain streaming**: chunks are generated from world-space noise, so neighbours
   tile seamlessly (shared edges sample the same continuous field, incl. normals).
-  The streamer regenerates the ring as the camera crosses chunk borders.
+  Generation runs on a **worker-thread pool** (CPU `MeshData` only); the render
+  thread uploads a few finished chunks per frame, so crossing chunk borders never
+  stalls the frame. A generation counter discards work made stale by a rebuild.
+- **Frustum culling**: each pass extracts its 6 frustum planes (Gribb-Hartmann) and
+  tests every submittable's world AABB, so the reflection/refraction/main passes each
+  cull against their own frustum. The ImGui panel reports visible vs culled draws.
 - **Terrain detail**: the height field combines domain warping (organic, non-grid
   shapes), a rolling fBm base, and a ridged-multifractal mountain layer masked onto
   the highlands. `lit.frag` adds close-up micro-detail via a procedural value-noise
@@ -112,5 +117,5 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 
 Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.
-Natural next steps: frustum culling of chunks, async chunk generation off the main
-thread, a material/texture asset system, and model loading (glTF/OBJ).
+Natural next steps: triplanar terrain texturing with real albedo maps, a
+material/texture asset system, model loading (glTF/OBJ), and a scene graph.

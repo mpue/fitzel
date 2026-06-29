@@ -54,6 +54,10 @@ public:
     CascadedShadowMap&       shadows()       { return m_csm; }
     const CascadedShadowMap& shadows() const { return m_csm; }
 
+    // Frustum-culling stats from the most recent renderScene() call.
+    int lastDrawn()  const { return m_lastDrawn; }
+    int lastCulled() const { return m_lastCulled; }
+
 private:
     struct Renderable {
         const Mesh*     mesh;
@@ -68,8 +72,10 @@ private:
     const Camera*    m_camera = nullptr;
     float            m_aspect = 1.0f;
     DirectionalLight m_light;
-    int              m_vpWidth  = 1;
-    int              m_vpHeight = 1;
+    int              m_vpWidth   = 1;
+    int              m_vpHeight  = 1;
+    int              m_lastDrawn  = 0;
+    int              m_lastCulled = 0;
 };
 
 } // namespace fitzel

@@ -23,8 +23,7 @@ float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
     const float base = stb_perlin_fbm_noise3(
         wx * f + s.seed, 0.0f, wz * f + s.seed, s.lacunarity, s.gain, s.octaves);
 
-    // 3) Sharp mountain ridges (ridged multifractal), raised on the highlands so
-    //    ranges grow out of higher ground rather than the whole field.
+    // 3) Sharp mountain ridges, raised on the highlands.
     const float ridge = stb_perlin_ridge_noise3(
         wx * f * 1.9f + s.seed, 0.0f, wz * f * 1.9f + s.seed,
         2.0f, 0.5f, 1.0f, s.octaves);
@@ -33,21 +32,17 @@ float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
     return base * s.heightScale + ridge * s.ridgeScale * mask;
 }
 
-TerrainChunk TerrainChunk::generate(const TerrainSettings& s, glm::ivec2 coord) {
-    TerrainChunk chunk;
-    chunk.m_coord = coord;
+MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord) {
+    MeshData data;
 
-    const int   verts  = std::max(2, s.resolution + 1);
-    const float step   = s.chunkSize / static_cast<float>(s.resolution);
+    const int   verts   = std::max(2, s.resolution + 1);
+    const float step    = s.chunkSize / static_cast<float>(s.resolution);
     const float originX = coord.x * s.chunkSize;
     const float originZ = coord.y * s.chunkSize;
 
-    // World-space height sampler; used for both positions and normals so chunk
-    // edges line up exactly with their neighbours.
     auto height = [&](float wx, float wz) { return terrainHeight(s, wx, wz); };
 
-    std::vector<Vertex> vertices;
-    vertices.reserve(static_cast<std::size_t>(verts) * verts);
+    data.vertices.reserve(static_cast<std::size_t>(verts) * verts);
     for (int z = 0; z < verts; ++z) {
         for (int x = 0; x < verts; ++x) {
             const float wx = originX + x * step;
@@ -66,28 +61,55 @@ TerrainChunk TerrainChunk::generate(const TerrainSettings& s, glm::ivec2 coord) 
             v.normal   = normal;
             v.uv       = {static_cast<float>(x) / s.resolution,
                           static_cast<float>(z) / s.resolution};
-            vertices.push_back(v);
+            data.vertices.push_back(v);
         }
     }
 
-    std::vector<std::uint32_t> indices;
-    indices.reserve(static_cast<std::size_t>(s.resolution) * s.resolution * 6);
+    data.indices.reserve(static_cast<std::size_t>(s.resolution) * s.resolution * 6);
     for (int z = 0; z < verts - 1; ++z) {
         for (int x = 0; x < verts - 1; ++x) {
             const std::uint32_t i0 = static_cast<std::uint32_t>(z * verts + x);
             const std::uint32_t i1 = i0 + 1;
             const std::uint32_t i2 = i0 + verts;
             const std::uint32_t i3 = i2 + 1;
-            indices.insert(indices.end(), {i0, i2, i1, i1, i2, i3});
+            data.indices.insert(data.indices.end(),
+                                {i0, i2, i1, i1, i2, i3});
         }
     }
 
-    chunk.m_mesh = Mesh::create(vertices, indices);
+    return data;
+}
+
+TerrainChunk TerrainChunk::fromData(glm::ivec2 coord, const MeshData& data) {
+    TerrainChunk chunk;
+    chunk.m_coord = coord;
+    chunk.m_mesh  = Mesh::create(data);
     return chunk;
 }
 
+TerrainChunk TerrainChunk::generate(const TerrainSettings& s, glm::ivec2 coord) {
+    return fromData(coord, buildMeshData(s, coord));
+}
+
+// --- TerrainStreamer -------------------------------------------------------
+
 TerrainStreamer::TerrainStreamer(const TerrainSettings& settings, int radius)
-    : m_settings(settings), m_radius(std::max(0, radius)) {}
+    : m_settings(settings), m_radius(std::max(0, radius)) {
+    unsigned hw = std::thread::hardware_concurrency();
+    unsigned count = (hw > 2) ? hw - 1 : 1;
+    count = std::min(count, 4u);
+    for (unsigned i = 0; i < count; ++i) {
+        m_workers.emplace_back([this] { workerLoop(); });
+    }
+}
+
+TerrainStreamer::~TerrainStreamer() {
+    m_stop.store(true);
+    m_jobCv.notify_all();
+    for (std::thread& t : m_workers) {
+        if (t.joinable()) t.join();
+    }
+}
 
 std::int64_t TerrainStreamer::key(glm::ivec2 c) {
     return (static_cast<std::int64_t>(c.x) << 32) ^
@@ -99,43 +121,97 @@ glm::ivec2 TerrainStreamer::chunkCoordOf(const glm::vec3& pos) const {
             static_cast<int>(std::floor(pos.z / m_settings.chunkSize))};
 }
 
-int TerrainStreamer::update(const glm::vec3& cameraPos) {
-    const glm::ivec2 c = chunkCoordOf(cameraPos);
-    if (c == m_center && !m_dirty) {
-        return 0;
-    }
-    m_center = c;
-    m_dirty  = false;
+bool TerrainStreamer::inRange(glm::ivec2 c, glm::ivec2 center) const {
+    return std::abs(c.x - center.x) <= m_radius &&
+           std::abs(c.y - center.y) <= m_radius;
+}
 
-    // Drop chunks outside the radius.
-    for (auto it = m_chunks.begin(); it != m_chunks.end();) {
-        const glm::ivec2 cc = it->second.coord();
-        if (std::abs(cc.x - c.x) > m_radius || std::abs(cc.y - c.y) > m_radius) {
-            it = m_chunks.erase(it);
-        } else {
-            ++it;
+void TerrainStreamer::workerLoop() {
+    for (;;) {
+        Job job;
+        {
+            std::unique_lock<std::mutex> lock(m_jobMutex);
+            m_jobCv.wait(lock, [this] { return m_stop.load() || !m_jobs.empty(); });
+            if (m_stop.load()) return;
+            job = std::move(m_jobs.front());
+            m_jobs.pop();
+        }
+        MeshData data = TerrainChunk::buildMeshData(job.settings, job.coord);
+        {
+            std::lock_guard<std::mutex> lock(m_resultMutex);
+            m_results.push({job.coord, job.generation, std::move(data)});
         }
     }
+}
 
-    // Generate any missing chunks within the radius.
-    int generated = 0;
-    for (int dz = -m_radius; dz <= m_radius; ++dz) {
-        for (int dx = -m_radius; dx <= m_radius; ++dx) {
-            const glm::ivec2 cc{c.x + dx, c.y + dz};
-            const std::int64_t k = key(cc);
-            if (m_chunks.find(k) == m_chunks.end()) {
-                m_chunks.emplace(k, TerrainChunk::generate(m_settings, cc));
-                ++generated;
+int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
+    const glm::ivec2 center = chunkCoordOf(cameraPos);
+
+    // 1) Upload finished chunks (render thread). Bounded per frame.
+    int uploaded = 0;
+    std::vector<Result> ready;
+    {
+        std::lock_guard<std::mutex> lock(m_resultMutex);
+        while (!m_results.empty() && static_cast<int>(ready.size()) < maxUploads) {
+            ready.push_back(std::move(m_results.front()));
+            m_results.pop();
+        }
+    }
+    for (Result& r : ready) {
+        m_pending.erase(key(r.coord));
+        const bool stale = (r.generation != m_generation) || !inRange(r.coord, center);
+        if (!stale && m_chunks.find(key(r.coord)) == m_chunks.end()) {
+            m_chunks.emplace(key(r.coord), TerrainChunk::fromData(r.coord, r.data));
+            ++uploaded;
+        }
+        // stale / out-of-range results are simply dropped.
+    }
+
+    bool changed = uploaded > 0;
+
+    // 2) When the camera changes chunk (or after a rebuild), refresh the desired
+    //    set: drop far chunks and queue any missing ones.
+    if (center != m_center || m_dirty) {
+        m_center = center;
+        m_dirty  = false;
+        changed  = true;
+
+        for (auto it = m_chunks.begin(); it != m_chunks.end();) {
+            if (!inRange(it->second.coord(), center)) it = m_chunks.erase(it);
+            else ++it;
+        }
+
+        std::vector<Job> newJobs;
+        for (int dz = -m_radius; dz <= m_radius; ++dz) {
+            for (int dx = -m_radius; dx <= m_radius; ++dx) {
+                const glm::ivec2 c{center.x + dx, center.y + dz};
+                const std::int64_t k = key(c);
+                if (m_chunks.find(k) == m_chunks.end() &&
+                    m_pending.find(k) == m_pending.end()) {
+                    m_pending.insert(k);
+                    newJobs.push_back({c, m_settings, m_generation});
+                }
             }
         }
+        if (!newJobs.empty()) {
+            std::lock_guard<std::mutex> lock(m_jobMutex);
+            for (Job& j : newJobs) m_jobs.push(std::move(j));
+            m_jobCv.notify_all();
+        }
     }
 
-    refreshVisible();
-    return generated;
+    if (changed) {
+        refreshVisible();
+    }
+    return uploaded;
 }
 
 void TerrainStreamer::rebuild() {
+    // Bump generation so in-flight results are discarded; clear loaded + pending.
+    ++m_generation;
     m_chunks.clear();
+    m_pending.clear();
+    m_visible.clear();
     m_dirty = true;
 }
 

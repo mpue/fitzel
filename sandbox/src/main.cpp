@@ -142,7 +142,10 @@ int main() {
                             1000.0f / ImGui::GetIO().Framerate);
                 ImGui::Text("Camera: %.0f, %.0f, %.0f",
                             camera.position().x, camera.position().y, camera.position().z);
-                ImGui::Text("Loaded chunks: %d", streamer.loadedChunkCount());
+                ImGui::Text("Chunks: %d loaded, %d pending",
+                            streamer.loadedChunkCount(), streamer.pendingChunkCount());
+                ImGui::Text("Draws: %d visible, %d culled",
+                            renderer.lastDrawn(), renderer.lastCulled());
                 ImGui::SliderFloat("Move speed", &camera.moveSpeed, 2.0f, 80.0f);
 
                 if (ImGui::CollapsingHeader("Lighting & Shadows", ImGuiTreeNodeFlags_DefaultOpen)) {
