@@ -16,6 +16,7 @@ class Material;
 struct DirectionalLight {
     glm::vec3 direction{0.5f, 1.0f, 0.35f}; // points *towards* the light
     glm::vec3 color{1.0f, 0.97f, 0.9f};
+    glm::vec3 ambient{0.30f, 0.33f, 0.38f}; // sky/fill light
 };
 
 // A high-level renderer that drives cascaded shadow mapping and a forward lit

@@ -150,6 +150,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setVec4("uClipPlane", clipPlane);
         s->setVec3("uLightDir", m_light.direction);
         s->setVec3("uLightColor", m_light.color);
+        s->setVec3("uAmbient", m_light.ambient);
         s->setInt("uCascadeCount", cascades);
         s->setInt("uShadowMap", kShadowMapUnit);
 

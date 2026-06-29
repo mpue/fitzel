@@ -78,10 +78,11 @@ The engine exposes a small, RAII-based core to build on:
   as `TerrainChunk`s around the camera; `terrainHeight()` queries the field.
 - `fitzel::Gui`     — Dear ImGui context + GLFW/OpenGL3 backends; call ImGui:: directly.
 
-The sandbox ties it together: an **infinite, streamed procedural landscape** lit
-by a directional light with **cascaded shadow mapping** (PCF) and **Blinn-Phong**
-shading, cubes that cast shadows onto the terrain, and a **planar-reflective water
-plane** flooding the valleys. The renderer exposes both a one-call path
+The sandbox ties it together: an **infinite, streamed procedural landscape** under a
+**day/night sky with volumetric clouds**, lit by a directional sun with **cascaded
+shadow mapping** (PCF) and **Blinn-Phong** shading, cubes that cast shadows onto the
+terrain, and a **planar-reflective water plane** (reflecting sky + clouds) flooding
+the valleys. The renderer exposes both a one-call path
 (`begin()` → `submit()` → `end()`) and multi-pass building blocks
 (`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`) used to render the
 reflection/refraction passes. A live ImGui panel tweaks the light, cascade split,
@@ -108,6 +109,14 @@ hold right mouse to look, scroll to zoom, ESC to quit.
   normal bump and albedo break-up.
 - **Terrain colour** is procedural (sand → grass → rock → snow) by world height and
   slope — steep faces turn to rock, snow only settles on flat high ground.
+- **Sky & day/night**: a fullscreen pass reconstructs the world view ray per pixel
+  and shades a sun-driven sky gradient. The time of day rotates the sun, which drives
+  the light direction, colour (warm at the horizon) and ambient — and the whole scene
+  darkens into night. The same pass also feeds the water reflection (it runs with the
+  mirrored view), so clouds reflect on the water.
+- **Volumetric clouds**: the sky pass raymarches a cloud slab (3D value-noise fBm
+  density with a height falloff), with a secondary light-march toward the sun for
+  self-shadowing and a Henyey-Greenstein phase for the silver lining.
 - **Water**: planar reflection + refraction. The scene is rendered twice off-screen
   (a mirror-matrix camera with the underwater half clipped for the reflection, the
   above-water half clipped for the refraction), then the water surface blends the two

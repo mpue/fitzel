@@ -89,6 +89,33 @@ int main() {
         float     waveStrength = 0.018f;
         float     waveScale    = 0.06f;
 
+        // Sky + volumetric clouds (fullscreen raymarch pass).
+        Shader sky = Shader::fromFiles("assets/shaders/sky.vert",
+                                       "assets/shaders/sky.frag");
+        if (!sky.isValid()) {
+            std::fprintf(stderr, "Failed to load sky shader\n");
+            return 1;
+        }
+        const std::vector<Vertex> fsVerts = {
+            {{-1.0f, -1.0f, 0.0f}, {0, 0, 1}, {0, 0}},
+            {{ 1.0f, -1.0f, 0.0f}, {0, 0, 1}, {1, 0}},
+            {{ 1.0f,  1.0f, 0.0f}, {0, 0, 1}, {1, 1}},
+            {{-1.0f,  1.0f, 0.0f}, {0, 0, 1}, {0, 1}},
+        };
+        Mesh fsQuad = Mesh::create(fsVerts, {0, 1, 2, 0, 2, 3});
+
+        // Day/night cycle.
+        float timeOfDay = 8.5f;    // hours [0,24)
+        float dayLength = 200.0f;  // real seconds per full 24h (0 = frozen)
+
+        // Cloud controls.
+        float cloudCoverage = 0.5f;
+        float cloudDensity  = 1.0f;
+        float cloudScale    = 0.0025f;
+        float cloudSpeed    = 5.0f;
+        float cloudBottom   = 140.0f;
+        float cloudTop      = 320.0f;
+
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
 
@@ -135,6 +162,23 @@ int main() {
             // Stream terrain chunks around the camera.
             streamer.update(camera.position());
 
+            // --- Day/night: advance time, derive sun direction and lighting ---
+            if (dayLength > 0.1f) {
+                timeOfDay += dt * (24.0f / dayLength);
+                timeOfDay = std::fmod(timeOfDay, 24.0f);
+            }
+            const float phi = (timeOfDay / 24.0f) * 6.2831853f - 1.5707963f;
+            const glm::vec3 sunDir =
+                glm::normalize(glm::vec3(std::cos(phi), std::sin(phi), 0.18f));
+            const float dayF   = glm::smoothstep(-0.12f, 0.18f, sunDir.y);
+            const float lowSun = 1.0f - glm::clamp(sunDir.y / 0.3f, 0.0f, 1.0f);
+            const glm::vec3 sunCol =
+                glm::mix(glm::vec3(1.0f, 0.97f, 0.9f), glm::vec3(1.0f, 0.55f, 0.26f), lowSun);
+            light.direction = sunDir;
+            light.color   = sunCol * (0.12f + 0.95f * dayF);
+            light.ambient = glm::mix(glm::vec3(0.04f, 0.05f, 0.09f),
+                                     glm::vec3(0.34f, 0.37f, 0.42f), dayF);
+
             // --- UI ------------------------------------------------------
             gui.beginFrame();
             if (ImGui::Begin("Fitzel")) {
@@ -152,6 +196,14 @@ int main() {
                     ImGui::SliderFloat3("Light dir", &light.direction.x, -1.0f, 1.0f);
                     ImGui::ColorEdit3("Light color", &light.color.x);
                     ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
+                }
+                if (ImGui::CollapsingHeader("Sky & clouds", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
+                    ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
+                    ImGui::SliderFloat("Coverage",    &cloudCoverage, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
+                    ImGui::SliderFloat("Cloud scale", &cloudScale, 0.001f, 0.006f, "%.4f");
+                    ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
                 }
                 if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Level",      &waterLevel, -15.0f, 15.0f);
@@ -226,41 +278,65 @@ int main() {
                 renderer.submit(cube, cubeMat, m);
             }
 
-            // --- Multi-pass render with planar water --------------------
+            // --- Multi-pass render with sky and planar water ------------
             renderer.prepareShadows(); // shadows once, from the real camera
 
-            auto clearScene = [] {
-                glClearColor(0.55f, 0.70f, 0.92f, 1.0f); // sky
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            const glm::vec3& camPos = camera.position();
+            const glm::mat4  view   = camera.viewMatrix();
+            const glm::mat4  mainVP = proj * view;
+
+            // Fullscreen sky + volumetric clouds for a given view.
+            auto drawSky = [&](const glm::mat4& invViewProj, const glm::vec3& eye) {
+                glDisable(GL_DEPTH_TEST);
+                glDepthMask(GL_FALSE);
+                glDisable(GL_CULL_FACE);
+                sky.bind();
+                sky.setMat4("uInvViewProj", invViewProj);
+                sky.setVec3("uCameraPos", eye);
+                sky.setVec3("uSunDir", light.direction);
+                sky.setVec3("uSunColor", light.color);
+                sky.setFloat("uTime", static_cast<float>(now));
+                sky.setFloat("uCoverage", glm::mix(0.62f, 0.16f, cloudCoverage));
+                sky.setFloat("uCloudDensity", cloudDensity);
+                sky.setFloat("uCloudScale", cloudScale);
+                sky.setFloat("uCloudSpeed", cloudSpeed);
+                sky.setFloat("uCloudBottom", cloudBottom);
+                sky.setFloat("uCloudTop", cloudTop);
+                fsQuad.draw();
+                glDepthMask(GL_TRUE);
+                glEnable(GL_DEPTH_TEST);
+                glEnable(GL_CULL_FACE);
             };
 
-            const glm::vec3& camPos = camera.position();
-
-            // 1) Reflection: render the scene mirrored across the water plane,
+            // 1) Reflection: sky + scene mirrored across the water plane,
             //    clipping everything below the surface.
             const glm::mat4 mirror =
                 glm::translate(glm::mat4(1.0f), {0.0f, 2.0f * waterLevel, 0.0f}) *
                 glm::scale(glm::mat4(1.0f), {1.0f, -1.0f, 1.0f});
-            const glm::mat4 reflView = camera.viewMatrix() * mirror;
+            const glm::mat4 reflView = view * mirror;
             const glm::vec3 reflEye{camPos.x, 2.0f * waterLevel - camPos.y, camPos.z};
 
             reflectRT.bind();
-            clearScene();
+            glClear(GL_DEPTH_BUFFER_BIT);
+            drawSky(glm::inverse(proj * reflView), reflEye);
             glCullFace(GL_FRONT); // mirroring flips winding
             renderer.renderScene(reflView, proj, reflEye,
                                  glm::vec4(0, 1, 0, -waterLevel + 0.1f));
             glCullFace(GL_BACK);
 
-            // 2) Refraction: render the scene normally, clipping above water.
+            // 2) Refraction: scene only, clipping above water (deep-water clear).
             refractRT.bind();
-            clearScene();
-            renderer.renderScene(camera.viewMatrix(), proj, camPos,
+            glClearColor(waterColor.r * 0.5f, waterColor.g * 0.5f,
+                         waterColor.b * 0.5f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            renderer.renderScene(view, proj, camPos,
                                  glm::vec4(0, -1, 0, waterLevel + 0.1f));
 
-            // 3) Main pass: the full scene, no clipping.
+            // 3) Main pass: sky + full scene, no clipping.
             RenderTarget::unbind(fbW, fbH);
-            clearScene();
-            renderer.renderScene(camera.viewMatrix(), proj, camPos, Renderer::kNoClip);
+            glClear(GL_DEPTH_BUFFER_BIT);
+            drawSky(glm::inverse(mainVP), camPos);
+            renderer.renderScene(view, proj, camPos, Renderer::kNoClip);
 
             // 4) The water surface: a large quad following the camera, sampling
             //    the reflection/refraction targets with Fresnel + ripples.
@@ -270,7 +346,7 @@ int main() {
 
             water.bind();
             water.setMat4("uModel", waterModel);
-            water.setMat4("uViewProj", proj * camera.viewMatrix());
+            water.setMat4("uViewProj", mainVP);
             water.setVec3("uCameraPos", camPos);
             water.setVec3("uLightDir", light.direction);
             water.setVec3("uLightColor", light.color);

@@ -11,6 +11,7 @@ out vec4 FragColor;
 uniform vec3 uViewPos;
 uniform vec3 uLightDir;    // direction *towards* the light, world space
 uniform vec3 uLightColor;
+uniform vec3 uAmbient;     // sky/fill light (drives day/night darkening)
 
 // Shadows (cascaded).
 uniform sampler2DArray uShadowMap;
@@ -146,9 +147,8 @@ void main() {
 
     int   layer   = selectCascade();
     float shadow  = computeShadow(layer, N, L);
-    float ambient = 0.30;
 
-    vec3 color = albedo * ambient
+    vec3 color = albedo * uAmbient
                + (1.0 - shadow) * uLightColor * (albedo * diff + spec);
 
     FragColor = vec4(color, 1.0);
