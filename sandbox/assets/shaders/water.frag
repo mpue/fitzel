@@ -1,7 +1,9 @@
 #version 330 core
 
-in vec4 vClip;
-in vec3 vWorldPos;
+in vec4  vClip;
+in vec3  vWorldPos;
+in vec3  vWaveNormal;
+in float vCrest;
 out vec4 FragColor;
 
 uniform sampler2D uReflection;
@@ -14,6 +16,7 @@ uniform float uFoamWidth; // world-ish depth over which shoreline foam fades
 uniform vec3  uCameraPos;
 uniform vec3  uLightDir;     // towards the light
 uniform vec3  uLightColor;
+uniform vec3  uAmbient;      // sky/fill light (for lit foam)
 uniform float uTime;
 uniform vec3  uWaterColor;
 uniform float uWaveStrength; // ripple distortion amount
@@ -83,7 +86,9 @@ void main() {
     // oriented -- both targets sample at the fragment's own screen UV.
     vec2 ndc = (vClip.xy / vClip.w) * 0.5 + 0.5;
 
-    vec3  N = waterNormal(vWorldPos.xz);
+    // Combine the large Gerstner swell normal with fine noise ripples.
+    vec3  ripple = waterNormal(vWorldPos.xz);
+    vec3  N = normalize(vWaveNormal + vec3(ripple.x, 0.0, ripple.z));
     vec3  V = normalize(uCameraPos - vWorldPos);
 
     // Ripple distortion linked to the surface normal.
@@ -113,13 +118,25 @@ void main() {
 
     // Shoreline foam: thickness of the water column = scene depth behind the
     // water minus the water surface depth. Thin water (shallow shore) -> foam.
-    float sceneZ = linearDepth(texture(uRefractionDepth, refractUV).r);
+    // Sample depth at the *undistorted* screen position so the foam tracks the
+    // real shoreline geometry (the refraction colour is still distorted).
+    float sceneZ = linearDepth(texture(uRefractionDepth, ndc).r);
     float waterZ = linearDepth(gl_FragCoord.z);
     float thickness = sceneZ - waterZ;
-    float shore = 1.0 - smoothstep(0.0, uFoamWidth, thickness);
-    float fn    = fbm(vWorldPos.xz * 0.6 + vec2(uTime * 0.08, -uTime * 0.05));
-    float foam  = smoothstep(0.45, 0.95, shore * (0.55 + 0.9 * fn));
-    color = mix(color, vec3(1.0), foam * 0.85);
+    float shoreF = 1.0 - smoothstep(0.0, uFoamWidth, thickness);
+    float fn     = fbm(vWorldPos.xz * 0.6 + vec2(uTime * 0.08, -uTime * 0.05));
+    shoreF       = smoothstep(0.45, 0.95, shoreF * (0.55 + 0.9 * fn));
+
+    // Whitecaps / spray on the steep wave crests.
+    float capNoise = fbm(vWorldPos.xz * 0.35 - vec2(uTime * 0.06));
+    float whitecap = smoothstep(0.55, 0.9, vCrest) * smoothstep(0.35, 0.85, capNoise);
+
+    float foam = clamp(max(shoreF, whitecap * 0.85), 0.0, 1.0);
+
+    // Foam is a lit surface, not a flat white decal: it responds to the sun and
+    // dims at night.
+    vec3 foamColor = uAmbient * 1.5 + uLightColor * max(dot(N, L), 0.0);
+    color = mix(color, foamColor, foam * 0.9);
 
     // Atmospheric fog so distant water blends into the horizon haze.
     vec3  toFrag = vWorldPos - uCameraPos;

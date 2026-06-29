@@ -109,6 +109,13 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 - **SSAO**: the HDR pass writes a depth texture; a half-res screen-space ambient
   occlusion pass reconstructs view position/normal from depth and samples a hemisphere
   kernel; the composite multiplies it into the scene to darken creases and valleys.
+- **Weather**: a single `weather` value (0 clear → 1 storm), drifting automatically or
+  driven by a slider, ties together cloud coverage/density/wind/altitude, sun & ambient
+  dimming, fog density, Gerstner wave height/choppiness, lightning flashes, and rain.
+- **Waves & rain**: the water is a tessellated grid displaced by summed **Gerstner
+  waves** (with analytic normals and crest-driven whitecaps/foam that's lit, not flat
+  white). **Rain** is a box of falling line streaks that follows the camera, wind-slanted
+  and depth-tested against the scene.
 - On laptops the app exports `NvOptimusEnablement` so it runs on the discrete GPU.
 
 ### Terrain textures (not in the repo)

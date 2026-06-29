@@ -34,7 +34,7 @@ int main() {
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
-        Camera camera({-30.0f, 22.0f, 56.0f}, 22.0f, -3.0f);
+        Camera camera({-16.0f, 2.5f, 40.0f}, 14.0f, -3.0f);
         camera.moveSpeed = 20.0f;
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
@@ -112,13 +112,30 @@ int main() {
             std::fprintf(stderr, "Failed to load water shader\n");
             return 1;
         }
-        const std::vector<Vertex> waterVerts = {
-            {{-0.5f, 0.0f, -0.5f}, {0, 1, 0}, {0, 0}},
-            {{ 0.5f, 0.0f, -0.5f}, {0, 1, 0}, {1, 0}},
-            {{ 0.5f, 0.0f,  0.5f}, {0, 1, 0}, {1, 1}},
-            {{-0.5f, 0.0f,  0.5f}, {0, 1, 0}, {0, 1}},
-        };
-        Mesh waterMesh = Mesh::create(waterVerts, {0, 3, 2, 0, 2, 1});
+        // A tessellated water grid so Gerstner waves can displace its vertices.
+        const int gridN = 400;
+        std::vector<Vertex>        waterVerts;
+        std::vector<std::uint32_t> waterIdx;
+        waterVerts.reserve(static_cast<std::size_t>(gridN) * gridN);
+        for (int z = 0; z < gridN; ++z) {
+            for (int x = 0; x < gridN; ++x) {
+                const float fx = static_cast<float>(x) / (gridN - 1) - 0.5f;
+                const float fz = static_cast<float>(z) / (gridN - 1) - 0.5f;
+                waterVerts.push_back({{fx, 0.0f, fz}, {0, 1, 0},
+                                      {static_cast<float>(x) / (gridN - 1),
+                                       static_cast<float>(z) / (gridN - 1)}});
+            }
+        }
+        for (int z = 0; z < gridN - 1; ++z) {
+            for (int x = 0; x < gridN - 1; ++x) {
+                const std::uint32_t i0 = static_cast<std::uint32_t>(z * gridN + x);
+                const std::uint32_t i1 = i0 + 1;
+                const std::uint32_t i2 = i0 + gridN;
+                const std::uint32_t i3 = i2 + 1;
+                waterIdx.insert(waterIdx.end(), {i0, i2, i1, i1, i2, i3});
+            }
+        }
+        Mesh waterMesh = Mesh::create(waterVerts, waterIdx);
         // Half-resolution reflection/refraction: the water distortion hides it
         // and it roughly quarters the cost of those two textured passes.
         RenderTarget reflectRT(640, 360);
@@ -129,6 +146,8 @@ int main() {
         float     waveStrength = 0.018f;
         float     waveScale    = 0.06f;
         float     foamWidth    = 2.5f;
+        float     waveHeight   = 0.6f; // Gerstner swell amplitude
+        float     waveChoppy   = 0.6f;
 
         // Sky + volumetric clouds (fullscreen raymarch pass).
         Shader sky = Shader::fromFiles("assets/shaders/sky.vert",
@@ -193,6 +212,48 @@ int main() {
         float cloudSpeed    = 5.0f;
         float cloudBottom   = 140.0f;
         float cloudTop      = 320.0f;
+
+        // Weather: 0 = clear .. 1 = storm. Drives clouds, light, fog, waves, rain.
+        float weather     = 0.0f;
+        bool  autoWeather = true;
+
+        // Rain: falling line streaks in a box that follows the camera.
+        Shader rain = Shader::fromFiles("assets/shaders/rain.vert",
+                                        "assets/shaders/rain.frag");
+        if (!rain.isValid()) { std::fprintf(stderr, "Failed to load rain shader\n"); return 1; }
+        const int   rainDrops   = 14000;
+        const float rainBoxHalf = 55.0f;
+        const float rainBoxH    = 95.0f;
+        GLuint rainVAO = 0, rainVBO = 0;
+        {
+            std::mt19937 rr(99u);
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            std::vector<float> data;
+            data.reserve(static_cast<std::size_t>(rainDrops) * 2 * 5);
+            for (int i = 0; i < rainDrops; ++i) {
+                const float bx = (u(rr) - 0.5f) * 2.0f * rainBoxHalf;
+                const float bz = (u(rr) - 0.5f) * 2.0f * rainBoxHalf;
+                const float ys = u(rr) * rainBoxH;
+                const float sp = glm::mix(30.0f, 55.0f, u(rr));
+                data.insert(data.end(), {bx, ys, bz, sp, 0.0f});
+                data.insert(data.end(), {bx, ys, bz, sp, 1.0f});
+            }
+            glGenVertexArrays(1, &rainVAO);
+            glBindVertexArray(rainVAO);
+            glGenBuffers(1, &rainVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, rainVBO);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(data.size() * sizeof(float)),
+                         data.data(), GL_STATIC_DRAW);
+            const GLsizei stride = 5 * sizeof(float);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
+            glBindVertexArray(0);
+        }
 
         // Atmospheric fog (subtle by default; aerial perspective, not haze soup).
         float fogDensity = 0.0028f;
@@ -260,6 +321,36 @@ int main() {
             // Stream terrain chunks around the camera.
             streamer.update(camera.position());
 
+            // --- Weather: drift (auto) and derive storm parameters ----------
+            if (autoWeather) {
+                const float target = glm::clamp(
+                    0.5f + 0.42f * std::sin(static_cast<float>(now) * 0.018f)
+                         + 0.18f * std::sin(static_cast<float>(now) * 0.011f + 2.1f),
+                    0.0f, 1.0f);
+                weather += (target - weather) * std::min(1.0f, dt * 0.3f);
+            }
+            weather = glm::clamp(weather, 0.0f, 1.0f);
+
+            const float effCoverage  = glm::mix(cloudCoverage, 0.97f, weather);
+            const float effDensity   = glm::mix(cloudDensity, 2.7f, weather);
+            const float effWind      = glm::mix(cloudSpeed, 26.0f, weather);
+            const float effCloudBot  = glm::mix(cloudBottom, 80.0f, weather);
+            const float effWaveH     = glm::mix(waveHeight, 2.4f, weather);
+            const float effWaveC     = glm::mix(waveChoppy, 0.95f, weather);
+            const float effFog       = fogDensity + weather * 0.011f;
+            const float rainIntensity = glm::smoothstep(0.45f, 0.85f, weather);
+            const float lightDim     = glm::mix(1.0f, 0.30f, weather);
+
+            // Lightning: brief flashes once the storm is strong.
+            float flash = 0.0f;
+            if (weather > 0.5f) {
+                const float ft  = static_cast<float>(now) * 0.55f;
+                const float rnd = glm::fract(std::sin(std::floor(ft) * 127.1f) * 43758.5f);
+                if (rnd > 0.9f) {
+                    flash = std::exp(-glm::fract(ft) * 7.0f) * (weather - 0.5f) * 2.0f;
+                }
+            }
+
             // --- Day/night: advance time, derive sun direction and lighting ---
             if (dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
@@ -275,9 +366,15 @@ int main() {
             light.direction = sunDir;
             // HDR radiance: the sun is much brighter than 1 so tonemapping
             // produces highlights and contrast instead of a flat look.
-            light.color   = sunCol * (0.12f + 0.95f * dayF) * 3.4f;
+            light.color   = sunCol * (0.12f + 0.95f * dayF) * 3.4f * lightDim;
             light.ambient = glm::mix(glm::vec3(0.015f, 0.02f, 0.04f),
                                      glm::vec3(0.12f, 0.14f, 0.18f), dayF);
+            // Overcast: dimmer, greyer, cooler ambient.
+            light.ambient = glm::mix(light.ambient,
+                                     glm::vec3(0.05f, 0.06f, 0.08f), weather * 0.7f);
+            // Lightning flash lights the scene briefly.
+            light.color   += glm::vec3(0.8f, 0.85f, 1.0f) * (flash * 6.0f);
+            light.ambient += glm::vec3(0.5f, 0.55f, 0.7f) * flash;
             renderer.setExposure(exposure);
 
             // Atmospheric fog, tinted by time of day to match the sky horizon.
@@ -285,7 +382,7 @@ int main() {
             // blend (tonemapping converts back on output).
             Fog fog;
             fog.height        = waterLevel;
-            fog.density       = fogDensity;
+            fog.density       = effFog;
             fog.heightFalloff = fogFalloff;
             const glm::vec3 hazeDisp =
                 glm::mix(glm::vec3(0.03f, 0.04f, 0.09f), glm::vec3(0.62f, 0.74f, 0.92f), dayF);
@@ -323,6 +420,13 @@ int main() {
                         camera.setPitch(camPitch);
                 }
 
+                if (ImGui::CollapsingHeader("Weather", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::Checkbox("Auto weather", &autoWeather);
+                    ImGui::SliderFloat("Storm", &weather, 0.0f, 1.0f);
+                    ImGui::Text("Rain %.0f%%   Lightning %s", rainIntensity * 100.0f,
+                                weather > 0.5f ? "armed" : "off");
+                }
+
                 if (ImGui::CollapsingHeader("Sky, clouds & atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
                     ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
@@ -344,11 +448,13 @@ int main() {
                     ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
                 }
                 if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::SliderFloat("Level",      &waterLevel, -15.0f, 15.0f);
-                    ImGui::SliderFloat("Waves",      &waveStrength, 0.0f, 0.05f, "%.3f");
-                    ImGui::SliderFloat("Ripple size",&waveScale, 0.01f, 0.2f, "%.3f");
-                    ImGui::SliderFloat("Shore foam", &foamWidth, 0.0f, 8.0f);
-                    ImGui::ColorEdit3("Tint",        &waterColor.x);
+                    ImGui::SliderFloat("Level",       &waterLevel, -15.0f, 15.0f);
+                    ImGui::SliderFloat("Swell height",&waveHeight, 0.0f, 2.5f);
+                    ImGui::SliderFloat("Choppiness",  &waveChoppy, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Ripples",     &waveStrength, 0.0f, 0.05f, "%.3f");
+                    ImGui::SliderFloat("Ripple size", &waveScale, 0.01f, 0.2f, "%.3f");
+                    ImGui::SliderFloat("Shore foam",  &foamWidth, 0.0f, 8.0f);
+                    ImGui::ColorEdit3("Tint",         &waterColor.x);
                 }
                 if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Height",    &uiSettings.heightScale, 0.0f, 30.0f);
@@ -434,11 +540,11 @@ int main() {
                 sky.setVec3("uSunDir", light.direction);
                 sky.setVec3("uSunColor", light.color);
                 sky.setFloat("uTime", static_cast<float>(now));
-                sky.setFloat("uCoverage", glm::mix(0.62f, 0.16f, cloudCoverage));
-                sky.setFloat("uCloudDensity", cloudDensity);
+                sky.setFloat("uCoverage", glm::mix(0.62f, 0.10f, effCoverage));
+                sky.setFloat("uCloudDensity", effDensity);
                 sky.setFloat("uCloudScale", cloudScale);
-                sky.setFloat("uCloudSpeed", cloudSpeed);
-                sky.setFloat("uCloudBottom", cloudBottom);
+                sky.setFloat("uCloudSpeed", effWind);
+                sky.setFloat("uCloudBottom", effCloudBot);
                 sky.setFloat("uCloudTop", cloudTop);
                 sky.setFloat("uExposure", exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
@@ -501,6 +607,9 @@ int main() {
             water.setVec3("uWaterColor", waterColor);
             water.setFloat("uWaveStrength", waveStrength);
             water.setFloat("uWaveScale", waveScale);
+            water.setFloat("uWaveHeight", effWaveH);
+            water.setFloat("uChoppy", effWaveC);
+            water.setVec3("uAmbient", light.ambient);
             water.setVec3("uFogColor", fog.color);
             water.setVec3("uFogSunColor", fog.sunColor);
             water.setFloat("uFogDensity", fog.density);
@@ -518,6 +627,32 @@ int main() {
             refractRT.bindColorTexture(1);
             refractRT.bindDepthTexture(2);
             waterMesh.draw();
+
+            // --- Rain streaks (storm), into the HDR buffer --------------
+            if (rainIntensity > 0.001f) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                rain.bind();
+                rain.setMat4("uViewProj", mainVP);
+                rain.setVec3("uBoxCenter", camPos);
+                rain.setFloat("uBoxHeight", rainBoxH);
+                rain.setFloat("uBoxHalf", rainBoxHalf);
+                rain.setFloat("uStreak", glm::mix(1.2f, 3.0f, weather));
+                rain.setFloat("uTime", static_cast<float>(now));
+                rain.setVec3("uWind",
+                             glm::normalize(glm::vec3(0.6f, 0.0f, 0.3f)) *
+                                 glm::mix(0.05f, 0.6f, weather));
+                rain.setVec3("uRainColor",
+                             glm::clamp(light.ambient * 2.5f + light.color * 0.12f,
+                                        glm::vec3(0.0f), glm::vec3(2.0f)));
+                rain.setFloat("uIntensity", rainIntensity);
+                glBindVertexArray(rainVAO);
+                glDrawArrays(GL_LINES, 0, rainDrops * 2);
+                glBindVertexArray(0);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+            }
 
             // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
             ssaoRT.bind();
@@ -580,6 +715,9 @@ int main() {
             gui.endFrame();
             window.swapBuffers();
         }
+
+        glDeleteBuffers(1, &rainVBO);
+        glDeleteVertexArrays(1, &rainVAO);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
         return 1;
