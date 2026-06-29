@@ -23,7 +23,7 @@ int main() {
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
-        Camera camera({0.0f, 45.0f, 90.0f}, -90.0f, -25.0f);
+        Camera camera({0.0f, 10.0f, 78.0f}, -90.0f, -8.0f);
         camera.moveSpeed = 20.0f;
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
@@ -66,6 +66,28 @@ int main() {
         TerrainStreamer streamer(settings, /*radius=*/4);
         Renderer        renderer(2048, 4);
         DirectionalLight light;
+
+        // Water: planar reflection/refraction targets + a surface quad.
+        Shader water = Shader::fromFiles("assets/shaders/water.vert",
+                                         "assets/shaders/water.frag");
+        if (!water.isValid()) {
+            std::fprintf(stderr, "Failed to load water shader\n");
+            return 1;
+        }
+        const std::vector<Vertex> waterVerts = {
+            {{-0.5f, 0.0f, -0.5f}, {0, 1, 0}, {0, 0}},
+            {{ 0.5f, 0.0f, -0.5f}, {0, 1, 0}, {1, 0}},
+            {{ 0.5f, 0.0f,  0.5f}, {0, 1, 0}, {1, 1}},
+            {{-0.5f, 0.0f,  0.5f}, {0, 1, 0}, {0, 1}},
+        };
+        Mesh waterMesh = Mesh::create(waterVerts, {0, 3, 2, 0, 2, 1});
+        RenderTarget reflectRT(1280, 720);
+        RenderTarget refractRT(1280, 720);
+
+        float     waterLevel   = -2.0f;
+        glm::vec3 waterColor{0.10f, 0.30f, 0.38f};
+        float     waveStrength = 0.018f;
+        float     waveScale    = 0.06f;
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -128,6 +150,12 @@ int main() {
                     ImGui::ColorEdit3("Light color", &light.color.x);
                     ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                 }
+                if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    ImGui::SliderFloat("Level",      &waterLevel, -15.0f, 15.0f);
+                    ImGui::SliderFloat("Waves",      &waveStrength, 0.0f, 0.05f, "%.3f");
+                    ImGui::SliderFloat("Ripple size",&waveScale, 0.01f, 0.2f, "%.3f");
+                    ImGui::ColorEdit3("Tint",        &waterColor.x);
+                }
                 if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Height",    &uiSettings.heightScale, 0.0f, 30.0f);
                     ImGui::SliderFloat("Ridges",    &uiSettings.ridgeScale, 0.0f, 50.0f);
@@ -165,21 +193,18 @@ int main() {
                       .set("uDetailScale", look.detailScale)
                       .set("uDetailStrength", look.detailStrength);
 
-            // --- Submit + render ----------------------------------------
+            // --- Submit the opaque scene once ---------------------------
             int fbW = 0, fbH = 0;
             window.framebufferSize(fbW, fbH);
+            const float     aspect = window.aspectRatio();
+            const glm::mat4 proj   = camera.projectionMatrix(aspect);
+
             renderer.setViewport(fbW, fbH);
-
-            glClearColor(0.55f, 0.70f, 0.92f, 1.0f); // sky
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-            renderer.begin(camera, window.aspectRatio(), light);
+            renderer.begin(camera, aspect, light);
 
             for (const TerrainChunk* chunk : streamer.visibleChunks()) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f));
             }
-
-            // Static cubes resting on the ground.
             for (const glm::vec2& spot : cubeSpots) {
                 const float gy = streamer.heightAt(spot.x, spot.y);
                 glm::mat4 m(1.0f);
@@ -187,9 +212,7 @@ int main() {
                 m = glm::scale(m, glm::vec3(4.0f));
                 renderer.submit(cube, cubeMat, m);
             }
-
-            // One floating, spinning cube to show shadows cast onto terrain.
-            {
+            {   // floating, spinning shadow caster
                 const float gy  = streamer.heightAt(0.0f, 0.0f);
                 const float bob = std::sin(static_cast<float>(now)) * 2.0f;
                 glm::mat4 m(1.0f);
@@ -200,7 +223,63 @@ int main() {
                 renderer.submit(cube, cubeMat, m);
             }
 
-            renderer.end();
+            // --- Multi-pass render with planar water --------------------
+            renderer.prepareShadows(); // shadows once, from the real camera
+
+            auto clearScene = [] {
+                glClearColor(0.55f, 0.70f, 0.92f, 1.0f); // sky
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            };
+
+            const glm::vec3& camPos = camera.position();
+
+            // 1) Reflection: render the scene mirrored across the water plane,
+            //    clipping everything below the surface.
+            const glm::mat4 mirror =
+                glm::translate(glm::mat4(1.0f), {0.0f, 2.0f * waterLevel, 0.0f}) *
+                glm::scale(glm::mat4(1.0f), {1.0f, -1.0f, 1.0f});
+            const glm::mat4 reflView = camera.viewMatrix() * mirror;
+            const glm::vec3 reflEye{camPos.x, 2.0f * waterLevel - camPos.y, camPos.z};
+
+            reflectRT.bind();
+            clearScene();
+            glCullFace(GL_FRONT); // mirroring flips winding
+            renderer.renderScene(reflView, proj, reflEye,
+                                 glm::vec4(0, 1, 0, -waterLevel + 0.1f));
+            glCullFace(GL_BACK);
+
+            // 2) Refraction: render the scene normally, clipping above water.
+            refractRT.bind();
+            clearScene();
+            renderer.renderScene(camera.viewMatrix(), proj, camPos,
+                                 glm::vec4(0, -1, 0, waterLevel + 0.1f));
+
+            // 3) Main pass: the full scene, no clipping.
+            RenderTarget::unbind(fbW, fbH);
+            clearScene();
+            renderer.renderScene(camera.viewMatrix(), proj, camPos, Renderer::kNoClip);
+
+            // 4) The water surface: a large quad following the camera, sampling
+            //    the reflection/refraction targets with Fresnel + ripples.
+            glm::mat4 waterModel =
+                glm::translate(glm::mat4(1.0f), {camPos.x, waterLevel, camPos.z});
+            waterModel = glm::scale(waterModel, glm::vec3(1400.0f, 1.0f, 1400.0f));
+
+            water.bind();
+            water.setMat4("uModel", waterModel);
+            water.setMat4("uViewProj", proj * camera.viewMatrix());
+            water.setVec3("uCameraPos", camPos);
+            water.setVec3("uLightDir", light.direction);
+            water.setVec3("uLightColor", light.color);
+            water.setFloat("uTime", static_cast<float>(now));
+            water.setVec3("uWaterColor", waterColor);
+            water.setFloat("uWaveStrength", waveStrength);
+            water.setFloat("uWaveScale", waveScale);
+            water.setInt("uReflection", 0);
+            water.setInt("uRefraction", 1);
+            reflectRT.bindColorTexture(0);
+            refractRT.bindColorTexture(1);
+            waterMesh.draw();
 
             gui.endFrame();
             window.swapBuffers();

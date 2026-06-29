@@ -73,17 +73,20 @@ The engine exposes a small, RAII-based core to build on:
   submitted `(mesh, material, model)` tuples.
 - `fitzel::CascadedShadowMap` — frustum-split directional shadows in a depth array.
 - `fitzel::ShadowMap` — single-cascade depth FBO (simpler alternative to CSM).
+- `fitzel::RenderTarget` — off-screen color+depth FBO for render-to-texture passes.
 - `fitzel::Terrain` — `TerrainStreamer` streams an infinite, seamless fBm terrain
   as `TerrainChunk`s around the camera; `terrainHeight()` queries the field.
 - `fitzel::Gui`     — Dear ImGui context + GLFW/OpenGL3 backends; call ImGui:: directly.
 
 The sandbox ties it together: an **infinite, streamed procedural landscape** lit
 by a directional light with **cascaded shadow mapping** (PCF) and **Blinn-Phong**
-shading, with cubes that cast shadows onto the terrain. The render loop is just
-`renderer.begin()` → `submit()` per object → `renderer.end()`. A live ImGui panel
-tweaks the light, the cascade split, and regenerates the terrain (height /
-frequency / octaves / seed). Controls: WASD + Q/E to move, hold right mouse to
-look, scroll to zoom, ESC to quit.
+shading, cubes that cast shadows onto the terrain, and a **planar-reflective water
+plane** flooding the valleys. The renderer exposes both a one-call path
+(`begin()` → `submit()` → `end()`) and multi-pass building blocks
+(`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`) used to render the
+reflection/refraction passes. A live ImGui panel tweaks the light, cascade split,
+water (level/waves/tint) and regenerates the terrain. Controls: WASD + Q/E to move,
+hold right mouse to look, scroll to zoom, ESC to quit.
 
 ### Rendering notes
 
@@ -100,6 +103,12 @@ look, scroll to zoom, ESC to quit.
   normal bump and albedo break-up.
 - **Terrain colour** is procedural (sand → grass → rock → snow) by world height and
   slope — steep faces turn to rock, snow only settles on flat high ground.
+- **Water**: planar reflection + refraction. The scene is rendered twice off-screen
+  (a mirror-matrix camera with the underwater half clipped for the reflection, the
+  above-water half clipped for the refraction), then the water surface blends the two
+  by Fresnel, with animated noise ripples distorting the projective lookups and a
+  specular sun glint. A world-space clip plane (`uClipPlane` in `lit.vert`,
+  `GL_CLIP_DISTANCE0`) drives the clipping.
 
 Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.

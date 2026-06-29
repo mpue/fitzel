@@ -37,7 +37,19 @@ public:
 
     void begin(const Camera& camera, float aspect, const DirectionalLight& light);
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model);
-    void end();
+    void end(); // convenience: prepareShadows() + one lit pass from the camera
+
+    // Multi-pass building blocks (for reflection/refraction etc.):
+    // render the shadow cascades once from the stored camera + light.
+    void prepareShadows();
+    // Render the submitted opaque queue with an explicit view/projection,
+    // eye position and world-space clip plane into the currently bound target
+    // (does not clear). Pass kNoClip to disable clipping.
+    void renderScene(const glm::mat4& view, const glm::mat4& proj,
+                     const glm::vec3& eye, const glm::vec4& clipPlane);
+
+    // A clip plane that keeps every fragment (effectively no clipping).
+    static const glm::vec4 kNoClip;
 
     CascadedShadowMap&       shadows()       { return m_csm; }
     const CascadedShadowMap& shadows() const { return m_csm; }

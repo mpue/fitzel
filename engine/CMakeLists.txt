@@ -7,6 +7,7 @@ add_library(fitzel STATIC
     src/graphics/Material.cpp
     src/graphics/ShadowMap.cpp
     src/graphics/CascadedShadowMap.cpp
+    src/graphics/RenderTarget.cpp
     src/graphics/stb_image_impl.cpp
     src/render/Renderer.cpp
     src/scene/Camera.cpp

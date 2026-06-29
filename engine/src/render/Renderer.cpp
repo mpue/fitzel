@@ -6,6 +6,8 @@
 
 #include <string>
 
+#include <glad/gl.h>
+
 namespace fitzel {
 
 namespace {
@@ -24,6 +26,8 @@ void main() {}
 )";
 
 } // namespace
+
+const glm::vec4 Renderer::kNoClip = glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f);
 
 Renderer::Renderer(int shadowResolution, int cascades)
     : m_csm(shadowResolution, cascades),
@@ -47,12 +51,11 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
     m_queue.push_back({&mesh, &material, model});
 }
 
-void Renderer::end() {
+void Renderer::prepareShadows() {
     if (!m_camera) return;
 
     m_csm.update(*m_camera, m_aspect, m_light.direction);
 
-    // --- Shadow passes: one per cascade --------------------------------
     const int cascades = m_csm.cascadeCount();
     for (int i = 0; i < cascades; ++i) {
         m_csm.beginCascade(i);
@@ -64,12 +67,15 @@ void Renderer::end() {
         }
     }
     m_csm.end(m_vpWidth, m_vpHeight);
+}
 
-    // --- Lit pass -------------------------------------------------------
-    const glm::mat4 view     = m_camera->viewMatrix();
-    const glm::mat4 viewProj = m_camera->projectionMatrix(m_aspect) * view;
+void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
+                           const glm::vec3& eye, const glm::vec4& clipPlane) {
+    const glm::mat4 viewProj = proj * view;
+    const int cascades = m_csm.cascadeCount();
 
     m_csm.bindTextureArray(kShadowMapUnit);
+    glEnable(GL_CLIP_DISTANCE0);
 
     for (const auto& r : m_queue) {
         r.material->apply(); // binds shader + material params/textures
@@ -78,7 +84,8 @@ void Renderer::end() {
         s->setMat4("uModel", r.model);
         s->setMat4("uView", view);
         s->setMat4("uViewProj", viewProj);
-        s->setVec3("uViewPos", m_camera->position());
+        s->setVec3("uViewPos", eye);
+        s->setVec4("uClipPlane", clipPlane);
         s->setVec3("uLightDir", m_light.direction);
         s->setVec3("uLightColor", m_light.color);
         s->setInt("uCascadeCount", cascades);
@@ -93,6 +100,15 @@ void Renderer::end() {
         r.mesh->draw();
     }
 
+    glDisable(GL_CLIP_DISTANCE0);
+}
+
+void Renderer::end() {
+    if (!m_camera) return;
+    prepareShadows();
+    renderScene(m_camera->viewMatrix(),
+                m_camera->projectionMatrix(m_aspect),
+                m_camera->position(), kNoClip);
     m_queue.clear();
 }
 

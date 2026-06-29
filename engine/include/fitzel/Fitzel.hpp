@@ -9,6 +9,7 @@
 #include "fitzel/graphics/Material.hpp"
 #include "fitzel/graphics/ShadowMap.hpp"
 #include "fitzel/graphics/CascadedShadowMap.hpp"
+#include "fitzel/graphics/RenderTarget.hpp"
 #include "fitzel/render/Renderer.hpp"
 #include "fitzel/scene/Camera.hpp"
 #include "fitzel/world/Terrain.hpp"
