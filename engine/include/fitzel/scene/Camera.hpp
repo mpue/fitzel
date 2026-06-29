@@ -29,9 +29,15 @@ public:
     const glm::vec3& right() const { return m_right; }
 
     float fov()       const { return m_fovDegrees; }
+    void  setFov(float degrees) { m_fovDegrees = degrees; }
     float nearPlane() const { return m_near; }
     float farPlane()  const { return m_far; }
     void  setFarPlane(float far) { m_far = far; }
+
+    float yaw()   const { return m_yaw; }
+    float pitch() const { return m_pitch; }
+    void  setYaw(float deg)   { m_yaw = deg;   updateVectors(); }
+    void  setPitch(float deg) { m_pitch = deg; updateVectors(); }
 
     float moveSpeed   = 3.0f;   // units per second
     float mouseSens   = 0.1f;   // degrees per pixel

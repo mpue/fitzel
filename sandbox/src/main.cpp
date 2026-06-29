@@ -160,8 +160,16 @@ int main() {
         float fogDensity = 0.0028f;
         float fogFalloff = 0.035f;
 
-        // Tonemapping exposure.
-        float exposure = 1.0f;
+        // Tonemapping exposure + HSV colour grade.
+        float exposure   = 1.0f;
+        float hueShift   = 0.0f;
+        float saturation = 1.0f;
+        float valueGain  = 1.0f;
+
+        // Camera angle controls.
+        float camFov   = camera.fov();
+        float camYaw   = camera.yaw();
+        float camPitch = camera.pitch();
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -265,6 +273,18 @@ int main() {
                 ImGui::SameLine();
                 ImGui::Text("(%.0f m)", viewRadius * streamer.settings().chunkSize);
 
+                if (ImGui::CollapsingHeader("Camera")) {
+                    // Sync from the camera (mouse-look may have changed it), then
+                    // apply only when a slider is actually edited.
+                    camFov = camera.fov(); camYaw = camera.yaw(); camPitch = camera.pitch();
+                    if (ImGui::SliderFloat("FOV",   &camFov, 25.0f, 100.0f, "%.0f deg"))
+                        camera.setFov(camFov);
+                    if (ImGui::SliderFloat("Yaw",   &camYaw, -180.0f, 180.0f, "%.0f"))
+                        camera.setYaw(camYaw);
+                    if (ImGui::SliderFloat("Pitch", &camPitch, -89.0f, 89.0f, "%.0f"))
+                        camera.setPitch(camPitch);
+                }
+
                 if (ImGui::CollapsingHeader("Sky, clouds & atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
                     ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
@@ -278,6 +298,10 @@ int main() {
                     ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
                     ImGui::SliderFloat("Sun rays",   &rayIntensity, 0.0f, 1.5f);
                     ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
+                    ImGui::SeparatorText("Colour grade (HSV)");
+                    ImGui::SliderFloat("Hue",        &hueShift, -180.0f, 180.0f, "%.0f");
+                    ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f);
+                    ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
                 }
                 if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Level",      &waterLevel, -15.0f, 15.0f);
@@ -473,6 +497,9 @@ int main() {
             composite.setVec3("uSunColor", sunCol);
             composite.setFloat("uBloom", bloomIntensity);
             composite.setFloat("uRays", rayIntensity);
+            composite.setFloat("uHueShift", hueShift);
+            composite.setFloat("uSaturation", saturation);
+            composite.setFloat("uValue", valueGain);
             fsQuad.draw();
             glDepthMask(GL_TRUE);
             glEnable(GL_DEPTH_TEST);

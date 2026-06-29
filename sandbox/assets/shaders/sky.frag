@@ -62,6 +62,28 @@ float fbm3(vec3 p) {
     return s;
 }
 
+// Sparse procedural starfield (night only).
+vec3 starField(vec3 dir) {
+    if (dir.y < 0.02) return vec3(0.0);
+    vec3 p  = dir * 260.0;
+    vec3 id = floor(p);
+    vec3 f  = fract(p) - 0.5;
+    float h = hash13(id);
+    float exists = step(0.986, h);          // ~1.4% of cells
+    float point  = exists * smoothstep(0.16, 0.0, length(f));
+    float twinkle = 0.5 + 0.5 * hash13(id + 3.17);
+    return vec3(0.9, 0.95, 1.0) * point * twinkle * 2.0;
+}
+
+// A soft moon disk in a fixed direction.
+vec3 moon(vec3 dir) {
+    vec3  md = normalize(vec3(0.5, 0.5, 0.72));
+    float m  = dot(dir, md);
+    float disk = smoothstep(0.9986, 0.9992, m);
+    float glow = pow(max(m, 0.0), 250.0) * 0.3;
+    return vec3(0.85, 0.9, 1.0) * (disk * 4.0 + glow);
+}
+
 // --- Sky gradient + sun ----------------------------------------------------
 vec3 skyColor(vec3 dir) {
     float day = smoothstep(-0.12, 0.18, uSunDir.y); // 0 night -> 1 day
@@ -84,6 +106,10 @@ vec3 skyColor(vec3 dir) {
 
     // The gradient colours are authored in sRGB -> linearise for the pipeline.
     col = pow(col, vec3(2.2));
+
+    // Stars and moon fade in at night.
+    float night = 1.0 - day;
+    col += (starField(dir) + moon(dir)) * night;
 
     // Sun disk + tight corona (HDR linear radiance). The soft halo comes from
     // bloom in the composite, so keep the in-sky glow tight to avoid a blowout.
@@ -128,6 +154,7 @@ vec4 renderClouds(vec3 ro, vec3 rd) {
 
     float cosA  = dot(rd, uSunDir);
     float phase = mix(phaseHG(cosA, 0.2), phaseHG(cosA, -0.15), 0.5);
+    float dayF  = smoothstep(-0.1, 0.2, uSunDir.y); // fade sun lighting at night
 
     vec3 ambient = pow(mix(vec3(0.10, 0.13, 0.20), vec3(0.55, 0.62, 0.75),
                        smoothstep(-0.1, 0.2, uSunDir.y)), vec3(2.2));
@@ -148,7 +175,7 @@ vec4 renderClouds(vec3 ro, vec3 rd) {
             }
             float sun = exp(-ls * lstep * 0.9);
 
-            vec3 lum = uSunColor * sun * phase * 8.0 + ambient;
+            vec3 lum = uSunColor * sun * phase * 8.0 * dayF + ambient;
             float dens = d * dt;
             float a = 1.0 - exp(-dens);
             col += T * lum * a;
