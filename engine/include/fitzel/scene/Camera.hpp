@@ -31,6 +31,7 @@ public:
     float fov()       const { return m_fovDegrees; }
     float nearPlane() const { return m_near; }
     float farPlane()  const { return m_far; }
+    void  setFarPlane(float far) { m_far = far; }
 
     float moveSpeed   = 3.0f;   // units per second
     float mouseSens   = 0.1f;   // degrees per pixel

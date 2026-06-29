@@ -80,6 +80,13 @@ public:
     // Discard everything and regenerate (e.g. after settings changed).
     void rebuild();
 
+    // View distance in chunks. Changing it streams the new ring in/out.
+    int  radius() const { return m_radius; }
+    void setRadius(int r) {
+        r = (r < 1) ? 1 : r;
+        if (r != m_radius) { m_radius = r; m_dirty = true; }
+    }
+
     const std::vector<const TerrainChunk*>& visibleChunks() const { return m_visible; }
 
     const TerrainSettings& settings() const { return m_settings; }

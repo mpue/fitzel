@@ -124,6 +124,9 @@ at build time (`FITZEL_TEXTURE_DIR`).
 - **Frustum culling**: each pass extracts its 6 frustum planes (Gribb-Hartmann) and
   tests every submittable's world AABB, so the reflection/refraction/main passes each
   cull against their own frustum. The ImGui panel reports visible vs culled draws.
+- **Adjustable view distance**: a single control sets the streaming radius (how many
+  chunk rings load) and the camera far plane together, so the cascades and clip range
+  follow the visible range.
 - **Terrain detail**: the height field combines domain warping (organic, non-grid
   shapes), a rolling fBm base, and a ridged-multifractal mountain layer masked onto
   the highlands. `lit.frag` adds close-up micro-detail via a procedural value-noise

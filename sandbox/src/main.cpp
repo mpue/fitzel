@@ -87,7 +87,8 @@ int main() {
 
         // World streaming + renderer with cascaded shadows.
         TerrainSettings settings;
-        TerrainStreamer streamer(settings, /*radius=*/4);
+        TerrainStreamer streamer(settings, /*radius=*/5);
+        int             viewRadius = 5; // view distance in chunks
         Renderer        renderer(2048, 4);
         DirectionalLight light;
 
@@ -205,6 +206,11 @@ int main() {
                 if (input.isKeyDown(GLFW_KEY_Q)) camera.processKeyboard(Camera::Direction::Down, dt);
             }
 
+            // View distance: drive the streaming radius and the camera far plane.
+            streamer.setRadius(viewRadius);
+            camera.setFarPlane(
+                std::max(250.0f, viewRadius * streamer.settings().chunkSize * 1.7f));
+
             // Stream terrain chunks around the camera.
             streamer.update(camera.position());
 
@@ -255,6 +261,9 @@ int main() {
                 ImGui::Text("Draws: %d visible, %d culled",
                             renderer.lastDrawn(), renderer.lastCulled());
                 ImGui::SliderFloat("Move speed", &camera.moveSpeed, 2.0f, 80.0f);
+                ImGui::SliderInt("View distance", &viewRadius, 2, 9, "%d chunks");
+                ImGui::SameLine();
+                ImGui::Text("(%.0f m)", viewRadius * streamer.settings().chunkSize);
 
                 if (ImGui::CollapsingHeader("Sky, clouds & atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
                     ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
