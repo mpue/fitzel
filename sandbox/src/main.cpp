@@ -1,5 +1,6 @@
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include <glad/gl.h>
@@ -12,6 +13,15 @@
 
 using namespace fitzel;
 
+// On laptops with hybrid graphics (NVIDIA Optimus / AMD PowerXpress), ask the
+// driver to run us on the discrete high-performance GPU instead of the iGPU.
+#if defined(_WIN32)
+extern "C" {
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+#endif
+
 int main() {
     try {
         Window window(WindowConfig{
@@ -23,7 +33,7 @@ int main() {
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
-        Camera camera({0.0f, 10.0f, 78.0f}, -90.0f, -8.0f);
+        Camera camera({-30.0f, 22.0f, 56.0f}, 22.0f, -3.0f);
         camera.moveSpeed = 20.0f;
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
@@ -50,13 +60,27 @@ int main() {
             float detailStrength = 1.5f;  // normal-perturbation strength
         } look;
 
+        // Terrain PBR-ish albedo textures (triplanar), loaded from the repo's
+        // textures/ folder (path injected by CMake).
+        const std::string texDir = FITZEL_TEXTURE_DIR;
+        Texture texSand   = Texture::fromFile(texDir + "/coast_sand_01_diff_4k.jpg");
+        Texture texGround = Texture::fromFile(texDir + "/aerial_rocks_01_diff_4k.jpg");
+        Texture texCliff  = Texture::fromFile(texDir + "/rocky_terrain_02_diff_4k.jpg");
+        Texture texSnow   = Texture::fromFile(texDir + "/snow_02_diff_4k.jpg");
+        if (!texSand.isValid() || !texGround.isValid() ||
+            !texCliff.isValid() || !texSnow.isValid()) {
+            std::fprintf(stderr, "Warning: some terrain textures failed to load from %s\n",
+                         texDir.c_str());
+        }
+        float texScale = 0.08f; // world units -> texture tiling
+
         // Materials describe surface appearance; the renderer feeds in lighting.
         Material terrainMat(lit);
         terrainMat.set("uColorMode", 1)
-                  .set("uColorSand", look.sand)
-                  .set("uColorGrass", look.grass)
-                  .set("uColorRock", look.rock)
-                  .set("uColorSnow", look.snow);
+                  .setTexture("uTexSand", texSand, 6)
+                  .setTexture("uTexGround", texGround, 3)
+                  .setTexture("uTexCliff", texCliff, 4)
+                  .setTexture("uTexSnow", texSnow, 5);
 
         Material cubeMat(lit);
         cubeMat.set("uColorMode", 2).setTexture("uTexture", texture, 0);
@@ -81,8 +105,10 @@ int main() {
             {{-0.5f, 0.0f,  0.5f}, {0, 1, 0}, {0, 1}},
         };
         Mesh waterMesh = Mesh::create(waterVerts, {0, 3, 2, 0, 2, 1});
-        RenderTarget reflectRT(1280, 720);
-        RenderTarget refractRT(1280, 720);
+        // Half-resolution reflection/refraction: the water distortion hides it
+        // and it roughly quarters the cost of those two textured passes.
+        RenderTarget reflectRT(640, 360);
+        RenderTarget refractRT(640, 360);
 
         float     waterLevel   = -2.0f;
         glm::vec3 waterColor{0.10f, 0.30f, 0.38f};
@@ -104,9 +130,22 @@ int main() {
         };
         Mesh fsQuad = Mesh::create(fsVerts, {0, 1, 2, 0, 2, 3});
 
+        // HDR scene buffer + post-processing (bloom, god rays, lens flare, tonemap).
+        Shader composite = Shader::fromFiles("assets/shaders/sky.vert",
+                                             "assets/shaders/composite.frag");
+        if (!composite.isValid()) {
+            std::fprintf(stderr, "Failed to load composite shader\n");
+            return 1;
+        }
+        int hdrW = 0, hdrH = 0;
+        window.framebufferSize(hdrW, hdrH);
+        RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F);
+        float bloomIntensity = 0.35f;
+        float rayIntensity   = 0.5f;
+
         // Day/night cycle.
-        float timeOfDay = 8.5f;    // hours [0,24)
-        float dayLength = 200.0f;  // real seconds per full 24h (0 = frozen)
+        float timeOfDay = 7.3f;    // hours [0,24)
+        float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
 
         // Cloud controls.
         float cloudCoverage = 0.5f;
@@ -116,9 +155,9 @@ int main() {
         float cloudBottom   = 140.0f;
         float cloudTop      = 320.0f;
 
-        // Atmospheric fog.
-        float fogDensity = 0.0065f;
-        float fogFalloff = 0.03f;
+        // Atmospheric fog (subtle by default; aerial perspective, not haze soup).
+        float fogDensity = 0.0028f;
+        float fogFalloff = 0.035f;
 
         // Tonemapping exposure.
         float exposure = 1.0f;
@@ -224,9 +263,11 @@ int main() {
                     ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
                     ImGui::SliderFloat("Cloud scale", &cloudScale, 0.001f, 0.006f, "%.4f");
                     ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
-                    ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.03f, "%.4f");
+                    ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.02f, "%.4f");
                     ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
                     ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
+                    ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
+                    ImGui::SliderFloat("Sun rays",   &rayIntensity, 0.0f, 1.5f);
                     ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                 }
                 if (ImGui::CollapsingHeader("Water", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -249,28 +290,23 @@ int main() {
                     }
                 }
                 if (ImGui::CollapsingHeader("Terrain material (slope)", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::SliderFloat("Rock slope",   &look.rockSlope, 0.0f, 1.0f);
-                    ImGui::SliderFloat("Slope blend",  &look.slopeSharpness, 0.02f, 0.4f);
-                    ImGui::SliderFloat("Snow level",   &look.snowLevel, 0.0f, 40.0f);
-                    ImGui::SliderFloat("Detail scale",    &look.detailScale, 0.05f, 1.0f);
-                    ImGui::SliderFloat("Detail strength", &look.detailStrength, 0.0f, 4.0f);
-                    ImGui::ColorEdit3("Grass", &look.grass.x);
-                    ImGui::ColorEdit3("Rock",  &look.rock.x);
-                    ImGui::ColorEdit3("Snow",  &look.snow.x);
+                    ImGui::SliderFloat("Texture scale", &texScale, 0.02f, 0.2f, "%.3f");
+                    ImGui::SliderFloat("Rock slope",    &look.rockSlope, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Slope blend",   &look.slopeSharpness, 0.02f, 0.4f);
+                    ImGui::SliderFloat("Snow level",    &look.snowLevel, 0.0f, 40.0f);
+                    ImGui::SliderFloat("Detail bump",   &look.detailStrength, 0.0f, 4.0f);
                 }
             }
             ImGui::End();
 
-            // Push the (possibly edited) slope/height palette into the material.
-            terrainMat.set("uColorSand", look.sand)
-                      .set("uColorGrass", look.grass)
-                      .set("uColorRock", look.rock)
-                      .set("uColorSnow", look.snow)
-                      .set("uSnowLevel", look.snowLevel)
+            // Push the (possibly edited) terrain blend params into the material.
+            terrainMat.set("uSnowLevel", look.snowLevel)
                       .set("uRockSlope", look.rockSlope)
                       .set("uSlopeSharpness", look.slopeSharpness)
                       .set("uDetailScale", look.detailScale)
-                      .set("uDetailStrength", look.detailStrength);
+                      .set("uDetailStrength", look.detailStrength)
+                      .set("uTexScale", texScale)
+                      .set("uSandLevel", waterLevel + 1.0f);
 
             // --- Submit the opaque scene once ---------------------------
             int fbW = 0, fbH = 0;
@@ -361,11 +397,15 @@ int main() {
             renderer.renderScene(view, proj, camPos,
                                  glm::vec4(0, -1, 0, waterLevel + 0.1f), false);
 
-            // 3) Main pass: sky + full scene, tonemapped to the backbuffer.
-            RenderTarget::unbind(fbW, fbH);
-            glClear(GL_DEPTH_BUFFER_BIT);
-            drawSky(glm::inverse(mainVP), camPos, true);
-            renderer.renderScene(view, proj, camPos, Renderer::kNoClip, true);
+            // 3) Main pass: sky + full scene rendered LINEAR into the HDR buffer
+            //    (tonemapping happens in the composite pass).
+            if (hdrRT.width() != fbW || hdrRT.height() != fbH) {
+                hdrRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA16F);
+            }
+            hdrRT.bind();
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            drawSky(glm::inverse(mainVP), camPos, false);
+            renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
 
             // 4) The water surface: a large quad following the camera, sampling
             //    the reflection/refraction targets with Fresnel + ripples.
@@ -389,12 +429,45 @@ int main() {
             water.setFloat("uFogHeightFalloff", fog.heightFalloff);
             water.setFloat("uFogHeight", fog.height);
             water.setFloat("uExposure", exposure);
-            water.setInt("uTonemap", 1);
+            water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
             water.setInt("uReflection", 0);
             water.setInt("uRefraction", 1);
             reflectRT.bindColorTexture(0);
             refractRT.bindColorTexture(1);
             waterMesh.draw();
+
+            // --- Composite: bloom + god rays + lens flare + tonemap ------
+            // Project the sun to screen space for the rays/flare.
+            const glm::vec4 sunClip = mainVP * glm::vec4(camPos + sunDir * 3000.0f, 1.0f);
+            glm::vec2 sunUV(0.5f);
+            float sunOnScreen = 0.0f;
+            if (sunClip.w > 1e-4f) {
+                sunUV = glm::vec2(sunClip) / sunClip.w * 0.5f + 0.5f;
+                if (sunUV.x > -0.3f && sunUV.x < 1.3f &&
+                    sunUV.y > -0.3f && sunUV.y < 1.3f && sunDir.y > -0.05f) {
+                    sunOnScreen = 1.0f;
+                }
+            }
+
+            RenderTarget::unbind(fbW, fbH);
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+            glDisable(GL_CULL_FACE);
+            composite.bind();
+            hdrRT.bindColorTexture(0);
+            composite.setInt("uHdr", 0);
+            composite.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
+            composite.setFloat("uAspect", aspect);
+            composite.setFloat("uExposure", exposure);
+            composite.setVec2("uSunUV", sunUV);
+            composite.setFloat("uSunOnScreen", sunOnScreen);
+            composite.setVec3("uSunColor", sunCol);
+            composite.setFloat("uBloom", bloomIntensity);
+            composite.setFloat("uRays", rayIntensity);
+            fsQuad.draw();
+            glDepthMask(GL_TRUE);
+            glEnable(GL_DEPTH_TEST);
+            glEnable(GL_CULL_FACE);
 
             gui.endFrame();
             window.swapBuffers();

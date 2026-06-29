@@ -55,53 +55,51 @@ float fbm(vec2 p) {
     return s;
 }
 
-// Animated surface normal from two scrolling noise layers.
+// Animated surface normal from two scrolling noise layers at different scales
+// and directions -> richer, less uniform ripples.
 vec3 waterNormal(vec2 p) {
-    float t = uTime * 0.06;
-    vec2  q = p * uWaveScale;
-    float e = 0.35;
-    float h  = fbm(q + vec2(t, t * 0.7));
-    float hx = fbm(q + vec2(e, 0.0) + vec2(t, t * 0.7));
-    float hz = fbm(q + vec2(0.0, e) + vec2(t, t * 0.7));
-    return normalize(vec3(h - hx, e * 3.0, h - hz));
+    float e = 0.30;
+    vec2 q1 = p * uWaveScale       + vec2(uTime * 0.05, uTime * 0.035);
+    vec2 q2 = p * uWaveScale * 2.7 - vec2(uTime * 0.028, uTime * 0.06);
+    float h  = fbm(q1)              + 0.5 * fbm(q2);
+    float hx = fbm(q1 + vec2(e, 0)) + 0.5 * fbm(q2 + vec2(e, 0));
+    float hz = fbm(q1 + vec2(0, e)) + 0.5 * fbm(q2 + vec2(0, e));
+    return normalize(vec3(h - hx, e * 2.0, h - hz));
 }
 
 void main() {
     // Projective UVs from clip-space position. The reflection is rendered with a
     // mirror matrix (view * scale(1,-1,1)), so the texture is already correctly
     // oriented -- both targets sample at the fragment's own screen UV.
-    vec2 ndc        = (vClip.xy / vClip.w) * 0.5 + 0.5;
-    vec2 refractUV  = ndc;
-    vec2 reflectUV  = ndc;
+    vec2 ndc = (vClip.xy / vClip.w) * 0.5 + 0.5;
 
-    // Ripple distortion driven by animated noise.
-    float t = uTime * 0.04;
-    vec2  wp = vWorldPos.xz * uWaveScale;
-    vec2  distortion = vec2(fbm(wp + vec2(t, 0.0)),
-                            fbm(wp + vec2(0.0, t))) - 0.5;
-    distortion *= 2.0 * uWaveStrength;
+    vec3  N = waterNormal(vWorldPos.xz);
+    vec3  V = normalize(uCameraPos - vWorldPos);
 
-    refractUV = clamp(refractUV + distortion, 0.002, 0.998);
-    reflectUV = clamp(reflectUV + distortion, 0.002, 0.998);
+    // Ripple distortion linked to the surface normal.
+    vec2 distortion = N.xz * uWaveStrength;
+    vec2 refractUV  = clamp(ndc + distortion, 0.002, 0.998);
+    vec2 reflectUV  = clamp(ndc + distortion, 0.002, 0.998);
 
     vec3 reflectCol = texture(uReflection, reflectUV).rgb;
     vec3 refractCol = texture(uRefraction, refractUV).rgb;
 
-    // Fresnel: looking straight down -> see through (refraction); grazing -> mirror.
-    vec3  N = waterNormal(vWorldPos.xz);
-    vec3  V = normalize(uCameraPos - vWorldPos);
-    float fresnel = pow(clamp(dot(V, N), 0.0, 1.0), 0.6);
+    // Schlick Fresnel: ~2% reflectance head-on, ~100% at grazing angles.
+    float cosT = clamp(dot(V, N), 0.0, 1.0);
+    float F = 0.02 + 0.98 * pow(1.0 - cosT, 5.0);
 
-    // Tint the refracted (underwater) color toward the water color (linear).
-    refractCol = mix(refractCol, pow(uWaterColor, vec3(2.2)), 0.4);
+    // Deep water absorbs light: tint the refracted view toward the water colour,
+    // more so at grazing angles (longer path through water).
+    vec3 deep = pow(uWaterColor, vec3(2.2));
+    refractCol = mix(refractCol, deep, mix(0.35, 0.8, 1.0 - cosT));
 
-    vec3 color = mix(reflectCol, refractCol, fresnel);
+    vec3 color = mix(refractCol, reflectCol, F);
 
-    // Specular sun glint off the rippled surface.
+    // Sharp specular sun glint (HDR, picked up by bloom).
     vec3  L = normalize(uLightDir);
     vec3  H = normalize(L + V);
-    float spec = pow(max(dot(N, H), 0.0), 120.0);
-    color += uLightColor * spec * 0.7;
+    float spec = pow(max(dot(N, H), 0.0), 300.0);
+    color += uLightColor * spec * 3.0;
 
     // Atmospheric fog so distant water blends into the horizon haze.
     vec3  toFrag = vWorldPos - uCameraPos;

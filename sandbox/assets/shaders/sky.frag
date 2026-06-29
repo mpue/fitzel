@@ -85,10 +85,13 @@ vec3 skyColor(vec3 dir) {
     // The gradient colours are authored in sRGB -> linearise for the pipeline.
     col = pow(col, vec3(2.2));
 
-    // Sun disk + glow (HDR linear radiance, added after linearisation).
-    float sd = max(dot(dir, uSunDir), 0.0);
-    col += uSunColor * pow(sd, 8.0) * 0.5;            // glow
-    col += uSunColor * smoothstep(0.9995, 0.9998, sd) * 8.0; // disk
+    // Sun disk + tight corona (HDR linear radiance). The soft halo comes from
+    // bloom in the composite, so keep the in-sky glow tight to avoid a blowout.
+    float sd   = max(dot(dir, uSunDir), 0.0);
+    float disk = smoothstep(0.9991, 0.9995, sd);  // the bright disk
+    float glow = pow(sd, 200.0) * 0.5;            // tight corona only
+    vec3 sunTint = uSunColor * vec3(1.0, 0.9, 0.72);
+    col += sunTint * (disk * 9.0 + glow);
     return col;
 }
 

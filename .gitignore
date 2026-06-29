@@ -14,6 +14,9 @@ compile_commands.json
 /.idea/
 *.user
 
+# Large binary texture assets (provided locally, not tracked)
+/textures/
+
 # OS
 Thumbs.db
 .DS_Store

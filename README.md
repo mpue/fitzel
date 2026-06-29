@@ -91,12 +91,26 @@ hold right mouse to look, scroll to zoom, ESC to quit.
 
 ### Rendering notes
 
-- **Colour management**: lighting runs in linear space (authored sRGB colours are
-  linearised on use), the sun is an HDR radiance, and each final on-screen write
-  applies **ACES filmic tonemapping** + exposure + gamma. The off-screen
-  reflection/refraction passes render *linear* (untonemapped) so the water shader
-  samples and tonemaps once. This is what gives the image contrast and highlights
-  instead of a flat look.
+- **Colour management & post**: the scene renders linear into an HDR (RGBA16F)
+  buffer; a composite pass adds **bloom**, **god rays** (radial march from the sun's
+  screen position) and an analytic **lens flare**, then applies **ACES filmic
+  tonemapping** + exposure + gamma. Authored sRGB colours are linearised on use and
+  the sun is an HDR radiance, so highlights bloom and the sun reads as a sun.
+- **Terrain texturing**: four PBR albedo sets (sand / rocky ground / cliff / snow)
+  are **triplanar-mapped** (projected on the three world axes, blended by the normal)
+  so steep faces don't stretch, and blended by height + slope.
+- **Water**: planar reflection/refraction (rendered at half-res, distortion hides it)
+  with multi-octave animated normals, **Schlick Fresnel**, depth-tinted refraction and
+  a sharp HDR sun glint that the bloom picks up.
+- On laptops the app exports `NvOptimusEnablement` so it runs on the discrete GPU.
+
+### Terrain textures (not in the repo)
+
+The terrain albedo textures are large and **git-ignored**. Drop these 4K diffuse
+JPGs from [Poly Haven](https://polyhaven.com/textures) into `textures/`:
+`coast_sand_01_diff_4k.jpg`, `aerial_rocks_01_diff_4k.jpg`,
+`rocky_terrain_02_diff_4k.jpg`, `snow_02_diff_4k.jpg`. CMake injects the folder path
+at build time (`FITZEL_TEXTURE_DIR`).
 
 - **Cascaded shadows**: the camera frustum is split into 4 depth ranges (practical
   log/uniform blend); each cascade is fit to its sub-frustum and rendered into a

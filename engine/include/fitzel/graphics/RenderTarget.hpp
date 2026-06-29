@@ -5,11 +5,13 @@
 namespace fitzel {
 
 // An off-screen framebuffer with a color texture and a depth renderbuffer.
-// Used for render-to-texture passes (e.g. planar water reflection/refraction).
-// Move-only.
+// Used for render-to-texture passes (e.g. planar water reflection/refraction,
+// HDR scene buffer for post-processing). Move-only.
 class RenderTarget {
 public:
-    RenderTarget(int width, int height);
+    enum class Format { RGBA8, RGBA16F };
+
+    RenderTarget(int width, int height, Format format = Format::RGBA8);
     ~RenderTarget();
 
     RenderTarget(const RenderTarget&)            = delete;

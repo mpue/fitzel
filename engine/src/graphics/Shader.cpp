@@ -135,6 +135,11 @@ void Shader::setFloat(std::string_view name, float value) const {
     glUniform1f(uniformLocation(name), value);
 }
 
+void Shader::setVec2(std::string_view name, const glm::vec2& value) const {
+    glUseProgram(m_program);
+    glUniform2fv(uniformLocation(name), 1, glm::value_ptr(value));
+}
+
 void Shader::setVec3(std::string_view name, const glm::vec3& value) const {
     glUseProgram(m_program);
     glUniform3fv(uniformLocation(name), 1, glm::value_ptr(value));

@@ -56,6 +56,14 @@ uniform float uSnowLevel;      // world height at which snow appears
 uniform float uRockSlope;      // slope (normal.y) below which faces turn to rock
 uniform float uSlopeSharpness; // blend width of the rock transition
 
+// Triplanar terrain textures (uColorMode == 1).
+uniform sampler2D uTexSand;    // low ground near water
+uniform sampler2D uTexGround;  // flat ground / rocky soil
+uniform sampler2D uTexCliff;   // steep rock
+uniform sampler2D uTexSnow;    // high, flat snow
+uniform float     uTexScale;   // world units -> texture tiling
+uniform float     uSandLevel;  // height below which sand dominates
+
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
 uniform float uDetailStrength; // how strongly it perturbs the normal
@@ -117,22 +125,40 @@ float detailFbm(vec2 p) {
     return sum;
 }
 
-// Height- and slope-based palette. `slope` is the upward component of the
-// surface normal: 1.0 = flat ground, ~0.0 = a vertical face.
-vec3 terrainColor(float height, float slope) {
-    // 0 on steep faces -> 1 on flat ground.
+// Triplanar sampling: project the texture along the three world axes and blend
+// by the (squared) normal, so steep terrain doesn't stretch a flat UV.
+vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale) {
+    vec3 bw = abs(n);
+    bw = pow(bw, vec3(4.0));
+    bw /= (bw.x + bw.y + bw.z);
+    vec3 cx = texture(tex, wp.zy * scale).rgb;
+    vec3 cy = texture(tex, wp.xz * scale).rgb;
+    vec3 cz = texture(tex, wp.xy * scale).rgb;
+    return cx * bw.x + cy * bw.y + cz * bw.z;
+}
+
+// Height- and slope-based terrain albedo from three triplanar textures.
+// `slope` is the upward component of the surface normal: 1 = flat, ~0 = vertical.
+vec3 terrainAlbedo(vec3 wp, vec3 n, float detail) {
     float flatness = smoothstep(uRockSlope - uSlopeSharpness,
-                                uRockSlope + uSlopeSharpness, slope);
+                                uRockSlope + uSlopeSharpness, n.y);
 
-    // Base ground by height.
-    vec3 ground = mix(uColorSand, uColorGrass, smoothstep(-3.0, 2.0, height));
+    vec3 sand   = triplanar(uTexSand,   wp, n, uTexScale * 1.4);
+    vec3 ground = triplanar(uTexGround, wp, n, uTexScale);
+    vec3 cliff  = triplanar(uTexCliff,  wp, n, uTexScale * 0.7);
+    vec3 snow   = triplanar(uTexSnow,   wp, n, uTexScale);
 
-    // Snow settles on high ground, but only where it's flat enough to hold.
-    float snowMask = smoothstep(uSnowLevel - 2.0, uSnowLevel + 2.0, height) * flatness;
-    ground = mix(ground, uColorSnow, snowMask);
+    // Sand near the water line, blending up into rocky ground.
+    float sandH      = uSandLevel + (detail - 0.5) * 3.0;
+    float groundMix  = smoothstep(sandH, sandH + 5.0, wp.y);
+    vec3  lowGround  = mix(sand, ground, groundMix);
 
-    // Steep faces are bare rock regardless of height.
-    return mix(uColorRock, ground, flatness);
+    // Break the snow line with noise so it isn't a hard contour.
+    float snowH    = uSnowLevel + (detail - 0.5) * 6.0;
+    float snowMask = smoothstep(snowH - 2.5, snowH + 2.5, wp.y) * flatness;
+
+    vec3 base = mix(cliff, lowGround, flatness);
+    return mix(base, snow, snowMask);
 }
 
 // Apply exponential height fog with sun-tinted in-scatter to a shaded colour.
@@ -174,8 +200,7 @@ void main() {
 
     vec3 albedo;
     if (uColorMode == 1) {
-        albedo = terrainColor(vWorldPos.y, N.y);
-        albedo *= 0.88 + 0.24 * detail; // subtle tonal variation
+        albedo = terrainAlbedo(vWorldPos, N, detail);
     } else if (uColorMode == 2) {
         albedo = texture(uTexture, vUV).rgb;
     } else {

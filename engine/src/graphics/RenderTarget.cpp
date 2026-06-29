@@ -7,15 +7,19 @@
 
 namespace fitzel {
 
-RenderTarget::RenderTarget(int width, int height)
+RenderTarget::RenderTarget(int width, int height, Format format)
     : m_width(width), m_height(height) {
+    const bool hdr = (format == Format::RGBA16F);
+    const GLint  internalFormat = hdr ? GL_RGBA16F : GL_RGBA8;
+    const GLenum pixelType      = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+
     glGenFramebuffers(1, &m_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
 
     glGenTextures(1, &m_colorTex);
     glBindTexture(GL_TEXTURE_2D, m_colorTex);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0,
-                 GL_RGB, GL_UNSIGNED_BYTE, nullptr);
+    glTexImage2D(GL_TEXTURE_2D, 0, internalFormat, width, height, 0,
+                 GL_RGBA, pixelType, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
