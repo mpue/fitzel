@@ -103,7 +103,9 @@ hold right mouse to look, scroll to zoom, ESC to quit.
   **tinyexr**.
 - **Water**: planar reflection/refraction (rendered at half-res, distortion hides it)
   with multi-octave animated normals, **Schlick Fresnel**, depth-tinted refraction and
-  a sharp HDR sun glint that the bloom picks up.
+  a sharp HDR sun glint that the bloom picks up. The refraction pass keeps a depth
+  texture, so the water knows its column thickness: thin water at the shore gets
+  animated **foam**, and submerged terrain is darkened as **wet** in `lit.frag`.
 - **SSAO**: the HDR pass writes a depth texture; a half-res screen-space ambient
   occlusion pass reconstructs view position/normal from depth and samples a hemisphere
   kernel; the composite multiplies it into the scene to darken creases and valleys.

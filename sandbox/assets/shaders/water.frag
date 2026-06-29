@@ -6,6 +6,10 @@ out vec4 FragColor;
 
 uniform sampler2D uReflection;
 uniform sampler2D uRefraction;
+uniform sampler2D uRefractionDepth; // scene depth behind the water
+uniform float uNear;
+uniform float uFar;
+uniform float uFoamWidth; // world-ish depth over which shoreline foam fades
 
 uniform vec3  uCameraPos;
 uniform vec3  uLightDir;     // towards the light
@@ -55,6 +59,12 @@ float fbm(vec2 p) {
     return s;
 }
 
+// Window-space depth [0,1] -> linear eye distance.
+float linearDepth(float d) {
+    float z = d * 2.0 - 1.0;
+    return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
+}
+
 // Animated surface normal from two scrolling noise layers at different scales
 // and directions -> richer, less uniform ripples.
 vec3 waterNormal(vec2 p) {
@@ -100,6 +110,16 @@ void main() {
     vec3  H = normalize(L + V);
     float spec = pow(max(dot(N, H), 0.0), 300.0);
     color += uLightColor * spec * 3.0;
+
+    // Shoreline foam: thickness of the water column = scene depth behind the
+    // water minus the water surface depth. Thin water (shallow shore) -> foam.
+    float sceneZ = linearDepth(texture(uRefractionDepth, refractUV).r);
+    float waterZ = linearDepth(gl_FragCoord.z);
+    float thickness = sceneZ - waterZ;
+    float shore = 1.0 - smoothstep(0.0, uFoamWidth, thickness);
+    float fn    = fbm(vWorldPos.xz * 0.6 + vec2(uTime * 0.08, -uTime * 0.05));
+    float foam  = smoothstep(0.45, 0.95, shore * (0.55 + 0.9 * fn));
+    color = mix(color, vec3(1.0), foam * 0.85);
 
     // Atmospheric fog so distant water blends into the horizon haze.
     vec3  toFrag = vWorldPos - uCameraPos;

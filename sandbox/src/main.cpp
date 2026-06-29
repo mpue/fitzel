@@ -122,12 +122,13 @@ int main() {
         // Half-resolution reflection/refraction: the water distortion hides it
         // and it roughly quarters the cost of those two textured passes.
         RenderTarget reflectRT(640, 360);
-        RenderTarget refractRT(640, 360);
+        RenderTarget refractRT(640, 360, RenderTarget::Format::RGBA8, /*depthTex=*/true);
 
         float     waterLevel   = -2.0f;
         glm::vec3 waterColor{0.10f, 0.30f, 0.38f};
         float     waveStrength = 0.018f;
         float     waveScale    = 0.06f;
+        float     foamWidth    = 2.5f;
 
         // Sky + volumetric clouds (fullscreen raymarch pass).
         Shader sky = Shader::fromFiles("assets/shaders/sky.vert",
@@ -346,6 +347,7 @@ int main() {
                     ImGui::SliderFloat("Level",      &waterLevel, -15.0f, 15.0f);
                     ImGui::SliderFloat("Waves",      &waveStrength, 0.0f, 0.05f, "%.3f");
                     ImGui::SliderFloat("Ripple size",&waveScale, 0.01f, 0.2f, "%.3f");
+                    ImGui::SliderFloat("Shore foam", &foamWidth, 0.0f, 8.0f);
                     ImGui::ColorEdit3("Tint",        &waterColor.x);
                 }
                 if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -380,7 +382,8 @@ int main() {
                       .set("uDetailStrength", look.detailStrength)
                       .set("uTexScale", texScale)
                       .set("uSandLevel", waterLevel + 1.0f)
-                      .set("uNormalStrength", normalStrength);
+                      .set("uNormalStrength", normalStrength)
+                      .set("uWaterLevel", waterLevel);
 
             // --- Submit the opaque scene once ---------------------------
             int fbW = 0, fbH = 0;
@@ -507,8 +510,13 @@ int main() {
             water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
             water.setInt("uReflection", 0);
             water.setInt("uRefraction", 1);
+            water.setInt("uRefractionDepth", 2);
+            water.setFloat("uNear", camera.nearPlane());
+            water.setFloat("uFar", camera.farPlane());
+            water.setFloat("uFoamWidth", foamWidth);
             reflectRT.bindColorTexture(0);
             refractRT.bindColorTexture(1);
+            refractRT.bindDepthTexture(2);
             waterMesh.draw();
 
             // --- SSAO: occlusion from the HDR depth buffer (half-res) ---

@@ -70,6 +70,7 @@ uniform sampler2D uTexGroundN;
 uniform sampler2D uTexCliffN;
 uniform sampler2D uTexSnowN;
 uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal map
+uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
@@ -236,6 +237,11 @@ void main() {
         albedo = uAlbedo;
     }
     albedo = pow(albedo, vec3(2.2)); // sRGB -> linear for correct lighting
+
+    // Submerged (and just-above-waterline) surfaces are wet -> darker, with a
+    // narrow damp band reaching slightly above the surface.
+    float wet = 1.0 - smoothstep(uWaterLevel - 0.8, uWaterLevel + 0.4, vWorldPos.y);
+    albedo *= mix(1.0, 0.42, wet);
 
     // Detailed normal from the triplanar normal maps, for lighting.
     if (uColorMode == 1) {
