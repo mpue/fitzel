@@ -32,6 +32,12 @@ struct TerrainSettings {
     float ridgeScale    = 24.0f;
     float warpStrength  = 14.0f;
     float warpFrequency = 0.01f;
+
+    // Large-scale variety: continents (lowland basins vs highlands), regional
+    // roughness (plains vs rugged mountains) and plateaus.
+    float continentAmp = 1.5f;    // strength of the big elevation swings
+    float biomeFreq    = 0.0017f; // size of regions (lower = larger)
+    float terrace      = 0.35f;   // 0..1 plateau/terracing amount
 };
 
 // World-space terrain height at (x, z). Continuous and cheap enough to query

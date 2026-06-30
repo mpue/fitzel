@@ -58,8 +58,16 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- miniaudio: single-header cross-platform audio playback ----------------
+FetchContent_Declare(
+    miniaudio
+    GIT_REPOSITORY https://github.com/mackron/miniaudio.git
+    GIT_TAG        0.11.21
+    GIT_SHALLOW    ON
+)
+
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr)
+FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio)
 
 # Generate a GLAD loader for OpenGL 3.3 Core. Produces the target `glad_gl_core_33`.
 glad_add_library(glad_gl_core_33 REPRODUCIBLE API gl:core=3.3)
@@ -73,6 +81,10 @@ add_library(tinyexr_dep STATIC ${tinyexr_SOURCE_DIR}/deps/miniz/miniz.c)
 target_include_directories(tinyexr_dep PUBLIC
     ${tinyexr_SOURCE_DIR}
     ${tinyexr_SOURCE_DIR}/deps/miniz)
+
+# miniaudio headers (the MINIAUDIO_IMPLEMENTATION TU lives in engine/).
+add_library(miniaudio_dep INTERFACE)
+target_include_directories(miniaudio_dep INTERFACE ${miniaudio_SOURCE_DIR})
 
 # Build Dear ImGui (core + GLFW/OpenGL3 backends) as a static library. The
 # OpenGL3 backend ships its own GL loader, so it doesn't clash with GLAD.

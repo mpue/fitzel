@@ -14,3 +14,4 @@
 #include "fitzel/scene/Camera.hpp"
 #include "fitzel/world/Terrain.hpp"
 #include "fitzel/ui/Gui.hpp"
+#include "fitzel/audio/Audio.hpp"

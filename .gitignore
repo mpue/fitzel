@@ -17,6 +17,9 @@ compile_commands.json
 # Large binary texture assets (provided locally, not tracked)
 /textures/
 
+# Audio assets (provided/generated locally, not tracked)
+/sounds/
+
 # OS
 Thumbs.db
 .DS_Store

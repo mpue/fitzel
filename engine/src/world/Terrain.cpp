@@ -8,8 +8,8 @@
 namespace fitzel {
 
 float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
-    // 1) Domain warp: displace the sample point by a low-frequency noise field
-    //    so features bend and meander instead of looking grid-aligned.
+    // Domain warp: displace the sample point by a low-frequency noise field so
+    // features bend and meander instead of looking grid-aligned.
     const float wf = s.warpFrequency;
     const float wx = worldX + s.warpStrength *
         stb_perlin_fbm_noise3(worldX * wf, 0.0f, worldZ * wf, 2.0f, 0.5f, 4);
@@ -17,19 +17,47 @@ float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
         stb_perlin_fbm_noise3((worldX + 101.7f) * wf, 0.0f,
                               (worldZ + 57.1f) * wf, 2.0f, 0.5f, 4);
 
-    const float f = s.frequency;
+    const float f  = s.frequency;
+    const float bf = s.biomeFreq;
 
-    // 2) Rolling base terrain (signed fBm).
-    const float base = stb_perlin_fbm_noise3(
-        wx * f + s.seed, 0.0f, wz * f + s.seed, s.lacunarity, s.gain, s.octaves);
+    // 1) Continents: big lowland basins (sea/lake floors) vs highlands.
+    const float continent = stb_perlin_fbm_noise3(
+        wx * bf + s.seed, 0.0f, wz * bf + s.seed, 2.0f, 0.5f, 4);
+    const float baseElev = continent * s.heightScale * s.continentAmp;
+    const float highland = glm::smoothstep(-0.15f, 0.45f, continent);
 
-    // 3) Sharp mountain ridges, raised on the highlands.
+    // 2) Regional roughness: smooth plains in some regions, rugged in others.
+    const float roughN = stb_perlin_fbm_noise3(
+        (wx + 311.0f) * bf * 1.7f + s.seed, 0.0f,
+        (wz + 117.0f) * bf * 1.7f + s.seed, 2.0f, 0.5f, 3);
+    const float rough = glm::smoothstep(0.30f, 0.75f, roughN * 0.5f + 0.5f);
+
+    // 3) Rolling hills (medium scale), stronger where it's rugged.
+    const float hills = stb_perlin_fbm_noise3(
+        wx * f + s.seed, 0.0f, wz * f + s.seed, s.lacunarity, s.gain, s.octaves)
+        * s.heightScale * 0.5f * (0.3f + 0.7f * rough);
+
+    // 4) Sharp ridged mountains, only on rugged highlands.
     const float ridge = stb_perlin_ridge_noise3(
         wx * f * 1.9f + s.seed, 0.0f, wz * f * 1.9f + s.seed,
         2.0f, 0.5f, 1.0f, s.octaves);
-    const float mask = glm::smoothstep(-0.1f, 0.55f, base);
+    const float mountains = ridge * s.ridgeScale * rough * highland;
 
-    return base * s.heightScale + ridge * s.ridgeScale * mask;
+    float h = baseElev + hills + mountains;
+
+    // 5) Plateaus / terraces in some regions (soft-stepped).
+    if (s.terrace > 0.001f) {
+        const float tMask = glm::smoothstep(0.55f, 0.85f,
+            stb_perlin_fbm_noise3((wx - 733.0f) * bf * 1.3f, 0.0f,
+                                  (wz + 401.0f) * bf * 1.3f, 2.0f, 0.5f, 3) * 0.5f + 0.5f);
+        const float step = 5.0f;
+        const float q    = std::floor(h / step) * step;
+        const float frac = (h - q) / step;
+        const float soft = q + step * glm::smoothstep(0.35f, 0.65f, frac);
+        h = glm::mix(h, soft, tMask * s.terrace);
+    }
+
+    return h;
 }
 
 MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord) {

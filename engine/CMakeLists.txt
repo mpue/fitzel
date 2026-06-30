@@ -14,6 +14,8 @@ add_library(fitzel STATIC
     src/scene/Camera.cpp
     src/world/Terrain.cpp
     src/ui/Gui.cpp
+    src/audio/Audio.cpp
+    src/audio/miniaudio_impl.cpp
 )
 
 # Public headers live under include/, exposed as <fitzel/...>.
@@ -34,6 +36,7 @@ target_link_libraries(fitzel
     PRIVATE
         stb_headers
         tinyexr_dep
+        miniaudio_dep
 )
 
 target_compile_features(fitzel PUBLIC cxx_std_20)

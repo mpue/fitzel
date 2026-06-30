@@ -77,6 +77,8 @@ The engine exposes a small, RAII-based core to build on:
 - `fitzel::Terrain` — `TerrainStreamer` streams an infinite, seamless fBm terrain
   as `TerrainChunk`s around the camera; `terrainHeight()` queries the field.
 - `fitzel::Gui`     — Dear ImGui context + GLFW/OpenGL3 backends; call ImGui:: directly.
+- `fitzel::Audio` / `fitzel::Sound` — miniaudio-backed playback: looping ambient
+  layers (volume-controlled) and one-shot effects, used to drive weather audio.
 
 The sandbox ties it together: an **infinite, streamed procedural landscape** under a
 **day/night sky with volumetric clouds**, lit by a directional sun with **cascaded
@@ -116,6 +118,30 @@ hold right mouse to look, scroll to zoom, ESC to quit.
   waves** (with analytic normals and crest-driven whitecaps/foam that's lit, not flat
   white). **Rain** is a box of falling line streaks that follows the camera, wind-slanted
   and depth-tested against the scene.
+- **Weather audio**: looping rain / wind / breeze layers whose volumes cross-fade with
+  the weather value, plus a thunder one-shot fired on each lightning flash (via
+  `fitzel::Audio`/miniaudio). Placeholder WAVs are git-ignored; generate them with the
+  snippet below or drop in your own.
+
+### Weather sounds (not in the repo)
+
+The weather audio loads `rain.wav`, `wind.wav`, `breeze.wav`, `thunder.wav` from a
+git-ignored `sounds/` folder (path injected as `FITZEL_SOUND_DIR`). Drop in your own,
+or generate procedural placeholders with Python (numpy):
+
+```python
+import numpy as np, wave
+sr = 44100
+def save(name, x):
+    w = wave.open(f"sounds/{name}", "w"); w.setnchannels(1); w.setsampwidth(2)
+    w.setframerate(sr); w.writeframes((np.clip(x,-1,1)*32767).astype(np.int16).tobytes())
+rng = np.random.default_rng(7)
+save("rain.wav",  rng.standard_normal(sr*5) * 0.3)               # hiss
+save("wind.wav",  np.cumsum(rng.standard_normal(sr*7)) / sr * 4) # low rumble
+save("breeze.wav",rng.standard_normal(sr*6) * 0.1)
+t = np.arange(sr*4)/sr
+save("thunder.wav", rng.standard_normal(sr*4) * np.exp(-t/1.2))  # decaying crack
+```
 - On laptops the app exports `NvOptimusEnablement` so it runs on the discrete GPU.
 
 ### Terrain textures (not in the repo)
@@ -151,10 +177,11 @@ for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
 - **Adjustable view distance**: a single control sets the streaming radius (how many
   chunk rings load) and the camera far plane together, so the cascades and clip range
   follow the visible range.
-- **Terrain detail**: the height field combines domain warping (organic, non-grid
-  shapes), a rolling fBm base, and a ridged-multifractal mountain layer masked onto
-  the highlands. `lit.frag` adds close-up micro-detail via a procedural value-noise
-  normal bump and albedo break-up.
+- **Terrain detail & variety**: domain warping (organic, non-grid shapes) plus
+  large-scale **continent** (lowland basins / highlands), **roughness** (plains vs
+  rugged mountains) and **plateau** control maps, with a rolling fBm base and a
+  ridged-multifractal mountain layer raised only on rugged highlands — so different
+  regions and seeds give genuinely different landscapes.
 - **Terrain colour** is procedural (sand → grass → rock → snow) by world height and
   slope — steep faces turn to rock, snow only settles on flat high ground.
 - **Sky & day/night**: a fullscreen pass reconstructs the world view ray per pixel

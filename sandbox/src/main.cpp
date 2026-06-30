@@ -34,7 +34,7 @@ int main() {
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
-        Camera camera({-16.0f, 2.5f, 40.0f}, 14.0f, -3.0f);
+        Camera camera({0.0f, 34.0f, 80.0f}, -90.0f, -13.0f);
         camera.moveSpeed = 20.0f;
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
@@ -255,6 +255,20 @@ int main() {
             glBindVertexArray(0);
         }
 
+        // --- Audio: weather-driven sound layers --------------------------
+        Audio audio;
+        const std::string soundDir = FITZEL_SOUND_DIR;
+        Sound rainSnd    = Sound::fromFile(audio, soundDir + "/rain.wav", true);
+        Sound windSnd    = Sound::fromFile(audio, soundDir + "/wind.wav", true);
+        Sound breezeSnd  = Sound::fromFile(audio, soundDir + "/breeze.wav", true);
+        Sound thunderSnd = Sound::fromFile(audio, soundDir + "/thunder.wav", false);
+        rainSnd.setVolume(0.0f);   rainSnd.play();   // loops; volume follows weather
+        windSnd.setVolume(0.0f);   windSnd.play();
+        breezeSnd.setVolume(0.0f); breezeSnd.play();
+        float masterVolume = 0.8f;
+        bool  muted        = false;
+        bool  prevFlashOn  = false;
+
         // Atmospheric fog (subtle by default; aerial perspective, not haze soup).
         float fogDensity = 0.0028f;
         float fogFalloff = 0.035f;
@@ -351,6 +365,19 @@ int main() {
                 }
             }
 
+            // Weather audio: cross-fade the looping layers, fire thunder on a
+            // fresh lightning flash.
+            audio.setMasterVolume(muted ? 0.0f : masterVolume);
+            rainSnd.setVolume(rainIntensity);
+            windSnd.setVolume(glm::smoothstep(0.15f, 1.0f, weather) * 0.9f);
+            breezeSnd.setVolume((1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f);
+            const bool flashOn = flash > 0.25f;
+            if (flashOn && !prevFlashOn) {
+                thunderSnd.setVolume(glm::clamp(weather, 0.3f, 1.0f));
+                thunderSnd.play();
+            }
+            prevFlashOn = flashOn;
+
             // --- Day/night: advance time, derive sun direction and lighting ---
             if (dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
@@ -425,6 +452,11 @@ int main() {
                     ImGui::SliderFloat("Storm", &weather, 0.0f, 1.0f);
                     ImGui::Text("Rain %.0f%%   Lightning %s", rainIntensity * 100.0f,
                                 weather > 0.5f ? "armed" : "off");
+                    ImGui::Separator();
+                    ImGui::Checkbox("Mute", &muted);
+                    ImGui::SameLine();
+                    ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f);
+                    if (!audio.ok()) ImGui::TextDisabled("(audio device unavailable)");
                 }
 
                 if (ImGui::CollapsingHeader("Sky, clouds & atmosphere", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -457,12 +489,15 @@ int main() {
                     ImGui::ColorEdit3("Tint",         &waterColor.x);
                 }
                 if (ImGui::CollapsingHeader("Terrain", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    ImGui::SliderFloat("Height",    &uiSettings.heightScale, 0.0f, 30.0f);
-                    ImGui::SliderFloat("Ridges",    &uiSettings.ridgeScale, 0.0f, 50.0f);
-                    ImGui::SliderFloat("Warp",      &uiSettings.warpStrength, 0.0f, 40.0f);
-                    ImGui::SliderFloat("Frequency", &uiSettings.frequency, 0.003f, 0.05f, "%.3f");
-                    ImGui::SliderInt  ("Octaves",   &uiSettings.octaves, 1, 8);
-                    ImGui::SliderFloat("Seed",      &uiSettings.seed, 0.0f, 100.0f);
+                    ImGui::SliderFloat("Height",     &uiSettings.heightScale, 0.0f, 30.0f);
+                    ImGui::SliderFloat("Ridges",     &uiSettings.ridgeScale, 0.0f, 50.0f);
+                    ImGui::SliderFloat("Continents", &uiSettings.continentAmp, 0.0f, 3.0f);
+                    ImGui::SliderFloat("Biome size", &uiSettings.biomeFreq, 0.0005f, 0.004f, "%.4f");
+                    ImGui::SliderFloat("Terraces",   &uiSettings.terrace, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Warp",       &uiSettings.warpStrength, 0.0f, 40.0f);
+                    ImGui::SliderFloat("Frequency",  &uiSettings.frequency, 0.003f, 0.05f, "%.3f");
+                    ImGui::SliderInt  ("Octaves",    &uiSettings.octaves, 1, 8);
+                    ImGui::SliderFloat("Seed",       &uiSettings.seed, 0.0f, 100.0f);
                     if (ImGui::Button("Regenerate")) {
                         streamer.settings() = uiSettings;
                         streamer.rebuild();
