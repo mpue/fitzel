@@ -364,6 +364,13 @@ int main() {
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
         // panel's content region, so the scene renders at the viewport's pixels.
         RenderTarget viewportRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
+        // FXAA reads this LDR composite result and writes the anti-aliased image
+        // to the viewport texture (or screen). Toggle via fxaaEnabled.
+        Shader fxaa = Shader::fromFiles("assets/shaders/sky.vert",
+                                        "assets/shaders/fxaa.frag");
+        if (!fxaa.isValid()) { std::fprintf(stderr, "Failed to load fxaa shader\n"); return 1; }
+        RenderTarget postRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
+        bool fxaaEnabled = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
@@ -525,10 +532,14 @@ int main() {
                     const float bare  = valNoise2(wx * 0.13f + 19.0f, wz * 0.13f + 7.0f);
                     if (bare < 0.26f) continue; // bare ground -> no grass in this cell
                     const float dens  = glm::mix(0.25f, 1.25f, patch);
-                    const float rim   = 1.0f - glm::smoothstep(R * 0.82f, R,
-                                                               std::sqrt(x * x + z * z));
+                    const float dist  = std::sqrt(x * x + z * z);
+                    const float rim   = 1.0f - glm::smoothstep(R * 0.82f, R, dist);
+                    // Distance LOD: thin out far cells (most of the area) hard --
+                    // near grass stays full, distant grass is a fraction. Big win.
+                    const float lod   = glm::mix(1.0f, 0.22f,
+                                                 glm::smoothstep(0.28f, 1.0f, dist / R));
                     const int   count = static_cast<int>(per * dens
-                                        * glm::mix(0.35f, 1.0f, lush) * rim);
+                                        * glm::mix(0.35f, 1.0f, lush) * rim * lod);
                     for (int b = 0; b < count; ++b) {
                         // Scatter well past the cell so the sampling grid vanishes.
                         // Height follows the patch (taller clumps) plus per-blade jitter.
@@ -918,9 +929,18 @@ int main() {
         if (!bird.isValid()) { std::fprintf(stderr, "Failed to load bird shader\n"); return 1; }
         GLuint birdVAO = 0, birdBaseVBO = 0, birdInstVBO = 0;
         {
-            const float bm[] = { // pos3, flap ; two triangles (left + right wing)
-                0,0, 0.6f,0,  -1,0,0,1,   0,0,-0.4f,0,
-                0,0, 0.6f,0,   0,0,-0.4f,0, 1,0,0,1 };
+            // Gull silhouette: small body + swept, bent wings. pos3, flap (flap
+            // rises toward the tips so the wings flex when they beat). +Z forward.
+            const float bm[] = {
+                // body (diamond: nose, shoulders, tail)
+                 0.00f, 0.0f,  0.45f, 0.0f,  -0.12f, 0.0f, 0.05f, 0.0f,   0.12f, 0.0f, 0.05f, 0.0f,
+                -0.12f, 0.0f,  0.05f, 0.0f,   0.00f, 0.0f,-0.55f, 0.0f,   0.12f, 0.0f, 0.05f, 0.0f,
+                // left wing (inner + outer panel, trailing to the tail)
+                -0.12f, 0.0f,  0.05f, 0.0f,  -0.55f, 0.05f,-0.05f, 0.4f,  0.00f, 0.0f,-0.55f, 0.0f,
+                -0.55f, 0.05f,-0.05f, 0.4f,  -1.05f, 0.0f,-0.35f, 1.0f,   0.00f, 0.0f,-0.55f, 0.0f,
+                // right wing
+                 0.12f, 0.0f,  0.05f, 0.0f,   0.00f, 0.0f,-0.55f, 0.0f,   0.55f, 0.05f,-0.05f, 0.4f,
+                 0.55f, 0.05f,-0.05f, 0.4f,   0.00f, 0.0f,-0.55f, 0.0f,   1.05f, 0.0f,-0.35f, 1.0f };
             glGenVertexArrays(1, &birdVAO);
             glBindVertexArray(birdVAO);
             glGenBuffers(1, &birdBaseVBO);
@@ -948,6 +968,36 @@ int main() {
         bool  birdsEnabled = true;
         int   birdCount    = 18;
         float birdSize     = 2.2f;
+
+        // --- Fireflies: additive glowing points that wander the grass at night --
+        Shader firefly = Shader::fromFiles("assets/shaders/firefly.vert",
+                                           "assets/shaders/firefly.frag");
+        if (!firefly.isValid()) { std::fprintf(stderr, "Failed to load firefly shader\n"); return 1; }
+        GLuint fireflyVAO = 0, fireflyVBO = 0;
+        {
+            glGenVertexArrays(1, &fireflyVAO);
+            glBindVertexArray(fireflyVAO);
+            glGenBuffers(1, &fireflyVBO); // instance-only (corner from gl_VertexID)
+            glBindBuffer(GL_ARRAY_BUFFER, fireflyVBO);
+            const GLsizei is = 4 * sizeof(float); // iPos3, iPhase
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
+            glVertexAttribDivisor(0, 1);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
+            glVertexAttribDivisor(1, 1);
+            glBindVertexArray(0);
+        }
+        bool  fireflyEnabled = true;
+        int   fireflyCount   = 70;
+        float fireflySize    = 0.09f;
+        const float fireflyRadius = 34.0f;
+        std::mt19937 flyRng(9001u);
+        std::uniform_real_distribution<float> flyU(0.0f, 1.0f);
+        // Home xz + blink phase per firefly; homes start "far" so they seed near
+        // the camera on the first night frame.
+        std::vector<glm::vec3> fireflies(256, glm::vec3(1e9f, 1e9f, 0.0f));
+        for (auto& f : fireflies) f.z = flyU(flyRng) * 6.2831f;
 
         glm::vec2 treeCenter(1e9f);
         bool      treeEnabled  = true;
@@ -1712,6 +1762,8 @@ int main() {
                 ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
                 ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
                 ImGui::SliderFloat("Focus far",  &dofFar, 20.0f, 400.0f, "%.0f m");
+                ImGui::SeparatorText("Anti-aliasing");
+                ImGui::Checkbox("FXAA", &fxaaEnabled);
             }
             ImGui::End();
 
@@ -1795,6 +1847,11 @@ int main() {
                 ImGui::Checkbox("Birds", &birdsEnabled);
                 ImGui::SliderInt("Flock size", &birdCount, 0, 60);
                 ImGui::SliderFloat("Bird size", &birdSize, 0.8f, 5.0f);
+
+                ImGui::SeparatorText("Fireflies (night)");
+                ImGui::Checkbox("Fireflies", &fireflyEnabled);
+                ImGui::SliderInt("Count", &fireflyCount, 0, 256);
+                ImGui::SliderFloat("Firefly size", &fireflySize, 0.03f, 0.25f, "%.2f");
             }
             ImGui::End();
 
@@ -2146,6 +2203,39 @@ int main() {
                 glEnable(GL_CULL_FACE);
             };
 
+            // Instanced 3D trees for a given view (used by the main pass and the
+            // water reflection, so trees mirror in the water). Two-sided.
+            auto drawTrees = [&](const glm::mat4& vp, const glm::vec3& eye) {
+                if (!treeEnabled || treeCount == 0 || treePrims.empty()) return;
+                glDisable(GL_CULL_FACE);
+                tree.bind();
+                tree.setMat4("uViewProj", vp);
+                tree.setFloat("uTime", static_cast<float>(now));
+                tree.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
+                tree.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
+                tree.setFloat("uTreeHeight", treeLocalHeight);
+                tree.setVec3("uCamPos", eye);
+                tree.setFloat("uLodNear", lodNear);
+                tree.setVec3("uViewPos", eye);
+                tree.setVec3("uLightDir", light.direction);
+                tree.setVec3("uLightColor", light.color);
+                tree.setVec3("uAmbient", light.ambient);
+                tree.setVec3("uFogColor", fog.color);
+                tree.setVec3("uFogSunColor", fog.sunColor);
+                tree.setFloat("uFogDensity", fog.density);
+                tree.setFloat("uFogHeightFalloff", fog.heightFalloff);
+                tree.setFloat("uFogHeight", fog.height);
+                tree.setInt("uTex", 0);
+                glBindVertexArray(treeVAO);
+                for (const TreePrim& tp : treePrims) {
+                    if (tp.hasTex) tp.tex.bind(0);
+                    tree.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
+                    glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, treeCount);
+                }
+                glBindVertexArray(0);
+                glEnable(GL_CULL_FACE);
+            };
+
             // 1) Reflection: sky + scene mirrored across the water plane,
             //    clipping everything below the surface.
             const glm::mat4 mirror =
@@ -2163,6 +2253,7 @@ int main() {
             renderer.renderScene(reflView, proj, reflEye,
                                  glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
             glCullFace(GL_BACK);
+            drawTrees(proj * reflView, reflEye); // trees mirror in the water
 
             // 2) Refraction: scene only, clipping above water (deep-water clear).
             refractRT.bind();
@@ -2178,6 +2269,7 @@ int main() {
                 hdrRT  = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA16F, true);
                 ssaoRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
                 viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
+                postRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
             }
             hdrRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -2232,35 +2324,7 @@ int main() {
             }
 
             // Trees (instanced, per-material) into the HDR buffer.
-            if (treeEnabled && treeCount > 0 && !treePrims.empty()) {
-                glDisable(GL_CULL_FACE);
-                tree.bind();
-                tree.setMat4("uViewProj", mainVP);
-                tree.setFloat("uTime", static_cast<float>(now));
-                tree.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-                tree.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
-                tree.setFloat("uTreeHeight", treeLocalHeight);
-                tree.setVec3("uCamPos", camPos);
-                tree.setFloat("uLodNear", lodNear);
-                tree.setVec3("uViewPos", camPos);
-                tree.setVec3("uLightDir", light.direction);
-                tree.setVec3("uLightColor", light.color);
-                tree.setVec3("uAmbient", light.ambient);
-                tree.setVec3("uFogColor", fog.color);
-                tree.setVec3("uFogSunColor", fog.sunColor);
-                tree.setFloat("uFogDensity", fog.density);
-                tree.setFloat("uFogHeightFalloff", fog.heightFalloff);
-                tree.setFloat("uFogHeight", fog.height);
-                tree.setInt("uTex", 0);
-                glBindVertexArray(treeVAO);
-                for (const TreePrim& tp : treePrims) {
-                    if (tp.hasTex) tp.tex.bind(0);
-                    tree.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-                    glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, treeCount);
-                }
-                glBindVertexArray(0);
-                glEnable(GL_CULL_FACE);
-            }
+            drawTrees(mainVP, camPos);
 
             // Distant trees as camera-facing billboards (alpha cutout).
             if (treeEnabled && treeCount > 0 && billboardTex.isValid()) {
@@ -2293,14 +2357,14 @@ int main() {
             // wingbeat in the shader). Drawn two-sided into the HDR buffer.
             if (birdsEnabled && birdCount > 0) {
                 const float cx = camPos.x, cz = camPos.z;
-                const float baseY = streamer.heightAt(cx, cz) + 55.0f;
+                const float baseY = streamer.heightAt(cx, cz) + 95.0f; // fly higher
                 std::vector<float> bi;
                 bi.reserve(birdCount * 5);
                 for (int i = 0; i < birdCount; ++i) {
                     const float ph = static_cast<float>(i) * 2.39996f;
-                    const float R  = 45.0f + 35.0f * vhash2(static_cast<float>(i), 3.0f);
+                    const float R  = 50.0f + 45.0f * vhash2(static_cast<float>(i), 3.0f);
                     const float sp = 0.12f + 0.10f * vhash2(static_cast<float>(i), 9.0f);
-                    const float hY = baseY + 18.0f * vhash2(static_cast<float>(i), 5.0f);
+                    const float hY = baseY + 30.0f * vhash2(static_cast<float>(i), 5.0f);
                     const float ang = static_cast<float>(now) * sp + ph;
                     const float bx = cx + std::cos(ang) * R;
                     const float bz = cz + std::sin(ang) * R;
@@ -2318,7 +2382,7 @@ int main() {
                 bird.setFloat("uSize", birdSize);
                 bird.setVec3("uColor", glm::vec3(0.02f, 0.02f, 0.03f));
                 glBindVertexArray(birdVAO);
-                glDrawArraysInstanced(GL_TRIANGLES, 0, 6, birdCount);
+                glDrawArraysInstanced(GL_TRIANGLES, 0, 18, birdCount);
                 glBindVertexArray(0);
                 glEnable(GL_CULL_FACE);
             }
@@ -2386,6 +2450,55 @@ int main() {
                 glDisable(GL_BLEND);
             }
 
+            // --- Fireflies: night-only glowing wanderers, additive into HDR ---
+            const float nightF = 1.0f - dayF;
+            if (fireflyEnabled && fireflyCount > 0 && nightF > 0.03f) {
+                const glm::vec2 camXZ(camPos.x, camPos.z);
+                std::vector<float> fi;
+                fi.reserve(fireflyCount * 4);
+                for (int i = 0; i < fireflyCount; ++i) {
+                    glm::vec3& f = fireflies[i];
+                    glm::vec2 home(f.x, f.y);
+                    if (glm::length(home - camXZ) > fireflyRadius) {
+                        const float ang = flyU(flyRng) * 6.2831f;
+                        const float rad = std::sqrt(flyU(flyRng)) * fireflyRadius;
+                        home = camXZ + rad * glm::vec2(std::cos(ang), std::sin(ang));
+                        f.x = home.x; f.y = home.y;
+                    }
+                    const float ph = f.z;
+                    const float t  = static_cast<float>(now);
+                    const float wx = home.x + std::sin(t * 0.7f + ph) * 1.3f;
+                    const float wz = home.y + std::cos(t * 0.9f + ph * 1.7f) * 1.3f;
+                    const float hover = 0.5f + 0.5f * std::sin(t * 1.1f + ph * 2.3f);
+                    const float wy = streamer.heightAt(wx, wz) + 0.4f + hover * 0.9f;
+                    fi.insert(fi.end(), {wx, wy, wz, ph});
+                }
+                const glm::vec3 camRight = camera.right();
+                const glm::vec3 camUp = glm::normalize(glm::cross(camRight, camera.front()));
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE); // additive glow
+                glDepthMask(GL_FALSE);
+                glDisable(GL_CULL_FACE);
+                glBindBuffer(GL_ARRAY_BUFFER, fireflyVBO);
+                glBufferData(GL_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(fi.size() * sizeof(float)),
+                             fi.data(), GL_DYNAMIC_DRAW);
+                firefly.bind();
+                firefly.setMat4("uViewProj", mainVP);
+                firefly.setVec3("uCamRight", camRight);
+                firefly.setVec3("uCamUp", camUp);
+                firefly.setFloat("uSize", fireflySize);
+                firefly.setFloat("uTime", static_cast<float>(now));
+                firefly.setFloat("uNight", nightF);
+                firefly.setVec3("uColor", glm::vec3(0.7f, 1.0f, 0.35f));
+                glBindVertexArray(fireflyVAO);
+                glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, fireflyCount);
+                glBindVertexArray(0);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+                glEnable(GL_CULL_FACE);
+            }
+
             // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
             ssaoRT.bind();
             glClear(GL_COLOR_BUFFER_BIT);
@@ -2418,15 +2531,8 @@ int main() {
                 }
             }
 
-            // Composite: to the viewport texture (editor) or straight to the
-            // screen (presentation mode, no dock panel to display it in).
-            if (presentMode) {
-                int winW = 0, winH = 0;
-                window.framebufferSize(winW, winH);
-                RenderTarget::unbind(winW, winH);
-            } else {
-                viewportRT.bind();
-            }
+            // Composite into an LDR buffer; FXAA then filters it to the target.
+            postRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glDisable(GL_DEPTH_TEST);
             glDepthMask(GL_FALSE);
@@ -2457,6 +2563,23 @@ int main() {
             composite.setFloat("uValue", valueGain);
             composite.setFloat("uWarmth", warmth);
             composite.setFloat("uContrast", contrast);
+            fsQuad.draw();
+
+            // --- FXAA: filter the composite to the viewport texture (editor) or
+            //     straight to the screen (presentation mode) ------------------
+            if (presentMode) {
+                int winW = 0, winH = 0;
+                window.framebufferSize(winW, winH);
+                RenderTarget::unbind(winW, winH);
+            } else {
+                viewportRT.bind();
+            }
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            fxaa.bind();
+            postRT.bindColorTexture(0);
+            fxaa.setInt("uImage", 0);
+            fxaa.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
+            fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);
             fsQuad.draw();
             glDepthMask(GL_TRUE);
             glEnable(GL_DEPTH_TEST);
@@ -2491,6 +2614,8 @@ int main() {
         glDeleteBuffers(1, &birdBaseVBO);
         glDeleteBuffers(1, &birdInstVBO);
         glDeleteVertexArrays(1, &birdVAO);
+        glDeleteBuffers(1, &fireflyVBO);
+        glDeleteVertexArrays(1, &fireflyVAO);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
         return 1;
