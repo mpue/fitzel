@@ -3,7 +3,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <future>
 #include <random>
 #include <string>
@@ -72,6 +75,122 @@ static void samplePath(const std::vector<CamKey>& k, float time,
     yaw   = catmull(k[i0].yaw,   k[i1].yaw,   k[i2].yaw,   k[i3].yaw,   u);
     pitch = catmull(k[i0].pitch, k[i1].pitch, k[i2].pitch, k[i3].pitch, u);
     fov   = catmull(k[i0].fov,   k[i1].fov,   k[i2].fov,   k[i3].fov,   u);
+}
+
+// Squared distance from (x,z) to a polyline in the XZ plane. Returns a huge
+// value for an empty/degenerate line, so callers can test "< clearance^2"
+// unconditionally. Used to keep vegetation off the road.
+static float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z) {
+    if (line.size() < 2) return 1e30f;
+    const glm::vec2 p(x, z);
+    float best = 1e30f;
+    for (size_t i = 0; i + 1 < line.size(); ++i) {
+        const glm::vec2 a = line[i], b = line[i + 1];
+        const glm::vec2 ab = b - a;
+        const float len2 = glm::dot(ab, ab);
+        float t = len2 > 1e-8f ? glm::dot(p - a, ab) / len2 : 0.0f;
+        t = glm::clamp(t, 0.0f, 1.0f);
+        const glm::vec2 d = p - (a + ab * t);
+        best = std::min(best, glm::dot(d, d));
+    }
+    return best;
+}
+
+// Smooth 2D value noise (~0..1) for meadow patchiness in grass placement.
+static float vhash2(float x, float z) {
+    const float h = std::sin(x * 127.1f + z * 311.7f) * 43758.5453f;
+    return h - std::floor(h);
+}
+static float valNoise2(float x, float z) {
+    const float xi = std::floor(x), zi = std::floor(z);
+    const float xf = x - xi, zf = z - zi;
+    const float u = xf * xf * (3.0f - 2.0f * xf);
+    const float v = zf * zf * (3.0f - 2.0f * zf);
+    const float a = vhash2(xi, zi),     b = vhash2(xi + 1.0f, zi);
+    const float c = vhash2(xi, zi + 1.0f), d = vhash2(xi + 1.0f, zi + 1.0f);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+// A small flower: a green stem (crossed quads, tint 0), a ring of cupped petals
+// tinted per-instance (tint 1) and a yellow centre disc (tint 2). Petals tilt up
+// and outward so the bloom reads as a flower from across the meadow, not a disc.
+// Returns interleaved floats: pos3, normal3, tint1.
+static std::vector<float> makeFlowerMesh() {
+    std::vector<float> v;
+    auto push = [&](glm::vec3 p, glm::vec3 n, float t) {
+        v.insert(v.end(), {p.x, p.y, p.z, n.x, n.y, n.z, t});
+    };
+    auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, float t) {
+        const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
+        push(a, n, t); push(b, n, t); push(c, n, t);
+    };
+    auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n, float t) {
+        push(a, n, t); push(b, n, t); push(c, n, t);
+        push(a, n, t); push(c, n, t); push(d, n, t);
+    };
+    const float sh = 0.55f, hw = 0.018f;
+    quad({-hw, 0, 0}, {hw, 0, 0}, {hw, sh, 0}, {-hw, sh, 0}, {0, 0, 1}, 0.0f);
+    quad({0, 0, -hw}, {0, 0, hw}, {0, sh, hw}, {0, sh, -hw}, {1, 0, 0}, 0.0f);
+
+    // Petals: a triangle each, base near the centre, tip raised and pushed out.
+    const int   P = 6;
+    const float rb = 0.06f, rt = 0.34f, lift = 0.16f;
+    for (int i = 0; i < P; ++i) {
+        const float am = static_cast<float>(i) / P * 6.2831853f;
+        const float d  = 3.14159f / P * 0.95f; // near-touching petals
+        const glm::vec3 bL(std::cos(am - d) * rb, sh, std::sin(am - d) * rb);
+        const glm::vec3 bR(std::cos(am + d) * rb, sh, std::sin(am + d) * rb);
+        const glm::vec3 tip(std::cos(am) * rt, sh + lift, std::sin(am) * rt);
+        tri(bL, bR, tip, 1.0f);
+    }
+    // Yellow centre disc, slightly raised.
+    const int   C = 8;
+    const float rc = 0.09f;
+    const glm::vec3 cc(0.0f, sh + 0.02f, 0.0f);
+    for (int i = 0; i < C; ++i) {
+        const float a0 = static_cast<float>(i) / C * 6.2831853f;
+        const float a1 = static_cast<float>(i + 1) / C * 6.2831853f;
+        const glm::vec3 p0(std::cos(a0) * rc, sh + 0.015f, std::sin(a0) * rc);
+        const glm::vec3 p1(std::cos(a1) * rc, sh + 0.015f, std::sin(a1) * rc);
+        tri(cc, p0, p1, 2.0f);
+    }
+    return v;
+}
+
+// A capped cylinder with its axle along local X (for vehicle wheels). Radius r,
+// half-thickness ht, `seg` sides. Normals point outward; UVs are placeholders.
+static MeshData makeCylinderX(float r, float ht, int seg) {
+    MeshData m;
+    const float TAU = 6.28318530718f;
+    for (int i = 0; i < seg; ++i) {
+        const float a0 = static_cast<float>(i) / seg * TAU;
+        const float a1 = static_cast<float>(i + 1) / seg * TAU;
+        const glm::vec3 n0(0.0f, std::cos(a0), std::sin(a0));
+        const glm::vec3 n1(0.0f, std::cos(a1), std::sin(a1));
+        const auto base = static_cast<std::uint32_t>(m.vertices.size());
+        m.vertices.push_back({{-ht, r * n0.y, r * n0.z}, n0, {0.0f, 0.0f}});
+        m.vertices.push_back({{ ht, r * n0.y, r * n0.z}, n0, {0.0f, 1.0f}});
+        m.vertices.push_back({{ ht, r * n1.y, r * n1.z}, n1, {1.0f, 1.0f}});
+        m.vertices.push_back({{-ht, r * n1.y, r * n1.z}, n1, {1.0f, 0.0f}});
+        m.indices.insert(m.indices.end(),
+                         {base, base + 1, base + 2, base, base + 2, base + 3});
+    }
+    for (int side = 0; side < 2; ++side) {
+        const float x = side ? ht : -ht;
+        const glm::vec3 nc(side ? 1.0f : -1.0f, 0.0f, 0.0f);
+        const auto c = static_cast<std::uint32_t>(m.vertices.size());
+        m.vertices.push_back({{x, 0.0f, 0.0f}, nc, {0.5f, 0.5f}});
+        for (int i = 0; i <= seg; ++i) {
+            const float a = static_cast<float>(i) / seg * TAU;
+            m.vertices.push_back({{x, r * std::cos(a), r * std::sin(a)}, nc, {0.0f, 0.0f}});
+        }
+        for (int i = 0; i < seg; ++i) {
+            const std::uint32_t a = c + 1 + i, b = c + 2 + i;
+            if (side) m.indices.insert(m.indices.end(), {c, a, b});
+            else      m.indices.insert(m.indices.end(), {c, b, a});
+        }
+    }
+    return m;
 }
 
 int main() {
@@ -237,6 +356,8 @@ int main() {
         RenderTarget viewportRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
+        glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
+        bool viewportClicked = false;     // left-click landed on the viewport image
         {
             std::mt19937 rng(1337u);
             std::uniform_real_distribution<float> d(0.0f, 1.0f);
@@ -363,7 +484,9 @@ int main() {
         std::uint32_t grassSeed = 1234u;
         auto computeGrass = [](TerrainSettings s, glm::vec2 c, float waterLvl,
                                float snowLvl, float gHeight, float gDensity,
-                               float R, std::uint32_t seed) -> std::vector<float> {
+                               float R, std::uint32_t seed,
+                               std::vector<glm::vec2> road, float roadClear)
+                               -> std::vector<float> {
             std::vector<float> out;
             std::mt19937 rng(seed);
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
@@ -373,6 +496,7 @@ int main() {
                 for (float x = -R; x <= R; x += spacing) {
                     if (x * x + z * z > R * R) continue;
                     const float wx = c.x + x, wz = c.y + z;
+                    if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
                     const float h = terrainHeight(s, wx, wz);
                     if (h < waterLvl + 0.5f || h > snowLvl - 1.5f) continue;
                     const float e = 1.0f;
@@ -386,19 +510,28 @@ int main() {
                             - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
                         0.0f, 1.0f);
                     if (lush < 0.22f) continue;
-                    const float edge  = 1.0f - (x * x + z * z) / (R * R);
-                    const int   count = static_cast<int>(per
-                                        * glm::clamp(edge * 1.3f, 0.2f, 1.0f)
-                                        * glm::mix(0.3f, 1.0f, lush));
+                    // Meadow patchiness: clumps of dense/thin grass and bare gaps.
+                    const float patch = valNoise2(wx * 0.05f, wz * 0.05f);
+                    const float bare  = valNoise2(wx * 0.13f + 19.0f, wz * 0.13f + 7.0f);
+                    if (bare < 0.26f) continue; // bare ground -> no grass in this cell
+                    const float dens  = glm::mix(0.25f, 1.25f, patch);
+                    const float rim   = 1.0f - glm::smoothstep(R * 0.82f, R,
+                                                               std::sqrt(x * x + z * z));
+                    const int   count = static_cast<int>(per * dens
+                                        * glm::mix(0.35f, 1.0f, lush) * rim);
                     for (int b = 0; b < count; ++b) {
                         // Scatter well past the cell so the sampling grid vanishes.
+                        // Height follows the patch (taller clumps) plus per-blade jitter.
+                        const float bh = gHeight * glm::mix(0.65f, 1.25f, patch)
+                                                 * glm::mix(0.8f, 1.1f, u(rng));
                         out.insert(out.end(), {
                             wx + (u(rng) - 0.5f) * spacing * 2.2f, h,
                             wz + (u(rng) - 0.5f) * spacing * 2.2f,
                             u(rng) * 6.2831f,
-                            gHeight * glm::mix(0.8f, 1.0f, u(rng)),
+                            bh,
                             u(rng) * 6.2831f,
-                            glm::clamp(lush + (u(rng) - 0.5f) * 0.08f, 0.0f, 1.0f)});
+                            glm::clamp(lush + (patch - 0.5f) * 0.4f
+                                            + (u(rng) - 0.5f) * 0.12f, 0.0f, 1.0f)});
                     }
                 }
             }
@@ -511,6 +644,271 @@ int main() {
             glBindVertexArray(0);
         }
 
+        // --- Roads / paths -----------------------------------------------
+        // A road is a ribbon mesh lofted along a Catmull-Rom spline through
+        // control points, draped onto the terrain and textured with asphalt.
+        // Submitted through the Renderer, so it gets lighting/shadows/fog free.
+        Texture  roadTex = Texture::fromFile(texDir + "/asphalt_02_diff_4k.jpg");
+        Material roadMat(lit);
+        roadMat.set("uColorMode", 2).setTexture("uTexture", roadTex, 0);
+        // Selectable surface: gather the diffuse/albedo textures from textures/.
+        std::vector<std::string> roadTexFiles;
+        int roadTexSel = 0;
+        {
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(texDir, ec)) {
+                const std::string name = e.path().filename().string();
+                const std::string ext  = e.path().extension().string();
+                if ((ext == ".jpg" || ext == ".jpeg" || ext == ".png") &&
+                    name.find("diff") != std::string::npos)
+                    roadTexFiles.push_back(name);
+            }
+            std::sort(roadTexFiles.begin(), roadTexFiles.end());
+            for (int i = 0; i < static_cast<int>(roadTexFiles.size()); ++i)
+                if (roadTexFiles[i].find("asphalt") != std::string::npos) roadTexSel = i;
+        }
+        std::vector<glm::vec2> roadPts;   // control points (world x,z)
+        Mesh  roadMesh;
+        int   roadVerts    = 0;
+        bool  roadEnabled  = true;
+        bool  roadEditMode = false;
+        bool  roadDirty    = false;
+        int   roadSel      = -1;          // selected control point (-1 = none)
+        bool  roadDragging = false;       // dragging the selected handle
+        bool  roadVegDirty = false;       // road changed -> clear vegetation on it
+        float roadWidth    = 5.0f;
+        float roadTexTile  = 8.0f;        // world metres per texture tile
+        std::vector<glm::vec2> roadCenterline; // sampled centre (for veg masking)
+        // Raycast the terrain under a viewport NDC point; true + world hit on success.
+        auto roadPickTerrain = [&](glm::vec2 ndc, const glm::mat4& vp, glm::vec3& out) {
+            const glm::mat4 inv = glm::inverse(vp);
+            glm::vec4 pn = inv * glm::vec4(ndc, -1.0f, 1.0f); pn /= pn.w;
+            glm::vec4 pf = inv * glm::vec4(ndc,  1.0f, 1.0f); pf /= pf.w;
+            const glm::vec3 ro = glm::vec3(pn);
+            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+            float t = 0.0f;
+            for (int i = 0; i < 2048 && t < 4000.0f; ++i) {
+                const glm::vec3 p = ro + rd * t;
+                const float h = streamer.heightAt(p.x, p.z);
+                if (p.y <= h) { out = p; return true; }
+                t += std::max(0.25f, (p.y - h) * 0.4f);
+            }
+            return false;
+        };
+        auto buildRoad = [&] {
+            roadDirty = false;
+            roadVegDirty = true;  // vegetation must re-evaluate against the new road
+            roadCenterline.clear();
+            MeshData md;
+            const int n = static_cast<int>(roadPts.size());
+            if (n < 2) { roadMesh = Mesh(); roadVerts = 0; return; }
+
+            // Smooth centreline: Catmull-Rom through the points, draped on terrain.
+            std::vector<glm::vec3> center;
+            const int SUB = 14;
+            for (int i = 0; i < n - 1; ++i) {
+                const glm::vec2 p0 = roadPts[std::max(0, i - 1)];
+                const glm::vec2 p1 = roadPts[i];
+                const glm::vec2 p2 = roadPts[i + 1];
+                const glm::vec2 p3 = roadPts[std::min(n - 1, i + 2)];
+                const int last = (i == n - 2) ? SUB : SUB - 1;
+                for (int s = 0; s <= last; ++s) {
+                    const glm::vec2 c = catmull(p0, p1, p2, p3, static_cast<float>(s) / SUB);
+                    center.push_back({c.x, streamer.heightAt(c.x, c.y), c.y});
+                }
+            }
+
+            // Keep the flat centreline for vegetation masking.
+            roadCenterline.reserve(center.size());
+            for (const glm::vec3& p : center) roadCenterline.push_back({p.x, p.z});
+
+            // Loft left/right edges perpendicular to the path (in the XZ plane).
+            const float half = roadWidth * 0.5f;
+            float vlen = 0.0f;
+            for (size_t i = 0; i < center.size(); ++i) {
+                glm::vec3 fwd = (i == 0)                 ? center[1] - center[0]
+                              : (i + 1 == center.size()) ? center[i] - center[i - 1]
+                                                         : center[i + 1] - center[i - 1];
+                fwd.y = 0.0f;
+                if (glm::length(fwd) < 1e-4f) fwd = glm::vec3(0, 0, 1);
+                fwd = glm::normalize(fwd);
+                const glm::vec3 side = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
+                if (i > 0) vlen += glm::length(center[i] - center[i - 1]);
+                const float v = vlen / roadTexTile;
+                glm::vec3 Lp = center[i] - side * half;
+                glm::vec3 Rp = center[i] + side * half;
+                Lp.y = streamer.heightAt(Lp.x, Lp.z) + 0.10f; // lift off the ground
+                Rp.y = streamer.heightAt(Rp.x, Rp.z) + 0.10f;
+                const glm::vec3 up(0.0f, 1.0f, 0.0f);
+                md.vertices.push_back({Lp, up, {0.0f, v}});
+                md.vertices.push_back({Rp, up, {roadWidth / roadTexTile, v}});
+            }
+            // Two triangles per rung, wound CCW-from-above (front faces up).
+            for (std::uint32_t i = 0; i + 1 < center.size(); ++i) {
+                const std::uint32_t a = 2 * i;
+                md.indices.insert(md.indices.end(), {a, a + 2, a + 1, a + 1, a + 2, a + 3});
+            }
+            roadMesh  = Mesh::create(md);
+            roadVerts = static_cast<int>(md.vertices.size());
+        };
+
+        // --- Test-drive vehicle ------------------------------------------
+        // A primitive car: a scaled cube for the body/cabin plus four cylinder
+        // wheels. Drawn through the Renderer (colour-only lit material) so it
+        // gets lighting, shadows and fog like everything else.
+        Mesh     carCube  = Mesh::cube();
+        Mesh     carWheel = Mesh::create(makeCylinderX(0.42f, 0.16f, 16));
+        Material carBodyMat(lit);
+        carBodyMat.set("uColorMode", 0).set("uAlbedo", glm::vec3(0.72f, 0.12f, 0.10f))
+                  .set("uWaterLevel", -1.0e4f);
+        Material carCabinMat(lit);
+        carCabinMat.set("uColorMode", 0).set("uAlbedo", glm::vec3(0.11f, 0.13f, 0.17f))
+                   .set("uWaterLevel", -1.0e4f);
+        Material carWheelMat(lit);
+        carWheelMat.set("uColorMode", 0).set("uAlbedo", glm::vec3(0.05f, 0.05f, 0.06f))
+                   .set("uWaterLevel", -1.0e4f);
+
+        bool  vehicleMode = false;
+        bool  prevV       = false;
+        bool  carPlaced   = false;
+        bool  showVehicle = true;
+        glm::vec3 carPos(0.0f);
+        float carYaw     = 0.0f;   // heading (radians)
+        float carSpeed   = 0.0f;   // m/s (negative = reverse)
+        float wheelSpin  = 0.0f;   // rolling angle (radians)
+        float steerAngle = 0.0f;   // front-wheel steer (radians)
+        glm::vec3 camChase(0.0f);  // smoothed chase-camera position
+        const float wheelR = 0.42f, bodyW = 1.8f, bodyH = 0.7f, bodyL = 4.0f;
+        const float cabW = 1.5f, cabH = 0.6f, cabL = 1.8f;
+        const float halfTrack = 0.85f, halfBase = 1.35f;
+        auto placeCar = [&] {
+            const glm::vec3 p = camera.position();
+            carPos    = glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z);
+            carYaw    = glm::radians(90.0f - camera.yaw()); // align with view heading
+            carSpeed  = 0.0f;
+            carPlaced = true;
+            camChase  = camera.position();
+        };
+
+        // --- Flowers: GPU-instanced blooms scattered through lush grass ---
+        Shader flower = Shader::fromFiles("assets/shaders/flower.vert",
+                                          "assets/shaders/flower.frag");
+        if (!flower.isValid()) { std::fprintf(stderr, "Failed to load flower shader\n"); return 1; }
+        GLuint flowerVAO = 0, flowerBaseVBO = 0, flowerInstVBO = 0;
+        int    flowerVerts = 0;
+        {
+            const std::vector<float> fm = makeFlowerMesh();
+            flowerVerts = static_cast<int>(fm.size() / 7);
+            glGenVertexArrays(1, &flowerVAO);
+            glBindVertexArray(flowerVAO);
+            glGenBuffers(1, &flowerBaseVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, flowerBaseVBO);
+            glBufferData(GL_ARRAY_BUFFER, fm.size() * sizeof(float), fm.data(), GL_STATIC_DRAW);
+            const GLsizei bs = 7 * sizeof(float);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, bs, (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, bs, (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, bs, (void*)(6 * sizeof(float)));
+            glGenBuffers(1, &flowerInstVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, flowerInstVBO);
+            const GLsizei is = 8 * sizeof(float); // iPos3, iYaw, iScale, iColor3
+            glEnableVertexAttribArray(3);
+            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
+            glVertexAttribDivisor(3, 1);
+            glEnableVertexAttribArray(4);
+            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
+            glVertexAttribDivisor(4, 1);
+            glEnableVertexAttribArray(5);
+            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
+            glVertexAttribDivisor(5, 1);
+            glEnableVertexAttribArray(6);
+            glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, is, (void*)(5 * sizeof(float)));
+            glVertexAttribDivisor(6, 1);
+            glBindVertexArray(0);
+        }
+        int   flowerCount   = 0;
+        bool  flowerEnabled = true;
+        float flowerDensity = 1.0f;
+        auto regenFlowers = [&](glm::vec2 c) {
+            std::vector<float> out;
+            std::mt19937 rng(4242u);
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            const float R = grassRadius, spacing = 0.9f;
+            const float clear = roadWidth * 0.5f + 1.5f;
+            const glm::vec3 palette[5] = {{1.0f, 1.0f, 0.92f}, {1.0f, 0.85f, 0.2f},
+                                          {0.92f, 0.22f, 0.30f}, {0.72f, 0.32f, 0.85f},
+                                          {0.40f, 0.52f, 0.95f}};
+            for (float z = -R; z <= R; z += spacing) {
+                for (float x = -R; x <= R; x += spacing) {
+                    if (x * x + z * z > R * R) continue;
+                    const float wx = c.x + x, wz = c.y + z;
+                    if (roadDistanceSq(roadCenterline, wx, wz) < clear * clear) continue;
+                    const float h = streamer.heightAt(wx, wz);
+                    if (h < waterLevel + 0.6f || h > look.snowLevel - 2.0f) continue;
+                    const float e = 1.0f;
+                    const glm::vec3 n = glm::normalize(glm::vec3(
+                        streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz), 2.0f * e,
+                        streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
+                    if (n.y < 0.9f) continue;
+                    const float moist = terrainMoisture(streamer.settings(), wx, wz);
+                    const float patch = valNoise2(wx * 0.08f + 50.0f, wz * 0.08f + 50.0f);
+                    const float prob  = glm::smoothstep(0.32f, 0.72f, moist)
+                                      * glm::smoothstep(0.4f, 0.82f, patch) * 1.4f * flowerDensity;
+                    if (u(rng) > prob) continue;
+                    const float fx = wx + (u(rng) - 0.5f) * spacing;
+                    const float fz = wz + (u(rng) - 0.5f) * spacing;
+                    const glm::vec3 col = palette[static_cast<int>(u(rng) * 5.0f) % 5];
+                    out.insert(out.end(), {fx, streamer.heightAt(fx, fz) - 0.02f, fz,
+                                           u(rng) * 6.2831f, glm::mix(0.7f, 1.2f, u(rng)),
+                                           col.r, col.g, col.b});
+                }
+            }
+            flowerCount = static_cast<int>(out.size() / 8);
+            glBindBuffer(GL_ARRAY_BUFFER, flowerInstVBO);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(out.size() * sizeof(float)),
+                         out.data(), GL_DYNAMIC_DRAW);
+        };
+
+        // --- Birds: a small flock of flapping billboards circling overhead --
+        Shader bird = Shader::fromFiles("assets/shaders/bird.vert",
+                                        "assets/shaders/bird.frag");
+        if (!bird.isValid()) { std::fprintf(stderr, "Failed to load bird shader\n"); return 1; }
+        GLuint birdVAO = 0, birdBaseVBO = 0, birdInstVBO = 0;
+        {
+            const float bm[] = { // pos3, flap ; two triangles (left + right wing)
+                0,0, 0.6f,0,  -1,0,0,1,   0,0,-0.4f,0,
+                0,0, 0.6f,0,   0,0,-0.4f,0, 1,0,0,1 };
+            glGenVertexArrays(1, &birdVAO);
+            glBindVertexArray(birdVAO);
+            glGenBuffers(1, &birdBaseVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, birdBaseVBO);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(bm), bm, GL_STATIC_DRAW);
+            const GLsizei bs = 4 * sizeof(float);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, bs, (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, bs, (void*)(3 * sizeof(float)));
+            glGenBuffers(1, &birdInstVBO);
+            glBindBuffer(GL_ARRAY_BUFFER, birdInstVBO);
+            const GLsizei is = 5 * sizeof(float); // iPos3, iYaw, iPhase
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
+            glVertexAttribDivisor(2, 1);
+            glEnableVertexAttribArray(3);
+            glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
+            glVertexAttribDivisor(3, 1);
+            glEnableVertexAttribArray(4);
+            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
+            glVertexAttribDivisor(4, 1);
+            glBindVertexArray(0);
+        }
+        bool  birdsEnabled = true;
+        int   birdCount    = 18;
+        float birdSize     = 2.2f;
+
         std::vector<float> treeInst;
         int       treeCount    = 0;
         glm::vec2 treeCenter(1e9f);
@@ -526,6 +924,8 @@ int main() {
                 for (float x = -treeRadius; x <= treeRadius; x += spacing) {
                     if (x * x + z * z > treeRadius * treeRadius) continue;
                     const float wx = cc.x + x, wz = cc.y + z;
+                    const float roadClear = roadWidth * 0.5f + 3.0f; // keep trees clear
+                    if (roadDistanceSq(roadCenterline, wx, wz) < roadClear * roadClear) continue;
                     const float h = streamer.heightAt(wx, wz);
                     if (h < waterLevel + 0.8f || h > look.snowLevel - 2.0f) continue;
                     const float e = 1.5f;
@@ -591,6 +991,11 @@ int main() {
         float camYaw   = camera.yaw();
         float camPitch = camera.pitch();
 
+        // Presentation mode: borderless fullscreen with the editor UI hidden.
+        bool presentMode = false;
+        bool prevF11     = false;
+        int  savedWX = 0, savedWY = 0, savedWW = 0, savedWH = 0;
+
         // First-person (walk on terrain) mode.
         bool        fpsMode  = false;
         bool        prevF    = false;
@@ -645,6 +1050,96 @@ int main() {
         std::puts("[Fitzel] Fly: WASD/QE, hold RMB=look. F = FPS mode (walk).");
 
         TerrainSettings uiSettings = settings; // editable copy for the panel
+
+        // --- Preset system ------------------------------------------------
+        // Every tunable is bound by name to a getter/setter, so presets are a
+        // simple "key value" text file per scene look. Unknown/missing keys are
+        // ignored, so old presets keep working as fields come and go.
+        struct PField {
+            std::string key;
+            std::function<float()>     get;
+            std::function<void(float)> set;
+        };
+        std::vector<PField> fields;
+        auto addF = [&](const char* k, float& r) {
+            fields.push_back({k, [&r] { return r; }, [&r](float v) { r = v; }});
+        };
+        auto addB = [&](const char* k, bool& r) {
+            fields.push_back({k, [&r] { return r ? 1.0f : 0.0f; },
+                                 [&r](float v) { r = v > 0.5f; }});
+        };
+        auto addI = [&](const char* k, int& r) {
+            fields.push_back({k, [&r] { return static_cast<float>(r); },
+                                 [&r](float v) { r = static_cast<int>(std::lround(v)); }});
+        };
+        addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
+        addB("autoWeather", autoWeather);      addF("weather", weather);
+        addB("muted", muted);                  addF("volume", masterVolume);
+        addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
+        addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
+        addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
+        addF("fogDensity", fogDensity);        addF("fogFalloff", fogFalloff);
+        addF("exposure", exposure);            addF("bloom", bloomIntensity);
+        addF("rays", rayIntensity);            addF("ssao", ssaoStrength);
+        addF("ssaoRadius", ssaoRadius);        addF("cascadeSplit", renderer.shadows().splitLambda);
+        addF("hue", hueShift);                 addF("saturation", saturation);
+        addF("value", valueGain);              addF("warmth", warmth);
+        addF("contrast", contrast);
+        addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
+        addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
+        addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
+        addF("waterColorR", waterColor.x);     addF("waterColorG", waterColor.y);
+        addF("waterColorB", waterColor.z);
+        addF("terrHeight", uiSettings.heightScale);   addF("terrRidge", uiSettings.ridgeScale);
+        addF("terrContinent", uiSettings.continentAmp); addF("terrBiome", uiSettings.biomeFreq);
+        addF("terrTerrace", uiSettings.terrace);      addF("terrWarp", uiSettings.warpStrength);
+        addF("terrFreq", uiSettings.frequency);       addI("terrOctaves", uiSettings.octaves);
+        addF("terrSeed", uiSettings.seed);
+        addF("texScale", texScale);            addF("normalStrength", normalStrength);
+        addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
+        addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
+        addB("grassEnabled", grassEnabled);    addF("grassDensity", grassDensity);
+        addF("grassRadius", grassRadius);      addF("grassHeight", grassHeight);
+        addF("grassTintR", grassTint.x);       addF("grassTintG", grassTint.y);
+        addF("grassTintB", grassTint.z);
+        addB("treeEnabled", treeEnabled);      addF("treeDensity", treeDensity);
+        addF("treeSize", treeSize);            addF("lodNear", lodNear);
+
+        namespace fs = std::filesystem;
+        const fs::path presetDir = "presets";
+        auto listPresets = [&] {
+            std::vector<std::string> out;
+            std::error_code ec;
+            if (fs::exists(presetDir, ec))
+                for (const auto& e : fs::directory_iterator(presetDir, ec))
+                    if (e.path().extension() == ".fzp") out.push_back(e.path().stem().string());
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        auto savePreset = [&](const std::string& name) {
+            std::error_code ec; fs::create_directories(presetDir, ec);
+            std::ofstream f(presetDir / (name + ".fzp"));
+            for (const PField& fld : fields) f << fld.key << ' ' << fld.get() << '\n';
+        };
+        auto loadPreset = [&](const std::string& name) {
+            std::ifstream f(presetDir / (name + ".fzp"));
+            if (!f) return false;
+            std::map<std::string, float> vals;
+            std::string k; float v;
+            while (f >> k >> v) vals[k] = v;
+            for (const PField& fld : fields) {
+                auto it = vals.find(fld.key);
+                if (it != vals.end()) fld.set(it->second);
+            }
+            return true;
+        };
+        auto deletePreset = [&](const std::string& name) {
+            std::error_code ec; fs::remove(presetDir / (name + ".fzp"), ec);
+        };
+        std::vector<std::string> presetList = listPresets();
+        int  presetSel = -1;
+        char presetName[64] = "my scene";
+
         double lastTime = window.time();
 
         while (window.isOpen()) {
@@ -658,7 +1153,7 @@ int main() {
             // --- Input ---------------------------------------------------
             // F toggles first-person walk mode (cursor locks, mouse-look always on).
             const bool fDown = input.isKeyDown(GLFW_KEY_F);
-            if (fDown && !prevF) {
+            if (fDown && !prevF && !vehicleMode) {
                 fpsMode = !fpsMode;
                 input.setCursorLocked(fpsMode);
                 fpsVelY = 0.0f;
@@ -669,14 +1164,83 @@ int main() {
             }
             prevF = fDown;
 
+            // V toggles the drive-a-vehicle mode.
+            const bool vDown = input.isKeyDown(GLFW_KEY_V);
+            if (vDown && !prevV) {
+                vehicleMode = !vehicleMode;
+                if (vehicleMode) {
+                    fpsMode = false;
+                    input.setCursorLocked(false);
+                    if (!carPlaced) placeCar();
+                    camChase = camera.position();
+                }
+            }
+            prevV = vDown;
+
+            // F11 toggles borderless-fullscreen presentation (UI hidden).
+            const bool f11 = input.isKeyDown(GLFW_KEY_F11);
+            if (f11 && !prevF11) {
+                presentMode = !presentMode;
+                GLFWwindow* w = window.nativeHandle();
+                if (presentMode) {
+                    glfwGetWindowPos(w, &savedWX, &savedWY);
+                    glfwGetWindowSize(w, &savedWW, &savedWH);
+                    GLFWmonitor* m = glfwGetPrimaryMonitor();
+                    const GLFWvidmode* vm = glfwGetVideoMode(m);
+                    glfwSetWindowMonitor(w, m, 0, 0, vm->width, vm->height, vm->refreshRate);
+                } else {
+                    glfwSetWindowMonitor(w, nullptr, savedWX, savedWY, savedWW, savedWH, 0);
+                }
+            }
+            prevF11 = f11;
+
             const bool escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
             if (escDown && !prevEsc) {
-                if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
-                else         { window.requestClose(); }
+                if (presentMode) {
+                    presentMode = false;
+                    glfwSetWindowMonitor(window.nativeHandle(), nullptr,
+                                         savedWX, savedWY, savedWW, savedWH, 0);
+                } else if (vehicleMode)  { vehicleMode = false; }
+                else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
+                else              { window.requestClose(); }
             }
             prevEsc = escDown;
 
-            if (fpsMode) {
+            if (vehicleMode) {
+                // Arcade car: throttle + steering, drag, bicycle-model heading.
+                const bool kW = input.isKeyDown(GLFW_KEY_W);
+                const bool kS = input.isKeyDown(GLFW_KEY_S);
+                const bool kA = input.isKeyDown(GLFW_KEY_A);
+                const bool kD = input.isKeyDown(GLFW_KEY_D);
+                const bool kBrake = input.isKeyDown(GLFW_KEY_SPACE);
+                const float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
+                const float steerIn  = (kA ? 1.0f : 0.0f) - (kD ? 1.0f : 0.0f);
+
+                const float maxSteer = glm::radians(32.0f);
+                steerAngle += (steerIn * maxSteer - steerAngle) * std::min(1.0f, dt * 7.0f);
+
+                carSpeed += throttle * 14.0f * dt;                    // accelerate
+                if (kBrake) carSpeed -= glm::sign(carSpeed) * 26.0f * dt;
+                carSpeed *= (1.0f - 0.6f * dt);                       // drag
+                if (throttle == 0.0f && !kBrake) carSpeed *= (1.0f - 1.2f * dt);
+                carSpeed = glm::clamp(carSpeed, -8.0f, 26.0f);
+                if (std::abs(carSpeed) < 0.02f) carSpeed = 0.0f;
+
+                carYaw += (carSpeed / 2.7f) * std::tan(steerAngle) * dt; // wheelbase 2.7m
+                const glm::vec3 fwd(std::sin(carYaw), 0.0f, std::cos(carYaw));
+                carPos   += fwd * carSpeed * dt;
+                carPos.y  = streamer.heightAt(carPos.x, carPos.z);
+                wheelSpin += (carSpeed / wheelR) * dt;
+
+                // Chase camera: behind and above, smoothly following, looking ahead.
+                const glm::vec3 target = carPos + glm::vec3(0.0f, 1.2f, 0.0f);
+                const glm::vec3 wanted = carPos - fwd * 7.0f + glm::vec3(0.0f, 3.2f, 0.0f);
+                camChase += (wanted - camChase) * std::min(1.0f, dt * 4.0f);
+                camera.setPosition(camChase);
+                const glm::vec3 d = glm::normalize(target - camChase);
+                camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
+                camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+            } else if (fpsMode) {
                 // Mouse look is always active; movement is on the ground plane.
                 const glm::vec2 d = input.mouseDelta();
                 camera.processMouse(d.x, d.y);
@@ -710,13 +1274,13 @@ int main() {
                 // Look only when dragging over the viewport panel (or already
                 // locked into a drag); the surrounding dock panels keep the mouse.
                 const bool mouseLook = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
-                                       && (viewportHovered || input.isCursorLocked());
+                                       && (viewportHovered || presentMode || input.isCursorLocked());
                 if (mouseLook != input.isCursorLocked()) input.setCursorLocked(mouseLook);
                 if (mouseLook) {
                     const glm::vec2 d = input.mouseDelta();
                     camera.processMouse(d.x, d.y);
                 }
-                if (viewportHovered)      camera.processScroll(input.scrollDelta());
+                if (viewportHovered || presentMode) camera.processScroll(input.scrollDelta());
                 if (!gui.wantsKeyboard()) {
                     if (input.isKeyDown(GLFW_KEY_W)) camera.processKeyboard(Camera::Direction::Forward, dt);
                     if (input.isKeyDown(GLFW_KEY_S)) camera.processKeyboard(Camera::Direction::Backward, dt);
@@ -735,7 +1299,7 @@ int main() {
                     recordAccum -= recordInterval;
                     appendKey(pathTime);
                 }
-            } else if (pathPlaying && camPath.size() >= 2) {
+            } else if (!vehicleMode && pathPlaying && camPath.size() >= 2) {
                 pathTime += dt * pathSpeed;
                 const float tmax = camPath.back().t;
                 if (pathTime >= tmax) {
@@ -758,6 +1322,14 @@ int main() {
             // Stream terrain chunks around the camera.
             streamer.update(camera.position());
 
+            // When the road settles (not mid-drag), regrow vegetation so it
+            // clears off the new road; debounced to avoid thrashing while editing.
+            if (roadVegDirty && !roadDragging) {
+                roadVegDirty = false;
+                grassDirty   = true;
+                treeCenter   = glm::vec2(1e9f);
+            }
+
             // Regrow grass (async) / trees when the camera has moved far enough.
             {
                 const glm::vec2 camXZ(camera.position().x, camera.position().z);
@@ -769,7 +1341,8 @@ int main() {
                     grassFuture = std::async(std::launch::async, computeGrass,
                                              streamer.settings(), camXZ, waterLevel,
                                              look.snowLevel, grassHeight, grassDensity,
-                                             grassRadius, grassSeed++);
+                                             grassRadius, grassSeed++,
+                                             roadCenterline, roadWidth * 0.5f + 1.5f);
                 }
                 if (grassPending && grassFuture.valid() &&
                     grassFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
@@ -781,6 +1354,8 @@ int main() {
                                  data.data(), GL_DYNAMIC_DRAW);
                     grassCenter = grassPendingCenter;
                     grassPending = false;
+                    // Flowers share the grass area; regenerate them to match.
+                    if (flowerEnabled) regenFlowers(grassPendingCenter);
                 }
                 if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f) regenTrees(camXZ);
             }
@@ -871,6 +1446,11 @@ int main() {
 
             // --- UI ------------------------------------------------------
             gui.beginFrame();
+            if (presentMode) {
+                // Presentation: hide the editor UI, render the scene full-window.
+                window.framebufferSize(viewW, viewH);
+                viewportHovered = true;
+            } else {
             const ImGuiID dockId = gui.dockspace();
 
             // First run (or after "Reset layout"): lay the panels out into a tidy
@@ -900,6 +1480,9 @@ int main() {
                 ImGui::DockBuilderDockWindow("Terrain", bottom);
                 ImGui::DockBuilderDockWindow("Vegetation", bottom);
                 ImGui::DockBuilderDockWindow("Camera path", bottom);
+                ImGui::DockBuilderDockWindow("Roads", bottom);
+                ImGui::DockBuilderDockWindow("Vehicle", bottom);
+                ImGui::DockBuilderDockWindow("Presets", bottom);
                 ImGui::DockBuilderFinish(dockId);
             }
 
@@ -916,8 +1499,96 @@ int main() {
                              ImVec2(static_cast<float>(viewW), static_cast<float>(viewH)),
                              ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
                 viewportHovered = ImGui::IsItemHovered();
+                // Cursor position inside the image, mapped to NDC (for picking).
+                const ImVec2 rmin = ImGui::GetItemRectMin();
+                const ImVec2 rsz  = ImGui::GetItemRectSize();
+                const ImVec2 mp   = ImGui::GetIO().MousePos;
+                viewportMouseNdc = glm::vec2(
+                    (rsz.x > 0.0f ? (mp.x - rmin.x) / rsz.x : 0.5f) * 2.0f - 1.0f,
+                    1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
+                viewportClicked = viewportHovered &&
+                                  ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+
+                // --- Road edit handles: draggable control-point markers -----
+                if (roadEditMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin; // image top-left in screen space
+                    auto handleWorld = [&](int i) {
+                        return glm::vec3(roadPts[i].x,
+                                         streamer.heightAt(roadPts[i].x, roadPts[i].y) + 0.10f,
+                                         roadPts[i].y);
+                    };
+                    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
+                        const glm::vec4 c = vp * glm::vec4(wp, 1.0f);
+                        if (c.w <= 1e-4f) return false;
+                        const glm::vec3 n = glm::vec3(c) / c.w;
+                        if (n.z > 1.0f) return false;
+                        out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                     org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                        return true;
+                    };
+
+                    // Pick / add on click.
+                    if (viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        int  best = -1;
+                        float bestD = 12.0f; // pixel grab radius
+                        for (int i = 0; i < static_cast<int>(roadPts.size()); ++i) {
+                            ImVec2 sp;
+                            if (!toScreen(handleWorld(i), sp)) continue;
+                            const float d = std::hypot(sp.x - mp.x, sp.y - mp.y);
+                            if (d < bestD) { bestD = d; best = i; }
+                        }
+                        if (best >= 0) { roadSel = best; roadDragging = true; }
+                        else {
+                            glm::vec3 h;
+                            if (roadPickTerrain(viewportMouseNdc, vp, h)) {
+                                roadPts.push_back({h.x, h.z});
+                                roadSel = static_cast<int>(roadPts.size()) - 1;
+                                roadDirty = true;
+                            }
+                        }
+                    }
+                    // Drag the selected handle across the terrain.
+                    if (roadDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
+                        roadSel >= 0 && roadSel < static_cast<int>(roadPts.size())) {
+                        glm::vec3 h;
+                        if (roadPickTerrain(viewportMouseNdc, vp, h)) {
+                            roadPts[roadSel] = glm::vec2(h.x, h.z);
+                            roadDirty = true;
+                        }
+                    }
+                    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) roadDragging = false;
+                    // Delete the selected point.
+                    if (roadSel >= 0 && roadSel < static_cast<int>(roadPts.size()) &&
+                        ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+                        roadPts.erase(roadPts.begin() + roadSel);
+                        roadSel = -1;
+                        roadDirty = true;
+                    }
+
+                    // Draw the path preview line, then the handles on top.
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImVec2 prev; bool havePrev = false;
+                    for (int i = 0; i < static_cast<int>(roadPts.size()); ++i) {
+                        ImVec2 sp;
+                        if (!toScreen(handleWorld(i), sp)) { havePrev = false; continue; }
+                        if (havePrev) dl->AddLine(prev, sp, IM_COL32(255, 220, 80, 150), 2.0f);
+                        prev = sp; havePrev = true;
+                    }
+                    for (int i = 0; i < static_cast<int>(roadPts.size()); ++i) {
+                        ImVec2 sp;
+                        if (!toScreen(handleWorld(i), sp)) continue;
+                        const bool s = (i == roadSel);
+                        dl->AddCircleFilled(sp, s ? 7.0f : 5.0f,
+                                            s ? IM_COL32(255, 210, 60, 255)
+                                              : IM_COL32(90, 180, 255, 235));
+                        dl->AddCircle(sp, s ? 7.0f : 5.0f, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+                    }
+                }
             } else {
                 viewportHovered = false;
+                viewportClicked = false;
             }
             ImGui::End();
             ImGui::PopStyleVar();
@@ -1032,6 +1703,7 @@ int main() {
                     streamer.update(camera.position());
                     grassDirty = true; // regrow vegetation on the new terrain
                     treeCenter = glm::vec2(1e9f);
+                    roadDirty  = true; // re-drape roads on the new heights
                 }
                 ImGui::SeparatorText("Material (slope)");
                 ImGui::SliderFloat("Texture scale", &texScale, 0.02f, 0.2f, "%.3f");
@@ -1061,6 +1733,19 @@ int main() {
                 if (retree) treeCenter = glm::vec2(1e9f);
                 ImGui::SliderFloat("Tree LOD dist", &lodNear, 15.0f, 200.0f);
                 ImGui::Text("Trees: %d", treeCount);
+
+                ImGui::SeparatorText("Flowers");
+                ImGui::Checkbox("Flowers", &flowerEnabled);
+                if (ImGui::SliderFloat("Flower density", &flowerDensity, 0.0f, 2.0f))
+                    grassDirty = true; // flowers regenerate with the grass pass
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Regrow")) grassDirty = true;
+                ImGui::Text("Flowers: %d", flowerCount);
+
+                ImGui::SeparatorText("Birds");
+                ImGui::Checkbox("Birds", &birdsEnabled);
+                ImGui::SliderInt("Flock size", &birdCount, 0, 60);
+                ImGui::SliderFloat("Bird size", &birdSize, 0.8f, 5.0f);
             }
             ImGui::End();
 
@@ -1134,6 +1819,163 @@ int main() {
             }
             ImGui::End();
 
+            if (ImGui::Begin("Roads")) {
+                ImGui::Checkbox("Show roads", &roadEnabled);
+                ImGui::Checkbox("Edit mode", &roadEditMode);
+                if (roadEditMode) {
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                                       "Click ground = add | drag handle = move | Del = delete");
+                } else {
+                    ImGui::TextDisabled("Enable edit mode to place and drag handles");
+                }
+                ImGui::Text("Points: %d", static_cast<int>(roadPts.size()));
+                ImGui::SameLine();
+                if (roadSel >= 0) ImGui::Text("| selected #%d", roadSel);
+                else              ImGui::TextDisabled("| none selected");
+
+                bool rc = false;
+                rc |= ImGui::SliderFloat("Width", &roadWidth, 1.0f, 20.0f, "%.1f m");
+                rc |= ImGui::SliderFloat("Texture tile", &roadTexTile, 2.0f, 24.0f, "%.1f m");
+                if (rc) roadDirty = true;
+
+                // Surface texture picker (any diffuse texture in textures/).
+                if (!roadTexFiles.empty() &&
+                    ImGui::BeginCombo("Surface", roadTexFiles[roadTexSel].c_str())) {
+                    for (int i = 0; i < static_cast<int>(roadTexFiles.size()); ++i) {
+                        const bool sel = (i == roadTexSel);
+                        if (ImGui::Selectable(roadTexFiles[i].c_str(), sel)) {
+                            Texture t = Texture::fromFile(texDir + "/" + roadTexFiles[i]);
+                            if (t.isValid()) {
+                                roadTex = std::move(t);
+                                roadMat.setTexture("uTexture", roadTex, 0);
+                                roadTexSel = i;
+                            }
+                        }
+                        if (sel) ImGui::SetItemDefaultFocus();
+                    }
+                    ImGui::EndCombo();
+                }
+
+                ImGui::BeginDisabled(roadSel < 0 || roadSel >= static_cast<int>(roadPts.size()));
+                if (ImGui::Button("Delete selected")) {
+                    roadPts.erase(roadPts.begin() + roadSel);
+                    roadSel = -1;
+                    roadDirty = true;
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(roadPts.empty());
+                if (ImGui::Button("Undo point")) {
+                    roadPts.pop_back();
+                    if (roadSel >= static_cast<int>(roadPts.size())) roadSel = -1;
+                    roadDirty = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Clear")) { roadPts.clear(); roadSel = -1; roadDirty = true; }
+                ImGui::EndDisabled();
+
+                ImGui::Separator();
+                if (ImGui::Button("Save")) {
+                    std::ofstream f("road.txt");
+                    for (const glm::vec2& p : roadPts) f << p.x << ' ' << p.y << '\n';
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Load")) {
+                    std::ifstream f("road.txt");
+                    if (f) {
+                        roadPts.clear();
+                        glm::vec2 p;
+                        while (f >> p.x >> p.y) roadPts.push_back(p);
+                        roadSel = -1;
+                        roadDirty = true;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(road.txt)");
+            }
+            ImGui::End();
+
+            if (ImGui::Begin("Vehicle")) {
+                if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
+                    if (vehicleMode) {
+                        fpsMode = false;
+                        input.setCursorLocked(false);
+                        if (!carPlaced) placeCar();
+                        camChase = camera.position();
+                    }
+                }
+                if (vehicleMode)
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                                       "W/S drive, A/D steer, Space brake, Esc exit");
+                else
+                    ImGui::TextDisabled("Press V or tick above to drive");
+                ImGui::Checkbox("Show vehicle", &showVehicle);
+                if (ImGui::Button("Place at camera")) placeCar();
+                if (carPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(carSpeed) * 3.6f);
+                else           ImGui::TextDisabled("Vehicle not placed yet");
+            }
+            ImGui::End();
+
+            if (ImGui::Begin("Presets")) {
+                // Applying a preset that changes terrain requires a rebuild+regrow,
+                // exactly like the Regenerate button does.
+                auto applyLoaded = [&] {
+                    streamer.settings() = uiSettings;
+                    streamer.rebuild();
+                    streamer.update(camera.position());
+                    grassDirty = true;
+                    treeCenter = glm::vec2(1e9f);
+                    roadDirty  = true;
+                };
+
+                ImGui::TextDisabled("Save the full scene look (terrain, sky, water, "
+                                    "grade, vegetation...) as a named preset.");
+                ImGui::InputText("Name", presetName, sizeof(presetName));
+                if (ImGui::Button("Save preset")) {
+                    if (presetName[0]) {
+                        savePreset(presetName);
+                        presetList = listPresets();
+                        for (int i = 0; i < static_cast<int>(presetList.size()); ++i)
+                            if (presetList[i] == presetName) presetSel = i;
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Refresh")) { presetList = listPresets(); presetSel = -1; }
+
+                ImGui::SeparatorText("Saved presets");
+                if (presetList.empty()) {
+                    ImGui::TextDisabled("(none yet)");
+                }
+                if (ImGui::BeginListBox("##presetlist", ImVec2(-1.0f, 150.0f))) {
+                    for (int i = 0; i < static_cast<int>(presetList.size()); ++i) {
+                        const bool sel = (presetSel == i);
+                        if (ImGui::Selectable(presetList[i].c_str(), sel))
+                            presetSel = i;
+                        // Double-click loads immediately.
+                        if (sel && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
+                                && ImGui::IsItemHovered()) {
+                            if (loadPreset(presetList[i])) applyLoaded();
+                        }
+                    }
+                    ImGui::EndListBox();
+                }
+
+                const bool hasSel = presetSel >= 0 && presetSel < static_cast<int>(presetList.size());
+                ImGui::BeginDisabled(!hasSel);
+                if (ImGui::Button("Load")) {
+                    if (loadPreset(presetList[presetSel])) applyLoaded();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete")) {
+                    deletePreset(presetList[presetSel]);
+                    presetList = listPresets();
+                    presetSel = -1;
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::End();
+            } // end editor UI (skipped in presentation mode)
+
             // Push the (possibly edited) terrain blend params into the material.
             terrainMat.set("uSnowLevel", look.snowLevel)
                       .set("uRockSlope", look.rockSlope)
@@ -1156,6 +1998,50 @@ int main() {
 
             for (const TerrainChunk* chunk : streamer.visibleChunks()) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f));
+            }
+
+            // Road mesh is (re)built when points/width change (edited in the UI).
+            if (roadDirty) buildRoad();
+            if (roadEnabled && roadVerts > 0) {
+                roadMat.set("uWaterLevel", waterLevel); // wet-darken submerged parts
+                renderer.submit(roadMesh, roadMat, glm::mat4(1.0f));
+            }
+
+            // --- Vehicle: terrain-aligned body + steered/rolling wheels --
+            if (showVehicle && carPlaced) {
+                const float e = 1.2f;
+                const glm::vec3 N = glm::normalize(glm::vec3(
+                    streamer.heightAt(carPos.x - e, carPos.z) - streamer.heightAt(carPos.x + e, carPos.z),
+                    2.0f * e,
+                    streamer.heightAt(carPos.x, carPos.z - e) - streamer.heightAt(carPos.x, carPos.z + e)));
+                const glm::vec3 fwd0(std::sin(carYaw), 0.0f, std::cos(carYaw));
+                const glm::vec3 fwd   = glm::normalize(fwd0 - N * glm::dot(fwd0, N));
+                const glm::vec3 right = glm::normalize(glm::cross(N, fwd));
+                glm::mat4 basis(1.0f);
+                basis[0] = glm::vec4(right, 0.0f);
+                basis[1] = glm::vec4(N, 0.0f);
+                basis[2] = glm::vec4(fwd, 0.0f);
+                basis[3] = glm::vec4(carPos, 1.0f);
+
+                const glm::mat4 body = basis
+                    * glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, wheelR + bodyH * 0.5f, 0.0f))
+                    * glm::scale(glm::mat4(1.0f), glm::vec3(bodyW, bodyH, bodyL));
+                renderer.submit(carCube, carBodyMat, body);
+                const glm::mat4 cabin = basis
+                    * glm::translate(glm::mat4(1.0f),
+                                     glm::vec3(0.0f, wheelR + bodyH + cabH * 0.5f, -0.25f))
+                    * glm::scale(glm::mat4(1.0f), glm::vec3(cabW, cabH, cabL));
+                renderer.submit(carCube, carCabinMat, cabin);
+
+                const glm::vec3 wl[4] = {
+                    { halfTrack, wheelR,  halfBase}, {-halfTrack, wheelR,  halfBase},
+                    { halfTrack, wheelR, -halfBase}, {-halfTrack, wheelR, -halfBase}};
+                for (int i = 0; i < 4; ++i) {
+                    glm::mat4 w = basis * glm::translate(glm::mat4(1.0f), wl[i]);
+                    if (i < 2) w = w * glm::rotate(glm::mat4(1.0f), steerAngle, glm::vec3(0, 1, 0));
+                    w = w * glm::rotate(glm::mat4(1.0f), wheelSpin, glm::vec3(1, 0, 0));
+                    renderer.submit(carWheel, carWheelMat, w);
+                }
             }
 
             // --- Multi-pass render with sky and planar water ------------
@@ -1273,6 +2159,29 @@ int main() {
                 glEnable(GL_CULL_FACE);
             }
 
+            // Flowers (instanced) into the HDR buffer, lit + fogged like grass.
+            if (flowerEnabled && flowerCount > 0) {
+                glDisable(GL_CULL_FACE);
+                flower.bind();
+                flower.setMat4("uViewProj", mainVP);
+                flower.setFloat("uTime", static_cast<float>(now));
+                flower.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
+                flower.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, weather));
+                flower.setVec3("uViewPos", camPos);
+                flower.setVec3("uLightDir", light.direction);
+                flower.setVec3("uLightColor", light.color);
+                flower.setVec3("uAmbient", light.ambient);
+                flower.setVec3("uFogColor", fog.color);
+                flower.setVec3("uFogSunColor", fog.sunColor);
+                flower.setFloat("uFogDensity", fog.density);
+                flower.setFloat("uFogHeightFalloff", fog.heightFalloff);
+                flower.setFloat("uFogHeight", fog.height);
+                glBindVertexArray(flowerVAO);
+                glDrawArraysInstanced(GL_TRIANGLES, 0, flowerVerts, flowerCount);
+                glBindVertexArray(0);
+                glEnable(GL_CULL_FACE);
+            }
+
             // Trees (instanced, per-material) into the HDR buffer.
             if (treeEnabled && treeCount > 0 && !treePrims.empty()) {
                 glDisable(GL_CULL_FACE);
@@ -1327,6 +2236,40 @@ int main() {
                 billboardTex.bind(0);
                 glBindVertexArray(bbVAO);
                 glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, treeCount);
+                glBindVertexArray(0);
+                glEnable(GL_CULL_FACE);
+            }
+
+            // Birds: a flock wheeling above the camera (positions on the CPU,
+            // wingbeat in the shader). Drawn two-sided into the HDR buffer.
+            if (birdsEnabled && birdCount > 0) {
+                const float cx = camPos.x, cz = camPos.z;
+                const float baseY = streamer.heightAt(cx, cz) + 55.0f;
+                std::vector<float> bi;
+                bi.reserve(birdCount * 5);
+                for (int i = 0; i < birdCount; ++i) {
+                    const float ph = static_cast<float>(i) * 2.39996f;
+                    const float R  = 45.0f + 35.0f * vhash2(static_cast<float>(i), 3.0f);
+                    const float sp = 0.12f + 0.10f * vhash2(static_cast<float>(i), 9.0f);
+                    const float hY = baseY + 18.0f * vhash2(static_cast<float>(i), 5.0f);
+                    const float ang = static_cast<float>(now) * sp + ph;
+                    const float bx = cx + std::cos(ang) * R;
+                    const float bz = cz + std::sin(ang) * R;
+                    const float by = hY + 3.0f * std::sin(ang * 0.7f + ph);
+                    bi.insert(bi.end(), {bx, by, bz, ang, ph});
+                }
+                glDisable(GL_CULL_FACE);
+                glBindBuffer(GL_ARRAY_BUFFER, birdInstVBO);
+                glBufferData(GL_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(bi.size() * sizeof(float)),
+                             bi.data(), GL_DYNAMIC_DRAW);
+                bird.bind();
+                bird.setMat4("uViewProj", mainVP);
+                bird.setFloat("uTime", static_cast<float>(now));
+                bird.setFloat("uSize", birdSize);
+                bird.setVec3("uColor", glm::vec3(0.02f, 0.02f, 0.03f));
+                glBindVertexArray(birdVAO);
+                glDrawArraysInstanced(GL_TRIANGLES, 0, 6, birdCount);
                 glBindVertexArray(0);
                 glEnable(GL_CULL_FACE);
             }
@@ -1426,8 +2369,15 @@ int main() {
                 }
             }
 
-            // Composite into the viewport texture (shown by the central dock panel).
-            viewportRT.bind();
+            // Composite: to the viewport texture (editor) or straight to the
+            // screen (presentation mode, no dock panel to display it in).
+            if (presentMode) {
+                int winW = 0, winH = 0;
+                window.framebufferSize(winW, winH);
+                RenderTarget::unbind(winW, winH);
+            } else {
+                viewportRT.bind();
+            }
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glDisable(GL_DEPTH_TEST);
             glDepthMask(GL_FALSE);
@@ -1456,13 +2406,15 @@ int main() {
             glEnable(GL_DEPTH_TEST);
             glEnable(GL_CULL_FACE);
 
-            // Back to the window framebuffer; the editor UI (dock panels + the
-            // viewport image) is drawn over a neutral dark backdrop.
-            int winW = 0, winH = 0;
-            window.framebufferSize(winW, winH);
-            RenderTarget::unbind(winW, winH);
-            glClearColor(0.07f, 0.07f, 0.08f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            // Editor: return to the window framebuffer and clear a dark backdrop
+            // for the dock panels. Presentation mode already drew to the screen.
+            if (!presentMode) {
+                int winW = 0, winH = 0;
+                window.framebufferSize(winW, winH);
+                RenderTarget::unbind(winW, winH);
+                glClearColor(0.07f, 0.07f, 0.08f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            }
 
             gui.endFrame();
             window.swapBuffers();
@@ -1477,6 +2429,12 @@ int main() {
         glDeleteBuffers(1, &treeInstVBO);
         glDeleteVertexArrays(1, &treeVAO);
         glDeleteVertexArrays(1, &bbVAO);
+        glDeleteBuffers(1, &flowerBaseVBO);
+        glDeleteBuffers(1, &flowerInstVBO);
+        glDeleteVertexArrays(1, &flowerVAO);
+        glDeleteBuffers(1, &birdBaseVBO);
+        glDeleteBuffers(1, &birdInstVBO);
+        glDeleteVertexArrays(1, &birdVAO);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
         return 1;

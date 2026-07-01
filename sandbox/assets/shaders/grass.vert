@@ -16,6 +16,7 @@ out float vH;
 out vec3  vWorldPos;
 out vec3  vNormal;
 out float vLush;
+out float vRand; // per-blade random (colour/brightness variation)
 
 void main() {
     float h01 = aBlade.y;
@@ -34,6 +35,7 @@ void main() {
     vWorldPos = wp;
     vH = h01;
     vLush = iLush;
+    vRand = fract(sin(iPhase * 91.17 + iRot * 13.3) * 43758.5453);
     vNormal = normalize(vec3(-s, 1.2, c)); // blade facing, biased upward
     gl_Position = uViewProj * vec4(wp, 1.0);
 }
