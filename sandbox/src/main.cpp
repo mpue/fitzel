@@ -18,6 +18,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 #include <imgui_internal.h> // DockBuilder API for the default panel layout
+#include <ImGuizmo.h>       // 3D transform gizmos in the viewport
+#include <glm/gtc/type_ptr.hpp>
 
 #include <fitzel/Fitzel.hpp>
 
@@ -94,6 +96,28 @@ static float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z
         best = std::min(best, glm::dot(d, d));
     }
     return best;
+}
+
+// An axis-aligned solid block: walkable/collidable world geometry.
+struct SolidBox {
+    glm::vec3 center;
+    glm::vec3 half;   // half-extents
+};
+
+// Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
+static float rayAABB(const glm::vec3& ro, const glm::vec3& rd,
+                     const glm::vec3& bmin, const glm::vec3& bmax) {
+    float tmin = 0.0f, tmax = 1e30f;
+    for (int i = 0; i < 3; ++i) {
+        const float inv = 1.0f / rd[i];
+        float t1 = (bmin[i] - ro[i]) * inv;
+        float t2 = (bmax[i] - ro[i]) * inv;
+        if (t1 > t2) std::swap(t1, t2);
+        tmin = std::max(tmin, t1);
+        tmax = std::min(tmax, t2);
+        if (tmax < tmin) return -1.0f;
+    }
+    return tmin;
 }
 
 // Smooth 2D value noise (~0..1) for meadow patchiness in grass placement.
@@ -397,6 +421,7 @@ int main() {
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
         float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
+        bool  timePaused = false;  // freeze the time of day where it is
 
         // Cloud controls.
         float cloudCoverage = 0.5f;
@@ -811,6 +836,16 @@ int main() {
             camChase  = camera.position();
         };
 
+        // --- Solid geometry: placeable walkable blocks (reuse the unit cube) ---
+        Material solidMat(lit);
+        solidMat.set("uColorMode", 0).set("uAlbedo", glm::vec3(0.62f, 0.62f, 0.64f))
+                .set("uWaterLevel", -1.0e4f);
+        std::vector<SolidBox> solids;
+        int       solidSel      = -1;
+        bool      solidEditMode = false;
+        glm::vec3 solidNewHalf(1.0f, 1.0f, 1.0f); // default block size (half-extents)
+        ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
+
         // Tree instances live here (filled by regenTrees below); declared early
         // so flower placement can cluster blooms around the trees.
         std::vector<float> treeInst;
@@ -1144,6 +1179,34 @@ int main() {
 
         TerrainSettings uiSettings = settings; // editable copy for the panel
 
+        // --- Scenes: Nature (full outdoor) vs Empty (flat build sandbox) -----
+        const TerrainSettings natureSettings = settings;
+        int  scene = 0; // 0 = Nature, 1 = Empty
+        auto applyScene = [&](int s) {
+            scene = s;
+            if (s == 1) {                 // Empty: flat ground, nothing growing, no water
+                uiSettings.heightScale  = 0.0f;
+                uiSettings.ridgeScale   = 0.0f;
+                uiSettings.continentAmp = 0.0f;
+                uiSettings.warpStrength = 0.0f;
+                uiSettings.terrace      = 0.0f;
+                grassEnabled = treeEnabled = flowerEnabled = false;
+                birdsEnabled = fireflyEnabled = false;
+                waterLevel = -1000.0f;
+            } else {                       // Nature: restore the outdoor world
+                uiSettings = natureSettings;
+                grassEnabled = treeEnabled = flowerEnabled = true;
+                birdsEnabled = fireflyEnabled = true;
+                waterLevel = -2.0f;
+            }
+            streamer.settings() = uiSettings;
+            streamer.rebuild();
+            streamer.update(camera.position());
+            grassDirty = true;
+            treeCenter = glm::vec2(1e9f);
+            roadDirty  = true;
+        };
+
         // --- Preset system ------------------------------------------------
         // Every tunable is bound by name to a getter/setter, so presets are a
         // simple "key value" text file per scene look. Unknown/missing keys are
@@ -1349,8 +1412,43 @@ int main() {
                 if (input.isKeyDown(GLFW_KEY_A)) move -= rgt;
                 if (glm::length(move) > 1e-4f) move = glm::normalize(move);
 
+                // --- Move + collide against solid blocks -------------------
+                const float pr = 0.35f, stepH = 0.55f; // player radius, step height
                 glm::vec3 pos = camera.position();
-                pos += move * camera.moveSpeed * dt;
+                const float feetY = pos.y - eyeHeight;
+                const float mvx = move.x * camera.moveSpeed * dt;
+                const float mvz = move.z * camera.moveSpeed * dt;
+
+                // A block is a wall for us only where it spans our body above the
+                // step height (low blocks are steps we climb, not walls).
+                const float bodyLo = feetY + stepH, bodyHi = feetY + eyeHeight;
+                auto wallHit = [&](const SolidBox& b, float px, float pz) {
+                    if (bodyHi <= b.center.y - b.half.y || bodyLo >= b.center.y + b.half.y) return false;
+                    if (px + pr <= b.center.x - b.half.x || px - pr >= b.center.x + b.half.x) return false;
+                    if (pz + pr <= b.center.z - b.half.z || pz - pr >= b.center.z + b.half.z) return false;
+                    return true;
+                };
+                float nx = pos.x + mvx; // move X, then Z -> slide along faces
+                for (const SolidBox& b : solids)
+                    if (wallHit(b, nx, pos.z))
+                        nx = (mvx > 0.0f) ? b.center.x - b.half.x - pr : b.center.x + b.half.x + pr;
+                pos.x = nx;
+                float nz = pos.z + mvz;
+                for (const SolidBox& b : solids)
+                    if (wallHit(b, pos.x, nz))
+                        nz = (mvz > 0.0f) ? b.center.z - b.half.z - pr : b.center.z + b.half.z + pr;
+                pos.z = nz;
+
+                // Ground = terrain, raised to the top of any block we stand over.
+                float groundY = streamer.heightAt(pos.x, pos.z);
+                for (const SolidBox& b : solids) {
+                    if (pos.x + pr > b.center.x - b.half.x && pos.x - pr < b.center.x + b.half.x &&
+                        pos.z + pr > b.center.z - b.half.z && pos.z - pr < b.center.z + b.half.z) {
+                        const float top = b.center.y + b.half.y;
+                        if (top <= feetY + stepH + 0.01f && top > groundY) groundY = top;
+                    }
+                }
+                const float groundEye = groundY + eyeHeight;
 
                 // Gravity + jump.
                 const bool space = input.isKeyDown(GLFW_KEY_SPACE);
@@ -1359,9 +1457,8 @@ int main() {
                 fpsVelY -= 25.0f * dt;
                 pos.y += fpsVelY * dt;
 
-                const float ground = streamer.heightAt(pos.x, pos.z) + eyeHeight;
-                if (pos.y <= ground) { pos.y = ground; fpsVelY = 0.0f; grounded = true; }
-                else                 { grounded = false; }
+                if (pos.y <= groundEye) { pos.y = groundEye; fpsVelY = 0.0f; grounded = true; }
+                else                    { grounded = false; }
                 camera.setPosition(pos);
             } else {
                 // Look only when dragging over the viewport panel (or already
@@ -1497,7 +1594,7 @@ int main() {
             prevFlashOn = flashOn;
 
             // --- Day/night: advance time, derive sun direction and lighting ---
-            if (dayLength > 0.1f) {
+            if (!timePaused && dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
                 timeOfDay = std::fmod(timeOfDay, 24.0f);
             }
@@ -1541,6 +1638,7 @@ int main() {
 
             // --- UI ------------------------------------------------------
             gui.beginFrame();
+            ImGuizmo::BeginFrame();
             if (presentMode) {
                 // Presentation: hide the editor UI, render the scene full-window.
                 window.framebufferSize(viewW, viewH);
@@ -1576,6 +1674,7 @@ int main() {
                 ImGui::DockBuilderDockWindow("Vegetation", bottom);
                 ImGui::DockBuilderDockWindow("Camera path", bottom);
                 ImGui::DockBuilderDockWindow("Roads", bottom);
+                ImGui::DockBuilderDockWindow("Solids", bottom);
                 ImGui::DockBuilderDockWindow("Vehicle", bottom);
                 ImGui::DockBuilderDockWindow("Presets", bottom);
                 ImGui::DockBuilderFinish(dockId);
@@ -1681,6 +1780,65 @@ int main() {
                         dl->AddCircle(sp, s ? 7.0f : 5.0f, IM_COL32(0, 0, 0, 190), 0, 1.5f);
                     }
                 }
+
+                // --- Solid blocks: click to select an existing box or place a
+                //     new one on the terrain; Del removes the selected block. ----
+                if (solidEditMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 view = camera.viewMatrix();
+                    const glm::mat4 proj = camera.projectionMatrix(asp);
+                    const glm::mat4 vp = proj * view;
+
+                    // Transform gizmo for the selected block (move / scale).
+                    ImGuizmo::SetOrthographic(false);
+                    ImGuizmo::SetDrawlist();
+                    ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
+                                                      static_cast<float>(viewH));
+                    if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
+                        SolidBox& b = solids[solidSel];
+                        glm::mat4 model = glm::translate(glm::mat4(1.0f), b.center)
+                                        * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
+                        ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
+                                             gizmoOp, ImGuizmo::WORLD, glm::value_ptr(model));
+                        if (ImGuizmo::IsUsing()) {
+                            float t[3], r[3], s[3];
+                            ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, s);
+                            b.center = glm::vec3(t[0], t[1], t[2]);
+                            b.half   = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
+                        }
+                    }
+
+                    // Click to select/place, but not while grabbing the gizmo.
+                    if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
+                        viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        const glm::mat4 inv = glm::inverse(vp);
+                        glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
+                        glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
+                        const glm::vec3 ro = glm::vec3(pn);
+                        const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+                        int hit = -1; float bestT = 1e30f;
+                        for (int i = 0; i < static_cast<int>(solids.size()); ++i) {
+                            const float t = rayAABB(ro, rd, solids[i].center - solids[i].half,
+                                                            solids[i].center + solids[i].half);
+                            if (t >= 0.0f && t < bestT) { bestT = t; hit = i; }
+                        }
+                        if (hit >= 0) {
+                            solidSel = hit; // clicked a block -> select it
+                        } else {
+                            glm::vec3 h; // empty ground -> drop a new block there
+                            if (roadPickTerrain(viewportMouseNdc, vp, h)) {
+                                SolidBox nb{glm::vec3(h.x, h.y + solidNewHalf.y, h.z), solidNewHalf};
+                                solids.push_back(nb);
+                                solidSel = static_cast<int>(solids.size()) - 1;
+                            }
+                        }
+                    }
+                    if (solidSel >= 0 && solidSel < static_cast<int>(solids.size()) &&
+                        ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+                        solids.erase(solids.begin() + solidSel);
+                        solidSel = -1;
+                    }
+                }
             } else {
                 viewportHovered = false;
                 viewportClicked = false;
@@ -1689,6 +1847,9 @@ int main() {
             ImGui::PopStyleVar();
 
             if (ImGui::Begin("Stats")) {
+                const char* sceneNames[] = {"Nature", "Empty (build)"};
+                if (ImGui::Combo("Scene", &scene, sceneNames, 2)) applyScene(scene);
+                ImGui::Separator();
                 ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate,
                             1000.0f / ImGui::GetIO().Framerate);
                 ImGui::Text("Camera: %.0f, %.0f, %.0f",
@@ -1745,6 +1906,8 @@ int main() {
 
             if (ImGui::Begin("Sky & atmosphere")) {
                 ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
+                ImGui::SameLine();
+                ImGui::Checkbox("Pause", &timePaused);
                 ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
                 ImGui::SliderFloat("Coverage",    &cloudCoverage, 0.0f, 1.0f);
                 ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
@@ -2001,6 +2164,69 @@ int main() {
             }
             ImGui::End();
 
+            if (ImGui::Begin("Solids")) {
+                ImGui::Checkbox("Edit mode", &solidEditMode);
+                if (solidEditMode)
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                                       "Click ground = add | click block = select | Del = delete");
+                else
+                    ImGui::TextDisabled("Enable edit mode to place & edit blocks");
+                ImGui::Text("Blocks: %d", static_cast<int>(solids.size()));
+                ImGui::SameLine();
+                if (solidSel >= 0) ImGui::Text("| selected #%d", solidSel);
+                else               ImGui::TextDisabled("| none selected");
+
+                // Gizmo tool: drag the handles in the viewport to move/scale.
+                ImGui::TextDisabled("Gizmo:");
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Move", gizmoOp == ImGuizmo::TRANSLATE))
+                    gizmoOp = ImGuizmo::TRANSLATE;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
+                    gizmoOp = ImGuizmo::SCALE;
+
+                ImGui::SeparatorText("New block size (half-extents)");
+                ImGui::SliderFloat3("Size", &solidNewHalf.x, 0.25f, 12.0f, "%.2f m");
+
+                if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
+                    ImGui::SeparatorText("Selected block");
+                    SolidBox& b = solids[solidSel];
+                    ImGui::DragFloat3("Position", &b.center.x, 0.05f);
+                    ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.1f, 60.0f);
+                    if (ImGui::Button("Drop to ground"))
+                        b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
+                    ImGui::SameLine();
+                    if (ImGui::Button("Delete##solid")) {
+                        solids.erase(solids.begin() + solidSel);
+                        solidSel = -1;
+                    }
+                }
+
+                ImGui::Separator();
+                if (ImGui::Button("Clear all")) { solids.clear(); solidSel = -1; }
+                ImGui::SameLine();
+                if (ImGui::Button("Save##solids")) {
+                    std::ofstream f("solids.txt");
+                    for (const SolidBox& b : solids)
+                        f << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
+                          << b.half.x << ' ' << b.half.y << ' ' << b.half.z << '\n';
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Load##solids")) {
+                    std::ifstream f("solids.txt");
+                    if (f) {
+                        solids.clear();
+                        SolidBox b;
+                        while (f >> b.center.x >> b.center.y >> b.center.z >>
+                                    b.half.x >> b.half.y >> b.half.z)
+                            solids.push_back(b);
+                        solidSel = -1;
+                    }
+                }
+                ImGui::TextDisabled("Walk into them in FPS mode (F).");
+            }
+            ImGui::End();
+
             if (ImGui::Begin("Vehicle")) {
                 if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
                     if (vehicleMode) {
@@ -2148,6 +2374,13 @@ int main() {
                     w = w * glm::rotate(glm::mat4(1.0f), wheelSpin, glm::vec3(1, 0, 0));
                     renderer.submit(carWheel, carWheelMat, w);
                 }
+            }
+
+            // --- Solid blocks: submitted through the renderer (shadows, water) ---
+            for (const SolidBox& b : solids) {
+                const glm::mat4 m = glm::translate(glm::mat4(1.0f), b.center)
+                                  * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
+                renderer.submit(carCube, solidMat, m);
             }
 
             // --- Multi-pass render with sky and planar water ------------
