@@ -7,6 +7,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <sstream>
 #include <future>
 #include <random>
 #include <string>
@@ -100,8 +101,10 @@ static float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z
 
 // An axis-aligned solid block: walkable/collidable world geometry.
 struct SolidBox {
-    glm::vec3 center;
-    glm::vec3 half;   // half-extents
+    glm::vec3   center;
+    glm::vec3   half;                       // half-extents
+    glm::vec3   color{0.62f, 0.62f, 0.64f}; // albedo
+    std::string name;
 };
 
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
@@ -837,14 +840,23 @@ int main() {
         };
 
         // --- Solid geometry: placeable walkable blocks (reuse the unit cube) ---
-        Material solidMat(lit);
-        solidMat.set("uColorMode", 0).set("uAlbedo", glm::vec3(0.62f, 0.62f, 0.64f))
-                .set("uWaterLevel", -1.0e4f);
         std::vector<SolidBox> solids;
         int       solidSel      = -1;
         bool      solidEditMode = false;
         glm::vec3 solidNewHalf(1.0f, 1.0f, 1.0f); // default block size (half-extents)
+        glm::vec3 solidNewColor(0.62f, 0.62f, 0.64f);
+        int       solidCounter = 0; // for unique default names
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
+        // Add a block sitting on the terrain at a world point.
+        auto addSolid = [&](glm::vec3 groundPos) {
+            SolidBox nb;
+            nb.center = glm::vec3(groundPos.x, groundPos.y + solidNewHalf.y, groundPos.z);
+            nb.half   = solidNewHalf;
+            nb.color  = solidNewColor;
+            nb.name   = "Box " + std::to_string(solidCounter++);
+            solids.push_back(nb);
+            solidSel = static_cast<int>(solids.size()) - 1;
+        };
 
         // Tree instances live here (filled by regenTrees below); declared early
         // so flower placement can cluster blooms around the trees.
@@ -1674,7 +1686,8 @@ int main() {
                 ImGui::DockBuilderDockWindow("Vegetation", bottom);
                 ImGui::DockBuilderDockWindow("Camera path", bottom);
                 ImGui::DockBuilderDockWindow("Roads", bottom);
-                ImGui::DockBuilderDockWindow("Solids", bottom);
+                ImGui::DockBuilderDockWindow("Hierarchy", bottom);
+                ImGui::DockBuilderDockWindow("Inspector", bottom);
                 ImGui::DockBuilderDockWindow("Vehicle", bottom);
                 ImGui::DockBuilderDockWindow("Presets", bottom);
                 ImGui::DockBuilderFinish(dockId);
@@ -1826,11 +1839,7 @@ int main() {
                             solidSel = hit; // clicked a block -> select it
                         } else {
                             glm::vec3 h; // empty ground -> drop a new block there
-                            if (roadPickTerrain(viewportMouseNdc, vp, h)) {
-                                SolidBox nb{glm::vec3(h.x, h.y + solidNewHalf.y, h.z), solidNewHalf};
-                                solids.push_back(nb);
-                                solidSel = static_cast<int>(solids.size()) - 1;
-                            }
+                            if (roadPickTerrain(viewportMouseNdc, vp, h)) addSolid(h);
                         }
                     }
                     if (solidSel >= 0 && solidSel < static_cast<int>(solids.size()) &&
@@ -2164,19 +2173,14 @@ int main() {
             }
             ImGui::End();
 
-            if (ImGui::Begin("Solids")) {
+            if (ImGui::Begin("Hierarchy")) {
                 ImGui::Checkbox("Edit mode", &solidEditMode);
                 if (solidEditMode)
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "Click ground = add | click block = select | Del = delete");
+                                       "Click ground = add | click block = select | drag gizmo");
                 else
                     ImGui::TextDisabled("Enable edit mode to place & edit blocks");
-                ImGui::Text("Blocks: %d", static_cast<int>(solids.size()));
-                ImGui::SameLine();
-                if (solidSel >= 0) ImGui::Text("| selected #%d", solidSel);
-                else               ImGui::TextDisabled("| none selected");
 
-                // Gizmo tool: drag the handles in the viewport to move/scale.
                 ImGui::TextDisabled("Gizmo:");
                 ImGui::SameLine();
                 if (ImGui::RadioButton("Move", gizmoOp == ImGuizmo::TRANSLATE))
@@ -2185,45 +2189,94 @@ int main() {
                 if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
                     gizmoOp = ImGuizmo::SCALE;
 
-                ImGui::SeparatorText("New block size (half-extents)");
-                ImGui::SliderFloat3("Size", &solidNewHalf.x, 0.25f, 12.0f, "%.2f m");
+                if (ImGui::Button("Add box")) {
+                    const glm::vec3 p = camera.position() + camera.front() * 6.0f;
+                    addSolid(glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z));
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(solidSel < 0 || solidSel >= static_cast<int>(solids.size()));
+                if (ImGui::Button("Duplicate")) {
+                    SolidBox nb = solids[solidSel];
+                    nb.center.x += nb.half.x * 2.2f;
+                    nb.name += " copy";
+                    solids.push_back(nb);
+                    solidSel = static_cast<int>(solids.size()) - 1;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Delete")) { solids.erase(solids.begin() + solidSel); solidSel = -1; }
+                ImGui::EndDisabled();
 
-                if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
-                    ImGui::SeparatorText("Selected block");
-                    SolidBox& b = solids[solidSel];
-                    ImGui::DragFloat3("Position", &b.center.x, 0.05f);
-                    ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.1f, 60.0f);
-                    if (ImGui::Button("Drop to ground"))
-                        b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
-                    ImGui::SameLine();
-                    if (ImGui::Button("Delete##solid")) {
-                        solids.erase(solids.begin() + solidSel);
-                        solidSel = -1;
+                ImGui::SeparatorText("Objects");
+                if (ImGui::BeginListBox("##hierarchy", ImVec2(-1.0f, 150.0f))) {
+                    for (int i = 0; i < static_cast<int>(solids.size()); ++i) {
+                        ImGui::PushID(i);
+                        const char* nm = solids[i].name.empty() ? "(box)" : solids[i].name.c_str();
+                        if (ImGui::Selectable(nm, i == solidSel)) solidSel = i;
+                        ImGui::PopID();
                     }
+                    ImGui::EndListBox();
                 }
 
                 ImGui::Separator();
                 if (ImGui::Button("Clear all")) { solids.clear(); solidSel = -1; }
                 ImGui::SameLine();
-                if (ImGui::Button("Save##solids")) {
+                if (ImGui::Button("Save")) {
                     std::ofstream f("solids.txt");
                     for (const SolidBox& b : solids)
                         f << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
-                          << b.half.x << ' ' << b.half.y << ' ' << b.half.z << '\n';
+                          << b.half.x << ' ' << b.half.y << ' ' << b.half.z << ' '
+                          << b.color.x << ' ' << b.color.y << ' ' << b.color.z << ' '
+                          << b.name << '\n';
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Load##solids")) {
+                if (ImGui::Button("Load")) {
                     std::ifstream f("solids.txt");
                     if (f) {
                         solids.clear();
-                        SolidBox b;
-                        while (f >> b.center.x >> b.center.y >> b.center.z >>
-                                    b.half.x >> b.half.y >> b.half.z)
+                        std::string line;
+                        while (std::getline(f, line)) {
+                            if (line.empty()) continue;
+                            std::istringstream ss(line);
+                            SolidBox b;
+                            ss >> b.center.x >> b.center.y >> b.center.z
+                               >> b.half.x >> b.half.y >> b.half.z
+                               >> b.color.x >> b.color.y >> b.color.z;
+                            std::getline(ss, b.name);
+                            if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
                             solids.push_back(b);
+                        }
                         solidSel = -1;
                     }
                 }
-                ImGui::TextDisabled("Walk into them in FPS mode (F).");
+                ImGui::SameLine();
+                ImGui::TextDisabled("(solids.txt)");
+            }
+            ImGui::End();
+
+            if (ImGui::Begin("Inspector")) {
+                if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
+                    ImGui::SeparatorText("Selected object");
+                    SolidBox& b = solids[solidSel];
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "%s", b.name.c_str());
+                    if (ImGui::InputText("Name", buf, sizeof(buf))) b.name = buf;
+                    ImGui::DragFloat3("Position", &b.center.x, 0.05f);
+                    ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
+                    ImGui::ColorEdit3("Colour", &b.color.x);
+                    if (ImGui::Button("Drop to ground"))
+                        b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
+                    ImGui::SameLine();
+                    if (ImGui::Button("Delete##insp")) {
+                        solids.erase(solids.begin() + solidSel);
+                        solidSel = -1;
+                    }
+                } else {
+                    ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
+                }
+                ImGui::SeparatorText("New block defaults");
+                ImGui::SliderFloat3("Size", &solidNewHalf.x, 0.25f, 12.0f, "%.2f m");
+                ImGui::ColorEdit3("New colour", &solidNewColor.x);
+                ImGui::TextDisabled("Walk into blocks in FPS mode (F).");
             }
             ImGui::End();
 
@@ -2376,11 +2429,17 @@ int main() {
                 }
             }
 
-            // --- Solid blocks: submitted through the renderer (shadows, water) ---
+            // --- Solid blocks: per-block colour material, submitted through the
+            //     renderer (shadows, lighting, water). Materials are frame-local
+            //     and reserved so the pointers stay valid across all passes. -----
+            std::vector<Material> solidMats;
+            solidMats.reserve(solids.size());
             for (const SolidBox& b : solids) {
+                Material& mat = solidMats.emplace_back(lit);
+                mat.set("uColorMode", 0).set("uAlbedo", b.color).set("uWaterLevel", -1.0e4f);
                 const glm::mat4 m = glm::translate(glm::mat4(1.0f), b.center)
                                   * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
-                renderer.submit(carCube, solidMat, m);
+                renderer.submit(carCube, mat, m);
             }
 
             // --- Multi-pass render with sky and planar water ------------
