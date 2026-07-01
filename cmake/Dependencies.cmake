@@ -50,6 +50,14 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- ImGuizmo: 3D transform gizmos for the editor viewport -----------------
+FetchContent_Declare(
+    imguizmo
+    GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+    GIT_TAG        master
+    GIT_SHALLOW    ON
+)
+
 # --- tinyexr: load OpenEXR (.exr) images (e.g. PBR normal maps) -------------
 FetchContent_Declare(
     tinyexr
@@ -76,6 +84,13 @@ FetchContent_Declare(
 
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf)
+
+# ImGuizmo: fetch the sources only (its own CMakeLists would clash with our imgui
+# target), then compile ImGuizmo.cpp into the imgui library below.
+FetchContent_GetProperties(imguizmo)
+if(NOT imguizmo_POPULATED)
+    FetchContent_Populate(imguizmo)
+endif()
 
 # Generate a GLAD loader for OpenGL 3.3 Core. Produces the target `glad_gl_core_33`.
 glad_add_library(glad_gl_core_33 REPRODUCIBLE API gl:core=3.3)
@@ -108,9 +123,11 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
+    ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp   # 3D transform gizmos
 )
 target_include_directories(imgui PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
+    ${imguizmo_SOURCE_DIR}/src
 )
 target_link_libraries(imgui PUBLIC glfw)
