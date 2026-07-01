@@ -22,6 +22,8 @@ uniform float uAoStrength;
 uniform float uHueShift;    // degrees
 uniform float uSaturation;
 uniform float uValue;
+uniform float uWarmth;      // white balance: + warms (golden), - cools (blue)
+uniform float uContrast;    // S-curve contrast around mid grey
 
 vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
@@ -37,6 +39,12 @@ vec3 hsv2rgb(vec3 c) {
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 vec3 colorGrade(vec3 c) {
+    // White balance: warm pushes red up / blue down (golden hour), cool the reverse.
+    c *= vec3(1.0 + uWarmth * 0.5, 1.0 + uWarmth * 0.06, 1.0 - uWarmth * 0.45);
+
+    // Contrast: filmic S-curve around mid grey to lift the flat/milky look.
+    c = clamp((c - 0.5) * (1.0 + uContrast) + 0.5, 0.0, 1.0);
+
     vec3 hsv = rgb2hsv(c);
     hsv.x = fract(hsv.x + uHueShift / 360.0);
     hsv.y = clamp(hsv.y * uSaturation, 0.0, 1.0);

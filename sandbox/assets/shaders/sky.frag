@@ -161,7 +161,9 @@ vec4 renderClouds(vec3 ro, vec3 rd) {
 
     float T = 1.0;
     vec3  col = vec3(0.0);
-    float t = t0 + dt * 0.5;
+    // Per-pixel dither on the start offset breaks the raymarch banding.
+    float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    float t = t0 + dt * dither;
     for (int i = 0; i < STEPS; ++i) {
         vec3 p = ro + rd * t;
         float d = cloudDensity(p) * uCloudDensity;
