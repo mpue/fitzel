@@ -6,7 +6,8 @@ target_link_libraries(sandbox PRIVATE fitzel)
 # so the sandbox can load them without copying ~250 MB into the build dir.
 target_compile_definitions(sandbox PRIVATE
     FITZEL_TEXTURE_DIR="${CMAKE_SOURCE_DIR}/textures"
-    FITZEL_SOUND_DIR="${CMAKE_SOURCE_DIR}/sounds")
+    FITZEL_SOUND_DIR="${CMAKE_SOURCE_DIR}/sounds"
+    FITZEL_MODEL_DIR="${CMAKE_SOURCE_DIR}/models")
 
 # Copy shader assets next to the executable so relative paths resolve at runtime.
 add_custom_command(TARGET sandbox POST_BUILD

@@ -13,5 +13,6 @@
 #include "fitzel/render/Renderer.hpp"
 #include "fitzel/scene/Camera.hpp"
 #include "fitzel/world/Terrain.hpp"
+#include "fitzel/world/Model.hpp"
 #include "fitzel/ui/Gui.hpp"
 #include "fitzel/audio/Audio.hpp"

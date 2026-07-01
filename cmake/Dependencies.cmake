@@ -46,7 +46,7 @@ FetchContent_Declare(
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        v1.91.5
+    GIT_TAG        docking          # docking lives on this branch, not the release tags
     GIT_SHALLOW    ON
 )
 
@@ -66,8 +66,16 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- cgltf: single-header glTF / GLB loader ---------------------------------
+FetchContent_Declare(
+    cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG        v1.14
+    GIT_SHALLOW    ON
+)
+
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio)
+FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf)
 
 # Generate a GLAD loader for OpenGL 3.3 Core. Produces the target `glad_gl_core_33`.
 glad_add_library(glad_gl_core_33 REPRODUCIBLE API gl:core=3.3)
@@ -85,6 +93,10 @@ target_include_directories(tinyexr_dep PUBLIC
 # miniaudio headers (the MINIAUDIO_IMPLEMENTATION TU lives in engine/).
 add_library(miniaudio_dep INTERFACE)
 target_include_directories(miniaudio_dep INTERFACE ${miniaudio_SOURCE_DIR})
+
+# cgltf headers (the CGLTF_IMPLEMENTATION TU lives in engine/).
+add_library(cgltf_dep INTERFACE)
+target_include_directories(cgltf_dep INTERFACE ${cgltf_SOURCE_DIR})
 
 # Build Dear ImGui (core + GLFW/OpenGL3 backends) as a static library. The
 # OpenGL3 backend ships its own GL loader, so it doesn't clash with GLAD.

@@ -13,6 +13,7 @@ add_library(fitzel STATIC
     src/render/Renderer.cpp
     src/scene/Camera.cpp
     src/world/Terrain.cpp
+    src/world/Model.cpp
     src/ui/Gui.cpp
     src/audio/Audio.cpp
     src/audio/miniaudio_impl.cpp
@@ -37,6 +38,7 @@ target_link_libraries(fitzel
         stb_headers
         tinyexr_dep
         miniaudio_dep
+        cgltf_dep
 )
 
 target_compile_features(fitzel PUBLIC cxx_std_20)

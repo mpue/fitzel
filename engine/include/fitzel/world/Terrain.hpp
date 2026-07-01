@@ -44,6 +44,10 @@ struct TerrainSettings {
 // (e.g. for placing objects on the ground). Thread-safe (pure function).
 float terrainHeight(const TerrainSettings& settings, float worldX, float worldZ);
 
+// A 0..1 "moisture / lushness" field (independent low-frequency noise) for
+// biome-dependent placement: lush valleys vs dry highlands. Thread-safe.
+float terrainMoisture(const TerrainSettings& settings, float worldX, float worldZ);
+
 // A single square tile of terrain, generated in world space (model = identity).
 class TerrainChunk {
 public:

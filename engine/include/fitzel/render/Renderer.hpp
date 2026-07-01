@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -54,8 +55,11 @@ public:
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 
     // Multi-pass building blocks (for reflection/refraction etc.):
-    // render the shadow cascades once from the stored camera + light.
-    void prepareShadows();
+    // render the shadow cascades once from the stored camera + light. The
+    // optional callback is invoked per cascade with that cascade's light-space
+    // matrix, so the app can add its own casters (e.g. instanced trees).
+    using ShadowCaster = std::function<void(const glm::mat4& lightSpace)>;
+    void prepareShadows(const ShadowCaster& extra = {});
     // Render the submitted opaque queue with an explicit view/projection,
     // eye position and world-space clip plane into the currently bound target
     // (does not clear). Pass kNoClip to disable clipping.

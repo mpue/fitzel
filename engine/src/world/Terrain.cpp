@@ -60,6 +60,14 @@ float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
     return h;
 }
 
+float terrainMoisture(const TerrainSettings& s, float worldX, float worldZ) {
+    const float mf = s.biomeFreq * 0.8f;
+    const float m = stb_perlin_fbm_noise3(
+        worldX * mf + 137.0f + s.seed, 0.0f, worldZ * mf + 91.0f + s.seed,
+        2.0f, 0.5f, 3);
+    return glm::clamp(m * 0.5f + 0.5f, 0.0f, 1.0f);
+}
+
 MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord) {
     MeshData data;
 

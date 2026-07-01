@@ -102,7 +102,7 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
     m_queue.push_back({&mesh, &material, model});
 }
 
-void Renderer::prepareShadows() {
+void Renderer::prepareShadows(const ShadowCaster& extra) {
     if (!m_camera) return;
 
     m_csm.update(*m_camera, m_aspect, m_light.direction);
@@ -116,6 +116,7 @@ void Renderer::prepareShadows() {
             m_depthShader.setMat4("uModel", r.model);
             r.mesh->draw();
         }
+        if (extra) extra(m_csm.lightMatrices()[i]);
     }
     m_csm.end(m_vpWidth, m_vpHeight);
 }

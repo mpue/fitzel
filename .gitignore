@@ -20,6 +20,10 @@ compile_commands.json
 # Audio assets (provided/generated locally, not tracked)
 /sounds/
 
+# Blender source/backup files (only the exported glTF is tracked)
+*.blend
+*.blend1
+
 # OS
 Thumbs.db
 .DS_Store
