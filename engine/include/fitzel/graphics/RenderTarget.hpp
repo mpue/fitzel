@@ -33,6 +33,9 @@ public:
     int width()  const { return m_width; }
     int height() const { return m_height; }
 
+    // Raw GL color texture handle (e.g. to display the target via ImGui::Image).
+    std::uint32_t colorTexture() const { return m_colorTex; }
+
 private:
     std::uint32_t m_fbo       = 0;
     std::uint32_t m_colorTex  = 0;

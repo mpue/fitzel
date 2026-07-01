@@ -16,6 +16,9 @@ Gui::Gui(Window& window) {
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
 
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // allow panels to dock
+
     // install_callbacks = true: ImGui chains the callbacks Input already set.
     ImGui_ImplGlfw_InitForOpenGL(window.nativeHandle(), true);
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -49,6 +52,33 @@ void Gui::beginFrame() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+}
+
+unsigned int Gui::dockspace() {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+
+    // A borderless, transparent host that can't itself be docked or focused, so
+    // it acts purely as a backdrop for the dockspace over the live scene.
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoDocking;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::Begin("##DockHost", nullptr, flags);
+    ImGui::PopStyleVar(3);
+
+    const ImGuiID dockId = ImGui::GetID("FitzelDock");
+    // PassthruCentralNode keeps the empty centre transparent (scene visible).
+    ImGui::DockSpace(dockId, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
+    ImGui::End();
+    return dockId;
 }
 
 void Gui::endFrame() {

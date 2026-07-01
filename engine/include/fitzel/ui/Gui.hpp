@@ -23,6 +23,12 @@ public:
     void beginFrame();
     void endFrame();
 
+    // Submit a full-viewport, transparent dock host so panels can dock to the
+    // edges while the 3D scene shows through the central node. Call right after
+    // beginFrame(); returns the dockspace id (for DockBuilder layout). The id is
+    // an ImGuiID (unsigned int) — typed loosely to keep imgui.h out of this header.
+    unsigned int dockspace();
+
     // True when ImGui is using the mouse/keyboard, so the app should ignore it
     // (e.g. don't move the camera while interacting with a panel).
     bool wantsMouse() const;
