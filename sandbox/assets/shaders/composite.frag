@@ -18,6 +18,14 @@ uniform float uRays;        // god-ray intensity
 uniform sampler2D uAO;      // screen-space ambient occlusion
 uniform float uAoStrength;
 
+// Depth of field (distance blur toward the background).
+uniform sampler2D uDepth;
+uniform float uNear;
+uniform float uFar;
+uniform float uFocusNear;   // metres: sharp up to here
+uniform float uFocusFar;    // metres: fully blurred beyond here
+uniform float uDofMax;      // max blur radius in pixels (0 = DOF off)
+
 // HSV colour grade (applied to the final image).
 uniform float uHueShift;    // degrees
 uniform float uSaturation;
@@ -65,21 +73,48 @@ vec3 aces(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+// Eye-space distance from the depth buffer.
+float linearDepth(vec2 uv) {
+    float d = texture(uDepth, uv).r * 2.0 - 1.0;
+    return (2.0 * uNear * uFar) / (uFar + uNear - d * (uFar - uNear));
+}
+// Blur amount 0..1 by distance (sharp foreground, blurred background).
+float cocAt(vec2 uv) { return smoothstep(uFocusNear, uFocusFar, linearDepth(uv)); }
+
+// Depth-of-field gather: a two-ring disk scaled by CoC. Samples are weighted by
+// their own CoC so sharp foreground pixels don't bleed into blurred background.
+vec3 dofColor(vec2 uv) {
+    float c0 = cocAt(uv);
+    if (uDofMax < 0.5 || c0 < 0.02) return texture(uHdr, uv).rgb;
+    float radius = c0 * uDofMax;
+    vec3  sum  = texture(uHdr, uv).rgb;
+    float wsum = 1.0;
+    const int TAPS = 8; // single ring is enough for a soft background blur
+    for (int i = 0; i < TAPS; ++i) {
+        float a = float(i) / float(TAPS) * 6.2831853;
+        vec2  suv = uv + vec2(cos(a), sin(a)) * uTexel * radius;
+        float w = cocAt(suv);
+        sum  += texture(uHdr, suv).rgb * w;
+        wsum += w;
+    }
+    return sum / wsum;
+}
+
 void main() {
     vec2 uv  = vNdc * 0.5 + 0.5;
-    vec3 hdr = texture(uHdr, uv).rgb;
+    vec3 hdr = dofColor(uv);
 
     // Ambient occlusion darkens creases/valleys (bilinear-upscaled half-res AO).
     float ao = mix(1.0, texture(uAO, uv).r, uAoStrength);
     hdr *= ao;
 
-    // --- Bloom: gaussian-weighted blur of the bright pass --------------
+    // --- Bloom: gaussian-weighted blur of the bright pass (5x5, wider step) --
     vec3  bloom = vec3(0.0);
     float wsum  = 0.0;
-    for (int x = -3; x <= 3; ++x) {
-        for (int y = -3; y <= 3; ++y) {
-            vec2  o = vec2(x, y) * uTexel * 6.0;
-            float w = exp(-dot(vec2(x, y), vec2(x, y)) * 0.18);
+    for (int x = -2; x <= 2; ++x) {
+        for (int y = -2; y <= 2; ++y) {
+            vec2  o = vec2(x, y) * uTexel * 9.0;
+            float w = exp(-dot(vec2(x, y), vec2(x, y)) * 0.30);
             bloom += bright(uv + o) * w;
             wsum  += w;
         }

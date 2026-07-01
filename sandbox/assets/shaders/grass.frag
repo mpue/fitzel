@@ -54,8 +54,8 @@ void main() {
 
     vec3 dryBase = vec3(0.17, 0.15, 0.07);
     vec3 dryTip  = vec3(0.55, 0.48, 0.24);
-    vec3 lushBase = mix(vec3(0.05, 0.13, 0.03), vec3(0.09, 0.19, 0.05), fine);
-    vec3 lushTip  = mix(vec3(0.20, 0.40, 0.10), vec3(0.42, 0.55, 0.16), fine);
+    vec3 lushBase = mix(vec3(0.05, 0.14, 0.03), vec3(0.10, 0.20, 0.05), fine);
+    vec3 lushTip  = mix(vec3(0.26, 0.44, 0.11), vec3(0.54, 0.62, 0.20), fine);
     vec3 baseCol = mix(dryBase, lushBase, green);
     vec3 tipCol  = mix(dryTip,  lushTip,  green);
     // Per-blade brightness so neighbours don't read identically.
@@ -72,12 +72,19 @@ void main() {
 
     vec3 N = normalize(vNormal);
     vec3 L = normalize(uLightDir);
+    vec3 V = normalize(uViewPos - vWorldPos);
     float diff = max(dot(N, L), 0.0);
-    float back = max(dot(-N, L), 0.0) * 0.3; // light through the blade
+    float back = max(dot(-N, L), 0.0) * 0.3; // light wrapping through the blade
+
+    // Sun translucency: blades glow when the sun is behind them toward the eye,
+    // strongest at the tips -> the warm backlit shimmer of a real meadow.
+    float trans = pow(max(dot(V, -L), 0.0), 3.0) * (0.35 + 0.65 * vH);
+    vec3  glow  = uLightColor * albedo * trans * 1.5;
 
     vec3 color = albedo * uAmbient
-               + uLightColor * albedo * (diff * 0.8 + 0.2 + back);
-    color *= mix(mix(0.6, 1.0, vH), 1.0, farFade); // softer base AO, none at distance
+               + uLightColor * albedo * (diff * 0.85 + 0.2 + back)
+               + glow;
+    color *= mix(mix(0.72, 1.0, vH), 1.0, farFade); // gentle base AO, none at distance
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(color, 1.0);

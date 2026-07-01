@@ -132,26 +132,36 @@ static std::vector<float> makeFlowerMesh() {
     quad({-hw, 0, 0}, {hw, 0, 0}, {hw, sh, 0}, {-hw, sh, 0}, {0, 0, 1}, 0.0f);
     quad({0, 0, -hw}, {0, 0, hw}, {0, sh, hw}, {0, sh, -hw}, {1, 0, 0}, 0.0f);
 
-    // Petals: a triangle each, base near the centre, tip raised and pushed out.
-    const int   P = 6;
-    const float rb = 0.06f, rt = 0.34f, lift = 0.16f;
+    // Petals: rounded lobes, nearly flat and wide (buttercup/daisy look) so the
+    // open bloom reads as a soft colour speck rather than a cupped star.
+    const int   P = 6, ARC = 5;
+    const float rb = 0.04f, rt = 0.30f, lift = 0.05f;
+    const float PI = 3.14159265f;
     for (int i = 0; i < P; ++i) {
         const float am = static_cast<float>(i) / P * 6.2831853f;
-        const float d  = 3.14159f / P * 0.95f; // near-touching petals
-        const glm::vec3 bL(std::cos(am - d) * rb, sh, std::sin(am - d) * rb);
-        const glm::vec3 bR(std::cos(am + d) * rb, sh, std::sin(am + d) * rb);
-        const glm::vec3 tip(std::cos(am) * rt, sh + lift, std::sin(am) * rt);
-        tri(bL, bR, tip, 1.0f);
+        const float d  = (PI / P) * 1.2f; // wide, overlapping petals -> full bloom
+        const glm::vec3 baseC(std::cos(am) * rb, sh, std::sin(am) * rb);
+        glm::vec3 prev(0.0f);
+        for (int k = 0; k <= ARC; ++k) {
+            const float f = static_cast<float>(k) / ARC;   // 0..1 across the petal
+            const float a = am - d + 2.0f * d * f;
+            const float shape = std::sin(f * PI);          // round: 0 edges, 1 middle
+            const float r = rb + (rt - rb) * shape;
+            const float y = sh + lift * shape;
+            const glm::vec3 p(std::cos(a) * r, y, std::sin(a) * r);
+            if (k > 0) tri(baseC, prev, p, 1.0f);
+            prev = p;
+        }
     }
-    // Yellow centre disc, slightly raised.
-    const int   C = 8;
-    const float rc = 0.09f;
-    const glm::vec3 cc(0.0f, sh + 0.02f, 0.0f);
+    // Small yellow centre disc, almost flush with the petals.
+    const int   C = 10;
+    const float rc = 0.08f;
+    const glm::vec3 cc(0.0f, sh + 0.012f, 0.0f);
     for (int i = 0; i < C; ++i) {
         const float a0 = static_cast<float>(i) / C * 6.2831853f;
         const float a1 = static_cast<float>(i + 1) / C * 6.2831853f;
-        const glm::vec3 p0(std::cos(a0) * rc, sh + 0.015f, std::sin(a0) * rc);
-        const glm::vec3 p1(std::cos(a1) * rc, sh + 0.015f, std::sin(a1) * rc);
+        const glm::vec3 p0(std::cos(a0) * rc, sh + 0.008f, std::sin(a0) * rc);
+        const glm::vec3 p1(std::cos(a1) * rc, sh + 0.008f, std::sin(a1) * rc);
         tri(cc, p0, p1, 2.0f);
     }
     return v;
@@ -790,6 +800,11 @@ int main() {
             camChase  = camera.position();
         };
 
+        // Tree instances live here (filled by regenTrees below); declared early
+        // so flower placement can cluster blooms around the trees.
+        std::vector<float> treeInst;
+        int                treeCount = 0;
+
         // --- Flowers: GPU-instanced blooms scattered through lush grass ---
         Shader flower = Shader::fromFiles("assets/shaders/flower.vert",
                                           "assets/shaders/flower.frag");
@@ -837,9 +852,12 @@ int main() {
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
             const float R = grassRadius, spacing = 0.9f;
             const float clear = roadWidth * 0.5f + 1.5f;
-            const glm::vec3 palette[5] = {{1.0f, 1.0f, 0.92f}, {1.0f, 0.85f, 0.2f},
-                                          {0.92f, 0.22f, 0.30f}, {0.72f, 0.32f, 0.85f},
-                                          {0.40f, 0.52f, 0.95f}};
+            // Natural meadow palette, weighted toward buttercup yellow and white.
+            const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
+                                          {0.94f, 0.55f, 0.12f},  // warm orange
+                                          {0.95f, 0.95f, 0.88f},  // daisy white
+                                          {0.86f, 0.46f, 0.55f},  // soft pink
+                                          {0.60f, 0.55f, 0.82f}}; // pale lavender
             for (float z = -R; z <= R; z += spacing) {
                 for (float x = -R; x <= R; x += spacing) {
                     if (x * x + z * z > R * R) continue;
@@ -853,15 +871,37 @@ int main() {
                         streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
                     if (n.y < 0.9f) continue;
                     const float moist = terrainMoisture(streamer.settings(), wx, wz);
-                    const float patch = valNoise2(wx * 0.08f + 50.0f, wz * 0.08f + 50.0f);
-                    const float prob  = glm::smoothstep(0.32f, 0.72f, moist)
-                                      * glm::smoothstep(0.4f, 0.82f, patch) * 1.4f * flowerDensity;
+                    if (moist < 0.3f) continue; // flowers want greener ground
+
+                    // Clumps where a mid-frequency noise peaks; a small background
+                    // chance sprinkles lone flowers between the groups.
+                    const float clump  = valNoise2(wx * 0.16f + 50.0f, wz * 0.16f + 50.0f);
+                    const float groupP = glm::smoothstep(0.66f, 0.9f, clump);
+
+                    // Flowers gather in the shade around tree trunks.
+                    float treeP = 0.0f;
+                    for (int t = 0; t < treeCount; ++t) {
+                        const float dx = wx - treeInst[t * 5 + 0];
+                        const float dz = wz - treeInst[t * 5 + 2];
+                        const float dd = dx * dx + dz * dz;
+                        if (dd < 30.0f) treeP = std::max(treeP, glm::smoothstep(30.0f, 3.0f, dd));
+                    }
+
+                    const float prob = (0.02f + groupP * 0.9f + treeP * 0.75f)
+                                     * glm::smoothstep(0.3f, 0.7f, moist) * flowerDensity;
                     if (u(rng) > prob) continue;
                     const float fx = wx + (u(rng) - 0.5f) * spacing;
                     const float fz = wz + (u(rng) - 0.5f) * spacing;
-                    const glm::vec3 col = palette[static_cast<int>(u(rng) * 5.0f) % 5];
+                    // Weighted pick: mostly yellow/orange/white, few pink/lavender.
+                    const float cr = u(rng);
+                    const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
+                                 : cr < 0.92f ? 3 : 4;
+                    const glm::vec3 col = palette[ci];
+                    // Meadow flowers are small; squared roll keeps most of them tiny.
+                    const float sr = u(rng);
+                    const float scale = glm::mix(0.32f, 0.75f, sr * sr);
                     out.insert(out.end(), {fx, streamer.heightAt(fx, fz) - 0.02f, fz,
-                                           u(rng) * 6.2831f, glm::mix(0.7f, 1.2f, u(rng)),
+                                           u(rng) * 6.2831f, scale,
                                            col.r, col.g, col.b});
                 }
             }
@@ -909,8 +949,6 @@ int main() {
         int   birdCount    = 18;
         float birdSize     = 2.2f;
 
-        std::vector<float> treeInst;
-        int       treeCount    = 0;
         glm::vec2 treeCenter(1e9f);
         bool      treeEnabled  = true;
         float     treeDensity  = 1.0f;
@@ -973,8 +1011,13 @@ int main() {
         bool  prevFlashOn  = false;
 
         // Atmospheric fog (subtle by default; aerial perspective, not haze soup).
-        float fogDensity = 0.0028f;
-        float fogFalloff = 0.035f;
+        float fogDensity = 0.0045f; // stronger aerial perspective (soft distant haze)
+        float fogFalloff = 0.028f;  // fog reaches higher so distant hills recede
+
+        // Depth of field (distance blur). dofMax = 0 disables it.
+        float dofMax   = 5.0f;      // max blur radius (pixels)
+        float dofNear  = 25.0f;     // sharp up to here (metres)
+        float dofFar   = 140.0f;    // fully blurred beyond here
 
         // Tonemapping exposure + HSV colour grade.
         float exposure   = 1.0f;
@@ -1436,10 +1479,12 @@ int main() {
             fog.height        = waterLevel;
             fog.density       = effFog;
             fog.heightFalloff = fogFalloff;
+            // Brighter, slightly warmer daytime haze so the distance reads as soft
+            // atmosphere (like the reference) rather than a cool blue wash.
             const glm::vec3 hazeDisp =
-                glm::mix(glm::vec3(0.03f, 0.04f, 0.09f), glm::vec3(0.62f, 0.74f, 0.92f), dayF);
+                glm::mix(glm::vec3(0.03f, 0.04f, 0.09f), glm::vec3(0.76f, 0.82f, 0.90f), dayF);
             const glm::vec3 sunHazeDisp =
-                glm::mix(hazeDisp, glm::vec3(1.0f, 0.62f, 0.34f), 0.7f * dayF);
+                glm::mix(hazeDisp, glm::vec3(1.0f, 0.66f, 0.38f), 0.7f * dayF);
             fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
             fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
@@ -1663,6 +1708,10 @@ int main() {
                 ImGui::SliderFloat("SSAO",       &ssaoStrength, 0.0f, 1.0f);
                 ImGui::SliderFloat("SSAO radius",&ssaoRadius, 0.2f, 4.0f);
                 ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
+                ImGui::SeparatorText("Depth of field");
+                ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
+                ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
+                ImGui::SliderFloat("Focus far",  &dofFar, 20.0f, 400.0f, "%.0f m");
             }
             ImGui::End();
 
@@ -2385,6 +2434,13 @@ int main() {
             composite.bind();
             hdrRT.bindColorTexture(0);
             composite.setInt("uHdr", 0);
+            hdrRT.bindDepthTexture(1);
+            composite.setInt("uDepth", 1);
+            composite.setFloat("uNear", camera.nearPlane());
+            composite.setFloat("uFar", camera.farPlane());
+            composite.setFloat("uFocusNear", dofNear);
+            composite.setFloat("uFocusFar", dofFar);
+            composite.setFloat("uDofMax", dofMax);
             ssaoRT.bindColorTexture(2);
             composite.setInt("uAO", 2);
             composite.setFloat("uAoStrength", ssaoStrength);
