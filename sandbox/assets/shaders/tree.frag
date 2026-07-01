@@ -39,10 +39,13 @@ void main() {
     vec3 albedo = pow(tex.rgb, vec3(2.2));
     vec3 N = normalize(vNormal);
     vec3 L = normalize(uLightDir);
-    // Two-sided lighting (leaves face both ways).
-    float diff = max(abs(dot(N, L)), 0.0);
+    float ndl = dot(N, L);
+    // Foliage is translucent -> soft two-sided; bark is opaque -> one-sided so it
+    // keeps its form and doesn't read as flat and over-bright.
+    float diff = (uAlphaCutout == 1) ? mix(max(ndl, 0.0), abs(ndl), 0.5)
+                                     : max(ndl, 0.0);
 
-    vec3 color = albedo * uAmbient + uLightColor * albedo * (diff * 0.9 + 0.1);
+    vec3 color = albedo * uAmbient * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05);
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(color, 1.0);
 }

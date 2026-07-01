@@ -253,8 +253,10 @@ void main() {
     vec3 H = normalize(L + V);
 
     float diff      = max(dot(N, L), 0.0);
-    float specPower = (uColorMode == 1) ? 0.15 : 0.5;
-    float spec      = pow(max(dot(N, H), 0.0), 48.0) * specPower;
+    // Terrain: subtle. Textured surfaces (roads): rough/matte, faint broad sheen.
+    float specPower = (uColorMode == 1) ? 0.15 : 0.03;
+    float specExp   = (uColorMode == 1) ? 48.0 : 14.0;
+    float spec      = pow(max(dot(N, H), 0.0), specExp) * specPower;
 
     int   layer   = selectCascade();
     float shadow  = computeShadow(layer, N, L);
