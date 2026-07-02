@@ -105,6 +105,8 @@ struct SolidBox {
     glm::vec3   half;                       // half-extents
     glm::vec3   color{0.62f, 0.62f, 0.64f}; // albedo
     std::string name;
+    int         id     = 0;   // stable unique id (survives deletion/reordering)
+    int         parent = -1;  // parent's id, or -1 for a root object
 };
 
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
@@ -233,10 +235,11 @@ static MeshData makeCylinderX(float r, float ht, int seg) {
 int main() {
     try {
         Window window(WindowConfig{
-            .width  = 1280,
-            .height = 720,
-            .title  = "Fitzel - Infinite Terrain, CSM, Materials",
-            .vsync  = true,
+            .width     = 1280,
+            .height    = 720,
+            .title     = "Fitzel - Infinite Terrain, CSM, Materials",
+            .vsync     = true,
+            .maximized = true,
         });
 
         Input  input(window);                  // before Gui (callback chaining)
@@ -831,9 +834,33 @@ int main() {
             nb.center = glm::vec3(groundPos.x, groundPos.y + solidNewHalf.y, groundPos.z);
             nb.half   = solidNewHalf;
             nb.color  = solidNewColor;
-            nb.name   = "Box " + std::to_string(solidCounter++);
+            nb.id     = solidCounter++;
+            nb.name   = "Box " + std::to_string(nb.id);
             solids.push_back(nb);
             solidSel = static_cast<int>(solids.size()) - 1;
+        };
+        // Move a box (by id) and all its descendants by `delta` (parented drag).
+        std::function<void(int, glm::vec3)> moveSubtree = [&](int pid, glm::vec3 d) {
+            for (SolidBox& c : solids)
+                if (c.parent == pid) { c.center += d; moveSubtree(c.id, d); }
+        };
+        // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
+        auto isUnderId = [&](int a, int ancestorId) {
+            for (int p = a; p >= 0; ) {
+                if (p == ancestorId) return true;
+                int nextIdx = -1;
+                for (int i = 0; i < static_cast<int>(solids.size()); ++i)
+                    if (solids[i].id == p) { nextIdx = i; break; }
+                p = (nextIdx >= 0) ? solids[nextIdx].parent : -1;
+            }
+            return false;
+        };
+        // Delete a box by index, reparenting its children to its own parent.
+        auto deleteSolid = [&](int idx) {
+            const int gid = solids[idx].parent, did = solids[idx].id;
+            for (SolidBox& c : solids) if (c.parent == did) c.parent = gid;
+            solids.erase(solids.begin() + idx);
+            solidSel = -1;
         };
 
         // Tree instances live here (filled by regenTrees below); declared early
@@ -1725,6 +1752,8 @@ int main() {
                                                       static_cast<float>(viewH));
                     if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
                         SolidBox& b = solids[solidSel];
+                        const glm::vec3 oldCenter = b.center;
+                        const int selId = b.id;
                         glm::mat4 model = glm::translate(glm::mat4(1.0f), b.center)
                                         * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
                         ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
@@ -1734,6 +1763,9 @@ int main() {
                             ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, s);
                             b.center = glm::vec3(t[0], t[1], t[2]);
                             b.half   = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
+                            // Children follow the parent's translation.
+                            const glm::vec3 delta = b.center - oldCenter;
+                            if (glm::dot(delta, delta) > 0.0f) moveSubtree(selId, delta);
                         }
                     }
 
@@ -2114,23 +2146,73 @@ int main() {
                 if (ImGui::Button("Duplicate")) {
                     SolidBox nb = solids[solidSel];
                     nb.center.x += nb.half.x * 2.2f;
+                    nb.id = solidCounter++;
                     nb.name += " copy";
                     solids.push_back(nb);
                     solidSel = static_cast<int>(solids.size()) - 1;
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Delete")) { solids.erase(solids.begin() + solidSel); solidSel = -1; }
+                if (ImGui::Button("Delete")) deleteSolid(solidSel);
                 ImGui::EndDisabled();
 
-                ImGui::SeparatorText("Objects");
-                if (ImGui::BeginListBox("##hierarchy", ImVec2(-1.0f, 150.0f))) {
-                    for (int i = 0; i < static_cast<int>(solids.size()); ++i) {
-                        ImGui::PushID(i);
-                        const char* nm = solids[i].name.empty() ? "(box)" : solids[i].name.c_str();
-                        if (ImGui::Selectable(nm, i == solidSel)) solidSel = i;
-                        ImGui::PopID();
+                ImGui::SeparatorText("Scene");
+                // Recursive tree: roots first, children nested. Drag a node onto
+                // another to reparent it; drag onto "(root)" to unparent.
+                int reparentSrc = -1, reparentTo = -2; // -2 = none, -1 = root
+                std::function<void(int)> drawNode = [&](int i) {
+                    ImGui::PushID(i);
+                    bool hasChildren = false;
+                    for (const SolidBox& c : solids)
+                        if (c.parent == solids[i].id) { hasChildren = true; break; }
+                    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
+                                             | ImGuiTreeNodeFlags_SpanAvailWidth
+                                             | ImGuiTreeNodeFlags_DefaultOpen;
+                    if (i == solidSel)  flags |= ImGuiTreeNodeFlags_Selected;
+                    if (!hasChildren)   flags |= ImGuiTreeNodeFlags_Leaf;
+                    const char* nm = solids[i].name.empty() ? "(box)" : solids[i].name.c_str();
+                    const bool open = ImGui::TreeNodeEx("##n", flags, "%s", nm);
+                    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) solidSel = i;
+                    if (ImGui::BeginDragDropSource()) {
+                        const int sid = solids[i].id;
+                        ImGui::SetDragDropPayload("SOLID_ID", &sid, sizeof(int));
+                        ImGui::Text("%s", nm);
+                        ImGui::EndDragDropSource();
                     }
-                    ImGui::EndListBox();
+                    if (ImGui::BeginDragDropTarget()) {
+                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
+                            reparentSrc = *static_cast<const int*>(pl->Data);
+                            reparentTo  = solids[i].id;
+                        }
+                        ImGui::EndDragDropTarget();
+                    }
+                    if (open) {
+                        if (hasChildren)
+                            for (int c = 0; c < static_cast<int>(solids.size()); ++c)
+                                if (solids[c].parent == solids[i].id) drawNode(c);
+                        ImGui::TreePop();
+                    }
+                    ImGui::PopID();
+                };
+                ImGui::BeginChild("##tree", ImVec2(-1.0f, 170.0f), true);
+                ImGui::Selectable("(root)", false); // drop here to unparent
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
+                        reparentSrc = *static_cast<const int*>(pl->Data);
+                        reparentTo  = -1;
+                    }
+                    ImGui::EndDragDropTarget();
+                }
+                for (int i = 0; i < static_cast<int>(solids.size()); ++i)
+                    if (solids[i].parent < 0) drawNode(i);
+                ImGui::EndChild();
+                // Apply a requested reparent (rejecting cycles).
+                if (reparentSrc >= 0 && reparentTo != -2) {
+                    int si = -1;
+                    for (int k = 0; k < static_cast<int>(solids.size()); ++k)
+                        if (solids[k].id == reparentSrc) { si = k; break; }
+                    if (si >= 0 && reparentSrc != reparentTo &&
+                        (reparentTo < 0 || !isUnderId(reparentTo, reparentSrc)))
+                        solids[si].parent = reparentTo;
                 }
 
                 ImGui::Separator();
@@ -2142,13 +2224,14 @@ int main() {
                         f << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
                           << b.half.x << ' ' << b.half.y << ' ' << b.half.z << ' '
                           << b.color.x << ' ' << b.color.y << ' ' << b.color.z << ' '
-                          << b.name << '\n';
+                          << b.id << ' ' << b.parent << ' ' << b.name << '\n';
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Load")) {
                     std::ifstream f("solids.txt");
                     if (f) {
                         solids.clear();
+                        int maxId = -1;
                         std::string line;
                         while (std::getline(f, line)) {
                             if (line.empty()) continue;
@@ -2156,11 +2239,14 @@ int main() {
                             SolidBox b;
                             ss >> b.center.x >> b.center.y >> b.center.z
                                >> b.half.x >> b.half.y >> b.half.z
-                               >> b.color.x >> b.color.y >> b.color.z;
+                               >> b.color.x >> b.color.y >> b.color.z
+                               >> b.id >> b.parent;
                             std::getline(ss, b.name);
                             if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
+                            maxId = std::max(maxId, b.id);
                             solids.push_back(b);
                         }
+                        solidCounter = maxId + 1;
                         solidSel = -1;
                     }
                 }
@@ -2176,16 +2262,21 @@ int main() {
                     char buf[64];
                     std::snprintf(buf, sizeof(buf), "%s", b.name.c_str());
                     if (ImGui::InputText("Name", buf, sizeof(buf))) b.name = buf;
-                    ImGui::DragFloat3("Position", &b.center.x, 0.05f);
+                    const glm::vec3 oldC = b.center;
+                    if (ImGui::DragFloat3("Position", &b.center.x, 0.05f))
+                        moveSubtree(b.id, b.center - oldC); // children follow
                     ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
                     ImGui::ColorEdit3("Colour", &b.color.x);
+                    ImGui::Text("Parent: %s",
+                                b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
                     if (ImGui::Button("Drop to ground"))
                         b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
                     ImGui::SameLine();
-                    if (ImGui::Button("Delete##insp")) {
-                        solids.erase(solids.begin() + solidSel);
-                        solidSel = -1;
-                    }
+                    ImGui::BeginDisabled(b.parent < 0);
+                    if (ImGui::Button("Unparent")) b.parent = -1;
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Delete##insp")) deleteSolid(solidSel);
                 } else {
                     ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
                 }
