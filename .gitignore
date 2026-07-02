@@ -17,8 +17,14 @@ compile_commands.json
 # Large binary texture assets (provided locally, not tracked)
 /textures/
 
-# Large model assets with embedded 4k textures (provided locally, not tracked)
-models/*_4k.glb
+# Model assets: only the default tree is tracked; other imported models
+# (often carrying embedded 4k textures) stay local.
+models/*.glb
+models/*.gltf
+models/*.bin
+!models/tree1.glb
+!models/tree1.gltf
+!models/tree1.bin
 
 # Audio assets (provided/generated locally, not tracked)
 /sounds/
