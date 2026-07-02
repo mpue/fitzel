@@ -83,6 +83,23 @@ uniform float uEnvMaxLod;      // coarsest mip level (for rough reflections)
 uniform float uReflectivity;   // 0 = matte (no reflection), 1 = mirror
 uniform float uRoughness;      // 0 = sharp reflection, 1 = blurry
 
+// Image-based lighting from an HDRI (diffuse irradiance + specular prefilter).
+uniform int         uUseIBL;         // 1 = light ambient from the HDRI
+uniform samplerCube uIrradiance;     // diffuse convolution
+uniform samplerCube uPrefilter;      // specular, mipped by roughness
+uniform float       uPrefilterMaxLod;
+uniform float       uIBLIntensity;
+
+// Karis' analytic environment BRDF (split-sum approximation, no LUT texture).
+vec3 envBRDFApprox(vec3 F0, float rough, float NoV) {
+    const vec4 c0 = vec4(-1.0, -0.0275, -0.572, 0.022);
+    const vec4 c1 = vec4( 1.0,  0.0425,  1.040, -0.04);
+    vec4 r = rough * c0 + c1;
+    float a004 = min(r.x * r.x, exp2(-9.28 * NoV)) * r.x + r.y;
+    vec2 ab = vec2(-1.04, 1.04) * a004 + r.zw;
+    return F0 * ab.x + ab.y;
+}
+
 // Surface.
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
@@ -302,7 +319,23 @@ void main() {
     int   layer   = selectCascade();
     float shadow  = computeShadow(layer, N, L);
 
-    vec3 color = albedo * uAmbient
+    // Ambient: image-based lighting from the HDRI when enabled, else the flat
+    // directional ambient. IBL gives diffuse irradiance + a soft env specular.
+    vec3 ambient;
+    if (uUseIBL == 1) {
+        float NoV = max(dot(N, V), 0.0);
+        vec3  R   = reflect(-V, N);
+        vec3  F0  = vec3(0.04);
+        float iblRough = (uColorMode == 1) ? 0.9 : 0.55; // terrain matte, else semi
+        vec3 diffuseIBL = texture(uIrradiance, N).rgb * albedo;
+        vec3 preSpec    = textureLod(uPrefilter, R, iblRough * uPrefilterMaxLod).rgb;
+        vec3 specIBL    = preSpec * envBRDFApprox(F0, iblRough, NoV);
+        ambient = (diffuseIBL + specIBL) * uIBLIntensity;
+    } else {
+        ambient = albedo * uAmbient;
+    }
+
+    vec3 color = ambient
                + (1.0 - shadow) * uLightColor * (albedo * diff + spec);
 
     // Point lights: diffuse + a little specular, with smooth range falloff.

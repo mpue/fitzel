@@ -10,6 +10,7 @@ add_library(fitzel STATIC
     src/graphics/CascadedShadowMap.cpp
     src/graphics/CubeShadowMap.cpp
     src/graphics/CubeRenderTarget.cpp
+    src/graphics/EnvironmentIBL.cpp
     src/graphics/RenderTarget.cpp
     src/graphics/stb_image_impl.cpp
     src/graphics/tinyexr_impl.cpp

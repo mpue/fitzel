@@ -15,6 +15,7 @@ namespace fitzel {
 class Camera;
 class Mesh;
 class Material;
+class EnvironmentIBL;
 
 struct DirectionalLight {
     glm::vec3 direction{0.5f, 1.0f, 0.35f}; // points *towards* the light
@@ -63,6 +64,11 @@ public:
     // The dynamic environment-probe cubemap for reflective materials. Always
     // bound (unit 2) so its samplerCube never aliases a 2D sampler's unit.
     static constexpr int kEnvProbeUnit = 2;
+    // Image-based-lighting cubemaps from an HDRI (units 16/17; desktop GL gives
+    // >=32 image units). Always bound (probe cube as a fallback) to avoid unit-0
+    // aliasing; the shader only uses them when uUseIBL == 1.
+    static constexpr int kIrradianceUnit = 16;
+    static constexpr int kPrefilterUnit  = 17;
 
     explicit Renderer(int shadowResolution = 2048, int cascades = 4);
 
@@ -73,6 +79,12 @@ public:
     void begin(const Camera& camera, float aspect, const DirectionalLight& light);
     void setFog(const Fog& fog) { m_fog = fog; }
     void setExposure(float exposure) { m_exposure = exposure; }
+    // Image-based lighting from an HDRI. Pass a valid, loaded EnvironmentIBL and
+    // enabled = true to light lit-shader surfaces from it (replacing the flat
+    // ambient); pass nullptr/false to fall back to the directional ambient.
+    void setEnvironmentIBL(const EnvironmentIBL* ibl, bool enabled, float intensity) {
+        m_ibl = ibl; m_iblEnabled = enabled; m_iblIntensity = intensity;
+    }
     // Point lights for this frame (applied to lit-shader surfaces in every pass).
     void setPointLights(const std::vector<PointLight>& lights) { m_pointLights = lights; }
     // Render omnidirectional shadow cubemaps for the shadow-casting point lights
@@ -146,6 +158,9 @@ private:
     DirectionalLight m_light;
     std::vector<PointLight> m_pointLights;
     Fog              m_fog;
+    const EnvironmentIBL* m_ibl = nullptr;
+    bool             m_iblEnabled  = false;
+    float            m_iblIntensity = 1.0f;
     float            m_exposure = 1.0f;
     int              m_vpWidth   = 1;
     int              m_vpHeight  = 1;

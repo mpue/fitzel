@@ -25,6 +25,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <fitzel/Fitzel.hpp>
+#include <fitzel/graphics/EnvironmentIBL.hpp>
 
 #include "SceneTypes.hpp"
 #include "Primitives.hpp"
@@ -151,6 +152,13 @@ int main() {
         Renderer        renderer(2048, 4);
         DirectionalLight light;
 
+        // Image-based lighting from an HDRI (loaded on demand from the UI).
+        EnvironmentIBL environment;
+        bool  iblEnabled   = false;
+        bool  iblSkybox    = false;   // draw the HDRI as the sky background
+        float iblIntensity = 1.0f;
+        char  hdriPath[256] = "";
+
         // Water: planar reflection/refraction targets + a surface quad.
         Shader water = Shader::fromFiles("assets/shaders/water.vert",
                                          "assets/shaders/water.frag");
@@ -202,6 +210,9 @@ int main() {
             std::fprintf(stderr, "Failed to load sky shader\n");
             return 1;
         }
+        // HDRI skybox (reuses the fullscreen sky vertex shader).
+        Shader skybox = Shader::fromFiles("assets/shaders/sky.vert",
+                                          "assets/shaders/skybox.frag");
         const std::vector<Vertex> fsVerts = {
             {{-1.0f, -1.0f, 0.0f}, {0, 0, 1}, {0, 0}},
             {{ 1.0f, -1.0f, 0.0f}, {0, 0, 1}, {1, 0}},
@@ -694,6 +705,7 @@ int main() {
         bool showRoads       = false;
         bool showVehiclePanel = false;
         bool showPresets     = false;
+        bool showEnv         = false;
         std::string modelFile;       // selected file in the Models panel
 
         // Projects: a named scene file under projects/. currentProject is the
@@ -1330,6 +1342,48 @@ int main() {
         int  presetSel = -1;
         char presetName[64] = "my scene";
 
+        // --- Play mode: run the scene as a game -------------------------------
+        // Play snapshots the editable scene state and drops the player into
+        // first-person walk mode; Stop restores the snapshot and the edit camera
+        // exactly, so play-time changes never leak into the edited scene.
+        bool playMode = false;
+        std::vector<Entity>      playEntities;
+        std::vector<MaterialDef> playMaterials;
+        glm::vec3 playCamPos{0.0f};
+        float     playCamYaw = 0.0f, playCamPitch = 0.0f;
+        bool      playPrevEdit = false;
+        auto startPlay = [&] {
+            if (playMode) return;
+            playMode      = true;
+            playEntities  = entities;
+            playMaterials = materials;
+            playCamPos    = camera.position();
+            playCamYaw    = camera.yaw();
+            playCamPitch  = camera.pitch();
+            playPrevEdit  = entityEditMode;
+            entityEditMode = false;
+            entitySel      = -1;
+            vehicleMode    = false;
+            fpsMode        = true; // play as the walking player
+            input.setCursorLocked(true);
+            fpsVelY = 0.0f;
+            const glm::vec3 p = camera.position();
+            camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
+        };
+        auto stopPlay = [&] {
+            if (!playMode) return;
+            playMode  = false;
+            entities  = std::move(playEntities);
+            materials = std::move(playMaterials);
+            fpsMode   = false;
+            input.setCursorLocked(false);
+            camera.setPosition(playCamPos);
+            camera.setYaw(playCamYaw);
+            camera.setPitch(playCamPitch);
+            entityEditMode = playPrevEdit;
+            entitySel = -1;
+        };
+
         showProgress(0.95f, "Generating world...");
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
@@ -1394,7 +1448,8 @@ int main() {
                     presentMode = false;
                     glfwSetWindowMonitor(window.nativeHandle(), nullptr,
                                          savedWX, savedWY, savedWW, savedWH, 0);
-                } else if (vehicleMode)  { vehicleMode = false; }
+                } else if (playMode)     { stopPlay(); }
+                else if (vehicleMode)    { vehicleMode = false; }
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
                 else              { window.requestClose(); }
             }
@@ -1684,6 +1739,7 @@ int main() {
             fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
             fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
+            renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
 
             // --- UI ------------------------------------------------------
             gui.beginFrame();
@@ -1766,9 +1822,22 @@ int main() {
                     ImGui::Separator();
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
+                    ImGui::MenuItem("Environment",     nullptr, &showEnv);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
                     ImGui::EndMenu();
+                }
+                // Play / Stop: run the scene as a game (first-person), Stop (or
+                // Esc) restores the edited scene and camera exactly.
+                ImGui::Separator();
+                if (playMode) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.45f, 0.35f, 1.0f));
+                    if (ImGui::MenuItem("[  Stop  ]")) stopPlay();
+                    ImGui::PopStyleColor();
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 1.0f, 0.55f, 1.0f));
+                    if (ImGui::MenuItem("|>  Play")) startPlay();
+                    ImGui::PopStyleColor();
                 }
                 ImGui::EndMainMenuBar();
             }
@@ -2662,6 +2731,34 @@ int main() {
                 ImGui::End();
             }
 
+            // HDRI environment lighting (image-based lighting).
+            if (showEnv) {
+                if (ImGui::Begin("Environment", &showEnv)) {
+                    ImGui::TextDisabled("Equirectangular .hdr / .exr panorama.");
+                    ImGui::SetNextItemWidth(220.0f);
+                    ImGui::InputText("HDRI", hdriPath, sizeof(hdriPath));
+                    if (ImGui::Button("Load")) {
+                        // Try the path as given, else relative to the textures folder.
+                        bool ok = environment.load(hdriPath);
+                        if (!ok)
+                            ok = environment.load(std::string(FITZEL_TEXTURE_DIR) +
+                                                  "/" + hdriPath);
+                        iblEnabled = ok;
+                    }
+                    ImGui::SameLine();
+                    ImGui::TextDisabled(environment.valid() ? "loaded" : "not loaded");
+
+                    ImGui::BeginDisabled(!environment.valid());
+                    ImGui::Checkbox("Enable IBL lighting", &iblEnabled);
+                    ImGui::Checkbox("Show HDRI as background", &iblSkybox);
+                    ImGui::SliderFloat("Intensity", &iblIntensity, 0.0f, 4.0f);
+                    ImGui::EndDisabled();
+                    ImGui::TextDisabled("Lights surfaces from the panorama\n"
+                                        "(diffuse irradiance + specular).");
+                }
+                ImGui::End();
+            }
+
             if (showVehiclePanel) { if (ImGui::Begin("Vehicle", &showVehiclePanel)) {
                 if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
                     if (vehicleMode) {
@@ -2943,6 +3040,31 @@ int main() {
                 glEnable(GL_CULL_FACE);
             };
 
+            // Background: the HDRI panorama when it is the active sky, else the
+            // procedural sky. Same signature as drawSky so it drops in everywhere.
+            auto drawBackground = [&](const glm::mat4& invViewProj,
+                                      const glm::vec3& eye, bool tonemap) {
+                if (!(iblSkybox && environment.valid())) {
+                    drawSky(invViewProj, eye, tonemap);
+                    return;
+                }
+                glDisable(GL_DEPTH_TEST);
+                glDepthMask(GL_FALSE);
+                glDisable(GL_CULL_FACE);
+                skybox.bind();
+                environment.bindEnvCube(0);
+                skybox.setInt("uEnv", 0);
+                skybox.setMat4("uInvViewProj", invViewProj);
+                skybox.setVec3("uCameraPos", eye);
+                skybox.setFloat("uIntensity", iblIntensity);
+                skybox.setFloat("uExposure", exposure);
+                skybox.setInt("uTonemap", tonemap ? 1 : 0);
+                fsQuad.draw();
+                glDepthMask(GL_TRUE);
+                glEnable(GL_DEPTH_TEST);
+                glEnable(GL_CULL_FACE);
+            };
+
             // Instanced 3D trees for a given view (used by the main pass and the
             // water reflection, so trees mirror in the water). Two-sided.
             auto drawTrees = [&](const glm::mat4& vp, const glm::vec3& eye) {
@@ -2993,7 +3115,7 @@ int main() {
             if (hasReflective) {
                 renderer.prepareEnvProbe(probePos,
                     [&](const glm::mat4& ivp, const glm::vec3& eye) {
-                        drawSky(ivp, eye, false);
+                        drawBackground(ivp, eye, false);
                     });
             }
 
@@ -3009,7 +3131,7 @@ int main() {
             // shader can sample and tonemap them once at the end.
             reflectRT.bind();
             glClear(GL_DEPTH_BUFFER_BIT);
-            drawSky(glm::inverse(proj * reflView), reflEye, false);
+            drawBackground(glm::inverse(proj * reflView), reflEye, false);
             glCullFace(GL_FRONT); // mirroring flips winding
             renderer.renderScene(reflView, proj, reflEye,
                                  glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
@@ -3034,7 +3156,7 @@ int main() {
             }
             hdrRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            drawSky(glm::inverse(mainVP), camPos, false);
+            drawBackground(glm::inverse(mainVP), camPos, false);
             renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
 
             // Grass (instanced) into the HDR buffer, lit + fogged like the terrain.

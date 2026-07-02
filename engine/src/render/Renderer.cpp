@@ -2,6 +2,7 @@
 
 #include "fitzel/graphics/Material.hpp"
 #include "fitzel/graphics/Mesh.hpp"
+#include "fitzel/graphics/EnvironmentIBL.hpp"
 #include "fitzel/scene/Camera.hpp"
 
 #include <algorithm>
@@ -298,6 +299,24 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         m_envRead->bindTexture(kEnvProbeUnit);
         s->setInt("uEnvProbe", kEnvProbeUnit);
         s->setFloat("uEnvMaxLod", static_cast<float>(m_envRead->mipLevels() - 1));
+
+        // Image-based lighting from an HDRI. Bind the irradiance + prefilter
+        // cubemaps (or the probe cube as a harmless fallback so these samplerCubes
+        // never alias unit 0); the shader only reads them when uUseIBL == 1.
+        const bool useIbl = m_ibl && m_ibl->valid() && m_iblEnabled;
+        if (useIbl) {
+            m_ibl->bindIrradiance(kIrradianceUnit);
+            m_ibl->bindPrefilter(kPrefilterUnit);
+        } else {
+            m_envRead->bindTexture(kIrradianceUnit);
+            m_envRead->bindTexture(kPrefilterUnit);
+        }
+        s->setInt("uIrradiance", kIrradianceUnit);
+        s->setInt("uPrefilter", kPrefilterUnit);
+        s->setInt("uUseIBL", useIbl ? 1 : 0);
+        s->setFloat("uIBLIntensity", m_iblIntensity);
+        s->setFloat("uPrefilterMaxLod",
+                    useIbl ? static_cast<float>(m_ibl->prefilterMipLevels() - 1) : 0.0f);
 
         for (int i = 0; i < cascades; ++i) {
             const std::string idx = std::to_string(i);
