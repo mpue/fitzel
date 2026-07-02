@@ -99,11 +99,24 @@ static float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z
     return best;
 }
 
-// An axis-aligned solid block: walkable/collidable world geometry.
-struct SolidBox {
+// A scene entity: a placed, selectable object. Box/Ramp/Cylinder are solid,
+// walkable geometry; Light is a point-light marker.
+enum class EntityType { Box, Ramp, Cylinder, Light };
+inline const char* entityTypeName(EntityType t) {
+    switch (t) {
+        case EntityType::Box:      return "Box";
+        case EntityType::Ramp:     return "Ramp";
+        case EntityType::Cylinder: return "Cylinder";
+        case EntityType::Light:    return "Light";
+    }
+    return "Entity";
+}
+struct Entity {
+    EntityType  type = EntityType::Box;
     glm::vec3   center;
-    glm::vec3   half;                       // half-extents
-    glm::vec3   color{0.62f, 0.62f, 0.64f}; // albedo
+    glm::vec3   half{1.0f};                  // half-extents (Ramp rises along +Z)
+    glm::vec3   color{0.62f, 0.62f, 0.64f};  // albedo (Light: emissive colour)
+    float       intensity = 8.0f;            // Light only
     std::string name;
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object
@@ -232,6 +245,49 @@ static MeshData makeCylinderX(float r, float ht, int seg) {
     return m;
 }
 
+// A unit ramp in [-0.5,0.5]^3 rising along +Z (low at z=-0.5, high at z=+0.5).
+// Double-sided so it is robust to winding. Scaled by an entity's half-extents.
+static std::vector<Vertex> makeRampVerts() {
+    std::vector<Vertex> v;
+    auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {
+        for (glm::vec3 p : {a, b, c, a, c, d}) v.push_back({p, n, {0, 0}});
+        for (glm::vec3 p : {a, c, b, a, d, c}) v.push_back({p, -n, {0, 0}}); // back side
+    };
+    const float lo = -0.5f, hi = 0.5f;
+    const glm::vec3 Al(lo, lo, lo), Bl(lo, lo, hi), Cl(lo, hi, hi);
+    const glm::vec3 Ar(hi, lo, lo), Br(hi, lo, hi), Cr(hi, hi, hi);
+    quad(Al, Ar, Br, Bl, {0, -1, 0});                                  // bottom
+    quad(Bl, Br, Cr, Cl, {0, 0, 1});                                   // back wall
+    quad(Al, Cl, Cr, Ar, glm::normalize(glm::vec3(0, 1, -1)));         // slope
+    // triangular sides
+    for (glm::vec3 p : {Al, Bl, Cl}) v.push_back({p, {-1, 0, 0}, {0, 0}});
+    for (glm::vec3 p : {Al, Cl, Bl}) v.push_back({p, { 1, 0, 0}, {0, 0}});
+    for (glm::vec3 p : {Ar, Cr, Br}) v.push_back({p, { 1, 0, 0}, {0, 0}});
+    for (glm::vec3 p : {Ar, Br, Cr}) v.push_back({p, {-1, 0, 0}, {0, 0}});
+    return v;
+}
+
+// A unit cylinder (radius 0.5, y in [-0.5,0.5], axle Y). Double-sided.
+static std::vector<Vertex> makeCylinderYVerts(int seg = 20) {
+    std::vector<Vertex> v;
+    const float TAU = 6.28318530718f, r = 0.5f, hy = 0.5f;
+    auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 n) {
+        v.push_back({a, n, {0, 0}}); v.push_back({b, n, {0, 0}}); v.push_back({c, n, {0, 0}});
+        v.push_back({a, -n, {0, 0}}); v.push_back({c, -n, {0, 0}}); v.push_back({b, -n, {0, 0}});
+    };
+    for (int i = 0; i < seg; ++i) {
+        const float a0 = static_cast<float>(i) / seg * TAU;
+        const float a1 = static_cast<float>(i + 1) / seg * TAU;
+        const glm::vec3 n0(std::cos(a0), 0, std::sin(a0)), n1(std::cos(a1), 0, std::sin(a1));
+        const glm::vec3 b0(r * n0.x, -hy, r * n0.z), t0(r * n0.x, hy, r * n0.z);
+        const glm::vec3 b1(r * n1.x, -hy, r * n1.z), t1(r * n1.x, hy, r * n1.z);
+        tri(b0, b1, t1, n0); tri(b0, t1, t0, n0);        // side
+        tri(glm::vec3(0, hy, 0), t0, t1, {0, 1, 0});     // top cap
+        tri(glm::vec3(0, -hy, 0), b1, b0, {0, -1, 0});   // bottom cap
+    }
+    return v;
+}
+
 int main() {
     try {
         Window window(WindowConfig{
@@ -246,6 +302,36 @@ int main() {
         Gui    gui(window);
         Camera camera({0.0f, 10.0f, 30.0f}, -90.0f, -5.0f);
         camera.moveSpeed = 20.0f;
+
+        // Startup loading screen: render one frame with a progress bar. Called
+        // between the (synchronous, GL-bound) asset loads so the window shows what
+        // it is doing instead of staying black while everything loads.
+        auto showProgress = [&](float frac, const char* label) {
+            window.pollEvents();
+            int w = 0, h = 0;
+            window.framebufferSize(w, h);
+            glViewport(0, 0, w, h);
+            glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            gui.beginFrame();
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(
+                ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
+                       vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f));
+            ImGui::Begin("##loading", nullptr,
+                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse);
+            ImGui::Text("Fitzel");
+            ImGui::Spacing();
+            ImGui::TextUnformatted(label);
+            ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
+            ImGui::End();
+            gui.endFrame();
+            window.swapBuffers();
+        };
+        showProgress(0.02f, "Starting up...");
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
                                        "assets/shaders/lit.frag");
@@ -270,16 +356,24 @@ int main() {
         // Terrain PBR-ish albedo textures (triplanar), loaded from the repo's
         // textures/ folder (path injected by CMake).
         const std::string texDir = FITZEL_TEXTURE_DIR;
+        showProgress(0.08f, "Loading terrain textures (sand)...");
         Texture texSand   = Texture::fromFile(texDir + "/coast_sand_01_diff_4k.jpg");
+        showProgress(0.13f, "Loading terrain textures (ground)...");
         Texture texGround = Texture::fromFile(texDir + "/aerial_rocks_01_diff_4k.jpg");
+        showProgress(0.18f, "Loading terrain textures (rock)...");
         Texture texCliff  = Texture::fromFile(texDir + "/rocky_terrain_02_diff_4k.jpg");
+        showProgress(0.23f, "Loading terrain textures (snow)...");
         Texture texSnow   = Texture::fromFile(texDir + "/snow_02_diff_4k.jpg");
         // Matching triplanar normal maps. PolyHaven ships these as DWAA-compressed
         // EXR (which most loaders, incl. tinyexr, can't decode), so they're
         // converted to PNG once (see README); no vertical flip.
+        showProgress(0.28f, "Loading normal maps (sand)...");
         Texture texSandN   = Texture::fromFile(texDir + "/coast_sand_01_nor_gl_4k.png", false);
+        showProgress(0.33f, "Loading normal maps (ground)...");
         Texture texGroundN = Texture::fromFile(texDir + "/aerial_rocks_01_nor_gl_4k.png", false);
+        showProgress(0.38f, "Loading normal maps (rock)...");
         Texture texCliffN  = Texture::fromFile(texDir + "/rocky_terrain_02_nor_gl_4k.png", false);
+        showProgress(0.43f, "Loading normal maps (snow)...");
         Texture texSnowN   = Texture::fromFile(texDir + "/snow_02_nor_gl_4k.png", false);
         if (!texSand.isValid() || !texGround.isValid() ||
             !texCliff.isValid() || !texSnow.isValid()) {
@@ -584,6 +678,7 @@ int main() {
         std::vector<float>    treeVerts; // combined: pos3 normal3 uv2
         const float treeLocalHeight = 1.0f;
         float       treeSize = 9.0f;     // average tree height (world units)
+        showProgress(0.55f, "Loading tree model...");
         {
             ModelData md = loadGltf(std::string(FITZEL_MODEL_DIR) + "/tree1.glb");
             if (md.empty() || md.height() < 0.01f) {
@@ -648,6 +743,7 @@ int main() {
 
         // Tree billboards (LOD for distant trees): a camera-facing textured quad
         // that reuses the tree instance buffer; the corner comes from gl_VertexID.
+        showProgress(0.68f, "Loading tree billboards...");
         Texture billboardTex = Texture::fromFile(texDir + "/billboard_tree_bled.png");
         Shader  billboard = Shader::fromFiles("assets/shaders/billboard.vert",
                                               "assets/shaders/billboard.frag");
@@ -820,28 +916,32 @@ int main() {
             camChase  = camera.position();
         };
 
-        // --- Solid geometry: placeable walkable blocks (reuse the unit cube) ---
-        std::vector<SolidBox> solids;
-        int       solidSel      = -1;
-        bool      solidEditMode = false;
-        glm::vec3 solidNewHalf(1.0f, 1.0f, 1.0f); // default block size (half-extents)
-        glm::vec3 solidNewColor(0.62f, 0.62f, 0.64f);
-        int       solidCounter = 0; // for unique default names
+        // --- Scene entities: placeable objects (box / ramp / cylinder / light) ---
+        Mesh rampMesh = Mesh::create(makeRampVerts());
+        Mesh cylMesh  = Mesh::create(makeCylinderYVerts());
+        std::vector<Entity> entities;
+        int       entitySel      = -1;
+        bool      entityEditMode = false;
+        glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
+        glm::vec3 entityNewColor(0.62f, 0.62f, 0.64f);
+        EntityType entityNewType = EntityType::Box; // type placed on click
+        int       entityCounter = 0; // for unique default names
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
-        // Add a block sitting on the terrain at a world point.
-        auto addSolid = [&](glm::vec3 groundPos) {
-            SolidBox nb;
-            nb.center = glm::vec3(groundPos.x, groundPos.y + solidNewHalf.y, groundPos.z);
-            nb.half   = solidNewHalf;
-            nb.color  = solidNewColor;
-            nb.id     = solidCounter++;
-            nb.name   = "Box " + std::to_string(nb.id);
-            solids.push_back(nb);
-            solidSel = static_cast<int>(solids.size()) - 1;
+        // Add an entity of the given type, sitting on the terrain at a world point.
+        auto addEntity = [&](glm::vec3 groundPos, EntityType type) {
+            Entity nb;
+            nb.type   = type;
+            nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f) : entityNewHalf;
+            nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
+            nb.color  = (type == EntityType::Light) ? glm::vec3(1.0f, 0.95f, 0.8f) : entityNewColor;
+            nb.id     = entityCounter++;
+            nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
+            entities.push_back(nb);
+            entitySel = static_cast<int>(entities.size()) - 1;
         };
         // Move a box (by id) and all its descendants by `delta` (parented drag).
         std::function<void(int, glm::vec3)> moveSubtree = [&](int pid, glm::vec3 d) {
-            for (SolidBox& c : solids)
+            for (Entity& c : entities)
                 if (c.parent == pid) { c.center += d; moveSubtree(c.id, d); }
         };
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
@@ -849,18 +949,18 @@ int main() {
             for (int p = a; p >= 0; ) {
                 if (p == ancestorId) return true;
                 int nextIdx = -1;
-                for (int i = 0; i < static_cast<int>(solids.size()); ++i)
-                    if (solids[i].id == p) { nextIdx = i; break; }
-                p = (nextIdx >= 0) ? solids[nextIdx].parent : -1;
+                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
+                    if (entities[i].id == p) { nextIdx = i; break; }
+                p = (nextIdx >= 0) ? entities[nextIdx].parent : -1;
             }
             return false;
         };
         // Delete a box by index, reparenting its children to its own parent.
-        auto deleteSolid = [&](int idx) {
-            const int gid = solids[idx].parent, did = solids[idx].id;
-            for (SolidBox& c : solids) if (c.parent == did) c.parent = gid;
-            solids.erase(solids.begin() + idx);
-            solidSel = -1;
+        auto deleteEntity = [&](int idx) {
+            const int gid = entities[idx].parent, did = entities[idx].id;
+            for (Entity& c : entities) if (c.parent == did) c.parent = gid;
+            entities.erase(entities.begin() + idx);
+            entitySel = -1;
         };
 
         // Tree instances live here (filled by regenTrees below); declared early
@@ -1040,6 +1140,7 @@ int main() {
         };
 
         // --- Audio: weather-driven sound layers --------------------------
+        showProgress(0.82f, "Loading audio...");
         Audio audio;
         const std::string soundDir = FITZEL_SOUND_DIR;
         Sound rainSnd    = Sound::fromFile(audio, soundDir + "/rain.wav", true);
@@ -1139,7 +1240,7 @@ int main() {
 
         // --- Scenes: Nature (full outdoor) vs Empty (flat build sandbox) -----
         const TerrainSettings natureSettings = settings;
-        int  scene = 0; // 0 = Nature, 1 = Empty
+        int  scene = 1; // 0 = Nature, 1 = Empty  (start empty for editing)
         auto applyScene = [&](int s) {
             scene = s;
             if (s == 1) {                 // Empty: flat ground, nothing growing, no water
@@ -1164,6 +1265,7 @@ int main() {
             treeCenter = glm::vec2(1e9f);
             roadDirty  = true;
         };
+        applyScene(scene); // start in the selected scene (Empty by default)
 
         // --- Preset system ------------------------------------------------
         // Every tunable is bound by name to a getter/setter, so presets are a
@@ -1253,6 +1355,10 @@ int main() {
         std::vector<std::string> presetList = listPresets();
         int  presetSel = -1;
         char presetName[64] = "my scene";
+
+        showProgress(0.95f, "Generating world...");
+        streamer.update(camera.position()); // kick off the initial terrain ring
+        showProgress(1.0f, "Ready");
 
         double lastTime = window.time();
 
@@ -1380,29 +1486,37 @@ int main() {
                 // A block is a wall for us only where it spans our body above the
                 // step height (low blocks are steps we climb, not walls).
                 const float bodyLo = feetY + stepH, bodyHi = feetY + eyeHeight;
-                auto wallHit = [&](const SolidBox& b, float px, float pz) {
+                auto wallHit = [&](const Entity& b, float px, float pz) {
+                    if (b.type == EntityType::Ramp || b.type == EntityType::Light) return false;
                     if (bodyHi <= b.center.y - b.half.y || bodyLo >= b.center.y + b.half.y) return false;
                     if (px + pr <= b.center.x - b.half.x || px - pr >= b.center.x + b.half.x) return false;
                     if (pz + pr <= b.center.z - b.half.z || pz - pr >= b.center.z + b.half.z) return false;
                     return true;
                 };
                 float nx = pos.x + mvx; // move X, then Z -> slide along faces
-                for (const SolidBox& b : solids)
+                for (const Entity& b : entities)
                     if (wallHit(b, nx, pos.z))
                         nx = (mvx > 0.0f) ? b.center.x - b.half.x - pr : b.center.x + b.half.x + pr;
                 pos.x = nx;
                 float nz = pos.z + mvz;
-                for (const SolidBox& b : solids)
+                for (const Entity& b : entities)
                     if (wallHit(b, pos.x, nz))
                         nz = (mvz > 0.0f) ? b.center.z - b.half.z - pr : b.center.z + b.half.z + pr;
                 pos.z = nz;
 
                 // Ground = terrain, raised to the top of any block we stand over.
                 float groundY = streamer.heightAt(pos.x, pos.z);
-                for (const SolidBox& b : solids) {
+                for (const Entity& b : entities) {
+                    if (b.type == EntityType::Light) continue;
                     if (pos.x + pr > b.center.x - b.half.x && pos.x - pr < b.center.x + b.half.x &&
                         pos.z + pr > b.center.z - b.half.z && pos.z - pr < b.center.z + b.half.z) {
-                        const float top = b.center.y + b.half.y;
+                        float top;
+                        if (b.type == EntityType::Ramp) { // sloped top: rises along +Z
+                            float f = (pos.z - (b.center.z - b.half.z)) / (2.0f * b.half.z);
+                            top = (b.center.y - b.half.y) + glm::clamp(f, 0.0f, 1.0f) * (2.0f * b.half.y);
+                        } else {
+                            top = b.center.y + b.half.y;
+                        }
                         if (top <= feetY + stepH + 0.01f && top > groundY) groundY = top;
                     }
                 }
@@ -1739,7 +1853,7 @@ int main() {
 
                 // --- Solid blocks: click to select an existing box or place a
                 //     new one on the terrain; Del removes the selected block. ----
-                if (solidEditMode) {
+                if (entityEditMode) {
                     const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     const glm::mat4 view = camera.viewMatrix();
                     const glm::mat4 proj = camera.projectionMatrix(asp);
@@ -1750,8 +1864,8 @@ int main() {
                     ImGuizmo::SetDrawlist();
                     ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
                                                       static_cast<float>(viewH));
-                    if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
-                        SolidBox& b = solids[solidSel];
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
+                        Entity& b = entities[entitySel];
                         const glm::vec3 oldCenter = b.center;
                         const int selId = b.id;
                         glm::mat4 model = glm::translate(glm::mat4(1.0f), b.center)
@@ -1778,22 +1892,22 @@ int main() {
                         const glm::vec3 ro = glm::vec3(pn);
                         const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
                         int hit = -1; float bestT = 1e30f;
-                        for (int i = 0; i < static_cast<int>(solids.size()); ++i) {
-                            const float t = rayAABB(ro, rd, solids[i].center - solids[i].half,
-                                                            solids[i].center + solids[i].half);
+                        for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
+                            const float t = rayAABB(ro, rd, entities[i].center - entities[i].half,
+                                                            entities[i].center + entities[i].half);
                             if (t >= 0.0f && t < bestT) { bestT = t; hit = i; }
                         }
                         if (hit >= 0) {
-                            solidSel = hit; // clicked a block -> select it
+                            entitySel = hit; // clicked a block -> select it
                         } else {
                             glm::vec3 h; // empty ground -> drop a new block there
-                            if (roadPickTerrain(viewportMouseNdc, vp, h)) addSolid(h);
+                            if (roadPickTerrain(viewportMouseNdc, vp, h)) addEntity(h, entityNewType);
                         }
                     }
-                    if (solidSel >= 0 && solidSel < static_cast<int>(solids.size()) &&
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        solids.erase(solids.begin() + solidSel);
-                        solidSel = -1;
+                        entities.erase(entities.begin() + entitySel);
+                        entitySel = -1;
                     }
                 }
             } else {
@@ -2122,8 +2236,8 @@ int main() {
             ImGui::End();
 
             if (ImGui::Begin("Hierarchy")) {
-                ImGui::Checkbox("Edit mode", &solidEditMode);
-                if (solidEditMode)
+                ImGui::Checkbox("Edit mode", &entityEditMode);
+                if (entityEditMode)
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "Click ground = add | click block = select | drag gizmo");
                 else
@@ -2137,22 +2251,29 @@ int main() {
                 if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
                     gizmoOp = ImGuizmo::SCALE;
 
-                if (ImGui::Button("Add box")) {
+                // Object palette: type placed on viewport-click, plus quick "Add".
+                const char* typeNames[] = {"Box", "Ramp", "Cylinder", "Light"};
+                int nt = static_cast<int>(entityNewType);
+                ImGui::SetNextItemWidth(120.0f);
+                if (ImGui::Combo("Type", &nt, typeNames, 4))
+                    entityNewType = static_cast<EntityType>(nt);
+                ImGui::SameLine();
+                if (ImGui::Button("Add")) {
                     const glm::vec3 p = camera.position() + camera.front() * 6.0f;
-                    addSolid(glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z));
+                    addEntity(glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z), entityNewType);
                 }
-                ImGui::SameLine();
-                ImGui::BeginDisabled(solidSel < 0 || solidSel >= static_cast<int>(solids.size()));
+                ImGui::TextDisabled("(or click the ground in the viewport in edit mode)");
+                ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
                 if (ImGui::Button("Duplicate")) {
-                    SolidBox nb = solids[solidSel];
+                    Entity nb = entities[entitySel];
                     nb.center.x += nb.half.x * 2.2f;
-                    nb.id = solidCounter++;
+                    nb.id = entityCounter++;
                     nb.name += " copy";
-                    solids.push_back(nb);
-                    solidSel = static_cast<int>(solids.size()) - 1;
+                    entities.push_back(nb);
+                    entitySel = static_cast<int>(entities.size()) - 1;
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Delete")) deleteSolid(solidSel);
+                if (ImGui::Button("Delete")) deleteEntity(entitySel);
                 ImGui::EndDisabled();
 
                 ImGui::SeparatorText("Scene");
@@ -2162,18 +2283,18 @@ int main() {
                 std::function<void(int)> drawNode = [&](int i) {
                     ImGui::PushID(i);
                     bool hasChildren = false;
-                    for (const SolidBox& c : solids)
-                        if (c.parent == solids[i].id) { hasChildren = true; break; }
+                    for (const Entity& c : entities)
+                        if (c.parent == entities[i].id) { hasChildren = true; break; }
                     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
                                              | ImGuiTreeNodeFlags_SpanAvailWidth
                                              | ImGuiTreeNodeFlags_DefaultOpen;
-                    if (i == solidSel)  flags |= ImGuiTreeNodeFlags_Selected;
+                    if (i == entitySel)  flags |= ImGuiTreeNodeFlags_Selected;
                     if (!hasChildren)   flags |= ImGuiTreeNodeFlags_Leaf;
-                    const char* nm = solids[i].name.empty() ? "(box)" : solids[i].name.c_str();
+                    const char* nm = entities[i].name.empty() ? "(box)" : entities[i].name.c_str();
                     const bool open = ImGui::TreeNodeEx("##n", flags, "%s", nm);
-                    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) solidSel = i;
+                    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) entitySel = i;
                     if (ImGui::BeginDragDropSource()) {
-                        const int sid = solids[i].id;
+                        const int sid = entities[i].id;
                         ImGui::SetDragDropPayload("SOLID_ID", &sid, sizeof(int));
                         ImGui::Text("%s", nm);
                         ImGui::EndDragDropSource();
@@ -2181,14 +2302,14 @@ int main() {
                     if (ImGui::BeginDragDropTarget()) {
                         if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
                             reparentSrc = *static_cast<const int*>(pl->Data);
-                            reparentTo  = solids[i].id;
+                            reparentTo  = entities[i].id;
                         }
                         ImGui::EndDragDropTarget();
                     }
                     if (open) {
                         if (hasChildren)
-                            for (int c = 0; c < static_cast<int>(solids.size()); ++c)
-                                if (solids[c].parent == solids[i].id) drawNode(c);
+                            for (int c = 0; c < static_cast<int>(entities.size()); ++c)
+                                if (entities[c].parent == entities[i].id) drawNode(c);
                         ImGui::TreePop();
                     }
                     ImGui::PopID();
@@ -2202,71 +2323,80 @@ int main() {
                     }
                     ImGui::EndDragDropTarget();
                 }
-                for (int i = 0; i < static_cast<int>(solids.size()); ++i)
-                    if (solids[i].parent < 0) drawNode(i);
+                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
+                    if (entities[i].parent < 0) drawNode(i);
                 ImGui::EndChild();
                 // Apply a requested reparent (rejecting cycles).
                 if (reparentSrc >= 0 && reparentTo != -2) {
                     int si = -1;
-                    for (int k = 0; k < static_cast<int>(solids.size()); ++k)
-                        if (solids[k].id == reparentSrc) { si = k; break; }
+                    for (int k = 0; k < static_cast<int>(entities.size()); ++k)
+                        if (entities[k].id == reparentSrc) { si = k; break; }
                     if (si >= 0 && reparentSrc != reparentTo &&
                         (reparentTo < 0 || !isUnderId(reparentTo, reparentSrc)))
-                        solids[si].parent = reparentTo;
+                        entities[si].parent = reparentTo;
                 }
 
                 ImGui::Separator();
-                if (ImGui::Button("Clear all")) { solids.clear(); solidSel = -1; }
+                if (ImGui::Button("Clear all")) { entities.clear(); entitySel = -1; }
                 ImGui::SameLine();
                 if (ImGui::Button("Save")) {
-                    std::ofstream f("solids.txt");
-                    for (const SolidBox& b : solids)
-                        f << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
+                    std::ofstream f("scene.txt");
+                    for (const Entity& b : entities)
+                        f << static_cast<int>(b.type) << ' '
+                          << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
                           << b.half.x << ' ' << b.half.y << ' ' << b.half.z << ' '
                           << b.color.x << ' ' << b.color.y << ' ' << b.color.z << ' '
-                          << b.id << ' ' << b.parent << ' ' << b.name << '\n';
+                          << b.intensity << ' ' << b.id << ' ' << b.parent << ' '
+                          << b.name << '\n';
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Load")) {
-                    std::ifstream f("solids.txt");
+                    std::ifstream f("scene.txt");
                     if (f) {
-                        solids.clear();
+                        entities.clear();
                         int maxId = -1;
                         std::string line;
                         while (std::getline(f, line)) {
                             if (line.empty()) continue;
                             std::istringstream ss(line);
-                            SolidBox b;
-                            ss >> b.center.x >> b.center.y >> b.center.z
+                            Entity b;
+                            int ty = 0;
+                            ss >> ty
+                               >> b.center.x >> b.center.y >> b.center.z
                                >> b.half.x >> b.half.y >> b.half.z
                                >> b.color.x >> b.color.y >> b.color.z
-                               >> b.id >> b.parent;
+                               >> b.intensity >> b.id >> b.parent;
+                            b.type = static_cast<EntityType>(ty);
                             std::getline(ss, b.name);
                             if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
                             maxId = std::max(maxId, b.id);
-                            solids.push_back(b);
+                            entities.push_back(b);
                         }
-                        solidCounter = maxId + 1;
-                        solidSel = -1;
+                        entityCounter = maxId + 1;
+                        entitySel = -1;
                     }
                 }
                 ImGui::SameLine();
-                ImGui::TextDisabled("(solids.txt)");
+                ImGui::TextDisabled("(entities.txt)");
             }
             ImGui::End();
 
             if (ImGui::Begin("Inspector")) {
-                if (solidSel >= 0 && solidSel < static_cast<int>(solids.size())) {
-                    ImGui::SeparatorText("Selected object");
-                    SolidBox& b = solids[solidSel];
+                if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
+                    Entity& b = entities[entitySel];
+                    ImGui::SeparatorText(entityTypeName(b.type));
                     char buf[64];
                     std::snprintf(buf, sizeof(buf), "%s", b.name.c_str());
                     if (ImGui::InputText("Name", buf, sizeof(buf))) b.name = buf;
                     const glm::vec3 oldC = b.center;
                     if (ImGui::DragFloat3("Position", &b.center.x, 0.05f))
                         moveSubtree(b.id, b.center - oldC); // children follow
-                    ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
-                    ImGui::ColorEdit3("Colour", &b.color.x);
+                    if (b.type != EntityType::Light)
+                        ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
+                    ImGui::ColorEdit3(b.type == EntityType::Light ? "Light colour" : "Colour",
+                                      &b.color.x);
+                    if (b.type == EntityType::Light)
+                        ImGui::SliderFloat("Intensity", &b.intensity, 0.0f, 30.0f);
                     ImGui::Text("Parent: %s",
                                 b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
                     if (ImGui::Button("Drop to ground"))
@@ -2276,13 +2406,13 @@ int main() {
                     if (ImGui::Button("Unparent")) b.parent = -1;
                     ImGui::EndDisabled();
                     ImGui::SameLine();
-                    if (ImGui::Button("Delete##insp")) deleteSolid(solidSel);
+                    if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
                 } else {
                     ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
                 }
                 ImGui::SeparatorText("New block defaults");
-                ImGui::SliderFloat3("Size", &solidNewHalf.x, 0.25f, 12.0f, "%.2f m");
-                ImGui::ColorEdit3("New colour", &solidNewColor.x);
+                ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
+                ImGui::ColorEdit3("New colour", &entityNewColor.x);
                 ImGui::TextDisabled("Walk into blocks in FPS mode (F).");
             }
             ImGui::End();
@@ -2436,17 +2566,22 @@ int main() {
                 }
             }
 
-            // --- Solid blocks: per-block colour material, submitted through the
-            //     renderer (shadows, lighting, water). Materials are frame-local
-            //     and reserved so the pointers stay valid across all passes. -----
+            // --- Scene entities: per-entity colour material + type mesh, through
+            //     the renderer (shadows, lighting, water). Materials are frame-local
+            //     and reserved so the pointers stay valid across all passes. ------
             std::vector<Material> solidMats;
-            solidMats.reserve(solids.size());
-            for (const SolidBox& b : solids) {
+            solidMats.reserve(entities.size());
+            for (const Entity& b : entities) {
                 Material& mat = solidMats.emplace_back(lit);
-                mat.set("uColorMode", 0).set("uAlbedo", b.color).set("uWaterLevel", -1.0e4f);
+                // Light markers glow (emissive-ish: full albedo, unshaded-looking).
+                mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
+                   .set("uAlbedo", b.type == EntityType::Light ? b.color * 1.5f : b.color);
+                const Mesh& mesh = (b.type == EntityType::Ramp)     ? rampMesh
+                                 : (b.type == EntityType::Cylinder) ? cylMesh
+                                                                    : carCube;
                 const glm::mat4 m = glm::translate(glm::mat4(1.0f), b.center)
                                   * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
-                renderer.submit(carCube, mat, m);
+                renderer.submit(mesh, mat, m);
             }
 
             // --- Multi-pass render with sky and planar water ------------
