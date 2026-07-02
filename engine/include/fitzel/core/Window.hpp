@@ -8,10 +8,11 @@ struct GLFWwindow;
 namespace fitzel {
 
 struct WindowConfig {
-    int         width  = 1280;
-    int         height = 720;
-    std::string title  = "Fitzel";
-    bool        vsync  = true;
+    int         width     = 1280;
+    int         height    = 720;
+    std::string title     = "Fitzel";
+    bool        vsync     = true;
+    bool        maximized = false; // start maximized to the screen
 };
 
 // Owns a GLFW window plus its OpenGL 3.3 core context. Construction creates the
