@@ -17,6 +17,9 @@ compile_commands.json
 # Large binary texture assets (provided locally, not tracked)
 /textures/
 
+# Large model assets with embedded 4k textures (provided locally, not tracked)
+models/*_4k.glb
+
 # Audio assets (provided/generated locally, not tracked)
 /sounds/
 
