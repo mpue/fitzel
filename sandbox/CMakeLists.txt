@@ -2,7 +2,8 @@ add_executable(sandbox
     src/main.cpp
     src/Primitives.cpp
     src/SandboxMath.cpp
-    src/CameraPath.cpp)
+    src/CameraPath.cpp
+    src/PresetStore.cpp)
 
 target_link_libraries(sandbox PRIVATE fitzel)
 

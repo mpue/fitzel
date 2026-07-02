@@ -30,6 +30,7 @@
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
+#include "PresetStore.hpp"
 
 using namespace fitzel;
 
@@ -1288,23 +1289,10 @@ int main() {
         // Every tunable is bound by name to a getter/setter, so presets are a
         // simple "key value" text file per scene look. Unknown/missing keys are
         // ignored, so old presets keep working as fields come and go.
-        struct PField {
-            std::string key;
-            std::function<float()>     get;
-            std::function<void(float)> set;
-        };
-        std::vector<PField> fields;
-        auto addF = [&](const char* k, float& r) {
-            fields.push_back({k, [&r] { return r; }, [&r](float v) { r = v; }});
-        };
-        auto addB = [&](const char* k, bool& r) {
-            fields.push_back({k, [&r] { return r ? 1.0f : 0.0f; },
-                                 [&r](float v) { r = v > 0.5f; }});
-        };
-        auto addI = [&](const char* k, int& r) {
-            fields.push_back({k, [&r] { return static_cast<float>(r); },
-                                 [&r](float v) { r = static_cast<int>(std::lround(v)); }});
-        };
+        PresetStore presets;
+        auto addF = [&](const char* k, float& r) { presets.addFloat(k, r); };
+        auto addB = [&](const char* k, bool& r)  { presets.addBool(k, r); };
+        auto addI = [&](const char* k, int& r)   { presets.addInt(k, r); };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
@@ -1338,38 +1326,7 @@ int main() {
         addB("treeEnabled", treeEnabled);      addF("treeDensity", treeDensity);
         addF("treeSize", treeSize);            addF("lodNear", lodNear);
 
-        namespace fs = std::filesystem;
-        const fs::path presetDir = "presets";
-        auto listPresets = [&] {
-            std::vector<std::string> out;
-            std::error_code ec;
-            if (fs::exists(presetDir, ec))
-                for (const auto& e : fs::directory_iterator(presetDir, ec))
-                    if (e.path().extension() == ".fzp") out.push_back(e.path().stem().string());
-            std::sort(out.begin(), out.end());
-            return out;
-        };
-        auto savePreset = [&](const std::string& name) {
-            std::error_code ec; fs::create_directories(presetDir, ec);
-            std::ofstream f(presetDir / (name + ".fzp"));
-            for (const PField& fld : fields) f << fld.key << ' ' << fld.get() << '\n';
-        };
-        auto loadPreset = [&](const std::string& name) {
-            std::ifstream f(presetDir / (name + ".fzp"));
-            if (!f) return false;
-            std::map<std::string, float> vals;
-            std::string k; float v;
-            while (f >> k >> v) vals[k] = v;
-            for (const PField& fld : fields) {
-                auto it = vals.find(fld.key);
-                if (it != vals.end()) fld.set(it->second);
-            }
-            return true;
-        };
-        auto deletePreset = [&](const std::string& name) {
-            std::error_code ec; fs::remove(presetDir / (name + ".fzp"), ec);
-        };
-        std::vector<std::string> presetList = listPresets();
+        std::vector<std::string> presetList = presets.list();
         int  presetSel = -1;
         char presetName[64] = "my scene";
 
@@ -2743,14 +2700,14 @@ int main() {
                 ImGui::InputText("Name", presetName, sizeof(presetName));
                 if (ImGui::Button("Save preset")) {
                     if (presetName[0]) {
-                        savePreset(presetName);
-                        presetList = listPresets();
+                        presets.save(presetName);
+                        presetList = presets.list();
                         for (int i = 0; i < static_cast<int>(presetList.size()); ++i)
                             if (presetList[i] == presetName) presetSel = i;
                     }
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Refresh")) { presetList = listPresets(); presetSel = -1; }
+                if (ImGui::Button("Refresh")) { presetList = presets.list(); presetSel = -1; }
 
                 ImGui::SeparatorText("Saved presets");
                 if (presetList.empty()) {
@@ -2764,7 +2721,7 @@ int main() {
                         // Double-click loads immediately.
                         if (sel && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
                                 && ImGui::IsItemHovered()) {
-                            if (loadPreset(presetList[i])) applyLoaded();
+                            if (presets.load(presetList[i])) applyLoaded();
                         }
                     }
                     ImGui::EndListBox();
@@ -2773,12 +2730,12 @@ int main() {
                 const bool hasSel = presetSel >= 0 && presetSel < static_cast<int>(presetList.size());
                 ImGui::BeginDisabled(!hasSel);
                 if (ImGui::Button("Load")) {
-                    if (loadPreset(presetList[presetSel])) applyLoaded();
+                    if (presets.load(presetList[presetSel])) applyLoaded();
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Delete")) {
-                    deletePreset(presetList[presetSel]);
-                    presetList = listPresets();
+                    presets.remove(presetList[presetSel]);
+                    presetList = presets.list();
                     presetSel = -1;
                 }
                 ImGui::EndDisabled();
