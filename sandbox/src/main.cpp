@@ -480,38 +480,16 @@ int main() {
         Shader grass = Shader::fromFiles("assets/shaders/grass.vert",
                                          "assets/shaders/grass.frag");
         if (!grass.isValid()) { std::fprintf(stderr, "Failed to load grass shader\n"); return 1; }
-        GLuint grassVAO = 0, bladeVBO = 0, grassInstVBO = 0;
-        {
-            const float blade[] = { // triangle strip: (x, h01)
-                -0.5f, 0.0f,  0.5f, 0.0f,  -0.45f, 0.33f,  0.45f, 0.33f,
-                -0.30f, 0.66f, 0.30f, 0.66f,  0.0f, 1.0f };
-            glGenVertexArrays(1, &grassVAO);
-            glBindVertexArray(grassVAO);
-            glGenBuffers(1, &bladeVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, bladeVBO);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(blade), blade, GL_STATIC_DRAW);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
-            glGenBuffers(1, &grassInstVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, grassInstVBO);
-            const GLsizei is = 7 * sizeof(float);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-            glVertexAttribDivisor(1, 1);
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-            glVertexAttribDivisor(2, 1);
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
-            glVertexAttribDivisor(3, 1);
-            glEnableVertexAttribArray(4);
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(5 * sizeof(float)));
-            glVertexAttribDivisor(4, 1);
-            glEnableVertexAttribArray(5);
-            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, is, (void*)(6 * sizeof(float)));
-            glVertexAttribDivisor(5, 1);
-            glBindVertexArray(0);
-        }
+        // base: aBlade(x,h01) triangle strip ; instance: iPos3, iRot, iHeight,
+        // iPhase, iLush.
+        const float blade[] = {
+            -0.5f, 0.0f,  0.5f, 0.0f,  -0.45f, 0.33f,  0.45f, 0.33f,
+            -0.30f, 0.66f, 0.30f, 0.66f,  0.0f, 1.0f };
+        InstancedMesh grassField = InstancedMesh::create(
+            blade, sizeof(blade) / sizeof(float), 2 * sizeof(float), {{0, 2, 0}},
+            7 * sizeof(float),
+            {{1, 3, 0}, {2, 1, 3 * sizeof(float)}, {3, 1, 4 * sizeof(float)},
+             {4, 1, 5 * sizeof(float)}, {5, 1, 6 * sizeof(float)}});
         int       grassCount   = 0;
         glm::vec2 grassCenter(1e9f); // forces generation on the first frame
         bool      grassEnabled = true;
@@ -867,40 +845,15 @@ int main() {
         Shader flower = Shader::fromFiles("assets/shaders/flower.vert",
                                           "assets/shaders/flower.frag");
         if (!flower.isValid()) { std::fprintf(stderr, "Failed to load flower shader\n"); return 1; }
-        GLuint flowerVAO = 0, flowerBaseVBO = 0, flowerInstVBO = 0;
-        int    flowerVerts = 0;
-        {
-            const std::vector<float> fm = makeFlowerMesh();
-            flowerVerts = static_cast<int>(fm.size() / 7);
-            glGenVertexArrays(1, &flowerVAO);
-            glBindVertexArray(flowerVAO);
-            glGenBuffers(1, &flowerBaseVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, flowerBaseVBO);
-            glBufferData(GL_ARRAY_BUFFER, fm.size() * sizeof(float), fm.data(), GL_STATIC_DRAW);
-            const GLsizei bs = 7 * sizeof(float);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, bs, (void*)0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, bs, (void*)(3 * sizeof(float)));
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, bs, (void*)(6 * sizeof(float)));
-            glGenBuffers(1, &flowerInstVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, flowerInstVBO);
-            const GLsizei is = 8 * sizeof(float); // iPos3, iYaw, iScale, iColor3
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-            glVertexAttribDivisor(3, 1);
-            glEnableVertexAttribArray(4);
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-            glVertexAttribDivisor(4, 1);
-            glEnableVertexAttribArray(5);
-            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
-            glVertexAttribDivisor(5, 1);
-            glEnableVertexAttribArray(6);
-            glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, is, (void*)(5 * sizeof(float)));
-            glVertexAttribDivisor(6, 1);
-            glBindVertexArray(0);
-        }
+        // base: pos3, normal3, tint ; instance: iPos3, iYaw, iScale, iColor3.
+        const std::vector<float> flowerMesh = makeFlowerMesh();
+        const int flowerVerts = static_cast<int>(flowerMesh.size() / 7);
+        InstancedMesh flowerField = InstancedMesh::create(
+            flowerMesh.data(), flowerMesh.size(), 7 * sizeof(float),
+            {{0, 3, 0}, {1, 3, 3 * sizeof(float)}, {2, 1, 6 * sizeof(float)}},
+            8 * sizeof(float),
+            {{3, 3, 0}, {4, 1, 3 * sizeof(float)}, {5, 1, 4 * sizeof(float)},
+             {6, 3, 5 * sizeof(float)}});
         int   flowerCount   = 0;
         bool  flowerEnabled = true;
         float flowerDensity = 1.0f;
@@ -963,22 +916,17 @@ int main() {
                                            col.r, col.g, col.b});
                 }
             }
-            flowerCount = static_cast<int>(out.size() / 8);
-            glBindBuffer(GL_ARRAY_BUFFER, flowerInstVBO);
-            glBufferData(GL_ARRAY_BUFFER,
-                         static_cast<GLsizeiptr>(out.size() * sizeof(float)),
-                         out.data(), GL_DYNAMIC_DRAW);
+            flowerField.upload(out);
+            flowerCount = flowerField.count();
         };
 
         // --- Birds: a small flock of flapping billboards circling overhead --
         Shader bird = Shader::fromFiles("assets/shaders/bird.vert",
                                         "assets/shaders/bird.frag");
         if (!bird.isValid()) { std::fprintf(stderr, "Failed to load bird shader\n"); return 1; }
-        GLuint birdVAO = 0, birdBaseVBO = 0, birdInstVBO = 0;
-        {
-            // Gull silhouette: small body + swept, bent wings. pos3, flap (flap
-            // rises toward the tips so the wings flex when they beat). +Z forward.
-            const float bm[] = {
+        // Gull silhouette: small body + swept, bent wings. pos3, flap (flap
+        // rises toward the tips so the wings flex when they beat). +Z forward.
+        const float bm[] = {
                 // body (diamond: nose, shoulders, tail)
                  0.00f, 0.0f,  0.45f, 0.0f,  -0.12f, 0.0f, 0.05f, 0.0f,   0.12f, 0.0f, 0.05f, 0.0f,
                 -0.12f, 0.0f,  0.05f, 0.0f,   0.00f, 0.0f,-0.55f, 0.0f,   0.12f, 0.0f, 0.05f, 0.0f,
@@ -988,30 +936,12 @@ int main() {
                 // right wing
                  0.12f, 0.0f,  0.05f, 0.0f,   0.00f, 0.0f,-0.55f, 0.0f,   0.55f, 0.05f,-0.05f, 0.4f,
                  0.55f, 0.05f,-0.05f, 0.4f,   0.00f, 0.0f,-0.55f, 0.0f,   1.05f, 0.0f,-0.35f, 1.0f };
-            glGenVertexArrays(1, &birdVAO);
-            glBindVertexArray(birdVAO);
-            glGenBuffers(1, &birdBaseVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, birdBaseVBO);
-            glBufferData(GL_ARRAY_BUFFER, sizeof(bm), bm, GL_STATIC_DRAW);
-            const GLsizei bs = 4 * sizeof(float);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, bs, (void*)0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, bs, (void*)(3 * sizeof(float)));
-            glGenBuffers(1, &birdInstVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, birdInstVBO);
-            const GLsizei is = 5 * sizeof(float); // iPos3, iYaw, iPhase
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-            glVertexAttribDivisor(2, 1);
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-            glVertexAttribDivisor(3, 1);
-            glEnableVertexAttribArray(4);
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
-            glVertexAttribDivisor(4, 1);
-            glBindVertexArray(0);
-        }
+        // base: pos3 + flap ; instance: iPos3, iYaw, iPhase.
+        InstancedMesh birdField = InstancedMesh::create(
+            bm, sizeof(bm) / sizeof(float), 4 * sizeof(float),
+            {{0, 3, 0}, {1, 1, 3 * sizeof(float)}},
+            5 * sizeof(float),
+            {{2, 3, 0}, {3, 1, 3 * sizeof(float)}, {4, 1, 4 * sizeof(float)}});
         bool  birdsEnabled = true;
         int   birdCount    = 18;
         float birdSize     = 2.2f;
@@ -1020,21 +950,10 @@ int main() {
         Shader firefly = Shader::fromFiles("assets/shaders/firefly.vert",
                                            "assets/shaders/firefly.frag");
         if (!firefly.isValid()) { std::fprintf(stderr, "Failed to load firefly shader\n"); return 1; }
-        GLuint fireflyVAO = 0, fireflyVBO = 0;
-        {
-            glGenVertexArrays(1, &fireflyVAO);
-            glBindVertexArray(fireflyVAO);
-            glGenBuffers(1, &fireflyVBO); // instance-only (corner from gl_VertexID)
-            glBindBuffer(GL_ARRAY_BUFFER, fireflyVBO);
-            const GLsizei is = 4 * sizeof(float); // iPos3, iPhase
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-            glVertexAttribDivisor(0, 1);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-            glVertexAttribDivisor(1, 1);
-            glBindVertexArray(0);
-        }
+        // Instance-only (quad corner comes from gl_VertexID): iPos3, iPhase.
+        InstancedMesh fireflyField = InstancedMesh::create(
+            nullptr, 0, 0, {}, 4 * sizeof(float),
+            {{0, 3, 0}, {1, 1, 3 * sizeof(float)}});
         bool  fireflyEnabled = true;
         int   fireflyCount   = 70;
         float fireflySize    = 0.09f;
@@ -1549,11 +1468,8 @@ int main() {
                 if (grassPending && grassFuture.valid() &&
                     grassFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
                     const std::vector<float> data = grassFuture.get();
-                    grassCount = static_cast<int>(data.size() / 7);
-                    glBindBuffer(GL_ARRAY_BUFFER, grassInstVBO);
-                    glBufferData(GL_ARRAY_BUFFER,
-                                 static_cast<GLsizeiptr>(data.size() * sizeof(float)),
-                                 data.data(), GL_DYNAMIC_DRAW);
+                    grassField.upload(data);
+                    grassCount = grassField.count();
                     grassCenter = grassPendingCenter;
                     grassPending = false;
                     // Flowers share the grass area; regenerate them to match.
@@ -2586,9 +2502,7 @@ int main() {
                 grass.setFloat("uFogDensity", fog.density);
                 grass.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 grass.setFloat("uFogHeight", fog.height);
-                glBindVertexArray(grassVAO);
-                glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 7, grassCount);
-                glBindVertexArray(0);
+                grassField.draw(GL_TRIANGLE_STRIP, 7);
                 glEnable(GL_CULL_FACE);
             }
 
@@ -2609,9 +2523,7 @@ int main() {
                 flower.setFloat("uFogDensity", fog.density);
                 flower.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 flower.setFloat("uFogHeight", fog.height);
-                glBindVertexArray(flowerVAO);
-                glDrawArraysInstanced(GL_TRIANGLES, 0, flowerVerts, flowerCount);
-                glBindVertexArray(0);
+                flowerField.draw(GL_TRIANGLES, flowerVerts);
                 glEnable(GL_CULL_FACE);
             }
 
@@ -2664,18 +2576,13 @@ int main() {
                     bi.insert(bi.end(), {bx, by, bz, ang, ph});
                 }
                 glDisable(GL_CULL_FACE);
-                glBindBuffer(GL_ARRAY_BUFFER, birdInstVBO);
-                glBufferData(GL_ARRAY_BUFFER,
-                             static_cast<GLsizeiptr>(bi.size() * sizeof(float)),
-                             bi.data(), GL_DYNAMIC_DRAW);
+                birdField.upload(bi);
                 bird.bind();
                 bird.setMat4("uViewProj", mainVP);
                 bird.setFloat("uTime", static_cast<float>(now));
                 bird.setFloat("uSize", birdSize);
                 bird.setVec3("uColor", glm::vec3(0.02f, 0.02f, 0.03f));
-                glBindVertexArray(birdVAO);
-                glDrawArraysInstanced(GL_TRIANGLES, 0, 18, birdCount);
-                glBindVertexArray(0);
+                birdField.draw(GL_TRIANGLES, 18);
                 glEnable(GL_CULL_FACE);
             }
 
@@ -2771,10 +2678,7 @@ int main() {
                 glBlendFunc(GL_ONE, GL_ONE); // additive glow
                 glDepthMask(GL_FALSE);
                 glDisable(GL_CULL_FACE);
-                glBindBuffer(GL_ARRAY_BUFFER, fireflyVBO);
-                glBufferData(GL_ARRAY_BUFFER,
-                             static_cast<GLsizeiptr>(fi.size() * sizeof(float)),
-                             fi.data(), GL_DYNAMIC_DRAW);
+                fireflyField.upload(fi);
                 firefly.bind();
                 firefly.setMat4("uViewProj", mainVP);
                 firefly.setVec3("uCamRight", camRight);
@@ -2783,9 +2687,7 @@ int main() {
                 firefly.setFloat("uTime", static_cast<float>(now));
                 firefly.setFloat("uNight", nightF);
                 firefly.setVec3("uColor", glm::vec3(0.7f, 1.0f, 0.35f));
-                glBindVertexArray(fireflyVAO);
-                glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, fireflyCount);
-                glBindVertexArray(0);
+                fireflyField.draw(GL_TRIANGLE_STRIP, 4);
                 glDepthMask(GL_TRUE);
                 glDisable(GL_BLEND);
                 glEnable(GL_CULL_FACE);
@@ -2893,21 +2795,10 @@ int main() {
 
         glDeleteBuffers(1, &rainVBO);
         glDeleteVertexArrays(1, &rainVAO);
-        glDeleteBuffers(1, &bladeVBO);
-        glDeleteBuffers(1, &grassInstVBO);
-        glDeleteVertexArrays(1, &grassVAO);
         glDeleteBuffers(1, &treeVBO);
         glDeleteBuffers(1, &treeInstVBO);
         glDeleteVertexArrays(1, &treeVAO);
         glDeleteVertexArrays(1, &bbVAO);
-        glDeleteBuffers(1, &flowerBaseVBO);
-        glDeleteBuffers(1, &flowerInstVBO);
-        glDeleteVertexArrays(1, &flowerVAO);
-        glDeleteBuffers(1, &birdBaseVBO);
-        glDeleteBuffers(1, &birdInstVBO);
-        glDeleteVertexArrays(1, &birdVAO);
-        glDeleteBuffers(1, &fireflyVBO);
-        glDeleteVertexArrays(1, &fireflyVAO);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
         return 1;
