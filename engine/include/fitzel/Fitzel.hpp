@@ -5,6 +5,7 @@
 #include "fitzel/core/Input.hpp"
 #include "fitzel/graphics/Shader.hpp"
 #include "fitzel/graphics/Mesh.hpp"
+#include "fitzel/graphics/InstancedMesh.hpp"
 #include "fitzel/graphics/Texture.hpp"
 #include "fitzel/graphics/Material.hpp"
 #include "fitzel/graphics/ShadowMap.hpp"
