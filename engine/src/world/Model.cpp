@@ -87,9 +87,12 @@ ModelData loadGltf(const std::string& path) {
 
             ModelPrimitive mp;
             if (prim.material) {
+                if (prim.material->name) mp.materialName = prim.material->name;
                 mp.alphaCutout = (prim.material->alpha_mode != cgltf_alpha_mode_opaque);
                 if (prim.material->has_pbr_metallic_roughness) {
-                    decodeTexture(prim.material->pbr_metallic_roughness.base_color_texture.texture, mp);
+                    const auto& pbr = prim.material->pbr_metallic_roughness;
+                    for (int c = 0; c < 4; ++c) mp.baseColor[c] = pbr.base_color_factor[c];
+                    decodeTexture(pbr.base_color_texture.texture, mp);
                 }
             }
 

@@ -7,6 +7,8 @@
 
 #include "fitzel/graphics/Shader.hpp"
 #include "fitzel/graphics/CascadedShadowMap.hpp"
+#include "fitzel/graphics/CubeShadowMap.hpp"
+#include "fitzel/graphics/CubeRenderTarget.hpp"
 
 namespace fitzel {
 
@@ -18,6 +20,17 @@ struct DirectionalLight {
     glm::vec3 direction{0.5f, 1.0f, 0.35f}; // points *towards* the light
     glm::vec3 color{1.0f, 0.97f, 0.9f};
     glm::vec3 ambient{0.30f, 0.33f, 0.38f}; // sky/fill light
+};
+
+// A world-space point light with distance falloff. `color` is HDR radiance
+// (already scaled by intensity). Fed to lit-shader surfaces (terrain, roads,
+// entities); vegetation shaders are unaffected for now.
+struct PointLight {
+    glm::vec3 position{0.0f};
+    glm::vec3 color{1.0f};
+    float     range = 12.0f;
+    bool      castShadows = false; // opt-in omnidirectional shadow
+    float     shadowBias  = 0.003f; // normalized depth bias for the shadow cube
 };
 
 // Atmospheric fog: exponential height fog + aerial perspective. `color` is the
@@ -43,15 +56,43 @@ public:
     // The texture unit the cascade depth array is bound to. Materials must not
     // use this unit for their own textures.
     static constexpr int kShadowMapUnit = 7;
+    // Texture units 12..15 hold the point-light shadow cubemaps (units 3-6,8-11
+    // are terrain textures, 7 is the cascade array).
+    static constexpr int kPointShadowUnit  = 12;
+    static constexpr int kMaxShadowedPoints = 4;
+    // The dynamic environment-probe cubemap for reflective materials. Always
+    // bound (unit 2) so its samplerCube never aliases a 2D sampler's unit.
+    static constexpr int kEnvProbeUnit = 2;
 
     explicit Renderer(int shadowResolution = 2048, int cascades = 4);
 
     void setViewport(int width, int height);
 
+    static constexpr int kMaxPointLights = 16;
+
     void begin(const Camera& camera, float aspect, const DirectionalLight& light);
     void setFog(const Fog& fog) { m_fog = fog; }
     void setExposure(float exposure) { m_exposure = exposure; }
-    void submit(const Mesh& mesh, const Material& material, const glm::mat4& model);
+    // Point lights for this frame (applied to lit-shader surfaces in every pass).
+    void setPointLights(const std::vector<PointLight>& lights) { m_pointLights = lights; }
+    // Render omnidirectional shadow cubemaps for the shadow-casting point lights
+    // (up to kMaxShadowedPoints). Call after submit() and before renderScene().
+    void preparePointShadows();
+    // `castsPointShadow` false keeps a mesh out of the point-light shadow cubes
+    // (e.g. the ground, which should receive but not cast omni shadows).
+    // `reflective` true marks a mesh as an environment-probe surface: it is
+    // excluded from the probe render (so it doesn't reflect its own interior).
+    void submit(const Mesh& mesh, const Material& material, const glm::mat4& model,
+                bool castsPointShadow = true, bool reflective = false);
+
+    // Render the scene (opaque queue minus reflective surfaces + the sky drawn
+    // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
+    // submit()/prepareShadows() and before the lit passes so those passes sample
+    // a fresh probe. The probe is bound automatically in renderScene().
+    using SkyDrawer = std::function<void(const glm::mat4& invViewProj,
+                                         const glm::vec3& eye)>;
+    void prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky);
+
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 
     // Multi-pass building blocks (for reflection/refraction etc.):
@@ -65,7 +106,7 @@ public:
     // (does not clear). Pass kNoClip to disable clipping.
     void renderScene(const glm::mat4& view, const glm::mat4& proj,
                      const glm::vec3& eye, const glm::vec4& clipPlane,
-                     bool tonemap = true);
+                     bool tonemap = true, bool skipReflective = false);
 
     // A clip plane that keeps every fragment (effectively no clipping).
     static const glm::vec4 kNoClip;
@@ -82,15 +123,28 @@ private:
         const Mesh*     mesh;
         const Material* material;
         glm::mat4       model;
+        bool            castsPointShadow;
+        bool            reflective;
     };
 
     CascadedShadowMap m_csm;
     Shader            m_depthShader;
+    Shader            m_cubeDistShader;             // point-shadow distance pass
+    std::vector<CubeShadowMap> m_pointShadows;      // one per shadowed point light
+    int               m_shadowedCount = 0;
+    // Environment probe, ping-ponged: lit passes sample m_envRead (last frame's
+    // capture) while prepareEnvProbe() renders into m_envWrite, then they swap.
+    // Double-buffering avoids sampling the cubemap that is the current target.
+    CubeRenderTarget  m_envA{128};
+    CubeRenderTarget  m_envB{128};
+    CubeRenderTarget* m_envRead  = &m_envA;
+    CubeRenderTarget* m_envWrite = &m_envB;
     std::vector<Renderable> m_queue;
 
     const Camera*    m_camera = nullptr;
     float            m_aspect = 1.0f;
     DirectionalLight m_light;
+    std::vector<PointLight> m_pointLights;
     Fog              m_fog;
     float            m_exposure = 1.0f;
     int              m_vpWidth   = 1;

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -7,6 +8,7 @@
 #include <fstream>
 #include <functional>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <future>
 #include <random>
@@ -99,15 +101,20 @@ static float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z
     return best;
 }
 
-// A scene entity: a placed, selectable object. Box/Ramp/Cylinder are solid,
-// walkable geometry; Light is a point-light marker.
-enum class EntityType { Box, Ramp, Cylinder, Light };
+// A scene entity: a placed, selectable object. Box/Ramp/Cylinder/Sphere are
+// solid, walkable geometry; Model is an imported glTF/GLB; Light is a point
+// light; Sun is the (singleton) directional light driving the whole sky.
+// Model is appended last so the palette combo (index == enum value) is unaffected.
+enum class EntityType { Box, Ramp, Cylinder, Sphere, Light, Sun, Model };
 inline const char* entityTypeName(EntityType t) {
     switch (t) {
         case EntityType::Box:      return "Box";
         case EntityType::Ramp:     return "Ramp";
         case EntityType::Cylinder: return "Cylinder";
+        case EntityType::Sphere:   return "Sphere";
         case EntityType::Light:    return "Light";
+        case EntityType::Sun:      return "Sun";
+        case EntityType::Model:    return "Model";
     }
     return "Entity";
 }
@@ -115,11 +122,52 @@ struct Entity {
     EntityType  type = EntityType::Box;
     glm::vec3   center;
     glm::vec3   half{1.0f};                  // half-extents (Ramp rises along +Z)
-    glm::vec3   color{0.62f, 0.62f, 0.64f};  // albedo (Light: emissive colour)
-    float       intensity = 8.0f;            // Light only
+    glm::vec3   rotation{0.0f};              // Euler angles in degrees (gizmo)
+    glm::vec3   color{0.62f, 0.62f, 0.64f};  // albedo / light colour (tint for Sun)
+    float       intensity = 8.0f;            // Light/Sun only
+    float       range      = 12.0f;          // Light only: falloff + shadow far plane
+    bool        castShadows = false;         // Light only: opt-in cube shadows
+    float       shadowBias  = 0.003f;        // Light only: normalized cube-shadow bias
+    int         materialId = 0;              // solids: assigned MaterialDef id
+    int         modelId   = -1;              // Model only: LoadedModel id
+    float       scale     = 1.0f;            // Model only: uniform scale
+    std::string modelPath;                   // Model only: source file (for reload)
     std::string name;
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object
+};
+
+// A reusable surface material asset. Solids reference one by `id`; several
+// meshes can share a material, and editing it updates them all. Drives the lit
+// shader's albedo / reflection parameters.
+struct MaterialDef {
+    int         id = 0;                      // stable unique id
+    std::string name;
+    glm::vec3   albedo{0.72f, 0.72f, 0.74f};
+    float       reflectivity = 0.0f;         // 0 matte .. 1 mirror (env probe)
+    float       roughness    = 0.2f;         // reflection blur (0 sharp)
+    // Optional base-colour texture (shared so MaterialDef stays copyable). When
+    // set, the surface samples it (uColorMode 2) instead of the flat albedo.
+    std::shared_ptr<Texture> tex;
+    bool        fromModel = false;           // created by a model import
+};
+
+// An imported glTF/GLB, uploaded to the GPU: one Mesh + Material per material
+// group, sharing a base-colour texture. Model entities reference one by id and
+// render it through the normal Renderer (so it gets shadows/lighting/probe).
+// Move-only (owns GPU resources); stored behind unique_ptr for stable addresses
+// (Materials hold pointers into `texs`). `boundsMin/Max` are the local AABB.
+struct LoadedModel {
+    int               id = 0;
+    std::string       name;
+    std::string       path;
+    std::vector<Mesh> meshes;
+    std::vector<int>  primMaterialId; // library MaterialDef id per mesh
+    glm::vec3         boundsMin{0.0f};
+    glm::vec3         boundsMax{0.0f};
+
+    glm::vec3 center() const { return 0.5f * (boundsMin + boundsMax); }
+    glm::vec3 size()   const { return boundsMax - boundsMin; }
 };
 
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
@@ -288,6 +336,31 @@ static std::vector<Vertex> makeCylinderYVerts(int seg = 20) {
     return v;
 }
 
+// UV sphere of radius 0.5 centered at the origin (fits the unit-cube scale
+// convention). Smooth normals = normalized position; CCW outward winding.
+static std::vector<Vertex> makeSphereVerts(int stacks = 24, int slices = 32) {
+    std::vector<Vertex> v;
+    const float PI = 3.14159265358979f, TAU = 6.28318530718f, r = 0.5f;
+    auto pt = [&](int st, int sl) -> Vertex {
+        const float phi   = PI  * static_cast<float>(st) / stacks; // 0..PI, +Y down
+        const float theta = TAU * static_cast<float>(sl) / slices;
+        const glm::vec3 n(std::sin(phi) * std::cos(theta),
+                          std::cos(phi),
+                          std::sin(phi) * std::sin(theta));
+        return { r * n, n, { static_cast<float>(sl) / slices,
+                             static_cast<float>(st) / stacks } };
+    };
+    for (int st = 0; st < stacks; ++st) {
+        for (int sl = 0; sl < slices; ++sl) {
+            const Vertex a = pt(st,     sl),     d = pt(st,     sl + 1);
+            const Vertex b = pt(st + 1, sl),     c = pt(st + 1, sl + 1);
+            v.push_back(a); v.push_back(d); v.push_back(c);
+            v.push_back(a); v.push_back(c); v.push_back(b);
+        }
+    }
+    return v;
+}
+
 int main() {
     try {
         Window window(WindowConfig{
@@ -356,28 +429,18 @@ int main() {
         // Terrain PBR-ish albedo textures (triplanar), loaded from the repo's
         // textures/ folder (path injected by CMake).
         const std::string texDir = FITZEL_TEXTURE_DIR;
-        showProgress(0.08f, "Loading terrain textures (sand)...");
-        Texture texSand   = Texture::fromFile(texDir + "/coast_sand_01_diff_4k.jpg");
-        showProgress(0.13f, "Loading terrain textures (ground)...");
-        Texture texGround = Texture::fromFile(texDir + "/aerial_rocks_01_diff_4k.jpg");
-        showProgress(0.18f, "Loading terrain textures (rock)...");
-        Texture texCliff  = Texture::fromFile(texDir + "/rocky_terrain_02_diff_4k.jpg");
-        showProgress(0.23f, "Loading terrain textures (snow)...");
-        Texture texSnow   = Texture::fromFile(texDir + "/snow_02_diff_4k.jpg");
-        // Matching triplanar normal maps. PolyHaven ships these as DWAA-compressed
-        // EXR (which most loaders, incl. tinyexr, can't decode), so they're
-        // converted to PNG once (see README); no vertical flip.
-        showProgress(0.28f, "Loading normal maps (sand)...");
-        Texture texSandN   = Texture::fromFile(texDir + "/coast_sand_01_nor_gl_4k.png", false);
-        showProgress(0.33f, "Loading normal maps (ground)...");
-        Texture texGroundN = Texture::fromFile(texDir + "/aerial_rocks_01_nor_gl_4k.png", false);
-        showProgress(0.38f, "Loading normal maps (rock)...");
-        Texture texCliffN  = Texture::fromFile(texDir + "/rocky_terrain_02_nor_gl_4k.png", false);
-        showProgress(0.43f, "Loading normal maps (snow)...");
-        Texture texSnowN   = Texture::fromFile(texDir + "/snow_02_nor_gl_4k.png", false);
-        if (!texSand.isValid() || !texGround.isValid() ||
-            !texCliff.isValid() || !texSnow.isValid()) {
-            std::fprintf(stderr, "Warning: some terrain textures failed to load from %s\n",
+        // Default terrain surface: one moon macro texture drives all four
+        // material layers (sand/ground/cliff/snow), so the whole terrain reads
+        // as a single moon surface; the height/slope blend then only varies the
+        // tiling scale between the layers.
+        showProgress(0.12f, "Loading terrain texture (moon)...");
+        Texture texMoon  = Texture::fromFile(texDir + "/moon_flat_macro_02_diff_4k.jpg");
+        // Matching normal map. PolyHaven ships these as DWAA-compressed EXR (which
+        // tinyexr can't decode), converted once to PNG (see README); no v-flip.
+        showProgress(0.32f, "Loading terrain normal map (moon)...");
+        Texture texMoonN = Texture::fromFile(texDir + "/moon_flat_macro_02_nor_gl_4k.png", false);
+        if (!texMoon.isValid() || !texMoonN.isValid()) {
+            std::fprintf(stderr, "Warning: moon terrain textures failed to load from %s\n",
                          texDir.c_str());
         }
         float texScale       = 0.08f; // world units -> texture tiling
@@ -386,14 +449,14 @@ int main() {
         // Materials describe surface appearance; the renderer feeds in lighting.
         Material terrainMat(lit);
         terrainMat.set("uColorMode", 1)
-                  .setTexture("uTexSand", texSand, 6)
-                  .setTexture("uTexGround", texGround, 3)
-                  .setTexture("uTexCliff", texCliff, 4)
-                  .setTexture("uTexSnow", texSnow, 5)
-                  .setTexture("uTexSandN", texSandN, 8)
-                  .setTexture("uTexGroundN", texGroundN, 9)
-                  .setTexture("uTexCliffN", texCliffN, 10)
-                  .setTexture("uTexSnowN", texSnowN, 11);
+                  .setTexture("uTexSand", texMoon, 6)
+                  .setTexture("uTexGround", texMoon, 3)
+                  .setTexture("uTexCliff", texMoon, 4)
+                  .setTexture("uTexSnow", texMoon, 5)
+                  .setTexture("uTexSandN", texMoonN, 8)
+                  .setTexture("uTexGroundN", texMoonN, 9)
+                  .setTexture("uTexCliffN", texMoonN, 10)
+                  .setTexture("uTexSnowN", texMoonN, 11);
 
         // World streaming + renderer with cascaded shadows.
         TerrainSettings settings;
@@ -521,7 +584,7 @@ int main() {
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
         float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
-        bool  timePaused = false;  // freeze the time of day where it is
+        bool  timePaused = true;   // freeze the time of day where it is
 
         // Cloud controls.
         float cloudCoverage = 0.5f;
@@ -533,7 +596,7 @@ int main() {
 
         // Weather: 0 = clear .. 1 = storm. Drives clouds, light, fog, waves, rain.
         float weather     = 0.0f;
-        bool  autoWeather = true;
+        bool  autoWeather = false;
 
         // Rain: falling line streaks in a box that follows the camera.
         Shader rain = Shader::fromFiles("assets/shaders/rain.vert",
@@ -917,8 +980,9 @@ int main() {
         };
 
         // --- Scene entities: placeable objects (box / ramp / cylinder / light) ---
-        Mesh rampMesh = Mesh::create(makeRampVerts());
-        Mesh cylMesh  = Mesh::create(makeCylinderYVerts());
+        Mesh rampMesh   = Mesh::create(makeRampVerts());
+        Mesh cylMesh    = Mesh::create(makeCylinderYVerts());
+        Mesh sphereMesh = Mesh::create(makeSphereVerts());
         std::vector<Entity> entities;
         int       entitySel      = -1;
         bool      entityEditMode = false;
@@ -926,6 +990,121 @@ int main() {
         glm::vec3 entityNewColor(0.62f, 0.62f, 0.64f);
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
+
+        // Material library: named surface assets solids can be assigned. New
+        // objects get the material selected in the Materials panel (matSel).
+        std::vector<MaterialDef> materials;
+        int  materialCounter = 0;
+        int  matSel          = 0;    // selected material in the Materials panel
+        // Secondary-panel visibility (toggled from the View menu). The default
+        // layout is just Hierarchy | Scene | Inspector; everything else is hidden.
+        bool showMaterials   = false;
+        bool showModels      = false;
+        bool showStats       = false;
+        bool showCamera      = false;
+        bool showWeather     = false;
+        bool showSky         = false;
+        bool showColorGrade  = false;
+        bool showWater       = false;
+        bool showTerrain     = false;
+        bool showVegetation  = false;
+        bool showCamPath     = false;
+        bool showRoads       = false;
+        bool showVehiclePanel = false;
+        bool showPresets     = false;
+        std::string modelFile;       // selected file in the Models panel
+
+        // Projects: a named scene file under projects/. currentProject is the
+        // open project's path ("" = unsaved/new).
+        const std::string projectDir = "projects";
+        std::string       currentProject;
+        char              projNameBuf[64] = "";
+        auto addMaterial = [&](std::string name, glm::vec3 albedo,
+                               float refl, float rough) -> int {
+            MaterialDef md;
+            md.id = materialCounter++;
+            md.name = std::move(name);
+            md.albedo = albedo; md.reflectivity = refl; md.roughness = rough;
+            materials.push_back(md);
+            return md.id;
+        };
+        addMaterial("Default", {0.72f, 0.72f, 0.74f}, 0.0f, 0.20f); // id 0
+        addMaterial("Chrome",  {0.90f, 0.92f, 0.95f}, 1.0f, 0.04f); // id 1
+        addMaterial("Red",     {0.72f, 0.12f, 0.10f}, 0.0f, 0.30f); // id 2
+        // Index of the material with the given id (0 = Default fallback).
+        auto materialIndexById = [&](int id) -> int {
+            for (int i = 0; i < static_cast<int>(materials.size()); ++i)
+                if (materials[i].id == id) return i;
+            return 0;
+        };
+
+        // Imported glTF/GLB models (behind unique_ptr for stable addresses).
+        std::vector<std::unique_ptr<LoadedModel>> loadedModels;
+        int modelCounter = 0;
+        auto loadedModelById = [&](int id) -> LoadedModel* {
+            for (auto& lm : loadedModels) if (lm->id == id) return lm.get();
+            return nullptr;
+        };
+        // Load a model file into the registry and return its id (-1 on failure).
+        // Reuses an already-loaded model with the same path.
+        auto importModel = [&](const std::string& path) -> int {
+            for (auto& lm : loadedModels) if (lm->path == path) return lm->id;
+            ModelData md = loadGltf(path);
+            if (md.empty()) {
+                std::fprintf(stderr, "Model import failed: %s\n", path.c_str());
+                return -1;
+            }
+            auto lm = std::make_unique<LoadedModel>();
+            lm->id   = modelCounter++;
+            lm->path = path;
+            lm->name = std::filesystem::path(path).stem().string();
+            lm->meshes.reserve(md.primitives.size());
+            lm->primMaterialId.reserve(md.primitives.size());
+            glm::vec3 lo(1e30f), hi(-1e30f);
+            int primIdx = 0;
+            for (ModelPrimitive& p : md.primitives) {
+                std::vector<Vertex> verts;
+                verts.reserve(p.vertexCount());
+                for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
+                    const glm::vec3 pos(p.vertices[i], p.vertices[i + 1], p.vertices[i + 2]);
+                    lo = glm::min(lo, pos); hi = glm::max(hi, pos);
+                    verts.push_back({pos,
+                        {p.vertices[i + 3], p.vertices[i + 4], p.vertices[i + 5]},
+                        {p.vertices[i + 6], p.vertices[i + 7]}});
+                }
+                lm->meshes.push_back(Mesh::create(verts));
+                // Register this glTF material as a library material so it shows up
+                // (and is editable) in the Materials panel.
+                MaterialDef def;
+                def.id        = materialCounter++;
+                def.fromModel = true;
+                def.name      = lm->name + ":" + (p.materialName.empty()
+                                    ? std::to_string(primIdx) : p.materialName);
+                def.albedo    = glm::vec3(p.baseColor[0], p.baseColor[1], p.baseColor[2]);
+                if (!p.texPixels.empty())
+                    def.tex = std::make_shared<Texture>(Texture::fromPixels(
+                        p.texPixels.data(), p.texWidth, p.texHeight, 4));
+                const int matId = def.id;
+                materials.push_back(std::move(def));
+                lm->primMaterialId.push_back(matId);
+                ++primIdx;
+            }
+            if (md.primitives.empty()) { lo = hi = glm::vec3(0.0f); }
+            lm->boundsMin = lo; lm->boundsMax = hi;
+            const int id = lm->id;
+            loadedModels.push_back(std::move(lm));
+            return id;
+        };
+        // The scene always has exactly one Sun (directional light), non-deletable.
+        {
+            Entity sun;
+            sun.type      = EntityType::Sun;
+            sun.color     = glm::vec3(1.0f, 0.97f, 0.9f); // sun colour tint
+            sun.intensity = 1.0f;                          // strength multiplier
+            sun.name      = "Sun";
+            sun.id        = entityCounter++;
+            entities.push_back(sun);
+        }
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
         // Add an entity of the given type, sitting on the terrain at a world point.
         auto addEntity = [&](glm::vec3 groundPos, EntityType type) {
@@ -934,11 +1113,167 @@ int main() {
             nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f) : entityNewHalf;
             nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             nb.color  = (type == EntityType::Light) ? glm::vec3(1.0f, 0.95f, 0.8f) : entityNewColor;
+            if (!materials.empty())
+                nb.materialId = materials[glm::clamp(matSel, 0,
+                                    static_cast<int>(materials.size()) - 1)].id;
             nb.id     = entityCounter++;
             nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
             entities.push_back(nb);
             entitySel = static_cast<int>(entities.size()) - 1;
         };
+        // World-space half-extents of a placed model (its local AABB * scale).
+        auto modelHalf = [&](const LoadedModel& lm, float sc) {
+            return 0.5f * lm.size() * sc;
+        };
+        // Build translate * rotate(euler deg) * scale via ImGuizmo's own compose
+        // so the gizmo and the rendered transform share one Euler convention.
+        auto composeModel = [](const glm::vec3& t, const glm::vec3& rotDeg,
+                               const glm::vec3& s) {
+            const float tt[3] = {t.x, t.y, t.z};
+            const float rr[3] = {rotDeg.x, rotDeg.y, rotDeg.z};
+            const float ss[3] = {s.x, s.y, s.z};
+            float m[16];
+            ImGuizmo::RecomposeMatrixFromComponents(tt, rr, ss, m);
+            return glm::make_mat4(m);
+        };
+        // Place an imported model as a Model entity sitting on the terrain.
+        auto addModelEntity = [&](glm::vec3 groundPos, int modelId) {
+            LoadedModel* lm = loadedModelById(modelId);
+            if (!lm) return;
+            Entity nb;
+            nb.type      = EntityType::Model;
+            nb.modelId   = modelId;
+            nb.modelPath = lm->path;
+            nb.scale     = 1.0f;
+            nb.half      = modelHalf(*lm, nb.scale); // AABB (for picking/gizmo)
+            // The render transform centres the model's AABB at nb.center, so lift
+            // by half.y to rest its base on the ground.
+            nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
+            nb.id     = entityCounter++;
+            nb.name   = lm->name + " " + std::to_string(nb.id);
+            entities.push_back(nb);
+            entitySel = static_cast<int>(entities.size()) - 1;
+        };
+
+        // --- Project (scene) save / load / new -------------------------------
+        // Serialise the scene: user materials ("M" lines) then entities. Model
+        // materials are omitted (re-imports recreate them on load).
+        auto saveScene = [&](const std::string& path) {
+            std::ofstream f(path);
+            if (!f) return;
+            for (const MaterialDef& md : materials)
+                if (!md.fromModel)
+                    f << "M " << md.id << ' '
+                      << md.albedo.x << ' ' << md.albedo.y << ' ' << md.albedo.z << ' '
+                      << md.reflectivity << ' ' << md.roughness << ' '
+                      << md.name << '\n';
+            for (const Entity& b : entities)
+                f << static_cast<int>(b.type) << ' '
+                  << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
+                  << b.half.x << ' ' << b.half.y << ' ' << b.half.z << ' '
+                  << b.color.x << ' ' << b.color.y << ' ' << b.color.z << ' '
+                  << b.intensity << ' ' << b.range << ' '
+                  << b.shadowBias << ' ' << (b.castShadows ? 1 : 0) << ' '
+                  << b.materialId << ' ' << b.scale << ' '
+                  << b.rotation.x << ' ' << b.rotation.y << ' ' << b.rotation.z << ' '
+                  << (b.type == EntityType::Model
+                          ? std::filesystem::path(b.modelPath).filename().string()
+                          : std::string("-")) << ' '
+                  << b.id << ' ' << b.parent << ' '
+                  << b.name << '\n';
+        };
+        // Load a scene file, replacing the current one. Returns false if missing.
+        auto loadScene = [&](const std::string& path) -> bool {
+            std::ifstream f(path);
+            if (!f) return false;
+            entities.clear();
+            loadedModels.clear(); // models re-import fresh below
+            std::vector<MaterialDef> loadedMats;
+            bool matsApplied = false;
+            int maxId = -1, maxMatId = -1;
+            auto applyMats = [&]() {
+                if (matsApplied) return;
+                matsApplied = true;
+                materials = std::move(loadedMats);
+                materialCounter = maxMatId + 1;
+                matSel = 0;
+                if (materials.empty()) {
+                    MaterialDef d; d.id = materialCounter++; d.name = "Default";
+                    materials.push_back(std::move(d));
+                }
+            };
+            std::string line;
+            while (std::getline(f, line)) {
+                if (line.empty()) continue;
+                std::istringstream ss(line);
+                std::string tok;
+                ss >> tok;
+                if (tok == "M") { // material asset line
+                    MaterialDef md;
+                    ss >> md.id >> md.albedo.x >> md.albedo.y >> md.albedo.z
+                       >> md.reflectivity >> md.roughness;
+                    std::getline(ss, md.name);
+                    if (!md.name.empty() && md.name[0] == ' ') md.name.erase(0, 1);
+                    maxMatId = std::max(maxMatId, md.id);
+                    loadedMats.push_back(md);
+                    continue;
+                }
+                applyMats(); // M lines precede entities: library is ready
+                Entity b;
+                int cast = 0;
+                std::string modelTok;
+                b.type = static_cast<EntityType>(std::stoi(tok));
+                ss >> b.center.x >> b.center.y >> b.center.z
+                   >> b.half.x >> b.half.y >> b.half.z
+                   >> b.color.x >> b.color.y >> b.color.z
+                   >> b.intensity >> b.range >> b.shadowBias
+                   >> cast >> b.materialId >> b.scale
+                   >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
+                   >> b.id >> b.parent;
+                b.castShadows = cast != 0;
+                std::getline(ss, b.name);
+                if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
+                if (b.type == EntityType::Model && modelTok != "-") {
+                    b.modelPath = std::string(FITZEL_MODEL_DIR) + "/" + modelTok;
+                    b.modelId   = importModel(b.modelPath);
+                }
+                maxId = std::max(maxId, b.id);
+                entities.push_back(b);
+            }
+            applyMats(); // in case the scene had no entity lines
+            entityCounter = maxId + 1;
+            // Guarantee exactly one Sun (older scenes may lack it).
+            bool hasSun = false;
+            for (const Entity& e : entities) if (e.type == EntityType::Sun) hasSun = true;
+            if (!hasSun) {
+                Entity sun;
+                sun.type = EntityType::Sun; sun.color = glm::vec3(1.0f, 0.97f, 0.9f);
+                sun.intensity = 1.0f; sun.name = "Sun"; sun.id = entityCounter++;
+                entities.push_back(sun);
+            }
+            entitySel = -1;
+            return true;
+        };
+        // Start a fresh, empty project: default materials + a single Sun.
+        auto newProject = [&]() {
+            entities.clear();
+            loadedModels.clear();
+            materials.clear();
+            materialCounter = 0;
+            addMaterial("Default", {0.72f, 0.72f, 0.74f}, 0.0f, 0.20f);
+            addMaterial("Chrome",  {0.90f, 0.92f, 0.95f}, 1.0f, 0.04f);
+            addMaterial("Red",     {0.72f, 0.12f, 0.10f}, 0.0f, 0.30f);
+            matSel = 0;
+            entityCounter = 0;
+            Entity sun;
+            sun.type = EntityType::Sun; sun.color = glm::vec3(1.0f, 0.97f, 0.9f);
+            sun.intensity = 1.0f; sun.name = "Sun"; sun.id = entityCounter++;
+            entities.push_back(sun);
+            entitySel = -1;
+            currentProject.clear();
+            projNameBuf[0] = '\0';
+        };
+
         // Move a box (by id) and all its descendants by `delta` (parented drag).
         std::function<void(int, glm::vec3)> moveSubtree = [&](int pid, glm::vec3 d) {
             for (Entity& c : entities)
@@ -955,8 +1290,9 @@ int main() {
             }
             return false;
         };
-        // Delete a box by index, reparenting its children to its own parent.
+        // Delete an entity by index, reparenting its children to its own parent.
         auto deleteEntity = [&](int idx) {
+            if (entities[idx].type == EntityType::Sun) return; // the sun is permanent
             const int gid = entities[idx].parent, did = entities[idx].id;
             for (Entity& c : entities) if (c.parent == did) c.parent = gid;
             entities.erase(entities.begin() + idx);
@@ -1487,7 +1823,8 @@ int main() {
                 // step height (low blocks are steps we climb, not walls).
                 const float bodyLo = feetY + stepH, bodyHi = feetY + eyeHeight;
                 auto wallHit = [&](const Entity& b, float px, float pz) {
-                    if (b.type == EntityType::Ramp || b.type == EntityType::Light) return false;
+                    if (b.type != EntityType::Box && b.type != EntityType::Cylinder &&
+                        b.type != EntityType::Sphere) return false;
                     if (bodyHi <= b.center.y - b.half.y || bodyLo >= b.center.y + b.half.y) return false;
                     if (px + pr <= b.center.x - b.half.x || px - pr >= b.center.x + b.half.x) return false;
                     if (pz + pr <= b.center.z - b.half.z || pz - pr >= b.center.z + b.half.z) return false;
@@ -1507,7 +1844,8 @@ int main() {
                 // Ground = terrain, raised to the top of any block we stand over.
                 float groundY = streamer.heightAt(pos.x, pos.z);
                 for (const Entity& b : entities) {
-                    if (b.type == EntityType::Light) continue;
+                    if (b.type == EntityType::Light || b.type == EntityType::Sun ||
+                        b.type == EntityType::Model) continue; // models: no AABB stand
                     if (pos.x + pr > b.center.x - b.half.x && pos.x - pr < b.center.x + b.half.x &&
                         pos.z + pr > b.center.z - b.half.z && pos.z - pr < b.center.z + b.half.z) {
                         float top;
@@ -1675,9 +2013,13 @@ int main() {
             const glm::vec3 sunCol =
                 glm::mix(glm::vec3(1.0f, 0.97f, 0.9f), glm::vec3(1.0f, 0.55f, 0.26f), lowSun);
             light.direction = sunDir;
+            // The Sun entity tints and scales the directional light.
+            glm::vec3 sunTint(1.0f); float sunStrength = 1.0f;
+            for (const Entity& e : entities)
+                if (e.type == EntityType::Sun) { sunTint = e.color; sunStrength = e.intensity; break; }
             // HDR radiance: the sun is much brighter than 1 so tonemapping
             // produces highlights and contrast instead of a flat look.
-            light.color   = sunCol * (0.12f + 0.95f * dayF) * 3.4f * lightDim;
+            light.color   = sunCol * sunTint * (0.12f + 0.95f * dayF) * 3.4f * lightDim * sunStrength;
             light.ambient = glm::mix(glm::vec3(0.015f, 0.02f, 0.04f),
                                      glm::vec3(0.12f, 0.14f, 0.18f), dayF);
             // Overcast: dimmer, greyer, cooler ambient.
@@ -1713,6 +2055,101 @@ int main() {
                 window.framebufferSize(viewW, viewH);
                 viewportHovered = true;
             } else {
+            // --- Main menu bar (File / Edit / View) ----------------------
+            bool openSaveAs = false;
+            if (ImGui::BeginMainMenuBar()) {
+                if (ImGui::BeginMenu("File")) {
+                    if (ImGui::MenuItem("New Project")) newProject();
+                    if (ImGui::MenuItem("Save Project", nullptr, false,
+                                        !currentProject.empty())) saveScene(currentProject);
+                    if (ImGui::MenuItem("Save Project As...")) openSaveAs = true;
+                    if (ImGui::BeginMenu("Open Project")) {
+                        std::error_code ec;
+                        std::vector<std::string> projs;
+                        for (const auto& e :
+                             std::filesystem::directory_iterator(projectDir, ec))
+                            if (e.is_regular_file() &&
+                                e.path().extension().string() == ".fitzel")
+                                projs.push_back(e.path().stem().string());
+                        std::sort(projs.begin(), projs.end());
+                        if (projs.empty()) ImGui::TextDisabled("(no projects)");
+                        for (const std::string& p : projs)
+                            if (ImGui::MenuItem(p.c_str())) {
+                                const std::string path = projectDir + "/" + p + ".fitzel";
+                                if (loadScene(path)) {
+                                    currentProject = path;
+                                    std::snprintf(projNameBuf, sizeof(projNameBuf),
+                                                  "%s", p.c_str());
+                                }
+                            }
+                        ImGui::EndMenu();
+                    }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Exit")) window.requestClose();
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Edit")) {
+                    const bool hasSel = entitySel >= 0 &&
+                        entitySel < static_cast<int>(entities.size()) &&
+                        entities[entitySel].type != EntityType::Sun;
+                    if (ImGui::MenuItem("Duplicate", nullptr, false, hasSel)) {
+                        Entity nb = entities[entitySel];
+                        nb.center.x += nb.half.x * 2.2f;
+                        nb.id = entityCounter++;
+                        nb.parent = -1;
+                        nb.name += " copy";
+                        entities.push_back(nb);
+                        entitySel = static_cast<int>(entities.size()) - 1;
+                    }
+                    if (ImGui::MenuItem("Delete", nullptr, false, hasSel))
+                        deleteEntity(entitySel);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Clear objects")) {
+                        entities.erase(std::remove_if(entities.begin(), entities.end(),
+                            [](const Entity& e){ return e.type != EntityType::Sun; }),
+                            entities.end());
+                        entitySel = -1;
+                    }
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("View")) {
+                    ImGui::MenuItem("Stats",           nullptr, &showStats);
+                    ImGui::MenuItem("Camera",          nullptr, &showCamera);
+                    ImGui::MenuItem("Weather & audio", nullptr, &showWeather);
+                    ImGui::MenuItem("Sky & atmosphere",nullptr, &showSky);
+                    ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
+                    ImGui::MenuItem("Water",           nullptr, &showWater);
+                    ImGui::MenuItem("Terrain",         nullptr, &showTerrain);
+                    ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
+                    ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
+                    ImGui::MenuItem("Roads",           nullptr, &showRoads);
+                    ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
+                    ImGui::MenuItem("Presets",         nullptr, &showPresets);
+                    ImGui::Separator();
+                    ImGui::MenuItem("Materials",       nullptr, &showMaterials);
+                    ImGui::MenuItem("Models",          nullptr, &showModels);
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
+                    ImGui::EndMenu();
+                }
+                ImGui::EndMainMenuBar();
+            }
+            if (openSaveAs) ImGui::OpenPopup("Save Project As");
+            if (ImGui::BeginPopupModal("Save Project As", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::InputText("Name", projNameBuf, sizeof(projNameBuf));
+                if (ImGui::Button("Save") && projNameBuf[0] != '\0') {
+                    std::error_code ec;
+                    std::filesystem::create_directories(projectDir, ec);
+                    currentProject = projectDir + "/" + projNameBuf + ".fitzel";
+                    saveScene(currentProject);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+
             const ImGuiID dockId = gui.dockspace();
 
             // First run (or after "Reset layout"): lay the panels out into a tidy
@@ -1725,36 +2162,26 @@ int main() {
                                                 | ImGuiDockNodeFlags_DockSpace);
                 ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->WorkSize);
 
+                // Default layout: Hierarchy (left) | Scene (centre) | Inspector
+                // (right). Every other panel is toggled from the View menu and
+                // floats until the user docks it where they like.
                 ImGuiID central = 0;
-                ImGuiID column = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Right, 0.26f,
-                                                             nullptr, &central);
-                ImGuiID bottom = 0;
-                ImGuiID top = ImGui::DockBuilderSplitNode(column, ImGuiDir_Up, 0.40f,
-                                                          nullptr, &bottom);
+                ImGuiID left  = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.20f,
+                                                            nullptr, &central);
+                ImGuiID right = ImGui::DockBuilderSplitNode(central, ImGuiDir_Right, 0.28f,
+                                                            nullptr, &central);
 
-                ImGui::DockBuilderDockWindow("Viewport", central);
-                ImGui::DockBuilderDockWindow("Stats", top);
-                ImGui::DockBuilderDockWindow("Camera", top);
-                ImGui::DockBuilderDockWindow("Weather & audio", top);
-                ImGui::DockBuilderDockWindow("Sky & atmosphere", bottom);
-                ImGui::DockBuilderDockWindow("Colour grade", bottom);
-                ImGui::DockBuilderDockWindow("Water", bottom);
-                ImGui::DockBuilderDockWindow("Terrain", bottom);
-                ImGui::DockBuilderDockWindow("Vegetation", bottom);
-                ImGui::DockBuilderDockWindow("Camera path", bottom);
-                ImGui::DockBuilderDockWindow("Roads", bottom);
-                ImGui::DockBuilderDockWindow("Hierarchy", bottom);
-                ImGui::DockBuilderDockWindow("Inspector", bottom);
-                ImGui::DockBuilderDockWindow("Vehicle", bottom);
-                ImGui::DockBuilderDockWindow("Presets", bottom);
+                ImGui::DockBuilderDockWindow("Scene", central);
+                ImGui::DockBuilderDockWindow("Hierarchy", left);
+                ImGui::DockBuilderDockWindow("Inspector", right);
                 ImGui::DockBuilderFinish(dockId);
             }
 
             // Central scene viewport: shows the composited render texture. Its
             // content size drives the render resolution (set below for next pass).
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-            if (ImGui::Begin("Viewport", nullptr, ImGuiWindowFlags_NoScrollbar
-                                                | ImGuiWindowFlags_NoScrollWithMouse)) {
+            if (ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoScrollbar
+                                             | ImGuiWindowFlags_NoScrollWithMouse)) {
                 const ImVec2 avail = ImGui::GetContentRegionAvail();
                 viewW = std::max(1, static_cast<int>(avail.x));
                 viewH = std::max(1, static_cast<int>(avail.y));
@@ -1864,23 +2291,53 @@ int main() {
                     ImGuizmo::SetDrawlist();
                     ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
                                                       static_cast<float>(viewH));
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
+                        entities[entitySel].type != EntityType::Sun) {
                         Entity& b = entities[entitySel];
                         const glm::vec3 oldCenter = b.center;
                         const int selId = b.id;
-                        glm::mat4 model = glm::translate(glm::mat4(1.0f), b.center)
-                                        * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
+                        float t[3] = {b.center.x, b.center.y, b.center.z};
+                        float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
+                        float s[3] = {b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f};
+                        float model[16];
+                        ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                         ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                             gizmoOp, ImGuizmo::WORLD, glm::value_ptr(model));
+                                             gizmoOp, ImGuizmo::WORLD, model);
                         if (ImGuizmo::IsUsing()) {
-                            float t[3], r[3], s[3];
-                            ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(model), t, r, s);
-                            b.center = glm::vec3(t[0], t[1], t[2]);
-                            b.half   = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
+                            ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
+                            b.center   = glm::vec3(t[0], t[1], t[2]);
+                            b.rotation = glm::vec3(r[0], r[1], r[2]);
+                            b.half     = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
                             // Children follow the parent's translation.
                             const glm::vec3 delta = b.center - oldCenter;
                             if (glm::dot(delta, delta) > 0.0f) moveSubtree(selId, delta);
                         }
+
+                        // Orange oriented wireframe around the selected object.
+                        const glm::mat4 boxX =
+                            composeModel(b.center, b.rotation, glm::vec3(1.0f));
+                        ImVec2 sp[8]; bool ok[8];
+                        for (int c = 0; c < 8; ++c) {
+                            const glm::vec3 lh((c & 1) ? b.half.x : -b.half.x,
+                                               (c & 2) ? b.half.y : -b.half.y,
+                                               (c & 4) ? b.half.z : -b.half.z);
+                            const glm::vec4 cc = vp * (boxX * glm::vec4(lh, 1.0f));
+                            ok[c] = cc.w > 1e-4f;
+                            if (ok[c]) {
+                                const glm::vec3 n = glm::vec3(cc) / cc.w;
+                                ok[c] = n.z <= 1.0f;
+                                sp[c] = ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
+                                               rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            }
+                        }
+                        static const int kBoxEdges[12][2] = {
+                            {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
+                            {0,4},{1,5},{2,6},{3,7}};
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        for (const auto& e : kBoxEdges)
+                            if (ok[e[0]] && ok[e[1]])
+                                dl->AddLine(sp[e[0]], sp[e[1]],
+                                            IM_COL32(255, 140, 0, 230), 1.6f);
                     }
 
                     // Click to select/place, but not while grabbing the gizmo.
@@ -1917,7 +2374,7 @@ int main() {
             ImGui::End();
             ImGui::PopStyleVar();
 
-            if (ImGui::Begin("Stats")) {
+            if (showStats) { if (ImGui::Begin("Stats", &showStats)) {
                 const char* sceneNames[] = {"Nature", "Empty (build)"};
                 if (ImGui::Combo("Scene", &scene, sceneNames, 2)) applyScene(scene);
                 ImGui::Separator();
@@ -1937,9 +2394,9 @@ int main() {
                 ImGui::Separator();
                 if (ImGui::Button("Reset layout")) requestDockRebuild = true;
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Camera")) {
+            if (showCamera) { if (ImGui::Begin("Camera", &showCamera)) {
                 if (ImGui::Checkbox("First-person (F)", &fpsMode)) {
                     input.setCursorLocked(fpsMode);
                     fpsVelY = 0.0f;
@@ -1960,9 +2417,9 @@ int main() {
                 if (ImGui::SliderFloat("Pitch", &camPitch, -89.0f, 89.0f, "%.0f"))
                     camera.setPitch(camPitch);
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Weather & audio")) {
+            if (showWeather) { if (ImGui::Begin("Weather & audio", &showWeather)) {
                 ImGui::Checkbox("Auto weather", &autoWeather);
                 ImGui::SliderFloat("Storm", &weather, 0.0f, 1.0f);
                 ImGui::Text("Rain %.0f%%   Lightning %s", rainIntensity * 100.0f,
@@ -1973,9 +2430,9 @@ int main() {
                 ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f);
                 if (!audio.ok()) ImGui::TextDisabled("(audio device unavailable)");
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Sky & atmosphere")) {
+            if (showSky) { if (ImGui::Begin("Sky & atmosphere", &showSky)) {
                 ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
                 ImGui::SameLine();
                 ImGui::Checkbox("Pause", &timePaused);
@@ -1999,18 +2456,18 @@ int main() {
                 ImGui::SeparatorText("Anti-aliasing");
                 ImGui::Checkbox("FXAA", &fxaaEnabled);
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Colour grade")) {
+            if (showColorGrade) { if (ImGui::Begin("Colour grade", &showColorGrade)) {
                 ImGui::SliderFloat("Hue",        &hueShift, -180.0f, 180.0f, "%.0f");
                 ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f);
                 ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
                 ImGui::SliderFloat("Warmth",     &warmth, -0.5f, 0.5f);
                 ImGui::SliderFloat("Contrast",   &contrast, 0.0f, 0.6f);
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Water")) {
+            if (showWater) { if (ImGui::Begin("Water", &showWater)) {
                 ImGui::SliderFloat("Level",       &waterLevel, -15.0f, 15.0f);
                 ImGui::SliderFloat("Swell height",&waveHeight, 0.0f, 2.5f);
                 ImGui::SliderFloat("Choppiness",  &waveChoppy, 0.0f, 1.0f);
@@ -2019,9 +2476,9 @@ int main() {
                 ImGui::SliderFloat("Shore foam",  &foamWidth, 0.0f, 8.0f);
                 ImGui::ColorEdit3("Tint",         &waterColor.x);
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Terrain")) {
+            if (showTerrain) { if (ImGui::Begin("Terrain", &showTerrain)) {
                 ImGui::SeparatorText("Generator");
                 ImGui::SliderFloat("Height",     &uiSettings.heightScale, 0.0f, 30.0f);
                 ImGui::SliderFloat("Ridges",     &uiSettings.ridgeScale, 0.0f, 50.0f);
@@ -2048,9 +2505,9 @@ int main() {
                 ImGui::SliderFloat("Snow level",    &look.snowLevel, 0.0f, 40.0f);
                 ImGui::SliderFloat("Detail bump",   &look.detailStrength, 0.0f, 4.0f);
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Vegetation")) {
+            if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ImGui::SeparatorText("Grass");
                 ImGui::Checkbox("Grass", &grassEnabled);
                 bool regrow = false;
@@ -2087,9 +2544,9 @@ int main() {
                 ImGui::SliderInt("Count", &fireflyCount, 0, 256);
                 ImGui::SliderFloat("Firefly size", &fireflySize, 0.03f, 0.25f, "%.2f");
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Camera path")) {
+            if (showCamPath) { if (ImGui::Begin("Camera path", &showCamPath)) {
                 ImGui::Text("Keyframes: %d", static_cast<int>(camPath.size()));
                 if (pathRecording) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
                                                       "RECORDING  %.1fs", pathTime);
@@ -2157,9 +2614,9 @@ int main() {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(%s)", kPathFile);
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Roads")) {
+            if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
                 ImGui::Checkbox("Show roads", &roadEnabled);
                 ImGui::Checkbox("Edit mode", &roadEditMode);
                 if (roadEditMode) {
@@ -2233,7 +2690,7 @@ int main() {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(road.txt)");
             }
-            ImGui::End();
+            ImGui::End(); }
 
             if (ImGui::Begin("Hierarchy")) {
                 ImGui::Checkbox("Edit mode", &entityEditMode);
@@ -2248,14 +2705,17 @@ int main() {
                 if (ImGui::RadioButton("Move", gizmoOp == ImGuizmo::TRANSLATE))
                     gizmoOp = ImGuizmo::TRANSLATE;
                 ImGui::SameLine();
+                if (ImGui::RadioButton("Rotate", gizmoOp == ImGuizmo::ROTATE))
+                    gizmoOp = ImGuizmo::ROTATE;
+                ImGui::SameLine();
                 if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
                     gizmoOp = ImGuizmo::SCALE;
 
                 // Object palette: type placed on viewport-click, plus quick "Add".
-                const char* typeNames[] = {"Box", "Ramp", "Cylinder", "Light"};
+                const char* typeNames[] = {"Box", "Ramp", "Cylinder", "Sphere", "Light"};
                 int nt = static_cast<int>(entityNewType);
                 ImGui::SetNextItemWidth(120.0f);
-                if (ImGui::Combo("Type", &nt, typeNames, 4))
+                if (ImGui::Combo("Type", &nt, typeNames, 5))
                     entityNewType = static_cast<EntityType>(nt);
                 ImGui::SameLine();
                 if (ImGui::Button("Add")) {
@@ -2264,7 +2724,7 @@ int main() {
                 }
                 ImGui::TextDisabled("(or click the ground in the viewport in edit mode)");
                 ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
-                if (ImGui::Button("Duplicate")) {
+                if (ImGui::Button("Duplicate") && entities[entitySel].type != EntityType::Sun) {
                     Entity nb = entities[entitySel];
                     nb.center.x += nb.half.x * 2.2f;
                     nb.id = entityCounter++;
@@ -2336,48 +2796,56 @@ int main() {
                         entities[si].parent = reparentTo;
                 }
 
-                ImGui::Separator();
-                if (ImGui::Button("Clear all")) { entities.clear(); entitySel = -1; }
+                ImGui::SeparatorText("Project");
+                ImGui::TextDisabled("Current: %s", currentProject.empty()
+                    ? "(unsaved)"
+                    : std::filesystem::path(currentProject).stem().string().c_str());
+
+                if (ImGui::Button("New")) newProject();
                 ImGui::SameLine();
+                if (ImGui::Button("Clear objects")) { // keep Sun + materials
+                    entities.erase(std::remove_if(entities.begin(), entities.end(),
+                                   [](const Entity& e){ return e.type != EntityType::Sun; }),
+                                   entities.end());
+                    entitySel = -1;
+                }
+
+                ImGui::SetNextItemWidth(150.0f);
+                ImGui::InputText("Name##proj", projNameBuf, sizeof(projNameBuf));
+                ImGui::SameLine();
+                ImGui::BeginDisabled(projNameBuf[0] == '\0');
                 if (ImGui::Button("Save")) {
-                    std::ofstream f("scene.txt");
-                    for (const Entity& b : entities)
-                        f << static_cast<int>(b.type) << ' '
-                          << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
-                          << b.half.x << ' ' << b.half.y << ' ' << b.half.z << ' '
-                          << b.color.x << ' ' << b.color.y << ' ' << b.color.z << ' '
-                          << b.intensity << ' ' << b.id << ' ' << b.parent << ' '
-                          << b.name << '\n';
+                    std::error_code ec;
+                    std::filesystem::create_directories(projectDir, ec);
+                    currentProject = projectDir + "/" + projNameBuf + ".fitzel";
+                    saveScene(currentProject);
                 }
-                ImGui::SameLine();
-                if (ImGui::Button("Load")) {
-                    std::ifstream f("scene.txt");
-                    if (f) {
-                        entities.clear();
-                        int maxId = -1;
-                        std::string line;
-                        while (std::getline(f, line)) {
-                            if (line.empty()) continue;
-                            std::istringstream ss(line);
-                            Entity b;
-                            int ty = 0;
-                            ss >> ty
-                               >> b.center.x >> b.center.y >> b.center.z
-                               >> b.half.x >> b.half.y >> b.half.z
-                               >> b.color.x >> b.color.y >> b.color.z
-                               >> b.intensity >> b.id >> b.parent;
-                            b.type = static_cast<EntityType>(ty);
-                            std::getline(ss, b.name);
-                            if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
-                            maxId = std::max(maxId, b.id);
-                            entities.push_back(b);
-                        }
-                        entityCounter = maxId + 1;
-                        entitySel = -1;
+                ImGui::EndDisabled();
+
+                ImGui::SetNextItemWidth(150.0f);
+                if (ImGui::BeginCombo("Open##proj", "Select project...")) {
+                    std::error_code ec;
+                    std::vector<std::string> projs;
+                    for (const auto& e :
+                         std::filesystem::directory_iterator(projectDir, ec)) {
+                        if (e.is_regular_file() &&
+                            e.path().extension().string() == ".fitzel")
+                            projs.push_back(e.path().stem().string());
                     }
+                    std::sort(projs.begin(), projs.end());
+                    if (projs.empty()) ImGui::TextDisabled("(no projects yet)");
+                    for (const std::string& p : projs) {
+                        if (ImGui::Selectable(p.c_str())) {
+                            const std::string path = projectDir + "/" + p + ".fitzel";
+                            if (loadScene(path)) {
+                                currentProject = path;
+                                std::snprintf(projNameBuf, sizeof(projNameBuf),
+                                              "%s", p.c_str());
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(entities.txt)");
             }
             ImGui::End();
 
@@ -2388,36 +2856,175 @@ int main() {
                     char buf[64];
                     std::snprintf(buf, sizeof(buf), "%s", b.name.c_str());
                     if (ImGui::InputText("Name", buf, sizeof(buf))) b.name = buf;
-                    const glm::vec3 oldC = b.center;
-                    if (ImGui::DragFloat3("Position", &b.center.x, 0.05f))
-                        moveSubtree(b.id, b.center - oldC); // children follow
-                    if (b.type != EntityType::Light)
-                        ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
-                    ImGui::ColorEdit3(b.type == EntityType::Light ? "Light colour" : "Colour",
-                                      &b.color.x);
-                    if (b.type == EntityType::Light)
-                        ImGui::SliderFloat("Intensity", &b.intensity, 0.0f, 30.0f);
-                    ImGui::Text("Parent: %s",
-                                b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
-                    if (ImGui::Button("Drop to ground"))
-                        b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
-                    ImGui::SameLine();
-                    ImGui::BeginDisabled(b.parent < 0);
-                    if (ImGui::Button("Unparent")) b.parent = -1;
-                    ImGui::EndDisabled();
-                    ImGui::SameLine();
-                    if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
+                    if (b.type == EntityType::Sun) {
+                        ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
+                        ImGui::SameLine();
+                        ImGui::Checkbox("Pause", &timePaused);
+                        ImGui::ColorEdit3("Sun colour", &b.color.x);
+                        ImGui::SliderFloat("Intensity", &b.intensity, 0.0f, 3.0f);
+                        ImGui::TextDisabled("The sun drives the sky and casts shadows.");
+                    } else {
+                        const glm::vec3 oldC = b.center;
+                        if (ImGui::DragFloat3("Position", &b.center.x, 0.05f))
+                            moveSubtree(b.id, b.center - oldC); // children follow
+                        if (b.type != EntityType::Light)
+                            ImGui::DragFloat3("Rotation", &b.rotation.x, 1.0f, 0.0f, 0.0f, "%.0f deg");
+                        if (b.type != EntityType::Light && b.type != EntityType::Model)
+                            ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
+                        if (b.type == EntityType::Light)
+                            ImGui::ColorEdit3("Light colour", &b.color.x);
+                        if (b.type == EntityType::Light) {
+                            ImGui::SliderFloat("Intensity", &b.intensity, 0.0f, 30.0f);
+                            ImGui::SliderFloat("Range", &b.range, 0.5f, 60.0f, "%.1f m");
+                            ImGui::Checkbox("Cast shadows", &b.castShadows);
+                            if (b.castShadows)
+                                ImGui::SliderFloat("Shadow bias", &b.shadowBias,
+                                                   0.0f, 0.03f, "%.4f");
+                        } else if (b.type == EntityType::Model) {
+                            // Imported model: uniform scale (keeps the pick box in
+                            // sync); geometry brings its own baked materials.
+                            LoadedModel* lm = loadedModelById(b.modelId);
+                            ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");
+                            if (ImGui::SliderFloat("Scale", &b.scale, 0.05f, 20.0f, "%.2f")
+                                && lm)
+                                b.half = modelHalf(*lm, b.scale);
+                        } else {
+                            // Assign one of the library materials to this mesh.
+                            int mi = materialIndexById(b.materialId);
+                            if (ImGui::BeginCombo("Material", materials[mi].name.c_str())) {
+                                for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
+                                    const bool sel = (i == mi);
+                                    if (ImGui::Selectable(materials[i].name.c_str(), sel)) {
+                                        b.materialId = materials[i].id;
+                                        matSel = i; // focus it in the Materials panel
+                                    }
+                                    if (sel) ImGui::SetItemDefaultFocus();
+                                }
+                                ImGui::EndCombo();
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::SmallButton("Edit##mat")) {
+                                matSel = mi;
+                                showMaterials = true;
+                            }
+                        }
+                        ImGui::Text("Parent: %s",
+                                    b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
+                        if (ImGui::Button("Drop to ground"))
+                            b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
+                        ImGui::SameLine();
+                        ImGui::BeginDisabled(b.parent < 0);
+                        if (ImGui::Button("Unparent")) b.parent = -1;
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
+                    }
                 } else {
                     ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
                 }
                 ImGui::SeparatorText("New block defaults");
                 ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
                 ImGui::ColorEdit3("New colour", &entityNewColor.x);
+                if (ImGui::Button("Materials...")) showMaterials = true;
+                ImGui::SameLine();
+                if (ImGui::Button("Models...")) showModels = true;
                 ImGui::TextDisabled("Walk into blocks in FPS mode (F).");
             }
             ImGui::End();
 
-            if (ImGui::Begin("Vehicle")) {
+            // Material library: create/edit reusable surface materials. Solids are
+            // assigned one via the Inspector; edits here update every mesh using it.
+            if (showMaterials) {
+                if (ImGui::Begin("Materials", &showMaterials)) {
+                    if (ImGui::Button("New")) {
+                        matSel = static_cast<int>(materials.size());
+                        addMaterial("Material " + std::to_string(materialCounter),
+                                    glm::vec3(0.7f), 0.0f, 0.2f);
+                    }
+                    ImGui::SameLine();
+                    const bool selFromModel = matSel >= 0 &&
+                        matSel < static_cast<int>(materials.size()) &&
+                        materials[matSel].fromModel;
+                    // Model materials are owned by their model -> not deletable here.
+                    ImGui::BeginDisabled(materials.size() <= 1 || selFromModel);
+                    if (ImGui::Button("Delete") && materials.size() > 1 && !selFromModel) {
+                        const int removedId = materials[matSel].id;
+                        materials.erase(materials.begin() + matSel);
+                        // Meshes that used it fall back to the first material.
+                        for (Entity& e : entities)
+                            if (e.materialId == removedId) e.materialId = materials[0].id;
+                        matSel = glm::clamp(matSel, 0,
+                                            static_cast<int>(materials.size()) - 1);
+                    }
+                    ImGui::EndDisabled();
+
+                    ImGui::Separator();
+                    for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
+                        const std::string lbl = materials[i].name + "##m" + std::to_string(i);
+                        if (ImGui::Selectable(lbl.c_str(), i == matSel)) matSel = i;
+                    }
+                    ImGui::Separator();
+
+                    if (matSel >= 0 && matSel < static_cast<int>(materials.size())) {
+                        MaterialDef& md = materials[matSel];
+                        char mbuf[64];
+                        std::snprintf(mbuf, sizeof(mbuf), "%s", md.name.c_str());
+                        if (ImGui::InputText("Name", mbuf, sizeof(mbuf))) md.name = mbuf;
+                        if (md.fromModel)
+                            ImGui::TextDisabled(md.tex ? "From model (textured)"
+                                                       : "From model");
+                        // A textured material samples its base-colour map, so the
+                        // flat albedo is unused; only show it for untextured ones.
+                        if (!md.tex)
+                            ImGui::ColorEdit3("Albedo", &md.albedo.x);
+                        ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
+                        ImGui::TextDisabled("Reflectivity mirrors the scene (env probe).");
+                    }
+                }
+                ImGui::End();
+            }
+
+            // Model import: list glTF/GLB files under models/ and drop one into
+            // the scene in front of the camera as a Model entity.
+            if (showModels) {
+                if (ImGui::Begin("Models", &showModels)) {
+                    ImGui::TextDisabled("Import glTF/GLB from the models/ folder.");
+                    std::error_code mec;
+                    std::vector<std::string> files;
+                    for (const auto& e :
+                         std::filesystem::directory_iterator(FITZEL_MODEL_DIR, mec)) {
+                        if (!e.is_regular_file()) continue;
+                        std::string ext = e.path().extension().string();
+                        for (char& c : ext) c = static_cast<char>(std::tolower(
+                            static_cast<unsigned char>(c)));
+                        if (ext == ".glb" || ext == ".gltf")
+                            files.push_back(e.path().filename().string());
+                    }
+                    std::sort(files.begin(), files.end());
+                    for (const std::string& f : files)
+                        if (ImGui::Selectable(f.c_str(), modelFile == f)) modelFile = f;
+
+                    ImGui::Separator();
+                    ImGui::BeginDisabled(modelFile.empty());
+                    if (ImGui::Button("Import to scene")) {
+                        const std::string path =
+                            std::string(FITZEL_MODEL_DIR) + "/" + modelFile;
+                        const int id = importModel(path);
+                        if (id >= 0) {
+                            const glm::vec3 p = camera.position() + camera.front() * 8.0f;
+                            addModelEntity(
+                                glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z), id);
+                        }
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::TextDisabled("%d model(s) loaded.",
+                                        static_cast<int>(loadedModels.size()));
+                }
+                ImGui::End();
+            }
+
+            if (showVehiclePanel) { if (ImGui::Begin("Vehicle", &showVehiclePanel)) {
                 if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
                     if (vehicleMode) {
                         fpsMode = false;
@@ -2436,9 +3043,9 @@ int main() {
                 if (carPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(carSpeed) * 3.6f);
                 else           ImGui::TextDisabled("Vehicle not placed yet");
             }
-            ImGui::End();
+            ImGui::End(); }
 
-            if (ImGui::Begin("Presets")) {
+            if (showPresets) { if (ImGui::Begin("Presets", &showPresets)) {
                 // Applying a preset that changes terrain requires a rebuild+regrow,
                 // exactly like the Regenerate button does.
                 auto applyLoaded = [&] {
@@ -2495,7 +3102,7 @@ int main() {
                 }
                 ImGui::EndDisabled();
             }
-            ImGui::End();
+            ImGui::End(); }
             } // end editor UI (skipped in presentation mode)
 
             // Push the (possibly edited) terrain blend params into the material.
@@ -2519,14 +3126,14 @@ int main() {
             renderer.begin(camera, aspect, light);
 
             for (const TerrainChunk* chunk : streamer.visibleChunks()) {
-                renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f));
+                renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
             }
 
             // Road mesh is (re)built when points/width change (edited in the UI).
             if (roadDirty) buildRoad();
             if (roadEnabled && roadVerts > 0) {
                 roadMat.set("uWaterLevel", waterLevel); // wet-darken submerged parts
-                renderer.submit(roadMesh, roadMat, glm::mat4(1.0f));
+                renderer.submit(roadMesh, roadMat, glm::mat4(1.0f), false);
             }
 
             // --- Vehicle: terrain-aligned body + steered/rolling wheels --
@@ -2566,23 +3173,84 @@ int main() {
                 }
             }
 
-            // --- Scene entities: per-entity colour material + type mesh, through
-            //     the renderer (shadows, lighting, water). Materials are frame-local
-            //     and reserved so the pointers stay valid across all passes. ------
-            std::vector<Material> solidMats;
-            solidMats.reserve(entities.size());
+            // --- Scene entities through the renderer (shadows, lighting, water).
+            //     One GPU material is built per library asset and shared by every
+            //     mesh assigned to it; light markers keep their own emissive one.
+            //     All frame-local, reserved so pointers stay valid across passes.
+            std::vector<Material> gpuMats;
+            gpuMats.reserve(materials.size());
+            for (const MaterialDef& md : materials) {
+                Material& m = gpuMats.emplace_back(lit);
+                m.set("uWaterLevel", -1.0e4f)
+                 .set("uReflectivity", md.reflectivity)
+                 .set("uRoughness", md.roughness);
+                if (md.tex)
+                    m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0);
+                else
+                    m.set("uColorMode", 0).set("uAlbedo", md.albedo);
+            }
+            std::vector<Material> lightMats;
+            lightMats.reserve(entities.size());
             for (const Entity& b : entities) {
-                Material& mat = solidMats.emplace_back(lit);
-                // Light markers glow (emissive-ish: full albedo, unshaded-looking).
-                mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
-                   .set("uAlbedo", b.type == EntityType::Light ? b.color * 1.5f : b.color);
+                if (b.type == EntityType::Sun) continue; // directional, no geometry
+                if (b.type == EntityType::Model) {
+                    // Imported model: draw every primitive with its baked material.
+                    // Centre the model's AABB at b.center (so it matches the pick
+                    // box), then translate/scale into the world.
+                    LoadedModel* lm = loadedModelById(b.modelId);
+                    if (!lm) continue;
+                    // Derive the scale from the entity's AABB half-extents so the
+                    // model fills center +/- half exactly: this makes the Scale
+                    // gizmo (which writes half) and the pick box work like a
+                    // primitive, in addition to the inspector's Scale slider.
+                    const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+                    const glm::mat4 mm =
+                        composeModel(b.center, b.rotation, (b.half * 2.0f) / sz) *
+                        glm::translate(glm::mat4(1.0f), -lm->center());
+                    for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
+                        const int mi = materialIndexById(lm->primMaterialId[i]);
+                        renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
+                                        materials[mi].reflectivity > 0.0f);
+                    }
+                    continue;
+                }
                 const Mesh& mesh = (b.type == EntityType::Ramp)     ? rampMesh
                                  : (b.type == EntityType::Cylinder) ? cylMesh
+                                 : (b.type == EntityType::Sphere)   ? sphereMesh
                                                                     : carCube;
-                const glm::mat4 m = glm::translate(glm::mat4(1.0f), b.center)
-                                  * glm::scale(glm::mat4(1.0f), b.half * 2.0f);
-                renderer.submit(mesh, mat, m);
+                const glm::mat4 m = composeModel(b.center, b.rotation, b.half * 2.0f);
+                if (b.type == EntityType::Light) {
+                    // Light markers glow (emissive-ish). A marker sits on its own
+                    // light position, so it must NOT cast into that light's shadow
+                    // cube (it would wrap the light in a caster and go dark).
+                    Material& mat = lightMats.emplace_back(lit);
+                    mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
+                       .set("uAlbedo", b.color * 1.5f).set("uReflectivity", 0.0f);
+                    renderer.submit(mesh, mat, m, /*castsPointShadow=*/false);
+                } else {
+                    // Assigned library material; reflective solids are excluded
+                    // from the env probe so they don't reflect their own interior.
+                    const int mi = materialIndexById(b.materialId);
+                    renderer.submit(mesh, gpuMats[mi], m, true,
+                                    materials[mi].reflectivity > 0.0f);
+                }
             }
+
+            // Light entities become real point lights (lit-shader surfaces).
+            std::vector<PointLight> pointLights;
+            for (const Entity& b : entities) {
+                if (b.type != EntityType::Light) continue;
+                if (static_cast<int>(pointLights.size()) >= Renderer::kMaxPointLights) break;
+                PointLight pl;
+                pl.position    = b.center;
+                pl.color       = b.color * b.intensity;      // HDR radiance
+                pl.range       = b.range;
+                pl.castShadows = b.castShadows;
+                pl.shadowBias  = b.shadowBias;
+                pointLights.push_back(pl);
+            }
+            renderer.setPointLights(pointLights);
+            renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
 
             // --- Multi-pass render with sky and planar water ------------
             // Trees cast shadows: drawn into every cascade via this callback.
@@ -2669,6 +3337,27 @@ int main() {
                 glBindVertexArray(0);
                 glEnable(GL_CULL_FACE);
             };
+
+            // 0) Environment probe: capture the scene into a cubemap from the
+            //    first reflective object's position, so reflective materials
+            //    mirror the surrounding world. One shared probe (v1); its parallax
+            //    is only exact at that point. Skipped when nothing is reflective.
+            glm::vec3 probePos(0.0f);
+            bool hasReflective = false;
+            for (const Entity& b : entities) {
+                if (b.type != EntityType::Light && b.type != EntityType::Sun &&
+                    materials[materialIndexById(b.materialId)].reflectivity > 0.0f) {
+                    probePos = b.center;
+                    hasReflective = true;
+                    break;
+                }
+            }
+            if (hasReflective) {
+                renderer.prepareEnvProbe(probePos,
+                    [&](const glm::mat4& ivp, const glm::vec3& eye) {
+                        drawSky(ivp, eye, false);
+                    });
+            }
 
             // 1) Reflection: sky + scene mirrored across the water plane,
             //    clipping everything below the surface.

@@ -4,10 +4,13 @@
 #include "fitzel/graphics/Mesh.hpp"
 #include "fitzel/scene/Camera.hpp"
 
+#include <algorithm>
 #include <array>
 #include <string>
+#include <utility>
 
 #include <glad/gl.h>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace fitzel {
 
@@ -24,6 +27,23 @@ void main() { gl_Position = uLightSpace * uModel * vec4(aPos, 1.0); }
 
 constexpr const char* kDepthFrag = R"(#version 330 core
 void main() {}
+)";
+
+// Point-shadow pass: write normalized distance-to-light into an R32F cubemap.
+constexpr const char* kCubeVert = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uModel;
+uniform mat4 uVP;
+out vec3 vWorld;
+void main() { vec4 w = uModel * vec4(aPos, 1.0); vWorld = w.xyz; gl_Position = uVP * w; }
+)";
+
+constexpr const char* kCubeFrag = R"(#version 330 core
+in vec3 vWorld;
+layout(location = 0) out float oDist;
+uniform vec3  uLightPos;
+uniform float uFar;
+void main() { oDist = length(vWorld - uLightPos) / uFar; }
 )";
 
 // Extract the 6 world-space frustum planes from a view-projection matrix
@@ -82,7 +102,8 @@ const glm::vec4 Renderer::kNoClip = glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f);
 
 Renderer::Renderer(int shadowResolution, int cascades)
     : m_csm(shadowResolution, cascades),
-      m_depthShader(Shader::fromSource(kDepthVert, kDepthFrag)) {}
+      m_depthShader(Shader::fromSource(kDepthVert, kDepthFrag)),
+      m_cubeDistShader(Shader::fromSource(kCubeVert, kCubeFrag)) {}
 
 void Renderer::setViewport(int width, int height) {
     m_vpWidth  = width;
@@ -98,8 +119,9 @@ void Renderer::begin(const Camera& camera, float aspect,
 }
 
 void Renderer::submit(const Mesh& mesh, const Material& material,
-                      const glm::mat4& model) {
-    m_queue.push_back({&mesh, &material, model});
+                      const glm::mat4& model, bool castsPointShadow,
+                      bool reflective) {
+    m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective});
 }
 
 void Renderer::prepareShadows(const ShadowCaster& extra) {
@@ -121,9 +143,80 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
     m_csm.end(m_vpWidth, m_vpHeight);
 }
 
+void Renderer::preparePointShadows() {
+    // Shadow-casting point lights first, so their indices line up with the
+    // cubemaps and with the lit shader's first uShadowCount lights.
+    std::stable_partition(m_pointLights.begin(), m_pointLights.end(),
+                          [](const PointLight& l) { return l.castShadows; });
+    m_shadowedCount = 0;
+    for (const PointLight& l : m_pointLights)
+        if (l.castShadows) ++m_shadowedCount;
+    m_shadowedCount = std::min(m_shadowedCount, kMaxShadowedPoints);
+    if (m_shadowedCount == 0) return;
+
+    while (static_cast<int>(m_pointShadows.size()) < m_shadowedCount)
+        m_pointShadows.emplace_back(512);
+
+    const glm::vec3* dirs = CubeShadowMap::faceDirs();
+    const glm::vec3* ups  = CubeShadowMap::faceUps();
+
+    glDisable(GL_CLIP_DISTANCE0);
+    glEnable(GL_DEPTH_TEST);
+    // Cull front faces so single-sided ground doesn't self-shadow (only closed
+    // casters write their far side); avoids acne blacking out the lit surface.
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_FRONT);
+    m_cubeDistShader.bind();
+    for (int k = 0; k < m_shadowedCount; ++k) {
+        const PointLight& l = m_pointLights[k];
+        const float far = std::max(l.range, 0.5f);
+        const glm::mat4 pr = glm::perspective(glm::radians(90.0f), 1.0f, 0.05f, far);
+        m_cubeDistShader.setVec3("uLightPos", l.position);
+        m_cubeDistShader.setFloat("uFar", far);
+        for (int f = 0; f < 6; ++f) {
+            m_pointShadows[k].beginFace(f);
+            const glm::mat4 vp = pr * glm::lookAt(l.position, l.position + dirs[f], ups[f]);
+            m_cubeDistShader.setMat4("uVP", vp);
+            for (const auto& r : m_queue) {
+                if (!r.castsPointShadow) continue; // e.g. the ground
+                m_cubeDistShader.setMat4("uModel", r.model);
+                r.mesh->draw();
+            }
+        }
+    }
+    glCullFace(GL_BACK);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, m_vpWidth, m_vpHeight); // restore from the 512^2 cube faces
+}
+
+void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
+    if (!m_camera) return;
+
+    const glm::mat4 proj = CubeRenderTarget::faceProjection(0.2f, 4000.0f);
+
+    glDisable(GL_CLIP_DISTANCE0);
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+    for (int f = 0; f < 6; ++f) {
+        m_envWrite->beginFace(f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        const glm::mat4 view = CubeRenderTarget::faceView(pos, f);
+        if (drawSky) drawSky(glm::inverse(proj * view), pos);
+        // Linear (untonemapped) so reflections match the HDR scene; skip the
+        // reflective surfaces themselves and sample last frame's probe.
+        renderScene(view, proj, pos, kNoClip, /*tonemap=*/false,
+                    /*skipReflective=*/true);
+    }
+    m_envWrite->generateMipmaps();
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, m_vpWidth, m_vpHeight);
+    // The freshly captured cube becomes the one the lit passes sample this frame.
+    std::swap(m_envRead, m_envWrite);
+}
+
 void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                            const glm::vec3& eye, const glm::vec4& clipPlane,
-                           bool tonemap) {
+                           bool tonemap, bool skipReflective) {
     const glm::mat4 viewProj = proj * view;
     const int cascades = m_csm.cascadeCount();
 
@@ -135,6 +228,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     glEnable(GL_CLIP_DISTANCE0);
 
     for (const auto& r : m_queue) {
+        if (skipReflective && r.reflective) continue; // env-probe pass excludes them
         if (!aabbVisible(planes, r.model,
                          r.mesh->boundsMin(), r.mesh->boundsMax())) {
             ++m_lastCulled;
@@ -142,8 +236,15 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         }
         ++m_lastDrawn;
 
-        r.material->apply(); // binds shader + material params/textures
         Shader* s = r.material->shader();
+        // Baseline: reflection off. A Material only uploads the uniforms it
+        // defines, so without this a reflective material would leave uReflectivity
+        // set on the shared program and later matte draws (terrain, road) would
+        // inherit it. Materials opt in by setting uReflectivity in apply().
+        s->bind();
+        s->setFloat("uReflectivity", 0.0f);
+
+        r.material->apply(); // binds shader + material params/textures
 
         s->setMat4("uModel", r.model);
         s->setMat4("uView", view);
@@ -162,6 +263,41 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uTonemap", tonemap ? 1 : 0);
         s->setInt("uCascadeCount", cascades);
         s->setInt("uShadowMap", kShadowMapUnit);
+
+        // Point lights (no-ops on shaders that don't declare these uniforms).
+        const int pc = std::min(static_cast<int>(m_pointLights.size()), kMaxPointLights);
+        s->setInt("uPointCount", pc);
+        for (int i = 0; i < pc; ++i) {
+            const std::string idx = std::to_string(i);
+            s->setVec3("uPointPos[" + idx + "]", m_pointLights[i].position);
+            s->setVec3("uPointColor[" + idx + "]", m_pointLights[i].color);
+            s->setFloat("uPointRange[" + idx + "]", m_pointLights[i].range);
+        }
+        // Point-shadow cubemaps. Always give ALL four cube samplers their own
+        // units (12..15) -- even the unused ones -- so none is left aliasing
+        // unit 0, where uTexture (a sampler2D) lives. A samplerCube and a
+        // sampler2D pointing at the same unit is a type clash that makes the
+        // driver drop the whole draw once the cube is sampled, so every lit
+        // surface (the terrain) would vanish when point shadows switch on.
+        s->setInt("uShadowCount", m_shadowedCount);
+        for (int k = 0; k < kMaxShadowedPoints; ++k) {
+            const std::string ks = std::to_string(k);
+            if (k < m_shadowedCount) {
+                m_pointShadows[k].bindTexture(kPointShadowUnit + k);
+                s->setFloat("uShadowFar" + ks, std::max(m_pointLights[k].range, 0.5f));
+                s->setFloat("uShadowBias" + ks, m_pointLights[k].shadowBias);
+            } else if (m_shadowedCount > 0) {
+                // Bind a real cubemap so the unit stays a complete cube texture.
+                m_pointShadows[0].bindTexture(kPointShadowUnit + k);
+            }
+            s->setInt("uShadowCube" + ks, kPointShadowUnit + k);
+        }
+
+        // Environment probe for reflective materials. Bound for every lit draw
+        // (even non-reflective ones) so this samplerCube never aliases unit 0.
+        m_envRead->bindTexture(kEnvProbeUnit);
+        s->setInt("uEnvProbe", kEnvProbeUnit);
+        s->setFloat("uEnvMaxLod", static_cast<float>(m_envRead->mipLevels() - 1));
 
         for (int i = 0; i < cascades; ++i) {
             const std::string idx = std::to_string(i);

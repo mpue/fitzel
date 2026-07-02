@@ -42,6 +42,47 @@ uniform mat4  uLightSpace[MAX_CASCADES];
 uniform float uCascadeSplits[MAX_CASCADES];
 uniform int   uCascadeCount;
 
+// Point lights (placed Light entities). Colours are HDR (colour * intensity).
+#define MAX_POINT_LIGHTS 16
+uniform int   uPointCount;
+uniform vec3  uPointPos[MAX_POINT_LIGHTS];
+uniform vec3  uPointColor[MAX_POINT_LIGHTS];
+uniform float uPointRange[MAX_POINT_LIGHTS];
+
+// Omnidirectional shadows for the first uShadowCount point lights.
+uniform int   uShadowCount;
+uniform samplerCube uShadowCube0;
+uniform samplerCube uShadowCube1;
+uniform samplerCube uShadowCube2;
+uniform samplerCube uShadowCube3;
+uniform float uShadowFar0;
+uniform float uShadowFar1;
+uniform float uShadowFar2;
+uniform float uShadowFar3;
+// Per-light normalized depth bias. Front-face culling in the cube pass already
+// keeps acne away, so this is small: a larger bias detaches the shadow from the
+// object ("peter panning", a visible gap at the contact point).
+uniform float uShadowBias0;
+uniform float uShadowBias1;
+uniform float uShadowBias2;
+uniform float uShadowBias3;
+
+float pointShadow(int i, vec3 toFrag, float far, float bias) {
+    float cur = length(toFrag) / far;
+    float closest;
+    if (i == 0)      closest = texture(uShadowCube0, toFrag).r;
+    else if (i == 1) closest = texture(uShadowCube1, toFrag).r;
+    else if (i == 2) closest = texture(uShadowCube2, toFrag).r;
+    else             closest = texture(uShadowCube3, toFrag).r;
+    return (cur - bias > closest) ? 1.0 : 0.0; // 1 = shadowed
+}
+
+// Environment reflection (dynamic scene cubemap probe).
+uniform samplerCube uEnvProbe;
+uniform float uEnvMaxLod;      // coarsest mip level (for rough reflections)
+uniform float uReflectivity;   // 0 = matte (no reflection), 1 = mirror
+uniform float uRoughness;      // 0 = sharp reflection, 1 = blurry
+
 // Surface.
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
@@ -263,6 +304,39 @@ void main() {
 
     vec3 color = albedo * uAmbient
                + (1.0 - shadow) * uLightColor * (albedo * diff + spec);
+
+    // Point lights: diffuse + a little specular, with smooth range falloff.
+    for (int i = 0; i < uPointCount; ++i) {
+        vec3  d   = uPointPos[i] - vWorldPos;
+        float dst = length(d);
+        vec3  Lp  = d / max(dst, 1e-4);
+        float att = clamp(1.0 - dst / max(uPointRange[i], 1e-3), 0.0, 1.0);
+        att *= att; // quadratic-ish falloff
+        float dp  = max(dot(N, Lp), 0.0);
+        float sp  = pow(max(dot(N, normalize(Lp + V)), 0.0), 32.0) * 0.2;
+        float sh  = 0.0;
+        if (i < uShadowCount) {
+            float far = (i == 0) ? uShadowFar0 : (i == 1) ? uShadowFar1
+                      : (i == 2) ? uShadowFar2 : uShadowFar3;
+            float bias = (i == 0) ? uShadowBias0 : (i == 1) ? uShadowBias1
+                       : (i == 2) ? uShadowBias2 : uShadowBias3;
+            sh = pointShadow(i, -d, far, bias); // -d = light -> fragment
+        }
+        color += uPointColor[i] * (albedo * dp + sp) * att * (1.0 - sh);
+    }
+
+    // Environment reflection: sample the dynamic scene probe along the reflection
+    // vector and blend in by a Fresnel term. uReflectivity raises the base
+    // reflectance F0 (0 -> dielectric 4%, 1 -> full mirror); uRoughness selects a
+    // blurrier mip. Reflection happens before fog so distant mirrors haze too.
+    if (uReflectivity > 0.0) {
+        vec3  Rv   = reflect(-V, N);
+        vec3  env  = textureLod(uEnvProbe, Rv, uRoughness * uEnvMaxLod).rgb;
+        float F0   = mix(0.04, 1.0, uReflectivity);
+        float NoV  = max(dot(N, V), 0.0);
+        float fres = F0 + (1.0 - F0) * pow(1.0 - NoV, 5.0);
+        color = mix(color, env, clamp(fres, 0.0, 1.0));
+    }
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 

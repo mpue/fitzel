@@ -12,9 +12,11 @@ namespace fitzel {
 struct ModelPrimitive {
     std::vector<float>         vertices;  // 8 floats per vertex
     std::vector<std::uint8_t>  texPixels; // RGBA, empty if untextured
-    int  texWidth    = 0;
-    int  texHeight   = 0;
-    bool alphaCutout = false;             // material uses MASK/BLEND (foliage)
+    int   texWidth    = 0;
+    int   texHeight   = 0;
+    bool  alphaCutout = false;            // material uses MASK/BLEND (foliage)
+    float baseColor[4] = {0.8f, 0.8f, 0.8f, 1.0f}; // PBR base-colour factor (tint)
+    std::string materialName;             // glTF material name (may be empty)
 
     int vertexCount() const { return static_cast<int>(vertices.size() / 8); }
 };
