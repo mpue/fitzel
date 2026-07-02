@@ -32,6 +32,7 @@
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
 #include "PresetStore.hpp"
+#include "ScriptSystem.hpp"
 
 using namespace fitzel;
 
@@ -873,6 +874,7 @@ int main() {
                   << (b.type == EntityType::Model
                           ? std::filesystem::path(b.modelPath).filename().string()
                           : std::string("-")) << ' '
+                  << (b.script.empty() ? std::string("-") : b.script) << ' '
                   << b.id << ' ' << b.parent << ' '
                   << b.name << '\n';
         };
@@ -915,7 +917,7 @@ int main() {
                 applyMats(); // M lines precede entities: library is ready
                 Entity b;
                 int cast = 0;
-                std::string modelTok;
+                std::string modelTok, scriptTok;
                 b.type = static_cast<EntityType>(std::stoi(tok));
                 ss >> b.center.x >> b.center.y >> b.center.z
                    >> b.half.x >> b.half.y >> b.half.z
@@ -923,8 +925,10 @@ int main() {
                    >> b.intensity >> b.range >> b.shadowBias
                    >> cast >> b.materialId >> b.scale
                    >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
+                   >> scriptTok
                    >> b.id >> b.parent;
                 b.castShadows = cast != 0;
+                if (scriptTok != "-") b.script = scriptTok;
                 std::getline(ss, b.name);
                 if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
                 if (b.type == EntityType::Model && modelTok != "-") {
@@ -1347,6 +1351,7 @@ int main() {
         // first-person walk mode; Stop restores the snapshot and the edit camera
         // exactly, so play-time changes never leak into the edited scene.
         bool playMode = false;
+        ScriptSystem scripts; // Lua entity scripts, ticked while playing
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
         glm::vec3 playCamPos{0.0f};
@@ -1364,6 +1369,7 @@ int main() {
             entityEditMode = false;
             entitySel      = -1;
             vehicleMode    = false;
+            scripts.reset(); // fresh VM: scripts reload, start() runs again
             fpsMode        = true; // play as the walking player
             input.setCursorLocked(true);
             fpsVelY = 0.0f;
@@ -1740,6 +1746,14 @@ int main() {
             fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
             renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
+
+            // --- Scripts: tick each scripted entity's Lua update while playing --
+            if (playMode) {
+                for (Entity& e : entities)
+                    if (e.type != EntityType::Sun && !e.script.empty())
+                        scripts.update(e, "scripts/" + e.script, dt,
+                                       static_cast<float>(now));
+            }
 
             // --- UI ------------------------------------------------------
             gui.beginFrame();
@@ -2578,6 +2592,19 @@ int main() {
                             ImGui::DragFloat3("Rotation", &b.rotation.x, 1.0f, 0.0f, 0.0f, "%.0f deg");
                         if (b.type != EntityType::Light && b.type != EntityType::Model)
                             ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
+                        {
+                            // Lua behaviour, run while playing (scripts/<file>.lua).
+                            char sbuf[128];
+                            std::snprintf(sbuf, sizeof(sbuf), "%s", b.script.c_str());
+                            if (ImGui::InputText("Script", sbuf, sizeof(sbuf)))
+                                b.script = sbuf;
+                            if (!scripts.lastError().empty())
+                                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+                                                   "Script error: %s",
+                                                   scripts.lastError().c_str());
+                            else if (!b.script.empty())
+                                ImGui::TextDisabled("Runs start()/update() in Play.");
+                        }
                         if (b.type == EntityType::Light)
                             ImGui::ColorEdit3("Light colour", &b.color.x);
                         if (b.type == EntityType::Light) {

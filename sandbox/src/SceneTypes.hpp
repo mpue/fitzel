@@ -44,6 +44,7 @@ struct Entity {
     int         modelId   = -1;              // Model only: LoadedModel id
     float       scale     = 1.0f;            // Model only: uniform scale
     std::string modelPath;                   // Model only: source file (for reload)
+    std::string script;                      // Lua file under scripts/ ("" = none)
     std::string name;
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object

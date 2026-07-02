@@ -82,8 +82,16 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- Lua 5.4: entity scripting (plain C API, compiled from source) ----------
+FetchContent_Declare(
+    lua
+    GIT_REPOSITORY https://github.com/lua/lua.git
+    GIT_TAG        v5.4.7
+    GIT_SHALLOW    ON
+)
+
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf)
+FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua)
 
 # ImGuizmo: fetch the sources only (its own CMakeLists would clash with our imgui
 # target), then compile ImGuizmo.cpp into the imgui library below.
@@ -112,6 +120,16 @@ target_include_directories(miniaudio_dep INTERFACE ${miniaudio_SOURCE_DIR})
 # cgltf headers (the CGLTF_IMPLEMENTATION TU lives in engine/).
 add_library(cgltf_dep INTERFACE)
 target_include_directories(cgltf_dep INTERFACE ${cgltf_SOURCE_DIR})
+
+# Lua static library (the repo ships no CMakeLists; compile its sources directly,
+# excluding the standalone interpreter, the amalgam and the internal test file).
+file(GLOB LUA_SOURCES ${lua_SOURCE_DIR}/*.c)
+list(REMOVE_ITEM LUA_SOURCES
+    ${lua_SOURCE_DIR}/lua.c
+    ${lua_SOURCE_DIR}/onelua.c
+    ${lua_SOURCE_DIR}/ltests.c)
+add_library(lua_dep STATIC ${LUA_SOURCES})
+target_include_directories(lua_dep PUBLIC ${lua_SOURCE_DIR})
 
 # Build Dear ImGui (core + GLFW/OpenGL3 backends) as a static library. The
 # OpenGL3 backend ships its own GL loader, so it doesn't clash with GLAD.
