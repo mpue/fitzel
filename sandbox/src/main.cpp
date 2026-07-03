@@ -1645,6 +1645,7 @@ int main() {
         showProgress(1.0f, "Ready");
 
         double lastTime = window.time();
+        double nextAssetPoll = 0.0; // next wall-clock time to scan for asset edits
 
         while (window.isOpen()) {
             window.pollEvents();
@@ -1653,6 +1654,20 @@ int main() {
             const double now = window.time();
             const float  dt  = static_cast<float>(now - lastTime);
             lastTime = now;
+
+            // Hot reload: pick up on-disk asset edits ~twice a second. Textures
+            // and models reload in place (existing handles update automatically);
+            // edited/added/removed materials refresh the project's library.
+            if (now >= nextAssetPoll) {
+                nextAssetPoll = now + 0.5;
+                const std::vector<AssetChange> changes = assetDb.pollChanges();
+                bool materialsChanged = false;
+                for (const AssetChange& ch : changes)
+                    if (ch.type == AssetType::Material) materialsChanged = true;
+                if (materialsChanged && !currentProject.empty())
+                    loadProjectMaterials(
+                        std::filesystem::path(currentProject).stem().string());
+            }
 
             // --- Input ---------------------------------------------------
             // F toggles first-person walk mode (cursor locks, mouse-look always on).

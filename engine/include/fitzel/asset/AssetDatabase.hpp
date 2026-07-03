@@ -20,6 +20,14 @@ struct ModelData;
 // resolves the id against whichever mounted source contains it.
 enum class AssetSourceKind { Engine, Project };
 
+// A single on-disk change reported by AssetDatabase::pollChanges().
+struct AssetChange {
+    enum class Kind { Added, Modified, Removed };
+    AssetId   id;
+    Kind      kind = Kind::Modified;
+    AssetType type = AssetType::Unknown;
+};
+
 // A Unity-style asset registry that can mount several content roots at once
 // (e.g. an engine source plus a project source). Every asset file on disk gets a
 // stable GUID stored in a `<file>.meta` sidecar; references elsewhere (scenes,
@@ -41,6 +49,7 @@ public:
         AssetType             type        = AssetType::Unknown;
         int                   sourceIndex = -1; // index into sources()
         TextureImportSettings textureImport;    // meaningful when type == Texture
+        std::filesystem::file_time_type mtime{}; // last-write time at import/poll
     };
 
     AssetDatabase() = default;
@@ -93,9 +102,20 @@ public:
     std::shared_ptr<Texture>   loadTexture(const std::filesystem::path& path);
     std::shared_ptr<ModelData> loadModelData(const std::filesystem::path& path);
 
+    // --- Hot reload ---------------------------------------------------------
+    // Walk every mounted source and report on-disk changes since the last
+    // refresh()/poll: new asset files are imported (Added), files whose
+    // modification time advanced have their live-cached Texture/ModelData
+    // reloaded in place -- so existing shared handles instantly see the new data
+    // -- and reported Modified, and vanished files are dropped (Removed). Cheap
+    // enough to call a couple of times per second. Must run on the thread that
+    // owns the GL context (a texture reload issues GL calls).
+    std::vector<AssetChange> pollChanges();
+
 private:
     AssetId     importFile(const std::filesystem::path& absPath, int sourceIndex);
     void        loadOrCreateMeta(Entry& e);
+    void        reloadInPlace(const Entry& e); // refresh a live-cached decode
     int         sourceIndexForPath(const std::filesystem::path& absPath) const;
     std::string relKey(const std::filesystem::path& absPath, int sourceIndex) const;
     std::string absKey(const std::filesystem::path& absPath) const;

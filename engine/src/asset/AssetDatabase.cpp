@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <fstream>
 #include <system_error>
+#include <unordered_set>
 
 #include <nlohmann/json.hpp>
 
@@ -153,6 +154,8 @@ AssetId AssetDatabase::importFile(const fs::path& absPath, int sourceIndex) {
     e.relPath     = relKey(e.absPath, sourceIndex);
     e.type        = type;
     e.sourceIndex = sourceIndex;
+    std::error_code mec;
+    e.mtime       = fs::last_write_time(e.absPath, mec);
     loadOrCreateMeta(e);
     if (!e.id.valid()) return {};
 
@@ -275,6 +278,80 @@ std::shared_ptr<Texture> AssetDatabase::loadTexture(const fs::path& path) {
 
 std::shared_ptr<ModelData> AssetDatabase::loadModelData(const fs::path& path) {
     return loadModelData(idForPath(path));
+}
+
+void AssetDatabase::reloadInPlace(const Entry& e) {
+    // Only reload assets that are still held by someone (live weak cache);
+    // otherwise the next load() re-reads from disk anyway. Reload into the same
+    // object so existing shared handles observe the change without being rebound.
+    if (e.type == AssetType::Texture) {
+        auto it = m_texCache.find(e.id);
+        if (it == m_texCache.end()) return;
+        if (auto sp = it->second.lock()) {
+            Texture t = Texture::fromFile(e.absPath.string(),
+                                          e.textureImport.flipVertically);
+            if (t.isValid()) *sp = std::move(t); // keep old pixels on a bad read
+        }
+    } else if (e.type == AssetType::Model) {
+        auto it = m_modelCache.find(e.id);
+        if (it == m_modelCache.end()) return;
+        if (auto sp = it->second.lock()) {
+            ModelData md = loadGltf(e.absPath.string());
+            if (!md.empty()) *sp = std::move(md);
+        }
+    }
+}
+
+std::vector<AssetChange> AssetDatabase::pollChanges() {
+    std::vector<AssetChange> changes;
+    std::error_code ec;
+    std::unordered_set<std::string> seen; // absolute keys present on disk now
+
+    for (int si = 0; si < static_cast<int>(m_sources.size()); ++si) {
+        const Source& src = m_sources[si];
+        if (!fs::exists(src.root, ec)) continue;
+        for (fs::recursive_directory_iterator it(src.root, ec), end; it != end;
+             it.increment(ec)) {
+            if (ec) break;
+            if (!it->is_regular_file(ec)) continue;
+            const fs::path& p = it->path();
+            if (p.extension() == ".meta") continue;
+            if (assetTypeForExtension(lowerExt(p)) == AssetType::Unknown) continue;
+
+            const std::string key = absKey(p);
+            seen.insert(key);
+            auto pit = m_byPath.find(key);
+            if (pit == m_byPath.end()) {
+                const AssetId id = importFile(p, si); // new file
+                if (id.valid())
+                    changes.push_back({id, AssetChange::Kind::Added, typeForId(id)});
+                continue;
+            }
+            Entry& e = m_byId.at(pit->second);
+            std::error_code mec;
+            const auto mt = fs::last_write_time(p, mec);
+            if (!mec && mt != e.mtime) {
+                e.mtime = mt;
+                reloadInPlace(e);
+                changes.push_back({e.id, AssetChange::Kind::Modified, e.type});
+            }
+        }
+    }
+
+    // Anything registered but no longer on disk was removed.
+    std::vector<AssetId> gone;
+    for (const auto& [id, e] : m_byId)
+        if (!seen.count(e.absPath.generic_string())) gone.push_back(id);
+    for (const AssetId id : gone) {
+        const Entry& e = m_byId.at(id);
+        changes.push_back({id, AssetChange::Kind::Removed, e.type});
+        m_byPath.erase(e.absPath.generic_string());
+        m_texCache.erase(id);
+        m_modelCache.erase(id);
+        m_order.erase(std::remove(m_order.begin(), m_order.end(), id), m_order.end());
+        m_byId.erase(id);
+    }
+    return changes;
 }
 
 } // namespace fitzel
