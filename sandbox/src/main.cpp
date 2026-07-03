@@ -708,6 +708,7 @@ int main() {
         // layout is just Hierarchy | Scene | Inspector; everything else is hidden.
         bool showMaterials   = false;
         bool showModels      = false;
+        bool showAssets      = false;
         bool showStats       = false;
         bool showCamera      = false;
         bool showWeather     = false;
@@ -2072,6 +2073,7 @@ int main() {
                     ImGui::Separator();
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
+                    ImGui::MenuItem("Assets",          nullptr, &showAssets);
                     ImGui::MenuItem("Environment",     nullptr, &showEnv);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
@@ -2153,6 +2155,28 @@ int main() {
                     1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+
+                // Drag a Model asset from the Assets browser onto the terrain.
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const ImGuiPayload* pl =
+                            ImGui::AcceptDragDropPayload("ASSET_GUID")) {
+                        const AssetId gid = AssetId::fromString(std::string(
+                            static_cast<const char*>(pl->Data), pl->DataSize));
+                        if (assetDb.typeForId(gid) == AssetType::Model) {
+                            const float asp = static_cast<float>(viewW) /
+                                              static_cast<float>(viewH);
+                            const glm::mat4 vp =
+                                camera.projectionMatrix(asp) * camera.viewMatrix();
+                            glm::vec3 hit;
+                            if (roadPickTerrain(viewportMouseNdc, vp, hit)) {
+                                const int id =
+                                    importModel(assetDb.pathForId(gid).string());
+                                if (id >= 0) addModelEntity(hit, id);
+                            }
+                        }
+                    }
+                    ImGui::EndDragDropTarget();
+                }
 
                 // --- Road edit handles: draggable control-point markers -----
                 if (roadEditMode) {
@@ -2924,6 +2948,38 @@ int main() {
                             ImGui::ColorEdit3("Albedo", &md.albedo.x);
                         ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
                         ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
+                        // Base-colour texture slot: drop a Texture asset here from
+                        // the Assets browser. File-backed textures persist by GUID
+                        // (md.texId) into the .fmat; model-embedded ones don't.
+                        if (!md.fromModel) {
+                            std::string slot = "(none)";
+                            if (md.texId.valid()) {
+                                const AssetDatabase::Entry* te = assetDb.entry(md.texId);
+                                slot = te ? te->relPath : md.texId.toString();
+                            }
+                            ImGui::Text("Base texture:");
+                            ImGui::SameLine();
+                            ImGui::Button((slot + "##texslot").c_str());
+                            if (ImGui::BeginDragDropTarget()) {
+                                if (const ImGuiPayload* pl =
+                                        ImGui::AcceptDragDropPayload("ASSET_GUID")) {
+                                    const AssetId gid = AssetId::fromString(std::string(
+                                        static_cast<const char*>(pl->Data), pl->DataSize));
+                                    if (assetDb.typeForId(gid) == AssetType::Texture) {
+                                        md.texId = gid;
+                                        md.tex   = assetDb.loadTexture(gid);
+                                    }
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+                            if (md.texId.valid()) {
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Clear##tex")) {
+                                    md.texId = {};
+                                    md.tex.reset();
+                                }
+                            }
+                        }
                         ImGui::TextDisabled("Reflectivity mirrors the scene (env probe).");
                     }
                 }
@@ -2965,6 +3021,60 @@ int main() {
                     ImGui::EndDisabled();
                     ImGui::TextDisabled("%d model(s) loaded.",
                                         static_cast<int>(loadedModels.size()));
+                }
+                ImGui::End();
+            }
+
+            // Asset browser: every asset in the database, grouped by source
+            // (Engine vs Project) and labelled by type. Drag a Model onto the
+            // viewport to place it, or a Texture onto a material's Base texture
+            // slot. Double-click a Model to drop it ahead of the camera.
+            if (showAssets) {
+                if (ImGui::Begin("Assets", &showAssets)) {
+                    ImGui::TextDisabled("Drag a model to the viewport, or a "
+                                        "texture onto a material's Base texture.");
+                    ImGui::Separator();
+                    const auto& srcs = assetDb.sources();
+                    for (int si = 0; si < static_cast<int>(srcs.size()); ++si) {
+                        const char* kind = srcs[si].kind == AssetSourceKind::Engine
+                                               ? "Engine" : "Project";
+                        const std::string hdr =
+                            srcs[si].name + " (" + kind + ")###src" + std::to_string(si);
+                        if (!ImGui::CollapsingHeader(hdr.c_str(),
+                                                     ImGuiTreeNodeFlags_DefaultOpen))
+                            continue;
+                        ImGui::PushID(si);
+                        int shown = 0;
+                        for (AssetId id : assetDb.allAssets()) {
+                            const AssetDatabase::Entry* e = assetDb.entry(id);
+                            if (!e || e->sourceIndex != si) continue;
+                            ++shown;
+                            const std::string lbl = std::string(assetTypeName(e->type)) +
+                                                    "  " + e->relPath + "##a" + id.toString();
+                            ImGui::Selectable(lbl.c_str());
+                            if (ImGui::BeginDragDropSource(
+                                    ImGuiDragDropFlags_SourceAllowNullID)) {
+                                const std::string g = id.toString();
+                                ImGui::SetDragDropPayload("ASSET_GUID", g.data(), 32);
+                                ImGui::Text("%s  %s", assetTypeName(e->type),
+                                            e->relPath.c_str());
+                                ImGui::EndDragDropSource();
+                            }
+                            if (e->type == AssetType::Model &&
+                                ImGui::IsItemHovered() &&
+                                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                                const int id2 = importModel(e->absPath.string());
+                                if (id2 >= 0) {
+                                    const glm::vec3 p =
+                                        camera.position() + camera.front() * 8.0f;
+                                    addModelEntity(glm::vec3(p.x,
+                                        streamer.heightAt(p.x, p.z), p.z), id2);
+                                }
+                            }
+                        }
+                        if (shown == 0) ImGui::TextDisabled("  (empty)");
+                        ImGui::PopID();
+                    }
                 }
                 ImGui::End();
             }
