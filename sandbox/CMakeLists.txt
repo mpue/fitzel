@@ -3,7 +3,6 @@ add_executable(sandbox
     src/Primitives.cpp
     src/SandboxMath.cpp
     src/CameraPath.cpp
-    src/PresetStore.cpp
     src/ScriptSystem.cpp
     src/FolderDialog.cpp)
 

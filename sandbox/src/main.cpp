@@ -34,7 +34,6 @@
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
-#include "PresetStore.hpp"
 #include "ScriptSystem.hpp"
 #include "FolderDialog.hpp"
 
@@ -723,7 +722,6 @@ int main() {
         bool showCamPath     = false;
         bool showRoads       = false;
         bool showVehiclePanel = false;
-        bool showPresets     = false;
         bool showEnv         = false;
         std::string modelFile;       // selected file in the Models panel
 
@@ -744,6 +742,11 @@ int main() {
         bool wizardIsNew = true;    // true = New Project (reset scene), false = Save As
         char wizName[64]      = "";
         char wizLocation[512] = "";
+        // Scene look/settings serialization hooks. The tunable registry that
+        // backs these is built later (once all the tunables exist), so saveScene/
+        // loadScene call through these std::functions instead of the registry.
+        std::function<void(nlohmann::json&)>       writeSettingsFn;
+        std::function<void(const nlohmann::json&)> readSettingsFn;
         auto addMaterial = [&](std::string name, glm::vec3 albedo,
                                float refl, float rough) -> AssetId {
             MaterialDef md;
@@ -1011,6 +1014,12 @@ int main() {
                 ents.push_back(std::move(e));
             }
             j["entities"] = std::move(ents);
+            // Scene look/settings (terrain, sky, water, grade, vegetation, ...).
+            if (writeSettingsFn) {
+                nlohmann::json s = nlohmann::json::object();
+                writeSettingsFn(s);
+                j["settings"] = std::move(s);
+            }
             std::ofstream f(path);
             if (f) f << j.dump(2) << '\n';
         };
@@ -1186,6 +1195,9 @@ int main() {
                     maxId = std::max(maxId, b.id);
                     entities.push_back(std::move(b));
                 }
+                // Apply the saved scene look/settings (rebuilds terrain/veg).
+                if (readSettingsFn && j.contains("settings"))
+                    readSettingsFn(j["settings"]);
             } else {
                 // Legacy space-separated text: inline "M" materials + int ids.
                 materials.clear();
@@ -1619,14 +1631,31 @@ int main() {
         };
         applyScene(scene); // start in the selected scene (Empty by default)
 
-        // --- Preset system ------------------------------------------------
-        // Every tunable is bound by name to a getter/setter, so presets are a
-        // simple "key value" text file per scene look. Unknown/missing keys are
-        // ignored, so old presets keep working as fields come and go.
-        PresetStore presets;
-        auto addF = [&](const char* k, float& r) { presets.addFloat(k, r); };
-        auto addB = [&](const char* k, bool& r)  { presets.addBool(k, r); };
-        auto addI = [&](const char* k, int& r)   { presets.addInt(k, r); };
+        // --- Scene settings registry --------------------------------------
+        // Every tunable is bound by name to a getter/setter and serialised as
+        // part of the project scene (.fitzel "settings" object). Missing keys are
+        // ignored, so scenes keep loading as fields come and go.
+        struct Setting {
+            std::string                                key;
+            std::function<void(nlohmann::json&)>       write;
+            std::function<void(const nlohmann::json&)> read;
+        };
+        std::vector<Setting> tunables;
+        auto addF = [&](const char* k, float& r) {
+            tunables.push_back({k,
+                [k, &r](nlohmann::json& j){ j[k] = r; },
+                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+        };
+        auto addB = [&](const char* k, bool& r) {
+            tunables.push_back({k,
+                [k, &r](nlohmann::json& j){ j[k] = r; },
+                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+        };
+        auto addI = [&](const char* k, int& r) {
+            tunables.push_back({k,
+                [k, &r](nlohmann::json& j){ j[k] = r; },
+                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+        };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
@@ -1660,9 +1689,21 @@ int main() {
         addB("treeEnabled", treeEnabled);      addF("treeDensity", treeDensity);
         addF("treeSize", treeSize);            addF("lodNear", lodNear);
 
-        std::vector<std::string> presetList = presets.list();
-        int  presetSel = -1;
-        char presetName[64] = "my scene";
+        // Wire the serialization hooks now that every tunable and the terrain/
+        // vegetation state they drive are in scope. Reading settings applies them
+        // and rebuilds the terrain + regrows vegetation (like Regenerate does).
+        writeSettingsFn = [&](nlohmann::json& j){
+            for (const Setting& s : tunables) s.write(j);
+        };
+        readSettingsFn = [&](const nlohmann::json& j){
+            for (const Setting& s : tunables) s.read(j);
+            streamer.settings() = uiSettings;
+            streamer.rebuild();
+            streamer.update(camera.position());
+            grassDirty = true;
+            treeCenter = glm::vec2(1e9f);
+            roadDirty  = true;
+        };
 
         // --- Play mode: run the scene as a game -------------------------------
         // Play snapshots the editable scene state and drops the player into
@@ -2218,7 +2259,6 @@ int main() {
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
                     ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
-                    ImGui::MenuItem("Presets",         nullptr, &showPresets);
                     ImGui::Separator();
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
@@ -3484,64 +3524,6 @@ int main() {
             }
             ImGui::End(); }
 
-            if (showPresets) { if (ImGui::Begin("Presets", &showPresets)) {
-                // Applying a preset that changes terrain requires a rebuild+regrow,
-                // exactly like the Regenerate button does.
-                auto applyLoaded = [&] {
-                    streamer.settings() = uiSettings;
-                    streamer.rebuild();
-                    streamer.update(camera.position());
-                    grassDirty = true;
-                    treeCenter = glm::vec2(1e9f);
-                    roadDirty  = true;
-                };
-
-                ImGui::TextDisabled("Save the full scene look (terrain, sky, water, "
-                                    "grade, vegetation...) as a named preset.");
-                ImGui::InputText("Name", presetName, sizeof(presetName));
-                if (ImGui::Button("Save preset")) {
-                    if (presetName[0]) {
-                        presets.save(presetName);
-                        presetList = presets.list();
-                        for (int i = 0; i < static_cast<int>(presetList.size()); ++i)
-                            if (presetList[i] == presetName) presetSel = i;
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Refresh")) { presetList = presets.list(); presetSel = -1; }
-
-                ImGui::SeparatorText("Saved presets");
-                if (presetList.empty()) {
-                    ImGui::TextDisabled("(none yet)");
-                }
-                if (ImGui::BeginListBox("##presetlist", ImVec2(-1.0f, 150.0f))) {
-                    for (int i = 0; i < static_cast<int>(presetList.size()); ++i) {
-                        const bool sel = (presetSel == i);
-                        if (ImGui::Selectable(presetList[i].c_str(), sel))
-                            presetSel = i;
-                        // Double-click loads immediately.
-                        if (sel && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)
-                                && ImGui::IsItemHovered()) {
-                            if (presets.load(presetList[i])) applyLoaded();
-                        }
-                    }
-                    ImGui::EndListBox();
-                }
-
-                const bool hasSel = presetSel >= 0 && presetSel < static_cast<int>(presetList.size());
-                ImGui::BeginDisabled(!hasSel);
-                if (ImGui::Button("Load")) {
-                    if (presets.load(presetList[presetSel])) applyLoaded();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Delete")) {
-                    presets.remove(presetList[presetSel]);
-                    presetList = presets.list();
-                    presetSel = -1;
-                }
-                ImGui::EndDisabled();
-            }
-            ImGui::End(); }
             } // end editor UI (skipped in presentation mode)
 
             // Push the (possibly edited) terrain blend params into the material.
