@@ -41,7 +41,7 @@ struct Entity {
     float       range      = 12.0f;          // Light only: falloff + shadow far plane
     bool        castShadows = false;         // Light only: opt-in cube shadows
     float       shadowBias  = 0.003f;        // Light only: normalized cube-shadow bias
-    int         materialId = 0;              // solids: assigned MaterialDef id
+    fitzel::AssetId material;                 // solids: assigned MaterialDef (by GUID)
     int         modelId   = -1;              // Model only: LoadedModel id
     float       scale     = 1.0f;            // Model only: uniform scale
     std::string modelPath;                   // Model only: source file (for reload)
@@ -51,11 +51,13 @@ struct Entity {
     int         parent = -1;  // parent's id, or -1 for a root object
 };
 
-// A reusable surface material asset. Solids reference one by `id`; several
-// meshes can share a material, and editing it updates them all. Drives the lit
-// shader's albedo / reflection parameters.
+// A reusable surface material asset, saved as a `.fmat` file in the project's
+// materials/ folder. Solids reference one by its `assetId` (GUID); several meshes
+// can share a material, and editing it updates them all. Drives the lit shader's
+// albedo / reflection parameters.
 struct MaterialDef {
-    int         id = 0;                      // stable unique id
+    fitzel::AssetId assetId;                  // stable GUID (from its .fmat, or
+                                              // generated for model-embedded mats)
     std::string name;
     glm::vec3   albedo{0.72f, 0.72f, 0.74f};
     float       reflectivity = 0.0f;         // 0 matte .. 1 mirror (env probe)
@@ -81,7 +83,7 @@ struct LoadedModel {
     std::string               name;
     std::string               path;
     std::vector<fitzel::Mesh> meshes;
-    std::vector<int>          primMaterialId; // library MaterialDef id per mesh
+    std::vector<fitzel::AssetId> primMaterialId; // library MaterialDef GUID per mesh
     glm::vec3                 boundsMin{0.0f};
     glm::vec3                 boundsMax{0.0f};
 

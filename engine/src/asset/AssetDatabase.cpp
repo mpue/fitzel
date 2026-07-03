@@ -59,6 +59,19 @@ int AssetDatabase::mount(std::string name, AssetSourceKind kind, fs::path root) 
     return static_cast<int>(m_sources.size()) - 1;
 }
 
+void AssetDatabase::unmountProjects() {
+    m_sources.erase(std::remove_if(m_sources.begin(), m_sources.end(),
+                        [](const Source& s) {
+                            return s.kind == AssetSourceKind::Project;
+                        }),
+                    m_sources.end());
+}
+
+int AssetDatabase::mountProject(fs::path root) {
+    unmountProjects(); // keep exactly one project mounted at a time
+    return mount("project", AssetSourceKind::Project, std::move(root));
+}
+
 std::string AssetDatabase::absKey(const fs::path& absPath) const {
     return canonicalPath(absPath).generic_string();
 }

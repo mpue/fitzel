@@ -52,6 +52,14 @@ public:
     // mounting to scan it.
     int mount(std::string name, AssetSourceKind kind, std::filesystem::path root);
 
+    // Mount `root` as the single Project source, replacing any previously mounted
+    // Project source (Engine sources stay). Call refresh() afterwards.
+    int mountProject(std::filesystem::path root);
+
+    // Remove all Project sources (Engine sources stay). Their registry entries
+    // persist until the next refresh().
+    void unmountProjects();
+
     const std::vector<Source>& sources() const { return m_sources; }
 
     // (Re)scan every mounted source from disk. Registers each known asset,
