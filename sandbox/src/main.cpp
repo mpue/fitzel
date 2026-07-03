@@ -165,12 +165,12 @@ int main() {
         Renderer        renderer(2048, 4);
         DirectionalLight light;
 
-        // Image-based lighting from an HDRI (loaded on demand from the UI).
+        // Image-based lighting from an HDRI (chosen from the asset library).
         EnvironmentIBL environment;
         bool  iblEnabled   = false;
         bool  iblSkybox    = false;   // draw the HDRI as the sky background
         float iblIntensity = 1.0f;
-        char  hdriPath[256] = "";
+        std::string hdriLoaded;       // relPath of the loaded HDRI ("" = none)
 
         // Water: planar reflection/refraction targets + a surface quad.
         Shader water = Shader::fromFiles("assets/shaders/water.vert",
@@ -3408,15 +3408,46 @@ int main() {
             if (showEnv) {
                 if (ImGui::Begin("Environment", &showEnv)) {
                     ImGui::TextDisabled("Equirectangular .hdr / .exr panorama.");
-                    ImGui::SetNextItemWidth(220.0f);
-                    ImGui::InputText("HDRI", hdriPath, sizeof(hdriPath));
-                    if (ImGui::Button("Load")) {
-                        // Try the path as given, else relative to the textures folder.
-                        bool ok = environment.load(hdriPath);
-                        if (!ok)
-                            ok = environment.load(std::string(FITZEL_TEXTURE_DIR) +
-                                                  "/" + hdriPath);
-                        iblEnabled = ok;
+                    // Gather HDRI panoramas from the asset library: .hdr/.exr
+                    // textures, excluding PBR material maps (normal/rough/etc).
+                    auto isMaterialMap = [](const std::string& n){
+                        std::string s = n;
+                        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){
+                            return static_cast<char>(std::tolower(c)); });
+                        for (const char* t : {"_nor", "_normal", "_rough", "_disp",
+                                "_diff", "_albedo", "_ao", "_spec", "_metal",
+                                "_height", "_bump", "_opacity", "_mask", "_gloss",
+                                "_translucent", "_color"})
+                            if (s.find(t) != std::string::npos) return true;
+                        return false;
+                    };
+                    std::vector<std::pair<std::string, std::string>> hdris; // (label, path)
+                    for (const AssetId id : assetDb.allAssets()) {
+                        const AssetDatabase::Entry* e = assetDb.entry(id);
+                        if (!e || e->type != AssetType::Texture) continue;
+                        std::string ext = e->absPath.extension().string();
+                        std::transform(ext.begin(), ext.end(), ext.begin(),
+                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                        if ((ext != ".exr" && ext != ".hdr") || isMaterialMap(e->relPath))
+                            continue;
+                        hdris.push_back({e->relPath, e->absPath.string()});
+                    }
+                    std::sort(hdris.begin(), hdris.end());
+
+                    ImGui::SetNextItemWidth(260.0f);
+                    const char* curLabel = hdriLoaded.empty() ? "(select HDRI)"
+                                                              : hdriLoaded.c_str();
+                    if (ImGui::BeginCombo("HDRI", curLabel)) {
+                        if (hdris.empty())
+                            ImGui::TextDisabled("(no .hdr/.exr panoramas found)");
+                        for (const auto& [label, path] : hdris)
+                            if (ImGui::Selectable(label.c_str(), label == hdriLoaded)) {
+                                if (environment.load(path)) {
+                                    hdriLoaded = label;
+                                    iblEnabled = true;
+                                }
+                            }
+                        ImGui::EndCombo();
                     }
                     ImGui::SameLine();
                     ImGui::TextDisabled(environment.valid() ? "loaded" : "not loaded");
