@@ -58,6 +58,14 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- ImGuiColorTextEdit: syntax-highlighting code editor (Lua script editor) -
+FetchContent_Declare(
+    imcolortextedit
+    GIT_REPOSITORY https://github.com/BalazsJako/ImGuiColorTextEdit.git
+    GIT_TAG        master
+    GIT_SHALLOW    ON
+)
+
 # --- tinyexr: load OpenEXR (.exr) images (e.g. PBR normal maps) -------------
 FetchContent_Declare(
     tinyexr
@@ -109,6 +117,12 @@ if(NOT imguizmo_POPULATED)
     FetchContent_Populate(imguizmo)
 endif()
 
+# ImGuiColorTextEdit: sources only (compiled into the imgui library below).
+FetchContent_GetProperties(imcolortextedit)
+if(NOT imcolortextedit_POPULATED)
+    FetchContent_Populate(imcolortextedit)
+endif()
+
 # Generate a GLAD loader for OpenGL 3.3 Core. Produces the target `glad_gl_core_33`.
 glad_add_library(glad_gl_core_33 REPRODUCIBLE API gl:core=3.3)
 
@@ -150,11 +164,13 @@ add_library(imgui STATIC
     ${imgui_SOURCE_DIR}/imgui_demo.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_glfw.cpp
     ${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp
-    ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp   # 3D transform gizmos
+    ${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp        # 3D transform gizmos
+    ${imcolortextedit_SOURCE_DIR}/TextEditor.cpp   # syntax-highlighting code editor
 )
 target_include_directories(imgui PUBLIC
     ${imgui_SOURCE_DIR}
     ${imgui_SOURCE_DIR}/backends
     ${imguizmo_SOURCE_DIR}/src
+    ${imcolortextedit_SOURCE_DIR}
 )
 target_link_libraries(imgui PUBLIC glfw)

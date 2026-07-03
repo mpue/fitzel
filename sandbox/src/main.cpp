@@ -22,6 +22,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // DockBuilder API for the default panel layout
 #include <ImGuizmo.h>       // 3D transform gizmos in the viewport
+#include <TextEditor.h>     // ImGuiColorTextEdit: the Lua script editor
 #include <glm/gtc/type_ptr.hpp>
 
 #include <nlohmann/json.hpp>
@@ -710,6 +711,7 @@ int main() {
         bool showMaterials   = false;
         bool showModels      = false;
         bool showAssets      = false;
+        bool showScriptEditor = false;
         bool showStats       = false;
         bool showCamera      = false;
         bool showWeather     = false;
@@ -1668,6 +1670,41 @@ int main() {
         // exactly, so play-time changes never leak into the edited scene.
         bool playMode = false;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
+
+        // --- Lua script editor (ImGuiColorTextEdit) --------------------------
+        TextEditor  luaEditor;
+        luaEditor.SetLanguageDefinition(TextEditor::LanguageDefinition::Lua());
+        luaEditor.SetPalette(TextEditor::GetDarkPalette());
+        std::string editorPath;          // "scripts/<file>.lua" open ("" = none)
+        bool        editorDirty = false;  // unsaved changes
+        char        newScriptName[64] = "";
+        // Open a script (bare filename under scripts/) in the editor.
+        auto openScript = [&](const std::string& file){
+            if (file.empty()) return;
+            const std::string path = "scripts/" + file;
+            std::ifstream in(path);
+            std::stringstream ss; ss << in.rdbuf();
+            luaEditor.SetText(ss.str());
+            editorPath = path;
+            editorDirty = false;
+            showScriptEditor = true;
+        };
+        // Write the editor buffer back and reload the VM so Play picks it up.
+        auto saveEditor = [&](){
+            if (editorPath.empty()) return;
+            std::ofstream out(editorPath);
+            if (out) { out << luaEditor.GetText(); scripts.reset(); editorDirty = false; }
+        };
+        // .lua files currently in scripts/ (bare names, sorted).
+        auto listScripts = [&](){
+            std::vector<std::string> out;
+            std::error_code ec;
+            for (const auto& de : std::filesystem::directory_iterator("scripts", ec))
+                if (de.is_regular_file() && de.path().extension() == ".lua")
+                    out.push_back(de.path().filename().string());
+            std::sort(out.begin(), out.end());
+            return out;
+        };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
         glm::vec3 playCamPos{0.0f};
@@ -2186,6 +2223,7 @@ int main() {
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
                     ImGui::MenuItem("Assets",          nullptr, &showAssets);
+                    ImGui::MenuItem("Script Editor",   nullptr, &showScriptEditor);
                     ImGui::MenuItem("Environment",     nullptr, &showEnv);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
@@ -3018,7 +3056,8 @@ int main() {
                             std::sort(luaFiles.begin(), luaFiles.end());
                             const std::string cur =
                                 b.script.empty() ? "(none)" : b.script;
-                            if (ImGui::BeginCombo("Script", cur.c_str())) {
+                            ImGui::SetNextItemWidth(-60.0f);
+                            if (ImGui::BeginCombo("##script", cur.c_str())) {
                                 if (ImGui::Selectable("(none)", b.script.empty()))
                                     b.script.clear();
                                 for (const std::string& f : luaFiles)
@@ -3026,6 +3065,11 @@ int main() {
                                         b.script = f;
                                 ImGui::EndCombo();
                             }
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(b.script.empty());
+                            if (ImGui::Button("Edit##scr")) openScript(b.script);
+                            ImGui::EndDisabled();
+                            ImGui::SameLine(0.0f, 4.0f); ImGui::TextDisabled("Script");
                             // A script set but not present on disk -> warn.
                             if (!b.script.empty() &&
                                 std::find(luaFiles.begin(), luaFiles.end(),
@@ -3276,6 +3320,88 @@ int main() {
                     }
                 }
                 ImGui::End();
+            }
+
+            // Lua script editor (syntax-highlighted). Open/create/save the .lua
+            // files under scripts/; saving reloads the script VM so the next Play
+            // uses the edited code. Assign a script to an entity in the Inspector.
+            if (showScriptEditor) {
+                bool openNewScript = false;
+                if (ImGui::Begin("Script Editor", &showScriptEditor,
+                                 ImGuiWindowFlags_MenuBar)) {
+                    bool doSave = false;
+                    if (ImGui::BeginMenuBar()) {
+                        if (ImGui::BeginMenu("File")) {
+                            if (ImGui::MenuItem("New...")) openNewScript = true;
+                            if (ImGui::BeginMenu("Open")) {
+                                const auto files = listScripts();
+                                if (files.empty()) ImGui::TextDisabled("(none)");
+                                for (const std::string& f : files)
+                                    if (ImGui::MenuItem(f.c_str())) openScript(f);
+                                ImGui::EndMenu();
+                            }
+                            if (ImGui::MenuItem("Save", "Ctrl+S", false,
+                                                !editorPath.empty()))
+                                doSave = true;
+                            ImGui::EndMenu();
+                        }
+                        ImGui::EndMenuBar();
+                    }
+
+                    ImGui::Text("%s%s", editorPath.empty() ? "(no file)"
+                                                           : editorPath.c_str(),
+                                editorDirty ? " *" : "");
+                    if (!scripts.lastError().empty()) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+                                           "  %s", scripts.lastError().c_str());
+                    }
+
+                    // Ctrl+S saves while the editor window is focused.
+                    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+                        ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
+                        doSave = true;
+
+                    luaEditor.Render("LuaText");
+                    if (luaEditor.IsTextChanged()) editorDirty = true;
+                    if (doSave) saveEditor();
+                }
+                ImGui::End();
+
+                // New-script modal: create scripts/<name>.lua from a template.
+                if (openNewScript) ImGui::OpenPopup("New Script");
+                if (ImGui::BeginPopupModal("New Script", nullptr,
+                                           ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::SetNextItemWidth(260.0f);
+                    ImGui::InputText("Name", newScriptName, sizeof(newScriptName));
+                    const std::string safe = safeName(newScriptName);
+                    const std::string file = safe + ".lua";
+                    std::error_code sec;
+                    const bool exists = newScriptName[0] &&
+                        std::filesystem::exists("scripts/" + file, sec);
+                    if (exists)
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                           "scripts/%s already exists.", file.c_str());
+                    ImGui::BeginDisabled(newScriptName[0] == '\0' || exists);
+                    if (ImGui::Button("Create", ImVec2(110.0f, 0.0f))) {
+                        std::error_code ec;
+                        std::filesystem::create_directories("scripts", ec);
+                        std::ofstream out("scripts/" + file);
+                        if (out)
+                            out << "-- " << file << " : entity behaviour (runs in Play)\n"
+                                   "-- e: x/y/z pos, rx/ry/rz rot(deg), sx/sy/sz half, name, id\n\n"
+                                   "function start(e)\nend\n\n"
+                                   "function update(e, dt, t)\nend\n";
+                        newScriptName[0] = '\0';
+                        openScript(file);
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::EndDisabled();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel", ImVec2(110.0f, 0.0f)))
+                        ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                }
             }
 
             // HDRI environment lighting (image-based lighting).
