@@ -571,6 +571,8 @@ int main() {
         std::vector<glm::vec2> roadPts;   // control points (world x,z)
         Mesh  roadMesh;
         int   roadVerts    = 0;
+        std::vector<glm::vec3>     roadCollVerts;   // road geometry for physics
+        std::vector<std::uint32_t> roadCollIndices;
         bool  roadEnabled  = true;
         bool  roadEditMode = false;
         bool  roadDirty    = false;
@@ -602,7 +604,11 @@ int main() {
             roadCenterline.clear();
             MeshData md;
             const int n = static_cast<int>(roadPts.size());
-            if (n < 2) { roadMesh = Mesh(); roadVerts = 0; return; }
+            if (n < 2) {
+                roadMesh = Mesh(); roadVerts = 0;
+                roadCollVerts.clear(); roadCollIndices.clear();
+                return;
+            }
 
             // Smooth centreline: Catmull-Rom through the points, draped on terrain.
             std::vector<glm::vec3> center;
@@ -651,6 +657,11 @@ int main() {
             }
             roadMesh  = Mesh::create(md);
             roadVerts = static_cast<int>(md.vertices.size());
+            // Keep the CPU geometry for the physics mesh collider (Play mode).
+            roadCollVerts.clear();
+            roadCollVerts.reserve(md.vertices.size());
+            for (const Vertex& vtx : md.vertices) roadCollVerts.push_back(vtx.position);
+            roadCollIndices = md.indices;
         };
 
         // --- Test-drive vehicle ------------------------------------------
@@ -1800,6 +1811,14 @@ int main() {
                         heights[z * N + x] = streamer.heightAt(ox + x * sp, oz + z * sp);
                 physics->addHeightField(heights.data(), N, glm::vec3(ox, 0.0f, oz), sp);
             }
+            // Roads: a static triangle-mesh collider (draped on the terrain), so
+            // the player and objects can walk/drive on them.
+            if (roadDirty) buildRoad();
+            if (roadEnabled && roadCollIndices.size() >= 3)
+                physics->addMesh(roadCollVerts.data(),
+                                 static_cast<int>(roadCollVerts.size()),
+                                 roadCollIndices.data(),
+                                 static_cast<int>(roadCollIndices.size()));
             physicsBody.clear();
             for (Entity& e : entities) {
                 if (e.physics == 0 || e.type == EntityType::Light ||

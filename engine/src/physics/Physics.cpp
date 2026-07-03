@@ -18,6 +18,7 @@
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 
@@ -173,6 +174,30 @@ PhysicsBodyId PhysicsWorld::addConvexHull(const glm::vec3* points, int count,
         return 0;
     }
     return m_impl->create(res.Get(), pos, rot, mass).GetIndexAndSequenceNumber();
+}
+
+PhysicsBodyId PhysicsWorld::addMesh(const glm::vec3* verts, int vertCount,
+                                    const std::uint32_t* indices, int indexCount) {
+    if (!verts || vertCount < 3 || !indices || indexCount < 3) return 0;
+    JPH::VertexList vl;
+    vl.reserve(static_cast<std::size_t>(vertCount));
+    for (int i = 0; i < vertCount; ++i)
+        vl.push_back(JPH::Float3(verts[i].x, verts[i].y, verts[i].z));
+    JPH::IndexedTriangleList tl;
+    tl.reserve(static_cast<std::size_t>(indexCount / 3));
+    for (int i = 0; i + 2 < indexCount; i += 3)
+        tl.push_back(JPH::IndexedTriangle(indices[i], indices[i + 1],
+                                          indices[i + 2], 0));
+    JPH::MeshShapeSettings s(vl, tl);
+    s.Sanitize(); // drop degenerate/duplicate triangles
+    JPH::Shape::ShapeResult res = s.Create();
+    if (res.HasError()) {
+        std::fprintf(stderr, "[Fitzel] mesh shape error: %s\n",
+                     res.GetError().c_str());
+        return 0;
+    }
+    return m_impl->create(res.Get(), glm::vec3(0.0f), glm::quat(1, 0, 0, 0), 0.0f)
+        .GetIndexAndSequenceNumber();
 }
 
 PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,

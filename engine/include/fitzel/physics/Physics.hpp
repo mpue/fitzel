@@ -36,6 +36,12 @@ public:
     PhysicsBodyId addConvexHull(const glm::vec3* points, int count, glm::vec3 pos,
                                 glm::quat rot, float mass);
 
+    // Static triangle-mesh collider for concave world geometry (e.g. roads).
+    // `verts` are world-space positions; `indices` is a triangle list (a multiple
+    // of 3). Always static. Returns 0 on failure.
+    PhysicsBodyId addMesh(const glm::vec3* verts, int vertCount,
+                          const std::uint32_t* indices, int indexCount);
+
     // Static terrain collider from a square, row-major grid of `size`x`size`
     // world-space heights. The grid's (0,0) sample sits at `origin`, and adjacent
     // samples are `scaleXZ` metres apart along X and Z. `size` must be a positive
