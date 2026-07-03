@@ -2213,11 +2213,11 @@ int main() {
                 ImGui::TextUnformatted(wizardIsNew
                     ? "Create a new project" : "Save project as");
                 ImGui::Separator();
-                ImGui::SetNextItemWidth(-1.0f);
-                ImGui::InputText("##wizname", wizName, sizeof(wizName));
-                ImGui::SameLine(0.0f, 0.0f); ImGui::TextDisabled(" Name");
-                ImGui::SetNextItemWidth(-90.0f);
-                ImGui::InputText("##wizloc", wizLocation, sizeof(wizLocation));
+                const float fieldW = 340.0f;
+                ImGui::SetNextItemWidth(fieldW);
+                ImGui::InputText("Name", wizName, sizeof(wizName));
+                ImGui::SetNextItemWidth(fieldW);
+                ImGui::InputText("Location", wizLocation, sizeof(wizLocation));
                 ImGui::SameLine();
                 if (ImGui::Button("Browse...")) {
                     std::string picked;
@@ -2226,7 +2226,6 @@ int main() {
                         std::snprintf(wizLocation, sizeof(wizLocation), "%s",
                                       picked.c_str());
                 }
-                ImGui::SameLine(0.0f, 0.0f); ImGui::TextDisabled(" Location");
 
                 const std::string safe = safeName(wizName);
                 const std::string loc(wizLocation);
@@ -2240,8 +2239,12 @@ int main() {
                                     std::filesystem::exists(target, vec);
 
                 ImGui::Spacing();
-                if (!target.empty())
-                    ImGui::TextWrapped("Folder: %s", target.c_str());
+                if (!target.empty()) {
+                    // Bound the wrap so a long path can't stretch the modal wide.
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 460.0f);
+                    ImGui::TextDisabled("Folder: %s", target.c_str());
+                    ImGui::PopTextWrapPos();
+                }
                 const ImVec4 warn(1.0f, 0.55f, 0.3f, 1.0f);
                 if (!nameOk)      ImGui::TextColored(warn, "Enter a project name.");
                 else if (!locOk)  ImGui::TextColored(warn, "Location does not exist.");
