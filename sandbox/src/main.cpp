@@ -1810,6 +1810,12 @@ int main() {
                 }
                 if (id) physicsBody[e.id] = id;
             }
+            // The player is a physics capsule (~1.8 m tall) at the camera.
+            {
+                const glm::vec3 cp = camera.position();
+                physics->spawnCharacter(0.3f, 0.6f,
+                    glm::vec3(cp.x, streamer.heightAt(cp.x, cp.z), cp.z));
+            }
 
             fpsMode        = true; // play as the walking player
             input.setCursorLocked(true);
@@ -1959,6 +1965,28 @@ int main() {
                 const glm::vec2 d = input.mouseDelta();
                 camera.processMouse(d.x, d.y);
 
+                if (playMode && physics && physics->hasCharacter()) {
+                    // Physics character controller: collides with the terrain
+                    // heightfield and every rigid body in the world.
+                    glm::vec3 cf = camera.front(); cf.y = 0.0f;
+                    glm::vec3 cr = camera.right(); cr.y = 0.0f;
+                    if (glm::length(cf) > 1e-4f) cf = glm::normalize(cf);
+                    if (glm::length(cr) > 1e-4f) cr = glm::normalize(cr);
+                    glm::vec3 mv(0.0f);
+                    if (input.isKeyDown(GLFW_KEY_W)) mv += cf;
+                    if (input.isKeyDown(GLFW_KEY_S)) mv -= cf;
+                    if (input.isKeyDown(GLFW_KEY_D)) mv += cr;
+                    if (input.isKeyDown(GLFW_KEY_A)) mv -= cr;
+                    if (glm::length(mv) > 1e-4f) mv = glm::normalize(mv);
+                    const bool space = input.isKeyDown(GLFW_KEY_SPACE);
+                    const bool jump  = space && !prevSpace;
+                    prevSpace = space;
+                    bool onGround = false;
+                    const glm::vec3 foot = physics->moveCharacter(
+                        mv * camera.moveSpeed, jump, dt, onGround);
+                    grounded = onGround;
+                    camera.setPosition(glm::vec3(foot.x, foot.y + eyeHeight, foot.z));
+                } else {
                 glm::vec3 fwd = camera.front(); fwd.y = 0.0f;
                 glm::vec3 rgt = camera.right(); rgt.y = 0.0f;
                 if (glm::length(fwd) > 1e-4f) fwd = glm::normalize(fwd);
@@ -2028,6 +2056,7 @@ int main() {
                 if (pos.y <= groundEye) { pos.y = groundEye; fpsVelY = 0.0f; grounded = true; }
                 else                    { grounded = false; }
                 camera.setPosition(pos);
+                }
             } else {
                 // Look only when dragging over the viewport panel (or already
                 // locked into a drag); the surrounding dock panels keep the mouse.

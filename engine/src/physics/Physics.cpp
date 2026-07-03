@@ -16,7 +16,9 @@
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
+#include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
+#include <Jolt/Physics/Character/CharacterVirtual.h>
 
 JPH_SUPPRESS_WARNINGS
 
@@ -96,6 +98,9 @@ struct PhysicsWorld::Impl {
     ObjectVsBroadPhaseLayerFilterImpl objVsBp;
     ObjectLayerPairFilterImpl     objVsObj;
     JPH::PhysicsSystem            system;
+
+    JPH::Ref<JPH::CharacterVirtual> character;
+    float charRadius = 0.3f, charHalfHeight = 0.6f, charVertVel = 0.0f;
 
     Impl() {
         system.Init(/*maxBodies=*/4096, /*numBodyMutexes=*/0,
@@ -186,6 +191,63 @@ bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,
     pos = glm::vec3(float(p.GetX()), float(p.GetY()), float(p.GetZ()));
     rot = toGlm(bi.GetRotation(bid));
     return true;
+}
+
+// --- Character controller ---------------------------------------------------
+
+void PhysicsWorld::spawnCharacter(float radius, float halfHeight,
+                                  glm::vec3 footPos) {
+    Impl& d = *m_impl;
+    d.charRadius     = std::max(radius, 0.05f);
+    d.charHalfHeight = std::max(halfHeight, 0.05f);
+    d.charVertVel    = 0.0f;
+    // CharacterVirtual position is the capsule centre; lift the foot by half the
+    // full height (cylinder half + one radius cap).
+    const float lift = d.charHalfHeight + d.charRadius;
+    JPH::CharacterVirtualSettings s;
+    s.mShape = new JPH::CapsuleShape(d.charHalfHeight, d.charRadius);
+    s.mMaxSlopeAngle = JPH::DegreesToRadians(46.0f);
+    // Only the cylinder body (not the bottom cap) counts as "supported ground".
+    s.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -d.charRadius);
+    d.character = new JPH::CharacterVirtual(
+        &s, JPH::RVec3(footPos.x, footPos.y + lift, footPos.z),
+        JPH::Quat::sIdentity(), 0, &d.system);
+}
+
+void PhysicsWorld::removeCharacter() { m_impl->character = nullptr; }
+
+bool PhysicsWorld::hasCharacter() const { return m_impl->character != nullptr; }
+
+glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
+                                      bool& outOnGround) {
+    Impl& d = *m_impl;
+    outOnGround = false;
+    if (!d.character || dt <= 0.0f) return glm::vec3(0.0f);
+    if (dt > 0.1f) dt = 0.1f;
+
+    const bool grounded = d.character->GetGroundState() ==
+                          JPH::CharacterBase::EGroundState::OnGround;
+    const JPH::Vec3 g = d.system.GetGravity();
+    if (grounded && d.charVertVel < 0.0f)
+        d.charVertVel = 0.0f;            // rest on the ground
+    if (jump && grounded)
+        d.charVertVel = 6.0f;            // jump impulse
+    d.charVertVel += g.GetY() * dt;      // gravity
+
+    d.character->SetLinearVelocity(JPH::Vec3(horizVel.x, d.charVertVel, horizVel.z));
+
+    JPH::CharacterVirtual::ExtendedUpdateSettings us;
+    d.character->ExtendedUpdate(
+        dt, g, us,
+        d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+        d.system.GetDefaultLayerFilter(Layers::MOVING),
+        JPH::BodyFilter{}, JPH::ShapeFilter{}, d.temp);
+
+    outOnGround = d.character->GetGroundState() ==
+                  JPH::CharacterBase::EGroundState::OnGround;
+    const JPH::RVec3 c = d.character->GetPosition();
+    const float lift = d.charHalfHeight + d.charRadius;
+    return glm::vec3(float(c.GetX()), float(c.GetY()) - lift, float(c.GetZ()));
 }
 
 } // namespace fitzel

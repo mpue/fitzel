@@ -41,6 +41,22 @@ public:
     // Advance the simulation by `dt` seconds.
     void step(float dt);
 
+    // --- Character controller (a capsule the player drives) -----------------
+    // Spawn a capsule character at `footPos` (bottom of the capsule), replacing
+    // any existing one. `radius`/`halfHeight` are the capsule dimensions (the
+    // cylinder part is 2*halfHeight tall). It collides with the world but is
+    // driven kinematically (see moveCharacter).
+    void spawnCharacter(float radius, float halfHeight, glm::vec3 footPos);
+    void removeCharacter();
+    bool hasCharacter() const;
+
+    // Move the character this frame. `horizVel` is the desired horizontal world
+    // velocity (m/s); `jump` requests a jump when grounded. The world applies
+    // gravity + vertical motion and collide-and-slide, then returns the new foot
+    // position and sets `outOnGround`.
+    glm::vec3 moveCharacter(glm::vec3 horizVel, bool jump, float dt,
+                            bool& outOnGround);
+
     // World transform of a body. False if the id is unknown.
     bool getTransform(PhysicsBodyId id, glm::vec3& pos, glm::quat& rot) const;
 
