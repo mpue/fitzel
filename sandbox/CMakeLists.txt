@@ -4,9 +4,15 @@ add_executable(sandbox
     src/SandboxMath.cpp
     src/CameraPath.cpp
     src/PresetStore.cpp
-    src/ScriptSystem.cpp)
+    src/ScriptSystem.cpp
+    src/FolderDialog.cpp)
 
 target_link_libraries(sandbox PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
+
+# Native folder-picker (IFileOpenDialog) needs COM + the shell on Windows.
+if(WIN32)
+    target_link_libraries(sandbox PRIVATE ole32 shell32)
+endif()
 
 # Inject the path to the project's content root (textures, models, sounds) at the
 # repo root, so the sandbox can load the large, git-ignored assets without copying

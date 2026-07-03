@@ -35,6 +35,7 @@
 #include "CameraPath.hpp"
 #include "PresetStore.hpp"
 #include "ScriptSystem.hpp"
+#include "FolderDialog.hpp"
 
 using namespace fitzel;
 
@@ -724,11 +725,23 @@ int main() {
         bool showEnv         = false;
         std::string modelFile;       // selected file in the Models panel
 
-        // Projects: a named scene file under projects/. currentProject is the
-        // open project's path ("" = unsaved/new).
-        const std::string projectDir = "projects";
+        // Projects: a project is a folder chosen by the user (New Project wizard)
+        // containing <name>.fitzel + materials/. currentProject is the open
+        // project's scene-file path ("" = unsaved/new). The default location the
+        // wizard offers, plus the last-used location and a recent-projects list,
+        // persist in editor.json next to the executable.
+        const std::string defaultProjectsRoot =
+            std::filesystem::absolute("projects").generic_string();
         std::string       currentProject;
         char              projNameBuf[64] = "";
+        std::string       prefLocation = defaultProjectsRoot; // wizard default dir
+        std::vector<std::string> recentProjects;              // folders, newest first
+        const std::string prefsPath = "editor.json";
+        // New Project / Save As wizard state.
+        bool wizardOpen  = false;   // request to (re)open the modal this frame
+        bool wizardIsNew = true;    // true = New Project (reset scene), false = Save As
+        char wizName[64]      = "";
+        char wizLocation[512] = "";
         auto addMaterial = [&](std::string name, glm::vec3 albedo,
                                float refl, float rough) -> AssetId {
             MaterialDef md;
@@ -892,10 +905,50 @@ int main() {
                                  a[2].get<float>());
             return def;
         };
-        // Project path helpers (name -> folder / scene file / materials dir).
-        auto projFolder    = [&](const std::string& n){ return projectDir + "/" + n; };
-        auto projSceneFile = [&](const std::string& n){ return projFolder(n) + "/" + n + ".fitzel"; };
-        auto projMatsDir   = [&](const std::string& n){ return projFolder(n) + "/materials"; };
+        // --- Editor prefs (last location + recent projects) ------------------
+        auto savePrefs = [&]() {
+            nlohmann::json j;
+            j["lastLocation"] = prefLocation;
+            j["recent"]       = recentProjects;
+            std::ofstream f(prefsPath);
+            if (f) f << j.dump(2) << '\n';
+        };
+        auto loadPrefs = [&]() {
+            std::ifstream f(prefsPath);
+            if (!f) return;
+            nlohmann::json j;
+            try { f >> j; } catch (const nlohmann::json::exception&) { return; }
+            prefLocation   = j.value("lastLocation", prefLocation);
+            recentProjects = j.value("recent", std::vector<std::string>{});
+        };
+        // Record a just-saved/opened project: remember its parent as the default
+        // location and push it to the front of the recent list (deduped, capped).
+        auto rememberProject = [&](const std::string& folder) {
+            prefLocation = std::filesystem::path(folder).parent_path().generic_string();
+            recentProjects.erase(
+                std::remove(recentProjects.begin(), recentProjects.end(), folder),
+                recentProjects.end());
+            recentProjects.insert(recentProjects.begin(), folder);
+            if (recentProjects.size() > 8) recentProjects.resize(8);
+            savePrefs();
+        };
+        loadPrefs();
+
+        // --- Project path helpers (folder-based) -----------------------------
+        auto projMatsDirIn = [&](const std::string& folder){ return folder + "/materials"; };
+        // The project's scene file: prefer <folder>/<folder-name>.fitzel; else the
+        // first .fitzel present (robust to a renamed folder). Returns the preferred
+        // path even if absent, so it doubles as the save target.
+        auto projSceneFileIn = [&](const std::string& folder) -> std::string {
+            const std::string stem = std::filesystem::path(folder).filename().string();
+            const std::string preferred = folder + "/" + stem + ".fitzel";
+            std::error_code ec;
+            if (std::filesystem::exists(preferred, ec)) return preferred;
+            for (const auto& de : std::filesystem::directory_iterator(folder, ec))
+                if (de.path().extension() == ".fitzel")
+                    return de.path().generic_string();
+            return preferred;
+        };
         // Filesystem-safe token from a display name.
         auto safeName = [](const std::string& s){
             std::string o; o.reserve(s.size());
@@ -960,39 +1013,25 @@ int main() {
             if (f) f << j.dump(2) << '\n';
         };
 
-        // (Re)write every non-model material into <name>/materials, clearing any
+        // (Re)write every non-model material into <folder>/materials, clearing any
         // stale .fmat/.meta first so deleted materials don't linger on disk.
-        auto writeProjectMaterials = [&](const std::string& name){
+        auto writeProjectMaterials = [&](const std::string& matsDir){
             std::error_code ec;
-            const std::string dir = projMatsDir(name);
-            std::filesystem::create_directories(dir, ec);
-            for (const auto& de : std::filesystem::directory_iterator(dir, ec)) {
+            std::filesystem::create_directories(matsDir, ec);
+            for (const auto& de : std::filesystem::directory_iterator(matsDir, ec)) {
                 const std::string ext = de.path().extension().string();
                 if (ext == ".fmat" || ext == ".meta")
                     std::filesystem::remove(de.path(), ec);
             }
             for (const MaterialDef& md : materials)
-                if (!md.fromModel) writeMaterialFile(md, dir);
+                if (!md.fromModel) writeMaterialFile(md, matsDir);
         };
-        // Save the current scene as project <name>, (re)mounting its folder as
-        // the database's Project source.
-        auto saveProject = [&](const std::string& name){
-            if (name.empty()) return;
-            std::error_code ec;
-            std::filesystem::create_directories(projFolder(name), ec);
-            writeProjectMaterials(name);
-            saveScene(projSceneFile(name));
-            assetDb.mountProject(projFolder(name));
-            assetDb.refresh();
-            currentProject = projSceneFile(name);
-            std::snprintf(projNameBuf, sizeof(projNameBuf), "%s", name.c_str());
-        };
-        // Load all .fmat materials of project <name> into the library.
-        auto loadProjectMaterials = [&](const std::string& name){
+        // Load every .fmat material from <folder>/materials into the library.
+        auto loadProjectMaterials = [&](const std::string& matsDir){
             materials.clear();
             std::error_code ec;
             for (const auto& de :
-                 std::filesystem::directory_iterator(projMatsDir(name), ec)) {
+                 std::filesystem::directory_iterator(matsDir, ec)) {
                 if (de.path().extension().string() != ".fmat") continue;
                 std::ifstream f(de.path());
                 if (!f) continue;
@@ -1014,18 +1053,40 @@ int main() {
             if (materials.empty()) seedDefaultMaterials();
             matSel = 0;
         };
-        // Names of all projects (subdirectories of projects/ holding a scene),
-        // sorted. Each is a folder <name>/ with a <name>.fitzel inside.
-        auto listProjects = [&]() {
-            std::vector<std::string> out;
+        // Save the current scene into project folder `folder`, (re)mounting it as
+        // the database's Project source and remembering it in the prefs.
+        auto saveProjectTo = [&](const std::string& folder){
+            if (folder.empty()) return;
             std::error_code ec;
-            for (const auto& de :
-                 std::filesystem::directory_iterator(projectDir, ec)) {
+            std::filesystem::create_directories(folder, ec);
+            writeProjectMaterials(projMatsDirIn(folder));
+            const std::string scene = projSceneFileIn(folder);
+            saveScene(scene);
+            assetDb.mountProject(folder);
+            assetDb.refresh();
+            currentProject = scene;
+            std::snprintf(projNameBuf, sizeof(projNameBuf), "%s",
+                          std::filesystem::path(folder).filename().string().c_str());
+            rememberProject(folder);
+        };
+        // Re-save the currently open project in place.
+        auto saveCurrent = [&](){
+            if (!currentProject.empty())
+                saveProjectTo(
+                    std::filesystem::path(currentProject).parent_path().generic_string());
+        };
+        // (name, folder) of every project directly under `root` that holds a scene.
+        auto listProjectsIn = [&](const std::string& root){
+            std::vector<std::pair<std::string, std::string>> out;
+            std::error_code ec;
+            for (const auto& de : std::filesystem::directory_iterator(root, ec)) {
                 if (!de.is_directory()) continue;
-                const std::string n = de.path().filename().string();
-                std::error_code ec2;
-                if (std::filesystem::exists(projSceneFile(n), ec2))
-                    out.push_back(n);
+                const std::string folder = de.path().generic_string();
+                bool hasScene = false;
+                std::error_code e2;
+                for (const auto& f : std::filesystem::directory_iterator(folder, e2))
+                    if (f.path().extension() == ".fitzel") { hasScene = true; break; }
+                if (hasScene) out.push_back({de.path().filename().string(), folder});
             }
             std::sort(out.begin(), out.end());
             return out;
@@ -1190,15 +1251,20 @@ int main() {
             entitySel = -1;
             return true;
         };
-        // Open project <name>: mount its folder as the Project source, load its
-        // .fmat materials, then its scene. Returns false if the scene is missing.
-        auto loadProject = [&](const std::string& name) -> bool {
-            assetDb.mountProject(projFolder(name));
+        // Open the project in `folder`: mount it as the Project source, load its
+        // .fmat materials, then its scene. False if the folder has no scene.
+        auto openProjectFolder = [&](const std::string& folder) -> bool {
+            const std::string scene = projSceneFileIn(folder);
+            std::error_code ec;
+            if (!std::filesystem::exists(scene, ec)) return false;
+            assetDb.mountProject(folder);
             assetDb.refresh();
-            loadProjectMaterials(name);
-            if (!loadScene(projSceneFile(name))) return false;
-            currentProject = projSceneFile(name);
-            std::snprintf(projNameBuf, sizeof(projNameBuf), "%s", name.c_str());
+            loadProjectMaterials(projMatsDirIn(folder));
+            if (!loadScene(scene)) return false;
+            currentProject = scene;
+            std::snprintf(projNameBuf, sizeof(projNameBuf), "%s",
+                          std::filesystem::path(folder).filename().string().c_str());
+            rememberProject(folder);
             return true;
         };
         // Start a fresh, unsaved project: seeded materials + a single Sun. No
@@ -1666,7 +1732,8 @@ int main() {
                     if (ch.type == AssetType::Material) materialsChanged = true;
                 if (materialsChanged && !currentProject.empty())
                     loadProjectMaterials(
-                        std::filesystem::path(currentProject).stem().string());
+                        std::filesystem::path(currentProject).parent_path()
+                            .generic_string() + "/materials");
             }
 
             // --- Input ---------------------------------------------------
@@ -2029,19 +2096,49 @@ int main() {
                 viewportHovered = true;
             } else {
             // --- Main menu bar (File / Edit / View) ----------------------
-            bool openSaveAs = false;
             if (ImGui::BeginMainMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
-                    if (ImGui::MenuItem("New Project")) newProject();
+                    if (ImGui::MenuItem("New Project...")) {
+                        wizardIsNew = true;
+                        wizName[0] = '\0';
+                        std::snprintf(wizLocation, sizeof(wizLocation), "%s",
+                                      prefLocation.c_str());
+                        wizardOpen = true;
+                    }
                     if (ImGui::MenuItem("Save Project", nullptr, false,
                                         !currentProject.empty()))
-                        saveProject(std::filesystem::path(currentProject).stem().string());
-                    if (ImGui::MenuItem("Save Project As...")) openSaveAs = true;
+                        saveCurrent();
+                    if (ImGui::MenuItem("Save Project As...")) {
+                        wizardIsNew = false;
+                        std::snprintf(wizName, sizeof(wizName), "%s", projNameBuf);
+                        std::snprintf(wizLocation, sizeof(wizLocation), "%s",
+                                      prefLocation.c_str());
+                        wizardOpen = true;
+                    }
                     if (ImGui::BeginMenu("Open Project")) {
-                        const std::vector<std::string> projs = listProjects();
-                        if (projs.empty()) ImGui::TextDisabled("(no projects)");
-                        for (const std::string& p : projs)
-                            if (ImGui::MenuItem(p.c_str())) loadProject(p);
+                        if (ImGui::MenuItem("Browse folder...")) {
+                            std::string picked;
+                            if (ed::pickFolder(picked, prefLocation) &&
+                                !openProjectFolder(picked))
+                                std::fprintf(stderr,
+                                    "No project (.fitzel) in %s\n", picked.c_str());
+                        }
+                        if (!recentProjects.empty()) {
+                            ImGui::SeparatorText("Recent");
+                            for (const std::string& folder : recentProjects) {
+                                const std::string lbl =
+                                    std::filesystem::path(folder).filename().string() +
+                                    "##r" + folder;
+                                if (ImGui::MenuItem(lbl.c_str()))
+                                    openProjectFolder(folder);
+                            }
+                        }
+                        ImGui::SeparatorText("In default location");
+                        const auto projs = listProjectsIn(prefLocation);
+                        if (projs.empty()) ImGui::TextDisabled("(none)");
+                        for (const auto& [n, folder] : projs)
+                            if (ImGui::MenuItem((n + "##d" + folder).c_str()))
+                                openProjectFolder(folder);
                         ImGui::EndMenu();
                     }
                     ImGui::Separator();
@@ -2108,16 +2205,62 @@ int main() {
                 }
                 ImGui::EndMainMenuBar();
             }
-            if (openSaveAs) ImGui::OpenPopup("Save Project As");
-            if (ImGui::BeginPopupModal("Save Project As", nullptr,
+            // --- New Project / Save As wizard --------------------------------
+            if (wizardOpen) { ImGui::OpenPopup("Project Wizard"); wizardOpen = false; }
+            ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("Project Wizard", nullptr,
                                        ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::InputText("Name", projNameBuf, sizeof(projNameBuf));
-                if (ImGui::Button("Save") && projNameBuf[0] != '\0') {
-                    saveProject(projNameBuf);
+                ImGui::TextUnformatted(wizardIsNew
+                    ? "Create a new project" : "Save project as");
+                ImGui::Separator();
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputText("##wizname", wizName, sizeof(wizName));
+                ImGui::SameLine(0.0f, 0.0f); ImGui::TextDisabled(" Name");
+                ImGui::SetNextItemWidth(-90.0f);
+                ImGui::InputText("##wizloc", wizLocation, sizeof(wizLocation));
+                ImGui::SameLine();
+                if (ImGui::Button("Browse...")) {
+                    std::string picked;
+                    if (ed::pickFolder(picked,
+                            wizLocation[0] ? std::string(wizLocation) : prefLocation))
+                        std::snprintf(wizLocation, sizeof(wizLocation), "%s",
+                                      picked.c_str());
+                }
+                ImGui::SameLine(0.0f, 0.0f); ImGui::TextDisabled(" Location");
+
+                const std::string safe = safeName(wizName);
+                const std::string loc(wizLocation);
+                const std::string target = loc.empty() ? std::string()
+                                                       : (loc + "/" + safe);
+                std::error_code vec;
+                const bool nameOk = wizName[0] != '\0';
+                const bool locOk  = !loc.empty() &&
+                                    std::filesystem::is_directory(loc, vec);
+                const bool exists = nameOk && locOk &&
+                                    std::filesystem::exists(target, vec);
+
+                ImGui::Spacing();
+                if (!target.empty())
+                    ImGui::TextWrapped("Folder: %s", target.c_str());
+                const ImVec4 warn(1.0f, 0.55f, 0.3f, 1.0f);
+                if (!nameOk)      ImGui::TextColored(warn, "Enter a project name.");
+                else if (!locOk)  ImGui::TextColored(warn, "Location does not exist.");
+                else if (exists)  ImGui::TextColored(warn,
+                                      "A folder with that name already exists here.");
+                ImGui::Spacing();
+
+                const bool canGo = nameOk && locOk && !exists;
+                ImGui::BeginDisabled(!canGo);
+                if (ImGui::Button(wizardIsNew ? "Create" : "Save",
+                                  ImVec2(120.0f, 0.0f))) {
+                    if (wizardIsNew) newProject();
+                    saveProjectTo(target);
                     ImGui::CloseCurrentPopup();
                 }
+                ImGui::EndDisabled();
                 ImGui::SameLine();
-                if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+                    ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
             }
 
@@ -2793,7 +2936,17 @@ int main() {
                     ? "(unsaved)"
                     : std::filesystem::path(currentProject).stem().string().c_str());
 
-                if (ImGui::Button("New")) newProject();
+                if (ImGui::Button("New...")) {
+                    wizardIsNew = true;
+                    wizName[0] = '\0';
+                    std::snprintf(wizLocation, sizeof(wizLocation), "%s",
+                                  prefLocation.c_str());
+                    wizardOpen = true;
+                }
+                ImGui::SameLine();
+                ImGui::BeginDisabled(currentProject.empty());
+                if (ImGui::Button("Save")) saveCurrent();
+                ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::Button("Clear objects")) { // keep Sun + materials
                     entities.erase(std::remove_if(entities.begin(), entities.end(),
@@ -2803,18 +2956,24 @@ int main() {
                 }
 
                 ImGui::SetNextItemWidth(150.0f);
-                ImGui::InputText("Name##proj", projNameBuf, sizeof(projNameBuf));
-                ImGui::SameLine();
-                ImGui::BeginDisabled(projNameBuf[0] == '\0');
-                if (ImGui::Button("Save")) saveProject(projNameBuf);
-                ImGui::EndDisabled();
-
-                ImGui::SetNextItemWidth(150.0f);
                 if (ImGui::BeginCombo("Open##proj", "Select project...")) {
-                    const std::vector<std::string> projs = listProjects();
-                    if (projs.empty()) ImGui::TextDisabled("(no projects yet)");
-                    for (const std::string& p : projs)
-                        if (ImGui::Selectable(p.c_str())) loadProject(p);
+                    if (ImGui::Selectable("Browse folder...")) {
+                        std::string picked;
+                        if (ed::pickFolder(picked, prefLocation))
+                            openProjectFolder(picked);
+                    }
+                    for (const std::string& folder : recentProjects) {
+                        const std::string lbl =
+                            std::filesystem::path(folder).filename().string() +
+                            "##r" + folder;
+                        if (ImGui::Selectable(lbl.c_str())) openProjectFolder(folder);
+                    }
+                    const auto projs = listProjectsIn(prefLocation);
+                    for (const auto& [n, folder] : projs)
+                        if (ImGui::Selectable((n + "##d" + folder).c_str()))
+                            openProjectFolder(folder);
+                    if (recentProjects.empty() && projs.empty())
+                        ImGui::TextDisabled("(no projects yet)");
                     ImGui::EndCombo();
                 }
             }
