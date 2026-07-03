@@ -44,6 +44,8 @@ struct Entity {
     fitzel::AssetId material;                 // solids: assigned MaterialDef (by GUID)
     int         modelId   = -1;              // Model only: LoadedModel id
     float       scale     = 1.0f;            // Model only: uniform scale
+    int         physics   = 0;               // 0 none, 1 static, 2 dynamic (Play)
+    float       mass      = 1.0f;            // dynamic body mass (kg)
     std::string modelPath;                   // Model only: source file (for reload)
     std::string script;                      // Lua file under scripts/ ("" = none)
     std::string name;

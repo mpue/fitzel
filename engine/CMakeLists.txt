@@ -24,6 +24,7 @@ add_library(fitzel STATIC
     src/asset/AssetId.cpp
     src/asset/AssetTypes.cpp
     src/asset/AssetDatabase.cpp
+    src/physics/Physics.cpp
 )
 
 # Public headers live under include/, exposed as <fitzel/...>.
@@ -47,6 +48,7 @@ target_link_libraries(fitzel
         miniaudio_dep
         cgltf_dep
         nlohmann_json::nlohmann_json
+        Jolt
 )
 
 target_compile_features(fitzel PUBLIC cxx_std_20)

@@ -19,6 +19,7 @@
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <imgui.h>
 #include <imgui_internal.h> // DockBuilder API for the default panel layout
 #include <ImGuizmo.h>       // 3D transform gizmos in the viewport
@@ -29,6 +30,7 @@
 
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/graphics/EnvironmentIBL.hpp>
+#include <fitzel/physics/Physics.hpp>
 
 #include "SceneTypes.hpp"
 #include "Primitives.hpp"
@@ -1000,6 +1002,7 @@ int main() {
                 e["castShadows"] = b.castShadows;
                 if (b.material.valid()) e["material"] = b.material.toString();
                 e["scale"]       = b.scale;
+                if (b.physics) { e["physics"] = b.physics; e["mass"] = b.mass; }
                 e["id"]          = b.id;
                 e["parent"]      = b.parent;
                 e["name"]        = b.name;
@@ -1164,6 +1167,8 @@ int main() {
                     b.shadowBias  = e.value("shadowBias", b.shadowBias);
                     b.castShadows = e.value("castShadows", false);
                     b.scale       = e.value("scale", 1.0f);
+                    b.physics     = e.value("physics", 0);
+                    b.mass        = e.value("mass", 1.0f);
                     b.id          = e.value("id", 0);
                     b.parent      = e.value("parent", -1);
                     b.name        = e.value("name", std::string{});
@@ -1748,6 +1753,8 @@ int main() {
         };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
+        std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
+        std::map<int, PhysicsBodyId>  physicsBody;  // entity id -> body handle
         glm::vec3 playCamPos{0.0f};
         float     playCamYaw = 0.0f, playCamPitch = 0.0f;
         bool      playPrevEdit = false;
@@ -1764,6 +1771,46 @@ int main() {
             entitySel      = -1;
             vehicleMode    = false;
             scripts.reset(); // fresh VM: scripts reload, start() runs again
+
+            // Physics: fresh world with the terrain as a static heightfield
+            // ground, plus a rigid body per physics-tagged entity.
+            physics = std::make_unique<PhysicsWorld>();
+            physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
+            {
+                const int   N  = 128;   // heightfield resolution (even)
+                const float sp = 4.0f;  // metres per sample (~512 m span)
+                const glm::vec3 cc = camera.position();
+                const float ox = cc.x - (N * 0.5f) * sp;
+                const float oz = cc.z - (N * 0.5f) * sp;
+                std::vector<float> heights(static_cast<std::size_t>(N) * N);
+                for (int z = 0; z < N; ++z)
+                    for (int x = 0; x < N; ++x)
+                        heights[z * N + x] = streamer.heightAt(ox + x * sp, oz + z * sp);
+                physics->addHeightField(heights.data(), N, glm::vec3(ox, 0.0f, oz), sp);
+            }
+            physicsBody.clear();
+            for (Entity& e : entities) {
+                if (e.physics == 0 || e.type == EntityType::Light ||
+                    e.type == EntityType::Sun)
+                    continue;
+                const float m = (e.physics == 2) ? glm::max(e.mass, 0.01f) : 0.0f;
+                const glm::quat q = glm::quat(glm::radians(e.rotation));
+                PhysicsBodyId id = 0;
+                switch (e.type) {
+                    case EntityType::Sphere:
+                        id = physics->addSphere(
+                            (e.half.x + e.half.y + e.half.z) / 3.0f, e.center, m);
+                        break;
+                    case EntityType::Cylinder:
+                        id = physics->addCylinder(e.half.x, e.half.y, e.center, q, m);
+                        break;
+                    default: // Box, Ramp, Model -> box from the AABB half extents
+                        id = physics->addBox(e.half, e.center, q, m);
+                        break;
+                }
+                if (id) physicsBody[e.id] = id;
+            }
+
             fpsMode        = true; // play as the walking player
             input.setCursorLocked(true);
             fpsVelY = 0.0f;
@@ -1773,6 +1820,8 @@ int main() {
         auto stopPlay = [&] {
             if (!playMode) return;
             playMode  = false;
+            physics.reset();
+            physicsBody.clear();
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
@@ -2156,6 +2205,26 @@ int main() {
             fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
             renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
+
+            // --- Physics: step the world, sync dynamic bodies back to entities -
+            if (playMode && physics) {
+                physics->step(dt);
+                for (Entity& e : entities) {
+                    if (e.physics != 2) continue; // only dynamic bodies move
+                    auto it = physicsBody.find(e.id);
+                    if (it == physicsBody.end()) continue;
+                    glm::vec3 p; glm::quat q;
+                    if (!physics->getTransform(it->second, p, q)) continue;
+                    // Decompose via ImGuizmo so the Euler angles match how the
+                    // renderer recomposes the transform (composeModel).
+                    const glm::mat4 mm =
+                        glm::translate(glm::mat4(1.0f), p) * glm::mat4_cast(q);
+                    float t[3], r[3], s[3];
+                    ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(mm), t, r, s);
+                    e.center   = glm::vec3(t[0], t[1], t[2]);
+                    e.rotation = glm::vec3(r[0], r[1], r[2]);
+                }
+            }
 
             // --- Scripts: tick each scripted entity's Lua update while playing --
             if (playMode) {
@@ -3122,6 +3191,21 @@ int main() {
                                                    scripts.lastError().c_str());
                             else if (!b.script.empty())
                                 ImGui::TextDisabled("Runs start()/update() in Play.");
+                        }
+                        // Physics body (rigid body created in Play mode).
+                        if (b.type != EntityType::Light) {
+                            const char* kinds[] = {"None", "Static", "Dynamic"};
+                            int pk = glm::clamp(b.physics, 0, 2);
+                            ImGui::SetNextItemWidth(-60.0f);
+                            if (ImGui::Combo("##phys", &pk, kinds, 3)) b.physics = pk;
+                            ImGui::SameLine(0.0f, 4.0f); ImGui::TextDisabled("Physics");
+                            if (b.physics == 2)
+                                ImGui::DragFloat("Mass", &b.mass, 0.1f, 0.01f,
+                                                 1000.0f, "%.2f kg");
+                            if (b.physics)
+                                ImGui::TextDisabled(b.physics == 2
+                                    ? "Falls & collides in Play."
+                                    : "Static collider in Play.");
                         }
                         if (b.type == EntityType::Light)
                             ImGui::ColorEdit3("Light colour", &b.color.x);

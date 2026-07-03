@@ -107,8 +107,26 @@ FetchContent_Declare(
 )
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 
+# --- Jolt Physics: rigid-body dynamics (its CMake lives in the Build/ subdir) -
+FetchContent_Declare(
+    jolt
+    GIT_REPOSITORY https://github.com/jrouwe/JoltPhysics.git
+    GIT_TAG        v5.2.0
+    GIT_SHALLOW    ON
+    SOURCE_SUBDIR  Build
+)
+# Build only the library, and match our dynamic MSVC runtime (/MD); Jolt would
+# otherwise default to the static runtime (/MT) and fail to link.
+set(TARGET_UNIT_TESTS            OFF CACHE BOOL "" FORCE)
+set(TARGET_HELLO_WORLD           OFF CACHE BOOL "" FORCE)
+set(TARGET_PERFORMANCE_TEST      OFF CACHE BOOL "" FORCE)
+set(TARGET_SAMPLES               OFF CACHE BOOL "" FORCE)
+set(TARGET_VIEWER                OFF CACHE BOOL "" FORCE)
+set(ENABLE_ALL_WARNINGS          OFF CACHE BOOL "" FORCE)
+set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
+
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json)
+FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json jolt)
 
 # ImGuizmo: fetch the sources only (its own CMakeLists would clash with our imgui
 # target), then compile ImGuizmo.cpp into the imgui library below.
