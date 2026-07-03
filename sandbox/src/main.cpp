@@ -3006,11 +3006,33 @@ int main() {
                             ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
                         {
                             // Lua behaviour, run while playing (scripts/<file>.lua).
-                            char sbuf[128];
-                            std::snprintf(sbuf, sizeof(sbuf), "%s", b.script.c_str());
-                            if (ImGui::InputText("Script", sbuf, sizeof(sbuf)))
-                                b.script = sbuf;
-                            if (!scripts.lastError().empty())
+                            // Pick from the .lua files in the scripts/ folder.
+                            std::vector<std::string> luaFiles;
+                            std::error_code lec;
+                            for (const auto& de :
+                                 std::filesystem::directory_iterator("scripts", lec)) {
+                                if (de.is_regular_file() &&
+                                    de.path().extension() == ".lua")
+                                    luaFiles.push_back(de.path().filename().string());
+                            }
+                            std::sort(luaFiles.begin(), luaFiles.end());
+                            const std::string cur =
+                                b.script.empty() ? "(none)" : b.script;
+                            if (ImGui::BeginCombo("Script", cur.c_str())) {
+                                if (ImGui::Selectable("(none)", b.script.empty()))
+                                    b.script.clear();
+                                for (const std::string& f : luaFiles)
+                                    if (ImGui::Selectable(f.c_str(), b.script == f))
+                                        b.script = f;
+                                ImGui::EndCombo();
+                            }
+                            // A script set but not present on disk -> warn.
+                            if (!b.script.empty() &&
+                                std::find(luaFiles.begin(), luaFiles.end(),
+                                          b.script) == luaFiles.end())
+                                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                    "Missing: scripts/%s", b.script.c_str());
+                            else if (!scripts.lastError().empty())
                                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
                                                    "Script error: %s",
                                                    scripts.lastError().c_str());
