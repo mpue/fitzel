@@ -15,19 +15,23 @@ compile_commands.json
 *.user
 
 # Large binary texture assets (provided locally, not tracked)
-/textures/
+/content/textures/
 
 # Model assets: only the default tree is tracked; other imported models
 # (often carrying embedded 4k textures) stay local.
-models/*.glb
-models/*.gltf
-models/*.bin
-!models/tree1.glb
-!models/tree1.gltf
-!models/tree1.bin
+content/models/*.glb
+content/models/*.gltf
+content/models/*.bin
+!content/models/tree1.glb
+!content/models/tree1.gltf
+!content/models/tree1.bin
 
 # Audio assets (provided/generated locally, not tracked)
-/sounds/
+/content/sounds/
+
+# Asset metadata sidecars are generated locally for now (Phase 1); the ignored
+# content dirs above already exclude most of them.
+*.meta
 
 # Blender source/backup files (only the exported glTF is tracked)
 *.blend

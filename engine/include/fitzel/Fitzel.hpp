@@ -17,3 +17,6 @@
 #include "fitzel/world/Model.hpp"
 #include "fitzel/ui/Gui.hpp"
 #include "fitzel/audio/Audio.hpp"
+#include "fitzel/asset/AssetId.hpp"
+#include "fitzel/asset/AssetTypes.hpp"
+#include "fitzel/asset/AssetDatabase.hpp"

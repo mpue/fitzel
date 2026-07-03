@@ -24,6 +24,8 @@
 #include <ImGuizmo.h>       // 3D transform gizmos in the viewport
 #include <glm/gtc/type_ptr.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 
@@ -89,6 +91,14 @@ int main() {
             window.swapBuffers();
         };
         showProgress(0.02f, "Starting up...");
+
+        // Central asset registry: scans the project's content/ tree, giving each
+        // texture/model/sound a stable GUID (persisted in a `<file>.meta` sidecar)
+        // and caching decoded assets so repeated loads are deduplicated. Model
+        // imports and material textures below resolve through this database.
+        showProgress(0.05f, "Scanning content library...");
+        AssetDatabase assetDb(FITZEL_CONTENT_DIR);
+        assetDb.refresh();
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
                                        "assets/shaders/lit.frag");
@@ -531,9 +541,14 @@ int main() {
         // A road is a ribbon mesh lofted along a Catmull-Rom spline through
         // control points, draped onto the terrain and textured with asphalt.
         // Submitted through the Renderer, so it gets lighting/shadows/fog free.
-        Texture  roadTex = Texture::fromFile(texDir + "/asphalt_02_diff_4k.jpg");
+        // Loaded through the asset database (cached/deduplicated): the surface
+        // picker below can re-select a texture without re-reading it from disk.
+        // Held as a shared handle so the object stays alive while roadMat binds it.
+        std::shared_ptr<Texture> roadTex =
+            assetDb.loadTexture(texDir + "/asphalt_02_diff_4k.jpg");
         Material roadMat(lit);
-        roadMat.set("uColorMode", 2).setTexture("uTexture", roadTex, 0);
+        roadMat.set("uColorMode", 2);
+        if (roadTex) roadMat.setTexture("uTexture", *roadTex, 0);
         // Selectable surface: gather the diffuse/albedo textures from textures/.
         std::vector<std::string> roadTexFiles;
         int roadTexSel = 0;
@@ -744,20 +759,25 @@ int main() {
         // Reuses an already-loaded model with the same path.
         auto importModel = [&](const std::string& path) -> int {
             for (auto& lm : loadedModels) if (lm->path == path) return lm->id;
-            ModelData md = loadGltf(path);
-            if (md.empty()) {
+            // Resolve through the asset database: assigns the file a GUID and
+            // caches the decoded CPU mesh so re-imports (e.g. across scene loads)
+            // reuse the parse instead of re-reading the glTF from disk.
+            std::shared_ptr<ModelData> mdPtr = assetDb.loadModelData(path);
+            if (!mdPtr || mdPtr->empty()) {
                 std::fprintf(stderr, "Model import failed: %s\n", path.c_str());
                 return -1;
             }
+            const ModelData& md = *mdPtr;
             auto lm = std::make_unique<LoadedModel>();
-            lm->id   = modelCounter++;
-            lm->path = path;
-            lm->name = std::filesystem::path(path).stem().string();
+            lm->id      = modelCounter++;
+            lm->assetId = assetDb.idForPath(path); // stable GUID for save/load
+            lm->path    = path;
+            lm->name    = std::filesystem::path(path).stem().string();
             lm->meshes.reserve(md.primitives.size());
             lm->primMaterialId.reserve(md.primitives.size());
             glm::vec3 lo(1e30f), hi(-1e30f);
             int primIdx = 0;
-            for (ModelPrimitive& p : md.primitives) {
+            for (const ModelPrimitive& p : md.primitives) {
                 std::vector<Vertex> verts;
                 verts.reserve(p.vertexCount());
                 for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
@@ -851,45 +871,83 @@ int main() {
         };
 
         // --- Project (scene) save / load / new -------------------------------
-        // Serialise the scene: user materials ("M" lines) then entities. Model
-        // materials are omitted (re-imports recreate them on load).
-        auto saveScene = [&](const std::string& path) {
-            std::ofstream f(path);
-            if (!f) return;
-            for (const MaterialDef& md : materials)
-                if (!md.fromModel)
-                    f << "M " << md.id << ' '
-                      << md.albedo.x << ' ' << md.albedo.y << ' ' << md.albedo.z << ' '
-                      << md.reflectivity << ' ' << md.roughness << ' '
-                      << md.name << '\n';
-            for (const Entity& b : entities)
-                f << static_cast<int>(b.type) << ' '
-                  << b.center.x << ' ' << b.center.y << ' ' << b.center.z << ' '
-                  << b.half.x << ' ' << b.half.y << ' ' << b.half.z << ' '
-                  << b.color.x << ' ' << b.color.y << ' ' << b.color.z << ' '
-                  << b.intensity << ' ' << b.range << ' '
-                  << b.shadowBias << ' ' << (b.castShadows ? 1 : 0) << ' '
-                  << b.materialId << ' ' << b.scale << ' '
-                  << b.rotation.x << ' ' << b.rotation.y << ' ' << b.rotation.z << ' '
-                  << (b.type == EntityType::Model
-                          ? std::filesystem::path(b.modelPath).filename().string()
-                          : std::string("-")) << ' '
-                  << (b.script.empty() ? std::string("-") : b.script) << ' '
-                  << b.id << ' ' << b.parent << ' '
-                  << b.name << '\n';
+        // Scenes serialise to JSON (schema version 2): a material library plus
+        // entities. Asset references are stored by GUID -- models by their source
+        // file's id, material textures by the texture asset's id -- so they keep
+        // resolving after files move or across engine/project sources. Model-
+        // derived materials are omitted (re-imports recreate them). The legacy
+        // space-separated text format still loads (see loadScene).
+        auto vec3Json = [](const glm::vec3& v) {
+            return nlohmann::json::array({v.x, v.y, v.z});
         };
-        // Load a scene file, replacing the current one. Returns false if missing.
+        auto saveScene = [&](const std::string& path) {
+            nlohmann::json j;
+            j["version"] = 2;
+
+            nlohmann::json mats = nlohmann::json::array();
+            for (const MaterialDef& md : materials) {
+                if (md.fromModel) continue; // recreated on model import
+                nlohmann::json m;
+                m["id"]           = md.id;
+                m["name"]         = md.name;
+                m["albedo"]       = vec3Json(md.albedo);
+                m["reflectivity"] = md.reflectivity;
+                m["roughness"]    = md.roughness;
+                if (md.texId.valid()) m["texture"] = md.texId.toString();
+                mats.push_back(std::move(m));
+            }
+            j["materials"] = std::move(mats);
+
+            nlohmann::json ents = nlohmann::json::array();
+            for (const Entity& b : entities) {
+                nlohmann::json e;
+                e["type"]        = static_cast<int>(b.type);
+                e["center"]      = vec3Json(b.center);
+                e["half"]        = vec3Json(b.half);
+                e["color"]       = vec3Json(b.color);
+                e["rotation"]    = vec3Json(b.rotation);
+                e["intensity"]   = b.intensity;
+                e["range"]       = b.range;
+                e["shadowBias"]  = b.shadowBias;
+                e["castShadows"] = b.castShadows;
+                e["materialId"]  = b.materialId;
+                e["scale"]       = b.scale;
+                e["id"]          = b.id;
+                e["parent"]      = b.parent;
+                e["name"]        = b.name;
+                if (!b.script.empty()) e["script"] = b.script;
+                if (b.type == EntityType::Model) {
+                    if (LoadedModel* lm = loadedModelById(b.modelId);
+                        lm && lm->assetId.valid())
+                        e["model"] = lm->assetId.toString();
+                    // Human-readable fallback if the GUID can't be resolved later.
+                    e["modelFile"] =
+                        std::filesystem::path(b.modelPath).filename().string();
+                }
+                ents.push_back(std::move(e));
+            }
+            j["entities"] = std::move(ents);
+
+            std::ofstream f(path);
+            if (f) f << j.dump(2) << '\n';
+        };
+        // Load a scene file, replacing the current one. Accepts both the JSON
+        // format above and the legacy space-separated text format (auto-detected
+        // from the first non-blank character). Returns false if missing/unreadable.
         auto loadScene = [&](const std::string& path) -> bool {
             std::ifstream f(path);
             if (!f) return false;
+            std::stringstream buf; buf << f.rdbuf();
+            const std::string content = buf.str();
+            const std::size_t firstCh = content.find_first_not_of(" \t\r\n");
+            const bool isJson =
+                firstCh != std::string::npos && content[firstCh] == '{';
+
             entities.clear();
             loadedModels.clear(); // models re-import fresh below
             std::vector<MaterialDef> loadedMats;
-            bool matsApplied = false;
             int maxId = -1, maxMatId = -1;
             auto applyMats = [&]() {
-                if (matsApplied) return;
-                matsApplied = true;
                 materials = std::move(loadedMats);
                 materialCounter = maxMatId + 1;
                 matSel = 0;
@@ -898,47 +956,117 @@ int main() {
                     materials.push_back(std::move(d));
                 }
             };
-            std::string line;
-            while (std::getline(f, line)) {
-                if (line.empty()) continue;
-                std::istringstream ss(line);
-                std::string tok;
-                ss >> tok;
-                if (tok == "M") { // material asset line
+
+            if (isJson) {
+                nlohmann::json j;
+                try { j = nlohmann::json::parse(content); }
+                catch (const nlohmann::json::exception& ex) {
+                    std::fprintf(stderr, "Scene parse error: %s\n", ex.what());
+                    return false;
+                }
+                auto readVec3 = [](const nlohmann::json& a, glm::vec3 def) {
+                    if (a.is_array() && a.size() == 3)
+                        return glm::vec3(a[0].get<float>(), a[1].get<float>(),
+                                         a[2].get<float>());
+                    return def;
+                };
+                for (const auto& m : j.value("materials", nlohmann::json::array())) {
                     MaterialDef md;
-                    ss >> md.id >> md.albedo.x >> md.albedo.y >> md.albedo.z
-                       >> md.reflectivity >> md.roughness;
-                    std::getline(ss, md.name);
-                    if (!md.name.empty() && md.name[0] == ' ') md.name.erase(0, 1);
+                    md.id           = m.value("id", 0);
+                    md.name         = m.value("name", std::string{});
+                    md.albedo       = readVec3(m.value("albedo", nlohmann::json{}), md.albedo);
+                    md.reflectivity = m.value("reflectivity", md.reflectivity);
+                    md.roughness    = m.value("roughness", md.roughness);
+                    if (m.contains("texture")) {
+                        md.texId = AssetId::fromString(m["texture"].get<std::string>());
+                        if (md.texId.valid()) md.tex = assetDb.loadTexture(md.texId);
+                    }
                     maxMatId = std::max(maxMatId, md.id);
-                    loadedMats.push_back(md);
-                    continue;
+                    loadedMats.push_back(std::move(md));
                 }
-                applyMats(); // M lines precede entities: library is ready
-                Entity b;
-                int cast = 0;
-                std::string modelTok, scriptTok;
-                b.type = static_cast<EntityType>(std::stoi(tok));
-                ss >> b.center.x >> b.center.y >> b.center.z
-                   >> b.half.x >> b.half.y >> b.half.z
-                   >> b.color.x >> b.color.y >> b.color.z
-                   >> b.intensity >> b.range >> b.shadowBias
-                   >> cast >> b.materialId >> b.scale
-                   >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
-                   >> scriptTok
-                   >> b.id >> b.parent;
-                b.castShadows = cast != 0;
-                if (scriptTok != "-") b.script = scriptTok;
-                std::getline(ss, b.name);
-                if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
-                if (b.type == EntityType::Model && modelTok != "-") {
-                    b.modelPath = std::string(FITZEL_MODEL_DIR) + "/" + modelTok;
-                    b.modelId   = importModel(b.modelPath);
+                applyMats();
+                for (const auto& e : j.value("entities", nlohmann::json::array())) {
+                    Entity b;
+                    b.type        = static_cast<EntityType>(e.value("type", 0));
+                    b.center      = readVec3(e.value("center", nlohmann::json{}), b.center);
+                    b.half        = readVec3(e.value("half", nlohmann::json{}), b.half);
+                    b.color       = readVec3(e.value("color", nlohmann::json{}), b.color);
+                    b.rotation    = readVec3(e.value("rotation", nlohmann::json{}), b.rotation);
+                    b.intensity   = e.value("intensity", b.intensity);
+                    b.range       = e.value("range", b.range);
+                    b.shadowBias  = e.value("shadowBias", b.shadowBias);
+                    b.castShadows = e.value("castShadows", false);
+                    b.materialId  = e.value("materialId", 0);
+                    b.scale       = e.value("scale", 1.0f);
+                    b.id          = e.value("id", 0);
+                    b.parent      = e.value("parent", -1);
+                    b.name        = e.value("name", std::string{});
+                    b.script      = e.value("script", std::string{});
+                    if (b.type == EntityType::Model) {
+                        std::string mp;
+                        if (e.contains("model")) {
+                            const AssetId gid =
+                                AssetId::fromString(e["model"].get<std::string>());
+                            mp = assetDb.pathForId(gid).string();
+                        }
+                        if (mp.empty() && e.contains("modelFile"))
+                            mp = std::string(FITZEL_MODEL_DIR) + "/" +
+                                 e["modelFile"].get<std::string>();
+                        if (!mp.empty()) {
+                            b.modelPath = mp;
+                            b.modelId   = importModel(mp);
+                        }
+                    }
+                    maxId = std::max(maxId, b.id);
+                    entities.push_back(std::move(b));
                 }
-                maxId = std::max(maxId, b.id);
-                entities.push_back(b);
+            } else {
+                // Legacy space-separated text format.
+                std::istringstream in(content);
+                bool matsApplied = false;
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.empty()) continue;
+                    std::istringstream ss(line);
+                    std::string tok;
+                    ss >> tok;
+                    if (tok == "M") { // material asset line
+                        MaterialDef md;
+                        ss >> md.id >> md.albedo.x >> md.albedo.y >> md.albedo.z
+                           >> md.reflectivity >> md.roughness;
+                        std::getline(ss, md.name);
+                        if (!md.name.empty() && md.name[0] == ' ') md.name.erase(0, 1);
+                        maxMatId = std::max(maxMatId, md.id);
+                        loadedMats.push_back(md);
+                        continue;
+                    }
+                    if (!matsApplied) { matsApplied = true; applyMats(); }
+                    Entity b;
+                    int cast = 0;
+                    std::string modelTok, scriptTok;
+                    b.type = static_cast<EntityType>(std::stoi(tok));
+                    ss >> b.center.x >> b.center.y >> b.center.z
+                       >> b.half.x >> b.half.y >> b.half.z
+                       >> b.color.x >> b.color.y >> b.color.z
+                       >> b.intensity >> b.range >> b.shadowBias
+                       >> cast >> b.materialId >> b.scale
+                       >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
+                       >> scriptTok
+                       >> b.id >> b.parent;
+                    b.castShadows = cast != 0;
+                    if (scriptTok != "-") b.script = scriptTok;
+                    std::getline(ss, b.name);
+                    if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
+                    if (b.type == EntityType::Model && modelTok != "-") {
+                        b.modelPath = std::string(FITZEL_MODEL_DIR) + "/" + modelTok;
+                        b.modelId   = importModel(b.modelPath);
+                    }
+                    maxId = std::max(maxId, b.id);
+                    entities.push_back(b);
+                }
+                if (!matsApplied) applyMats();
             }
-            applyMats(); // in case the scene had no entity lines
+
             entityCounter = maxId + 1;
             // Guarantee exactly one Sun (older scenes may lack it).
             bool hasSun = false;
@@ -2362,10 +2490,9 @@ int main() {
                     for (int i = 0; i < static_cast<int>(roadTexFiles.size()); ++i) {
                         const bool sel = (i == roadTexSel);
                         if (ImGui::Selectable(roadTexFiles[i].c_str(), sel)) {
-                            Texture t = Texture::fromFile(texDir + "/" + roadTexFiles[i]);
-                            if (t.isValid()) {
+                            if (auto t = assetDb.loadTexture(texDir + "/" + roadTexFiles[i])) {
                                 roadTex = std::move(t);
-                                roadMat.setTexture("uTexture", roadTex, 0);
+                                roadMat.setTexture("uTexture", *roadTex, 0);
                                 roadTexSel = i;
                             }
                         }

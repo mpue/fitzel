@@ -90,8 +90,17 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- nlohmann/json: header-only JSON for asset .meta files and (later) scenes -
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG        v3.11.3
+    GIT_SHALLOW    ON
+)
+set(JSON_BuildTests OFF CACHE INTERNAL "")
+
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua)
+FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json)
 
 # ImGuizmo: fetch the sources only (its own CMakeLists would clash with our imgui
 # target), then compile ImGuizmo.cpp into the imgui library below.

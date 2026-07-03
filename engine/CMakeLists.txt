@@ -21,6 +21,9 @@ add_library(fitzel STATIC
     src/ui/Gui.cpp
     src/audio/Audio.cpp
     src/audio/miniaudio_impl.cpp
+    src/asset/AssetId.cpp
+    src/asset/AssetTypes.cpp
+    src/asset/AssetDatabase.cpp
 )
 
 # Public headers live under include/, exposed as <fitzel/...>.
@@ -43,6 +46,7 @@ target_link_libraries(fitzel
         tinyexr_dep
         miniaudio_dep
         cgltf_dep
+        nlohmann_json::nlohmann_json
 )
 
 target_compile_features(fitzel PUBLIC cxx_std_20)

@@ -6,6 +6,7 @@
 
 #include <glm/glm.hpp>
 
+#include <fitzel/asset/AssetId.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Texture.hpp>
 
@@ -62,6 +63,10 @@ struct MaterialDef {
     // Optional base-colour texture (shared so MaterialDef stays copyable). When
     // set, the surface samples it (uColorMode 2) instead of the flat albedo.
     std::shared_ptr<fitzel::Texture> tex;
+    // Asset GUID of `tex` when it comes from a file-backed texture asset (so the
+    // reference survives save/load). Invalid for model-embedded textures, which
+    // are recreated on import and therefore not serialized.
+    fitzel::AssetId texId;
     bool        fromModel = false;           // created by a model import
 };
 
@@ -72,6 +77,7 @@ struct MaterialDef {
 // (Materials hold pointers into `texs`). `boundsMin/Max` are the local AABB.
 struct LoadedModel {
     int                       id = 0;
+    fitzel::AssetId           assetId;       // GUID of the source file (for save/load)
     std::string               name;
     std::string               path;
     std::vector<fitzel::Mesh> meshes;
