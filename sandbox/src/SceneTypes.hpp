@@ -86,6 +86,7 @@ struct LoadedModel {
     std::string               path;
     std::vector<fitzel::Mesh> meshes;
     std::vector<fitzel::AssetId> primMaterialId; // library MaterialDef GUID per mesh
+    std::vector<glm::vec3>    hullPoints;     // raw vertex positions (physics hull)
     glm::vec3                 boundsMin{0.0f};
     glm::vec3                 boundsMax{0.0f};
 

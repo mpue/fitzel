@@ -17,6 +17,7 @@
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 
@@ -155,6 +156,23 @@ PhysicsBodyId PhysicsWorld::addCylinder(float radius, float halfHeight,
     JPH::ShapeRefC shape = new JPH::CylinderShape(
         glm::max(halfHeight, 0.02f), glm::max(radius, 0.02f));
     return m_impl->create(shape, pos, rot, mass).GetIndexAndSequenceNumber();
+}
+
+PhysicsBodyId PhysicsWorld::addConvexHull(const glm::vec3* points, int count,
+                                          glm::vec3 pos, glm::quat rot,
+                                          float mass) {
+    if (!points || count < 4) return 0;
+    JPH::Array<JPH::Vec3> pv;
+    pv.reserve(static_cast<std::size_t>(count));
+    for (int i = 0; i < count; ++i) pv.push_back(toJolt(points[i]));
+    JPH::ConvexHullShapeSettings hs(pv);
+    JPH::Shape::ShapeResult res = hs.Create();
+    if (res.HasError()) {
+        std::fprintf(stderr, "[Fitzel] convex hull shape error: %s\n",
+                     res.GetError().c_str());
+        return 0;
+    }
+    return m_impl->create(res.Get(), pos, rot, mass).GetIndexAndSequenceNumber();
 }
 
 PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,

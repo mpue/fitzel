@@ -31,6 +31,11 @@ public:
     PhysicsBodyId addCylinder(float radius, float halfHeight, glm::vec3 pos,
                               glm::quat rot, float mass);
 
+    // Convex-hull collider from a point cloud (>= 4 points) given in the body's
+    // local space. Used for ramps (a wedge) and imported models.
+    PhysicsBodyId addConvexHull(const glm::vec3* points, int count, glm::vec3 pos,
+                                glm::quat rot, float mass);
+
     // Static terrain collider from a square, row-major grid of `size`x`size`
     // world-space heights. The grid's (0,0) sample sits at `origin`, and adjacent
     // samples are `scaleXZ` metres apart along X and Z. `size` must be a positive

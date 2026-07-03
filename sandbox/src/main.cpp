@@ -809,6 +809,7 @@ int main() {
                 for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
                     const glm::vec3 pos(p.vertices[i], p.vertices[i + 1], p.vertices[i + 2]);
                     lo = glm::min(lo, pos); hi = glm::max(hi, pos);
+                    lm->hullPoints.push_back(pos); // for the physics convex hull
                     verts.push_back({pos,
                         {p.vertices[i + 3], p.vertices[i + 4], p.vertices[i + 5]},
                         {p.vertices[i + 6], p.vertices[i + 7]}});
@@ -832,6 +833,17 @@ int main() {
             }
             if (md.primitives.empty()) { lo = hi = glm::vec3(0.0f); }
             lm->boundsMin = lo; lm->boundsMax = hi;
+            // Cap the physics hull cloud so convex-hull build stays cheap on big
+            // models; keep the AABB corners so it still spans the full extent.
+            if (lm->hullPoints.size() > 2048) {
+                const std::size_t stride = lm->hullPoints.size() / 2048 + 1;
+                std::vector<glm::vec3> reduced;
+                reduced.reserve(2048 + 2);
+                for (std::size_t i = 0; i < lm->hullPoints.size(); i += stride)
+                    reduced.push_back(lm->hullPoints[i]);
+                reduced.push_back(lo); reduced.push_back(hi);
+                lm->hullPoints = std::move(reduced);
+            }
             const int id = lm->id;
             loadedModels.push_back(std::move(lm));
             return id;
@@ -1804,7 +1816,35 @@ int main() {
                     case EntityType::Cylinder:
                         id = physics->addCylinder(e.half.x, e.half.y, e.center, q, m);
                         break;
-                    default: // Box, Ramp, Model -> box from the AABB half extents
+                    case EntityType::Ramp: {
+                        // Triangular-prism wedge: rises along +Z (front-bottom to
+                        // back-top), matching the ramp mesh and the walk collider.
+                        const glm::vec3 h = e.half;
+                        const glm::vec3 pts[6] = {
+                            {-h.x, -h.y, -h.z}, { h.x, -h.y, -h.z},
+                            {-h.x, -h.y,  h.z}, { h.x, -h.y,  h.z},
+                            {-h.x,  h.y,  h.z}, { h.x,  h.y,  h.z}};
+                        id = physics->addConvexHull(pts, 6, e.center, q, m);
+                        break;
+                    }
+                    case EntityType::Model: {
+                        // Convex hull of the model's vertices (centred + scaled to
+                        // match the render), falling back to the AABB box.
+                        LoadedModel* lm = loadedModelById(e.modelId);
+                        if (lm && lm->hullPoints.size() >= 4) {
+                            const glm::vec3 c = lm->center();
+                            std::vector<glm::vec3> pts;
+                            pts.reserve(lm->hullPoints.size());
+                            for (const glm::vec3& v : lm->hullPoints)
+                                pts.push_back((v - c) * e.scale);
+                            id = physics->addConvexHull(
+                                pts.data(), static_cast<int>(pts.size()),
+                                e.center, q, m);
+                        }
+                        if (!id) id = physics->addBox(e.half, e.center, q, m);
+                        break;
+                    }
+                    default: // Box
                         id = physics->addBox(e.half, e.center, q, m);
                         break;
                 }
