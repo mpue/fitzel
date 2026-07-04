@@ -13,6 +13,7 @@
 #include <future>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glad/gl.h>
@@ -50,8 +51,38 @@ extern "C" {
 }
 #endif
 
-int main() {
+int main(int argc, char** argv) {
     try {
+        // Resolve all relative paths (assets/, content/, scripts/, game.json,
+        // project/) against the executable's own directory, so the app behaves
+        // the same whether launched from a shell, a shortcut, or a double-click.
+        {
+            std::error_code ec;
+            if (argc > 0) {
+                auto exePath = std::filesystem::absolute(argv[0], ec);
+                if (!ec && exePath.has_parent_path())
+                    std::filesystem::current_path(exePath.parent_path(), ec);
+            }
+        }
+        // Exported/player build: a game.json next to the exe boots straight into
+        // the game with the editor hidden. `--play <projectFolder>` does the same.
+        std::string bootProject;
+        bool        bootFullscreen = true;
+        {
+            std::error_code ec;
+            if (std::filesystem::exists("game.json", ec)) {
+                std::ifstream gin("game.json");
+                try {
+                    nlohmann::json gj; gin >> gj;
+                    bootProject    = gj.value("project", std::string{});
+                    bootFullscreen = gj.value("fullscreen", true);
+                } catch (...) {}
+            }
+        }
+        for (int i = 1; i + 1 < argc; ++i)
+            if (std::string(argv[i]) == "--play") bootProject = argv[i + 1];
+        const bool playerMode = !bootProject.empty();
+
         Window window(WindowConfig{
             .width     = 1280,
             .height    = 720,
@@ -64,6 +95,16 @@ int main() {
         Gui    gui(window);
         Camera camera({0.0f, 10.0f, 30.0f}, -90.0f, -5.0f);
         camera.moveSpeed = 20.0f;
+
+        // Content roots: prefer a `content/` next to the exe (a portable/exported
+        // build ships its assets there), else the compile-time dev tree.
+        const bool localContent = std::filesystem::exists("content") &&
+                                  std::filesystem::is_directory("content");
+        const std::string contentRoot = localContent
+            ? std::filesystem::absolute("content").generic_string()
+            : std::string(FITZEL_CONTENT_DIR);
+        const std::string modelDir = localContent ? contentRoot + "/models"
+                                                   : std::string(FITZEL_MODEL_DIR);
 
         // Startup loading screen: render one frame with a progress bar. Called
         // between the (synchronous, GL-bound) asset loads so the window shows what
@@ -100,7 +141,7 @@ int main() {
         // and caching decoded assets so repeated loads are deduplicated. Model
         // imports and material textures below resolve through this database.
         showProgress(0.05f, "Scanning content library...");
-        AssetDatabase assetDb(FITZEL_CONTENT_DIR);
+        AssetDatabase assetDb(contentRoot);
         assetDb.refresh();
 
         Shader lit = Shader::fromFiles("assets/shaders/lit.vert",
@@ -125,7 +166,8 @@ int main() {
 
         // Terrain PBR-ish albedo textures (triplanar), loaded from the repo's
         // textures/ folder (path injected by CMake).
-        const std::string texDir = FITZEL_TEXTURE_DIR;
+        const std::string texDir = localContent ? contentRoot + "/textures"
+                                                 : std::string(FITZEL_TEXTURE_DIR);
         // Default terrain surface: one moon macro texture drives all four
         // material layers (sand/ground/cliff/snow), so the whole terrain reads
         // as a single moon surface; the height/slope blend then only varies the
@@ -269,6 +311,8 @@ int main() {
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
         bool viewportClicked = false;     // left-click landed on the viewport image
+        glm::vec2 viewportRectMin(0.0f);  // viewport image top-left in screen px
+        glm::vec2 viewportRectSize(0.0f); // viewport image size in screen px
         {
             std::mt19937 rng(1337u);
             std::uniform_real_distribution<float> d(0.0f, 1.0f);
@@ -450,7 +494,7 @@ int main() {
         float       treeSize = 9.0f;     // average tree height (world units)
         showProgress(0.55f, "Loading tree model...");
         {
-            ModelData md = loadGltf(std::string(FITZEL_MODEL_DIR) + "/tree1.glb");
+            ModelData md = loadGltf(modelDir + "/tree1.glb");
             if (md.empty() || md.height() < 0.01f) {
                 std::fprintf(stderr, "Tree model failed to load\n");
             } else {
@@ -1112,6 +1156,39 @@ int main() {
                 saveProjectTo(
                     std::filesystem::path(currentProject).parent_path().generic_string());
         };
+        // Export a standalone, portable build of the open project into `outDir`:
+        //   <outDir>/<Game>.exe   (this same binary, renamed)
+        //   <outDir>/assets/      (shaders)
+        //   <outDir>/content/     (engine textures/models/sounds)
+        //   <outDir>/project/     (the project: scene, materials, scripts, content)
+        //   <outDir>/game.json    (boot descriptor: launches straight into Play)
+        // The exe resolves content/ and project/ next to itself, so the folder
+        // runs on any Windows PC (zip & ship).
+        std::string exportStatus; // shown under the File menu after an export
+        auto exportGame = [&](const std::string& outDir){
+            namespace fs = std::filesystem;
+            if (currentProject.empty()) { exportStatus = "Save the project first."; return; }
+            std::error_code ec;
+            const fs::path exeDir = fs::current_path();
+            const fs::path out    = fs::path(outDir);
+            fs::create_directories(out, ec);
+            const std::string game =
+                projNameBuf[0] ? std::string(projNameBuf) : std::string("game");
+            const auto rec = fs::copy_options::recursive |
+                             fs::copy_options::overwrite_existing;
+            fs::copy_file(exeDir / "sandbox.exe", out / (game + ".exe"),
+                          fs::copy_options::overwrite_existing, ec);
+            fs::copy(exeDir / "assets", out / "assets", rec, ec);
+            fs::copy(contentRoot,       out / "content", rec, ec);
+            fs::copy(fs::path(currentProject).parent_path(), out / "project", rec, ec);
+            nlohmann::json gj;
+            gj["project"]    = "project";
+            gj["fullscreen"] = true;
+            std::ofstream(out / "game.json") << gj.dump(2);
+            exportStatus = ec ? ("Export finished with warnings: " + ec.message())
+                              : ("Exported to " + out.generic_string());
+            std::fprintf(stderr, "[Fitzel] %s\n", exportStatus.c_str());
+        };
         // (name, folder) of every project directly under `root` that holds a scene.
         auto listProjectsIn = [&](const std::string& root){
             std::vector<std::pair<std::string, std::string>> out;
@@ -1213,7 +1290,7 @@ int main() {
                             mp = assetDb.pathForId(gid).string();
                         }
                         if (mp.empty() && e.contains("modelFile"))
-                            mp = std::string(FITZEL_MODEL_DIR) + "/" +
+                            mp = modelDir + "/" +
                                  e["modelFile"].get<std::string>();
                         if (!mp.empty()) {
                             b.modelPath = mp;
@@ -1267,7 +1344,7 @@ int main() {
                     if (auto it = legacyMat.find(oldMat); it != legacyMat.end())
                         b.material = it->second;
                     if (b.type == EntityType::Model && modelTok != "-") {
-                        b.modelPath = std::string(FITZEL_MODEL_DIR) + "/" + modelTok;
+                        b.modelPath = modelDir + "/" + modelTok;
                         b.modelId   = importModel(b.modelPath);
                     }
                     maxId = std::max(maxId, b.id);
@@ -1534,7 +1611,8 @@ int main() {
         // --- Audio: weather-driven sound layers --------------------------
         showProgress(0.82f, "Loading audio...");
         Audio audio;
-        const std::string soundDir = FITZEL_SOUND_DIR;
+        const std::string soundDir = localContent ? contentRoot + "/sounds"
+                                                   : std::string(FITZEL_SOUND_DIR);
         Sound rainSnd    = Sound::fromFile(audio, soundDir + "/rain.wav", true);
         Sound windSnd    = Sound::fromFile(audio, soundDir + "/wind.wav", true);
         Sound breezeSnd  = Sound::fromFile(audio, soundDir + "/breeze.wav", true);
@@ -1747,10 +1825,32 @@ int main() {
         std::string editorPath;          // "scripts/<file>.lua" open ("" = none)
         bool        editorDirty = false;  // unsaved changes
         char        newScriptName[64] = "";
-        // Open a script (bare filename under scripts/) in the editor.
+        // Where entity scripts live: the open project's scripts/ folder, or the
+        // bundled scripts/ next to the exe when no project is open (demo scripts).
+        auto scriptsDir = [&]() -> std::string {
+            if (!currentProject.empty())
+                return (std::filesystem::path(currentProject).parent_path() /
+                        "scripts").generic_string();
+            return "scripts";
+        };
+        auto scriptPath = [&](const std::string& file){
+            return scriptsDir() + "/" + file;
+        };
+        // .lua files currently in the scripts dir (bare names, sorted).
+        auto listScripts = [&](){
+            std::vector<std::string> out;
+            std::error_code ec;
+            for (const auto& de :
+                 std::filesystem::directory_iterator(scriptsDir(), ec))
+                if (de.is_regular_file() && de.path().extension() == ".lua")
+                    out.push_back(de.path().filename().string());
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        // Open a script (bare filename under the scripts dir) in the editor.
         auto openScript = [&](const std::string& file){
             if (file.empty()) return;
-            const std::string path = "scripts/" + file;
+            const std::string path = scriptPath(file);
             std::ifstream in(path);
             std::stringstream ss; ss << in.rdbuf();
             luaEditor.SetText(ss.str());
@@ -1764,20 +1864,76 @@ int main() {
             std::ofstream out(editorPath);
             if (out) { out << luaEditor.GetText(); scripts.reset(); editorDirty = false; }
         };
-        // .lua files currently in scripts/ (bare names, sorted).
-        auto listScripts = [&](){
-            std::vector<std::string> out;
-            std::error_code ec;
-            for (const auto& de : std::filesystem::directory_iterator("scripts", ec))
-                if (de.is_regular_file() && de.path().extension() == ".lua")
-                    out.push_back(de.path().filename().string());
-            std::sort(out.begin(), out.end());
-            return out;
-        };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
         std::map<int, PhysicsBodyId>  physicsBody;  // entity id -> body handle
+
+        // --- Lua `game` API bridge -------------------------------------------
+        // Scripts mutate the entity list only through deferred queues (the tick
+        // loop iterates entities), applied once per frame after scripts run.
+        ScriptHost                       host;
+        std::vector<Entity>              pendingSpawns;
+        std::unordered_map<int, glm::vec3> pendingSpawnVel; // spawn id -> velocity
+        std::vector<int>                 pendingDestroy;
+        std::unordered_map<int, unsigned char> keyPrev, mousePrev; // edge state
+        std::vector<int>                 keyQ, mouseQ;              // queried this frame
+        host.keyDown      = [&](int kc){ return input.isKeyDown(kc); };
+        host.keyPressed   = [&](int kc){ keyQ.push_back(kc);
+                                         return input.isKeyDown(kc) && !keyPrev[kc]; };
+        host.mouseDown    = [&](int b){ return input.isMouseButtonDown(b); };
+        host.mousePressed = [&](int b){ mouseQ.push_back(b);
+                                        return input.isMouseButtonDown(b) && !mousePrev[b]; };
+        host.spawn = [&](const ScriptSpawn& s) -> int {
+            Entity e;
+            e.type     = static_cast<EntityType>(s.type);
+            e.center   = s.pos;
+            e.half     = glm::max(s.half, glm::vec3(0.02f));
+            e.rotation = s.rot;
+            e.color    = s.color;
+            e.mass     = s.mass;
+            e.physics  = s.physics;
+            e.name     = s.name.empty() ? "spawned" : s.name;
+            e.script   = s.script;
+            e.id       = entityCounter++;
+            pendingSpawnVel[e.id] = s.vel;
+            pendingSpawns.push_back(e);
+            return e.id;
+        };
+        host.destroy = [&](int id){ pendingDestroy.push_back(id); };
+        host.getPos  = [&](int id, glm::vec3& out) -> bool {
+            for (const Entity& e : entities)
+                if (e.id == id) { out = e.center; return true; }
+            return false;
+        };
+        host.setPos = [&](int id, glm::vec3 p){
+            for (Entity& e : entities) if (e.id == id) { e.center = p; break; }
+        };
+        host.setVelocity = [&](int id, glm::vec3 v){
+            auto it = physicsBody.find(id);
+            if (physics && it != physicsBody.end()) physics->setLinearVelocity(it->second, v);
+        };
+        host.applyImpulse = [&](int id, glm::vec3 j){
+            auto it = physicsBody.find(id);
+            if (physics && it != physicsBody.end()) physics->applyImpulse(it->second, j);
+        };
+        host.playSound = [&](const std::string& n){
+            // Prefer the open project's content/sounds/, fall back to the engine's
+            // bundled sounds (FITZEL_SOUND_DIR) when the file isn't in the project.
+            if (!currentProject.empty()) {
+                const std::string projSnd =
+                    (std::filesystem::path(currentProject).parent_path() /
+                     "content" / "sounds" / n).generic_string();
+                std::error_code ec;
+                if (std::filesystem::exists(projSnd, ec)) {
+                    audio.playOneShot(projSnd);
+                    return;
+                }
+            }
+            audio.playOneShot(soundDir + "/" + n);
+        };
+        scripts.setHost(&host);
+
         glm::vec3 playCamPos{0.0f};
         float     playCamYaw = 0.0f, playCamPitch = 0.0f;
         bool      playPrevEdit = false;
@@ -1794,6 +1950,12 @@ int main() {
             entitySel      = -1;
             vehicleMode    = false;
             scripts.reset(); // fresh VM: scripts reload, start() runs again
+            host.score = 0;
+            host.hud.clear();
+            pendingSpawns.clear();
+            pendingSpawnVel.clear();
+            pendingDestroy.clear();
+            keyPrev.clear(); mousePrev.clear();
 
             // Physics: fresh world with the terrain as a static heightfield
             // ground, plus a rigid body per physics-tagged entity.
@@ -1902,6 +2064,27 @@ int main() {
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
 
+        // Player build: load the game project, hide the editor, go fullscreen and
+        // start playing immediately. Esc quits (handled in the input loop).
+        if (playerMode) {
+            if (openProjectFolder(bootProject)) {
+                if (bootFullscreen) {
+                    GLFWwindow* w = window.nativeHandle();
+                    glfwGetWindowPos(w, &savedWX, &savedWY);
+                    glfwGetWindowSize(w, &savedWW, &savedWH);
+                    GLFWmonitor* mon = glfwGetPrimaryMonitor();
+                    const GLFWvidmode* vm = glfwGetVideoMode(mon);
+                    glfwSetWindowMonitor(w, mon, 0, 0, vm->width, vm->height,
+                                         vm->refreshRate);
+                }
+                presentMode = true;
+                startPlay();
+            } else {
+                std::fprintf(stderr,
+                    "[Fitzel] player: project not found: %s\n", bootProject.c_str());
+            }
+        }
+
         double lastTime = window.time();
         double nextAssetPoll = 0.0; // next wall-clock time to scan for asset edits
 
@@ -1974,7 +2157,8 @@ int main() {
 
             const bool escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
             if (escDown && !prevEsc) {
-                if (presentMode) {
+                if (playerMode)          { window.requestClose(); }
+                else if (presentMode) {
                     presentMode = false;
                     glfwSetWindowMonitor(window.nativeHandle(), nullptr,
                                          savedWX, savedWY, savedWW, savedWH, 0);
@@ -2234,13 +2418,14 @@ int main() {
             }
 
             // Weather audio: cross-fade the looping layers, fire thunder on a
-            // fresh lightning flash.
+            // fresh lightning flash. Only audible while playing -- the editor
+            // stays silent.
             audio.setMasterVolume(muted ? 0.0f : masterVolume);
-            rainSnd.setVolume(rainIntensity);
-            windSnd.setVolume(glm::smoothstep(0.15f, 1.0f, weather) * 0.9f);
-            breezeSnd.setVolume((1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f);
+            rainSnd.setVolume(playMode ? rainIntensity : 0.0f);
+            windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, weather) * 0.9f : 0.0f);
+            breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f : 0.0f);
             const bool flashOn = flash > 0.25f;
-            if (flashOn && !prevFlashOn) {
+            if (playMode && flashOn && !prevFlashOn) {
                 thunderSnd.setVolume(glm::clamp(weather, 0.3f, 1.0f));
                 thunderSnd.play();
             }
@@ -2316,10 +2501,62 @@ int main() {
 
             // --- Scripts: tick each scripted entity's Lua update while playing --
             if (playMode) {
+                host.camPos = camera.position();
+                host.camDir = camera.front();
                 for (Entity& e : entities)
                     if (e.type != EntityType::Sun && !e.script.empty())
-                        scripts.update(e, "scripts/" + e.script, dt,
+                        scripts.update(e, scriptPath(e.script), dt,
                                        static_cast<float>(now));
+
+                // Apply entity spawns/destroys the scripts requested this frame
+                // (deferred so the tick loop above kept stable references).
+                for (int did : pendingDestroy) {
+                    auto bit = physicsBody.find(did);
+                    if (bit != physicsBody.end()) {
+                        if (physics) physics->removeBody(bit->second);
+                        physicsBody.erase(bit);
+                    }
+                    scripts.removeEntity(did);
+                    entities.erase(std::remove_if(entities.begin(), entities.end(),
+                        [did](const Entity& e){ return e.id == did; }), entities.end());
+                }
+                pendingDestroy.clear();
+                for (const Entity& ne : pendingSpawns) {
+                    entities.push_back(ne);
+                    const Entity& e = entities.back();
+                    if (physics && e.physics != 0 && e.type != EntityType::Light &&
+                        e.type != EntityType::Sun) {
+                        const float m = (e.physics == 2) ? glm::max(e.mass, 0.01f) : 0.0f;
+                        const glm::quat q = glm::quat(glm::radians(e.rotation));
+                        PhysicsBodyId id = 0;
+                        switch (e.type) {
+                            case EntityType::Sphere:
+                                id = physics->addSphere(
+                                    (e.half.x + e.half.y + e.half.z) / 3.0f, e.center, m);
+                                break;
+                            case EntityType::Cylinder:
+                                id = physics->addCylinder(e.half.x, e.half.y, e.center, q, m);
+                                break;
+                            default:
+                                id = physics->addBox(e.half, e.center, q, m);
+                                break;
+                        }
+                        if (id) {
+                            physicsBody[e.id] = id;
+                            auto vit = pendingSpawnVel.find(e.id);
+                            if (vit != pendingSpawnVel.end() &&
+                                vit->second != glm::vec3(0.0f))
+                                physics->setLinearVelocity(id, vit->second);
+                        }
+                    }
+                    pendingSpawnVel.erase(e.id);
+                }
+                pendingSpawns.clear();
+
+                // Commit input edges so *Pressed fire once per press.
+                for (int kc : keyQ)  keyPrev[kc]  = input.isKeyDown(kc) ? 1 : 0;
+                for (int b  : mouseQ) mousePrev[b] = input.isMouseButtonDown(b) ? 1 : 0;
+                keyQ.clear(); mouseQ.clear();
             }
 
             // --- UI ------------------------------------------------------
@@ -2350,6 +2587,15 @@ int main() {
                                       prefLocation.c_str());
                         wizardOpen = true;
                     }
+                    ImGui::Separator();
+                    if (ImGui::MenuItem("Export Game...", nullptr, false,
+                                        !currentProject.empty())) {
+                        std::string picked;
+                        if (ed::pickFolder(picked, prefLocation)) exportGame(picked);
+                    }
+                    if (!exportStatus.empty())
+                        ImGui::TextDisabled("%s", exportStatus.c_str());
+                    ImGui::Separator();
                     if (ImGui::BeginMenu("Open Project")) {
                         if (ImGui::MenuItem("Browse folder...")) {
                             std::string picked;
@@ -2545,6 +2791,8 @@ int main() {
                 // Cursor position inside the image, mapped to NDC (for picking).
                 const ImVec2 rmin = ImGui::GetItemRectMin();
                 const ImVec2 rsz  = ImGui::GetItemRectSize();
+                viewportRectMin  = glm::vec2(rmin.x, rmin.y); // for the play crosshair
+                viewportRectSize = glm::vec2(rsz.x, rsz.y);
                 const ImVec2 mp   = ImGui::GetIO().MousePos;
                 viewportMouseNdc = glm::vec2(
                     (rsz.x > 0.0f ? (mp.x - rmin.x) / rsz.x : 0.5f) * 2.0f - 1.0f,
@@ -3241,16 +3489,8 @@ int main() {
                             ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
                         {
                             // Lua behaviour, run while playing (scripts/<file>.lua).
-                            // Pick from the .lua files in the scripts/ folder.
-                            std::vector<std::string> luaFiles;
-                            std::error_code lec;
-                            for (const auto& de :
-                                 std::filesystem::directory_iterator("scripts", lec)) {
-                                if (de.is_regular_file() &&
-                                    de.path().extension() == ".lua")
-                                    luaFiles.push_back(de.path().filename().string());
-                            }
-                            std::sort(luaFiles.begin(), luaFiles.end());
+                            // Pick from the .lua files in the project's scripts folder.
+                            std::vector<std::string> luaFiles = listScripts();
                             const std::string cur =
                                 b.script.empty() ? "(none)" : b.script;
                             ImGui::SetNextItemWidth(-60.0f);
@@ -3449,7 +3689,7 @@ int main() {
                     std::error_code mec;
                     std::vector<std::string> files;
                     for (const auto& e :
-                         std::filesystem::directory_iterator(FITZEL_MODEL_DIR, mec)) {
+                         std::filesystem::directory_iterator(modelDir, mec)) {
                         if (!e.is_regular_file()) continue;
                         std::string ext = e.path().extension().string();
                         for (char& c : ext) c = static_cast<char>(std::tolower(
@@ -3464,8 +3704,7 @@ int main() {
                     ImGui::Separator();
                     ImGui::BeginDisabled(modelFile.empty());
                     if (ImGui::Button("Import to scene")) {
-                        const std::string path =
-                            std::string(FITZEL_MODEL_DIR) + "/" + modelFile;
+                        const std::string path = modelDir + "/" + modelFile;
                         const int id = importModel(path);
                         if (id >= 0) {
                             const glm::vec3 p = camera.position() + camera.front() * 8.0f;
@@ -3590,15 +3829,15 @@ int main() {
                     const std::string file = safe + ".lua";
                     std::error_code sec;
                     const bool exists = newScriptName[0] &&
-                        std::filesystem::exists("scripts/" + file, sec);
+                        std::filesystem::exists(scriptPath(file), sec);
                     if (exists)
                         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
                                            "scripts/%s already exists.", file.c_str());
                     ImGui::BeginDisabled(newScriptName[0] == '\0' || exists);
                     if (ImGui::Button("Create", ImVec2(110.0f, 0.0f))) {
                         std::error_code ec;
-                        std::filesystem::create_directories("scripts", ec);
-                        std::ofstream out("scripts/" + file);
+                        std::filesystem::create_directories(scriptsDir(), ec);
+                        std::ofstream out(scriptPath(file));
                         if (out)
                             out << "-- " << file << " : entity behaviour (runs in Play)\n"
                                    "-- e: x/y/z pos, rx/ry/rz rot(deg), sx/sy/sz half, name, id\n\n"
@@ -4320,6 +4559,47 @@ int main() {
                 RenderTarget::unbind(winW, winH);
                 glClearColor(0.07f, 0.07f, 0.08f, 1.0f);
                 glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            }
+
+            // --- Play HUD: crosshair, score, and the script's HUD line -------
+            if (playMode) {
+                ImDrawList* dl = ImGui::GetForegroundDrawList();
+                // The HUD is anchored to the rendered viewport image, which is the
+                // whole window in presentation mode but an inset dock panel in the
+                // editor. Anchoring here keeps the crosshair on the aim point and
+                // the text inside the view (not off in a side panel).
+                ImVec2 vmin, vsize;
+                if (presentMode || viewportRectSize.x < 1.0f) {
+                    vmin  = ImVec2(0.0f, 0.0f);
+                    vsize = ImGui::GetIO().DisplaySize;
+                } else {
+                    vmin  = ImVec2(viewportRectMin.x, viewportRectMin.y);
+                    vsize = ImVec2(viewportRectSize.x, viewportRectSize.y);
+                }
+                const ImVec2 c(vmin.x + vsize.x * 0.5f, vmin.y + vsize.y * 0.5f);
+
+                // Crosshair, sized to the view.
+                const float ch = std::max(10.0f, vsize.y * 0.018f);
+                const ImU32 white = IM_COL32(255, 255, 255, 220);
+                dl->AddLine(ImVec2(c.x - ch, c.y), ImVec2(c.x + ch, c.y), white, 2.0f);
+                dl->AddLine(ImVec2(c.x, c.y - ch), ImVec2(c.x, c.y + ch), white, 2.0f);
+
+                // Score + HUD line, scaled to the view height and drawn with a
+                // dark shadow so it stays legible over any scene.
+                ImFont* font = ImGui::GetFont();
+                const float fs  = glm::clamp(vsize.y * 0.04f, 22.0f, 48.0f);
+                const float pad = fs * 0.6f;
+                auto shadowText = [&](float x, float y, ImU32 col, const char* s){
+                    dl->AddText(font, fs, ImVec2(x + 2.0f, y + 2.0f),
+                                IM_COL32(0, 0, 0, 190), s);
+                    dl->AddText(font, fs, ImVec2(x, y), col, s);
+                };
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "Score: %d", host.score);
+                shadowText(vmin.x + pad, vmin.y + pad, IM_COL32(255, 232, 120, 255), buf);
+                if (!host.hud.empty())
+                    shadowText(vmin.x + pad, vmin.y + pad + fs * 1.2f,
+                               IM_COL32(235, 235, 240, 235), host.hud.c_str());
             }
 
             gui.endFrame();

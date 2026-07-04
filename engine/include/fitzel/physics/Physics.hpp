@@ -71,6 +71,15 @@ public:
     // World transform of a body. False if the id is unknown.
     bool getTransform(PhysicsBodyId id, glm::vec3& pos, glm::quat& rot) const;
 
+    // Runtime edits to a dynamic body (used by Lua scripts during Play). All are
+    // no-ops if the id is unknown or the body is static/removed.
+    void setLinearVelocity(PhysicsBodyId id, glm::vec3 v);
+    void applyImpulse(PhysicsBodyId id, glm::vec3 impulse);
+
+    // Remove and destroy a body (e.g. an entity deleted mid-play). Safe on an
+    // unknown/already-removed id.
+    void removeBody(PhysicsBodyId id);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> m_impl;

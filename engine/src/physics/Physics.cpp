@@ -236,6 +236,29 @@ bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,
     return true;
 }
 
+void PhysicsWorld::setLinearVelocity(PhysicsBodyId id, glm::vec3 v) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.SetLinearVelocity(bid, toJolt(v));
+    bi.ActivateBody(bid);
+}
+
+void PhysicsWorld::applyImpulse(PhysicsBodyId id, glm::vec3 impulse) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.AddImpulse(bid, toJolt(impulse));
+    bi.ActivateBody(bid);
+}
+
+void PhysicsWorld::removeBody(PhysicsBodyId id) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (bi.IsAdded(bid)) bi.RemoveBody(bid);
+    bi.DestroyBody(bid);
+}
+
 // --- Character controller ---------------------------------------------------
 
 void PhysicsWorld::spawnCharacter(float radius, float halfHeight,
