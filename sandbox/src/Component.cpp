@@ -57,12 +57,26 @@ const std::vector<Property>& SpinComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& ScriptComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property file;
+        file.label = "Script"; file.key = "file"; file.kind = PropKind::Text;
+        file.field = [](void* o) -> void* { return &static_cast<ScriptComponent*>(o)->file; };
+        p.push_back(std::move(file));
+        return p;
+    }();
+    return props;
+}
+
 namespace {
 // Register built-in component types at startup.
 struct AutoRegister {
     AutoRegister() {
         components::registerType({"spin", "Spin",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
+        components::registerType({"script", "Script",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
     }
 } g_autoRegister;
 } // namespace

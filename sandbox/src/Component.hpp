@@ -42,6 +42,16 @@ public:
     ComponentList(ComponentList&&) = default;
     ComponentList& operator=(ComponentList&&) = default;
 
+    // First attached component of type T, or nullptr.
+    template <class T> T* get() {
+        for (auto& c : items) if (auto* p = dynamic_cast<T*>(c.get())) return p;
+        return nullptr;
+    }
+    template <class T> const T* get() const {
+        for (auto& c : items) if (auto* p = dynamic_cast<const T*>(c.get())) return p;
+        return nullptr;
+    }
+
     std::vector<std::unique_ptr<ComponentBase>> items;
 };
 
@@ -75,6 +85,22 @@ public:
     }
     const char* typeId() const override { return "spin"; }
     const char* displayName() const override { return "Spin"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Script (runs a Lua behaviour while playing) ----------
+// The file field is serialized/undone via metadata; the inspector renders it
+// with a bespoke file picker (it needs the project's script list).
+class ScriptComponent : public ComponentBase {
+public:
+    std::string file; // .lua under the project's scripts/ ("" = none)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<ScriptComponent>(*this);
+    }
+    const char* typeId() const override { return "script"; }
+    const char* displayName() const override { return "Script"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
 };

@@ -132,7 +132,6 @@ void saveScene(const Context& ctx, const std::string& path) {
         if (b.material.valid()) e["material"] = b.material.toString();
         e["id"]     = b.id;
         e["parent"] = b.parent;
-        if (!b.script.empty()) e["script"] = b.script;
         if (b.type == EntityType::Model) {
             if (LoadedModel* lm = ctx.loadedModelById(b.modelId);
                 lm && lm->assetId.valid())
@@ -250,7 +249,6 @@ bool loadScene(Context& ctx, const std::string& path) {
             // Bespoke references.
             b.id     = e.value("id", 0);
             b.parent = e.value("parent", -1);
-            b.script = e.value("script", std::string{});
             if (e.contains("material"))
                 b.material = AssetId::fromString(e["material"].get<std::string>());
             else if (e.contains("materialId")) {
@@ -323,7 +321,7 @@ bool loadScene(Context& ctx, const std::string& path) {
                >> scriptTok
                >> b.id >> b.parent;
             b.castShadows = cast != 0;
-            if (scriptTok != "-") b.script = scriptTok;
+            (void)scriptTok; // legacy text scenes: token consumed, no longer stored
             std::getline(ss, b.name);
             if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
             if (auto it = legacyMat.find(oldMat); it != legacyMat.end())

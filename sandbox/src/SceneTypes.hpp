@@ -49,7 +49,6 @@ struct Entity {
     int         physics   = 0;               // 0 none, 1 static, 2 dynamic (Play)
     float       mass      = 1.0f;            // dynamic body mass (kg)
     std::string modelPath;                   // Model only: source file (for reload)
-    std::string script;                      // Lua file under scripts/ ("" = none)
     std::string name;
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object

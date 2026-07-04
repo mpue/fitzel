@@ -1525,7 +1525,11 @@ int main(int argc, char** argv) {
             e.mass     = s.mass;
             e.physics  = s.physics;
             e.name     = s.name.empty() ? "spawned" : s.name;
-            e.script   = s.script;
+            if (!s.script.empty()) {
+                auto sc = std::make_unique<ScriptComponent>();
+                sc->file = s.script;
+                e.components.items.push_back(std::move(sc));
+            }
             e.id       = entityCounter++;
             pendingSpawnVel[e.id] = s.vel;
             pendingSpawns.push_back(e);
@@ -2154,9 +2158,11 @@ int main(int argc, char** argv) {
                 host.camPos = camera.position();
                 host.camDir = camera.front();
                 for (Entity& e : entities)
-                    if (e.type != EntityType::Sun && !e.script.empty())
-                        scripts.update(e, scriptPath(e.script), dt,
-                                       static_cast<float>(now));
+                    if (e.type != EntityType::Sun)
+                        if (auto* sc = e.components.get<ScriptComponent>();
+                            sc && !sc->file.empty())
+                            scripts.update(e, scriptPath(sc->file), dt,
+                                           static_cast<float>(now));
 
                 // Built-in component behaviours (data-authored, no code): Spin.
                 for (Entity& e : entities)
@@ -3140,34 +3146,6 @@ int main(int argc, char** argv) {
                         ImGui::TextDisabled("The sun drives the sky and casts shadows.");
                     } else {
                         // --- Bespoke fields (enumerate project state) ------------
-                        // Lua behaviour script (.lua files in the project scripts folder).
-                        {
-                            std::vector<std::string> luaFiles = listScripts();
-                            const std::string cur = b.script.empty() ? "(none)" : b.script;
-                            ImGui::SetNextItemWidth(-60.0f);
-                            if (ImGui::BeginCombo("##script", cur.c_str())) {
-                                if (ImGui::Selectable("(none)", b.script.empty()))
-                                    b.script.clear();
-                                for (const std::string& f : luaFiles)
-                                    if (ImGui::Selectable(f.c_str(), b.script == f))
-                                        b.script = f;
-                                ImGui::EndCombo();
-                            }
-                            ImGui::SameLine();
-                            ImGui::BeginDisabled(b.script.empty());
-                            if (ImGui::Button("Edit##scr")) openScript(b.script);
-                            ImGui::EndDisabled();
-                            ImGui::SameLine(0.0f, 4.0f); ImGui::TextDisabled("Script");
-                            if (!b.script.empty() &&
-                                std::find(luaFiles.begin(), luaFiles.end(), b.script) == luaFiles.end())
-                                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                    "Missing: scripts/%s", b.script.c_str());
-                            else if (!scripts.lastError().empty())
-                                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-                                                   "Script error: %s", scripts.lastError().c_str());
-                            else if (!b.script.empty())
-                                ImGui::TextDisabled("Runs start()/update() in Play.");
-                        }
                         if (b.physics)
                             ImGui::TextDisabled(b.physics == 2 ? "Falls & collides in Play."
                                                               : "Static collider in Play.");
@@ -3215,7 +3193,31 @@ int main(int argc, char** argv) {
                             ImGui::TextUnformatted(c->displayName());
                             ImGui::SameLine();
                             const bool remove = ImGui::SmallButton("Remove");
-                            for (const Property& pr : c->props()) drawProperty(pr, c);
+                            if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
+                                // Bespoke picker: enumerate the project's .lua files.
+                                std::vector<std::string> luaFiles = listScripts();
+                                const std::string cur = sc->file.empty() ? "(none)" : sc->file;
+                                ImGui::SetNextItemWidth(-60.0f);
+                                if (ImGui::BeginCombo("##scriptfile", cur.c_str())) {
+                                    if (ImGui::Selectable("(none)", sc->file.empty())) sc->file.clear();
+                                    for (const std::string& f : luaFiles)
+                                        if (ImGui::Selectable(f.c_str(), sc->file == f)) sc->file = f;
+                                    ImGui::EndCombo();
+                                }
+                                ImGui::SameLine();
+                                ImGui::BeginDisabled(sc->file.empty());
+                                if (ImGui::Button("Edit##scr")) openScript(sc->file);
+                                ImGui::EndDisabled();
+                                if (!sc->file.empty() &&
+                                    std::find(luaFiles.begin(), luaFiles.end(), sc->file) == luaFiles.end())
+                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                        "Missing: scripts/%s", sc->file.c_str());
+                                else if (!scripts.lastError().empty())
+                                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
+                                                       "Script error: %s", scripts.lastError().c_str());
+                            } else {
+                                for (const Property& pr : c->props()) drawProperty(pr, c);
+                            }
                             ImGui::PopID();
                             if (remove) {
                                 be.components.items.erase(be.components.items.begin() + ci);
