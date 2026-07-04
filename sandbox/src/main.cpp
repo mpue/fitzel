@@ -2158,6 +2158,12 @@ int main(int argc, char** argv) {
                         scripts.update(e, scriptPath(e.script), dt,
                                        static_cast<float>(now));
 
+                // Built-in component behaviours (data-authored, no code): Spin.
+                for (Entity& e : entities)
+                    for (const auto& c : e.components.items)
+                        if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
+                            e.rotation += sp->axis * sp->speed * dt;
+
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
                 for (int did : pendingDestroy) {
@@ -3116,53 +3122,14 @@ int main(int argc, char** argv) {
                     // visibility fall out here. Adding a field is a table entry.
                     for (const Property& pr : entityProperties()) {
                         if (!(pr.typeMask & typeBit(b.type))) continue;
-                        if (pr.visible && !pr.visible(b)) continue;
-                        void* f = pr.field(b);
-                        const char* fmt = pr.fmt.empty() ? "%.3f" : pr.fmt.c_str();
-                        switch (pr.kind) {
-                            case PropKind::Text: {
-                                auto* s = static_cast<std::string*>(f);
-                                char nbuf[64];
-                                std::snprintf(nbuf, sizeof(nbuf), "%s", s->c_str());
-                                if (ImGui::InputText(pr.label.c_str(), nbuf, sizeof(nbuf)))
-                                    *s = nbuf;
-                                break;
-                            }
-                            case PropKind::Float: {
-                                float* v = static_cast<float*>(f);
-                                const bool changed = pr.slider
-                                    ? ImGui::SliderFloat(pr.label.c_str(), v, pr.min, pr.max, fmt)
-                                    : ImGui::DragFloat(pr.label.c_str(), v, pr.speed, pr.min, pr.max, fmt);
-                                if (changed && pr.key == "scale") // model scale drives the pick box
-                                    if (LoadedModel* lm = loadedModelById(b.modelId))
-                                        b.half = modelHalf(*lm, b.scale);
-                                break;
-                            }
-                            case PropKind::Vec3: {
-                                glm::vec3* v = static_cast<glm::vec3*>(f);
-                                const glm::vec3 old = *v;
-                                if (ImGui::DragFloat3(pr.label.c_str(), &v->x, pr.speed,
-                                                      pr.min, pr.max, fmt) &&
-                                    pr.key == "center")
-                                    moveSubtree(b.id, *v - old); // children follow
-                                break;
-                            }
-                            case PropKind::Color:
-                                ImGui::ColorEdit3(pr.label.c_str(),
-                                                  &static_cast<glm::vec3*>(f)->x);
-                                break;
-                            case PropKind::Bool:
-                                ImGui::Checkbox(pr.label.c_str(), static_cast<bool*>(f));
-                                break;
-                            case PropKind::EnumInt: {
-                                int* v = static_cast<int*>(f);
-                                std::vector<const char*> items;
-                                for (const std::string& s : pr.enumLabels)
-                                    items.push_back(s.c_str());
-                                ImGui::Combo(pr.label.c_str(), v, items.data(),
-                                             static_cast<int>(items.size()));
-                                break;
-                            }
+                        if (pr.visible && !pr.visible(&b)) continue;
+                        const glm::vec3 oldCenter = b.center;
+                        if (drawProperty(pr, &b)) {
+                            if (pr.key == "center")
+                                moveSubtree(b.id, b.center - oldCenter); // children follow
+                            else if (pr.key == "scale") // model scale drives the pick box
+                                if (LoadedModel* lm = loadedModelById(b.modelId))
+                                    b.half = modelHalf(*lm, b.scale);
                         }
                     }
 
@@ -3234,6 +3201,34 @@ int main(int argc, char** argv) {
                         ImGui::EndDisabled();
                         ImGui::SameLine();
                         if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
+                    }
+                    // Components: optional attached capabilities. Each renders from
+                    // its own metadata; add/remove is open via the type registry.
+                    // (Re-fetch: Delete##insp above may have cleared the selection.)
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
+                        entities[entitySel].type != EntityType::Sun) {
+                        Entity& be = entities[entitySel];
+                        ImGui::SeparatorText("Components");
+                        for (std::size_t ci = 0; ci < be.components.items.size(); ++ci) {
+                            ComponentBase* c = be.components.items[ci].get();
+                            ImGui::PushID(static_cast<int>(ci));
+                            ImGui::TextUnformatted(c->displayName());
+                            ImGui::SameLine();
+                            const bool remove = ImGui::SmallButton("Remove");
+                            for (const Property& pr : c->props()) drawProperty(pr, c);
+                            ImGui::PopID();
+                            if (remove) {
+                                be.components.items.erase(be.components.items.begin() + ci);
+                                break;
+                            }
+                        }
+                        if (ImGui::Button("Add Component")) ImGui::OpenPopup("addcomp");
+                        if (ImGui::BeginPopup("addcomp")) {
+                            for (const components::TypeInfo& t : components::registry())
+                                if (ImGui::Selectable(t.displayName.c_str()))
+                                    be.components.items.push_back(t.make());
+                            ImGui::EndPopup();
+                        }
                     }
                     // Commit the inspector interaction as one undoable step. Begin
                     // when a field is first touched, commit when nothing is active.

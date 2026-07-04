@@ -10,6 +10,8 @@
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Texture.hpp>
 
+#include "Component.hpp"
+
 // Editor scene data types, shared across the sandbox translation units.
 
 // A scene entity: a placed, selectable object. Box/Ramp/Cylinder/Sphere are
@@ -51,6 +53,7 @@ struct Entity {
     std::string name;
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object
+    ComponentList components; // optional attached capabilities (deep-copied)
 };
 
 // A reusable surface material asset, saved as a `.fmat` file in the project's

@@ -140,6 +140,17 @@ void saveScene(const Context& ctx, const std::string& path) {
             e["modelFile"] =
                 std::filesystem::path(b.modelPath).filename().string();
         }
+        // Attached components: type id + their metadata-driven fields.
+        if (!b.components.items.empty()) {
+            nlohmann::json comps = nlohmann::json::array();
+            for (const auto& c : b.components.items) {
+                nlohmann::json cj;
+                cj["type"] = c->typeId();
+                writeProps(cj, c->props(), c.get());
+                comps.push_back(std::move(cj));
+            }
+            e["components"] = std::move(comps);
+        }
         ents.push_back(std::move(e));
     }
     j["entities"] = std::move(ents);
@@ -260,6 +271,16 @@ bool loadScene(Context& ctx, const std::string& path) {
                 if (!mp.empty()) {
                     b.modelPath = mp;
                     b.modelId   = ctx.importModel(mp);
+                }
+            }
+            // Attached components (type registry -> instance, then its fields).
+            if (e.contains("components") && e["components"].is_array()) {
+                for (const auto& cj : e["components"]) {
+                    const std::string ct = cj.value("type", std::string{});
+                    if (auto comp = components::create(ct)) {
+                        readProps(cj, comp->props(), comp.get());
+                        b.components.items.push_back(std::move(comp));
+                    }
                 }
             }
             maxId = std::max(maxId, b.id);

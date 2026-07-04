@@ -63,7 +63,8 @@ inline bool sameEntity(const Entity& a, const Entity& b) {
            a.castShadows == b.castShadows && a.shadowBias == b.shadowBias &&
            a.physics == b.physics && a.mass == b.mass &&
            a.parent == b.parent && a.name == b.name && a.script == b.script &&
-           a.material == b.material && a.modelId == b.modelId;
+           a.material == b.material && a.modelId == b.modelId &&
+           componentsEqual(a.components, b.components);
 }
 
 // --- Concrete commands ------------------------------------------------------
