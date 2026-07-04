@@ -34,6 +34,8 @@
 #include <fitzel/physics/Physics.hpp>
 
 #include "SceneTypes.hpp"
+#include "Document.hpp"
+#include "Command.hpp"
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
@@ -744,7 +746,12 @@ int main(int argc, char** argv) {
         Mesh rampMesh   = Mesh::create(makeRampVerts());
         Mesh cylMesh    = Mesh::create(makeCylinderYVerts());
         Mesh sphereMesh = Mesh::create(makeSphereVerts());
-        std::vector<Entity> entities;
+        // The scene document owns the authored content (entities + materials);
+        // `entities`/`materials` below are just aliases so existing code reads
+        // unchanged. Every content edit goes through `history` (undo/redo).
+        Document     document;
+        CommandStack history;
+        std::vector<Entity>& entities = document.entities();
         int       entitySel      = -1;
         bool      entityEditMode = false;
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
@@ -754,7 +761,7 @@ int main(int argc, char** argv) {
 
         // Material library: named surface assets solids can be assigned. New
         // objects get the material selected in the Materials panel (matSel).
-        std::vector<MaterialDef> materials;
+        std::vector<MaterialDef>& materials = document.materials();
         int  matSel          = 0;    // selected material in the Materials panel
         // Secondary-panel visibility (toggled from the View menu). The default
         // layout is just Hierarchy | Scene | Inspector; everything else is hidden.
@@ -920,8 +927,8 @@ int main(int argc, char** argv) {
                                   static_cast<int>(materials.size()) - 1)].assetId;
             nb.id     = entityCounter++;
             nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
-            entities.push_back(nb);
-            entitySel = static_cast<int>(entities.size()) - 1;
+            history.push(std::make_unique<AddEntityCmd>(nb), document);
+            entitySel = document.indexOf(nb.id);
         };
         // World-space half-extents of a placed model (its local AABB * scale).
         auto modelHalf = [&](const LoadedModel& lm, float sc) {
@@ -953,8 +960,8 @@ int main(int argc, char** argv) {
             nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             nb.id     = entityCounter++;
             nb.name   = lm->name + " " + std::to_string(nb.id);
-            entities.push_back(nb);
-            entitySel = static_cast<int>(entities.size()) - 1;
+            history.push(std::make_unique<AddEntityCmd>(nb), document);
+            entitySel = document.indexOf(nb.id);
         };
 
         // --- Project (scene) save / load / export ----------------------------
@@ -982,8 +989,10 @@ int main(int argc, char** argv) {
         auto saveCurrent          = [&](){ projectio::saveCurrent(pio); };
         auto exportGame           = [&](const std::string& o){ projectio::exportGame(pio, o); };
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
-        auto openProjectFolder    = [&](const std::string& f){ return projectio::openProjectFolder(pio, f); };
-        auto newProject           = [&](){ projectio::newProject(pio); };
+        // Loading/creating a project replaces the document, so the undo history
+        // must not survive the boundary.
+        auto openProjectFolder    = [&](const std::string& f){ const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
+        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); };
 
         // Move a box (by id) and all its descendants by `delta` (parented drag).
         std::function<void(int, glm::vec3)> moveSubtree = [&](int pid, glm::vec3 d) {
@@ -1003,11 +1012,43 @@ int main(int argc, char** argv) {
         };
         // Delete an entity by index, reparenting its children to its own parent.
         auto deleteEntity = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
             if (entities[idx].type == EntityType::Sun) return; // the sun is permanent
-            const int gid = entities[idx].parent, did = entities[idx].id;
-            for (Entity& c : entities) if (c.parent == did) c.parent = gid;
-            entities.erase(entities.begin() + idx);
+            history.push(std::make_unique<DeleteEntityCmd>(document, entities[idx].id),
+                         document);
             entitySel = -1;
+        };
+        // Duplicate an entity (offset copy, unparented) as one undoable step.
+        auto duplicateEntity = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            if (entities[idx].type == EntityType::Sun) return;
+            Entity nb = entities[idx];
+            nb.center.x += nb.half.x * 2.2f;
+            nb.id     = entityCounter++;
+            nb.parent = -1;
+            nb.name  += " copy";
+            history.push(std::make_unique<AddEntityCmd>(nb), document);
+            entitySel = document.indexOf(nb.id);
+        };
+        // Ids of an entity and all its descendants (for a parented gizmo drag).
+        auto collectSubtreeIds = [&](int rootId) {
+            std::vector<int> ids{rootId};
+            for (bool grew = true; grew; ) {
+                grew = false;
+                for (const Entity& e : entities) {
+                    const bool have = std::find(ids.begin(), ids.end(), e.id) != ids.end();
+                    const bool parentIn =
+                        std::find(ids.begin(), ids.end(), e.parent) != ids.end();
+                    if (!have && parentIn) { ids.push_back(e.id); grew = true; }
+                }
+            }
+            return ids;
+        };
+        auto snapshotEntities = [&](const std::vector<int>& ids) {
+            std::vector<Entity> out;
+            out.reserve(ids.size());
+            for (int id : ids) if (const Entity* e = document.find(id)) out.push_back(*e);
+            return out;
         };
 
         // Tree instances live here (filled by regenTrees below); declared early
@@ -1236,6 +1277,17 @@ int main(int argc, char** argv) {
         bool        prevF    = false;
         bool        prevEsc  = false;
         bool        prevSpace = false;
+
+        // Undo/redo edge state + gizmo-drag snapshot (a drag is one undoable step).
+        bool                prevUndo = false, prevRedo = false;
+        bool                gizmoActive = false;
+        std::vector<int>    gizmoIds;
+        std::vector<Entity> gizmoBefore;
+        // Inspector edit transaction: snapshot the selected entity's subtree while
+        // a field is being touched, commit one ModifyEntities step when released.
+        int                 inspEditId = -1;
+        std::vector<int>    inspEditIds;
+        std::vector<Entity> inspEditBefore;
         float       fpsVelY  = 0.0f;
         bool        grounded = false;
         const float eyeHeight = 1.8f;
@@ -1747,6 +1799,25 @@ int main(int argc, char** argv) {
             }
             prevEsc = escDown;
 
+            // Undo / redo: Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z. Suppressed while a
+            // text field has focus (so typing a name doesn't undo the scene).
+            if (!playMode && !ImGui::GetIO().WantTextInput) {
+                const bool ctrl  = input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                   input.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+                const bool shift = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                   input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+                const bool z = input.isKeyDown(GLFW_KEY_Z);
+                const bool y = input.isKeyDown(GLFW_KEY_Y);
+                const bool wantUndo = ctrl && z && !shift;
+                const bool wantRedo = ctrl && ((z && shift) || y);
+                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; }
+                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; }
+                prevUndo = wantUndo;
+                prevRedo = wantRedo;
+            } else {
+                prevUndo = prevRedo = false;
+            }
+
             if (vehicleMode) {
                 // Arcade car: throttle + steering, drag, bicycle-model heading.
                 const bool kW = input.isKeyDown(GLFW_KEY_W);
@@ -2205,18 +2276,22 @@ int main(int argc, char** argv) {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Edit")) {
+                    const std::string undoLbl = history.canUndo()
+                        ? std::string("Undo ") + history.undoName() : "Undo";
+                    const std::string redoLbl = history.canRedo()
+                        ? std::string("Redo ") + history.redoName() : "Redo";
+                    if (ImGui::MenuItem(undoLbl.c_str(), "Ctrl+Z", false, history.canUndo())) {
+                        history.undo(document); entitySel = -1;
+                    }
+                    if (ImGui::MenuItem(redoLbl.c_str(), "Ctrl+Y", false, history.canRedo())) {
+                        history.redo(document); entitySel = -1;
+                    }
+                    ImGui::Separator();
                     const bool hasSel = entitySel >= 0 &&
                         entitySel < static_cast<int>(entities.size()) &&
                         entities[entitySel].type != EntityType::Sun;
-                    if (ImGui::MenuItem("Duplicate", nullptr, false, hasSel)) {
-                        Entity nb = entities[entitySel];
-                        nb.center.x += nb.half.x * 2.2f;
-                        nb.id = entityCounter++;
-                        nb.parent = -1;
-                        nb.name += " copy";
-                        entities.push_back(nb);
-                        entitySel = static_cast<int>(entities.size()) - 1;
-                    }
+                    if (ImGui::MenuItem("Duplicate", nullptr, false, hasSel))
+                        duplicateEntity(entitySel);
                     if (ImGui::MenuItem("Delete", nullptr, false, hasSel))
                         deleteEntity(entitySel);
                     ImGui::Separator();
@@ -2225,6 +2300,7 @@ int main(int argc, char** argv) {
                             [](const Entity& e){ return e.type != EntityType::Sun; }),
                             entities.end());
                         entitySel = -1;
+                        history.clear(); // bulk reset -> drop history
                     }
                     ImGui::EndMenu();
                 }
@@ -2491,6 +2567,13 @@ int main(int argc, char** argv) {
                     ImGuizmo::SetDrawlist();
                     ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
                                                       static_cast<float>(viewH));
+                    // A finished gizmo drag becomes one undoable Transform step.
+                    if (gizmoActive && !ImGuizmo::IsUsing()) {
+                        gizmoActive = false;
+                        auto cmd = std::make_unique<ModifyEntitiesCmd>(
+                            gizmoBefore, snapshotEntities(gizmoIds));
+                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                    }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
                         entities[entitySel].type != EntityType::Sun) {
                         Entity& b = entities[entitySel];
@@ -2503,7 +2586,13 @@ int main(int argc, char** argv) {
                         ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                         ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
                                              gizmoOp, ImGuizmo::WORLD, model);
-                        if (ImGuizmo::IsUsing()) {
+                        const bool gizmoUsing = ImGuizmo::IsUsing();
+                        if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtree
+                            gizmoActive = true;
+                            gizmoIds    = collectSubtreeIds(selId);
+                            gizmoBefore = snapshotEntities(gizmoIds);
+                        }
+                        if (gizmoUsing) {
                             ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
                             b.center   = glm::vec3(t[0], t[1], t[2]);
                             b.rotation = glm::vec3(r[0], r[1], r[2]);
@@ -2563,8 +2652,7 @@ int main(int argc, char** argv) {
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        entities.erase(entities.begin() + entitySel);
-                        entitySel = -1;
+                        deleteEntity(entitySel);
                     }
                 }
             } else {
@@ -2899,14 +2987,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::TextDisabled("(or click the ground in the viewport in edit mode)");
                 ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
-                if (ImGui::Button("Duplicate") && entities[entitySel].type != EntityType::Sun) {
-                    Entity nb = entities[entitySel];
-                    nb.center.x += nb.half.x * 2.2f;
-                    nb.id = entityCounter++;
-                    nb.name += " copy";
-                    entities.push_back(nb);
-                    entitySel = static_cast<int>(entities.size()) - 1;
-                }
+                if (ImGui::Button("Duplicate")) duplicateEntity(entitySel);
                 ImGui::SameLine();
                 if (ImGui::Button("Delete")) deleteEntity(entitySel);
                 ImGui::EndDisabled();
@@ -2993,6 +3074,7 @@ int main(int argc, char** argv) {
                                    [](const Entity& e){ return e.type != EntityType::Sun; }),
                                    entities.end());
                     entitySel = -1;
+                    history.clear(); // bulk reset -> drop history
                 }
 
                 ImGui::SetNextItemWidth(150.0f);
@@ -3022,6 +3104,10 @@ int main(int argc, char** argv) {
             if (ImGui::Begin("Inspector")) {
                 if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
                     Entity& b = entities[entitySel];
+                    // Undo transaction: snapshot this entity's subtree before any
+                    // widget below mutates it (committed at the block's end).
+                    const std::vector<int> inspFrameIds   = collectSubtreeIds(b.id);
+                    std::vector<Entity>    inspFrameStart = snapshotEntities(inspFrameIds);
                     ImGui::SeparatorText(entityTypeName(b.type));
                     char buf[64];
                     std::snprintf(buf, sizeof(buf), "%s", b.name.c_str());
@@ -3136,6 +3222,23 @@ int main(int argc, char** argv) {
                         ImGui::EndDisabled();
                         ImGui::SameLine();
                         if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
+                    }
+                    // Commit the inspector interaction as one undoable step. Begin
+                    // when a field is first touched, commit when nothing is active.
+                    // (Re-check selection: Delete##insp above may have cleared it.)
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
+                        const int  selId      = entities[entitySel].id;
+                        const bool inspActive = ImGui::IsAnyItemActive();
+                        if (inspActive && inspEditId != selId) {
+                            inspEditId     = selId;
+                            inspEditIds    = inspFrameIds;
+                            inspEditBefore = inspFrameStart;
+                        } else if (!inspActive && inspEditId == selId) {
+                            inspEditId = -1;
+                            auto cmd = std::make_unique<ModifyEntitiesCmd>(
+                                inspEditBefore, snapshotEntities(inspEditIds));
+                            if (!cmd->trivial()) history.push(std::move(cmd), document);
+                        }
                     }
                 } else {
                     ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
