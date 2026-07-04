@@ -36,6 +36,7 @@
 #include "SceneTypes.hpp"
 #include "Document.hpp"
 #include "Command.hpp"
+#include "PropertyMeta.hpp"
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
@@ -3109,30 +3110,73 @@ int main(int argc, char** argv) {
                     const std::vector<int> inspFrameIds   = collectSubtreeIds(b.id);
                     std::vector<Entity>    inspFrameStart = snapshotEntities(inspFrameIds);
                     ImGui::SeparatorText(entityTypeName(b.type));
-                    char buf[64];
-                    std::snprintf(buf, sizeof(buf), "%s", b.name.c_str());
-                    if (ImGui::InputText("Name", buf, sizeof(buf))) b.name = buf;
+
+                    // Auto-generated fields: the property table (PropertyMeta.hpp)
+                    // declares each field once -> the right widget, range and
+                    // visibility fall out here. Adding a field is a table entry.
+                    for (const Property& pr : entityProperties()) {
+                        if (!(pr.typeMask & typeBit(b.type))) continue;
+                        if (pr.visible && !pr.visible(b)) continue;
+                        void* f = pr.field(b);
+                        const char* fmt = pr.fmt.empty() ? "%.3f" : pr.fmt.c_str();
+                        switch (pr.kind) {
+                            case PropKind::Text: {
+                                auto* s = static_cast<std::string*>(f);
+                                char nbuf[64];
+                                std::snprintf(nbuf, sizeof(nbuf), "%s", s->c_str());
+                                if (ImGui::InputText(pr.label.c_str(), nbuf, sizeof(nbuf)))
+                                    *s = nbuf;
+                                break;
+                            }
+                            case PropKind::Float: {
+                                float* v = static_cast<float*>(f);
+                                const bool changed = pr.slider
+                                    ? ImGui::SliderFloat(pr.label.c_str(), v, pr.min, pr.max, fmt)
+                                    : ImGui::DragFloat(pr.label.c_str(), v, pr.speed, pr.min, pr.max, fmt);
+                                if (changed && pr.key == "scale") // model scale drives the pick box
+                                    if (LoadedModel* lm = loadedModelById(b.modelId))
+                                        b.half = modelHalf(*lm, b.scale);
+                                break;
+                            }
+                            case PropKind::Vec3: {
+                                glm::vec3* v = static_cast<glm::vec3*>(f);
+                                const glm::vec3 old = *v;
+                                if (ImGui::DragFloat3(pr.label.c_str(), &v->x, pr.speed,
+                                                      pr.min, pr.max, fmt) &&
+                                    pr.key == "center")
+                                    moveSubtree(b.id, *v - old); // children follow
+                                break;
+                            }
+                            case PropKind::Color:
+                                ImGui::ColorEdit3(pr.label.c_str(),
+                                                  &static_cast<glm::vec3*>(f)->x);
+                                break;
+                            case PropKind::Bool:
+                                ImGui::Checkbox(pr.label.c_str(), static_cast<bool*>(f));
+                                break;
+                            case PropKind::EnumInt: {
+                                int* v = static_cast<int*>(f);
+                                std::vector<const char*> items;
+                                for (const std::string& s : pr.enumLabels)
+                                    items.push_back(s.c_str());
+                                ImGui::Combo(pr.label.c_str(), v, items.data(),
+                                             static_cast<int>(items.size()));
+                                break;
+                            }
+                        }
+                    }
+
                     if (b.type == EntityType::Sun) {
                         ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
                         ImGui::SameLine();
                         ImGui::Checkbox("Pause", &timePaused);
-                        ImGui::ColorEdit3("Sun colour", &b.color.x);
-                        ImGui::SliderFloat("Intensity", &b.intensity, 0.0f, 3.0f);
                         ImGui::TextDisabled("The sun drives the sky and casts shadows.");
                     } else {
-                        const glm::vec3 oldC = b.center;
-                        if (ImGui::DragFloat3("Position", &b.center.x, 0.05f))
-                            moveSubtree(b.id, b.center - oldC); // children follow
-                        if (b.type != EntityType::Light)
-                            ImGui::DragFloat3("Rotation", &b.rotation.x, 1.0f, 0.0f, 0.0f, "%.0f deg");
-                        if (b.type != EntityType::Light && b.type != EntityType::Model)
-                            ImGui::DragFloat3("Half size", &b.half.x, 0.02f, 0.05f, 60.0f);
+                        // --- Bespoke fields (enumerate project state) ------------
+                        // Lua behaviour script (.lua files in the project scripts folder).
                         {
-                            // Lua behaviour, run while playing (scripts/<file>.lua).
-                            // Pick from the .lua files in the project's scripts folder.
                             std::vector<std::string> luaFiles = listScripts();
-                            const std::string cur =
-                                b.script.empty() ? "(none)" : b.script;
+                            const std::string cur = b.script.empty() ? "(none)" : b.script;
                             ImGui::SetNextItemWidth(-60.0f);
                             if (ImGui::BeginCombo("##script", cur.c_str())) {
                                 if (ImGui::Selectable("(none)", b.script.empty()))
@@ -3147,70 +3191,38 @@ int main(int argc, char** argv) {
                             if (ImGui::Button("Edit##scr")) openScript(b.script);
                             ImGui::EndDisabled();
                             ImGui::SameLine(0.0f, 4.0f); ImGui::TextDisabled("Script");
-                            // A script set but not present on disk -> warn.
                             if (!b.script.empty() &&
-                                std::find(luaFiles.begin(), luaFiles.end(),
-                                          b.script) == luaFiles.end())
+                                std::find(luaFiles.begin(), luaFiles.end(), b.script) == luaFiles.end())
                                 ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
                                     "Missing: scripts/%s", b.script.c_str());
                             else if (!scripts.lastError().empty())
                                 ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-                                                   "Script error: %s",
-                                                   scripts.lastError().c_str());
+                                                   "Script error: %s", scripts.lastError().c_str());
                             else if (!b.script.empty())
                                 ImGui::TextDisabled("Runs start()/update() in Play.");
                         }
-                        // Physics body (rigid body created in Play mode).
-                        if (b.type != EntityType::Light) {
-                            const char* kinds[] = {"None", "Static", "Dynamic"};
-                            int pk = glm::clamp(b.physics, 0, 2);
-                            ImGui::SetNextItemWidth(-60.0f);
-                            if (ImGui::Combo("##phys", &pk, kinds, 3)) b.physics = pk;
-                            ImGui::SameLine(0.0f, 4.0f); ImGui::TextDisabled("Physics");
-                            if (b.physics == 2)
-                                ImGui::DragFloat("Mass", &b.mass, 0.1f, 0.01f,
-                                                 1000.0f, "%.2f kg");
-                            if (b.physics)
-                                ImGui::TextDisabled(b.physics == 2
-                                    ? "Falls & collides in Play."
-                                    : "Static collider in Play.");
-                        }
-                        if (b.type == EntityType::Light)
-                            ImGui::ColorEdit3("Light colour", &b.color.x);
-                        if (b.type == EntityType::Light) {
-                            ImGui::SliderFloat("Intensity", &b.intensity, 0.0f, 30.0f);
-                            ImGui::SliderFloat("Range", &b.range, 0.5f, 60.0f, "%.1f m");
-                            ImGui::Checkbox("Cast shadows", &b.castShadows);
-                            if (b.castShadows)
-                                ImGui::SliderFloat("Shadow bias", &b.shadowBias,
-                                                   0.0f, 0.03f, "%.4f");
-                        } else if (b.type == EntityType::Model) {
-                            // Imported model: uniform scale (keeps the pick box in
-                            // sync); geometry brings its own baked materials.
+                        if (b.physics)
+                            ImGui::TextDisabled(b.physics == 2 ? "Falls & collides in Play."
+                                                              : "Static collider in Play.");
+                        if (b.type == EntityType::Model) {
                             LoadedModel* lm = loadedModelById(b.modelId);
                             ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");
-                            if (ImGui::SliderFloat("Scale", &b.scale, 0.05f, 20.0f, "%.2f")
-                                && lm)
-                                b.half = modelHalf(*lm, b.scale);
-                        } else {
-                            // Assign one of the library materials to this mesh.
+                        } else if (b.type != EntityType::Light) {
+                            // Assign a library material to this solid.
                             int mi = materialIndexByAsset(b.material);
                             if (ImGui::BeginCombo("Material", materials[mi].name.c_str())) {
                                 for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
                                     const bool sel = (i == mi);
                                     if (ImGui::Selectable(materials[i].name.c_str(), sel)) {
                                         b.material = materials[i].assetId;
-                                        matSel = i; // focus it in the Materials panel
+                                        matSel = i;
                                     }
                                     if (sel) ImGui::SetItemDefaultFocus();
                                 }
                                 ImGui::EndCombo();
                             }
                             ImGui::SameLine();
-                            if (ImGui::SmallButton("Edit##mat")) {
-                                matSel = mi;
-                                showMaterials = true;
-                            }
+                            if (ImGui::SmallButton("Edit##mat")) { matSel = mi; showMaterials = true; }
                         }
                         ImGui::Text("Parent: %s",
                                     b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());

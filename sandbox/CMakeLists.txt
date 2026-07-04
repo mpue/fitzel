@@ -6,6 +6,7 @@ add_executable(sandbox
     src/ScriptSystem.cpp
     src/ProjectIO.cpp
     src/TerrainPanel.cpp
+    src/PropertyMeta.cpp
     src/FolderDialog.cpp)
 
 target_link_libraries(sandbox PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
