@@ -67,11 +67,17 @@ FetchContent_Declare(
 )
 
 # --- tinyexr: load OpenEXR (.exr) images (e.g. PBR normal maps) -------------
+# We only need tinyexr's headers + bundled miniz (we build our own target
+# below). tinyexr's own CMakeLists compiles with `-Weverything -Werror`, which
+# breaks on recent clang (e.g. -Wpoison-system-directories on arm64). Point
+# SOURCE_SUBDIR at a non-existent dir so MakeAvailable only populates the
+# sources and never processes tinyexr's CMake target.
 FetchContent_Declare(
     tinyexr
     GIT_REPOSITORY https://github.com/syoyo/tinyexr.git
     GIT_TAG        v1.0.8
     GIT_SHALLOW    ON
+    SOURCE_SUBDIR  do-not-build
 )
 
 # --- miniaudio: single-header cross-platform audio playback ----------------
