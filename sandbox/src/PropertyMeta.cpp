@@ -112,3 +112,55 @@ const std::vector<Property>& entityProperties() {
     }();
     return props;
 }
+
+void writeEntityProps(nlohmann::json& j, const Entity& e) {
+    for (const Property& p : entityProperties()) {
+        void* f = p.field(const_cast<Entity&>(e)); // read-only use
+        switch (p.kind) {
+            case PropKind::Text:
+                j[p.key] = *static_cast<std::string*>(f); break;
+            case PropKind::Float:
+                j[p.key] = *static_cast<float*>(f); break;
+            case PropKind::Vec3:
+            case PropKind::Color: {
+                const glm::vec3* v = static_cast<glm::vec3*>(f);
+                j[p.key] = nlohmann::json::array({v->x, v->y, v->z}); break;
+            }
+            case PropKind::Bool:
+                j[p.key] = *static_cast<bool*>(f); break;
+            case PropKind::EnumInt:
+                j[p.key] = *static_cast<int*>(f); break;
+        }
+    }
+}
+
+void readEntityProps(const nlohmann::json& j, Entity& e) {
+    for (const Property& p : entityProperties()) {
+        if (!j.contains(p.key)) continue;
+        const nlohmann::json& val = j.at(p.key);
+        void* f = p.field(e);
+        switch (p.kind) {
+            case PropKind::Text:
+                if (val.is_string()) *static_cast<std::string*>(f) = val.get<std::string>();
+                break;
+            case PropKind::Float:
+                if (val.is_number()) *static_cast<float*>(f) = val.get<float>();
+                break;
+            case PropKind::Vec3:
+            case PropKind::Color:
+                if (val.is_array() && val.size() == 3) {
+                    glm::vec3* v = static_cast<glm::vec3*>(f);
+                    v->x = val[0].get<float>();
+                    v->y = val[1].get<float>();
+                    v->z = val[2].get<float>();
+                }
+                break;
+            case PropKind::Bool:
+                if (val.is_boolean()) *static_cast<bool*>(f) = val.get<bool>();
+                break;
+            case PropKind::EnumInt:
+                if (val.is_number_integer()) *static_cast<int*>(f) = val.get<int>();
+                break;
+        }
+    }
+}

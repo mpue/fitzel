@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "SceneTypes.hpp"
 
 // Editor-facing metadata for the uniform, scalar-ish fields of an Entity. Each
@@ -37,3 +39,11 @@ constexpr unsigned typeBit(EntityType t) { return 1u << static_cast<unsigned>(t)
 
 // The Entity property table, built once.
 const std::vector<Property>& entityProperties();
+
+// (De)serialize the table-covered fields of an entity to/from a JSON object,
+// keyed by Property::key. The same declarations that drive the Inspector drive
+// save/load. Bespoke fields (type, id, parent, material, model, script) are the
+// caller's responsibility. read only overwrites keys that are present, so older
+// scenes (missing keys) fall back to the entity's defaults.
+void writeEntityProps(nlohmann::json& j, const Entity& e);
+void readEntityProps(const nlohmann::json& j, Entity& e);

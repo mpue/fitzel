@@ -12,6 +12,8 @@
 
 #include <fitzel/asset/AssetDatabase.hpp>
 
+#include "PropertyMeta.hpp"
+
 using fitzel::AssetId;
 
 namespace projectio {
@@ -122,21 +124,14 @@ void saveScene(const Context& ctx, const std::string& path) {
     nlohmann::json ents = nlohmann::json::array();
     for (const Entity& b : ctx.entities) {
         nlohmann::json e;
-        e["type"]        = static_cast<int>(b.type);
-        e["center"]      = vec3Json(b.center);
-        e["half"]        = vec3Json(b.half);
-        e["color"]       = vec3Json(b.color);
-        e["rotation"]    = vec3Json(b.rotation);
-        e["intensity"]   = b.intensity;
-        e["range"]       = b.range;
-        e["shadowBias"]  = b.shadowBias;
-        e["castShadows"] = b.castShadows;
+        e["type"] = static_cast<int>(b.type);
+        // Simple fields (transform, colour, physics, light params, name) come
+        // straight from the property table -- one declaration drives save + UI.
+        writeEntityProps(e, b);
+        // Bespoke references the table can't own.
         if (b.material.valid()) e["material"] = b.material.toString();
-        e["scale"]       = b.scale;
-        if (b.physics) { e["physics"] = b.physics; e["mass"] = b.mass; }
-        e["id"]          = b.id;
-        e["parent"]      = b.parent;
-        e["name"]        = b.name;
+        e["id"]     = b.id;
+        e["parent"] = b.parent;
         if (!b.script.empty()) e["script"] = b.script;
         if (b.type == EntityType::Model) {
             if (LoadedModel* lm = ctx.loadedModelById(b.modelId);
@@ -238,22 +233,13 @@ bool loadScene(Context& ctx, const std::string& path) {
         }
         for (const auto& e : j.value("entities", nlohmann::json::array())) {
             Entity b;
-            b.type        = static_cast<EntityType>(e.value("type", 0));
-            b.center      = readVec3Json(e.value("center", nlohmann::json{}), b.center);
-            b.half        = readVec3Json(e.value("half", nlohmann::json{}), b.half);
-            b.color       = readVec3Json(e.value("color", nlohmann::json{}), b.color);
-            b.rotation    = readVec3Json(e.value("rotation", nlohmann::json{}), b.rotation);
-            b.intensity   = e.value("intensity", b.intensity);
-            b.range       = e.value("range", b.range);
-            b.shadowBias  = e.value("shadowBias", b.shadowBias);
-            b.castShadows = e.value("castShadows", false);
-            b.scale       = e.value("scale", 1.0f);
-            b.physics     = e.value("physics", 0);
-            b.mass        = e.value("mass", 1.0f);
-            b.id          = e.value("id", 0);
-            b.parent      = e.value("parent", -1);
-            b.name        = e.value("name", std::string{});
-            b.script      = e.value("script", std::string{});
+            b.type = static_cast<EntityType>(e.value("type", 0));
+            // Table-covered fields (transform, colour, physics, light, name).
+            readEntityProps(e, b);
+            // Bespoke references.
+            b.id     = e.value("id", 0);
+            b.parent = e.value("parent", -1);
+            b.script = e.value("script", std::string{});
             if (e.contains("material"))
                 b.material = AssetId::fromString(e["material"].get<std::string>());
             else if (e.contains("materialId")) {
