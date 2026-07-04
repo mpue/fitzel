@@ -38,6 +38,8 @@
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
+#include "ProjectIO.hpp"
+#include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
 
 using namespace fitzel;
@@ -151,18 +153,10 @@ int main(int argc, char** argv) {
             return 1;
         }
 
-        // Slope/height-driven terrain palette, exposed as material parameters.
-        struct TerrainLook {
-            glm::vec3 sand{0.76f, 0.70f, 0.48f};
-            glm::vec3 grass{0.23f, 0.42f, 0.16f};
-            glm::vec3 rock{0.38f, 0.34f, 0.30f};
-            glm::vec3 snow{0.92f, 0.94f, 0.98f};
-            float snowLevel      = 16.0f;
-            float rockSlope      = 0.62f; // flatter than this -> rock
-            float slopeSharpness = 0.14f;
-            float detailScale    = 0.35f; // micro-detail frequency
-            float detailStrength = 1.5f;  // normal-perturbation strength
-        } look;
+        // Slope/height-driven terrain palette (TerrainLook, defined in
+        // TerrainPanel.hpp), exposed as material parameters and edited in the
+        // Terrain panel.
+        TerrainLook look;
 
         // Terrain PBR-ish albedo textures (triplanar), loaded from the repo's
         // textures/ folder (path injected by CMake).
@@ -963,449 +957,33 @@ int main(int argc, char** argv) {
             entitySel = static_cast<int>(entities.size()) - 1;
         };
 
-        // --- Project (scene) save / load / new -------------------------------
-        // A project is a folder under projects/: <name>/<name>.fitzel (the scene,
-        // JSON schema v3) plus <name>/materials/*.fmat -- one material asset each,
-        // with a .meta GUID sidecar. The folder is mounted as the database's
-        // Project source. Scenes reference materials and models by GUID. Legacy
-        // inline-material scenes (v2 JSON, and the older space-separated text
-        // format) still load and get fresh GUIDs assigned.
-        auto vec3Json = [](const glm::vec3& v) {
-            return nlohmann::json::array({v.x, v.y, v.z});
-        };
-        auto readVec3Json = [](const nlohmann::json& a, glm::vec3 def) {
-            if (a.is_array() && a.size() == 3)
-                return glm::vec3(a[0].get<float>(), a[1].get<float>(),
-                                 a[2].get<float>());
-            return def;
-        };
-        // --- Editor prefs (last location + recent projects) ------------------
-        auto savePrefs = [&]() {
-            nlohmann::json j;
-            j["lastLocation"] = prefLocation;
-            j["recent"]       = recentProjects;
-            std::ofstream f(prefsPath);
-            if (f) f << j.dump(2) << '\n';
-        };
-        auto loadPrefs = [&]() {
-            std::ifstream f(prefsPath);
-            if (!f) return;
-            nlohmann::json j;
-            try { f >> j; } catch (const nlohmann::json::exception&) { return; }
-            prefLocation   = j.value("lastLocation", prefLocation);
-            recentProjects = j.value("recent", std::vector<std::string>{});
-        };
-        // Record a just-saved/opened project: remember its parent as the default
-        // location and push it to the front of the recent list (deduped, capped).
-        auto rememberProject = [&](const std::string& folder) {
-            prefLocation = std::filesystem::path(folder).parent_path().generic_string();
-            recentProjects.erase(
-                std::remove(recentProjects.begin(), recentProjects.end(), folder),
-                recentProjects.end());
-            recentProjects.insert(recentProjects.begin(), folder);
-            if (recentProjects.size() > 8) recentProjects.resize(8);
-            savePrefs();
-        };
-        loadPrefs();
-
-        // --- Project path helpers (folder-based) -----------------------------
-        auto projMatsDirIn = [&](const std::string& folder){ return folder + "/materials"; };
-        // The project's scene file: prefer <folder>/<folder-name>.fitzel; else the
-        // first .fitzel present (robust to a renamed folder). Returns the preferred
-        // path even if absent, so it doubles as the save target.
-        auto projSceneFileIn = [&](const std::string& folder) -> std::string {
-            const std::string stem = std::filesystem::path(folder).filename().string();
-            const std::string preferred = folder + "/" + stem + ".fitzel";
-            std::error_code ec;
-            if (std::filesystem::exists(preferred, ec)) return preferred;
-            for (const auto& de : std::filesystem::directory_iterator(folder, ec))
-                if (de.path().extension() == ".fitzel")
-                    return de.path().generic_string();
-            return preferred;
-        };
-        // Filesystem-safe token from a display name.
-        auto safeName = [](const std::string& s){
-            std::string o; o.reserve(s.size());
-            for (char c : s)
-                o.push_back(std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
-            return o.empty() ? std::string("material") : o;
-        };
-        // Write a `.meta` sidecar so the database adopts our chosen GUID for a
-        // freshly written asset file (keeps in-memory ids and on-disk ids in sync).
-        auto writeMeta = [](const std::string& path, AssetId id, const char* type){
-            nlohmann::json m; m["guid"] = id.toString(); m["type"] = type;
-            std::ofstream f(path + ".meta"); if (f) f << m.dump(2) << '\n';
-        };
-        // Serialise one material to <dir>/<name>-<guid8>.fmat (+ its .meta).
-        auto writeMaterialFile = [&](const MaterialDef& md, const std::string& dir){
-            const std::string file = dir + "/" + safeName(md.name) + "-" +
-                                     md.assetId.toString().substr(0, 8) + ".fmat";
-            nlohmann::json m;
-            m["name"]         = md.name;
-            m["albedo"]       = vec3Json(md.albedo);
-            m["reflectivity"] = md.reflectivity;
-            m["roughness"]    = md.roughness;
-            if (md.texId.valid()) m["texture"] = md.texId.toString();
-            std::ofstream f(file); if (f) f << m.dump(2) << '\n';
-            writeMeta(file, md.assetId, "Material");
-        };
-
-        // Save the scene (entities only) as JSON v3. Materials live in .fmat
-        // files; entities reference their material by GUID.
-        auto saveScene = [&](const std::string& path) {
-            nlohmann::json j;
-            j["version"] = 3;
-            nlohmann::json ents = nlohmann::json::array();
-            for (const Entity& b : entities) {
-                nlohmann::json e;
-                e["type"]        = static_cast<int>(b.type);
-                e["center"]      = vec3Json(b.center);
-                e["half"]        = vec3Json(b.half);
-                e["color"]       = vec3Json(b.color);
-                e["rotation"]    = vec3Json(b.rotation);
-                e["intensity"]   = b.intensity;
-                e["range"]       = b.range;
-                e["shadowBias"]  = b.shadowBias;
-                e["castShadows"] = b.castShadows;
-                if (b.material.valid()) e["material"] = b.material.toString();
-                e["scale"]       = b.scale;
-                if (b.physics) { e["physics"] = b.physics; e["mass"] = b.mass; }
-                e["id"]          = b.id;
-                e["parent"]      = b.parent;
-                e["name"]        = b.name;
-                if (!b.script.empty()) e["script"] = b.script;
-                if (b.type == EntityType::Model) {
-                    if (LoadedModel* lm = loadedModelById(b.modelId);
-                        lm && lm->assetId.valid())
-                        e["model"] = lm->assetId.toString();
-                    e["modelFile"] =
-                        std::filesystem::path(b.modelPath).filename().string();
-                }
-                ents.push_back(std::move(e));
-            }
-            j["entities"] = std::move(ents);
-            // Scene look/settings (terrain, sky, water, grade, vegetation, ...).
-            if (writeSettingsFn) {
-                nlohmann::json s = nlohmann::json::object();
-                writeSettingsFn(s);
-                j["settings"] = std::move(s);
-            }
-            std::ofstream f(path);
-            if (f) f << j.dump(2) << '\n';
-        };
-
-        // (Re)write every non-model material into <folder>/materials, clearing any
-        // stale .fmat/.meta first so deleted materials don't linger on disk.
-        auto writeProjectMaterials = [&](const std::string& matsDir){
-            std::error_code ec;
-            std::filesystem::create_directories(matsDir, ec);
-            for (const auto& de : std::filesystem::directory_iterator(matsDir, ec)) {
-                const std::string ext = de.path().extension().string();
-                if (ext == ".fmat" || ext == ".meta")
-                    std::filesystem::remove(de.path(), ec);
-            }
-            for (const MaterialDef& md : materials)
-                if (!md.fromModel) writeMaterialFile(md, matsDir);
-        };
-        // Load every .fmat material from <folder>/materials into the library.
-        auto loadProjectMaterials = [&](const std::string& matsDir){
-            materials.clear();
-            std::error_code ec;
-            for (const auto& de :
-                 std::filesystem::directory_iterator(matsDir, ec)) {
-                if (de.path().extension().string() != ".fmat") continue;
-                std::ifstream f(de.path());
-                if (!f) continue;
-                nlohmann::json m;
-                try { f >> m; } catch (const nlohmann::json::exception&) { continue; }
-                MaterialDef md;
-                md.assetId      = assetDb.idForPath(de.path().string());
-                if (!md.assetId.valid()) md.assetId = AssetId::generate();
-                md.name         = m.value("name", de.path().stem().string());
-                md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
-                md.reflectivity = m.value("reflectivity", md.reflectivity);
-                md.roughness    = m.value("roughness", md.roughness);
-                if (m.contains("texture")) {
-                    md.texId = AssetId::fromString(m["texture"].get<std::string>());
-                    if (md.texId.valid()) md.tex = assetDb.loadTexture(md.texId);
-                }
-                materials.push_back(std::move(md));
-            }
-            if (materials.empty()) seedDefaultMaterials();
-            matSel = 0;
-        };
-        // Save the current scene into project folder `folder`, (re)mounting it as
-        // the database's Project source and remembering it in the prefs.
-        auto saveProjectTo = [&](const std::string& folder){
-            if (folder.empty()) return;
-            std::error_code ec;
-            std::filesystem::create_directories(folder, ec);
-            writeProjectMaterials(projMatsDirIn(folder));
-            const std::string scene = projSceneFileIn(folder);
-            saveScene(scene);
-            assetDb.mountProject(folder);
-            assetDb.refresh();
-            currentProject = scene;
-            std::snprintf(projNameBuf, sizeof(projNameBuf), "%s",
-                          std::filesystem::path(folder).filename().string().c_str());
-            rememberProject(folder);
-        };
-        // Re-save the currently open project in place.
-        auto saveCurrent = [&](){
-            if (!currentProject.empty())
-                saveProjectTo(
-                    std::filesystem::path(currentProject).parent_path().generic_string());
-        };
-        // Export a standalone, portable build of the open project into `outDir`:
-        //   <outDir>/<Game>.exe   (this same binary, renamed)
-        //   <outDir>/assets/      (shaders)
-        //   <outDir>/content/     (engine textures/models/sounds)
-        //   <outDir>/project/     (the project: scene, materials, scripts, content)
-        //   <outDir>/game.json    (boot descriptor: launches straight into Play)
-        // The exe resolves content/ and project/ next to itself, so the folder
-        // runs on any Windows PC (zip & ship).
+        // --- Project (scene) save / load / export ----------------------------
+        // Serialization now lives in ProjectIO (projectio::). main still owns the
+        // scene data + asset database; it threads them in through a Context of
+        // references and callbacks, built once here. Thin forwarding lambdas keep
+        // the existing call sites (menus, wizard, player boot) unchanged.
         std::string exportStatus; // shown under the File menu after an export
-        auto exportGame = [&](const std::string& outDir){
-            namespace fs = std::filesystem;
-            if (currentProject.empty()) { exportStatus = "Save the project first."; return; }
-            std::error_code ec;
-            const fs::path exeDir = fs::current_path();
-            const fs::path out    = fs::path(outDir);
-            fs::create_directories(out, ec);
-            const std::string game =
-                projNameBuf[0] ? std::string(projNameBuf) : std::string("game");
-            const auto rec = fs::copy_options::recursive |
-                             fs::copy_options::overwrite_existing;
-            fs::copy_file(exeDir / "sandbox.exe", out / (game + ".exe"),
-                          fs::copy_options::overwrite_existing, ec);
-            fs::copy(exeDir / "assets", out / "assets", rec, ec);
-            fs::copy(contentRoot,       out / "content", rec, ec);
-            fs::copy(fs::path(currentProject).parent_path(), out / "project", rec, ec);
-            nlohmann::json gj;
-            gj["project"]    = "project";
-            gj["fullscreen"] = true;
-            std::ofstream(out / "game.json") << gj.dump(2);
-            exportStatus = ec ? ("Export finished with warnings: " + ec.message())
-                              : ("Exported to " + out.generic_string());
-            std::fprintf(stderr, "[Fitzel] %s\n", exportStatus.c_str());
+        projectio::Context pio{
+            entities, materials, matSel, entityCounter, entitySel,
+            currentProject, projNameBuf, sizeof(projNameBuf), prefLocation,
+            recentProjects, prefsPath, exportStatus,
+            assetDb, contentRoot, modelDir,
+            [&]{ seedDefaultMaterials(); },
+            [&](const std::string& p){ return importModel(p); },
+            [&](int id){ return loadedModelById(id); },
+            [&]{ loadedModels.clear(); },
+            writeSettingsFn, readSettingsFn,
         };
-        // (name, folder) of every project directly under `root` that holds a scene.
-        auto listProjectsIn = [&](const std::string& root){
-            std::vector<std::pair<std::string, std::string>> out;
-            std::error_code ec;
-            for (const auto& de : std::filesystem::directory_iterator(root, ec)) {
-                if (!de.is_directory()) continue;
-                const std::string folder = de.path().generic_string();
-                bool hasScene = false;
-                std::error_code e2;
-                for (const auto& f : std::filesystem::directory_iterator(folder, e2))
-                    if (f.path().extension() == ".fitzel") { hasScene = true; break; }
-                if (hasScene) out.push_back({de.path().filename().string(), folder});
-            }
-            std::sort(out.begin(), out.end());
-            return out;
-        };
-        // Load a scene file, replacing the current one. Accepts JSON v3 (materials
-        // live in .fmat and are loaded separately -- see loadProject), JSON v2
-        // (inline integer-id materials), and the legacy space-separated text
-        // format; the latter two synthesize the material library with fresh GUIDs.
-        // Auto-detected from the first non-blank character. False if unreadable.
-        auto loadScene = [&](const std::string& path) -> bool {
-            std::ifstream f(path);
-            if (!f) return false;
-            std::stringstream buf; buf << f.rdbuf();
-            const std::string content = buf.str();
-            const std::size_t firstCh = content.find_first_not_of(" \t\r\n");
-            const bool isJson =
-                firstCh != std::string::npos && content[firstCh] == '{';
+        projectio::loadPrefs(pio);
 
-            entities.clear();
-            loadedModels.clear(); // models re-import fresh below
-            int maxId = -1;
-            // Maps a legacy integer material id to a synthesized GUID (v2/legacy).
-            std::map<int, AssetId> legacyMat;
-
-            if (isJson) {
-                nlohmann::json j;
-                try { j = nlohmann::json::parse(content); }
-                catch (const nlohmann::json::exception& ex) {
-                    std::fprintf(stderr, "Scene parse error: %s\n", ex.what());
-                    return false;
-                }
-                // v2 back-compat: inline materials with integer ids -> rebuild the
-                // library here. v3 keeps materials in .fmat (loaded by loadProject),
-                // so an absent/empty "materials" array leaves the library intact.
-                if (j.contains("materials") && j["materials"].is_array() &&
-                    !j["materials"].empty()) {
-                    materials.clear();
-                    for (const auto& m : j["materials"]) {
-                        MaterialDef md;
-                        md.assetId      = AssetId::generate();
-                        md.name         = m.value("name", std::string{});
-                        md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
-                        md.reflectivity = m.value("reflectivity", md.reflectivity);
-                        md.roughness    = m.value("roughness", md.roughness);
-                        if (m.contains("texture")) {
-                            md.texId = AssetId::fromString(m["texture"].get<std::string>());
-                            if (md.texId.valid()) md.tex = assetDb.loadTexture(md.texId);
-                        }
-                        legacyMat[m.value("id", 0)] = md.assetId;
-                        materials.push_back(std::move(md));
-                    }
-                    if (materials.empty()) seedDefaultMaterials();
-                    matSel = 0;
-                }
-                for (const auto& e : j.value("entities", nlohmann::json::array())) {
-                    Entity b;
-                    b.type        = static_cast<EntityType>(e.value("type", 0));
-                    b.center      = readVec3Json(e.value("center", nlohmann::json{}), b.center);
-                    b.half        = readVec3Json(e.value("half", nlohmann::json{}), b.half);
-                    b.color       = readVec3Json(e.value("color", nlohmann::json{}), b.color);
-                    b.rotation    = readVec3Json(e.value("rotation", nlohmann::json{}), b.rotation);
-                    b.intensity   = e.value("intensity", b.intensity);
-                    b.range       = e.value("range", b.range);
-                    b.shadowBias  = e.value("shadowBias", b.shadowBias);
-                    b.castShadows = e.value("castShadows", false);
-                    b.scale       = e.value("scale", 1.0f);
-                    b.physics     = e.value("physics", 0);
-                    b.mass        = e.value("mass", 1.0f);
-                    b.id          = e.value("id", 0);
-                    b.parent      = e.value("parent", -1);
-                    b.name        = e.value("name", std::string{});
-                    b.script      = e.value("script", std::string{});
-                    // Material: v3 stores a GUID string; v2 an integer id.
-                    if (e.contains("material"))
-                        b.material = AssetId::fromString(e["material"].get<std::string>());
-                    else if (e.contains("materialId")) {
-                        auto it = legacyMat.find(e["materialId"].get<int>());
-                        if (it != legacyMat.end()) b.material = it->second;
-                    }
-                    if (!b.material.valid() && !materials.empty())
-                        b.material = materials[0].assetId;
-                    if (b.type == EntityType::Model) {
-                        std::string mp;
-                        if (e.contains("model")) {
-                            const AssetId gid =
-                                AssetId::fromString(e["model"].get<std::string>());
-                            mp = assetDb.pathForId(gid).string();
-                        }
-                        if (mp.empty() && e.contains("modelFile"))
-                            mp = modelDir + "/" +
-                                 e["modelFile"].get<std::string>();
-                        if (!mp.empty()) {
-                            b.modelPath = mp;
-                            b.modelId   = importModel(mp);
-                        }
-                    }
-                    maxId = std::max(maxId, b.id);
-                    entities.push_back(std::move(b));
-                }
-                // Apply the saved scene look/settings (rebuilds terrain/veg).
-                if (readSettingsFn && j.contains("settings"))
-                    readSettingsFn(j["settings"]);
-            } else {
-                // Legacy space-separated text: inline "M" materials + int ids.
-                materials.clear();
-                std::istringstream in(content);
-                std::string line;
-                while (std::getline(in, line)) {
-                    if (line.empty()) continue;
-                    std::istringstream ss(line);
-                    std::string tok;
-                    ss >> tok;
-                    if (tok == "M") { // material asset line
-                        MaterialDef md;
-                        int oldId = 0;
-                        ss >> oldId >> md.albedo.x >> md.albedo.y >> md.albedo.z
-                           >> md.reflectivity >> md.roughness;
-                        std::getline(ss, md.name);
-                        if (!md.name.empty() && md.name[0] == ' ') md.name.erase(0, 1);
-                        md.assetId = AssetId::generate();
-                        legacyMat[oldId] = md.assetId;
-                        materials.push_back(std::move(md));
-                        continue;
-                    }
-                    Entity b;
-                    int cast = 0, oldMat = 0;
-                    std::string modelTok, scriptTok;
-                    b.type = static_cast<EntityType>(std::stoi(tok));
-                    ss >> b.center.x >> b.center.y >> b.center.z
-                       >> b.half.x >> b.half.y >> b.half.z
-                       >> b.color.x >> b.color.y >> b.color.z
-                       >> b.intensity >> b.range >> b.shadowBias
-                       >> cast >> oldMat >> b.scale
-                       >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
-                       >> scriptTok
-                       >> b.id >> b.parent;
-                    b.castShadows = cast != 0;
-                    if (scriptTok != "-") b.script = scriptTok;
-                    std::getline(ss, b.name);
-                    if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
-                    if (auto it = legacyMat.find(oldMat); it != legacyMat.end())
-                        b.material = it->second;
-                    if (b.type == EntityType::Model && modelTok != "-") {
-                        b.modelPath = modelDir + "/" + modelTok;
-                        b.modelId   = importModel(b.modelPath);
-                    }
-                    maxId = std::max(maxId, b.id);
-                    entities.push_back(b);
-                }
-                if (materials.empty()) seedDefaultMaterials();
-                matSel = 0;
-                for (Entity& b : entities)
-                    if (!b.material.valid() && !materials.empty())
-                        b.material = materials[0].assetId;
-            }
-
-            entityCounter = maxId + 1;
-            // Guarantee exactly one Sun (older scenes may lack it).
-            bool hasSun = false;
-            for (const Entity& e : entities) if (e.type == EntityType::Sun) hasSun = true;
-            if (!hasSun) {
-                Entity sun;
-                sun.type = EntityType::Sun; sun.color = glm::vec3(1.0f, 0.97f, 0.9f);
-                sun.intensity = 1.0f; sun.name = "Sun"; sun.id = entityCounter++;
-                entities.push_back(sun);
-            }
-            entitySel = -1;
-            return true;
-        };
-        // Open the project in `folder`: mount it as the Project source, load its
-        // .fmat materials, then its scene. False if the folder has no scene.
-        auto openProjectFolder = [&](const std::string& folder) -> bool {
-            const std::string scene = projSceneFileIn(folder);
-            std::error_code ec;
-            if (!std::filesystem::exists(scene, ec)) return false;
-            assetDb.mountProject(folder);
-            assetDb.refresh();
-            loadProjectMaterials(projMatsDirIn(folder));
-            if (!loadScene(scene)) return false;
-            currentProject = scene;
-            std::snprintf(projNameBuf, sizeof(projNameBuf), "%s",
-                          std::filesystem::path(folder).filename().string().c_str());
-            rememberProject(folder);
-            return true;
-        };
-        // Start a fresh, unsaved project: seeded materials + a single Sun. No
-        // project folder exists yet (created on first save), so drop the mounted
-        // Project source.
-        auto newProject = [&]() {
-            entities.clear();
-            loadedModels.clear();
-            materials.clear();
-            seedDefaultMaterials();
-            matSel = 0;
-            entityCounter = 0;
-            Entity sun;
-            sun.type = EntityType::Sun; sun.color = glm::vec3(1.0f, 0.97f, 0.9f);
-            sun.intensity = 1.0f; sun.name = "Sun"; sun.id = entityCounter++;
-            entities.push_back(sun);
-            entitySel = -1;
-            currentProject.clear();
-            projNameBuf[0] = '\0';
-            assetDb.unmountProjects();
-            assetDb.refresh();
-        };
+        auto safeName             = [&](const std::string& s){ return projectio::safeName(s); };
+        auto loadProjectMaterials = [&](const std::string& d){ projectio::loadProjectMaterials(pio, d); };
+        auto saveProjectTo        = [&](const std::string& f){ projectio::saveProjectTo(pio, f); };
+        auto saveCurrent          = [&](){ projectio::saveCurrent(pio); };
+        auto exportGame           = [&](const std::string& o){ projectio::exportGame(pio, o); };
+        auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
+        auto openProjectFolder    = [&](const std::string& f){ return projectio::openProjectFolder(pio, f); };
+        auto newProject           = [&](){ projectio::newProject(pio); };
 
         // Move a box (by id) and all its descendants by `delta` (parented drag).
         std::function<void(int, glm::vec3)> moveSubtree = [&](int pid, glm::vec3 d) {
@@ -3100,34 +2678,10 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
-            if (showTerrain) { if (ImGui::Begin("Terrain", &showTerrain)) {
-                ImGui::SeparatorText("Generator");
-                ImGui::SliderFloat("Height",     &uiSettings.heightScale, 0.0f, 30.0f);
-                ImGui::SliderFloat("Ridges",     &uiSettings.ridgeScale, 0.0f, 50.0f);
-                ImGui::SliderFloat("Continents", &uiSettings.continentAmp, 0.0f, 3.0f);
-                ImGui::SliderFloat("Biome size", &uiSettings.biomeFreq, 0.0005f, 0.004f, "%.4f");
-                ImGui::SliderFloat("Terraces",   &uiSettings.terrace, 0.0f, 1.0f);
-                ImGui::SliderFloat("Warp",       &uiSettings.warpStrength, 0.0f, 40.0f);
-                ImGui::SliderFloat("Frequency",  &uiSettings.frequency, 0.003f, 0.05f, "%.3f");
-                ImGui::SliderInt  ("Octaves",    &uiSettings.octaves, 1, 8);
-                ImGui::SliderFloat("Seed",       &uiSettings.seed, 0.0f, 100.0f);
-                if (ImGui::Button("Regenerate")) {
-                    streamer.settings() = uiSettings;
-                    streamer.rebuild();
-                    streamer.update(camera.position());
-                    grassDirty = true; // regrow vegetation on the new terrain
-                    treeCenter = glm::vec2(1e9f);
-                    roadDirty  = true; // re-drape roads on the new heights
-                }
-                ImGui::SeparatorText("Material (slope)");
-                ImGui::SliderFloat("Texture scale", &texScale, 0.02f, 0.2f, "%.3f");
-                ImGui::SliderFloat("Normal strength", &normalStrength, 0.0f, 1.0f);
-                ImGui::SliderFloat("Rock slope",    &look.rockSlope, 0.0f, 1.0f);
-                ImGui::SliderFloat("Slope blend",   &look.slopeSharpness, 0.02f, 0.4f);
-                ImGui::SliderFloat("Snow level",    &look.snowLevel, 0.0f, 40.0f);
-                ImGui::SliderFloat("Detail bump",   &look.detailStrength, 0.0f, 4.0f);
-            }
-            ImGui::End(); }
+            terrainui::drawPanel({
+                showTerrain, uiSettings, streamer, camera, look,
+                texScale, normalStrength, grassDirty, treeCenter, roadDirty,
+            });
 
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ImGui::SeparatorText("Grass");
