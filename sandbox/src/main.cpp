@@ -2172,6 +2172,22 @@ int main(int argc, char** argv) {
                         if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
                             e.localRotation += sp->axis * sp->speed * dt;
 
+                // Collectible: when the player reaches a pickup, award its points,
+                // play its sound and remove it (destroy is deferred to below). A
+                // mid-body reference point keeps low objects reachable.
+                {
+                    glm::vec3 playerC = camera.position();
+                    playerC.y -= eyeHeight * 0.5f;
+                    for (Entity& e : entities) {
+                        const auto* col = e.components.get<CollectibleComponent>();
+                        if (!col) continue;
+                        if (glm::distance(playerC, e.center) > col->radius) continue;
+                        host.score += static_cast<int>(std::lround(col->points));
+                        if (!col->sound.empty()) host.playSound(col->sound);
+                        pendingDestroy.push_back(e.id);
+                    }
+                }
+
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
                 for (int did : pendingDestroy) {

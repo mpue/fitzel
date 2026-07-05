@@ -80,6 +80,28 @@ const std::vector<Property>& SpinComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& CollectibleComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property points;
+        points.label = "Points"; points.key = "points"; points.kind = PropKind::Float;
+        points.min = 0.0f; points.max = 1000.0f; points.speed = 1.0f; points.fmt = "%.0f";
+        points.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->points; };
+        p.push_back(std::move(points));
+        Property radius;
+        radius.label = "Pickup radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.2f; radius.max = 8.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property sound;
+        sound.label = "Sound"; sound.key = "sound"; sound.kind = PropKind::Text;
+        sound.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->sound; };
+        p.push_back(std::move(sound));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -177,6 +199,8 @@ struct AutoRegister {
     AutoRegister() {
         components::registerType({"spin", "Spin",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
+        components::registerType({"collectible", "Collectible",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

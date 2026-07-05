@@ -98,6 +98,27 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Collectible (a pickup -- walk into it in Play) -------
+// A game mechanic authored as data, no scripting: while playing, when the player
+// comes within `radius` of this entity it awards `points` to the score, plays an
+// optional one-shot `sound` (from the project's sounds/), and removes the
+// entity. Attach it to any solid so an artist builds "collect the coins" with
+// zero code. Ticked in the play loop alongside the other built-in behaviours.
+class CollectibleComponent : public ComponentBase {
+public:
+    float       points = 10.0f; // added to the score on pickup (whole number)
+    float       radius = 1.5f;  // pickup distance from the player (metres)
+    std::string sound;          // one-shot file under the project's sounds/ ("" = none)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<CollectibleComponent>(*this);
+    }
+    const char* typeId() const override { return "collectible"; }
+    const char* displayName() const override { return "Collectible"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Script (runs a Lua behaviour while playing) ----------
 // The file field is serialized/undone via metadata; the inspector renders it
 // with a bespoke file picker (it needs the project's script list).
