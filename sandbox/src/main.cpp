@@ -1469,6 +1469,19 @@ int main(int argc, char** argv) {
             std::ofstream out(editorPath);
             if (out) { out << luaEditor.GetText(); scripts.reset(); editorDirty = false; }
         };
+        // Sound assets known to the asset database (engine + project), by bare
+        // filename -- what game.playSound / CollectibleComponent resolve against.
+        // Backs the Collectible sound picker so it's chosen, not typed.
+        auto listSounds = [&](){
+            std::vector<std::string> out;
+            for (const AssetId& id : assetDb.allAssets())
+                if (assetDb.typeForId(id) == AssetType::Sound)
+                    if (const auto* e = assetDb.entry(id))
+                        out.push_back(e->absPath.filename().string());
+            std::sort(out.begin(), out.end());
+            out.erase(std::unique(out.begin(), out.end()), out.end());
+            return out;
+        };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
@@ -3246,6 +3259,23 @@ int main(int argc, char** argv) {
                                 if (ImGui::SliderFloat("Scale", &mdl->scale, 0.05f, 20.0f, "%.2f"))
                                     if (LoadedModel* lm = models.byId(mdl->modelId))
                                         be.half = modelHalf(*lm, mdl->scale);
+                            } else if (auto* col = dynamic_cast<CollectibleComponent*>(c)) {
+                                // Points + radius from metadata; Sound is a picker
+                                // over the Sound assets (chosen, not typed).
+                                for (const Property& pr : col->props())
+                                    if (pr.key != "sound") drawProperty(pr, col);
+                                const std::vector<std::string> sounds = listSounds();
+                                const std::string cur = col->sound.empty() ? "(none)" : col->sound;
+                                if (ImGui::BeginCombo("Sound", cur.c_str())) {
+                                    if (ImGui::Selectable("(none)", col->sound.empty())) col->sound.clear();
+                                    for (const std::string& s : sounds)
+                                        if (ImGui::Selectable(s.c_str(), col->sound == s)) col->sound = s;
+                                    ImGui::EndCombo();
+                                }
+                                if (!col->sound.empty() &&
+                                    std::find(sounds.begin(), sounds.end(), col->sound) == sounds.end())
+                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                                       "Missing sound: %s", col->sound.c_str());
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
