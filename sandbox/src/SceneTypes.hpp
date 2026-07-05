@@ -50,6 +50,13 @@ struct Entity {
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object
     ComponentList components; // optional attached capabilities (deep-copied)
+
+    // Scene-graph transform: localCenter/localRotation are the SOURCE OF TRUTH
+    // (relative to the parent); center/rotation above are the derived WORLD values
+    // that every consumer reads, filled by resolveHierarchy() each frame. The
+    // inspector/scripts edit local; the gizmo/physics edit world (converted back).
+    glm::vec3   localCenter{0.0f};
+    glm::vec3   localRotation{0.0f};
 };
 
 // A reusable surface material asset, saved as a `.fmat` file in the project's

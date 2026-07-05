@@ -14,6 +14,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glad/gl.h>
@@ -919,7 +920,8 @@ int main(int argc, char** argv) {
             Entity nb;
             nb.type   = type;
             nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f) : entityNewHalf;
-            nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
+            nb.localCenter = nb.center =
+                glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             if (type == EntityType::Light)
                 nb.components.items.push_back(std::make_unique<LightComponent>());
             if (!materials.empty())
@@ -957,7 +959,8 @@ int main(int argc, char** argv) {
             nb.half      = modelHalf(*lm, nb.scale); // AABB (for picking/gizmo)
             // The render transform centres the model's AABB at nb.center, so lift
             // by half.y to rest its base on the ground.
-            nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
+            nb.localCenter = nb.center =
+                glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             nb.id     = entityCounter++;
             nb.name   = lm->name + " " + std::to_string(nb.id);
             history.push(std::make_unique<AddEntityCmd>(nb), document);
@@ -994,11 +997,61 @@ int main(int argc, char** argv) {
         auto openProjectFolder    = [&](const std::string& f){ const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
         auto newProject           = [&](){ projectio::newProject(pio); history.clear(); };
 
-        // Move a box (by id) and all its descendants by `delta` (parented drag).
-        std::function<void(int, glm::vec3)> moveSubtree = [&](int pid, glm::vec3 d) {
-            for (Entity& c : entities)
-                if (c.parent == pid) { c.center += d; moveSubtree(c.id, d); }
+        // World transform (translate*rotate, ImGuizmo Euler convention) of an
+        // entity's cached world center/rotation. Scale is not part of the
+        // hierarchy -- each entity keeps its own size (half).
+        auto worldOf = [&](const Entity& e) {
+            return composeModel(e.center, e.rotation, glm::vec3(1.0f));
         };
+        // Convert a world-space edit (gizmo, physics) into the entity's LOCAL
+        // transform (the source of truth), given its parent's world matrix (null
+        // for a root). Also mirrors into center/rotation for this frame.
+        auto setWorld = [&](Entity& e, const glm::vec3& wPos, const glm::vec3& wRot,
+                            const glm::mat4* parentWorld) {
+            e.center = wPos; e.rotation = wRot;
+            if (!parentWorld) { e.localCenter = wPos; e.localRotation = wRot; return; }
+            const glm::mat4 lm =
+                glm::inverse(*parentWorld) * composeModel(wPos, wRot, glm::vec3(1.0f));
+            float t[3], r[3], s[3];
+            ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(lm), t, r, s);
+            e.localCenter   = glm::vec3(t[0], t[1], t[2]);
+            e.localRotation = glm::vec3(r[0], r[1], r[2]);
+        };
+        // Rebase local onto a (changed) parent so the entity's current world stays
+        // put -- used on reparent/unparent.
+        auto rebaseLocal = [&](Entity& e, const glm::mat4* parentWorld) {
+            setWorld(e, e.center, e.rotation, parentWorld);
+        };
+        // Scene-graph resolve: LOCAL transform is the source of truth; derive every
+        // entity's WORLD (center/rotation, what all consumers read) from
+        // parentWorld * local, parents first. Behaviours/scripts/inspector write
+        // local, so children inherit a parent's motion + rotation automatically.
+        std::function<void(Entity&, std::unordered_set<int>&)> resolveOne =
+            [&](Entity& e, std::unordered_set<int>& done) {
+                if (!done.insert(e.id).second) return;
+                Entity* p = (e.parent >= 0) ? document.find(e.parent) : nullptr;
+                if (p) resolveOne(*p, done);
+                if (!p) { e.center = e.localCenter; e.rotation = e.localRotation; }
+                else {
+                    const glm::mat4 w =
+                        worldOf(*p) * composeModel(e.localCenter, e.localRotation, glm::vec3(1.0f));
+                    float t[3], r[3], s[3];
+                    ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(w), t, r, s);
+                    e.center   = glm::vec3(t[0], t[1], t[2]);
+                    e.rotation = glm::vec3(r[0], r[1], r[2]);
+                }
+            };
+        auto resolveHierarchy = [&]() {
+            std::unordered_set<int> done;
+            for (Entity& e : entities) resolveOne(e, done);
+        };
+        // World matrix of an entity's PARENT (identity for a root) -- for setWorld.
+        auto parentWorldMat = [&](const Entity& e) -> glm::mat4 {
+            if (e.parent < 0) return glm::mat4(1.0f);
+            const Entity* p = document.find(e.parent);
+            return p ? worldOf(*p) : glm::mat4(1.0f);
+        };
+        // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
         auto isUnderId = [&](int a, int ancestorId) {
             for (int p = a; p >= 0; ) {
@@ -1023,7 +1076,8 @@ int main(int argc, char** argv) {
             if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
             if (entities[idx].type == EntityType::Sun) return;
             Entity nb = entities[idx];
-            nb.center.x += nb.half.x * 2.2f;
+            nb.localCenter.x += nb.half.x * 2.2f;
+            nb.center.x     += nb.half.x * 2.2f;
             nb.id     = entityCounter++;
             nb.parent = -1;
             nb.name  += " copy";
@@ -1517,9 +1571,9 @@ int main(int argc, char** argv) {
         host.spawn = [&](const ScriptSpawn& s) -> int {
             Entity e;
             e.type     = static_cast<EntityType>(s.type);
-            e.center   = s.pos;
+            e.localCenter   = e.center   = s.pos;
             e.half     = glm::max(s.half, glm::vec3(0.02f));
-            e.rotation = s.rot;
+            e.localRotation = e.rotation = s.rot;
             e.mass     = s.mass;
             e.physics  = s.physics;
             e.name     = s.name.empty() ? "spawned" : s.name;
@@ -1540,7 +1594,12 @@ int main(int argc, char** argv) {
             return false;
         };
         host.setPos = [&](int id, glm::vec3 p){
-            for (Entity& e : entities) if (e.id == id) { e.center = p; break; }
+            for (Entity& e : entities)
+                if (e.id == id) {
+                    const glm::mat4 pw = parentWorldMat(e);
+                    setWorld(e, p, e.rotation, e.parent >= 0 ? &pw : nullptr);
+                    break;
+                }
         };
         host.setVelocity = [&](int id, glm::vec3 v){
             auto it = physicsBody.find(id);
@@ -1568,7 +1627,7 @@ int main(int argc, char** argv) {
         scripts.setHost(&host);
 
         glm::vec3 playCamPos{0.0f};
-        float     playCamYaw = 0.0f, playCamPitch = 0.0f;
+        float     playCamYaw = 0.0f, playCamPitch = 0.0f, playMoveSpeed = 20.0f;
         bool      playPrevEdit = false;
         auto startPlay = [&] {
             if (playMode) return;
@@ -1578,6 +1637,7 @@ int main(int argc, char** argv) {
             playCamPos    = camera.position();
             playCamYaw    = camera.yaw();
             playCamPitch  = camera.pitch();
+            playMoveSpeed = camera.moveSpeed;
             playPrevEdit  = entityEditMode;
             entityEditMode = false;
             entitySel      = -1;
@@ -1589,6 +1649,7 @@ int main(int argc, char** argv) {
             pendingSpawnVel.clear();
             pendingDestroy.clear();
             keyPrev.clear(); mousePrev.clear();
+            resolveHierarchy(); // world transforms fresh before bodies are created
 
             // Physics: fresh world with the terrain as a static heightfield
             // ground, plus a rigid body per physics-tagged entity.
@@ -1664,18 +1725,25 @@ int main(int argc, char** argv) {
                 }
                 if (id) physicsBody[e.id] = id;
             }
-            // The player is a physics capsule (~1.8 m tall) at the camera.
-            {
-                const glm::vec3 cp = camera.position();
-                physics->spawnCharacter(0.3f, 0.6f,
-                    glm::vec3(cp.x, streamer.heightAt(cp.x, cp.z), cp.z));
-            }
+            // The player is a physics capsule (~1.8 m tall). It spawns at the
+            // first entity carrying a PlayerStart component (adopting its facing
+            // and move speed); otherwise at the edit camera.
+            glm::vec3 startPos = camera.position();
+            for (const Entity& e : entities)
+                if (const auto* ps = e.components.get<PlayerStartComponent>()) {
+                    startPos = e.center;
+                    camera.setYaw(e.rotation.y);
+                    camera.moveSpeed = ps->moveSpeed;
+                    break;
+                }
+            physics->spawnCharacter(0.3f, 0.6f,
+                glm::vec3(startPos.x, streamer.heightAt(startPos.x, startPos.z), startPos.z));
 
             fpsMode        = true; // play as the walking player
             input.setCursorLocked(true);
             fpsVelY = 0.0f;
-            const glm::vec3 p = camera.position();
-            camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
+            camera.setPosition({startPos.x,
+                streamer.heightAt(startPos.x, startPos.z) + eyeHeight, startPos.z});
         };
         auto stopPlay = [&] {
             if (!playMode) return;
@@ -1689,6 +1757,7 @@ int main(int argc, char** argv) {
             camera.setPosition(playCamPos);
             camera.setYaw(playCamYaw);
             camera.setPitch(playCamPitch);
+            camera.moveSpeed = playMoveSpeed;
             entityEditMode = playPrevEdit;
             entitySel = -1;
         };
@@ -2148,8 +2217,10 @@ int main(int argc, char** argv) {
                         glm::translate(glm::mat4(1.0f), p) * glm::mat4_cast(q);
                     float t[3], r[3], s[3];
                     ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(mm), t, r, s);
-                    e.center   = glm::vec3(t[0], t[1], t[2]);
-                    e.rotation = glm::vec3(r[0], r[1], r[2]);
+                    // Jolt is world-space -> convert back to the entity's local.
+                    const glm::mat4 pw = parentWorldMat(e);
+                    setWorld(e, glm::vec3(t[0], t[1], t[2]), glm::vec3(r[0], r[1], r[2]),
+                             e.parent >= 0 ? &pw : nullptr);
                 }
             }
 
@@ -2157,6 +2228,8 @@ int main(int argc, char** argv) {
             if (playMode) {
                 host.camPos = camera.position();
                 host.camDir = camera.front();
+                // Scripts and behaviours just write the entity's world transform;
+                // children follow via resolveHierarchy (below), no propagation.
                 for (Entity& e : entities)
                     if (e.type != EntityType::Sun)
                         if (auto* sc = e.components.get<ScriptComponent>();
@@ -2165,10 +2238,12 @@ int main(int argc, char** argv) {
                                            static_cast<float>(now));
 
                 // Built-in component behaviours (data-authored, no code): Spin.
+                // Writes LOCAL rotation; the scene-graph derives world (so a
+                // spinning child of a spinning parent orbits AND spins).
                 for (Entity& e : entities)
                     for (const auto& c : e.components.items)
                         if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
-                            e.rotation += sp->axis * sp->speed * dt;
+                            e.localRotation += sp->axis * sp->speed * dt;
 
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
@@ -2590,7 +2665,6 @@ int main(int argc, char** argv) {
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
                         entities[entitySel].type != EntityType::Sun) {
                         Entity& b = entities[entitySel];
-                        const glm::vec3 oldCenter = b.center;
                         const int selId = b.id;
                         float t[3] = {b.center.x, b.center.y, b.center.z};
                         float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
@@ -2607,12 +2681,13 @@ int main(int argc, char** argv) {
                         }
                         if (gizmoUsing) {
                             ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
-                            b.center   = glm::vec3(t[0], t[1], t[2]);
-                            b.rotation = glm::vec3(r[0], r[1], r[2]);
-                            b.half     = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
-                            // Children follow the parent's translation.
-                            const glm::vec3 delta = b.center - oldCenter;
-                            if (glm::dot(delta, delta) > 0.0f) moveSubtree(selId, delta);
+                            b.half = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
+                            // World-space edit -> local (children then follow via
+                            // resolveHierarchy).
+                            const glm::mat4 pw = parentWorldMat(b);
+                            setWorld(b, glm::vec3(t[0], t[1], t[2]),
+                                     glm::vec3(r[0], r[1], r[2]),
+                                     b.parent >= 0 ? &pw : nullptr);
                         }
 
                         // Orange oriented wireframe around the selected object.
@@ -3061,8 +3136,13 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < static_cast<int>(entities.size()); ++k)
                         if (entities[k].id == reparentSrc) { si = k; break; }
                     if (si >= 0 && reparentSrc != reparentTo &&
-                        (reparentTo < 0 || !isUnderId(reparentTo, reparentSrc)))
+                        (reparentTo < 0 || !isUnderId(reparentTo, reparentSrc))) {
                         entities[si].parent = reparentTo;
+                        // Keep the child put: rebase its local onto the new parent.
+                        Entity* np = (reparentTo >= 0) ? document.find(reparentTo) : nullptr;
+                        const glm::mat4 pw = np ? worldOf(*np) : glm::mat4(1.0f);
+                        rebaseLocal(entities[si], np ? &pw : nullptr);
+                    }
                 }
 
                 ImGui::SeparatorText("Project");
@@ -3129,11 +3209,10 @@ int main(int argc, char** argv) {
                     for (const Property& pr : entityProperties()) {
                         if (!(pr.typeMask & typeBit(b.type))) continue;
                         if (pr.visible && !pr.visible(&b)) continue;
-                        const glm::vec3 oldCenter = b.center;
                         if (drawProperty(pr, &b)) {
-                            if (pr.key == "center")
-                                moveSubtree(b.id, b.center - oldCenter); // children follow
-                            else if (pr.key == "scale") // model scale drives the pick box
+                            // Children follow center/rotation edits automatically
+                            // (resolveHierarchy). Model scale drives the pick box.
+                            if (pr.key == "scale")
                                 if (LoadedModel* lm = loadedModelById(b.modelId))
                                     b.half = modelHalf(*lm, b.scale);
                         }
@@ -3172,10 +3251,15 @@ int main(int argc, char** argv) {
                         ImGui::Text("Parent: %s",
                                     b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
                         if (ImGui::Button("Drop to ground"))
-                            b.center.y = streamer.heightAt(b.center.x, b.center.z) + b.half.y;
+                        {
+                            const glm::mat4 pw = parentWorldMat(b);
+                            setWorld(b, glm::vec3(b.center.x,
+                                streamer.heightAt(b.center.x, b.center.z) + b.half.y,
+                                b.center.z), b.rotation, b.parent >= 0 ? &pw : nullptr);
+                        }
                         ImGui::SameLine();
                         ImGui::BeginDisabled(b.parent < 0);
-                        if (ImGui::Button("Unparent")) b.parent = -1;
+                        if (ImGui::Button("Unparent")) { b.parent = -1; rebaseLocal(b, nullptr); }
                         ImGui::EndDisabled();
                         ImGui::SameLine();
                         if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
@@ -3675,6 +3759,10 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Resolve the scene-graph so every entity's world center/rotation
+            // reflects this frame's edits/scripts/physics and its parent chain.
+            resolveHierarchy();
+
             // --- Scene entities through the renderer (shadows, lighting, water).
             //     One GPU material is built per library asset and shared by every
             //     mesh assigned to it; light markers keep their own emissive one.
@@ -3695,6 +3783,8 @@ int main(int argc, char** argv) {
             lightMats.reserve(entities.size());
             for (const Entity& b : entities) {
                 if (b.type == EntityType::Sun) continue; // directional, no geometry
+                // Player-start markers are authoring aids -- hidden while playing.
+                if (playMode && b.components.get<PlayerStartComponent>()) continue;
                 if (b.type == EntityType::Model) {
                     // Imported model: draw every primitive with its baked material.
                     // Centre the model's AABB at b.center (so it matches the pick

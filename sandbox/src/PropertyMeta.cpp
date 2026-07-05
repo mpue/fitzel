@@ -33,15 +33,18 @@ const std::vector<Property>& entityProperties() {
         name.typeMask = ALLTYPES; name.field = at(&Entity::name);
         p.push_back(std::move(name));
 
+        // Position/Rotation edit the LOCAL transform (relative to the parent);
+        // world is derived by the scene-graph resolve. Serialized under the same
+        // keys, so a saved scene stores local transforms.
         Property pos;
         pos.label = "Position"; pos.key = "center"; pos.kind = PropKind::Vec3;
-        pos.typeMask = MOVABLE; pos.speed = 0.05f; pos.field = at(&Entity::center);
+        pos.typeMask = MOVABLE; pos.speed = 0.05f; pos.field = at(&Entity::localCenter);
         p.push_back(std::move(pos));
 
         Property rot;
         rot.label = "Rotation"; rot.key = "rotation"; rot.kind = PropKind::Vec3;
         rot.typeMask = SOLID | bit(E::Model); rot.speed = 1.0f; rot.fmt = "%.0f deg";
-        rot.field = at(&Entity::rotation);
+        rot.field = at(&Entity::localRotation);
         p.push_back(std::move(rot));
 
         Property half;

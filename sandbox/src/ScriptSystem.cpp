@@ -245,8 +245,10 @@ void ScriptSystem::fail(int id, const char* what) {
 void ScriptSystem::pushEntityTable(const Entity& e) {
     lua_State* L = m_lua;
     lua_createtable(L, 0, 12);
-    setNum(L, "x", e.center.x);   setNum(L, "y", e.center.y);   setNum(L, "z", e.center.z);
-    setNum(L, "rx", e.rotation.x); setNum(L, "ry", e.rotation.y); setNum(L, "rz", e.rotation.z);
+    // x/y/z and rx/ry/rz are the entity's LOCAL transform (relative to its
+    // parent); the scene-graph derives world. For a root object local == world.
+    setNum(L, "x", e.localCenter.x);   setNum(L, "y", e.localCenter.y);   setNum(L, "z", e.localCenter.z);
+    setNum(L, "rx", e.localRotation.x); setNum(L, "ry", e.localRotation.y); setNum(L, "rz", e.localRotation.z);
     setNum(L, "sx", e.half.x);    setNum(L, "sy", e.half.y);    setNum(L, "sz", e.half.z);
     lua_pushstring(L, e.name.c_str()); lua_setfield(L, -2, "name");
     lua_pushinteger(L, e.id);          lua_setfield(L, -2, "id");
@@ -254,12 +256,12 @@ void ScriptSystem::pushEntityTable(const Entity& e) {
 
 void ScriptSystem::readEntityTable(Entity& e) {
     lua_State* L = m_lua;
-    e.center.x   = getNum(L, "x", e.center.x);
-    e.center.y   = getNum(L, "y", e.center.y);
-    e.center.z   = getNum(L, "z", e.center.z);
-    e.rotation.x = getNum(L, "rx", e.rotation.x);
-    e.rotation.y = getNum(L, "ry", e.rotation.y);
-    e.rotation.z = getNum(L, "rz", e.rotation.z);
+    e.localCenter.x   = getNum(L, "x", e.localCenter.x);
+    e.localCenter.y   = getNum(L, "y", e.localCenter.y);
+    e.localCenter.z   = getNum(L, "z", e.localCenter.z);
+    e.localRotation.x = getNum(L, "rx", e.localRotation.x);
+    e.localRotation.y = getNum(L, "ry", e.localRotation.y);
+    e.localRotation.z = getNum(L, "rz", e.localRotation.z);
     e.half.x     = getNum(L, "sx", e.half.x);
     e.half.y     = getNum(L, "sy", e.half.y);
     e.half.z     = getNum(L, "sz", e.half.z);

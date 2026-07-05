@@ -100,6 +100,19 @@ const std::vector<Property>& LightComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& PlayerStartComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property speed;
+        speed.label = "Move speed"; speed.key = "moveSpeed"; speed.kind = PropKind::Float;
+        speed.slider = true; speed.min = 2.0f; speed.max = 80.0f; speed.fmt = "%.0f m/s";
+        speed.field = [](void* o) -> void* { return &static_cast<PlayerStartComponent*>(o)->moveSpeed; };
+        p.push_back(std::move(speed));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& SunComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -127,6 +140,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
+        components::registerType({"player_start", "Player Start",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<PlayerStartComponent>()); }});
         components::registerType({"sun", "Sun",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SunComponent>()); },
             /*addable=*/false});

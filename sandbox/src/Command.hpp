@@ -57,8 +57,8 @@ private:
 // dropped instead of polluting the undo history).
 inline bool sameEntity(const Entity& a, const Entity& b) {
     return a.id == b.id && a.type == b.type &&
-           a.center == b.center && a.half == b.half && a.rotation == b.rotation &&
-           a.scale == b.scale &&
+           a.localCenter == b.localCenter && a.localRotation == b.localRotation &&
+           a.half == b.half && a.scale == b.scale &&
            a.physics == b.physics && a.mass == b.mass &&
            a.parent == b.parent && a.name == b.name &&
            a.material == b.material && a.modelId == b.modelId &&

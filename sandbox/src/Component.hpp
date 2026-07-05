@@ -124,6 +124,23 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: PlayerStart (where the FPS player spawns in Play) ----
+// Attach to any entity to mark it as the player's start: on Play the walking
+// character spawns at that entity (position + facing), moving at moveSpeed. The
+// marker entity is hidden while playing.
+class PlayerStartComponent : public ComponentBase {
+public:
+    float moveSpeed = 20.0f; // walk speed (m/s)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<PlayerStartComponent>(*this);
+    }
+    const char* typeId() const override { return "player_start"; }
+    const char* displayName() const override { return "Player Start"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Sun (the singleton directional light's look) ---------
 // Engine-managed (auto-attached to the Sun entity), so not in the Add menu.
 class SunComponent : public ComponentBase {
