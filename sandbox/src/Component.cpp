@@ -100,6 +100,24 @@ const std::vector<Property>& LightComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& PhysicsComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property dyn;
+        dyn.label = "Dynamic"; dyn.key = "dynamic"; dyn.kind = PropKind::Bool;
+        dyn.field = [](void* o) -> void* { return &static_cast<PhysicsComponent*>(o)->dynamic; };
+        p.push_back(std::move(dyn));
+        Property mass;
+        mass.label = "Mass"; mass.key = "mass"; mass.kind = PropKind::Float;
+        mass.min = 0.01f; mass.max = 1000.0f; mass.speed = 0.1f; mass.fmt = "%.2f kg";
+        mass.field = [](void* o) -> void* { return &static_cast<PhysicsComponent*>(o)->mass; };
+        mass.visible = [](const void* o) { return static_cast<const PhysicsComponent*>(o)->dynamic; };
+        p.push_back(std::move(mass));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& PlayerStartComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -140,6 +158,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
+        components::registerType({"physics", "Physics",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
         components::registerType({"player_start", "Player Start",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PlayerStartComponent>()); }});
         components::registerType({"sun", "Sun",

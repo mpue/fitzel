@@ -124,6 +124,22 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Physics (gives an entity a rigid-body collider) ------
+// Presence = has a collider in Play. dynamic falls & collides; otherwise static.
+class PhysicsComponent : public ComponentBase {
+public:
+    bool  dynamic = true;
+    float mass    = 1.0f; // kg (dynamic only)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<PhysicsComponent>(*this);
+    }
+    const char* typeId() const override { return "physics"; }
+    const char* displayName() const override { return "Physics"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: PlayerStart (where the FPS player spawns in Play) ----
 // Attach to any entity to mark it as the player's start: on Play the walking
 // character spawns at that entity (position + facing), moving at moveSpeed. The

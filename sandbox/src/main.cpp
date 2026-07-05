@@ -1574,9 +1574,13 @@ int main(int argc, char** argv) {
             e.localCenter   = e.center   = s.pos;
             e.half     = glm::max(s.half, glm::vec3(0.02f));
             e.localRotation = e.rotation = s.rot;
-            e.mass     = s.mass;
-            e.physics  = s.physics;
             e.name     = s.name.empty() ? "spawned" : s.name;
+            if (s.physics != 0) {
+                auto pc = std::make_unique<PhysicsComponent>();
+                pc->dynamic = (s.physics == 2);
+                pc->mass    = s.mass;
+                e.components.items.push_back(std::move(pc));
+            }
             if (!s.script.empty()) {
                 auto sc = std::make_unique<ScriptComponent>();
                 sc->file = s.script;
@@ -1677,10 +1681,10 @@ int main(int argc, char** argv) {
                                  static_cast<int>(roadCollIndices.size()));
             physicsBody.clear();
             for (Entity& e : entities) {
-                if (e.physics == 0 || e.type == EntityType::Light ||
-                    e.type == EntityType::Sun)
+                const auto* pc = e.components.get<PhysicsComponent>();
+                if (!pc || e.type == EntityType::Light || e.type == EntityType::Sun)
                     continue;
-                const float m = (e.physics == 2) ? glm::max(e.mass, 0.01f) : 0.0f;
+                const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
                 const glm::quat q = glm::quat(glm::radians(e.rotation));
                 PhysicsBodyId id = 0;
                 switch (e.type) {
@@ -2206,7 +2210,8 @@ int main(int argc, char** argv) {
             if (playMode && physics) {
                 physics->step(dt);
                 for (Entity& e : entities) {
-                    if (e.physics != 2) continue; // only dynamic bodies move
+                    const auto* pc = e.components.get<PhysicsComponent>();
+                    if (!pc || !pc->dynamic) continue; // only dynamic bodies move
                     auto it = physicsBody.find(e.id);
                     if (it == physicsBody.end()) continue;
                     glm::vec3 p; glm::quat q;
@@ -2261,9 +2266,10 @@ int main(int argc, char** argv) {
                 for (const Entity& ne : pendingSpawns) {
                     entities.push_back(ne);
                     const Entity& e = entities.back();
-                    if (physics && e.physics != 0 && e.type != EntityType::Light &&
+                    const auto* pc = e.components.get<PhysicsComponent>();
+                    if (physics && pc && e.type != EntityType::Light &&
                         e.type != EntityType::Sun) {
-                        const float m = (e.physics == 2) ? glm::max(e.mass, 0.01f) : 0.0f;
+                        const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
                         const glm::quat q = glm::quat(glm::radians(e.rotation));
                         PhysicsBodyId id = 0;
                         switch (e.type) {
@@ -3225,9 +3231,6 @@ int main(int argc, char** argv) {
                         ImGui::TextDisabled("The sun drives the sky and casts shadows.");
                     } else {
                         // --- Bespoke fields (enumerate project state) ------------
-                        if (b.physics)
-                            ImGui::TextDisabled(b.physics == 2 ? "Falls & collides in Play."
-                                                              : "Static collider in Play.");
                         if (b.type == EntityType::Model) {
                             LoadedModel* lm = loadedModelById(b.modelId);
                             ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");

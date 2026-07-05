@@ -11,7 +11,6 @@ using E = EntityType;
 
 constexpr unsigned bit(E t) { return 1u << static_cast<unsigned>(t); }
 const unsigned SOLID    = bit(E::Box) | bit(E::Ramp) | bit(E::Cylinder) | bit(E::Sphere);
-const unsigned PHYSICAL = SOLID | bit(E::Model);
 const unsigned MOVABLE  = SOLID | bit(E::Model) | bit(E::Light); // has a world position
 const unsigned ALLTYPES = ~0u;
 
@@ -60,20 +59,8 @@ const std::vector<Property>& entityProperties() {
         scale.field = at(&Entity::scale);
         p.push_back(std::move(scale));
 
-        Property phys;
-        phys.label = "Physics"; phys.key = "physics"; phys.kind = PropKind::EnumInt;
-        phys.typeMask = PHYSICAL; phys.enumLabels = {"None", "Static", "Dynamic"};
-        phys.field = at(&Entity::physics);
-        p.push_back(std::move(phys));
-
-        Property mass;
-        mass.label = "Mass"; mass.key = "mass"; mass.kind = PropKind::Float;
-        mass.typeMask = PHYSICAL; mass.min = 0.01f; mass.max = 1000.0f;
-        mass.speed = 0.1f; mass.fmt = "%.2f kg"; mass.field = at(&Entity::mass);
-        mass.visible = [](const void* o) { return static_cast<const Entity*>(o)->physics == 2; };
-        p.push_back(std::move(mass));
-
-        // Light/Sun look now lives in LightComponent / SunComponent.
+        // Physics (collider/mass) now lives in PhysicsComponent; light/sun look
+        // in LightComponent / SunComponent.
 
         return p;
     }();
