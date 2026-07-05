@@ -807,30 +807,14 @@ int main(int argc, char** argv) {
         // loadScene call through these std::functions instead of the registry.
         std::function<void(nlohmann::json&)>       writeSettingsFn;
         std::function<void(const nlohmann::json&)> readSettingsFn;
-        auto addMaterial = [&](std::string name, glm::vec3 albedo,
-                               float refl, float rough) -> AssetId {
-            MaterialDef md;
-            md.assetId = AssetId::generate(); // persisted to a .fmat on save
-            md.name = std::move(name);
-            md.albedo = albedo; md.reflectivity = refl; md.roughness = rough;
-            materials.push_back(md);
-            return md.assetId;
-        };
         // Seed a fresh project with the built-in materials (saved as project
-        // .fmat files on first save). Returns nothing; entities reference these
-        // by the GUID that addMaterial mints.
+        // .fmat files on first save); entities reference these by their GUID.
         auto seedDefaultMaterials = [&]() {
-            addMaterial("Default", {0.72f, 0.72f, 0.74f}, 0.0f, 0.20f);
-            addMaterial("Chrome",  {0.90f, 0.92f, 0.95f}, 1.0f, 0.04f);
-            addMaterial("Red",     {0.72f, 0.12f, 0.10f}, 0.0f, 0.30f);
+            document.addMaterial("Default", {0.72f, 0.72f, 0.74f}, 0.0f, 0.20f);
+            document.addMaterial("Chrome",  {0.90f, 0.92f, 0.95f}, 1.0f, 0.04f);
+            document.addMaterial("Red",     {0.72f, 0.12f, 0.10f}, 0.0f, 0.30f);
         };
         seedDefaultMaterials();
-        // Index of the material with the given GUID (0 = Default fallback).
-        auto materialIndexByAsset = [&](AssetId id) -> int {
-            for (int i = 0; i < static_cast<int>(materials.size()); ++i)
-                if (materials[i].assetId == id) return i;
-            return 0;
-        };
 
         // Imported glTF/GLB models, uploaded to the GPU (see ModelLibrary). main
         // owns one registry and threads it in where models are placed/drawn.
@@ -3227,7 +3211,7 @@ int main(int argc, char** argv) {
                                                        "Script error: %s", scripts.lastError().c_str());
                             } else if (auto* mc = dynamic_cast<MaterialComponent*>(c)) {
                                 // Bespoke picker: pick from the material library.
-                                const int mi = materialIndexByAsset(mc->material);
+                                const int mi = document.materialIndex(mc->material);
                                 if (ImGui::BeginCombo("Material", materials[mi].name.c_str())) {
                                     for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
                                         const bool sel = (i == mi);
@@ -3298,8 +3282,8 @@ int main(int argc, char** argv) {
                 if (ImGui::Begin("Materials", &showMaterials)) {
                     if (ImGui::Button("New")) {
                         matSel = static_cast<int>(materials.size());
-                        addMaterial("Material " + std::to_string(materials.size()),
-                                    glm::vec3(0.7f), 0.0f, 0.2f);
+                        document.addMaterial("Material " + std::to_string(materials.size()),
+                                             glm::vec3(0.7f), 0.0f, 0.2f);
                     }
                     ImGui::SameLine();
                     const bool selFromModel = matSel >= 0 &&
@@ -3746,7 +3730,7 @@ int main(int argc, char** argv) {
                         composeModel(b.center, b.rotation, (b.half * 2.0f) / sz) *
                         glm::translate(glm::mat4(1.0f), -lm->center());
                     for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
-                        const int mi = materialIndexByAsset(lm->primMaterialId[i]);
+                        const int mi = document.materialIndex(lm->primMaterialId[i]);
                         renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
                                         materials[mi].reflectivity > 0.0f);
                     }
@@ -3771,7 +3755,7 @@ int main(int argc, char** argv) {
                     // Assigned library material; reflective solids are excluded
                     // from the env probe so they don't reflect their own interior.
                     const auto* mc = b.components.get<MaterialComponent>();
-                    const int mi = materialIndexByAsset(mc ? mc->material : AssetId{});
+                    const int mi = document.materialIndex(mc ? mc->material : AssetId{});
                     renderer.submit(mesh, gpuMats[mi], m, true,
                                     materials[mi].reflectivity > 0.0f);
                 }
@@ -3915,7 +3899,7 @@ int main(int argc, char** argv) {
             for (const Entity& b : entities) {
                 const auto* mc = b.components.get<MaterialComponent>();
                 if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
-                    materials[materialIndexByAsset(mc->material)].reflectivity > 0.0f) {
+                    materials[document.materialIndex(mc->material)].reflectivity > 0.0f) {
                     probePos = b.center;
                     hasReflective = true;
                     break;

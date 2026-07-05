@@ -35,6 +35,26 @@ public:
         return i >= 0 ? &m_entities[i] : nullptr;
     }
 
+    // Index of the material with `id` in the library, or 0 (the Default
+    // fallback) if absent -- solids always resolve to a valid material.
+    int materialIndex(fitzel::AssetId id) const {
+        for (int i = 0; i < static_cast<int>(m_materials.size()); ++i)
+            if (m_materials[i].assetId == id) return i;
+        return 0;
+    }
+
+    // Add a new surface material to the library and return its freshly minted
+    // GUID (persisted to a .fmat on save). Entities reference it by that GUID.
+    fitzel::AssetId addMaterial(std::string name, glm::vec3 albedo,
+                                float refl, float rough) {
+        MaterialDef md;
+        md.assetId = fitzel::AssetId::generate();
+        md.name = std::move(name);
+        md.albedo = albedo; md.reflectivity = refl; md.roughness = rough;
+        m_materials.push_back(md);
+        return md.assetId;
+    }
+
 private:
     std::vector<Entity>      m_entities;
     std::vector<MaterialDef> m_materials;
