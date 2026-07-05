@@ -196,6 +196,47 @@ const std::vector<Property>& LiftComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& CameraComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property fov;
+        fov.label = "FOV"; fov.key = "fov"; fov.kind = PropKind::Float;
+        fov.slider = true; fov.min = 20.0f; fov.max = 120.0f; fov.fmt = "%.0f deg";
+        fov.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->fov; };
+        p.push_back(std::move(fov));
+        Property act;
+        act.label = "Active on start"; act.key = "activeOnStart"; act.kind = PropKind::Bool;
+        act.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->activeOnStart; };
+        p.push_back(std::move(act));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& CameraSwitcherComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<CameraSwitcherComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        return p;
+    }();
+    return props;
+}
+
+// Persists the radius (a property) plus the target camera's entity id (a raw
+// reference, not a property, so it needs an explicit save/load like Material).
+void CameraSwitcherComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["target"] = target;
+}
+void CameraSwitcherComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    target = j.value("target", -1);
+}
+
 const std::vector<Property>& PusherComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -332,6 +373,10 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
         components::registerType({"lift", "Lift",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LiftComponent>()); }});
+        components::registerType({"camera", "Camera",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraComponent>()); }});
+        components::registerType({"camera_switcher", "Camera Switcher",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraSwitcherComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

@@ -1583,7 +1583,9 @@ int main(int argc, char** argv) {
 
         glm::vec3 playCamPos{0.0f};
         float     playCamYaw = 0.0f, playCamPitch = 0.0f, playMoveSpeed = 20.0f;
+        float     playCamFov = 60.0f;
         bool      playPrevEdit = false;
+        int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
         auto startPlay = [&] {
             if (playMode) return;
             playMode      = true;
@@ -1593,10 +1595,16 @@ int main(int argc, char** argv) {
             playCamYaw    = camera.yaw();
             playCamPitch  = camera.pitch();
             playMoveSpeed = camera.moveSpeed;
+            playCamFov    = camera.fov();
             playPrevEdit  = entityEditMode;
             entityEditMode = false;
             entitySel      = -1;
             vehicleMode    = false;
+            // Start from the camera marked active-on-start, else the player view.
+            activeCam = -1;
+            for (const Entity& e : entities)
+                if (const auto* cc = e.components.get<CameraComponent>();
+                    cc && cc->activeOnStart) { activeCam = e.id; break; }
             scripts.reset(); // fresh VM: scripts reload, start() runs again
             host.score = 0;
             host.hud.clear();
@@ -1714,6 +1722,7 @@ int main(int argc, char** argv) {
             camera.setYaw(playCamYaw);
             camera.setPitch(playCamPitch);
             camera.moveSpeed = playMoveSpeed;
+            camera.setFov(playCamFov);
             entityEditMode = playPrevEdit;
             entitySel = -1;
         };
@@ -2279,6 +2288,12 @@ int main(int argc, char** argv) {
                                     physics->setKinematicTarget(lf->bodyId, e.localCenter, q, dt);
                             }
                         }
+                        // CameraSwitcher: entering the zone makes `target` the
+                        // active camera (-1 = back to the player view).
+                        if (auto* cs = e.components.get<CameraSwitcherComponent>()) {
+                            if (glm::distance(playerC, e.center) <= cs->radius)
+                                activeCam = cs->target;
+                        }
                     }
                 }
 
@@ -2394,6 +2409,24 @@ int main(int argc, char** argv) {
                 for (int kc : keyQ)  keyPrev[kc]  = input.isKeyDown(kc) ? 1 : 0;
                 for (int b  : mouseQ) mousePrev[b] = input.isMouseButtonDown(b) ? 1 : 0;
                 keyQ.clear(); mouseQ.clear();
+
+                // Active camera: render the view from the chosen Camera entity
+                // (overriding the player camera). Done after control so this frame
+                // renders from it; player motion becomes relative to this view.
+                const Entity* ce = activeCam >= 0 ? document.find(activeCam) : nullptr;
+                const CameraComponent* cc = ce ? ce->components.get<CameraComponent>()
+                                               : nullptr;
+                if (cc) {
+                    const glm::vec3 fwd = glm::normalize(
+                        glm::quat(glm::radians(ce->rotation)) * glm::vec3(0, 0, -1));
+                    camera.setPosition(ce->center);
+                    camera.setYaw(glm::degrees(std::atan2(fwd.z, fwd.x)));
+                    camera.setPitch(glm::degrees(std::asin(glm::clamp(fwd.y, -1.0f, 1.0f))));
+                    camera.setFov(cc->fov);
+                } else {
+                    activeCam = -1;                 // target vanished -> player view
+                    camera.setFov(playCamFov);      // restore the player FOV
+                }
             }
 
             // --- UI ------------------------------------------------------
@@ -2870,7 +2903,7 @@ int main(int argc, char** argv) {
                         gz.dl = dl; gz.vp = vp; gz.org = rmin;
                         gz.vw = static_cast<float>(viewW); gz.vh = static_cast<float>(viewH);
                         for (const auto& comp : b.components.items)
-                            comp->onGizmo(gz, b.center);
+                            comp->onGizmo(gz, b.center, glm::quat(glm::radians(b.rotation)));
                     }
 
                     // Click to select/place, but not while grabbing the gizmo.
@@ -3472,6 +3505,21 @@ int main(int argc, char** argv) {
                                 for (const Property& pr : tr->props())
                                     if (pr.key != "sound") drawProperty(pr, tr);
                                 soundPickerCombo("Sound", tr->sound);
+                            } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
+                                // Radius from metadata; Target is a picker over the
+                                // scene's Camera entities (plus the player view).
+                                for (const Property& pr : cs->props()) drawProperty(pr, cs);
+                                const Entity* cur = document.find(cs->target);
+                                const std::string label = cur ? cur->name : "(Player view)";
+                                if (ImGui::BeginCombo("Target", label.c_str())) {
+                                    if (ImGui::Selectable("(Player view)", cs->target < 0))
+                                        cs->target = -1;
+                                    for (const Entity& ce : entities)
+                                        if (ce.components.get<CameraComponent>())
+                                            if (ImGui::Selectable(ce.name.c_str(), cs->target == ce.id))
+                                                cs->target = ce.id;
+                                    ImGui::EndCombo();
+                                }
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json_fwd.hpp>
 
 #include <fitzel/asset/AssetId.hpp>
@@ -54,9 +55,10 @@ public:
     virtual void load(const nlohmann::json& j);
 
     // Optional viewport gizmo, drawn for the selected entity while authoring.
-    // `worldCenter` is the entity's derived world position. Default: nothing --
-    // a component that wants a visual (a radius, a path) overrides this.
-    virtual void onGizmo(GizmoDraw& g, const glm::vec3& worldCenter) const {}
+    // `worldCenter`/`worldRot` are the entity's derived world transform (rot lets
+    // oriented gizmos like a camera frustum point the right way). Default: nothing.
+    virtual void onGizmo(GizmoDraw& g, const glm::vec3& worldCenter,
+                         const glm::quat& worldRot) const {}
 };
 
 // Holds an entity's components with value semantics: copying deep-clones, so an
@@ -141,7 +143,7 @@ public:
     const char* displayName() const override { return "Collectible"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, radius, {1.0f, 0.85f, 0.2f, 0.9f}); // gold pickup radius
     }
 };
@@ -170,7 +172,7 @@ public:
     const char* displayName() const override { return "Trigger"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, radius, {0.3f, 0.8f, 1.0f, 0.9f}); // cyan activation zone
     }
 };
@@ -198,7 +200,7 @@ public:
     const char* displayName() const override { return "Mover"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         // Travel path from the start to the far end, with a ring at the target.
         const glm::vec4 col{0.4f, 1.0f, 0.55f, 0.9f};
         g.line(c, c + offset, col);
@@ -229,7 +231,7 @@ public:
     const char* displayName() const override { return "Spawner"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, 0.5f, {1.0f, 0.5f, 0.9f, 0.9f}); // emit point
     }
 };
@@ -261,7 +263,7 @@ public:
     const char* displayName() const override { return "Lift"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, radius, {0.5f, 0.7f, 1.0f, 0.8f});      // call zone
         g.line(c, c + offset, {0.6f, 0.85f, 1.0f, 1.0f});   // travel to the top
         g.sphere(c + offset, 0.25f, {0.6f, 0.85f, 1.0f, 0.9f});
@@ -291,7 +293,7 @@ public:
     const char* displayName() const override { return "Pusher"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, radius, {1.0f, 0.4f, 0.3f, 0.8f}); // affect zone
         const float len = glm::length(direction);
         if (len > 1e-4f) {
@@ -299,6 +301,63 @@ public:
             g.line(c, tip, {1.0f, 0.7f, 0.2f, 1.0f});   // push direction
             g.sphere(tip, 0.2f, {1.0f, 0.7f, 0.2f, 0.9f});
         }
+    }
+};
+
+// --- Built-in component: Camera (a viewpoint you can switch to in Play) --------
+// Attach to an entity to make it a camera: in Play the view can render from its
+// position + orientation at this `fov`. `activeOnStart` makes it the initial view
+// when Play begins (otherwise the player camera). Switch between cameras at
+// runtime with CameraSwitcher. The gizmo draws a frustum so you can aim it.
+class CameraComponent : public ComponentBase {
+public:
+    float fov           = 60.0f; // vertical field of view (degrees)
+    bool  activeOnStart = false; // this camera is the view when Play starts
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<CameraComponent>(*this);
+    }
+    const char* typeId() const override { return "camera"; }
+    const char* displayName() const override { return "Camera"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        const glm::vec3 fwd = rot * glm::vec3(0.0f, 0.0f, -1.0f);
+        const glm::vec3 up  = rot * glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 rt  = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+        const float D = 2.0f;                                   // frustum depth
+        const float h = D * glm::tan(glm::radians(fov) * 0.5f); // half height at D
+        const float w = h * 1.5f;                               // ~16:9-ish
+        const glm::vec3 ctr = c + fwd * D;
+        const glm::vec4 col{0.5f, 0.85f, 1.0f, 0.95f};
+        const glm::vec3 a = ctr + up * h + rt * w, b = ctr + up * h - rt * w;
+        const glm::vec3 d = ctr - up * h - rt * w, e = ctr - up * h + rt * w;
+        g.line(c, a, col); g.line(c, b, col); g.line(c, d, col); g.line(c, e, col);
+        g.line(a, b, col); g.line(b, d, col); g.line(d, e, col); g.line(e, a, col);
+    }
+};
+
+// --- Built-in component: CameraSwitcher (switch the active camera in Play) -----
+// A zone that, when the player enters `radius`, makes `target` the active camera
+// (a Camera entity's id, or -1 for the normal player view). Place several along a
+// path for cinematic cuts, no code. The target is picked in the inspector from
+// the scene's cameras; it serializes itself (an entity id, not a plain property).
+class CameraSwitcherComponent : public ComponentBase {
+public:
+    int   target = -1;    // entity id of the Camera to switch to (-1 = player view)
+    float radius = 2.5f;  // player within this range triggers the switch
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<CameraSwitcherComponent>(*this);
+    }
+    const char* typeId() const override { return "camera_switcher"; }
+    const char* displayName() const override { return "Camera Switcher"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        g.sphere(c, radius, {0.7f, 0.6f, 1.0f, 0.85f}); // switch zone
     }
 };
 
@@ -334,7 +393,7 @@ public:
     const char* displayName() const override { return "Light"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, range, {color.r, color.g, color.b, 0.5f}); // reach of the light
     }
 };
