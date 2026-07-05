@@ -39,6 +39,7 @@
 #include "Command.hpp"
 #include "PropertyMeta.hpp"
 #include "Primitives.hpp"
+#include "ModelLibrary.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
@@ -831,80 +832,9 @@ int main(int argc, char** argv) {
             return 0;
         };
 
-        // Imported glTF/GLB models (behind unique_ptr for stable addresses).
-        std::vector<std::unique_ptr<LoadedModel>> loadedModels;
-        int modelCounter = 0;
-        auto loadedModelById = [&](int id) -> LoadedModel* {
-            for (auto& lm : loadedModels) if (lm->id == id) return lm.get();
-            return nullptr;
-        };
-        // Load a model file into the registry and return its id (-1 on failure).
-        // Reuses an already-loaded model with the same path.
-        auto importModel = [&](const std::string& path) -> int {
-            for (auto& lm : loadedModels) if (lm->path == path) return lm->id;
-            // Resolve through the asset database: assigns the file a GUID and
-            // caches the decoded CPU mesh so re-imports (e.g. across scene loads)
-            // reuse the parse instead of re-reading the glTF from disk.
-            std::shared_ptr<ModelData> mdPtr = assetDb.loadModelData(path);
-            if (!mdPtr || mdPtr->empty()) {
-                std::fprintf(stderr, "Model import failed: %s\n", path.c_str());
-                return -1;
-            }
-            const ModelData& md = *mdPtr;
-            auto lm = std::make_unique<LoadedModel>();
-            lm->id      = modelCounter++;
-            lm->assetId = assetDb.idForPath(path); // stable GUID for save/load
-            lm->path    = path;
-            lm->name    = std::filesystem::path(path).stem().string();
-            lm->meshes.reserve(md.primitives.size());
-            lm->primMaterialId.reserve(md.primitives.size());
-            glm::vec3 lo(1e30f), hi(-1e30f);
-            int primIdx = 0;
-            for (const ModelPrimitive& p : md.primitives) {
-                std::vector<Vertex> verts;
-                verts.reserve(p.vertexCount());
-                for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
-                    const glm::vec3 pos(p.vertices[i], p.vertices[i + 1], p.vertices[i + 2]);
-                    lo = glm::min(lo, pos); hi = glm::max(hi, pos);
-                    lm->hullPoints.push_back(pos); // for the physics convex hull
-                    verts.push_back({pos,
-                        {p.vertices[i + 3], p.vertices[i + 4], p.vertices[i + 5]},
-                        {p.vertices[i + 6], p.vertices[i + 7]}});
-                }
-                lm->meshes.push_back(Mesh::create(verts));
-                // Register this glTF material as a library material so it shows up
-                // (and is editable) in the Materials panel.
-                MaterialDef def;
-                def.assetId   = AssetId::generate(); // ephemeral (recreated on import)
-                def.fromModel = true;
-                def.name      = lm->name + ":" + (p.materialName.empty()
-                                    ? std::to_string(primIdx) : p.materialName);
-                def.albedo    = glm::vec3(p.baseColor[0], p.baseColor[1], p.baseColor[2]);
-                if (!p.texPixels.empty())
-                    def.tex = std::make_shared<Texture>(Texture::fromPixels(
-                        p.texPixels.data(), p.texWidth, p.texHeight, 4));
-                const AssetId matId = def.assetId;
-                materials.push_back(std::move(def));
-                lm->primMaterialId.push_back(matId);
-                ++primIdx;
-            }
-            if (md.primitives.empty()) { lo = hi = glm::vec3(0.0f); }
-            lm->boundsMin = lo; lm->boundsMax = hi;
-            // Cap the physics hull cloud so convex-hull build stays cheap on big
-            // models; keep the AABB corners so it still spans the full extent.
-            if (lm->hullPoints.size() > 2048) {
-                const std::size_t stride = lm->hullPoints.size() / 2048 + 1;
-                std::vector<glm::vec3> reduced;
-                reduced.reserve(2048 + 2);
-                for (std::size_t i = 0; i < lm->hullPoints.size(); i += stride)
-                    reduced.push_back(lm->hullPoints[i]);
-                reduced.push_back(lo); reduced.push_back(hi);
-                lm->hullPoints = std::move(reduced);
-            }
-            const int id = lm->id;
-            loadedModels.push_back(std::move(lm));
-            return id;
-        };
+        // Imported glTF/GLB models, uploaded to the GPU (see ModelLibrary). main
+        // owns one registry and threads it in where models are placed/drawn.
+        ModelLibrary models;
         // The scene always has exactly one Sun (directional light), non-deletable.
         {
             Entity sun;
@@ -954,7 +884,7 @@ int main(int argc, char** argv) {
         };
         // Place an imported model as a Model entity sitting on the terrain.
         auto addModelEntity = [&](glm::vec3 groundPos, int modelId) {
-            LoadedModel* lm = loadedModelById(modelId);
+            LoadedModel* lm = models.byId(modelId);
             if (!lm) return;
             Entity nb;
             nb.type       = EntityType::Model;
@@ -986,9 +916,9 @@ int main(int argc, char** argv) {
             recentProjects, prefsPath, exportStatus,
             assetDb, contentRoot, modelDir,
             [&]{ seedDefaultMaterials(); },
-            [&](const std::string& p){ return importModel(p); },
-            [&](int id){ return loadedModelById(id); },
-            [&]{ loadedModels.clear(); },
+            [&](const std::string& p){ return models.import(p, assetDb, materials); },
+            [&](int id){ return models.byId(id); },
+            [&]{ models.clear(); },
             writeSettingsFn, readSettingsFn,
         };
         projectio::loadPrefs(pio);
@@ -1717,7 +1647,7 @@ int main(int argc, char** argv) {
                         // Convex hull of the model's vertices (centred + scaled to
                         // match the render), falling back to the AABB box.
                         const auto* mdl = e.components.get<ModelComponent>();
-                        LoadedModel* lm = mdl ? loadedModelById(mdl->modelId) : nullptr;
+                        LoadedModel* lm = mdl ? models.byId(mdl->modelId) : nullptr;
                         if (lm && lm->hullPoints.size() >= 4) {
                             const glm::vec3 c = lm->center();
                             std::vector<glm::vec3> pts;
@@ -2569,8 +2499,8 @@ int main(int argc, char** argv) {
                                 camera.projectionMatrix(asp) * camera.viewMatrix();
                             glm::vec3 hit;
                             if (roadPickTerrain(viewportMouseNdc, vp, hit)) {
-                                const int id =
-                                    importModel(assetDb.pathForId(gid).string());
+                                const int id = models.import(
+                                    assetDb.pathForId(gid).string(), assetDb, materials);
                                 if (id >= 0) addModelEntity(hit, id);
                             }
                         }
@@ -3236,7 +3166,7 @@ int main(int argc, char** argv) {
                     } else {
                         // --- Bespoke fields (enumerate project state) ------------
                         if (auto* mdl = b.components.get<ModelComponent>()) {
-                            LoadedModel* lm = loadedModelById(mdl->modelId);
+                            LoadedModel* lm = models.byId(mdl->modelId);
                             ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");
                         }
                         ImGui::Text("Parent: %s",
@@ -3314,7 +3244,7 @@ int main(int argc, char** argv) {
                             } else if (auto* mdl = dynamic_cast<ModelComponent*>(c)) {
                                 // Scale drives the pick box (half) for the model.
                                 if (ImGui::SliderFloat("Scale", &mdl->scale, 0.05f, 20.0f, "%.2f"))
-                                    if (LoadedModel* lm = loadedModelById(mdl->modelId))
+                                    if (LoadedModel* lm = models.byId(mdl->modelId))
                                         be.half = modelHalf(*lm, mdl->scale);
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
@@ -3473,7 +3403,7 @@ int main(int argc, char** argv) {
                     ImGui::BeginDisabled(modelFile.empty());
                     if (ImGui::Button("Import to scene")) {
                         const std::string path = modelDir + "/" + modelFile;
-                        const int id = importModel(path);
+                        const int id = models.import(path, assetDb, materials);
                         if (id >= 0) {
                             const glm::vec3 p = camera.position() + camera.front() * 8.0f;
                             addModelEntity(
@@ -3482,7 +3412,7 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndDisabled();
                     ImGui::TextDisabled("%d model(s) loaded.",
-                                        static_cast<int>(loadedModels.size()));
+                                        static_cast<int>(models.size()));
                 }
                 ImGui::End();
             }
@@ -3525,7 +3455,8 @@ int main(int argc, char** argv) {
                             if (e->type == AssetType::Model &&
                                 ImGui::IsItemHovered() &&
                                 ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                                const int id2 = importModel(e->absPath.string());
+                                const int id2 = models.import(
+                                    e->absPath.string(), assetDb, materials);
                                 if (id2 >= 0) {
                                     const glm::vec3 p =
                                         camera.position() + camera.front() * 8.0f;
@@ -3804,7 +3735,7 @@ int main(int argc, char** argv) {
                     // Centre the model's AABB at b.center (so it matches the pick
                     // box), then translate/scale into the world.
                     const auto* mdl = b.components.get<ModelComponent>();
-                    LoadedModel* lm = mdl ? loadedModelById(mdl->modelId) : nullptr;
+                    LoadedModel* lm = mdl ? models.byId(mdl->modelId) : nullptr;
                     if (!lm) continue;
                     // Derive the scale from the entity's AABB half-extents so the
                     // model fills center +/- half exactly: this makes the Scale
