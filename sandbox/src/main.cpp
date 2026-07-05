@@ -924,9 +924,14 @@ int main(int argc, char** argv) {
                 glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             if (type == EntityType::Light)
                 nb.components.items.push_back(std::make_unique<LightComponent>());
-            if (!materials.empty())
-                nb.material = materials[glm::clamp(matSel, 0,
-                                  static_cast<int>(materials.size()) - 1)].assetId;
+            const bool solid = type == EntityType::Box || type == EntityType::Ramp ||
+                               type == EntityType::Cylinder || type == EntityType::Sphere;
+            if (solid && !materials.empty()) {
+                auto mc = std::make_unique<MaterialComponent>();
+                mc->material = materials[glm::clamp(matSel, 0,
+                                   static_cast<int>(materials.size()) - 1)].assetId;
+                nb.components.items.push_back(std::move(mc));
+            }
             nb.id     = entityCounter++;
             nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
             history.push(std::make_unique<AddEntityCmd>(nb), document);
@@ -3234,22 +3239,6 @@ int main(int argc, char** argv) {
                         if (b.type == EntityType::Model) {
                             LoadedModel* lm = loadedModelById(b.modelId);
                             ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");
-                        } else if (b.type != EntityType::Light) {
-                            // Assign a library material to this solid.
-                            int mi = materialIndexByAsset(b.material);
-                            if (ImGui::BeginCombo("Material", materials[mi].name.c_str())) {
-                                for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
-                                    const bool sel = (i == mi);
-                                    if (ImGui::Selectable(materials[i].name.c_str(), sel)) {
-                                        b.material = materials[i].assetId;
-                                        matSel = i;
-                                    }
-                                    if (sel) ImGui::SetItemDefaultFocus();
-                                }
-                                ImGui::EndCombo();
-                            }
-                            ImGui::SameLine();
-                            if (ImGui::SmallButton("Edit##mat")) { matSel = mi; showMaterials = true; }
                         }
                         ImGui::Text("Parent: %s",
                                     b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
@@ -3307,6 +3296,22 @@ int main(int argc, char** argv) {
                                 else if (!scripts.lastError().empty())
                                     ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
                                                        "Script error: %s", scripts.lastError().c_str());
+                            } else if (auto* mc = dynamic_cast<MaterialComponent*>(c)) {
+                                // Bespoke picker: pick from the material library.
+                                const int mi = materialIndexByAsset(mc->material);
+                                if (ImGui::BeginCombo("Material", materials[mi].name.c_str())) {
+                                    for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
+                                        const bool sel = (i == mi);
+                                        if (ImGui::Selectable(materials[i].name.c_str(), sel)) {
+                                            mc->material = materials[i].assetId;
+                                            matSel = i;
+                                        }
+                                        if (sel) ImGui::SetItemDefaultFocus();
+                                    }
+                                    ImGui::EndCombo();
+                                }
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Edit##mat")) { matSel = mi; showMaterials = true; }
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
@@ -3373,7 +3378,9 @@ int main(int argc, char** argv) {
                         materials.erase(materials.begin() + matSel);
                         // Meshes that used it fall back to the first material.
                         for (Entity& e : entities)
-                            if (e.material == removedId) e.material = materials[0].assetId;
+                            if (auto* mc = e.components.get<MaterialComponent>();
+                                mc && mc->material == removedId)
+                                mc->material = materials[0].assetId;
                         matSel = glm::clamp(matSel, 0,
                                             static_cast<int>(materials.size()) - 1);
                     }
@@ -3827,7 +3834,8 @@ int main(int argc, char** argv) {
                 } else {
                     // Assigned library material; reflective solids are excluded
                     // from the env probe so they don't reflect their own interior.
-                    const int mi = materialIndexByAsset(b.material);
+                    const auto* mc = b.components.get<MaterialComponent>();
+                    const int mi = materialIndexByAsset(mc ? mc->material : AssetId{});
                     renderer.submit(mesh, gpuMats[mi], m, true,
                                     materials[mi].reflectivity > 0.0f);
                 }
@@ -3969,8 +3977,9 @@ int main(int argc, char** argv) {
             glm::vec3 probePos(0.0f);
             bool hasReflective = false;
             for (const Entity& b : entities) {
-                if (b.type != EntityType::Light && b.type != EntityType::Sun &&
-                    materials[materialIndexByAsset(b.material)].reflectivity > 0.0f) {
+                const auto* mc = b.components.get<MaterialComponent>();
+                if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
+                    materials[materialIndexByAsset(mc->material)].reflectivity > 0.0f) {
                     probePos = b.center;
                     hasReflective = true;
                     break;

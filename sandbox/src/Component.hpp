@@ -6,6 +6,9 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <nlohmann/json_fwd.hpp>
+
+#include <fitzel/asset/AssetId.hpp>
 
 #include "Property.hpp"
 
@@ -25,6 +28,11 @@ public:
     virtual const char* typeId() const = 0;       // stable id (serialization + registry)
     virtual const char* displayName() const = 0;  // label in the inspector
     virtual const std::vector<Property>& props() const = 0; // field metadata over *this
+
+    // JSON (de)serialization. The default drives it from props() (the common
+    // case); components with non-property data (e.g. an asset reference) override.
+    virtual void save(nlohmann::json& j) const;
+    virtual void load(const nlohmann::json& j);
 };
 
 // Holds an entity's components with value semantics: copying deep-clones, so an
@@ -122,6 +130,25 @@ public:
     const char* displayName() const override { return "Light"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Material (assigns a library material to a solid) -----
+// Holds an asset GUID (not a plain property), so it serializes itself; the
+// inspector renders a bespoke material picker. Absent -> the default material.
+class MaterialComponent : public ComponentBase {
+public:
+    fitzel::AssetId material;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<MaterialComponent>(*this);
+    }
+    const char* typeId() const override { return "material"; }
+    const char* displayName() const override { return "Material"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> none; return none;
+    }
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
 };
 
 // --- Built-in component: Physics (gives an entity a rigid-body collider) ------

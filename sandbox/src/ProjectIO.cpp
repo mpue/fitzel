@@ -128,8 +128,7 @@ void saveScene(const Context& ctx, const std::string& path) {
         // Simple fields (transform, colour, physics, light params, name) come
         // straight from the property table -- one declaration drives save + UI.
         writeEntityProps(e, b);
-        // Bespoke references the table can't own.
-        if (b.material.valid()) e["material"] = b.material.toString();
+        // Bespoke references the table can't own (material lives in a component).
         e["id"]     = b.id;
         e["parent"] = b.parent;
         if (b.type == EntityType::Model) {
@@ -145,7 +144,7 @@ void saveScene(const Context& ctx, const std::string& path) {
             for (const auto& c : b.components.items) {
                 nlohmann::json cj;
                 cj["type"] = c->typeId();
-                writeProps(cj, c->props(), c.get());
+                c->save(cj);
                 comps.push_back(std::move(cj));
             }
             e["components"] = std::move(comps);
@@ -249,14 +248,6 @@ bool loadScene(Context& ctx, const std::string& path) {
             // Bespoke references.
             b.id     = e.value("id", 0);
             b.parent = e.value("parent", -1);
-            if (e.contains("material"))
-                b.material = AssetId::fromString(e["material"].get<std::string>());
-            else if (e.contains("materialId")) {
-                auto it = legacyMat.find(e["materialId"].get<int>());
-                if (it != legacyMat.end()) b.material = it->second;
-            }
-            if (!b.material.valid() && !ctx.materials.empty())
-                b.material = ctx.materials[0].assetId;
             if (b.type == EntityType::Model) {
                 std::string mp;
                 if (e.contains("model")) {
@@ -276,7 +267,7 @@ bool loadScene(Context& ctx, const std::string& path) {
                 for (const auto& cj : e["components"]) {
                     const std::string ct = cj.value("type", std::string{});
                     if (auto comp = components::create(ct)) {
-                        readProps(cj, comp->props(), comp.get());
+                        comp->load(cj);
                         b.components.items.push_back(std::move(comp));
                     }
                 }
@@ -324,8 +315,7 @@ bool loadScene(Context& ctx, const std::string& path) {
             (void)cast; (void)scriptTok; // castShadows / script no longer stored here
             std::getline(ss, b.name);
             if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
-            if (auto it = legacyMat.find(oldMat); it != legacyMat.end())
-                b.material = it->second;
+            (void)oldMat; // legacy text material no longer stored on the entity
             if (b.type == EntityType::Model && modelTok != "-") {
                 b.modelPath = ctx.modelDir + "/" + modelTok;
                 b.modelId   = ctx.importModel(b.modelPath);
@@ -335,9 +325,6 @@ bool loadScene(Context& ctx, const std::string& path) {
         }
         if (ctx.materials.empty()) ctx.seedDefaultMaterials();
         ctx.matSel = 0;
-        for (Entity& b : ctx.entities)
-            if (!b.material.valid() && !ctx.materials.empty())
-                b.material = ctx.materials[0].assetId;
     }
 
     ctx.entityCounter = maxId + 1;

@@ -21,16 +21,27 @@ std::unique_ptr<ComponentBase> create(const std::string& typeId) {
 
 } // namespace components
 
+void ComponentBase::save(nlohmann::json& j) const { writeProps(j, props(), this); }
+void ComponentBase::load(const nlohmann::json& j) { readProps(j, props(), this); }
+
+void MaterialComponent::save(nlohmann::json& j) const {
+    if (material.valid()) j["material"] = material.toString();
+}
+void MaterialComponent::load(const nlohmann::json& j) {
+    if (j.contains("material") && j["material"].is_string())
+        material = fitzel::AssetId::fromString(j["material"].get<std::string>());
+}
+
 bool componentsEqual(const ComponentList& a, const ComponentList& b) {
     if (a.items.size() != b.items.size()) return false;
     for (std::size_t i = 0; i < a.items.size(); ++i) {
         const ComponentBase* ca = a.items[i].get();
         const ComponentBase* cb = b.items[i].get();
         if (std::string(ca->typeId()) != cb->typeId()) return false;
-        // Value-compare by serializing each component's fields.
+        // Value-compare by serializing each component.
         nlohmann::json ja, jb;
-        writeProps(ja, ca->props(), ca);
-        writeProps(jb, cb->props(), cb);
+        ca->save(ja);
+        cb->save(jb);
         if (ja != jb) return false;
     }
     return true;
@@ -158,6 +169,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
+        components::registerType({"material", "Material",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<MaterialComponent>()); }});
         components::registerType({"physics", "Physics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
         components::registerType({"player_start", "Player Start",

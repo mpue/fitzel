@@ -38,9 +38,8 @@ struct Entity {
     glm::vec3   center;
     glm::vec3   half{1.0f};                  // half-extents (Ramp rises along +Z)
     glm::vec3   rotation{0.0f};              // Euler angles in degrees (gizmo)
-    // Light look (colour/intensity/range/shadows) lives in LightComponent;
-    // the Sun's in SunComponent -- see Component.hpp.
-    fitzel::AssetId material;                 // solids: assigned MaterialDef (by GUID)
+    // Light look -> LightComponent, sun -> SunComponent, physics -> Physics-
+    // Component, the assigned material -> MaterialComponent (see Component.hpp).
     int         modelId   = -1;              // Model only: LoadedModel id
     float       scale     = 1.0f;            // Model only: uniform scale
     std::string modelPath;                   // Model only: source file (for reload)
