@@ -159,6 +159,26 @@ PhysicsBodyId PhysicsWorld::addCylinder(float radius, float halfHeight,
     return m_impl->create(shape, pos, rot, mass).GetIndexAndSequenceNumber();
 }
 
+PhysicsBodyId PhysicsWorld::addKinematicBox(glm::vec3 half, glm::vec3 pos,
+                                            glm::quat rot) {
+    JPH::ShapeRefC shape = new JPH::BoxShape(toJolt(glm::max(half, glm::vec3(0.02f))));
+    JPH::BodyCreationSettings s(
+        shape, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
+        JPH::EMotionType::Kinematic, Layers::MOVING);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    JPH::BodyID id = bi.CreateAndAddBody(s, JPH::EActivation::Activate);
+    return id.GetIndexAndSequenceNumber();
+}
+
+void PhysicsWorld::setKinematicTarget(PhysicsBodyId id, glm::vec3 pos,
+                                      glm::quat rot, float dt) {
+    if (dt <= 0.0f) return;
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.MoveKinematic(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot), dt);
+}
+
 PhysicsBodyId PhysicsWorld::addConvexHull(const glm::vec3* points, int count,
                                           glm::vec3 pos, glm::quat rot,
                                           float mass) {

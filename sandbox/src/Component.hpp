@@ -234,6 +234,40 @@ public:
     }
 };
 
+// --- Built-in component: Lift (an elevator called by the player) --------------
+// Data-authored, no scripting: the platform rests at its start (bottom) and
+// rises to start+`offset` (top) at `speed` while the player is within `radius`,
+// then descends when they leave. Unlike Mover (which oscillates on its own), a
+// Lift is called and rests at either end. A kinematic collider (`bodyId`,
+// created lazily on the first tick) follows the platform so it actually carries
+// the player and any crates on it. `home`/`t`/`bodyId` are transient runtime
+// state, cleared when Play stops (scene restored from backup; physics world
+// destroyed). Don't also add a Physics component to a lift.
+class LiftComponent : public ComponentBase {
+public:
+    glm::vec3 offset{0.0f, 4.0f, 0.0f}; // travel from bottom (start) to top
+    float     speed  = 2.0f;            // travel speed (m/s)
+    float     radius = 2.5f;            // player within this range calls the lift
+
+    glm::vec3 home{0.0f};    // runtime: captured bottom position
+    bool      homeSet = false;
+    float     t       = 0.0f; // runtime: 0 bottom .. 1 top
+    unsigned  bodyId  = 0;    // runtime: kinematic collider (PhysicsBodyId; 0 = none)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<LiftComponent>(*this);
+    }
+    const char* typeId() const override { return "lift"; }
+    const char* displayName() const override { return "Lift"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        g.sphere(c, radius, {0.5f, 0.7f, 1.0f, 0.8f});      // call zone
+        g.line(c, c + offset, {0.6f, 0.85f, 1.0f, 1.0f});   // travel to the top
+        g.sphere(c + offset, 0.25f, {0.6f, 0.85f, 1.0f, 0.9f});
+    }
+};
+
 // --- Built-in component: Pusher (a directional force field in Play) -----------
 // Data-authored, no scripting: while playing it pushes every dynamic body within
 // `radius` along `direction`. `continuous` = a steady force each frame (wind,

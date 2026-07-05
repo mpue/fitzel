@@ -31,6 +31,16 @@ public:
     PhysicsBodyId addCylinder(float radius, float halfHeight, glm::vec3 pos,
                               glm::quat rot, float mass);
 
+    // A movable (kinematic) box: it never falls, but setKinematicTarget() drives
+    // it each frame and it carries the character and dynamic bodies resting on it
+    // -- moving platforms, lifts. Lives in the MOVING layer so both collide.
+    PhysicsBodyId addKinematicBox(glm::vec3 halfExtents, glm::vec3 pos, glm::quat rot);
+
+    // Move a kinematic body toward a world transform over `dt`, giving it the
+    // velocity needed to arrive so it pushes/carries whatever rests on it. No-op
+    // on an unknown id or a non-positive dt.
+    void setKinematicTarget(PhysicsBodyId id, glm::vec3 pos, glm::quat rot, float dt);
+
     // Convex-hull collider from a point cloud (>= 4 points) given in the body's
     // local space. Used for ramps (a wedge) and imported models.
     PhysicsBodyId addConvexHull(const glm::vec3* points, int count, glm::vec3 pos,

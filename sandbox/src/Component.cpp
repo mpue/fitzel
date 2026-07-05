@@ -173,6 +173,29 @@ const std::vector<Property>& SpawnerComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& LiftComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property offset;
+        offset.label = "Offset"; offset.key = "offset"; offset.kind = PropKind::Vec3;
+        offset.speed = 0.05f;
+        offset.field = [](void* o) -> void* { return &static_cast<LiftComponent*>(o)->offset; };
+        p.push_back(std::move(offset));
+        Property speed;
+        speed.label = "Speed"; speed.key = "speed"; speed.kind = PropKind::Float;
+        speed.slider = true; speed.min = 0.2f; speed.max = 10.0f; speed.fmt = "%.1f m/s";
+        speed.field = [](void* o) -> void* { return &static_cast<LiftComponent*>(o)->speed; };
+        p.push_back(std::move(speed));
+        Property radius;
+        radius.label = "Call radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 12.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<LiftComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& PusherComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -307,6 +330,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
         components::registerType({"pusher", "Pusher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
+        components::registerType({"lift", "Lift",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<LiftComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

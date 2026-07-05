@@ -2227,6 +2227,28 @@ int main(int argc, char** argv) {
                             }
                             tr->insideLast = inside;
                         }
+                        // Lift: rise while the player is within range, descend when
+                        // they leave, between the start (bottom) and start+offset
+                        // (top) at `speed`. Writes LOCAL position; a kinematic
+                        // collider (created lazily) follows it so it carries the
+                        // player and any crates. (World == local for an unparented
+                        // lift, the normal case.)
+                        if (auto* lf = e.components.get<LiftComponent>()) {
+                            if (!lf->homeSet) { lf->home = e.localCenter; lf->homeSet = true; }
+                            const bool called = glm::distance(playerC, e.center) <= lf->radius;
+                            const float travel = glm::max(glm::length(lf->offset), 0.001f);
+                            lf->t = glm::clamp(
+                                lf->t + (called ? 1.0f : -1.0f) * (lf->speed / travel) * dt,
+                                0.0f, 1.0f);
+                            e.localCenter = lf->home + lf->offset * lf->t;
+                            if (physics) {
+                                const glm::quat q = glm::quat(glm::radians(e.rotation));
+                                if (lf->bodyId == 0)
+                                    lf->bodyId = physics->addKinematicBox(e.half, e.localCenter, q);
+                                else
+                                    physics->setKinematicTarget(lf->bodyId, e.localCenter, q, dt);
+                            }
+                        }
                     }
                 }
 
