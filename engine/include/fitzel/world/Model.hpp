@@ -35,4 +35,9 @@ struct ModelData {
 // Returns an empty ModelData on failure.
 ModelData loadGltf(const std::string& path);
 
+// Load a Collada (.dae) file via assimp: node transforms are baked into the
+// vertices exactly like loadGltf, so it feeds the same static render path.
+// (Skeleton/animation parsing is a later phase.) Empty ModelData on failure.
+ModelData loadCollada(const std::string& path);
+
 } // namespace fitzel

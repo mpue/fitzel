@@ -49,6 +49,7 @@ target_link_libraries(fitzel
         cgltf_dep
         nlohmann_json::nlohmann_json
         Jolt
+        assimp
 )
 
 target_compile_features(fitzel PUBLIC cxx_std_20)

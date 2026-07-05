@@ -38,6 +38,11 @@ const char* sourceKindName(AssetSourceKind k) {
     return k == AssetSourceKind::Project ? "Project" : "Engine";
 }
 
+// Load a model file, routing by extension: .dae -> Collada (assimp), else glTF.
+ModelData loadModelFile(const fs::path& p) {
+    return lowerExt(p) == "dae" ? loadCollada(p.string()) : loadGltf(p.string());
+}
+
 // Canonicalise a path for use as a stable map key / prefix comparison. Tolerates
 // not-yet-existing paths (weakly_canonical) and always uses forward slashes.
 fs::path canonicalPath(const fs::path& p) {
@@ -266,8 +271,8 @@ std::shared_ptr<ModelData> AssetDatabase::loadModelData(AssetId id) {
         if (auto sp = it->second.lock()) return sp;
     }
 
-    auto sp = std::make_shared<ModelData>(loadGltf(e->absPath.string()));
-    if (sp->empty()) return nullptr; // loadGltf already logged
+    auto sp = std::make_shared<ModelData>(loadModelFile(e->absPath));
+    if (sp->empty()) return nullptr; // the loader already logged
     m_modelCache[id] = sp;
     return sp;
 }
@@ -296,7 +301,7 @@ void AssetDatabase::reloadInPlace(const Entry& e) {
         auto it = m_modelCache.find(e.id);
         if (it == m_modelCache.end()) return;
         if (auto sp = it->second.lock()) {
-            ModelData md = loadGltf(e.absPath.string());
+            ModelData md = loadModelFile(e.absPath);
             if (!md.empty()) *sp = std::move(md);
         }
     }

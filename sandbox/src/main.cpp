@@ -3666,7 +3666,7 @@ int main(int argc, char** argv) {
                         std::string ext = e.path().extension().string();
                         for (char& c : ext) c = static_cast<char>(std::tolower(
                             static_cast<unsigned char>(c)));
-                        if (ext == ".glb" || ext == ".gltf")
+                        if (ext == ".glb" || ext == ".gltf" || ext == ".dae")
                             files.push_back(e.path().filename().string());
                     }
                     std::sort(files.begin(), files.end());

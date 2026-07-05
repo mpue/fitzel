@@ -90,6 +90,28 @@ FetchContent_Declare(
     GIT_SHALLOW    ON
 )
 
+# --- assimp: Collada (.dae) import, incl. skeletons + animations ------------
+# Built lean: only the Collada importer, no exporters/tools/tests, static lib,
+# bundled zlib. This is the heavy dependency (long first build) that gives
+# robust .dae parsing with bones and animation clips.
+FetchContent_Declare(
+    assimp
+    GIT_REPOSITORY https://github.com/assimp/assimp.git
+    GIT_TAG        v5.4.3
+    GIT_SHALLOW    ON
+)
+set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_COLLADA_IMPORTER         ON  CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+set(ASSIMP_NO_EXPORT            ON  CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_TESTS         OFF  CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ASSIMP_TOOLS  OFF  CACHE BOOL "" FORCE)
+set(ASSIMP_INSTALL             OFF  CACHE BOOL "" FORCE)
+set(ASSIMP_WARNINGS_AS_ERRORS  OFF  CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_ZLIB          ON   CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_DRACO         OFF  CACHE BOOL "" FORCE)
+set(ASSIMP_INJECT_DEBUG_POSTFIX OFF CACHE BOOL "" FORCE)
+
 # --- Lua 5.4: entity scripting (plain C API, compiled from source) ----------
 FetchContent_Declare(
     lua
@@ -126,7 +148,13 @@ set(ENABLE_ALL_WARNINGS          OFF CACHE BOOL "" FORCE)
 set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF CACHE BOOL "" FORCE)
 
 set(TINYEXR_BUILD_SAMPLE OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json jolt)
+# assimp (and its bundled zlib) predate CMake 4's dropped <3.5 compatibility;
+# allow their older cmake_minimum_required to still configure.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5 CACHE STRING "" FORCE)
+# Build assimp as a static lib with the dynamic MSVC runtime (/MD), matching the
+# rest of the project (Jolt is configured the same way).
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glfw glm glad stb imgui tinyexr miniaudio cgltf lua nlohmann_json jolt assimp)
 
 # ImGuizmo: fetch the sources only (its own CMakeLists would clash with our imgui
 # target), then compile ImGuizmo.cpp into the imgui library below.
