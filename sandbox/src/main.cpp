@@ -2262,6 +2262,36 @@ int main(int argc, char** argv) {
                     ++sw->spawned;
                 }
 
+                // Pusher: shove dynamic bodies in range along `direction` -- a
+                // steady force (continuous) or one impulse on entry. O(n^2) over
+                // entities, fine for editor scenes.
+                if (physics)
+                    for (Entity& e : entities) {
+                        auto* pu = e.components.get<PusherComponent>();
+                        if (!pu) continue;
+                        const float len = glm::length(pu->direction);
+                        const glm::vec3 dir = len > 1e-4f ? pu->direction / len
+                                                          : glm::vec3(0.0f, 1.0f, 0.0f);
+                        for (Entity& t : entities) {
+                            if (t.id == e.id) continue;
+                            const auto* pc = t.components.get<PhysicsComponent>();
+                            if (!pc || !pc->dynamic) continue;
+                            auto bit = physicsBody.find(t.id);
+                            if (bit == physicsBody.end()) continue;
+                            const bool inside = glm::distance(e.center, t.center) <= pu->radius;
+                            if (pu->continuous) {
+                                if (inside)
+                                    physics->applyImpulse(bit->second, dir * pu->strength * dt);
+                            } else {
+                                const bool was = pu->insideBodies.count(t.id) != 0;
+                                if (inside && !was)
+                                    physics->applyImpulse(bit->second, dir * pu->strength);
+                                if (inside) pu->insideBodies.insert(t.id);
+                                else        pu->insideBodies.erase(t.id);
+                            }
+                        }
+                    }
+
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
                 for (int did : pendingDestroy) {

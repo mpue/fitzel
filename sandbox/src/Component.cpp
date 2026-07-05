@@ -173,6 +173,33 @@ const std::vector<Property>& SpawnerComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& PusherComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property dir;
+        dir.label = "Direction"; dir.key = "direction"; dir.kind = PropKind::Vec3;
+        dir.speed = 0.05f;
+        dir.field = [](void* o) -> void* { return &static_cast<PusherComponent*>(o)->direction; };
+        p.push_back(std::move(dir));
+        Property strength;
+        strength.label = "Strength"; strength.key = "strength"; strength.kind = PropKind::Float;
+        strength.slider = true; strength.min = 0.0f; strength.max = 50.0f; strength.fmt = "%.1f";
+        strength.field = [](void* o) -> void* { return &static_cast<PusherComponent*>(o)->strength; };
+        p.push_back(std::move(strength));
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<PusherComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property cont;
+        cont.label = "Continuous"; cont.key = "continuous"; cont.kind = PropKind::Bool;
+        cont.field = [](void* o) -> void* { return &static_cast<PusherComponent*>(o)->continuous; };
+        p.push_back(std::move(cont));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -278,6 +305,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
         components::registerType({"spawner", "Spawner",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
+        components::registerType({"pusher", "Pusher",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

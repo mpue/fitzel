@@ -3,6 +3,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -230,6 +231,40 @@ public:
     static const std::vector<Property>& properties();
     void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
         g.sphere(c, 0.5f, {1.0f, 0.5f, 0.9f, 0.9f}); // emit point
+    }
+};
+
+// --- Built-in component: Pusher (a directional force field in Play) -----------
+// Data-authored, no scripting: while playing it pushes every dynamic body within
+// `radius` along `direction`. `continuous` = a steady force each frame (wind,
+// conveyor); otherwise a single impulse when a body enters the zone (bumper,
+// launch pad). `strength` scales the push. `insideBodies` tracks entry edges for
+// the impulse mode and is transient (reset when Play stops). Pairs nicely with
+// Spawner -- spawn balls, then blow or launch them.
+class PusherComponent : public ComponentBase {
+public:
+    glm::vec3 direction{0.0f, 1.0f, 0.0f}; // push direction (world)
+    float     strength   = 10.0f;          // force / impulse magnitude
+    float     radius     = 3.0f;           // affect dynamic bodies within this range
+    bool      continuous = true;           // steady force vs one impulse on entry
+
+    std::unordered_set<int> insideBodies;  // runtime: bodies inside (impulse edges)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<PusherComponent>(*this);
+    }
+    const char* typeId() const override { return "pusher"; }
+    const char* displayName() const override { return "Pusher"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        g.sphere(c, radius, {1.0f, 0.4f, 0.3f, 0.8f}); // affect zone
+        const float len = glm::length(direction);
+        if (len > 1e-4f) {
+            const glm::vec3 tip = c + (direction / len) * glm::min(radius, 3.0f);
+            g.line(c, tip, {1.0f, 0.7f, 0.2f, 1.0f});   // push direction
+            g.sphere(tip, 0.2f, {1.0f, 0.7f, 0.2f, 0.9f});
+        }
     }
 };
 
