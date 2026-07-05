@@ -145,6 +145,34 @@ const std::vector<Property>& MoverComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& SpawnerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property type;
+        type.label = "Spawns"; type.key = "spawnType"; type.kind = PropKind::EnumInt;
+        type.enumLabels = {"Box", "Ramp", "Cylinder", "Sphere"};
+        type.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->spawnType; };
+        p.push_back(std::move(type));
+        Property interval;
+        interval.label = "Interval"; interval.key = "interval"; interval.kind = PropKind::Float;
+        interval.slider = true; interval.min = 0.1f; interval.max = 10.0f; interval.fmt = "%.2f s";
+        interval.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->interval; };
+        p.push_back(std::move(interval));
+        Property speed;
+        speed.label = "Launch speed"; speed.key = "speed"; speed.kind = PropKind::Float;
+        speed.slider = true; speed.min = 0.0f; speed.max = 30.0f; speed.fmt = "%.1f m/s";
+        speed.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->speed; };
+        p.push_back(std::move(speed));
+        Property maxCount;
+        maxCount.label = "Max count"; maxCount.key = "maxCount"; maxCount.kind = PropKind::Float;
+        maxCount.min = 1.0f; maxCount.max = 200.0f; maxCount.speed = 1.0f; maxCount.fmt = "%.0f";
+        maxCount.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->maxCount; };
+        p.push_back(std::move(maxCount));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -248,6 +276,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerComponent>()); }});
         components::registerType({"mover", "Mover",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
+        components::registerType({"spawner", "Spawner",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

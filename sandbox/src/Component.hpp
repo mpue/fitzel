@@ -12,6 +12,24 @@
 
 #include "Property.hpp"
 
+// A world-space debug-drawing sink for component gizmos. The viewport supplies a
+// concrete implementation (projecting each shape onto the ImGui draw list);
+// components emit only world-space shapes, so Component.cpp/.hpp stay free of any
+// rendering dependency. Colours are RGBA in 0..1.
+struct GizmoDraw {
+    virtual ~GizmoDraw() = default;
+    virtual void line(const glm::vec3& a, const glm::vec3& b, const glm::vec4& col) = 0;
+    // A `radius` circle centred at `c`, in the plane whose normal is `axis`.
+    virtual void circle(const glm::vec3& c, float radius,
+                        const glm::vec3& axis, const glm::vec4& col) = 0;
+    // A 3-ring wire sphere (built from circle()); the common component gizmo.
+    void sphere(const glm::vec3& c, float radius, const glm::vec4& col) {
+        circle(c, radius, {1.0f, 0.0f, 0.0f}, col);
+        circle(c, radius, {0.0f, 1.0f, 0.0f}, col);
+        circle(c, radius, {0.0f, 0.0f, 1.0f}, col);
+    }
+};
+
 // A component is an optional, self-describing capability attached to an entity.
 // It exposes its fields through the same Property metadata as entities, so the
 // auto-inspector and JSON serialization work on it for free. Components are
@@ -33,6 +51,11 @@ public:
     // case); components with non-property data (e.g. an asset reference) override.
     virtual void save(nlohmann::json& j) const;
     virtual void load(const nlohmann::json& j);
+
+    // Optional viewport gizmo, drawn for the selected entity while authoring.
+    // `worldCenter` is the entity's derived world position. Default: nothing --
+    // a component that wants a visual (a radius, a path) overrides this.
+    virtual void onGizmo(GizmoDraw& g, const glm::vec3& worldCenter) const {}
 };
 
 // Holds an entity's components with value semantics: copying deep-clones, so an
@@ -117,6 +140,9 @@ public:
     const char* displayName() const override { return "Collectible"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        g.sphere(c, radius, {1.0f, 0.85f, 0.2f, 0.9f}); // gold pickup radius
+    }
 };
 
 // --- Built-in component: Trigger (a zone that fires an event on entry) --------
@@ -143,6 +169,9 @@ public:
     const char* displayName() const override { return "Trigger"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        g.sphere(c, radius, {0.3f, 0.8f, 1.0f, 0.9f}); // cyan activation zone
+    }
 };
 
 // --- Built-in component: Mover (moves the entity back and forth in Play) -------
@@ -168,6 +197,40 @@ public:
     const char* displayName() const override { return "Mover"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        // Travel path from the start to the far end, with a ring at the target.
+        const glm::vec4 col{0.4f, 1.0f, 0.55f, 0.9f};
+        g.line(c, c + offset, col);
+        g.sphere(c + offset, 0.3f, {col.r, col.g, col.b, 0.7f});
+    }
+};
+
+// --- Built-in component: Spawner (emits entities on a timer in Play) ----------
+// Data-authored, no scripting: while playing it spawns a solid of `spawnType`
+// every `interval` seconds -- just above the spawner -- as a dynamic body with
+// an initial upward `speed`, up to `maxCount` total. Reuses the same deferred
+// spawn path as game.spawn. `timer`/`spawned` are transient and reset when Play
+// stops. A fountain of balls, a wave of crates -- all without code.
+class SpawnerComponent : public ComponentBase {
+public:
+    int   spawnType = 3;      // EntityType to emit (0 Box .. 3 Sphere)
+    float interval  = 1.0f;   // seconds between spawns
+    float speed     = 4.0f;   // initial upward velocity (m/s)
+    float maxCount  = 20.0f;  // stop after this many (whole number)
+
+    float timer   = 0.0f;     // runtime: time since the last spawn
+    int   spawned = 0;        // runtime: how many emitted this Play session
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SpawnerComponent>(*this);
+    }
+    const char* typeId() const override { return "spawner"; }
+    const char* displayName() const override { return "Spawner"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        g.sphere(c, 0.5f, {1.0f, 0.5f, 0.9f, 0.9f}); // emit point
+    }
 };
 
 // --- Built-in component: Script (runs a Lua behaviour while playing) ----------
@@ -202,6 +265,9 @@ public:
     const char* displayName() const override { return "Light"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c) const override {
+        g.sphere(c, range, {color.r, color.g, color.b, 0.5f}); // reach of the light
+    }
 };
 
 // --- Built-in component: Material (assigns a library material to a solid) -----

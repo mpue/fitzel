@@ -2243,6 +2243,25 @@ int main(int argc, char** argv) {
                         e.localCenter = mv->home + mv->offset * s;
                     }
 
+                // Spawner: emit a dynamic solid above itself every `interval`, up
+                // to `maxCount`, through the same deferred spawn queue as scripts.
+                for (Entity& e : entities) {
+                    auto* sw = e.components.get<SpawnerComponent>();
+                    if (!sw || sw->spawned >= static_cast<int>(sw->maxCount)) continue;
+                    sw->timer += dt;
+                    if (sw->timer < glm::max(sw->interval, 0.05f)) continue;
+                    sw->timer = 0.0f;
+                    ScriptSpawn s;
+                    s.type    = sw->spawnType;
+                    s.pos     = e.center + glm::vec3(0.0f, e.half.y + 0.4f, 0.0f);
+                    s.half    = glm::vec3(0.3f);
+                    s.physics = 2; // dynamic
+                    s.vel     = glm::vec3(0.0f, sw->speed, 0.0f);
+                    s.name    = "spawned";
+                    host.spawn(s);
+                    ++sw->spawned;
+                }
+
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
                 for (int did : pendingDestroy) {
@@ -2714,6 +2733,57 @@ int main(int argc, char** argv) {
                             if (ok[e[0]] && ok[e[1]])
                                 dl->AddLine(sp[e[0]], sp[e[1]],
                                             IM_COL32(255, 140, 0, 230), 1.6f);
+
+                        // Component gizmos: each component of the selected entity
+                        // draws its own world-space overlay (a radius, a path).
+                        // Generic -- the viewport only supplies the projection, so
+                        // a new component brings its gizmo with no change here.
+                        struct VpGizmo : GizmoDraw {
+                            ImDrawList* dl; glm::mat4 vp; ImVec2 org; float vw, vh;
+                            bool project(const glm::vec3& w, ImVec2& out) const {
+                                const glm::vec4 c = vp * glm::vec4(w, 1.0f);
+                                if (c.w <= 1e-4f) return false;
+                                const glm::vec3 n = glm::vec3(c) / c.w;
+                                if (n.z > 1.0f) return false;
+                                out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * vw,
+                                             org.y + (1.0f - (n.y * 0.5f + 0.5f)) * vh);
+                                return true;
+                            }
+                            static ImU32 toCol(const glm::vec4& c) {
+                                return IM_COL32(int(c.r * 255.0f), int(c.g * 255.0f),
+                                                int(c.b * 255.0f), int(c.a * 255.0f));
+                            }
+                            void line(const glm::vec3& a, const glm::vec3& b,
+                                      const glm::vec4& c) override {
+                                ImVec2 pa, pb;
+                                if (project(a, pa) && project(b, pb))
+                                    dl->AddLine(pa, pb, toCol(c), 2.0f);
+                            }
+                            void circle(const glm::vec3& ctr, float rad,
+                                        const glm::vec3& axis, const glm::vec4& c) override {
+                                const glm::vec3 n = glm::normalize(axis);
+                                const glm::vec3 up = (std::abs(n.y) < 0.99f)
+                                    ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
+                                const glm::vec3 u = glm::normalize(glm::cross(n, up));
+                                const glm::vec3 v = glm::cross(n, u);
+                                const int SEG = 40;
+                                ImVec2 prev; bool have = false;
+                                for (int i = 0; i <= SEG; ++i) {
+                                    const float a = 6.2831853f * i / SEG;
+                                    ImVec2 s2;
+                                    if (!project(ctr + (u * std::cos(a) + v * std::sin(a)) * rad, s2)) {
+                                        have = false; continue;
+                                    }
+                                    if (have) dl->AddLine(prev, s2, toCol(c), 1.5f);
+                                    prev = s2; have = true;
+                                }
+                            }
+                        };
+                        VpGizmo gz;
+                        gz.dl = dl; gz.vp = vp; gz.org = rmin;
+                        gz.vw = static_cast<float>(viewW); gz.vh = static_cast<float>(viewH);
+                        for (const auto& comp : b.components.items)
+                            comp->onGizmo(gz, b.center);
                     }
 
                     // Click to select/place, but not while grabbing the gizmo.
