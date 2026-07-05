@@ -756,7 +756,6 @@ int main(int argc, char** argv) {
         int       entitySel      = -1;
         bool      entityEditMode = false;
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
-        glm::vec3 entityNewColor(0.62f, 0.62f, 0.64f);
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
 
@@ -909,11 +908,10 @@ int main(int argc, char** argv) {
         {
             Entity sun;
             sun.type      = EntityType::Sun;
-            sun.color     = glm::vec3(1.0f, 0.97f, 0.9f); // sun colour tint
-            sun.intensity = 1.0f;                          // strength multiplier
             sun.name      = "Sun";
             sun.id        = entityCounter++;
-            entities.push_back(sun);
+            sun.components.items.push_back(std::make_unique<SunComponent>());
+            entities.push_back(std::move(sun));
         }
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
         // Add an entity of the given type, sitting on the terrain at a world point.
@@ -922,7 +920,8 @@ int main(int argc, char** argv) {
             nb.type   = type;
             nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f) : entityNewHalf;
             nb.center = glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
-            nb.color  = (type == EntityType::Light) ? glm::vec3(1.0f, 0.95f, 0.8f) : entityNewColor;
+            if (type == EntityType::Light)
+                nb.components.items.push_back(std::make_unique<LightComponent>());
             if (!materials.empty())
                 nb.material = materials[glm::clamp(matSel, 0,
                                   static_cast<int>(materials.size()) - 1)].assetId;
@@ -1521,7 +1520,6 @@ int main(int argc, char** argv) {
             e.center   = s.pos;
             e.half     = glm::max(s.half, glm::vec3(0.02f));
             e.rotation = s.rot;
-            e.color    = s.color;
             e.mass     = s.mass;
             e.physics  = s.physics;
             e.name     = s.name.empty() ? "spawned" : s.name;
@@ -2101,7 +2099,9 @@ int main(int argc, char** argv) {
             // The Sun entity tints and scales the directional light.
             glm::vec3 sunTint(1.0f); float sunStrength = 1.0f;
             for (const Entity& e : entities)
-                if (e.type == EntityType::Sun) { sunTint = e.color; sunStrength = e.intensity; break; }
+                if (const auto* sc = e.components.get<SunComponent>()) {
+                    sunTint = sc->color; sunStrength = sc->intensity; break;
+                }
             // HDR radiance: the sun is much brighter than 1 so tonemapping
             // produces highlights and contrast instead of a flat look.
             light.color   = sunCol * sunTint * (0.12f + 0.95f * dayF) * 3.4f * lightDim * sunStrength;
@@ -3183,8 +3183,7 @@ int main(int argc, char** argv) {
                     // Components: optional attached capabilities. Each renders from
                     // its own metadata; add/remove is open via the type registry.
                     // (Re-fetch: Delete##insp above may have cleared the selection.)
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
-                        entities[entitySel].type != EntityType::Sun) {
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
                         Entity& be = entities[entitySel];
                         ImGui::SeparatorText("Components");
                         for (std::size_t ci = 0; ci < be.components.items.size(); ++ci) {
@@ -3192,7 +3191,13 @@ int main(int argc, char** argv) {
                             ImGui::PushID(static_cast<int>(ci));
                             ImGui::TextUnformatted(c->displayName());
                             ImGui::SameLine();
+                            // Engine-managed components (Sun) aren't removable.
+                            bool addable = true;
+                            for (const auto& t : components::registry())
+                                if (t.typeId == c->typeId()) { addable = t.addable; break; }
+                            ImGui::BeginDisabled(!addable);
                             const bool remove = ImGui::SmallButton("Remove");
+                            ImGui::EndDisabled();
                             if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
                                 // Bespoke picker: enumerate the project's .lua files.
                                 std::vector<std::string> luaFiles = listScripts();
@@ -3227,7 +3232,7 @@ int main(int argc, char** argv) {
                         if (ImGui::Button("Add Component")) ImGui::OpenPopup("addcomp");
                         if (ImGui::BeginPopup("addcomp")) {
                             for (const components::TypeInfo& t : components::registry())
-                                if (ImGui::Selectable(t.displayName.c_str()))
+                                if (t.addable && ImGui::Selectable(t.displayName.c_str()))
                                     be.components.items.push_back(t.make());
                             ImGui::EndPopup();
                         }
@@ -3254,7 +3259,6 @@ int main(int argc, char** argv) {
                 }
                 ImGui::SeparatorText("New block defaults");
                 ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
-                ImGui::ColorEdit3("New colour", &entityNewColor.x);
                 if (ImGui::Button("Materials...")) showMaterials = true;
                 ImGui::SameLine();
                 if (ImGui::Button("Models...")) showModels = true;
@@ -3721,9 +3725,11 @@ int main(int argc, char** argv) {
                     // Light markers glow (emissive-ish). A marker sits on its own
                     // light position, so it must NOT cast into that light's shadow
                     // cube (it would wrap the light in a caster and go dark).
+                    const auto* lc = b.components.get<LightComponent>();
+                    const glm::vec3 lcol = lc ? lc->color : glm::vec3(1.0f);
                     Material& mat = lightMats.emplace_back(lit);
                     mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
-                       .set("uAlbedo", b.color * 1.5f).set("uReflectivity", 0.0f);
+                       .set("uAlbedo", lcol * 1.5f).set("uReflectivity", 0.0f);
                     renderer.submit(mesh, mat, m, /*castsPointShadow=*/false);
                 } else {
                     // Assigned library material; reflective solids are excluded
@@ -3734,17 +3740,19 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Light entities become real point lights (lit-shader surfaces).
+            // Any entity carrying a LightComponent becomes a real point light --
+            // decoupled from EntityType, so a box can glow too.
             std::vector<PointLight> pointLights;
             for (const Entity& b : entities) {
-                if (b.type != EntityType::Light) continue;
+                const auto* lc = b.components.get<LightComponent>();
+                if (!lc) continue;
                 if (static_cast<int>(pointLights.size()) >= Renderer::kMaxPointLights) break;
                 PointLight pl;
                 pl.position    = b.center;
-                pl.color       = b.color * b.intensity;      // HDR radiance
-                pl.range       = b.range;
-                pl.castShadows = b.castShadows;
-                pl.shadowBias  = b.shadowBias;
+                pl.color       = lc->color * lc->intensity;  // HDR radiance
+                pl.range       = lc->range;
+                pl.castShadows = lc->castShadows;
+                pl.shadowBias  = lc->shadowBias;
                 pointLights.push_back(pl);
             }
             renderer.setPointLights(pointLights);

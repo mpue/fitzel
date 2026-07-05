@@ -311,17 +311,17 @@ bool loadScene(Context& ctx, const std::string& path) {
             Entity b;
             int cast = 0, oldMat = 0;
             std::string modelTok, scriptTok;
+            float dump = 0.0f; // fields dropped in the component migration
             b.type = static_cast<EntityType>(std::stoi(tok));
             ss >> b.center.x >> b.center.y >> b.center.z
                >> b.half.x >> b.half.y >> b.half.z
-               >> b.color.x >> b.color.y >> b.color.z
-               >> b.intensity >> b.range >> b.shadowBias
+               >> dump >> dump >> dump      // color (now LightComponent/material)
+               >> dump >> dump >> dump      // intensity / range / shadowBias
                >> cast >> oldMat >> b.scale
                >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
                >> scriptTok
                >> b.id >> b.parent;
-            b.castShadows = cast != 0;
-            (void)scriptTok; // legacy text scenes: token consumed, no longer stored
+            (void)cast; (void)scriptTok; // castShadows / script no longer stored here
             std::getline(ss, b.name);
             if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
             if (auto it = legacyMat.find(oldMat); it != legacyMat.end())
@@ -341,13 +341,18 @@ bool loadScene(Context& ctx, const std::string& path) {
     }
 
     ctx.entityCounter = maxId + 1;
-    bool hasSun = false;
-    for (const Entity& e : ctx.entities) if (e.type == EntityType::Sun) hasSun = true;
-    if (!hasSun) {
+    // Invariant: exactly one Sun, and it always carries its SunComponent (which
+    // is engine-managed, so it can't be re-added through the UI).
+    Entity* sunE = nullptr;
+    for (Entity& e : ctx.entities)
+        if (e.type == EntityType::Sun) { sunE = &e; break; }
+    if (!sunE) {
         Entity sun;
-        sun.type = EntityType::Sun; sun.color = glm::vec3(1.0f, 0.97f, 0.9f);
-        sun.intensity = 1.0f; sun.name = "Sun"; sun.id = ctx.entityCounter++;
-        ctx.entities.push_back(sun);
+        sun.type = EntityType::Sun; sun.name = "Sun"; sun.id = ctx.entityCounter++;
+        sun.components.items.push_back(std::make_unique<SunComponent>());
+        ctx.entities.push_back(std::move(sun));
+    } else if (!sunE->components.get<SunComponent>()) {
+        sunE->components.items.push_back(std::make_unique<SunComponent>());
     }
     ctx.entitySel = -1;
     return true;
@@ -425,9 +430,9 @@ void newProject(Context& ctx) {
     ctx.matSel = 0;
     ctx.entityCounter = 0;
     Entity sun;
-    sun.type = EntityType::Sun; sun.color = glm::vec3(1.0f, 0.97f, 0.9f);
-    sun.intensity = 1.0f; sun.name = "Sun"; sun.id = ctx.entityCounter++;
-    ctx.entities.push_back(sun);
+    sun.type = EntityType::Sun; sun.name = "Sun"; sun.id = ctx.entityCounter++;
+    sun.components.items.push_back(std::make_unique<SunComponent>());
+    ctx.entities.push_back(std::move(sun));
     ctx.entitySel = -1;
     ctx.currentProject.clear();
     ctx.projNameBuf[0] = '\0';

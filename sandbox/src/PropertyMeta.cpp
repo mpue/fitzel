@@ -70,48 +70,7 @@ const std::vector<Property>& entityProperties() {
         mass.visible = [](const void* o) { return static_cast<const Entity*>(o)->physics == 2; };
         p.push_back(std::move(mass));
 
-        Property lcol;
-        lcol.label = "Light colour"; lcol.key = "color"; lcol.kind = PropKind::Color;
-        lcol.typeMask = bit(E::Light); lcol.field = at(&Entity::color);
-        p.push_back(std::move(lcol));
-
-        Property lint;
-        lint.label = "Intensity"; lint.key = "intensity"; lint.kind = PropKind::Float;
-        lint.typeMask = bit(E::Light); lint.slider = true; lint.min = 0.0f; lint.max = 30.0f;
-        lint.field = at(&Entity::intensity);
-        p.push_back(std::move(lint));
-
-        Property range;
-        range.label = "Range"; range.key = "range"; range.kind = PropKind::Float;
-        range.typeMask = bit(E::Light); range.slider = true;
-        range.min = 0.5f; range.max = 60.0f; range.fmt = "%.1f m";
-        range.field = at(&Entity::range);
-        p.push_back(std::move(range));
-
-        Property shadows;
-        shadows.label = "Cast shadows"; shadows.key = "castShadows";
-        shadows.kind = PropKind::Bool; shadows.typeMask = bit(E::Light);
-        shadows.field = at(&Entity::castShadows);
-        p.push_back(std::move(shadows));
-
-        Property bias;
-        bias.label = "Shadow bias"; bias.key = "shadowBias"; bias.kind = PropKind::Float;
-        bias.typeMask = bit(E::Light); bias.slider = true;
-        bias.min = 0.0f; bias.max = 0.03f; bias.fmt = "%.4f";
-        bias.field = at(&Entity::shadowBias);
-        bias.visible = [](const void* o) { return static_cast<const Entity*>(o)->castShadows; };
-        p.push_back(std::move(bias));
-
-        Property scol;
-        scol.label = "Sun colour"; scol.key = "color"; scol.kind = PropKind::Color;
-        scol.typeMask = bit(E::Sun); scol.field = at(&Entity::color);
-        p.push_back(std::move(scol));
-
-        Property sint;
-        sint.label = "Intensity"; sint.key = "intensity"; sint.kind = PropKind::Float;
-        sint.typeMask = bit(E::Sun); sint.slider = true; sint.min = 0.0f; sint.max = 3.0f;
-        sint.field = at(&Entity::intensity);
-        p.push_back(std::move(sint));
+        // Light/Sun look now lives in LightComponent / SunComponent.
 
         return p;
     }();

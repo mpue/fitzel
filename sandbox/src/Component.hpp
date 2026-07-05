@@ -66,6 +66,7 @@ struct TypeInfo {
     std::string typeId;
     std::string displayName;
     std::function<std::unique_ptr<ComponentBase>()> make;
+    bool addable = true; // shown in the "Add Component" menu (false = engine-managed)
 };
 
 std::vector<TypeInfo>&           registry();
@@ -101,6 +102,40 @@ public:
     }
     const char* typeId() const override { return "script"; }
     const char* displayName() const override { return "Script"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Light (a point light; attach to any entity to glow) --
+class LightComponent : public ComponentBase {
+public:
+    glm::vec3 color{1.0f, 0.95f, 0.8f};
+    float     intensity   = 8.0f;
+    float     range       = 12.0f;
+    bool      castShadows = false;
+    float     shadowBias  = 0.003f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<LightComponent>(*this);
+    }
+    const char* typeId() const override { return "light"; }
+    const char* displayName() const override { return "Light"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Sun (the singleton directional light's look) ---------
+// Engine-managed (auto-attached to the Sun entity), so not in the Add menu.
+class SunComponent : public ComponentBase {
+public:
+    glm::vec3 color{1.0f, 0.97f, 0.9f};
+    float     intensity = 1.0f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SunComponent>(*this);
+    }
+    const char* typeId() const override { return "sun"; }
+    const char* displayName() const override { return "Sun"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
 };

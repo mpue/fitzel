@@ -58,9 +58,7 @@ private:
 inline bool sameEntity(const Entity& a, const Entity& b) {
     return a.id == b.id && a.type == b.type &&
            a.center == b.center && a.half == b.half && a.rotation == b.rotation &&
-           a.color == b.color && a.scale == b.scale &&
-           a.intensity == b.intensity && a.range == b.range &&
-           a.castShadows == b.castShadows && a.shadowBias == b.shadowBias &&
+           a.scale == b.scale &&
            a.physics == b.physics && a.mass == b.mass &&
            a.parent == b.parent && a.name == b.name &&
            a.material == b.material && a.modelId == b.modelId &&

@@ -69,6 +69,54 @@ const std::vector<Property>& ScriptComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& LightComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property col;
+        col.label = "Colour"; col.key = "color"; col.kind = PropKind::Color;
+        col.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->color; };
+        p.push_back(std::move(col));
+        Property intensity;
+        intensity.label = "Intensity"; intensity.key = "intensity"; intensity.kind = PropKind::Float;
+        intensity.slider = true; intensity.min = 0.0f; intensity.max = 30.0f;
+        intensity.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->intensity; };
+        p.push_back(std::move(intensity));
+        Property range;
+        range.label = "Range"; range.key = "range"; range.kind = PropKind::Float;
+        range.slider = true; range.min = 0.5f; range.max = 60.0f; range.fmt = "%.1f m";
+        range.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->range; };
+        p.push_back(std::move(range));
+        Property shadows;
+        shadows.label = "Cast shadows"; shadows.key = "castShadows"; shadows.kind = PropKind::Bool;
+        shadows.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->castShadows; };
+        p.push_back(std::move(shadows));
+        Property bias;
+        bias.label = "Shadow bias"; bias.key = "shadowBias"; bias.kind = PropKind::Float;
+        bias.slider = true; bias.min = 0.0f; bias.max = 0.03f; bias.fmt = "%.4f";
+        bias.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->shadowBias; };
+        p.push_back(std::move(bias));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& SunComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property col;
+        col.label = "Sun colour"; col.key = "color"; col.kind = PropKind::Color;
+        col.field = [](void* o) -> void* { return &static_cast<SunComponent*>(o)->color; };
+        p.push_back(std::move(col));
+        Property intensity;
+        intensity.label = "Intensity"; intensity.key = "intensity"; intensity.kind = PropKind::Float;
+        intensity.slider = true; intensity.min = 0.0f; intensity.max = 3.0f;
+        intensity.field = [](void* o) -> void* { return &static_cast<SunComponent*>(o)->intensity; };
+        p.push_back(std::move(intensity));
+        return p;
+    }();
+    return props;
+}
+
 namespace {
 // Register built-in component types at startup.
 struct AutoRegister {
@@ -77,6 +125,11 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
+        components::registerType({"light", "Light",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
+        components::registerType({"sun", "Sun",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SunComponent>()); },
+            /*addable=*/false});
     }
 } g_autoRegister;
 } // namespace
