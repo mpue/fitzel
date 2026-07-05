@@ -756,7 +756,7 @@ int main(int argc, char** argv) {
         CommandStack history;
         std::vector<Entity>& entities = document.entities();
         int       entitySel      = -1;
-        bool      entityEditMode = false;
+        bool      entityEditMode = true; // start ready to edit; Esc -> selection
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
@@ -1252,6 +1252,7 @@ int main(int argc, char** argv) {
         bool        prevF    = false;
         bool        prevEsc  = false;
         bool        prevSpace = false;
+        bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
 
         // Undo/redo edge state + gizmo-drag snapshot (a drag is one undoable step).
         bool                prevUndo = false, prevRedo = false;
@@ -1822,9 +1823,27 @@ int main(int argc, char** argv) {
                 } else if (playMode)     { stopPlay(); }
                 else if (vehicleMode)    { vehicleMode = false; }
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
-                // In the plain editor, Esc no longer quits (use File > Exit).
+                // Plain editor: Esc steps back to selection (drop the transform
+                // tool), then a second Esc clears the selection. Never quits.
+                else if (entityEditMode) { entityEditMode = false; }
+                else if (entitySel >= 0) { entitySel = -1; }
             }
             prevEsc = escDown;
+
+            // Transform-tool shortcuts (Blender/Unity-style): Q/W/E pick the gizmo
+            // and (re)enter Edit mode. Only in the plain editor, never while a
+            // camera-fly drag (right mouse) or a text field owns the keys.
+            if (!playMode && !fpsMode && !vehicleMode && !presentMode &&
+                !ImGui::GetIO().WantTextInput &&
+                !input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
+                const bool qd = input.isKeyDown(GLFW_KEY_Q);
+                const bool wd = input.isKeyDown(GLFW_KEY_W);
+                const bool ed = input.isKeyDown(GLFW_KEY_E);
+                if (qd && !prevQkey) { gizmoOp = ImGuizmo::TRANSLATE; entityEditMode = true; }
+                if (wd && !prevWkey) { gizmoOp = ImGuizmo::ROTATE;    entityEditMode = true; }
+                if (ed && !prevEkey) { gizmoOp = ImGuizmo::SCALE;     entityEditMode = true; }
+                prevQkey = qd; prevWkey = wd; prevEkey = ed;
+            } else { prevQkey = prevWkey = prevEkey = false; }
 
             // Undo / redo: Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z. Suppressed while a
             // text field has focus (so typing a name doesn't undo the scene).
@@ -1981,13 +2000,24 @@ int main(int argc, char** argv) {
                 // locked into a drag); the surrounding dock panels keep the mouse.
                 const bool mouseLook = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
                                        && (viewportHovered || presentMode || input.isCursorLocked());
-                if (mouseLook != input.isCursorLocked()) input.setCursorLocked(mouseLook);
+                if (mouseLook != input.isCursorLocked()) {
+                    input.setCursorLocked(mouseLook);
+                    // Ending a look: the OS cursor reappears where it was grabbed,
+                    // which can be over the menu bar -> an accidental click. Drop
+                    // it back in the viewport centre instead.
+                    if (!mouseLook && viewW > 0 && viewH > 0)
+                        glfwSetCursorPos(window.nativeHandle(),
+                                         viewportRectMin.x + viewW * 0.5,
+                                         viewportRectMin.y + viewH * 0.5);
+                }
                 if (mouseLook) {
                     const glm::vec2 d = input.mouseDelta();
                     camera.processMouse(d.x, d.y);
                 }
                 if (viewportHovered || presentMode) camera.processScroll(input.scrollDelta());
-                if (!gui.wantsKeyboard()) {
+                // WASD/QE fly only while looking (right mouse held), so Q/W/E stay
+                // free as the transform-tool shortcuts the rest of the time.
+                if (mouseLook && !gui.wantsKeyboard()) {
                     if (input.isKeyDown(GLFW_KEY_W)) camera.processKeyboard(Camera::Direction::Forward, dt);
                     if (input.isKeyDown(GLFW_KEY_S)) camera.processKeyboard(Camera::Direction::Backward, dt);
                     if (input.isKeyDown(GLFW_KEY_A)) camera.processKeyboard(Camera::Direction::Left, dt);
@@ -2714,23 +2744,26 @@ int main(int argc, char** argv) {
 
                 // --- Solid blocks: click to select an existing box or place a
                 //     new one on the terrain; Del removes the selected block. ----
-                if (entityEditMode) {
+                {   // Viewport interaction: selecting works in both modes; the
+                    // transform gizmo and click-to-place are Edit-mode only.
                     const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     const glm::mat4 view = camera.viewMatrix();
                     const glm::mat4 proj = camera.projectionMatrix(asp);
                     const glm::mat4 vp = proj * view;
 
                     // Transform gizmo for the selected block (move / scale).
-                    ImGuizmo::SetOrthographic(false);
-                    ImGuizmo::SetDrawlist();
-                    ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
-                                                      static_cast<float>(viewH));
-                    // A finished gizmo drag becomes one undoable Transform step.
-                    if (gizmoActive && !ImGuizmo::IsUsing()) {
-                        gizmoActive = false;
-                        auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                            gizmoBefore, snapshotEntities(gizmoIds));
-                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                    if (entityEditMode) {
+                        ImGuizmo::SetOrthographic(false);
+                        ImGuizmo::SetDrawlist();
+                        ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
+                                                          static_cast<float>(viewH));
+                        // A finished gizmo drag becomes one undoable Transform step.
+                        if (gizmoActive && !ImGuizmo::IsUsing()) {
+                            gizmoActive = false;
+                            auto cmd = std::make_unique<ModifyEntitiesCmd>(
+                                gizmoBefore, snapshotEntities(gizmoIds));
+                            if (!cmd->trivial()) history.push(std::move(cmd), document);
+                        }
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
                         entities[entitySel].type != EntityType::Sun) {
@@ -2739,25 +2772,27 @@ int main(int argc, char** argv) {
                         float t[3] = {b.center.x, b.center.y, b.center.z};
                         float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
                         float s[3] = {b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f};
-                        float model[16];
-                        ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
-                        ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                             gizmoOp, ImGuizmo::WORLD, model);
-                        const bool gizmoUsing = ImGuizmo::IsUsing();
-                        if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtree
-                            gizmoActive = true;
-                            gizmoIds    = collectSubtreeIds(selId);
-                            gizmoBefore = snapshotEntities(gizmoIds);
-                        }
-                        if (gizmoUsing) {
-                            ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
-                            b.half = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
-                            // World-space edit -> local (children then follow via
-                            // resolveHierarchy).
-                            const glm::mat4 pw = parentWorldMat(b);
-                            setWorld(b, glm::vec3(t[0], t[1], t[2]),
-                                     glm::vec3(r[0], r[1], r[2]),
-                                     b.parent >= 0 ? &pw : nullptr);
+                        if (entityEditMode) {
+                            float model[16];
+                            ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
+                            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
+                                                 gizmoOp, ImGuizmo::WORLD, model);
+                            const bool gizmoUsing = ImGuizmo::IsUsing();
+                            if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtree
+                                gizmoActive = true;
+                                gizmoIds    = collectSubtreeIds(selId);
+                                gizmoBefore = snapshotEntities(gizmoIds);
+                            }
+                            if (gizmoUsing) {
+                                ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
+                                b.half = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
+                                // World-space edit -> local (children then follow via
+                                // resolveHierarchy).
+                                const glm::mat4 pw = parentWorldMat(b);
+                                setWorld(b, glm::vec3(t[0], t[1], t[2]),
+                                         glm::vec3(r[0], r[1], r[2]),
+                                         b.parent >= 0 ? &pw : nullptr);
+                            }
                         }
 
                         // Orange oriented wireframe around the selected object.
@@ -2854,9 +2889,11 @@ int main(int argc, char** argv) {
                         }
                         if (hit >= 0) {
                             entitySel = hit; // clicked a block -> select it
-                        } else {
-                            glm::vec3 h; // empty ground -> drop a new block there
+                        } else if (entityEditMode) {
+                            glm::vec3 h; // Edit mode: empty ground -> drop a new block
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) addEntity(h, entityNewType);
+                        } else {
+                            entitySel = -1; // Selection mode: empty click clears it
                         }
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
@@ -2903,7 +2940,8 @@ int main(int argc, char** argv) {
                     }
                 }
                 ImGui::SameLine();
-                ImGui::TextDisabled(fpsMode ? "(walk + jump, Esc to exit)" : "(free fly)");
+                ImGui::TextDisabled(fpsMode ? "(walk + jump, Esc to exit)"
+                                            : "(hold right mouse: look + WASD/QE fly)");
                 // Sync from the camera (mouse-look may have changed it), then
                 // apply only when a slider is actually edited.
                 camFov = camera.fov(); camYaw = camera.yaw(); camPitch = camera.pitch();
@@ -3168,11 +3206,11 @@ int main(int argc, char** argv) {
                 ImGui::Checkbox("Edit mode", &entityEditMode);
                 if (entityEditMode)
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "Click ground = add | click block = select | drag gizmo");
+                                       "Click ground = add | click block = select | drag gizmo | Esc = select mode");
                 else
-                    ImGui::TextDisabled("Enable edit mode to place & edit blocks");
+                    ImGui::TextDisabled("Selection: click to select | Q/W/E or Edit mode to transform");
 
-                ImGui::TextDisabled("Gizmo:");
+                ImGui::TextDisabled("Gizmo (Q/W/E):");
                 ImGui::SameLine();
                 if (ImGui::RadioButton("Move", gizmoOp == ImGuizmo::TRANSLATE))
                     gizmoOp = ImGuizmo::TRANSLATE;
