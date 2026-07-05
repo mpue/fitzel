@@ -102,6 +102,49 @@ const std::vector<Property>& CollectibleComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& TriggerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property once;
+        once.label = "Fire once"; once.key = "once"; once.kind = PropKind::Bool;
+        once.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->once; };
+        p.push_back(std::move(once));
+        Property message;
+        message.label = "HUD message"; message.key = "message"; message.kind = PropKind::Text;
+        message.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->message; };
+        p.push_back(std::move(message));
+        Property sound;
+        sound.label = "Sound"; sound.key = "sound"; sound.kind = PropKind::Text;
+        sound.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->sound; };
+        p.push_back(std::move(sound));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& MoverComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property offset;
+        offset.label = "Offset"; offset.key = "offset"; offset.kind = PropKind::Vec3;
+        offset.speed = 0.05f;
+        offset.field = [](void* o) -> void* { return &static_cast<MoverComponent*>(o)->offset; };
+        p.push_back(std::move(offset));
+        Property duration;
+        duration.label = "Duration"; duration.key = "duration"; duration.kind = PropKind::Float;
+        duration.slider = true; duration.min = 0.2f; duration.max = 20.0f; duration.fmt = "%.1f s";
+        duration.field = [](void* o) -> void* { return &static_cast<MoverComponent*>(o)->duration; };
+        p.push_back(std::move(duration));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -201,6 +244,10 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
         components::registerType({"collectible", "Collectible",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
+        components::registerType({"trigger", "Trigger",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerComponent>()); }});
+        components::registerType({"mover", "Mover",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

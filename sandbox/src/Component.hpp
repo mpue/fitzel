@@ -119,6 +119,57 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Trigger (a zone that fires an event on entry) --------
+// Data-authored, no scripting: while playing, when the player enters within
+// `radius` the trigger shows `message` on the HUD and/or plays `sound`. `once`
+// fires a single time (until Play restarts). The `insideLast`/`fired` runtime
+// flags are transient (not serialized) and reset for free when Play stops (the
+// scene is restored from its pre-play backup). Attach to any entity (typically
+// an invisible marker) for checkpoints, messages, "level complete", etc.
+class TriggerComponent : public ComponentBase {
+public:
+    float       radius = 2.0f;  // activation distance from the player (metres)
+    bool        once   = true;  // fire only once per Play session
+    std::string message;        // shown on the HUD on entry ("" = none)
+    std::string sound;          // one-shot file under the project's sounds/ ("" = none)
+
+    bool insideLast = false;    // runtime: player was inside last frame (edge detect)
+    bool fired      = false;    // runtime: has fired (for `once`)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<TriggerComponent>(*this);
+    }
+    const char* typeId() const override { return "trigger"; }
+    const char* displayName() const override { return "Trigger"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Mover (moves the entity back and forth in Play) -------
+// Data-authored motion, no scripting: while playing the entity oscillates
+// smoothly from its start position to start + `offset` and back, one full cycle
+// per `duration` seconds. Writes LOCAL position, so the scene graph carries
+// children along (a crate on a moving platform rides it). `home`/`phase` are
+// transient runtime state, reset when Play stops. Good for platforms, doors,
+// patrolling obstacles.
+class MoverComponent : public ComponentBase {
+public:
+    glm::vec3 offset{0.0f, 3.0f, 0.0f}; // travel vector from the start position
+    float     duration = 3.0f;          // seconds for one there-and-back cycle
+
+    glm::vec3 home{0.0f};    // runtime: captured start position
+    bool      homeSet = false;
+    float     phase   = 0.0f; // runtime: cycle position
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<MoverComponent>(*this);
+    }
+    const char* typeId() const override { return "mover"; }
+    const char* displayName() const override { return "Mover"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Script (runs a Lua behaviour while playing) ----------
 // The file field is serialized/undone via metadata; the inspector renders it
 // with a bespoke file picker (it needs the project's script list).

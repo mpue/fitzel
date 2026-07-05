@@ -1482,6 +1482,22 @@ int main(int argc, char** argv) {
             out.erase(std::unique(out.begin(), out.end()), out.end());
             return out;
         };
+        // Inspector combo that assigns a Sound asset (by filename) to a string
+        // field. Shared by the Collectible and Trigger sound pickers.
+        auto soundPickerCombo = [&](const char* label, std::string& field) {
+            const std::vector<std::string> sounds = listSounds();
+            const std::string cur = field.empty() ? "(none)" : field;
+            if (ImGui::BeginCombo(label, cur.c_str())) {
+                if (ImGui::Selectable("(none)", field.empty())) field.clear();
+                for (const std::string& s : sounds)
+                    if (ImGui::Selectable(s.c_str(), field == s)) field = s;
+                ImGui::EndCombo();
+            }
+            if (!field.empty() &&
+                std::find(sounds.begin(), sounds.end(), field) == sounds.end())
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                   "Missing sound: %s", field.c_str());
+        };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
@@ -2185,21 +2201,47 @@ int main(int argc, char** argv) {
                         if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
                             e.localRotation += sp->axis * sp->speed * dt;
 
-                // Collectible: when the player reaches a pickup, award its points,
-                // play its sound and remove it (destroy is deferred to below). A
-                // mid-body reference point keeps low objects reachable.
+                // Player-proximity behaviours (Collectible, Trigger). A mid-body
+                // reference point keeps low objects reachable.
                 {
                     glm::vec3 playerC = camera.position();
                     playerC.y -= eyeHeight * 0.5f;
                     for (Entity& e : entities) {
-                        const auto* col = e.components.get<CollectibleComponent>();
-                        if (!col) continue;
-                        if (glm::distance(playerC, e.center) > col->radius) continue;
-                        host.score += static_cast<int>(std::lround(col->points));
-                        if (!col->sound.empty()) host.playSound(col->sound);
-                        pendingDestroy.push_back(e.id);
+                        // Collectible: on reach, award points, play sound, remove
+                        // (destroy is deferred to the queue processed below).
+                        if (const auto* col = e.components.get<CollectibleComponent>()) {
+                            if (glm::distance(playerC, e.center) <= col->radius) {
+                                host.score += static_cast<int>(std::lround(col->points));
+                                if (!col->sound.empty()) host.playSound(col->sound);
+                                pendingDestroy.push_back(e.id);
+                            }
+                        }
+                        // Trigger: on entry (edge), set the HUD message / play the
+                        // sound. `once` latches via the transient `fired` flag.
+                        if (auto* tr = e.components.get<TriggerComponent>()) {
+                            const bool inside = glm::distance(playerC, e.center) <= tr->radius;
+                            if (inside && !tr->insideLast && !(tr->once && tr->fired)) {
+                                tr->fired = true;
+                                if (!tr->message.empty()) host.hud = tr->message;
+                                if (!tr->sound.empty()) host.playSound(tr->sound);
+                            }
+                            tr->insideLast = inside;
+                        }
                     }
                 }
+
+                // Mover: oscillate from the start position to start+offset and
+                // back (one cycle per `duration`). Writes LOCAL position; the
+                // scene graph carries children along. `home` is captured lazily on
+                // the first tick so spawned movers work too; both it and `phase`
+                // reset for free when Play stops (scene restored from backup).
+                for (Entity& e : entities)
+                    if (auto* mv = e.components.get<MoverComponent>()) {
+                        if (!mv->homeSet) { mv->home = e.localCenter; mv->homeSet = true; }
+                        mv->phase += dt / glm::max(mv->duration, 0.05f);
+                        const float s = 0.5f - 0.5f * std::cos(6.2831853f * mv->phase);
+                        e.localCenter = mv->home + mv->offset * s;
+                    }
 
                 // Apply entity spawns/destroys the scripts requested this frame
                 // (deferred so the tick loop above kept stable references).
@@ -3264,18 +3306,12 @@ int main(int argc, char** argv) {
                                 // over the Sound assets (chosen, not typed).
                                 for (const Property& pr : col->props())
                                     if (pr.key != "sound") drawProperty(pr, col);
-                                const std::vector<std::string> sounds = listSounds();
-                                const std::string cur = col->sound.empty() ? "(none)" : col->sound;
-                                if (ImGui::BeginCombo("Sound", cur.c_str())) {
-                                    if (ImGui::Selectable("(none)", col->sound.empty())) col->sound.clear();
-                                    for (const std::string& s : sounds)
-                                        if (ImGui::Selectable(s.c_str(), col->sound == s)) col->sound = s;
-                                    ImGui::EndCombo();
-                                }
-                                if (!col->sound.empty() &&
-                                    std::find(sounds.begin(), sounds.end(), col->sound) == sounds.end())
-                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                                       "Missing sound: %s", col->sound.c_str());
+                                soundPickerCombo("Sound", col->sound);
+                            } else if (auto* tr = dynamic_cast<TriggerComponent*>(c)) {
+                                // Radius/once/message from metadata; Sound is a picker.
+                                for (const Property& pr : tr->props())
+                                    if (pr.key != "sound") drawProperty(pr, tr);
+                                soundPickerCombo("Sound", tr->sound);
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
