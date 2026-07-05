@@ -1,5 +1,7 @@
 #include "Component.hpp"
 
+#include <filesystem>
+
 #include <nlohmann/json.hpp>
 
 #include "PropertyMeta.hpp"
@@ -30,6 +32,16 @@ void MaterialComponent::save(nlohmann::json& j) const {
 void MaterialComponent::load(const nlohmann::json& j) {
     if (j.contains("material") && j["material"].is_string())
         material = fitzel::AssetId::fromString(j["material"].get<std::string>());
+}
+
+void ModelComponent::save(nlohmann::json& j) const {
+    j["scale"]     = scale;
+    j["modelFile"] = std::filesystem::path(modelPath).filename().string();
+    // The asset ref ("model" GUID) is added by ProjectIO (it has the database).
+}
+void ModelComponent::load(const nlohmann::json& j) {
+    scale = j.value("scale", 1.0f);
+    // modelPath / modelId are resolved by ProjectIO (needs the asset context).
 }
 
 bool componentsEqual(const ComponentList& a, const ComponentList& b) {
@@ -171,6 +183,9 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
         components::registerType({"material", "Material",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MaterialComponent>()); }});
+        components::registerType({"model", "Model",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<ModelComponent>()); },
+            /*addable=*/false});
         components::registerType({"physics", "Physics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
         components::registerType({"player_start", "Player Start",

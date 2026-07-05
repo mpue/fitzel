@@ -151,6 +151,29 @@ public:
     void load(const nlohmann::json& j) override;
 };
 
+// --- Built-in component: Model (an imported glTF/GLB on a Model entity) --------
+// modelId is a runtime handle (resolved on load from the asset ref); modelPath
+// is the source file; scale drives the pick box. Engine-managed (created by
+// model import / drag-drop), so not in the Add menu. Serialized specially by
+// ProjectIO (it needs the asset database to resolve the model).
+class ModelComponent : public ComponentBase {
+public:
+    int         modelId = -1;
+    std::string modelPath;
+    float       scale = 1.0f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<ModelComponent>(*this);
+    }
+    const char* typeId() const override { return "model"; }
+    const char* displayName() const override { return "Model"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> none; return none;
+    }
+    void save(nlohmann::json& j) const override; // scale + modelFile
+    void load(const nlohmann::json& j) override; // scale (path/import via ProjectIO)
+};
+
 // --- Built-in component: Physics (gives an entity a rigid-body collider) ------
 // Presence = has a collider in Play. dynamic falls & collides; otherwise static.
 class PhysicsComponent : public ComponentBase {

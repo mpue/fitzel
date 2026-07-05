@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
         Window window(WindowConfig{
             .width     = 1280,
             .height    = 720,
-            .title     = "Fitzel - Infinite Terrain, CSM, Materials",
+            .title     = "Fitzel",
             .vsync     = true,
             .maximized = true,
         });
@@ -957,11 +957,13 @@ int main(int argc, char** argv) {
             LoadedModel* lm = loadedModelById(modelId);
             if (!lm) return;
             Entity nb;
-            nb.type      = EntityType::Model;
-            nb.modelId   = modelId;
-            nb.modelPath = lm->path;
-            nb.scale     = 1.0f;
-            nb.half      = modelHalf(*lm, nb.scale); // AABB (for picking/gizmo)
+            nb.type       = EntityType::Model;
+            auto mc       = std::make_unique<ModelComponent>();
+            mc->modelId   = modelId;
+            mc->modelPath = lm->path;
+            mc->scale     = 1.0f;
+            nb.components.items.push_back(std::move(mc));
+            nb.half       = modelHalf(*lm, 1.0f); // AABB (for picking/gizmo)
             // The render transform centres the model's AABB at nb.center, so lift
             // by half.y to rest its base on the ground.
             nb.localCenter = nb.center =
@@ -1714,13 +1716,14 @@ int main(int argc, char** argv) {
                     case EntityType::Model: {
                         // Convex hull of the model's vertices (centred + scaled to
                         // match the render), falling back to the AABB box.
-                        LoadedModel* lm = loadedModelById(e.modelId);
+                        const auto* mdl = e.components.get<ModelComponent>();
+                        LoadedModel* lm = mdl ? loadedModelById(mdl->modelId) : nullptr;
                         if (lm && lm->hullPoints.size() >= 4) {
                             const glm::vec3 c = lm->center();
                             std::vector<glm::vec3> pts;
                             pts.reserve(lm->hullPoints.size());
                             for (const glm::vec3& v : lm->hullPoints)
-                                pts.push_back((v - c) * e.scale);
+                                pts.push_back((v - c) * mdl->scale);
                             id = physics->addConvexHull(
                                 pts.data(), static_cast<int>(pts.size()),
                                 e.center, q, m);
@@ -1876,7 +1879,7 @@ int main(int argc, char** argv) {
                 } else if (playMode)     { stopPlay(); }
                 else if (vehicleMode)    { vehicleMode = false; }
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
-                else              { window.requestClose(); }
+                // In the plain editor, Esc no longer quits (use File > Exit).
             }
             prevEsc = escDown;
 
@@ -3220,13 +3223,9 @@ int main(int argc, char** argv) {
                     for (const Property& pr : entityProperties()) {
                         if (!(pr.typeMask & typeBit(b.type))) continue;
                         if (pr.visible && !pr.visible(&b)) continue;
-                        if (drawProperty(pr, &b)) {
-                            // Children follow center/rotation edits automatically
-                            // (resolveHierarchy). Model scale drives the pick box.
-                            if (pr.key == "scale")
-                                if (LoadedModel* lm = loadedModelById(b.modelId))
-                                    b.half = modelHalf(*lm, b.scale);
-                        }
+                        // Children follow center/rotation edits automatically
+                        // (resolveHierarchy); no per-field side effects left.
+                        drawProperty(pr, &b);
                     }
 
                     if (b.type == EntityType::Sun) {
@@ -3236,8 +3235,8 @@ int main(int argc, char** argv) {
                         ImGui::TextDisabled("The sun drives the sky and casts shadows.");
                     } else {
                         // --- Bespoke fields (enumerate project state) ------------
-                        if (b.type == EntityType::Model) {
-                            LoadedModel* lm = loadedModelById(b.modelId);
+                        if (auto* mdl = b.components.get<ModelComponent>()) {
+                            LoadedModel* lm = loadedModelById(mdl->modelId);
                             ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");
                         }
                         ImGui::Text("Parent: %s",
@@ -3312,6 +3311,11 @@ int main(int argc, char** argv) {
                                 }
                                 ImGui::SameLine();
                                 if (ImGui::SmallButton("Edit##mat")) { matSel = mi; showMaterials = true; }
+                            } else if (auto* mdl = dynamic_cast<ModelComponent*>(c)) {
+                                // Scale drives the pick box (half) for the model.
+                                if (ImGui::SliderFloat("Scale", &mdl->scale, 0.05f, 20.0f, "%.2f"))
+                                    if (LoadedModel* lm = loadedModelById(mdl->modelId))
+                                        be.half = modelHalf(*lm, mdl->scale);
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
@@ -3799,7 +3803,8 @@ int main(int argc, char** argv) {
                     // Imported model: draw every primitive with its baked material.
                     // Centre the model's AABB at b.center (so it matches the pick
                     // box), then translate/scale into the world.
-                    LoadedModel* lm = loadedModelById(b.modelId);
+                    const auto* mdl = b.components.get<ModelComponent>();
+                    LoadedModel* lm = mdl ? loadedModelById(mdl->modelId) : nullptr;
                     if (!lm) continue;
                     // Derive the scale from the entity's AABB half-extents so the
                     // model fills center +/- half exactly: this makes the Scale

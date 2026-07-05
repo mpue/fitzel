@@ -58,9 +58,8 @@ private:
 inline bool sameEntity(const Entity& a, const Entity& b) {
     return a.id == b.id && a.type == b.type &&
            a.localCenter == b.localCenter && a.localRotation == b.localRotation &&
-           a.half == b.half && a.scale == b.scale &&
+           a.half == b.half &&
            a.parent == b.parent && a.name == b.name &&
-           a.modelId == b.modelId &&
            componentsEqual(a.components, b.components);
 }
 

@@ -128,23 +128,21 @@ void saveScene(const Context& ctx, const std::string& path) {
         // Simple fields (transform, colour, physics, light params, name) come
         // straight from the property table -- one declaration drives save + UI.
         writeEntityProps(e, b);
-        // Bespoke references the table can't own (material lives in a component).
+        // Bespoke references the table can't own (material/model in components).
         e["id"]     = b.id;
         e["parent"] = b.parent;
-        if (b.type == EntityType::Model) {
-            if (LoadedModel* lm = ctx.loadedModelById(b.modelId);
-                lm && lm->assetId.valid())
-                e["model"] = lm->assetId.toString();
-            e["modelFile"] =
-                std::filesystem::path(b.modelPath).filename().string();
-        }
-        // Attached components: type id + their metadata-driven fields.
+        // Attached components: type id + their own serialization. A model
+        // component also needs its asset GUID, which only the database resolves.
         if (!b.components.items.empty()) {
             nlohmann::json comps = nlohmann::json::array();
             for (const auto& c : b.components.items) {
                 nlohmann::json cj;
                 cj["type"] = c->typeId();
                 c->save(cj);
+                if (const auto* mc = dynamic_cast<const ModelComponent*>(c.get()))
+                    if (LoadedModel* lm = ctx.loadedModelById(mc->modelId);
+                        lm && lm->assetId.valid())
+                        cj["model"] = lm->assetId.toString();
                 comps.push_back(std::move(cj));
             }
             e["components"] = std::move(comps);
@@ -248,28 +246,29 @@ bool loadScene(Context& ctx, const std::string& path) {
             // Bespoke references.
             b.id     = e.value("id", 0);
             b.parent = e.value("parent", -1);
-            if (b.type == EntityType::Model) {
-                std::string mp;
-                if (e.contains("model")) {
-                    const AssetId gid =
-                        AssetId::fromString(e["model"].get<std::string>());
-                    mp = ctx.assetDb.pathForId(gid).string();
-                }
-                if (mp.empty() && e.contains("modelFile"))
-                    mp = ctx.modelDir + "/" + e["modelFile"].get<std::string>();
-                if (!mp.empty()) {
-                    b.modelPath = mp;
-                    b.modelId   = ctx.importModel(mp);
-                }
-            }
-            // Attached components (type registry -> instance, then its fields).
+            // Attached components (type registry -> instance, then its fields). A
+            // model component resolves its source file + imports (needs the asset
+            // database), which comp->load can't do on its own.
             if (e.contains("components") && e["components"].is_array()) {
                 for (const auto& cj : e["components"]) {
                     const std::string ct = cj.value("type", std::string{});
-                    if (auto comp = components::create(ct)) {
-                        comp->load(cj);
-                        b.components.items.push_back(std::move(comp));
+                    auto comp = components::create(ct);
+                    if (!comp) continue;
+                    comp->load(cj);
+                    if (auto* mc = dynamic_cast<ModelComponent*>(comp.get())) {
+                        std::string mp;
+                        if (cj.contains("model"))
+                            mp = ctx.assetDb.pathForId(
+                                     AssetId::fromString(cj["model"].get<std::string>()))
+                                     .string();
+                        if (mp.empty() && cj.contains("modelFile"))
+                            mp = ctx.modelDir + "/" + cj["modelFile"].get<std::string>();
+                        if (!mp.empty()) {
+                            mc->modelPath = mp;
+                            mc->modelId   = ctx.importModel(mp);
+                        }
                     }
+                    b.components.items.push_back(std::move(comp));
                 }
             }
             maxId = std::max(maxId, b.id);
@@ -304,21 +303,22 @@ bool loadScene(Context& ctx, const std::string& path) {
             std::string modelTok, scriptTok;
             float dump = 0.0f; // fields dropped in the component migration
             b.type = static_cast<EntityType>(std::stoi(tok));
-            ss >> b.center.x >> b.center.y >> b.center.z
+            ss >> b.localCenter.x >> b.localCenter.y >> b.localCenter.z
                >> b.half.x >> b.half.y >> b.half.z
                >> dump >> dump >> dump      // color (now LightComponent/material)
                >> dump >> dump >> dump      // intensity / range / shadowBias
-               >> cast >> oldMat >> b.scale
-               >> b.rotation.x >> b.rotation.y >> b.rotation.z >> modelTok
+               >> cast >> oldMat >> dump    // castShadows / material / scale
+               >> b.localRotation.x >> b.localRotation.y >> b.localRotation.z >> modelTok
                >> scriptTok
                >> b.id >> b.parent;
-            (void)cast; (void)scriptTok; // castShadows / script no longer stored here
+            (void)cast; (void)scriptTok; (void)oldMat; // no longer stored here
             std::getline(ss, b.name);
             if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
-            (void)oldMat; // legacy text material no longer stored on the entity
             if (b.type == EntityType::Model && modelTok != "-") {
-                b.modelPath = ctx.modelDir + "/" + modelTok;
-                b.modelId   = ctx.importModel(b.modelPath);
+                auto mc = std::make_unique<ModelComponent>();
+                mc->modelPath = ctx.modelDir + "/" + modelTok;
+                mc->modelId   = ctx.importModel(mc->modelPath);
+                b.components.items.push_back(std::move(mc));
             }
             maxId = std::max(maxId, b.id);
             ctx.entities.push_back(b);

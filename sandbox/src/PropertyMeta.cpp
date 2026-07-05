@@ -52,15 +52,8 @@ const std::vector<Property>& entityProperties() {
         half.field = at(&Entity::half);
         p.push_back(std::move(half));
 
-        Property scale;
-        scale.label = "Scale"; scale.key = "scale"; scale.kind = PropKind::Float;
-        scale.typeMask = bit(E::Model); scale.slider = true;
-        scale.min = 0.05f; scale.max = 20.0f; scale.fmt = "%.2f";
-        scale.field = at(&Entity::scale);
-        p.push_back(std::move(scale));
-
-        // Physics (collider/mass) now lives in PhysicsComponent; light/sun look
-        // in LightComponent / SunComponent.
+        // Model scale lives in ModelComponent; physics in PhysicsComponent;
+        // light/sun look in LightComponent / SunComponent.
 
         return p;
     }();
