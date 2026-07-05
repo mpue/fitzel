@@ -143,7 +143,10 @@ void CascadedShadowMap::beginCascade(int index) {
     }
     glClear(GL_DEPTH_BUFFER_BIT);
     glEnable(GL_POLYGON_OFFSET_FILL);
-    glPolygonOffset(2.0f, 4.0f);
+    // Slope/constant depth bias in the shadow pass. Kept modest so the shadow
+    // stays attached to its caster (a large offset here reads as peter-panning);
+    // the fragment shader adds a small remaining bias.
+    glPolygonOffset(1.2f, 2.0f);
 }
 
 void CascadedShadowMap::end(int viewportWidth, int viewportHeight) {

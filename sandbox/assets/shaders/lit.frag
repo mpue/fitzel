@@ -147,8 +147,10 @@ float computeShadow(int layer, vec3 N, vec3 L) {
     proj = proj * 0.5 + 0.5;
     if (proj.z > 1.0) return 0.0;
 
-    float bias = max(0.0025 * (1.0 - dot(N, L)), 0.0008);
-    bias *= 1.0 + float(layer) * 0.6; // coarser cascades need more bias
+    // Kept small: glPolygonOffset in the depth pass already handles most acne, so
+    // a large bias here only detaches the shadow from the caster (peter-panning).
+    float bias = max(0.0010 * (1.0 - dot(N, L)), 0.00025);
+    bias *= 1.0 + float(layer) * 0.35; // coarser cascades need a little more
 
     vec2  texel   = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
     float current = proj.z;
