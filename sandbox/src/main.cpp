@@ -4257,7 +4257,7 @@ int main(int argc, char** argv) {
                 else
                     m.set("uColorMode", 0).set("uAlbedo", md.albedo);
                 if (md.normalTex)
-                    m.setTexture("uNormalMap", *md.normalTex, 2).set("uHasNormalMap", 1);
+                    m.setTexture("uNormalMap", *md.normalTex, 1).set("uHasNormalMap", 1);
                 else
                     m.set("uHasNormalMap", 0);
             }
