@@ -572,7 +572,7 @@ public:
         return std::make_unique<MaterialComponent>(*this);
     }
     const char* typeId() const override { return "material"; }
-    const char* displayName() const override { return "Material"; }
+    const char* displayName() const override { return "Glotzel"; }
     const std::vector<Property>& props() const override {
         static const std::vector<Property> none; return none;
     }
@@ -616,7 +616,7 @@ public:
         return std::make_unique<PhysicsComponent>(*this);
     }
     const char* typeId() const override { return "physics"; }
-    const char* displayName() const override { return "Physics"; }
+    const char* displayName() const override { return "Phitzel"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
 };

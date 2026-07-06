@@ -2750,13 +2750,13 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Sky & atmosphere",nullptr, &showSky);
                     ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
                     ImGui::MenuItem("Water",           nullptr, &showWater);
-                    ImGui::MenuItem("Terrain",         nullptr, &showTerrain);
+                    ImGui::MenuItem("Buddel (terrain)", nullptr, &showTerrain);
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
                     ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
                     ImGui::Separator();
-                    ImGui::MenuItem("Materials",       nullptr, &showMaterials);
+                    ImGui::MenuItem("Glotzel (materials)", nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
                     ImGui::MenuItem("Assets",          nullptr, &showAssets);
                     ImGui::MenuItem("Schnipsel (scripts)", nullptr, &showScriptEditor);
@@ -3976,7 +3976,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::SeparatorText("New block defaults");
                 ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
-                if (ImGui::Button("Materials...")) showMaterials = true;
+                if (ImGui::Button("Glotzel...")) showMaterials = true;
                 ImGui::SameLine();
                 if (ImGui::Button("Models...")) showModels = true;
                 ImGui::TextDisabled("Walk into blocks in FPS mode (F).");
@@ -3986,7 +3986,7 @@ int main(int argc, char** argv) {
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.
             if (showMaterials) {
-                if (ImGui::Begin("Materials", &showMaterials)) {
+                if (ImGui::Begin("Glotzel", &showMaterials)) {
                     if (ImGui::Button("New")) {
                         matSel = static_cast<int>(materials.size());
                         document.addMaterial("Material " + std::to_string(materials.size()),

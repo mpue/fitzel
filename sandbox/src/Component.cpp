@@ -539,12 +539,12 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
-        components::registerType({"material", "Material",
+        components::registerType({"material", "Glotzel",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MaterialComponent>()); }});
         components::registerType({"model", "Model",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ModelComponent>()); },
             /*addable=*/false});
-        components::registerType({"physics", "Physics",
+        components::registerType({"physics", "Phitzel",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
         components::registerType({"player_start", "Player Start",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PlayerStartComponent>()); }});

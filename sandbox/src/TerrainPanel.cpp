@@ -15,7 +15,7 @@ using fitzel::AssetId;
 
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
-    if (ImGui::Begin("Terrain", &s.show)) {
+    if (ImGui::Begin("Buddel", &s.show)) {
         ImGui::SeparatorText("Generator");
         ImGui::SliderFloat("Height",     &s.uiSettings.heightScale, 0.0f, 30.0f);
         ImGui::SliderFloat("Ridges",     &s.uiSettings.ridgeScale, 0.0f, 50.0f);
