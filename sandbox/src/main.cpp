@@ -4106,7 +4106,7 @@ int main(int argc, char** argv) {
                       .set("uTexScale", texScale)
                       .set("uNormalStrength", normalStrength)
                       .set("uWaterLevel", waterLevel)
-                      .set("uAlbedo", look.grass); // fallback where no layer covers
+                      .set("uAlbedo", glm::vec3(0.5f)); // neutral grey where no layer covers
             {
                 int bound = 0;
                 for (const TerrainLayer& L : look.layers) {
