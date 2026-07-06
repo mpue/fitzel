@@ -719,6 +719,7 @@ int main(int argc, char** argv) {
 
         bool  vehicleMode = false;
         bool  prevV       = false;
+        PhysicsBodyId physCarId = 0;   // Jolt vehicle chassis (Play-mode drive)
         bool  carPlaced   = false;
         bool  showVehicle = true;
         glm::vec3 carPos(0.0f);
@@ -1807,6 +1808,7 @@ int main(int argc, char** argv) {
         auto stopPlay = [&] {
             if (!playMode) return;
             playMode  = false;
+            vehicleMode = false; // the physics car is gone with the world
             physics.reset();
             physicsBody.clear();
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -1902,14 +1904,30 @@ int main(int argc, char** argv) {
             }
             prevF = fDown;
 
-            // V toggles the drive-a-vehicle mode.
+            // V toggles the drive-a-vehicle mode. In Play it drives a real Jolt
+            // physics car (spawned once at the camera); in the editor, the arcade car.
             const bool vDown = input.isKeyDown(GLFW_KEY_V);
             if (vDown && !prevV) {
                 vehicleMode = !vehicleMode;
                 if (vehicleMode) {
                     fpsMode = false;
                     input.setCursorLocked(false);
-                    if (!carPlaced) placeCar();
+                    if (playMode && physics) {
+                        if (!physics->hasVehicle()) {
+                            const glm::vec3 p = camera.position();
+                            glm::vec3 f = camera.front(); f.y = 0.0f;
+                            if (glm::length(f) < 1e-3f) f = glm::vec3(0, 0, 1);
+                            f = glm::normalize(f);
+                            const glm::quat q = glm::angleAxis(std::atan2(f.x, f.z),
+                                                              glm::vec3(0, 1, 0));
+                            const glm::vec3 sp(p.x, streamer.heightAt(p.x, p.z) + 1.2f, p.z);
+                            physCarId = physics->addVehicle(
+                                glm::vec3(0.9f, 0.35f, 2.0f), 1200.0f, sp, q,
+                                0.42f, 0.30f, 0.85f, 1.35f, -1.35f, 32.0f, 2500.0f);
+                        }
+                    } else if (!carPlaced) {
+                        placeCar();
+                    }
                     camChase = camera.position();
                 }
             }
@@ -1983,7 +2001,27 @@ int main(int argc, char** argv) {
                 prevUndo = prevRedo = false;
             }
 
-            if (vehicleMode) {
+            if (vehicleMode && playMode && physics && physics->hasVehicle()) {
+                // Physics car: WASD -> engine/steer/brake; chase camera from the
+                // chassis. The vehicle updates during the physics step below.
+                const float fwdIn = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
+                                    (input.isKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+                const float steer = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
+                                    (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                const float brake = input.isKeyDown(GLFW_KEY_SPACE) ? 1.0f : 0.0f;
+                physics->setVehicleInput(fwdIn, steer, brake, 0.0f);
+                glm::vec3 cp; glm::quat cq;
+                if (physics->getTransform(physCarId, cp, cq)) {
+                    const glm::vec3 fwd = cq * glm::vec3(0.0f, 0.0f, 1.0f);
+                    const glm::vec3 target = cp + glm::vec3(0.0f, 1.2f, 0.0f);
+                    const glm::vec3 wanted = cp - fwd * 7.0f + glm::vec3(0.0f, 3.2f, 0.0f);
+                    camChase += (wanted - camChase) * std::min(1.0f, dt * 4.0f);
+                    camera.setPosition(camChase);
+                    const glm::vec3 d = glm::normalize(target - camChase);
+                    camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
+                    camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+                }
+            } else if (vehicleMode) {
                 // Arcade car: throttle + steering, drag, bicycle-model heading.
                 const bool kW = input.isKeyDown(GLFW_KEY_W);
                 const bool kS = input.isKeyDown(GLFW_KEY_S);
@@ -4408,8 +4446,27 @@ int main(int argc, char** argv) {
                 renderer.submit(roadMesh, roadMat, glm::mat4(1.0f), false);
             }
 
-            // --- Vehicle: terrain-aligned body + steered/rolling wheels --
-            if (showVehicle && carPlaced) {
+            // --- Physics car: draw the chassis + wheels from Jolt transforms.
+            if (vehicleMode && playMode && physics && physics->hasVehicle()) {
+                glm::vec3 cp; glm::quat cq;
+                if (physics->getTransform(physCarId, cp, cq)) {
+                    const glm::mat4 chassis =
+                        glm::translate(glm::mat4(1.0f), cp) * glm::mat4_cast(cq);
+                    renderer.submit(carCube, carBodyMat, chassis *
+                        glm::scale(glm::mat4(1.0f), glm::vec3(1.8f, 0.7f, 4.0f)));
+                    renderer.submit(carCube, carCabinMat, chassis *
+                        glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.5f, -0.3f)) *
+                        glm::scale(glm::mat4(1.0f), glm::vec3(1.5f, 0.6f, 1.8f)));
+                    for (int i = 0; i < 4; ++i) {
+                        glm::vec3 wp; glm::quat wq;
+                        if (physics->getWheelTransform(i, wp, wq))
+                            renderer.submit(carWheel, carWheelMat,
+                                glm::translate(glm::mat4(1.0f), wp) * glm::mat4_cast(wq));
+                    }
+                }
+            }
+            // --- Arcade vehicle (editor): terrain-aligned body + rolling wheels --
+            else if (showVehicle && carPlaced && !playMode) {
                 const float e = 1.2f;
                 const glm::vec3 N = glm::normalize(glm::vec3(
                     streamer.heightAt(carPos.x - e, carPos.z) - streamer.heightAt(carPos.x + e, carPos.z),

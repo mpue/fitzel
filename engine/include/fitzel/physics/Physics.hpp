@@ -41,6 +41,22 @@ public:
     // on an unknown id or a non-positive dt.
     void setKinematicTarget(PhysicsBodyId id, glm::vec3 pos, glm::quat rot, float dt);
 
+    // --- Wheeled vehicle (Jolt VehicleConstraint) ---------------------------
+    // Spawn a physics car: a dynamic box chassis with four wheels (suspension,
+    // engine, steering). One vehicle per world. Forward is the body's +Z; front
+    // wheels (0,1) steer, rear (2,3) drive. Returns the chassis body id (read it
+    // with getTransform); wheel transforms via getWheelTransform.
+    PhysicsBodyId addVehicle(glm::vec3 chassisHalf, float mass, glm::vec3 pos,
+                             glm::quat rot, float wheelRadius, float wheelWidth,
+                             float halfTrack, float frontZ, float rearZ,
+                             float maxSteerDeg, float engineTorque);
+    // Driver input for this frame: `forward` accelerates (-1 reverse .. 1),
+    // `right` steers (-1 left .. 1 right), `brake`/`handBrake` are 0..1.
+    void setVehicleInput(float forward, float right, float brake, float handBrake);
+    // World transform of wheel `i` (0 FL, 1 FR, 2 RL, 3 RR). False if no vehicle.
+    bool getWheelTransform(int wheel, glm::vec3& pos, glm::quat& rot) const;
+    bool hasVehicle() const;
+
     // Convex-hull collider from a point cloud (>= 4 points) given in the body's
     // local space. Used for ramps (a wedge) and imported models.
     PhysicsBodyId addConvexHull(const glm::vec3* points, int count, glm::vec3 pos,

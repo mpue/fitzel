@@ -21,6 +21,9 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
+#include <Jolt/Physics/Vehicle/VehicleConstraint.h>
+#include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
+#include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
 
 JPH_SUPPRESS_WARNINGS
 
@@ -104,6 +107,10 @@ struct PhysicsWorld::Impl {
     JPH::Ref<JPH::CharacterVirtual> character;
     float charRadius = 0.3f, charHalfHeight = 0.6f, charVertVel = 0.0f;
 
+    JPH::Ref<JPH::VehicleConstraint>      vehicle;      // the (single) car
+    JPH::Ref<JPH::VehicleCollisionTester> vehicleTest;
+    JPH::BodyID                           vehicleBody;
+
     Impl() {
         system.Init(/*maxBodies=*/4096, /*numBodyMutexes=*/0,
                     /*maxBodyPairs=*/8192, /*maxContactConstraints=*/4096,
@@ -178,6 +185,83 @@ void PhysicsWorld::setKinematicTarget(PhysicsBodyId id, glm::vec3 pos,
     if (!bi.IsAdded(bid)) return;
     bi.MoveKinematic(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot), dt);
 }
+
+PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
+                                       glm::vec3 pos, glm::quat rot,
+                                       float wheelRadius, float wheelWidth,
+                                       float halfTrack, float frontZ, float rearZ,
+                                       float maxSteerDeg, float engineTorque) {
+    Impl& d = *m_impl;
+    JPH::BodyInterface& bi = d.system.GetBodyInterface();
+
+    JPH::RefConst<JPH::Shape> shape =
+        new JPH::BoxShape(toJolt(glm::max(chassisHalf, glm::vec3(0.05f))));
+    JPH::BodyCreationSettings bcs(shape, toJolt(pos), toJolt(rot),
+                                  JPH::EMotionType::Dynamic, Layers::MOVING);
+    bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
+    bcs.mMassPropertiesOverride.mMass = mass;
+    JPH::Body* body = bi.CreateBody(bcs);
+    if (!body) return 0;
+    bi.AddBody(body->GetID(), JPH::EActivation::Activate);
+    d.vehicleBody = body->GetID();
+
+    JPH::VehicleConstraintSettings vc;
+    vc.mMaxPitchRollAngle = JPH::DegreesToRadians(60.0f);
+    const float wy = -chassisHalf.y; // wheel attachment near the chassis bottom
+    const struct { float x, z; bool front; } wp[4] = {
+        {-halfTrack, frontZ, true}, {halfTrack, frontZ, true},
+        {-halfTrack, rearZ,  false}, {halfTrack, rearZ,  false}};
+    for (int i = 0; i < 4; ++i) {
+        JPH::WheelSettingsWV* w = new JPH::WheelSettingsWV;
+        w->mPosition            = JPH::Vec3(wp[i].x, wy, wp[i].z);
+        w->mRadius              = wheelRadius;
+        w->mWidth               = wheelWidth;
+        w->mSuspensionMinLength = 0.3f;
+        w->mSuspensionMaxLength = 0.5f;
+        w->mMaxSteerAngle       = wp[i].front ? JPH::DegreesToRadians(maxSteerDeg) : 0.0f;
+        w->mMaxHandBrakeTorque  = wp[i].front ? 0.0f : 4000.0f; // handbrake locks rear
+        vc.mWheels.push_back(w);
+    }
+    JPH::WheeledVehicleControllerSettings* ctrl =
+        new JPH::WheeledVehicleControllerSettings;
+    ctrl->mEngine.mMaxTorque = engineTorque;
+    ctrl->mEngine.mMaxRPM    = 6000.0f;
+    ctrl->mDifferentials.resize(1);         // rear-wheel drive
+    ctrl->mDifferentials[0].mLeftWheel  = 2;
+    ctrl->mDifferentials[0].mRightWheel = 3;
+    vc.mController = ctrl;
+
+    d.vehicle     = new JPH::VehicleConstraint(*body, vc);
+    d.vehicleTest = new JPH::VehicleCollisionTesterRay(Layers::MOVING);
+    JPH::VehicleConstraint* con = static_cast<JPH::VehicleConstraint*>(d.vehicle.GetPtr());
+    con->SetVehicleCollisionTester(d.vehicleTest);
+    d.system.AddConstraint(con);
+    d.system.AddStepListener(con);
+    return d.vehicleBody.GetIndexAndSequenceNumber();
+}
+
+void PhysicsWorld::setVehicleInput(float forward, float right, float brake,
+                                   float handBrake) {
+    if (!m_impl->vehicle) return;
+    JPH::VehicleConstraint* con =
+        static_cast<JPH::VehicleConstraint*>(m_impl->vehicle.GetPtr());
+    static_cast<JPH::WheeledVehicleController*>(con->GetController())
+        ->SetDriverInput(forward, right, brake, handBrake);
+    m_impl->system.GetBodyInterface().ActivateBody(m_impl->vehicleBody);
+}
+
+bool PhysicsWorld::getWheelTransform(int wheel, glm::vec3& pos, glm::quat& rot) const {
+    if (!m_impl->vehicle || wheel < 0 || wheel >= 4) return false;
+    JPH::VehicleConstraint* con =
+        static_cast<JPH::VehicleConstraint*>(m_impl->vehicle.GetPtr());
+    const JPH::RMat44 wt = con->GetWheelWorldTransform(
+        static_cast<JPH::uint>(wheel), JPH::Vec3::sAxisX(), JPH::Vec3::sAxisY());
+    pos = toGlm(JPH::Vec3(wt.GetTranslation()));
+    rot = toGlm(wt.GetQuaternion());
+    return true;
+}
+
+bool PhysicsWorld::hasVehicle() const { return m_impl->vehicle != nullptr; }
 
 PhysicsBodyId PhysicsWorld::addConvexHull(const glm::vec3* points, int count,
                                           glm::vec3 pos, glm::quat rot,
