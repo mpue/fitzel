@@ -3578,22 +3578,47 @@ int main(int argc, char** argv) {
                 ImGui::EndDisabled();
 
                 ImGui::SeparatorText("Scene");
-                // Recursive tree: roots first, children nested. Drag a node onto
-                // another to reparent it; drag onto "(root)" to unparent.
+                // A proper tree control: roots first, children nested; the tree
+                // fills the panel and scrolls. Single click selects, arrow/double-
+                // click expands; drag a node onto another to reparent (onto empty
+                // space to unparent); right-click for Duplicate/Delete.
                 int reparentSrc = -1, reparentTo = -2; // -2 = none, -1 = root
+                int dupReq = -1, delReq = -1;
+                auto typeColor = [](EntityType t) -> ImU32 {
+                    switch (t) {
+                        case EntityType::Light:    return IM_COL32(255, 224, 130, 255);
+                        case EntityType::Sun:      return IM_COL32(255, 200,  90, 255);
+                        case EntityType::Model:    return IM_COL32(150, 200, 255, 255);
+                        case EntityType::Sphere:   return IM_COL32(190, 230, 200, 255);
+                        case EntityType::Cylinder: return IM_COL32(200, 210, 235, 255);
+                        default:                   return IM_COL32(220, 220, 225, 255);
+                    }
+                };
                 std::function<void(int)> drawNode = [&](int i) {
-                    ImGui::PushID(i);
+                    ImGui::PushID(entities[i].id);           // stable id
                     bool hasChildren = false;
                     for (const Entity& c : entities)
                         if (c.parent == entities[i].id) { hasChildren = true; break; }
                     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
-                                             | ImGuiTreeNodeFlags_SpanAvailWidth
+                                             | ImGuiTreeNodeFlags_OpenOnDoubleClick
+                                             | ImGuiTreeNodeFlags_SpanFullWidth
                                              | ImGuiTreeNodeFlags_DefaultOpen;
                     if (i == entitySel)  flags |= ImGuiTreeNodeFlags_Selected;
                     if (!hasChildren)   flags |= ImGuiTreeNodeFlags_Leaf;
-                    const char* nm = entities[i].name.empty() ? "(box)" : entities[i].name.c_str();
+                    const char* nm = entities[i].name.empty() ? "(unnamed)"
+                                                              : entities[i].name.c_str();
+                    ImGui::PushStyleColor(ImGuiCol_Text, typeColor(entities[i].type));
                     const bool open = ImGui::TreeNodeEx("##n", flags, "%s", nm);
+                    ImGui::PopStyleColor();
                     if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) entitySel = i;
+                    if (ImGui::BeginPopupContextItem()) {
+                        entitySel = i;
+                        if (ImGui::MenuItem("Duplicate")) dupReq = i;
+                        ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
+                        if (ImGui::MenuItem("Delete")) delReq = i;
+                        ImGui::EndDisabled();
+                        ImGui::EndPopup();
+                    }
                     if (ImGui::BeginDragDropSource()) {
                         const int sid = entities[i].id;
                         ImGui::SetDragDropPayload("SOLID_ID", &sid, sizeof(int));
@@ -3615,8 +3640,11 @@ int main(int argc, char** argv) {
                     }
                     ImGui::PopID();
                 };
-                ImGui::BeginChild("##tree", ImVec2(-1.0f, 170.0f), true);
-                ImGui::Selectable("(root)", false); // drop here to unparent
+                ImGui::BeginChild("##tree", ImVec2(0.0f, 0.0f), true);
+                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
+                    if (entities[i].parent < 0) drawNode(i);
+                // Empty space in the tree unparents a node dropped onto it.
+                ImGui::Dummy(ImVec2(-1.0f, ImGui::GetContentRegionAvail().y));
                 if (ImGui::BeginDragDropTarget()) {
                     if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
                         reparentSrc = *static_cast<const int*>(pl->Data);
@@ -3624,9 +3652,9 @@ int main(int argc, char** argv) {
                     }
                     ImGui::EndDragDropTarget();
                 }
-                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
-                    if (entities[i].parent < 0) drawNode(i);
                 ImGui::EndChild();
+                if (dupReq >= 0)      duplicateEntity(dupReq);
+                else if (delReq >= 0) deleteEntity(delReq);
                 // Apply a requested reparent (rejecting cycles).
                 if (reparentSrc >= 0 && reparentTo != -2) {
                     int si = -1;
