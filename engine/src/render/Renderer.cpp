@@ -245,6 +245,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->bind();
         s->setFloat("uReflectivity", 0.0f);
         s->setFloat("uAlpha", r.opacity);
+        s->setInt("uGlass", 0);
 
         r.material->apply(); // binds shader + material params/textures
 

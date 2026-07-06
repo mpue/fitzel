@@ -813,6 +813,12 @@ int main(int argc, char** argv) {
             document.addMaterial("Default", {0.72f, 0.72f, 0.74f}, 0.0f, 0.20f);
             document.addMaterial("Chrome",  {0.90f, 0.92f, 0.95f}, 1.0f, 0.04f);
             document.addMaterial("Red",     {0.72f, 0.12f, 0.10f}, 0.0f, 0.30f);
+            // Glass: faint cool tint, smooth, a touch reflective; the glass flag
+            // adds the Fresnel alpha (clear head-on, opaque reflective rim).
+            document.addMaterial("Glass",   {0.85f, 0.92f, 0.95f}, 0.5f, 0.03f);
+            MaterialDef& glass = materials.back();
+            glass.opacity = 0.28f;
+            glass.glass   = true;
         };
         seedDefaultMaterials();
 
@@ -3635,6 +3641,11 @@ int main(int argc, char** argv) {
                         ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
                         ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
                         ImGui::SliderFloat("Opacity", &md.opacity, 0.0f, 1.0f);
+                        ImGui::Checkbox("Glass", &md.glass);
+                        if (md.glass) {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("(clear centre, reflective rim)");
+                        }
                         // Base-colour texture slot: drop a Texture asset here from
                         // the Assets browser. File-backed textures persist by GUID
                         // (md.texId) into the .fmat; model-embedded ones don't.
@@ -4045,7 +4056,8 @@ int main(int argc, char** argv) {
                 Material& m = gpuMats.emplace_back(lit);
                 m.set("uWaterLevel", -1.0e4f)
                  .set("uReflectivity", md.reflectivity)
-                 .set("uRoughness", md.roughness);
+                 .set("uRoughness", md.roughness)
+                 .set("uGlass", md.glass ? 1 : 0);
                 if (md.tex)
                     m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0);
                 else

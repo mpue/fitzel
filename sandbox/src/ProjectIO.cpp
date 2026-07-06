@@ -46,6 +46,7 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["reflectivity"] = md.reflectivity;
     m["roughness"]    = md.roughness;
     m["opacity"]      = md.opacity;
+    m["glass"]        = md.glass;
     if (md.texId.valid()) m["texture"] = md.texId.toString();
     std::ofstream f(file); if (f) f << m.dump(2) << '\n';
     writeMeta(file, md.assetId, "Material");
@@ -189,6 +190,7 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         md.reflectivity = m.value("reflectivity", md.reflectivity);
         md.roughness    = m.value("roughness", md.roughness);
         md.opacity      = m.value("opacity", md.opacity);
+        md.glass        = m.value("glass", md.glass);
         if (m.contains("texture")) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
@@ -231,6 +233,7 @@ bool loadScene(Context& ctx, const std::string& path) {
                 md.reflectivity = m.value("reflectivity", md.reflectivity);
                 md.roughness    = m.value("roughness", md.roughness);
                 md.opacity      = m.value("opacity", md.opacity);
+                md.glass        = m.value("glass", md.glass);
                 if (m.contains("texture")) {
                     md.texId = AssetId::fromString(m["texture"].get<std::string>());
                     if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);

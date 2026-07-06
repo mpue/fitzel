@@ -105,6 +105,7 @@ uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
 uniform vec3 uAlbedo;
 uniform float uAlpha;         // material opacity (1 = opaque); * texture alpha
+uniform int   uGlass;         // 1 = Fresnel alpha (clear head-on, opaque rim)
 
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
@@ -378,5 +379,14 @@ void main() {
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 
-    FragColor = vec4(toOutput(color), uAlpha * texA);
+    // Output alpha. Glass modulates it by a Fresnel term: nearly clear when
+    // viewed head-on, rising to opaque at grazing angles so the reflective rim
+    // (added above via uReflectivity) stays visible -- reads as real glass.
+    float outA = uAlpha * texA;
+    if (uGlass == 1) {
+        float NoV = max(dot(N, V), 0.0);
+        float fr  = pow(1.0 - NoV, 5.0);
+        outA = mix(uAlpha, 1.0, fr) * texA;
+    }
+    FragColor = vec4(toOutput(color), outA);
 }
