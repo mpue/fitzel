@@ -1863,15 +1863,27 @@ int main(int argc, char** argv) {
             }
 
             // --- Input ---------------------------------------------------
-            // F toggles first-person walk mode (cursor locks, mouse-look always on).
-            const bool fDown = input.isKeyDown(GLFW_KEY_F);
-            if (fDown && !prevF && !vehicleMode) {
-                fpsMode = !fpsMode;
-                input.setCursorLocked(fpsMode);
-                fpsVelY = 0.0f;
-                if (fpsMode) { // drop to standing height immediately
-                    const glm::vec3 p = camera.position();
-                    camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
+            // F frames the selected object; Shift+F toggles first-person walk mode.
+            const bool fDown  = input.isKeyDown(GLFW_KEY_F);
+            const bool shiftF = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+            if (fDown && !prevF && !vehicleMode && !ImGui::GetIO().WantTextInput) {
+                if (shiftF) { // Shift+F: toggle first-person (cursor locks, mouse-look)
+                    fpsMode = !fpsMode;
+                    input.setCursorLocked(fpsMode);
+                    fpsVelY = 0.0f;
+                    if (fpsMode) { // drop to standing height immediately
+                        const glm::vec3 p = camera.position();
+                        camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
+                    }
+                } else if (!fpsMode && entitySel >= 0 &&
+                           entitySel < static_cast<int>(entities.size())) {
+                    // Focus: keep the view direction, back off to fit the object.
+                    const Entity& e = entities[entitySel];
+                    const float radius = glm::max(glm::length(e.half), 0.25f);
+                    const float fov    = glm::radians(glm::max(camera.fov(), 1.0f));
+                    const float dist   = radius / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f;
+                    camera.setPosition(e.center - camera.front() * dist);
                 }
             }
             prevF = fDown;
@@ -3298,7 +3310,7 @@ int main(int argc, char** argv) {
             ImGui::End(); }
 
             if (showCamera) { if (ImGui::Begin("Camera", &showCamera)) {
-                if (ImGui::Checkbox("First-person (F)", &fpsMode)) {
+                if (ImGui::Checkbox("First-person (Shift+F)", &fpsMode)) {
                     input.setCursorLocked(fpsMode);
                     fpsVelY = 0.0f;
                     if (fpsMode) {
