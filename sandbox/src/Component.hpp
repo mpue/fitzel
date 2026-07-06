@@ -590,6 +590,8 @@ public:
     int         modelId = -1;
     std::string modelPath;
     float       scale = 1.0f;
+    int         nodeIndex = -1; // structure-preserving import: which model node
+                                // (-1 = the whole model)
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<ModelComponent>(*this);

@@ -26,12 +26,39 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
         std::fprintf(stderr, "Model import failed: %s\n", path.c_str());
         return -1;
     }
-    const ModelData& md = *mdPtr;
+    return buildFromData(std::filesystem::path(path).stem().string(), path,
+                         assetDb.idForPath(path), *mdPtr,
+                         mdPtr->animated() ? mdPtr : nullptr, assetDb, materials);
+}
+
+const std::vector<ModelNode>& ModelLibrary::nodes(const std::string& path) {
+    auto it = nodeCache_.find(path);
+    if (it == nodeCache_.end())
+        it = nodeCache_.emplace(path, loadModelNodes(path)).first;
+    return it->second;
+}
+
+int ModelLibrary::importNode(const std::string& path, int nodeIndex,
+                             AssetDatabase& assetDb, std::vector<MaterialDef>& materials) {
+    const std::string key = path + "#" + std::to_string(nodeIndex);
+    for (auto& lm : models_) if (lm->path == key) return lm->id;
+    const std::vector<ModelNode>& ns = nodes(path);
+    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(ns.size())) return -1;
+    return buildFromData(ns[nodeIndex].name, key, assetDb.idForPath(path),
+                         ns[nodeIndex].data, nullptr, assetDb, materials);
+}
+
+int ModelLibrary::buildFromData(const std::string& name, const std::string& path,
+                                AssetId assetId, const ModelData& md,
+                                std::shared_ptr<ModelData> keepAnim,
+                                AssetDatabase& assetDb,
+                                std::vector<MaterialDef>& materials) {
+    (void)assetDb;
     auto lm = std::make_unique<LoadedModel>();
     lm->id      = counter_++;
-    lm->assetId = assetDb.idForPath(path); // stable GUID for save/load
+    lm->assetId = assetId;
     lm->path    = path;
-    lm->name    = std::filesystem::path(path).stem().string();
+    lm->name    = name;
     lm->meshes.reserve(md.primitives.size());
     lm->primMaterialId.reserve(md.primitives.size());
     glm::vec3 lo(1e30f), hi(-1e30f);
@@ -83,7 +110,7 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
     }
     // Keep the CPU model data for skinned characters so the editor can animate
     // them (CPU skinning re-uploads the meshes each frame).
-    if (md.animated()) { lm->animated = true; lm->animData = mdPtr; }
+    if (keepAnim && keepAnim->animated()) { lm->animated = true; lm->animData = keepAnim; }
     const int id = lm->id;
     models_.push_back(std::move(lm));
     return id;

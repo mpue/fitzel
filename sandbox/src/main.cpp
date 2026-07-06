@@ -887,6 +887,60 @@ int main(int argc, char** argv) {
             history.push(std::make_unique<AddEntityCmd>(nb), document);
             entitySel = document.indexOf(nb.id);
         };
+        // Structure-preserving import: one entity per model node under a group
+        // root, so each element is separately selectable/movable in the scene.
+        auto addModelHierarchy = [&](glm::vec3 groundPos, const std::string& path) {
+            const auto& ns = models.nodes(path);
+            if (ns.empty()) { // no node structure -> fall back to a single model
+                const int id = models.import(path, assetDb, materials);
+                if (id >= 0) addModelEntity(groundPos, id);
+                return;
+            }
+            std::vector<int>       nodeIds(ns.size(), -1);
+            std::vector<glm::vec3> nodeHalf(ns.size(), glm::vec3(0.1f));
+            glm::vec3 lo(1e30f), hi(-1e30f);
+            for (std::size_t i = 0; i < ns.size(); ++i) {
+                nodeIds[i] = models.importNode(path, static_cast<int>(i), assetDb, materials);
+                if (LoadedModel* lm = models.byId(nodeIds[i])) nodeHalf[i] = modelHalf(*lm, 1.0f);
+                lo = glm::min(lo, ns[i].center - nodeHalf[i]);
+                hi = glm::max(hi, ns[i].center + nodeHalf[i]);
+            }
+            const glm::vec3 oc = 0.5f * (lo + hi), oh = 0.5f * (hi - lo);
+            const std::string stem = std::filesystem::path(path).stem().string();
+            // Group root: a Model-type entity with NO ModelComponent, so it
+            // renders nothing and just parents the parts. Placed at the model's
+            // centre, lifted so its base rests on the ground.
+            Entity root;
+            root.type = EntityType::Model;
+            root.name = stem;
+            root.half = oh;
+            root.localCenter = root.center = glm::vec3(
+                groundPos.x + oc.x, groundPos.y + oh.y, groundPos.z + oc.z);
+            root.id = entityCounter++;
+            history.push(std::make_unique<AddEntityCmd>(root), document);
+            const int rootId = root.id;
+            for (std::size_t i = 0; i < ns.size(); ++i) {
+                if (nodeIds[i] < 0) continue;
+                Entity ch;
+                ch.type   = EntityType::Model;
+                ch.name   = ns[i].name.empty() ? ("part " + std::to_string(i)) : ns[i].name;
+                ch.parent = rootId;
+                auto mc = std::make_unique<ModelComponent>();
+                mc->modelId = nodeIds[i]; mc->modelPath = path;
+                mc->nodeIndex = static_cast<int>(i); mc->scale = 1.0f;
+                ch.components.items.push_back(std::move(mc));
+                ch.half        = nodeHalf[i];
+                ch.localCenter = ns[i].center - oc; // relative to the root
+                ch.id          = entityCounter++;
+                history.push(std::make_unique<AddEntityCmd>(ch), document);
+            }
+            entitySel = document.indexOf(rootId);
+        };
+        auto isStructuredModel = [](const std::string& p) {
+            std::string e = std::filesystem::path(p).extension().string();
+            for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return e == ".fbx";
+        };
 
         // --- Project (scene) save / load / export ----------------------------
         // Serialization now lives in ProjectIO (projectio::). main still owns the
@@ -901,6 +955,7 @@ int main(int argc, char** argv) {
             assetDb, contentRoot, modelDir,
             [&]{ seedDefaultMaterials(); },
             [&](const std::string& p){ return models.import(p, assetDb, materials); },
+            [&](const std::string& p, int n){ return models.importNode(p, n, assetDb, materials); },
             [&](int id){ return models.byId(id); },
             [&]{ models.clear(); },
             writeSettingsFn, readSettingsFn,
@@ -2805,9 +2860,12 @@ int main(int argc, char** argv) {
                         if (at == AssetType::Model) {
                             glm::vec3 hit;
                             if (roadPickTerrain(viewportMouseNdc, vp, hit)) {
-                                const int id = models.import(
-                                    assetDb.pathForId(gid).string(), assetDb, materials);
-                                if (id >= 0) addModelEntity(hit, id);
+                                const std::string mp = assetDb.pathForId(gid).string();
+                                if (isStructuredModel(mp)) addModelHierarchy(hit, mp);
+                                else {
+                                    const int id = models.import(mp, assetDb, materials);
+                                    if (id >= 0) addModelEntity(hit, id);
+                                }
                             }
                         } else if (at == AssetType::Texture) {
                             // Pick the solid under the drop point.
@@ -3916,7 +3974,7 @@ int main(int argc, char** argv) {
                         std::string ext = e.path().extension().string();
                         for (char& c : ext) c = static_cast<char>(std::tolower(
                             static_cast<unsigned char>(c)));
-                        if (ext == ".glb" || ext == ".gltf" || ext == ".dae")
+                        if (ext == ".glb" || ext == ".gltf" || ext == ".dae" || ext == ".fbx")
                             files.push_back(e.path().filename().string());
                     }
                     std::sort(files.begin(), files.end());
@@ -3927,11 +3985,12 @@ int main(int argc, char** argv) {
                     ImGui::BeginDisabled(modelFile.empty());
                     if (ImGui::Button("Import to scene")) {
                         const std::string path = modelDir + "/" + modelFile;
-                        const int id = models.import(path, assetDb, materials);
-                        if (id >= 0) {
-                            const glm::vec3 p = camera.position() + camera.front() * 8.0f;
-                            addModelEntity(
-                                glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z), id);
+                        const glm::vec3 p = camera.position() + camera.front() * 8.0f;
+                        const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
+                        if (isStructuredModel(path)) addModelHierarchy(g, path);
+                        else {
+                            const int id = models.import(path, assetDb, materials);
+                            if (id >= 0) addModelEntity(g, id);
                         }
                     }
                     ImGui::EndDisabled();
@@ -3979,13 +4038,13 @@ int main(int argc, char** argv) {
                             if (e->type == AssetType::Model &&
                                 ImGui::IsItemHovered() &&
                                 ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                                const int id2 = models.import(
-                                    e->absPath.string(), assetDb, materials);
-                                if (id2 >= 0) {
-                                    const glm::vec3 p =
-                                        camera.position() + camera.front() * 8.0f;
-                                    addModelEntity(glm::vec3(p.x,
-                                        streamer.heightAt(p.x, p.z), p.z), id2);
+                                const std::string mp = e->absPath.string();
+                                const glm::vec3 p = camera.position() + camera.front() * 8.0f;
+                                const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
+                                if (isStructuredModel(mp)) addModelHierarchy(g, mp);
+                                else {
+                                    const int id2 = models.import(mp, assetDb, materials);
+                                    if (id2 >= 0) addModelEntity(g, id2);
                                 }
                             }
                         }

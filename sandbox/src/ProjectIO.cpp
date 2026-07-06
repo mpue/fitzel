@@ -280,7 +280,13 @@ bool loadScene(Context& ctx, const std::string& path) {
                             mp = ctx.modelDir + "/" + cj["modelFile"].get<std::string>();
                         if (!mp.empty()) {
                             mc->modelPath = mp;
-                            mc->modelId   = ctx.importModel(mp);
+                            // Structure-preserving import: a group root (node < 0
+                            // with no "model" ref) has no mesh; a child resolves its
+                            // own node.
+                            if (mc->nodeIndex >= 0)
+                                mc->modelId = ctx.importModelNode(mp, mc->nodeIndex);
+                            else if (cj.contains("model"))
+                                mc->modelId = ctx.importModel(mp);
                         }
                     }
                     b.components.items.push_back(std::move(comp));

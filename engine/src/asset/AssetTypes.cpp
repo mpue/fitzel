@@ -17,7 +17,7 @@ AssetType assetTypeForExtension(std::string_view ext) {
     if (e == "png" || e == "jpg" || e == "jpeg" || e == "tga" || e == "bmp" ||
         e == "exr" || e == "hdr")
         return AssetType::Texture;
-    if (e == "gltf" || e == "glb" || e == "dae")
+    if (e == "gltf" || e == "glb" || e == "dae" || e == "fbx")
         return AssetType::Model;
     if (e == "wav" || e == "ogg" || e == "mp3" || e == "flac")
         return AssetType::Sound;

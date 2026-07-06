@@ -50,6 +50,7 @@ struct Context {
     // Callbacks into main (state main owns exclusively).
     std::function<void()>                       seedDefaultMaterials;
     std::function<int(const std::string&)>      importModel;      // -> modelId
+    std::function<int(const std::string&, int)> importModelNode;  // path,node -> modelId
     std::function<LoadedModel*(int)>            loadedModelById;
     std::function<void()>                       clearModels;      // loadedModels.clear()
     // Scene look/settings hooks -- references, since main assigns them after the

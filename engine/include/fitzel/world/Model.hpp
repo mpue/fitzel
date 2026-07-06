@@ -100,4 +100,19 @@ ModelData loadGltf(const std::string& path);
 // (Skeleton/animation parsing is a later phase.) Empty ModelData on failure.
 ModelData loadCollada(const std::string& path);
 
+// One mesh-bearing node of a model imported with its structure preserved: the
+// node's meshes (world transform baked, then recentred on their combined AABB so
+// each sits at the origin) plus `center`, where that origin belongs in model
+// space. Lets a caller spread a model across one editor entity per node.
+struct ModelNode {
+    std::string name;
+    ModelData   data;         // meshes centred at the origin
+    glm::vec3   center{0.0f}; // world position of that centre (model space)
+};
+
+// Load a model via assimp (FBX, DAE, ...), one ModelNode per mesh-bearing node,
+// so the caller can create a separate entity per element (structure preserved,
+// no animation). Empty on failure.
+std::vector<ModelNode> loadModelNodes(const std::string& path);
+
 } // namespace fitzel

@@ -37,10 +37,12 @@ void MaterialComponent::load(const nlohmann::json& j) {
 void ModelComponent::save(nlohmann::json& j) const {
     j["scale"]     = scale;
     j["modelFile"] = std::filesystem::path(modelPath).filename().string();
+    if (nodeIndex >= 0) j["node"] = nodeIndex; // structure-preserving import
     // The asset ref ("model" GUID) is added by ProjectIO (it has the database).
 }
 void ModelComponent::load(const nlohmann::json& j) {
-    scale = j.value("scale", 1.0f);
+    scale     = j.value("scale", 1.0f);
+    nodeIndex = j.value("node", -1);
     // modelPath / modelId are resolved by ProjectIO (needs the asset context).
 }
 

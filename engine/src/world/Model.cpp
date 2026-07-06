@@ -363,69 +363,114 @@ void decodeAiTexture(const aiTexture* tex, ModelPrimitive& mp) {
 
 // Walk the node tree, baking each node's world transform into its meshes so the
 // output matches loadGltf (de-indexed 8-float verts, one primitive per mesh).
+// Convert one assimp mesh into a de-indexed ModelPrimitive, baking `world` into
+// the positions/normals (matching loadGltf's static output).
+ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
+                                 const glm::mat4& world) {
+    const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(world)));
+    ModelPrimitive mp;
+    if (mesh->mMaterialIndex < scene->mNumMaterials) {
+        const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
+        aiString nm;
+        if (mat->Get(AI_MATKEY_NAME, nm) == AI_SUCCESS) mp.materialName = nm.C_Str();
+        aiColor4D col;
+        if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, col) == AI_SUCCESS) {
+            mp.baseColor[0] = col.r; mp.baseColor[1] = col.g;
+            mp.baseColor[2] = col.b; mp.baseColor[3] = col.a;
+        }
+        float opacity = 1.0f;
+        if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS && opacity < 0.999f)
+            mp.alphaCutout = true;
+        aiString texPath; // embedded textures only
+        if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS &&
+            texPath.length > 1 && texPath.data[0] == '*') {
+            const int ti = std::atoi(texPath.C_Str() + 1);
+            if (ti >= 0 && ti < static_cast<int>(scene->mNumTextures))
+                decodeAiTexture(scene->mTextures[ti], mp);
+        }
+    }
+    const bool hasN  = mesh->HasNormals();
+    const bool hasUV = mesh->HasTextureCoords(0);
+    mp.vertices.reserve(static_cast<std::size_t>(mesh->mNumFaces) * 3 * 8);
+    for (unsigned f = 0; f < mesh->mNumFaces; ++f) {
+        const aiFace& face = mesh->mFaces[f];
+        if (face.mNumIndices != 3) continue; // triangulated on import
+        for (int k = 0; k < 3; ++k) {
+            const unsigned idx = face.mIndices[k];
+            const aiVector3D& P = mesh->mVertices[idx];
+            const glm::vec3 wp = glm::vec3(world * glm::vec4(P.x, P.y, P.z, 1.0f));
+            glm::vec3 wn(0.0f, 1.0f, 0.0f);
+            if (hasN) {
+                const aiVector3D& N = mesh->mNormals[idx];
+                wn = glm::normalize(normalM * glm::vec3(N.x, N.y, N.z));
+            }
+            float u = 0.0f, v = 0.0f;
+            if (hasUV) {
+                const aiVector3D& T = mesh->mTextureCoords[0][idx];
+                u = T.x; v = T.y;
+            }
+            mp.vertices.insert(mp.vertices.end(),
+                {wp.x, wp.y, wp.z, wn.x, wn.y, wn.z, u, v});
+        }
+    }
+    return mp;
+}
+
 void collectColladaNode(const aiScene* scene, const aiNode* node,
                         const glm::mat4& parent, ModelData& out,
                         float& lo, float& hi) {
-    const glm::mat4 world   = parent * aiToGlm(node->mTransformation);
-    const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(world)));
-
+    const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
         const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
         if (!mesh || mesh->mNumFaces == 0) continue;
-
-        ModelPrimitive mp;
-        if (mesh->mMaterialIndex < scene->mNumMaterials) {
-            const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
-            aiString nm;
-            if (mat->Get(AI_MATKEY_NAME, nm) == AI_SUCCESS) mp.materialName = nm.C_Str();
-            aiColor4D col;
-            if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, col) == AI_SUCCESS) {
-                mp.baseColor[0] = col.r; mp.baseColor[1] = col.g;
-                mp.baseColor[2] = col.b; mp.baseColor[3] = col.a;
-            }
-            float opacity = 1.0f;
-            if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS && opacity < 0.999f)
-                mp.alphaCutout = true;
-            aiString texPath; // embedded textures only (external files: later phase)
-            if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS &&
-                texPath.length > 1 && texPath.data[0] == '*') {
-                const int ti = std::atoi(texPath.C_Str() + 1);
-                if (ti >= 0 && ti < static_cast<int>(scene->mNumTextures))
-                    decodeAiTexture(scene->mTextures[ti], mp);
-            }
-        }
-
-        const bool hasN  = mesh->HasNormals();
-        const bool hasUV = mesh->HasTextureCoords(0);
-        mp.vertices.reserve(static_cast<std::size_t>(mesh->mNumFaces) * 3 * 8);
-        for (unsigned f = 0; f < mesh->mNumFaces; ++f) {
-            const aiFace& face = mesh->mFaces[f];
-            if (face.mNumIndices != 3) continue; // triangulated on import
-            for (int k = 0; k < 3; ++k) {
-                const unsigned idx = face.mIndices[k];
-                const aiVector3D& P = mesh->mVertices[idx];
-                const glm::vec3 wp = glm::vec3(world * glm::vec4(P.x, P.y, P.z, 1.0f));
-                glm::vec3 wn(0.0f, 1.0f, 0.0f);
-                if (hasN) {
-                    const aiVector3D& N = mesh->mNormals[idx];
-                    wn = glm::normalize(normalM * glm::vec3(N.x, N.y, N.z));
-                }
-                float u = 0.0f, v = 0.0f;
-                if (hasUV) {
-                    const aiVector3D& T = mesh->mTextureCoords[0][idx];
-                    u = T.x; v = T.y;
-                }
-                mp.vertices.insert(mp.vertices.end(),
-                    {wp.x, wp.y, wp.z, wn.x, wn.y, wn.z, u, v});
-                lo = glm::min(lo, wp.y);
-                hi = glm::max(hi, wp.y);
-            }
+        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world);
+        for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
+            lo = glm::min(lo, mp.vertices[i + 1]);
+            hi = glm::max(hi, mp.vertices[i + 1]);
         }
         if (mp.vertexCount() > 0) out.primitives.push_back(std::move(mp));
     }
-
     for (unsigned c = 0; c < node->mNumChildren; ++c)
         collectColladaNode(scene, node->mChildren[c], world, out, lo, hi);
+}
+
+// Structure-preserving walk: one ModelNode per mesh-bearing node, its meshes
+// world-baked then recentred on their combined AABB (so each sits at the origin;
+// `center` is where that origin belongs in model space).
+void collectStructuredNode(const aiScene* scene, const aiNode* node,
+                           const glm::mat4& parent, std::vector<ModelNode>& out) {
+    const glm::mat4 world = parent * aiToGlm(node->mTransformation);
+    if (node->mNumMeshes > 0) {
+        ModelNode mn;
+        mn.name = node->mName.length ? node->mName.C_Str() : "part";
+        glm::vec3 lo(1e30f), hi(-1e30f);
+        for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
+            const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
+            if (!mesh || mesh->mNumFaces == 0) continue;
+            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world);
+            if (mp.vertexCount() == 0) continue;
+            for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
+                lo = glm::min(lo, glm::vec3(mp.vertices[i], mp.vertices[i+1], mp.vertices[i+2]));
+                hi = glm::max(hi, glm::vec3(mp.vertices[i], mp.vertices[i+1], mp.vertices[i+2]));
+            }
+            mn.data.primitives.push_back(std::move(mp));
+        }
+        if (!mn.data.primitives.empty()) {
+            const glm::vec3 c = 0.5f * (lo + hi);
+            for (ModelPrimitive& p : mn.data.primitives)
+                for (int i = 0; i + 7 < static_cast<int>(p.vertices.size()); i += 8) {
+                    p.vertices[i]     -= c.x;
+                    p.vertices[i + 1] -= c.y;
+                    p.vertices[i + 2] -= c.z;
+                }
+            mn.data.minY = lo.y - c.y;
+            mn.data.maxY = hi.y - c.y;
+            mn.center = c;
+            out.push_back(std::move(mn));
+        }
+    }
+    for (unsigned c = 0; c < node->mNumChildren; ++c)
+        collectStructuredNode(scene, node->mChildren[c], world, out);
 }
 
 } // namespace
@@ -447,6 +492,22 @@ ModelData loadCollada(const std::string& path) {
     float hi = std::numeric_limits<float>::lowest();
     collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), out, lo, hi);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
+    return out;
+}
+
+std::vector<ModelNode> loadModelNodes(const std::string& path) {
+    std::vector<ModelNode> out;
+    Assimp::Importer imp;
+    const aiScene* scene = imp.ReadFile(
+        path, aiProcess_Triangulate | aiProcess_GenSmoothNormals |
+              aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality);
+    if (!scene || !scene->mRootNode ||
+        (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
+        std::fprintf(stderr, "[Fitzel] failed to load model '%s': %s\n",
+                     path.c_str(), imp.GetErrorString());
+        return out;
+    }
+    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), out);
     return out;
 }
 
