@@ -2730,6 +2730,78 @@ int main(int argc, char** argv) {
                 }
                 ImGui::EndMainMenuBar();
             }
+
+            // --- Toolbar strip under the menu bar: primitive-creation icons.
+            //     A viewport side bar reserves space at the top of the work area,
+            //     so the dockspace below shifts down automatically. Each button
+            //     draws its shape (no icon font); clicking it makes that type the
+            //     active one and drops one in front of the camera.
+            {
+                ImGuiViewport* tvp = ImGui::GetMainViewport();
+                const float bh   = 26.0f;
+                const float barH = bh + ImGui::GetStyle().WindowPadding.y * 2.0f + 2.0f;
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+                const bool barOpen = ImGui::BeginViewportSideBar(
+                    "##PrimToolbar", tvp, ImGuiDir_Up, barH,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration);
+                if (barOpen) {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const ImVec2 bs(bh, bh);
+                    auto shapeBtn = [&](EntityType t, const char* tip) {
+                        ImGui::PushID(static_cast<int>(t) + 1);
+                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        const bool clicked = ImGui::Button("##s", bs);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
+                        const float r = 8.0f;
+                        const ImU32 col = (entityNewType == t)
+                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
+                        switch (t) {
+                            case EntityType::Box:
+                                dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0.0f, 0, 2.0f);
+                                break;
+                            case EntityType::Ramp:
+                                dl->AddTriangle({c.x - r, c.y + r}, {c.x + r, c.y + r},
+                                                {c.x + r, c.y - r}, col, 2.0f);
+                                break;
+                            case EntityType::Cylinder:
+                                dl->AddRect({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y + r},
+                                            col, 4.0f, 0, 2.0f);
+                                dl->AddLine({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y - r}, col, 2.0f);
+                                break;
+                            case EntityType::Sphere:
+                                dl->AddCircle(c, r, col, 0, 2.0f);
+                                break;
+                            case EntityType::Light:
+                                dl->AddCircleFilled(c, r * 0.45f, col);
+                                for (int a = 0; a < 8; ++a) {
+                                    const float ang = a * 0.7853982f;
+                                    const ImVec2 d(std::cos(ang), std::sin(ang));
+                                    dl->AddLine({c.x + d.x * r * 0.7f, c.y + d.y * r * 0.7f},
+                                                {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
+                                }
+                                break;
+                            default: break;
+                        }
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                        if (clicked) {
+                            entityNewType = t;
+                            const glm::vec3 pp = camera.position() + camera.front() * 6.0f;
+                            addEntity(glm::vec3(pp.x, streamer.heightAt(pp.x, pp.z), pp.z), t);
+                        }
+                    };
+                    shapeBtn(EntityType::Box, "Box");
+                    shapeBtn(EntityType::Ramp, "Ramp");
+                    shapeBtn(EntityType::Cylinder, "Cylinder");
+                    shapeBtn(EntityType::Sphere, "Sphere");
+                    shapeBtn(EntityType::Light, "Light");
+                }
+                ImGui::End();
+                ImGui::PopStyleVar();
+            }
+
             // --- New Project / Save As wizard --------------------------------
             if (wizardOpen) { ImGui::OpenPopup("Project Wizard"); wizardOpen = false; }
             ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
@@ -3467,65 +3539,6 @@ int main(int argc, char** argv) {
                 if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
                     gizmoOp = ImGuizmo::SCALE;
 
-                // Primitive toolbar: each button draws the shape's symbol. Clicking
-                // it makes that type active (for viewport ground-clicks) and drops
-                // one in front of the camera.
-                ImGui::TextDisabled("Add:");
-                ImGui::SameLine();
-                {
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const ImVec2 bs(30.0f, 30.0f);
-                    auto shapeBtn = [&](EntityType t, const char* tip) {
-                        ImGui::PushID(static_cast<int>(t) + 1);
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##s", bs);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 9.0f;
-                        const ImU32 col = (entityNewType == t)
-                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
-                        switch (t) {
-                            case EntityType::Box:
-                                dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0.0f, 0, 2.0f);
-                                break;
-                            case EntityType::Ramp:
-                                dl->AddTriangle({c.x - r, c.y + r}, {c.x + r, c.y + r},
-                                                {c.x + r, c.y - r}, col, 2.0f);
-                                break;
-                            case EntityType::Cylinder:
-                                dl->AddRect({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y + r},
-                                            col, 4.0f, 0, 2.0f);
-                                dl->AddLine({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y - r}, col, 2.0f);
-                                break;
-                            case EntityType::Sphere:
-                                dl->AddCircle(c, r, col, 0, 2.0f);
-                                break;
-                            case EntityType::Light:
-                                dl->AddCircleFilled(c, r * 0.45f, col);
-                                for (int a = 0; a < 8; ++a) {
-                                    const float ang = a * 0.7853982f;
-                                    const ImVec2 d(std::cos(ang), std::sin(ang));
-                                    dl->AddLine({c.x + d.x * r * 0.7f, c.y + d.y * r * 0.7f},
-                                                {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
-                                }
-                                break;
-                            default: break;
-                        }
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked) {
-                            entityNewType = t;
-                            const glm::vec3 pp = camera.position() + camera.front() * 6.0f;
-                            addEntity(glm::vec3(pp.x, streamer.heightAt(pp.x, pp.z), pp.z), t);
-                        }
-                    };
-                    shapeBtn(EntityType::Box, "Box");
-                    shapeBtn(EntityType::Ramp, "Ramp");
-                    shapeBtn(EntityType::Cylinder, "Cylinder");
-                    shapeBtn(EntityType::Sphere, "Sphere");
-                    shapeBtn(EntityType::Light, "Light");
-                    ImGui::NewLine();
-                }
                 ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
                 if (ImGui::Button("Duplicate")) duplicateEntity(entitySel);
                 ImGui::SameLine();
