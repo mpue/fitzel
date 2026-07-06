@@ -45,12 +45,25 @@ void storePixels(unsigned char* px, int w, int h, ModelPrimitive& prim) {
     stbi_image_free(px);
 }
 
+// Name an encoded image's container from its magic bytes, so an undecodable
+// embedded texture reports WHAT it is (stb can't read WebP/KTX2/etc.).
+const char* imageFormat(const unsigned char* p, std::size_t n) {
+    if (n >= 8 && p[0] == 0x89 && p[1] == 'P' && p[2] == 'N' && p[3] == 'G') return "PNG";
+    if (n >= 3 && p[0] == 0xFF && p[1] == 0xD8 && p[2] == 0xFF)             return "JPEG";
+    if (n >= 12 && !std::memcmp(p, "RIFF", 4) && !std::memcmp(p + 8, "WEBP", 4)) return "WebP";
+    if (n >= 12 && !std::memcmp(p + 4, "ftypavif", 8))                     return "AVIF";
+    if (n >= 4 && p[0] == 0xAB && p[1] == 'K' && p[2] == 'T' && p[3] == 'X') return "KTX";
+    if (n >= 4 && !std::memcmp(p, "GIF8", 4))                              return "GIF";
+    if (n >= 2 && p[0] == 'B' && p[1] == 'M')                             return "BMP";
+    return "unknown";
+}
+
 // Decode a glTF base-colour/diffuse image into RGBA, from wherever it lives:
 // an embedded buffer view (the GLB case), an inline base64 data URI, or an
 // external file relative to the model. Missing any of these left textures
 // undecoded before -- so a model mixing storage/workflows lost some textures.
 void decodeImage(const cgltf_image* img, const std::string& baseDir,
-                 ModelPrimitive& prim) {
+                 ModelPrimitive& prim, const std::string& matName) {
     if (!img) return;
     stbi_set_flip_vertically_on_load(0); // glTF UVs match GL once uploaded as-is
     int w = 0, h = 0, ch = 0;
@@ -58,8 +71,15 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     if (img->buffer_view) {                       // embedded (typical GLB)
         const cgltf_buffer_view* bv = img->buffer_view;
         const auto* src = static_cast<const unsigned char*>(bv->buffer->data) + bv->offset;
-        storePixels(stbi_load_from_memory(src, static_cast<int>(bv->size),
-                                          &w, &h, &ch, 4), w, h, prim);
+        unsigned char* px = stbi_load_from_memory(src, static_cast<int>(bv->size),
+                                                  &w, &h, &ch, 4);
+        if (!px)
+            std::fprintf(stderr,
+                "[Fitzel] glTF material '%s': embedded texture is %s, which "
+                "stb_image can't decode -> shows flat colour\n",
+                matName.empty() ? "?" : matName.c_str(),
+                imageFormat(src, bv->size));
+        storePixels(px, w, h, prim);
         return;
     }
     if (!img->uri) return;
@@ -244,21 +264,8 @@ ModelData loadGltf(const std::string& path) {
                     for (int c = 0; c < 4; ++c) mp.baseColor[c] = sg.diffuse_factor[c];
                     colorTex = sg.diffuse_texture.texture;
                 }
-                if (colorTex) {
-                    decodeImage(colorTex->image, baseDir, mp);
-                    if (mp.texPixels.empty()) {
-                        const cgltf_image* im = colorTex->image;
-                        std::fprintf(stderr,
-                            "[Fitzel] glTF material '%s': colour texture not "
-                            "decoded (image=%s, basisu=%s) -> shows flat colour\n",
-                            mp.materialName.empty() ? "?" : mp.materialName.c_str(),
-                            im ? (im->buffer_view ? "embedded"
-                                                  : (im->uri ? im->uri : "none"))
-                               : "null",
-                            colorTex->basisu_image ? "yes (KTX2/Basis unsupported)"
-                                                   : "no");
-                    }
-                }
+                if (colorTex)
+                    decodeImage(colorTex->image, baseDir, mp, mp.materialName);
             }
 
             const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
