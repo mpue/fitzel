@@ -1308,6 +1308,8 @@ int main(int argc, char** argv) {
         bool        prevEsc  = false;
         bool        prevSpace = false;
         bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
+        bool        camFocusing = false;      // F: smoothly gliding to a focus point
+        glm::vec3   camFocusTarget{0.0f};
 
         // Undo/redo edge state + gizmo-drag snapshot (a drag is one undoable step).
         bool                prevUndo = false, prevRedo = false;
@@ -1878,12 +1880,14 @@ int main(int argc, char** argv) {
                     }
                 } else if (!fpsMode && entitySel >= 0 &&
                            entitySel < static_cast<int>(entities.size())) {
-                    // Focus: keep the view direction, back off to fit the object.
+                    // Focus: keep the view direction, back off to fit the object,
+                    // and glide there smoothly (applied each frame below).
                     const Entity& e = entities[entitySel];
                     const float radius = glm::max(glm::length(e.half), 0.25f);
                     const float fov    = glm::radians(glm::max(camera.fov(), 1.0f));
                     const float dist   = radius / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f;
-                    camera.setPosition(e.center - camera.front() * dist);
+                    camFocusTarget = e.center - camera.front() * dist;
+                    camFocusing    = true;
                 }
             }
             prevF = fDown;
@@ -2129,6 +2133,24 @@ int main(int argc, char** argv) {
                     if (input.isKeyDown(GLFW_KEY_D)) camera.processKeyboard(Camera::Direction::Right, dt);
                     if (input.isKeyDown(GLFW_KEY_E)) camera.processKeyboard(Camera::Direction::Up, dt);
                     if (input.isKeyDown(GLFW_KEY_Q)) camera.processKeyboard(Camera::Direction::Down, dt);
+                }
+            }
+
+            // Focus (F): glide the camera to the target, cancelled by any manual
+            // camera input (right-mouse fly) or leaving the free camera.
+            if (camFocusing) {
+                if (fpsMode || vehicleMode || playMode ||
+                    input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
+                    camFocusing = false;
+                } else {
+                    const glm::vec3 pos = camera.position();
+                    const glm::vec3 to  = camFocusTarget - pos;
+                    if (glm::length(to) < 0.03f) {
+                        camera.setPosition(camFocusTarget);
+                        camFocusing = false;
+                    } else {
+                        camera.setPosition(pos + to * (1.0f - std::exp(-12.0f * dt)));
+                    }
                 }
             }
 
