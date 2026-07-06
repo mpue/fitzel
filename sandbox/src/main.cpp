@@ -1627,6 +1627,12 @@ int main(int argc, char** argv) {
             for (const Entity& e : entities)
                 if (const auto* cc = e.components.get<CameraComponent>();
                     cc && cc->activeOnStart) { activeCam = e.id; break; }
+            // Re-init animations so autostart/range apply fresh at Play start
+            // (instead of continuing from the editor preview position).
+            for (Entity& e : entities)
+                if (auto* ac = e.components.get<AnimationComponent>()) {
+                    ac->started = false; ac->restart = false;
+                }
             scripts.reset(); // fresh VM: scripts reload, start() runs again
             host.score = 0;
             host.hud.clear();
@@ -2313,6 +2319,18 @@ int main(int argc, char** argv) {
                                 host.playSound(ts->sound); // one-shot (no per-voice volume)
                             }
                             ts->insideLast = inside;
+                        }
+                        // AnimationTrigger: on entry, (re)start the target entity's
+                        // Animation from its range start (the anim tick honours restart).
+                        if (auto* at = e.components.get<AnimationTriggerComponent>()) {
+                            const bool inside = glm::distance(playerC, e.center) <= at->radius;
+                            if (inside && !at->insideLast && !(at->once && at->fired))
+                                if (Entity* tgt = document.find(at->target))
+                                    if (auto* ac = tgt->components.get<AnimationComponent>()) {
+                                        ac->restart = true;
+                                        at->fired = true;
+                                    }
+                            at->insideLast = inside;
                         }
                         // Lift: rise while the player is within range, descend when
                         // they leave, between the start (bottom) and start+offset
@@ -3639,6 +3657,21 @@ int main(int argc, char** argv) {
                                 } else {
                                     ImGui::TextDisabled("No animated model on this entity.");
                                 }
+                            } else if (auto* at = dynamic_cast<AnimationTriggerComponent*>(c)) {
+                                // Radius/once from metadata; Target = a picker over
+                                // the scene's entities that have an Animation.
+                                for (const Property& pr : at->props()) drawProperty(pr, at);
+                                const Entity* cur = document.find(at->target);
+                                const std::string label = cur ? cur->name : "(none)";
+                                if (ImGui::BeginCombo("Target", label.c_str())) {
+                                    if (ImGui::Selectable("(none)", at->target < 0))
+                                        at->target = -1;
+                                    for (const Entity& te : entities)
+                                        if (te.components.get<AnimationComponent>())
+                                            if (ImGui::Selectable(te.name.c_str(), at->target == te.id))
+                                                at->target = te.id;
+                                    ImGui::EndCombo();
+                                }
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
@@ -4139,10 +4172,34 @@ int main(int argc, char** argv) {
                     const int ci = glm::clamp(ac->clip, 0,
                                               static_cast<int>(clips.size()) - 1);
                     const float dur = clips[ci].duration;
-                    if (ac->playing) ac->time += dt * ac->speed;
-                    if (dur > 0.0f)
-                        ac->time = ac->loop ? std::fmod(ac->time, dur)
-                                            : glm::min(ac->time, dur);
+                    // Playback sub-range [rStart, rEnd] (end <= start -> whole clip).
+                    const float rStart = glm::clamp(ac->start, 0.0f, dur);
+                    float rEnd = (ac->end > ac->start) ? glm::clamp(ac->end, 0.0f, dur) : dur;
+                    if (rEnd <= rStart) rEnd = dur;
+                    const float span = rEnd - rStart;
+                    // First tick this Play: apply autostart; a trigger sets restart.
+                    if (!ac->started) {
+                        ac->started = true;
+                        ac->playing = ac->autostart;
+                        ac->time    = ac->reverse ? rEnd : rStart;
+                    }
+                    if (ac->restart) {
+                        ac->restart = false;
+                        ac->playing = true;
+                        ac->time    = ac->reverse ? rEnd : rStart;
+                    }
+                    if (ac->playing && span > 1e-4f) {
+                        ac->time += dt * ac->speed * (ac->reverse ? -1.0f : 1.0f);
+                        if (ac->loop) {
+                            float rel = ac->time - rStart;
+                            rel -= std::floor(rel / span) * span; // wrap into [0, span)
+                            ac->time = rStart + rel;
+                        } else if (ac->reverse) {
+                            if (ac->time <= rStart) { ac->time = rStart; ac->playing = false; }
+                        } else {
+                            if (ac->time >= rEnd)   { ac->time = rEnd;   ac->playing = false; }
+                        }
+                    }
                     const auto palette = sampleSkeleton(*lm->animData, ci, ac->time);
                     if (palette.empty()) continue;
                     const auto& prims = lm->animData->primitives;

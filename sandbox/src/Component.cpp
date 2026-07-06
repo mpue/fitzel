@@ -294,25 +294,30 @@ const std::vector<Property>& PusherComponent::properties() {
 const std::vector<Property>& AnimationComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
-        Property speed;
-        speed.label = "Speed"; speed.key = "speed"; speed.kind = PropKind::Float;
-        speed.slider = true; speed.min = 0.0f; speed.max = 4.0f; speed.fmt = "%.2fx";
-        speed.field = [](void* o) -> void* { return &static_cast<AnimationComponent*>(o)->speed; };
-        p.push_back(std::move(speed));
-        Property playing;
-        playing.label = "Playing"; playing.key = "playing"; playing.kind = PropKind::Bool;
-        playing.field = [](void* o) -> void* { return &static_cast<AnimationComponent*>(o)->playing; };
-        p.push_back(std::move(playing));
-        Property loop;
-        loop.label = "Loop"; loop.key = "loop"; loop.kind = PropKind::Bool;
-        loop.field = [](void* o) -> void* { return &static_cast<AnimationComponent*>(o)->loop; };
-        p.push_back(std::move(loop));
+        auto addBool = [&](const char* label, const char* key, bool AnimationComponent::* m) {
+            Property b; b.label = label; b.key = key; b.kind = PropKind::Bool;
+            b.field = [m](void* o) -> void* { return &(static_cast<AnimationComponent*>(o)->*m); };
+            p.push_back(std::move(b));
+        };
+        auto addFloat = [&](const char* label, const char* key, float AnimationComponent::* m,
+                            bool slider, float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = slider; f.min = lo; f.max = hi; f.speed = 0.05f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<AnimationComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addFloat("Speed", "speed", &AnimationComponent::speed, true, 0.0f, 4.0f, "%.2fx");
+        addBool ("Autostart", "autostart", &AnimationComponent::autostart);
+        addBool ("Loop", "loop", &AnimationComponent::loop);
+        addBool ("Reverse", "reverse", &AnimationComponent::reverse);
+        addFloat("Start (s)", "start", &AnimationComponent::start, false, 0.0f, 600.0f, "%.2f");
+        addFloat("End (s)",   "end",   &AnimationComponent::end,   false, 0.0f, 600.0f, "%.2f");
         return p;
     }();
     return props;
 }
 
-// Persists speed/playing/loop (properties) plus the chosen clip index.
+// Persists the properties above plus the chosen clip index.
 void AnimationComponent::save(nlohmann::json& j) const {
     writeProps(j, props(), this);
     j["clip"] = clip;
@@ -320,6 +325,31 @@ void AnimationComponent::save(nlohmann::json& j) const {
 void AnimationComponent::load(const nlohmann::json& j) {
     readProps(j, props(), this);
     clip = j.value("clip", 0);
+}
+
+const std::vector<Property>& AnimationTriggerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<AnimationTriggerComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property once;
+        once.label = "Once"; once.key = "once"; once.kind = PropKind::Bool;
+        once.field = [](void* o) -> void* { return &static_cast<AnimationTriggerComponent*>(o)->once; };
+        p.push_back(std::move(once));
+        return p;
+    }();
+    return props;
+}
+void AnimationTriggerComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["target"] = target;
+}
+void AnimationTriggerComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    target = j.value("target", -1);
 }
 
 const std::vector<Property>& ScriptComponent::properties() {
@@ -439,6 +469,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraSwitcherComponent>()); }});
         components::registerType({"animation", "Animation",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationComponent>()); }});
+        components::registerType({"animation_trigger", "Animation Trigger",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationTriggerComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

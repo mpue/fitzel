@@ -392,18 +392,26 @@ public:
 };
 
 // --- Built-in component: Animation (plays a skinned model's clip) -------------
-// Attach to a Model entity whose glTF has a skeleton + animation clips: it plays
-// `clip` (looping/one-shot) at `speed`, CPU-skinning the mesh each frame (see the
-// tick in main). `clip` is chosen in the inspector from the model's clip names;
-// `time` is transient playback state. Works in the editor (live preview) too.
+// Attach to a Model entity whose glTF has a skeleton + animation clips. Plays
+// `clip` at `speed`, CPU-skinning the mesh each frame (see the tick in main).
+// `autostart` plays it from Play start; otherwise it waits for an AnimationTrigger
+// to fire. `reverse` plays backward. `start`/`end` restrict playback to a
+// sub-range of the clip in seconds (end <= start -> the whole clip). Loops or
+// stops at the range end per `loop`. Works in the editor preview too.
 class AnimationComponent : public ComponentBase {
 public:
-    int   clip    = 0;     // which animation clip of the model
-    float speed   = 1.0f;  // playback rate multiplier
-    bool  playing = true;
-    bool  loop    = true;
+    int   clip      = 0;      // which animation clip of the model
+    float speed     = 1.0f;   // playback rate multiplier
+    bool  loop      = true;
+    bool  autostart = true;   // play from Play start (else await AnimationTrigger)
+    bool  reverse   = false;  // play backward
+    float start     = 0.0f;   // sub-range start (seconds)
+    float end       = 0.0f;   // sub-range end (seconds; <= start -> whole clip)
 
-    float time = 0.0f;     // runtime: current playback time (seconds)
+    float time    = 0.0f;     // runtime: current playback time (seconds)
+    bool  playing = false;    // runtime: driven by autostart / triggers
+    bool  started = false;    // runtime: initial autostart applied this Play
+    bool  restart = false;    // runtime: a trigger requested a (re)start
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<AnimationComponent>(*this);
@@ -414,6 +422,33 @@ public:
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;
     void load(const nlohmann::json& j) override;
+};
+
+// --- Built-in component: AnimationTrigger (start an Animation on entry) --------
+// A zone that, when the player enters within `radius`, (re)starts the Animation
+// on `target` (an entity id carrying an Animation component) from its range
+// start. `once` fires a single time per Play. Serializes the target id itself.
+class AnimationTriggerComponent : public ComponentBase {
+public:
+    int   target = -1;    // entity id whose Animation to (re)start
+    float radius = 2.5f;
+    bool  once   = true;
+
+    bool insideLast = false; // runtime: player inside last frame (edge)
+    bool fired      = false; // runtime: one-shot latch
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<AnimationTriggerComponent>(*this);
+    }
+    const char* typeId() const override { return "animation_trigger"; }
+    const char* displayName() const override { return "Animation Trigger"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        g.sphere(c, radius, {0.9f, 0.5f, 0.9f, 0.8f}); // trigger zone
+    }
 };
 
 // --- Built-in component: Script (runs a Lua behaviour while playing) ----------
