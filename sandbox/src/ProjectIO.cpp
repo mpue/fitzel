@@ -45,6 +45,7 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["albedo"]       = vec3Json(md.albedo);
     m["reflectivity"] = md.reflectivity;
     m["roughness"]    = md.roughness;
+    m["opacity"]      = md.opacity;
     if (md.texId.valid()) m["texture"] = md.texId.toString();
     std::ofstream f(file); if (f) f << m.dump(2) << '\n';
     writeMeta(file, md.assetId, "Material");
@@ -187,6 +188,7 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
         md.reflectivity = m.value("reflectivity", md.reflectivity);
         md.roughness    = m.value("roughness", md.roughness);
+        md.opacity      = m.value("opacity", md.opacity);
         if (m.contains("texture")) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
@@ -228,6 +230,7 @@ bool loadScene(Context& ctx, const std::string& path) {
                 md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
                 md.reflectivity = m.value("reflectivity", md.reflectivity);
                 md.roughness    = m.value("roughness", md.roughness);
+                md.opacity      = m.value("opacity", md.opacity);
                 if (m.contains("texture")) {
                     md.texId = AssetId::fromString(m["texture"].get<std::string>());
                     if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);

@@ -56,6 +56,7 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
         def.name      = lm->name + ":" + (p.materialName.empty()
                             ? std::to_string(primIdx) : p.materialName);
         def.albedo    = glm::vec3(p.baseColor[0], p.baseColor[1], p.baseColor[2]);
+        def.opacity   = p.baseColor[3]; // glTF/Collada base-colour alpha
         if (!p.texPixels.empty())
             def.tex = std::make_shared<Texture>(Texture::fromPixels(
                 p.texPixels.data(), p.texWidth, p.texHeight, 4));

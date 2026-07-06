@@ -3634,6 +3634,7 @@ int main(int argc, char** argv) {
                             ImGui::ColorEdit3("Albedo", &md.albedo.x);
                         ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
                         ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
+                        ImGui::SliderFloat("Opacity", &md.opacity, 0.0f, 1.0f);
                         // Base-colour texture slot: drop a Texture asset here from
                         // the Assets browser. File-backed textures persist by GUID
                         // (md.texId) into the .fmat; model-embedded ones don't.
@@ -4074,7 +4075,8 @@ int main(int argc, char** argv) {
                     for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
                         const int mi = document.materialIndex(lm->primMaterialId[i]);
                         renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
-                                        materials[mi].reflectivity > 0.0f);
+                                        materials[mi].reflectivity > 0.0f,
+                                        materials[mi].opacity);
                     }
                     continue;
                 }
@@ -4099,7 +4101,8 @@ int main(int argc, char** argv) {
                     const auto* mc = b.components.get<MaterialComponent>();
                     const int mi = document.materialIndex(mc ? mc->material : AssetId{});
                     renderer.submit(mesh, gpuMats[mi], m, true,
-                                    materials[mi].reflectivity > 0.0f);
+                                    materials[mi].reflectivity > 0.0f,
+                                    materials[mi].opacity);
                 }
             }
 

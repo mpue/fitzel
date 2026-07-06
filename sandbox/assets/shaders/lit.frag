@@ -104,6 +104,7 @@ vec3 envBRDFApprox(vec3 F0, float rough, float NoV) {
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
 uniform vec3 uAlbedo;
+uniform float uAlpha;         // material opacity (1 = opaque); * texture alpha
 
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
@@ -289,10 +290,12 @@ void main() {
     float detail = (uColorMode == 1) ? detailFbm(vWorldPos.xz * uDetailScale) : 0.0;
 
     vec3 albedo;
+    float texA = 1.0; // texture alpha, folded into the output alpha
     if (uColorMode == 1) {
         albedo = terrainAlbedo(vWorldPos, N, detail);
     } else if (uColorMode == 2) {
-        albedo = texture(uTexture, vUV).rgb;
+        vec4 t = texture(uTexture, vUV);
+        albedo = t.rgb; texA = t.a;
     } else {
         albedo = uAlbedo;
     }
@@ -375,5 +378,5 @@ void main() {
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 
-    FragColor = vec4(toOutput(color), 1.0);
+    FragColor = vec4(toOutput(color), uAlpha * texA);
 }

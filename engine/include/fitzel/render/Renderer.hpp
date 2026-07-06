@@ -94,8 +94,12 @@ public:
     // (e.g. the ground, which should receive but not cast omni shadows).
     // `reflective` true marks a mesh as an environment-probe surface: it is
     // excluded from the probe render (so it doesn't reflect its own interior).
+    // `opacity` < 1 marks the mesh transparent: it is drawn after the opaque
+    // queue, back-to-front, with alpha blending and depth writes disabled, and
+    // the lit shader multiplies its output alpha by it.
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model,
-                bool castsPointShadow = true, bool reflective = false);
+                bool castsPointShadow = true, bool reflective = false,
+                float opacity = 1.0f);
 
     // Render the scene (opaque queue minus reflective surfaces + the sky drawn
     // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
@@ -137,6 +141,7 @@ private:
         glm::mat4       model;
         bool            castsPointShadow;
         bool            reflective;
+        float           opacity;
     };
 
     CascadedShadowMap m_csm;

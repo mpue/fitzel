@@ -65,6 +65,7 @@ struct MaterialDef {
     glm::vec3   albedo{0.72f, 0.72f, 0.74f};
     float       reflectivity = 0.0f;         // 0 matte .. 1 mirror (env probe)
     float       roughness    = 0.2f;         // reflection blur (0 sharp)
+    float       opacity      = 1.0f;         // 1 opaque .. 0 invisible (alpha blend)
     // Optional base-colour texture (shared so MaterialDef stays copyable). When
     // set, the surface samples it (uColorMode 2) instead of the flat albedo.
     std::shared_ptr<fitzel::Texture> tex;

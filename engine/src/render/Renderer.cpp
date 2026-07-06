@@ -121,8 +121,8 @@ void Renderer::begin(const Camera& camera, float aspect,
 
 void Renderer::submit(const Mesh& mesh, const Material& material,
                       const glm::mat4& model, bool castsPointShadow,
-                      bool reflective) {
-    m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective});
+                      bool reflective, float opacity) {
+    m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective, opacity});
 }
 
 void Renderer::prepareShadows(const ShadowCaster& extra) {
@@ -228,22 +228,23 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     m_csm.bindTextureArray(kShadowMapUnit);
     glEnable(GL_CLIP_DISTANCE0);
 
-    for (const auto& r : m_queue) {
-        if (skipReflective && r.reflective) continue; // env-probe pass excludes them
+    auto drawOne = [&](const Renderable& r) {
         if (!aabbVisible(planes, r.model,
                          r.mesh->boundsMin(), r.mesh->boundsMax())) {
             ++m_lastCulled;
-            continue;
+            return;
         }
         ++m_lastDrawn;
 
         Shader* s = r.material->shader();
-        // Baseline: reflection off. A Material only uploads the uniforms it
-        // defines, so without this a reflective material would leave uReflectivity
-        // set on the shared program and later matte draws (terrain, road) would
-        // inherit it. Materials opt in by setting uReflectivity in apply().
+        // Baseline: reflection off + fully opaque. A Material only uploads the
+        // uniforms it defines, so without these a reflective/transparent material
+        // would leave uReflectivity/uAlpha set on the shared program and later
+        // draws (terrain, road) would inherit it. uAlpha carries per-object
+        // opacity (1 for the opaque queue).
         s->bind();
         s->setFloat("uReflectivity", 0.0f);
+        s->setFloat("uAlpha", r.opacity);
 
         r.material->apply(); // binds shader + material params/textures
 
@@ -325,6 +326,30 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         }
 
         r.mesh->draw();
+    };
+
+    // Opaque queue first, then transparent surfaces back-to-front with alpha
+    // blending and depth writes off (so they blend over the opaque scene and
+    // each other without occluding). Reflective probe pass still excludes them.
+    std::vector<const Renderable*> opaque, transparent;
+    for (const auto& r : m_queue) {
+        if (skipReflective && r.reflective) continue;
+        (r.opacity < 0.999f ? transparent : opaque).push_back(&r);
+    }
+    for (const Renderable* r : opaque) drawOne(*r);
+    if (!transparent.empty()) {
+        std::sort(transparent.begin(), transparent.end(),
+            [&](const Renderable* a, const Renderable* b) {
+                const glm::vec3 da = glm::vec3(a->model[3]) - eye;
+                const glm::vec3 db = glm::vec3(b->model[3]) - eye;
+                return glm::dot(da, da) > glm::dot(db, db); // farthest first
+            });
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);
+        for (const Renderable* r : transparent) drawOne(*r);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
     }
 
     glDisable(GL_CLIP_DISTANCE0);
