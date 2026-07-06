@@ -74,6 +74,9 @@ struct MaterialDef {
     // reference survives save/load). Invalid for model-embedded textures, which
     // are recreated on import and therefore not serialized.
     fitzel::AssetId texId;
+    // Optional tangent-space normal map (same conventions as `tex`).
+    std::shared_ptr<fitzel::Texture> normalTex;
+    fitzel::AssetId normalTexId;
     bool        fromModel = false;           // created by a model import
 };
 

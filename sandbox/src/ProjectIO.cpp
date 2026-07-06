@@ -47,7 +47,8 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["roughness"]    = md.roughness;
     m["opacity"]      = md.opacity;
     m["glass"]        = md.glass;
-    if (md.texId.valid()) m["texture"] = md.texId.toString();
+    if (md.texId.valid())       m["texture"]   = md.texId.toString();
+    if (md.normalTexId.valid()) m["normalMap"] = md.normalTexId.toString();
     std::ofstream f(file); if (f) f << m.dump(2) << '\n';
     writeMeta(file, md.assetId, "Material");
 }
@@ -195,6 +196,10 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
         }
+        if (m.contains("normalMap")) {
+            md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
+            if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
+        }
         ctx.materials.push_back(std::move(md));
     }
     if (ctx.materials.empty()) ctx.seedDefaultMaterials();
@@ -237,6 +242,10 @@ bool loadScene(Context& ctx, const std::string& path) {
                 if (m.contains("texture")) {
                     md.texId = AssetId::fromString(m["texture"].get<std::string>());
                     if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
+                }
+                if (m.contains("normalMap")) {
+                    md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
+                    if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
                 }
                 legacyMat[m.value("id", 0)] = md.assetId;
                 ctx.materials.push_back(std::move(md));

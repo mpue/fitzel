@@ -60,6 +60,9 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
         if (!p.texPixels.empty())
             def.tex = std::make_shared<Texture>(Texture::fromPixels(
                 p.texPixels.data(), p.texWidth, p.texHeight, 4));
+        if (!p.normalPixels.empty())
+            def.normalTex = std::make_shared<Texture>(Texture::fromPixels(
+                p.normalPixels.data(), p.normalWidth, p.normalHeight, 4));
         const AssetId matId = def.assetId;
         materials.push_back(std::move(def));
         lm->primMaterialId.push_back(matId);

@@ -3804,6 +3804,35 @@ int main(int argc, char** argv) {
                                     md.tex.reset();
                                 }
                             }
+
+                            // Normal map slot (tangent-space, OpenGL convention).
+                            std::string nslot = "(none)";
+                            if (md.normalTexId.valid()) {
+                                const AssetDatabase::Entry* ne = assetDb.entry(md.normalTexId);
+                                nslot = ne ? ne->relPath : md.normalTexId.toString();
+                            }
+                            ImGui::Text("Normal map:");
+                            ImGui::SameLine();
+                            ImGui::Button((nslot + "##nrmslot").c_str());
+                            if (ImGui::BeginDragDropTarget()) {
+                                if (const ImGuiPayload* pl =
+                                        ImGui::AcceptDragDropPayload("ASSET_GUID")) {
+                                    const AssetId gid = AssetId::fromString(std::string(
+                                        static_cast<const char*>(pl->Data), pl->DataSize));
+                                    if (assetDb.typeForId(gid) == AssetType::Texture) {
+                                        md.normalTexId = gid;
+                                        md.normalTex   = assetDb.loadTexture(gid);
+                                    }
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+                            if (md.normalTexId.valid()) {
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Clear##nrm")) {
+                                    md.normalTexId = {};
+                                    md.normalTex.reset();
+                                }
+                            }
                         }
                         ImGui::TextDisabled("Reflectivity mirrors the scene (env probe).");
                     }
@@ -4227,6 +4256,10 @@ int main(int argc, char** argv) {
                     m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0);
                 else
                     m.set("uColorMode", 0).set("uAlbedo", md.albedo);
+                if (md.normalTex)
+                    m.setTexture("uNormalMap", *md.normalTex, 2).set("uHasNormalMap", 1);
+                else
+                    m.set("uHasNormalMap", 0);
             }
             std::vector<Material> lightMats;
             lightMats.reserve(entities.size());

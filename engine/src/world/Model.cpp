@@ -36,12 +36,12 @@ namespace fitzel {
 
 namespace {
 
-// Store decoded RGBA pixels into a primitive.
-void storePixels(unsigned char* px, int w, int h, ModelPrimitive& prim) {
+// Store decoded RGBA pixels into an output buffer + dimensions.
+void storePixels(unsigned char* px, int w, int h,
+                 std::vector<std::uint8_t>& outPix, int& outW, int& outH) {
     if (!px) return;
-    prim.texPixels.assign(px, px + static_cast<std::size_t>(w) * h * 4);
-    prim.texWidth  = w;
-    prim.texHeight = h;
+    outPix.assign(px, px + static_cast<std::size_t>(w) * h * 4);
+    outW = w; outH = h;
     stbi_image_free(px);
 }
 
@@ -63,7 +63,8 @@ const char* imageFormat(const unsigned char* p, std::size_t n) {
 // external file relative to the model. Missing any of these left textures
 // undecoded before -- so a model mixing storage/workflows lost some textures.
 void decodeImage(const cgltf_image* img, const std::string& baseDir,
-                 ModelPrimitive& prim, const std::string& matName) {
+                 std::vector<std::uint8_t>& outPix, int& outW, int& outH,
+                 const std::string& matName) {
     if (!img) return;
     stbi_set_flip_vertically_on_load(0); // glTF UVs match GL once uploaded as-is
     int w = 0, h = 0, ch = 0;
@@ -79,7 +80,7 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
                 "stb_image can't decode -> shows flat colour\n",
                 matName.empty() ? "?" : matName.c_str(),
                 imageFormat(src, bv->size));
-        storePixels(px, w, h, prim);
+        storePixels(px, w, h, outPix, outW, outH);
         return;
     }
     if (!img->uri) return;
@@ -95,7 +96,7 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
                 cgltf_result_success && decoded) {
             storePixels(stbi_load_from_memory(static_cast<unsigned char*>(decoded),
                                               static_cast<int>(outSize), &w, &h, &ch, 4),
-                        w, h, prim);
+                        w, h, outPix, outW, outH);
             std::free(decoded);
         }
         return;
@@ -107,7 +108,7 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     cgltf_decode_uri(&uri[0]);
     const std::string file = (std::filesystem::path(baseDir) / uri.c_str())
                                  .generic_string();
-    storePixels(stbi_load(file.c_str(), &w, &h, &ch, 4), w, h, prim);
+    storePixels(stbi_load(file.c_str(), &w, &h, &ch, 4), w, h, outPix, outW, outH);
 }
 
 } // namespace
@@ -265,7 +266,13 @@ ModelData loadGltf(const std::string& path) {
                     colorTex = sg.diffuse_texture.texture;
                 }
                 if (colorTex)
-                    decodeImage(colorTex->image, baseDir, mp, mp.materialName);
+                    decodeImage(colorTex->image, baseDir,
+                                mp.texPixels, mp.texWidth, mp.texHeight, mp.materialName);
+                // Tangent-space normal map (KHR standard normal_texture).
+                if (mat->normal_texture.texture)
+                    decodeImage(mat->normal_texture.texture->image, baseDir,
+                                mp.normalPixels, mp.normalWidth, mp.normalHeight,
+                                mp.materialName);
             }
 
             const cgltf_size count = prim.indices ? prim.indices->count : pos->count;

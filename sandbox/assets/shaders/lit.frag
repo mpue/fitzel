@@ -106,6 +106,8 @@ uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
 uniform vec3 uAlbedo;
 uniform float uAlpha;         // material opacity (1 = opaque); * texture alpha
 uniform int   uGlass;         // 1 = Fresnel alpha (clear head-on, opaque rim)
+uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
+uniform int   uHasNormalMap;  // 1 = perturb the normal with uNormalMap
 
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
@@ -284,6 +286,19 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
     return mix(color, fogCol, clamp(fog, 0.0, 1.0));
 }
 
+// Perturb the geometry normal `N` by a tangent-space normal map, building the
+// TBN basis from screen-space derivatives (no per-vertex tangents needed).
+vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap) {
+    vec3 nt = texture(nmap, uv).xyz * 2.0 - 1.0; // tangent-space normal
+    vec3 dp1 = dFdx(worldPos), dp2 = dFdy(worldPos);
+    vec2 du1 = dFdx(uv),       du2 = dFdy(uv);
+    vec3 dp2p = cross(dp2, N), dp1p = cross(N, dp1);
+    vec3 T = dp2p * du1.x + dp1p * du2.x;
+    vec3 B = dp2p * du1.y + dp1p * du2.y;
+    float inv = inversesqrt(max(dot(T, T), dot(B, B)));
+    return normalize(mat3(T * inv, B * inv, N) * nt);
+}
+
 void main() {
     vec3 N = normalize(vNormal); // smooth geometry normal (drives material masks)
 
@@ -306,9 +321,12 @@ void main() {
     float wet = 1.0 - smoothstep(uWaterLevel - 0.8, uWaterLevel + 0.4, vWorldPos.y);
     albedo *= mix(1.0, 0.42, wet);
 
-    // Detailed normal from the triplanar normal maps, for lighting.
+    // Surface normal: terrain uses its own path; object materials optionally
+    // perturb the geometry normal with a tangent-space normal map.
     if (uColorMode == 1) {
         N = terrainNormal(vWorldPos, N, detail);
+    } else if (uHasNormalMap == 1) {
+        N = applyNormalMap(N, vWorldPos, vUV, uNormalMap);
     }
 
     vec3 L = normalize(uLightDir);

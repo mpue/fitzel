@@ -54,9 +54,12 @@ struct AnimationClip {
 struct ModelPrimitive {
     std::vector<float>         vertices;  // 8 floats per vertex
     std::vector<VertexSkin>    skin;      // per-vertex binding (empty = static)
-    std::vector<std::uint8_t>  texPixels; // RGBA, empty if untextured
+    std::vector<std::uint8_t>  texPixels; // RGBA base colour, empty if untextured
     int   texWidth    = 0;
     int   texHeight   = 0;
+    std::vector<std::uint8_t>  normalPixels; // RGBA tangent-space normal map (opt)
+    int   normalWidth  = 0;
+    int   normalHeight = 0;
     bool  alphaCutout = false;            // material uses MASK/BLEND (foliage)
     float baseColor[4] = {0.8f, 0.8f, 0.8f, 1.0f}; // PBR base-colour factor (tint)
     std::string materialName;             // glTF material name (may be empty)
