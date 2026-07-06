@@ -2759,7 +2759,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
                     ImGui::MenuItem("Assets",          nullptr, &showAssets);
-                    ImGui::MenuItem("Script Editor",   nullptr, &showScriptEditor);
+                    ImGui::MenuItem("Schnipsel (scripts)", nullptr, &showScriptEditor);
                     ImGui::MenuItem("Environment",     nullptr, &showEnv);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
@@ -2774,7 +2774,7 @@ int main(int argc, char** argv) {
                     ImGui::PopStyleColor();
                 } else {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 1.0f, 0.55f, 1.0f));
-                    if (ImGui::MenuItem("|>  Play")) startPlay();
+                    if (ImGui::MenuItem("|>  Datzel")) startPlay();
                     ImGui::PopStyleColor();
                 }
                 ImGui::EndMainMenuBar();
@@ -4204,7 +4204,7 @@ int main(int argc, char** argv) {
             // uses the edited code. Assign a script to an entity in the Inspector.
             if (showScriptEditor) {
                 bool openNewScript = false;
-                if (ImGui::Begin("Script Editor", &showScriptEditor,
+                if (ImGui::Begin("Schnipsel", &showScriptEditor,
                                  ImGuiWindowFlags_MenuBar)) {
                     bool doSave = false;
                     if (ImGui::BeginMenuBar()) {

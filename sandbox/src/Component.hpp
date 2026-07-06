@@ -490,7 +490,7 @@ public:
         return std::make_unique<AnimationComponent>(*this);
     }
     const char* typeId() const override { return "animation"; }
-    const char* displayName() const override { return "Animation"; }
+    const char* displayName() const override { return "Zappel"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;
@@ -514,7 +514,7 @@ public:
         return std::make_unique<AnimationTriggerComponent>(*this);
     }
     const char* typeId() const override { return "animation_trigger"; }
-    const char* displayName() const override { return "Animation Trigger"; }
+    const char* displayName() const override { return "Zappel Trigger"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;

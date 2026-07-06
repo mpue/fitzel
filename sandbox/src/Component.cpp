@@ -531,9 +531,9 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraComponent>()); }});
         components::registerType({"camera_switcher", "Camera Switcher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraSwitcherComponent>()); }});
-        components::registerType({"animation", "Animation",
+        components::registerType({"animation", "Zappel",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationComponent>()); }});
-        components::registerType({"animation_trigger", "Animation Trigger",
+        components::registerType({"animation_trigger", "Zappel Trigger",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationTriggerComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
