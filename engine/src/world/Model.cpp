@@ -244,7 +244,21 @@ ModelData loadGltf(const std::string& path) {
                     for (int c = 0; c < 4; ++c) mp.baseColor[c] = sg.diffuse_factor[c];
                     colorTex = sg.diffuse_texture.texture;
                 }
-                if (colorTex) decodeImage(colorTex->image, baseDir, mp);
+                if (colorTex) {
+                    decodeImage(colorTex->image, baseDir, mp);
+                    if (mp.texPixels.empty()) {
+                        const cgltf_image* im = colorTex->image;
+                        std::fprintf(stderr,
+                            "[Fitzel] glTF material '%s': colour texture not "
+                            "decoded (image=%s, basisu=%s) -> shows flat colour\n",
+                            mp.materialName.empty() ? "?" : mp.materialName.c_str(),
+                            im ? (im->buffer_view ? "embedded"
+                                                  : (im->uri ? im->uri : "none"))
+                               : "null",
+                            colorTex->basisu_image ? "yes (KTX2/Basis unsupported)"
+                                                   : "no");
+                    }
+                }
             }
 
             const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
