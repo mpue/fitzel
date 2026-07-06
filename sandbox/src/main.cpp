@@ -3456,13 +3456,6 @@ int main(int argc, char** argv) {
             ImGui::End(); }
 
             if (ImGui::Begin("Hierarchy")) {
-                ImGui::Checkbox("Edit mode", &entityEditMode);
-                if (entityEditMode)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "Click ground = add | click block = select | drag gizmo | Esc = select mode");
-                else
-                    ImGui::TextDisabled("Selection: click to select | Q/W/E or Edit mode to transform");
-
                 ImGui::TextDisabled("Gizmo (Q/W/E):");
                 ImGui::SameLine();
                 if (ImGui::RadioButton("Move", gizmoOp == ImGuizmo::TRANSLATE))
@@ -3474,18 +3467,65 @@ int main(int argc, char** argv) {
                 if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
                     gizmoOp = ImGuizmo::SCALE;
 
-                // Object palette: type placed on viewport-click, plus quick "Add".
-                const char* typeNames[] = {"Box", "Ramp", "Cylinder", "Sphere", "Light"};
-                int nt = static_cast<int>(entityNewType);
-                ImGui::SetNextItemWidth(120.0f);
-                if (ImGui::Combo("Type", &nt, typeNames, 5))
-                    entityNewType = static_cast<EntityType>(nt);
+                // Primitive toolbar: each button draws the shape's symbol. Clicking
+                // it makes that type active (for viewport ground-clicks) and drops
+                // one in front of the camera.
+                ImGui::TextDisabled("Add:");
                 ImGui::SameLine();
-                if (ImGui::Button("Add")) {
-                    const glm::vec3 p = camera.position() + camera.front() * 6.0f;
-                    addEntity(glm::vec3(p.x, streamer.heightAt(p.x, p.z), p.z), entityNewType);
+                {
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const ImVec2 bs(30.0f, 30.0f);
+                    auto shapeBtn = [&](EntityType t, const char* tip) {
+                        ImGui::PushID(static_cast<int>(t) + 1);
+                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        const bool clicked = ImGui::Button("##s", bs);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
+                        const float r = 9.0f;
+                        const ImU32 col = (entityNewType == t)
+                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
+                        switch (t) {
+                            case EntityType::Box:
+                                dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0.0f, 0, 2.0f);
+                                break;
+                            case EntityType::Ramp:
+                                dl->AddTriangle({c.x - r, c.y + r}, {c.x + r, c.y + r},
+                                                {c.x + r, c.y - r}, col, 2.0f);
+                                break;
+                            case EntityType::Cylinder:
+                                dl->AddRect({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y + r},
+                                            col, 4.0f, 0, 2.0f);
+                                dl->AddLine({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y - r}, col, 2.0f);
+                                break;
+                            case EntityType::Sphere:
+                                dl->AddCircle(c, r, col, 0, 2.0f);
+                                break;
+                            case EntityType::Light:
+                                dl->AddCircleFilled(c, r * 0.45f, col);
+                                for (int a = 0; a < 8; ++a) {
+                                    const float ang = a * 0.7853982f;
+                                    const ImVec2 d(std::cos(ang), std::sin(ang));
+                                    dl->AddLine({c.x + d.x * r * 0.7f, c.y + d.y * r * 0.7f},
+                                                {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
+                                }
+                                break;
+                            default: break;
+                        }
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                        if (clicked) {
+                            entityNewType = t;
+                            const glm::vec3 pp = camera.position() + camera.front() * 6.0f;
+                            addEntity(glm::vec3(pp.x, streamer.heightAt(pp.x, pp.z), pp.z), t);
+                        }
+                    };
+                    shapeBtn(EntityType::Box, "Box");
+                    shapeBtn(EntityType::Ramp, "Ramp");
+                    shapeBtn(EntityType::Cylinder, "Cylinder");
+                    shapeBtn(EntityType::Sphere, "Sphere");
+                    shapeBtn(EntityType::Light, "Light");
+                    ImGui::NewLine();
                 }
-                ImGui::TextDisabled("(or click the ground in the viewport in edit mode)");
                 ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
                 if (ImGui::Button("Duplicate")) duplicateEntity(entitySel);
                 ImGui::SameLine();
@@ -3557,52 +3597,6 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                ImGui::SeparatorText("Project");
-                ImGui::TextDisabled("Current: %s", currentProject.empty()
-                    ? "(unsaved)"
-                    : std::filesystem::path(currentProject).stem().string().c_str());
-
-                if (ImGui::Button("New...")) {
-                    wizardIsNew = true;
-                    wizName[0] = '\0';
-                    std::snprintf(wizLocation, sizeof(wizLocation), "%s",
-                                  prefLocation.c_str());
-                    wizardOpen = true;
-                }
-                ImGui::SameLine();
-                ImGui::BeginDisabled(currentProject.empty());
-                if (ImGui::Button("Save")) saveCurrent();
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Clear objects")) { // keep Sun + materials
-                    entities.erase(std::remove_if(entities.begin(), entities.end(),
-                                   [](const Entity& e){ return e.type != EntityType::Sun; }),
-                                   entities.end());
-                    entitySel = -1;
-                    history.clear(); // bulk reset -> drop history
-                }
-
-                ImGui::SetNextItemWidth(150.0f);
-                if (ImGui::BeginCombo("Open##proj", "Select project...")) {
-                    if (ImGui::Selectable("Browse folder...")) {
-                        std::string picked;
-                        if (ed::pickFolder(picked, prefLocation))
-                            openProjectFolder(picked);
-                    }
-                    for (const std::string& folder : recentProjects) {
-                        const std::string lbl =
-                            std::filesystem::path(folder).filename().string() +
-                            "##r" + folder;
-                        if (ImGui::Selectable(lbl.c_str())) openProjectFolder(folder);
-                    }
-                    const auto projs = listProjectsIn(prefLocation);
-                    for (const auto& [n, folder] : projs)
-                        if (ImGui::Selectable((n + "##d" + folder).c_str()))
-                            openProjectFolder(folder);
-                    if (recentProjects.empty() && projs.empty())
-                        ImGui::TextDisabled("(no projects yet)");
-                    ImGui::EndCombo();
-                }
             }
             ImGui::End();
 
