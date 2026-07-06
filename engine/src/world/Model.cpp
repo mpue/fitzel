@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <unordered_map>
@@ -33,22 +36,58 @@ namespace fitzel {
 
 namespace {
 
-// Decode an embedded image (referenced by a base-colour texture) into RGBA.
-void decodeTexture(const cgltf_texture* tex, ModelPrimitive& prim) {
-    if (!tex || !tex->image || !tex->image->buffer_view) return;
-    const cgltf_buffer_view* bv = tex->image->buffer_view;
-    const auto* src = static_cast<const unsigned char*>(bv->buffer->data) + bv->offset;
+// Store decoded RGBA pixels into a primitive.
+void storePixels(unsigned char* px, int w, int h, ModelPrimitive& prim) {
+    if (!px) return;
+    prim.texPixels.assign(px, px + static_cast<std::size_t>(w) * h * 4);
+    prim.texWidth  = w;
+    prim.texHeight = h;
+    stbi_image_free(px);
+}
 
-    int w = 0, h = 0, ch = 0;
+// Decode a glTF base-colour/diffuse image into RGBA, from wherever it lives:
+// an embedded buffer view (the GLB case), an inline base64 data URI, or an
+// external file relative to the model. Missing any of these left textures
+// undecoded before -- so a model mixing storage/workflows lost some textures.
+void decodeImage(const cgltf_image* img, const std::string& baseDir,
+                 ModelPrimitive& prim) {
+    if (!img) return;
     stbi_set_flip_vertically_on_load(0); // glTF UVs match GL once uploaded as-is
-    unsigned char* px = stbi_load_from_memory(src, static_cast<int>(bv->size),
-                                              &w, &h, &ch, 4);
-    if (px) {
-        prim.texPixels.assign(px, px + static_cast<std::size_t>(w) * h * 4);
-        prim.texWidth  = w;
-        prim.texHeight = h;
-        stbi_image_free(px);
+    int w = 0, h = 0, ch = 0;
+
+    if (img->buffer_view) {                       // embedded (typical GLB)
+        const cgltf_buffer_view* bv = img->buffer_view;
+        const auto* src = static_cast<const unsigned char*>(bv->buffer->data) + bv->offset;
+        storePixels(stbi_load_from_memory(src, static_cast<int>(bv->size),
+                                          &w, &h, &ch, 4), w, h, prim);
+        return;
     }
+    if (!img->uri) return;
+
+    if (std::strncmp(img->uri, "data:", 5) == 0) { // inline base64 data URI
+        const char* comma = std::strchr(img->uri, ',');
+        if (!comma) return;
+        const char* b64 = comma + 1;
+        const cgltf_size outSize = (std::strlen(b64) / 4) * 3;
+        void* decoded = nullptr;
+        cgltf_options opts{};
+        if (cgltf_load_buffer_base64(&opts, outSize, b64, &decoded) ==
+                cgltf_result_success && decoded) {
+            storePixels(stbi_load_from_memory(static_cast<unsigned char*>(decoded),
+                                              static_cast<int>(outSize), &w, &h, &ch, 4),
+                        w, h, prim);
+            std::free(decoded);
+        }
+        return;
+    }
+
+    // External file, relative to the model (percent-decoded).
+    std::string uri = img->uri;
+    uri.push_back('\0');
+    cgltf_decode_uri(&uri[0]);
+    const std::string file = (std::filesystem::path(baseDir) / uri.c_str())
+                                 .generic_string();
+    storePixels(stbi_load(file.c_str(), &w, &h, &ch, 4), w, h, prim);
 }
 
 } // namespace
@@ -67,6 +106,9 @@ ModelData loadGltf(const std::string& path) {
         cgltf_free(data);
         return out;
     }
+    // Directory the model lives in, for resolving external (non-embedded) images.
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
 
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
@@ -185,13 +227,24 @@ ModelData loadGltf(const std::string& path) {
 
             ModelPrimitive mp;
             if (prim.material) {
-                if (prim.material->name) mp.materialName = prim.material->name;
-                mp.alphaCutout = (prim.material->alpha_mode != cgltf_alpha_mode_opaque);
-                if (prim.material->has_pbr_metallic_roughness) {
-                    const auto& pbr = prim.material->pbr_metallic_roughness;
+                const cgltf_material* mat = prim.material;
+                if (mat->name) mp.materialName = mat->name;
+                mp.alphaCutout = (mat->alpha_mode != cgltf_alpha_mode_opaque);
+                // Support both PBR workflows: metallic-roughness base colour and
+                // the KHR spec-gloss diffuse (older exporters). Whichever provides
+                // the colour texture wins -- a model mixing them keeps all its maps.
+                const cgltf_texture* colorTex = nullptr;
+                if (mat->has_pbr_metallic_roughness) {
+                    const auto& pbr = mat->pbr_metallic_roughness;
                     for (int c = 0; c < 4; ++c) mp.baseColor[c] = pbr.base_color_factor[c];
-                    decodeTexture(pbr.base_color_texture.texture, mp);
+                    colorTex = pbr.base_color_texture.texture;
                 }
+                if (!colorTex && mat->has_pbr_specular_glossiness) {
+                    const auto& sg = mat->pbr_specular_glossiness;
+                    for (int c = 0; c < 4; ++c) mp.baseColor[c] = sg.diffuse_factor[c];
+                    colorTex = sg.diffuse_texture.texture;
+                }
+                if (colorTex) decodeImage(colorTex->image, baseDir, mp);
             }
 
             const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
