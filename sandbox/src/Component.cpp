@@ -196,6 +196,33 @@ const std::vector<Property>& LiftComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& TriggerSoundComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 40.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property vol;
+        vol.label = "Volume"; vol.key = "volume"; vol.kind = PropKind::Float;
+        vol.slider = true; vol.min = 0.0f; vol.max = 1.0f; vol.fmt = "%.2f";
+        vol.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->volume; };
+        p.push_back(std::move(vol));
+        Property loop;
+        loop.label = "Loop (zone)"; loop.key = "loop"; loop.kind = PropKind::Bool;
+        loop.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->loop; };
+        p.push_back(std::move(loop));
+        Property once;
+        once.label = "Once"; once.key = "once"; once.kind = PropKind::Bool;
+        once.visible = [](const void* o) { return !static_cast<const TriggerSoundComponent*>(o)->loop; };
+        once.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->once; };
+        p.push_back(std::move(once));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& CameraComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -396,6 +423,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
         components::registerType({"trigger", "Trigger",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerComponent>()); }});
+        components::registerType({"trigger_sound", "Trigger Sound",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerSoundComponent>()); }});
         components::registerType({"mover", "Mover",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
         components::registerType({"spawner", "Spawner",

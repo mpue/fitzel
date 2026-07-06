@@ -1585,21 +1585,22 @@ int main(int argc, char** argv) {
             auto it = physicsBody.find(id);
             if (physics && it != physicsBody.end()) physics->applyImpulse(it->second, j);
         };
-        host.playSound = [&](const std::string& n){
-            // Prefer the open project's content/sounds/, fall back to the engine's
-            // bundled sounds (FITZEL_SOUND_DIR) when the file isn't in the project.
+        // Resolve a sound filename to a path: prefer the open project's
+        // content/sounds/, fall back to the engine's bundled sounds.
+        auto resolveSoundPath = [&](const std::string& n) -> std::string {
             if (!currentProject.empty()) {
                 const std::string projSnd =
                     (std::filesystem::path(currentProject).parent_path() /
                      "content" / "sounds" / n).generic_string();
                 std::error_code ec;
-                if (std::filesystem::exists(projSnd, ec)) {
-                    audio.playOneShot(projSnd);
-                    return;
-                }
+                if (std::filesystem::exists(projSnd, ec)) return projSnd;
             }
-            audio.playOneShot(soundDir + "/" + n);
+            return soundDir + "/" + n;
         };
+        host.playSound = [&](const std::string& n){ audio.playOneShot(resolveSoundPath(n)); };
+        // Looping ambient voices for TriggerSound zones (entity id -> Sound),
+        // created lazily in Play and cleared on stop. Sound is move-only.
+        std::unordered_map<int, Sound> zoneSounds;
         scripts.setHost(&host);
 
         glm::vec3 playCamPos{0.0f};
@@ -1735,6 +1736,7 @@ int main(int argc, char** argv) {
             playMode  = false;
             physics.reset();
             physicsBody.clear();
+            zoneSounds.clear(); // stop + free any looping TriggerSound voices
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
@@ -2286,6 +2288,31 @@ int main(int argc, char** argv) {
                                 if (!tr->sound.empty()) host.playSound(tr->sound);
                             }
                             tr->insideLast = inside;
+                        }
+                        // TriggerSound: a looping ambient zone (volume fades with
+                        // distance) or a one-shot on entry. The looping voice lives
+                        // in zoneSounds, created lazily and stopped when out of range.
+                        if (auto* ts = e.components.get<TriggerSoundComponent>()) {
+                            const float dist   = glm::distance(playerC, e.center);
+                            const bool  inside = dist <= ts->radius;
+                            if (ts->loop) {
+                                Sound& voice = zoneSounds[e.id];
+                                if (inside && !ts->sound.empty()) {
+                                    if (!voice.isValid())
+                                        voice = Sound::fromFile(
+                                            audio, resolveSoundPath(ts->sound), true);
+                                    if (!ts->insideLast) voice.play(); // (re)start on entry
+                                    const float fall = glm::clamp(1.0f - dist / glm::max(ts->radius, 0.01f), 0.0f, 1.0f);
+                                    voice.setVolume(ts->volume * fall);
+                                } else if (voice.isValid()) {
+                                    voice.stop();
+                                }
+                            } else if (inside && !ts->insideLast &&
+                                       !(ts->once && ts->fired) && !ts->sound.empty()) {
+                                ts->fired = true;
+                                host.playSound(ts->sound); // one-shot (no per-voice volume)
+                            }
+                            ts->insideLast = inside;
                         }
                         // Lift: rise while the player is within range, descend when
                         // they leave, between the start (bottom) and start+offset
@@ -3574,6 +3601,10 @@ int main(int argc, char** argv) {
                                 for (const Property& pr : tr->props())
                                     if (pr.key != "sound") drawProperty(pr, tr);
                                 soundPickerCombo("Sound", tr->sound);
+                            } else if (auto* ts = dynamic_cast<TriggerSoundComponent*>(c)) {
+                                // Radius/volume/loop/once from metadata; Sound picker.
+                                for (const Property& pr : ts->props()) drawProperty(pr, ts);
+                                soundPickerCombo("Sound", ts->sound);
                             } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
                                 // Radius from metadata; Target is a picker over the
                                 // scene's Camera entities (plus the player view).

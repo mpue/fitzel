@@ -304,6 +304,36 @@ public:
     }
 };
 
+// --- Built-in component: TriggerSound (a proximity sound zone) ----------------
+// Data-authored audio, no scripting: while playing, when the player is within
+// `radius` it plays `sound`. `loop` = an ambient zone that keeps looping while
+// the player is inside, its volume fading from `volume` at the centre to 0 at the
+// edge (a waterfall, a machine, a music area); otherwise a one-shot fired once on
+// entry (`once`) or on every entry. The looping voice is owned by main (see the
+// zoneSounds map); `insideLast`/`fired` are transient one-shot state.
+class TriggerSoundComponent : public ComponentBase {
+public:
+    float       radius = 4.0f;   // audible/activation distance from the player
+    float       volume = 1.0f;   // 0..1
+    bool        loop   = false;  // loop while inside (zone) vs one-shot on entry
+    bool        once   = true;   // one-shot mode: fire only once per Play
+    std::string sound;           // file under the project's sounds/ ("" = none)
+
+    bool insideLast = false;     // runtime: player inside last frame (one-shot edge)
+    bool fired      = false;     // runtime: one-shot latch
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<TriggerSoundComponent>(*this);
+    }
+    const char* typeId() const override { return "trigger_sound"; }
+    const char* displayName() const override { return "Trigger Sound"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        g.sphere(c, radius, {0.4f, 0.9f, 0.7f, 0.8f}); // sound zone
+    }
+};
+
 // --- Built-in component: Camera (a viewpoint you can switch to in Play) --------
 // Attach to an entity to make it a camera: in Play the view can render from its
 // position + orientation at this `fov`. `activeOnStart` makes it the initial view
