@@ -361,6 +361,31 @@ public:
     }
 };
 
+// --- Built-in component: Animation (plays a skinned model's clip) -------------
+// Attach to a Model entity whose glTF has a skeleton + animation clips: it plays
+// `clip` (looping/one-shot) at `speed`, CPU-skinning the mesh each frame (see the
+// tick in main). `clip` is chosen in the inspector from the model's clip names;
+// `time` is transient playback state. Works in the editor (live preview) too.
+class AnimationComponent : public ComponentBase {
+public:
+    int   clip    = 0;     // which animation clip of the model
+    float speed   = 1.0f;  // playback rate multiplier
+    bool  playing = true;
+    bool  loop    = true;
+
+    float time = 0.0f;     // runtime: current playback time (seconds)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<AnimationComponent>(*this);
+    }
+    const char* typeId() const override { return "animation"; }
+    const char* displayName() const override { return "Animation"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Script (runs a Lua behaviour while playing) ----------
 // The file field is serialized/undone via metadata; the inspector renders it
 // with a bespoke file picker (it needs the project's script list).

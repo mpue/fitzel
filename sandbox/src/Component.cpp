@@ -264,6 +264,37 @@ const std::vector<Property>& PusherComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& AnimationComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property speed;
+        speed.label = "Speed"; speed.key = "speed"; speed.kind = PropKind::Float;
+        speed.slider = true; speed.min = 0.0f; speed.max = 4.0f; speed.fmt = "%.2fx";
+        speed.field = [](void* o) -> void* { return &static_cast<AnimationComponent*>(o)->speed; };
+        p.push_back(std::move(speed));
+        Property playing;
+        playing.label = "Playing"; playing.key = "playing"; playing.kind = PropKind::Bool;
+        playing.field = [](void* o) -> void* { return &static_cast<AnimationComponent*>(o)->playing; };
+        p.push_back(std::move(playing));
+        Property loop;
+        loop.label = "Loop"; loop.key = "loop"; loop.kind = PropKind::Bool;
+        loop.field = [](void* o) -> void* { return &static_cast<AnimationComponent*>(o)->loop; };
+        p.push_back(std::move(loop));
+        return p;
+    }();
+    return props;
+}
+
+// Persists speed/playing/loop (properties) plus the chosen clip index.
+void AnimationComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["clip"] = clip;
+}
+void AnimationComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    clip = j.value("clip", 0);
+}
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -377,6 +408,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraComponent>()); }});
         components::registerType({"camera_switcher", "Camera Switcher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraSwitcherComponent>()); }});
+        components::registerType({"animation", "Animation",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

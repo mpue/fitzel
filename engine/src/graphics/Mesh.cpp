@@ -145,6 +145,22 @@ Mesh Mesh::cube() {
     return create(vertices, indices);
 }
 
+void Mesh::update(const std::vector<Vertex>& vertices) {
+    if (m_vbo == 0) { *this = create(vertices); return; }
+    m_vertexCount = static_cast<std::uint32_t>(vertices.size());
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(vertices.size() * sizeof(Vertex)),
+                 vertices.data(), GL_DYNAMIC_DRAW);
+    constexpr float inf = std::numeric_limits<float>::max();
+    glm::vec3 lo{inf}, hi{-inf};
+    for (const Vertex& v : vertices) {
+        lo = glm::min(lo, v.position);
+        hi = glm::max(hi, v.position);
+    }
+    if (!vertices.empty()) { m_boundsMin = lo; m_boundsMax = hi; }
+}
+
 void Mesh::draw() const {
     glBindVertexArray(m_vao);
     if (m_indexCount > 0) {

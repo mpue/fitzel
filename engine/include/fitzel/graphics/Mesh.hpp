@@ -40,6 +40,11 @@ public:
     // and UVs. Handy for testing lighting and texturing.
     static Mesh cube();
 
+    // Re-upload vertex data into the existing (non-indexed) VBO, keeping the same
+    // attribute layout/VAO. For CPU animation: skin on the CPU each frame and
+    // update the mesh in place. Refreshes the local AABB.
+    void update(const std::vector<Vertex>& vertices);
+
     // Issue the draw call. Assumes a shader is already bound.
     void draw() const;
 

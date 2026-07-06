@@ -77,6 +77,9 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
         reduced.push_back(lo); reduced.push_back(hi);
         lm->hullPoints = std::move(reduced);
     }
+    // Keep the CPU model data for skinned characters so the editor can animate
+    // them (CPU skinning re-uploads the meshes each frame).
+    if (md.animated()) { lm->animated = true; lm->animData = mdPtr; }
     const int id = lm->id;
     models_.push_back(std::move(lm));
     return id;

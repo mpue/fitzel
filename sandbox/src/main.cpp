@@ -3520,6 +3520,25 @@ int main(int argc, char** argv) {
                                                 cs->target = ce.id;
                                     ImGui::EndCombo();
                                 }
+                            } else if (auto* an = dynamic_cast<AnimationComponent*>(c)) {
+                                // Speed/playing/loop from metadata; Clip is a picker
+                                // over the model's animation clip names.
+                                for (const Property& pr : an->props()) drawProperty(pr, an);
+                                const auto* mc = be.components.get<ModelComponent>();
+                                LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+                                if (lm && lm->animData && !lm->animData->animations.empty()) {
+                                    const auto& clips = lm->animData->animations;
+                                    an->clip = glm::clamp(an->clip, 0,
+                                                          static_cast<int>(clips.size()) - 1);
+                                    if (ImGui::BeginCombo("Clip", clips[an->clip].name.c_str())) {
+                                        for (int i = 0; i < static_cast<int>(clips.size()); ++i)
+                                            if (ImGui::Selectable(clips[i].name.c_str(), an->clip == i))
+                                                { an->clip = i; an->time = 0.0f; }
+                                        ImGui::EndCombo();
+                                    }
+                                } else {
+                                    ImGui::TextDisabled("No animated model on this entity.");
+                                }
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
@@ -3981,6 +4000,39 @@ int main(int argc, char** argv) {
             // Resolve the scene-graph so every entity's world center/rotation
             // reflects this frame's edits/scripts/physics and its parent chain.
             resolveHierarchy();
+
+            // --- Skeletal animation (CPU skinning). For each entity carrying an
+            //     Animation component on an animated model, advance its clock and
+            //     re-skin the model's meshes so the shared static render path shows
+            //     the deformed pose. (Meshes are shared per model: instances of the
+            //     same model animate together.)
+            {
+                std::vector<Vertex> skinScratch;
+                for (Entity& e : entities) {
+                    auto* ac = e.components.get<AnimationComponent>();
+                    const auto* mc = e.components.get<ModelComponent>();
+                    if (!ac || !mc) continue;
+                    LoadedModel* lm = models.byId(mc->modelId);
+                    if (!lm || !lm->animated || !lm->animData) continue;
+                    const auto& clips = lm->animData->animations;
+                    if (clips.empty()) continue;
+                    const int ci = glm::clamp(ac->clip, 0,
+                                              static_cast<int>(clips.size()) - 1);
+                    const float dur = clips[ci].duration;
+                    if (ac->playing) ac->time += dt * ac->speed;
+                    if (dur > 0.0f)
+                        ac->time = ac->loop ? std::fmod(ac->time, dur)
+                                            : glm::min(ac->time, dur);
+                    const auto palette = sampleSkeleton(*lm->animData, ci, ac->time);
+                    if (palette.empty()) continue;
+                    const auto& prims = lm->animData->primitives;
+                    for (std::size_t p = 0;
+                         p < lm->meshes.size() && p < prims.size(); ++p) {
+                        skinPrimitive(prims[p], palette, skinScratch);
+                        lm->meshes[p].update(skinScratch);
+                    }
+                }
+            }
 
             // --- Scene entities through the renderer (shadows, lighting, water).
             //     One GPU material is built per library asset and shared by every

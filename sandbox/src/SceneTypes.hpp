@@ -9,6 +9,7 @@
 #include <fitzel/asset/AssetId.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Texture.hpp>
+#include <fitzel/world/Model.hpp>
 
 #include "Component.hpp"
 
@@ -89,6 +90,10 @@ struct LoadedModel {
     std::vector<glm::vec3>    hullPoints;     // raw vertex positions (physics hull)
     glm::vec3                 boundsMin{0.0f};
     glm::vec3                 boundsMax{0.0f};
+    // Skinned models keep their CPU data (skeleton + clips + bind verts) so an
+    // AnimationComponent can CPU-skin the meshes each frame (see main.cpp).
+    bool                              animated = false;
+    std::shared_ptr<fitzel::ModelData> animData;
 
     glm::vec3 center() const { return 0.5f * (boundsMin + boundsMax); }
     glm::vec3 size()   const { return boundsMax - boundsMin; }
