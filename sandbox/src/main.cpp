@@ -2681,22 +2681,69 @@ int main(int argc, char** argv) {
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
-                // Drag a Model asset from the Assets browser onto the terrain.
+                // Drag an asset from the Assets browser into the viewport: a Model
+                // drops onto the terrain; a Texture drops onto the object under the
+                // cursor, making a fresh material that uses it and assigning it.
                 if (ImGui::BeginDragDropTarget()) {
                     if (const ImGuiPayload* pl =
                             ImGui::AcceptDragDropPayload("ASSET_GUID")) {
                         const AssetId gid = AssetId::fromString(std::string(
                             static_cast<const char*>(pl->Data), pl->DataSize));
-                        if (assetDb.typeForId(gid) == AssetType::Model) {
-                            const float asp = static_cast<float>(viewW) /
-                                              static_cast<float>(viewH);
-                            const glm::mat4 vp =
-                                camera.projectionMatrix(asp) * camera.viewMatrix();
+                        const AssetType at = assetDb.typeForId(gid);
+                        const float asp = static_cast<float>(viewW) /
+                                          static_cast<float>(viewH);
+                        const glm::mat4 vp =
+                            camera.projectionMatrix(asp) * camera.viewMatrix();
+                        if (at == AssetType::Model) {
                             glm::vec3 hit;
                             if (roadPickTerrain(viewportMouseNdc, vp, hit)) {
                                 const int id = models.import(
                                     assetDb.pathForId(gid).string(), assetDb, materials);
                                 if (id >= 0) addModelEntity(hit, id);
+                            }
+                        } else if (at == AssetType::Texture) {
+                            // Pick the solid under the drop point.
+                            const glm::mat4 inv = glm::inverse(vp);
+                            glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
+                            glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
+                            const glm::vec3 ro = glm::vec3(pn);
+                            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+                            int hit = -1; float bestT = 1e30f;
+                            for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
+                                const EntityType t = entities[i].type;
+                                const bool solid = t == EntityType::Box || t == EntityType::Ramp ||
+                                                   t == EntityType::Cylinder || t == EntityType::Sphere;
+                                if (!solid) continue;
+                                const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
+                                                                entities[i].center + entities[i].half);
+                                if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
+                            }
+                            if (hit >= 0) {
+                                // A new material that samples the dropped texture.
+                                MaterialDef nm;
+                                nm.assetId = AssetId::generate();
+                                const AssetDatabase::Entry* te = assetDb.entry(gid);
+                                nm.name  = te ? std::filesystem::path(te->relPath).stem().string()
+                                              : "Textured";
+                                nm.texId = gid;
+                                nm.tex   = assetDb.loadTexture(gid);
+                                materials.push_back(nm);
+                                matSel = static_cast<int>(materials.size()) - 1;
+                                // Assign it to the object's MaterialComponent (undoable).
+                                const std::vector<int> ids{entities[hit].id};
+                                auto before = snapshotEntities(ids);
+                                Entity& e = entities[hit];
+                                if (auto* mc = e.components.get<MaterialComponent>())
+                                    mc->material = nm.assetId;
+                                else {
+                                    auto c = std::make_unique<MaterialComponent>();
+                                    c->material = nm.assetId;
+                                    e.components.items.push_back(std::move(c));
+                                }
+                                entitySel = hit;
+                                auto cmd = std::make_unique<ModifyEntitiesCmd>(
+                                    before, snapshotEntities(ids));
+                                if (!cmd->trivial()) history.push(std::move(cmd), document);
                             }
                         }
                     }
