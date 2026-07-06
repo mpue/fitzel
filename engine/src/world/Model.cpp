@@ -333,32 +333,82 @@ glm::mat4 aiToGlm(const aiMatrix4x4& m) {
                      m.a4, m.b4, m.c4, m.d4);
 }
 
-// Decode an assimp embedded texture (compressed like PNG/JPG, or raw BGRA) to RGBA.
-void decodeAiTexture(const aiTexture* tex, ModelPrimitive& mp) {
+// Decode an assimp EMBEDDED texture (compressed like PNG/JPG, or raw BGRA) into
+// an RGBA buffer + dimensions.
+void decodeAiTexture(const aiTexture* tex, std::vector<std::uint8_t>& outPix,
+                     int& outW, int& outH) {
     if (!tex) return;
     if (tex->mHeight == 0) {                 // compressed blob of mWidth bytes
         int w = 0, h = 0, ch = 0;
         stbi_set_flip_vertically_on_load(0);
-        unsigned char* px = stbi_load_from_memory(
-            reinterpret_cast<const unsigned char*>(tex->pcData),
-            static_cast<int>(tex->mWidth), &w, &h, &ch, 4);
-        if (px) {
-            mp.texPixels.assign(px, px + static_cast<std::size_t>(w) * h * 4);
-            mp.texWidth = w; mp.texHeight = h;
-            stbi_image_free(px);
-        }
+        storePixels(stbi_load_from_memory(
+                        reinterpret_cast<const unsigned char*>(tex->pcData),
+                        static_cast<int>(tex->mWidth), &w, &h, &ch, 4),
+                    w, h, outPix, outW, outH);
     } else {                                 // raw aiTexel grid (B,G,R,A)
-        mp.texWidth  = static_cast<int>(tex->mWidth);
-        mp.texHeight = static_cast<int>(tex->mHeight);
+        outW = static_cast<int>(tex->mWidth);
+        outH = static_cast<int>(tex->mHeight);
         const std::size_t n = static_cast<std::size_t>(tex->mWidth) * tex->mHeight;
-        mp.texPixels.resize(n * 4);
+        outPix.resize(n * 4);
         for (std::size_t i = 0; i < n; ++i) {
-            mp.texPixels[i * 4 + 0] = tex->pcData[i].r;
-            mp.texPixels[i * 4 + 1] = tex->pcData[i].g;
-            mp.texPixels[i * 4 + 2] = tex->pcData[i].b;
-            mp.texPixels[i * 4 + 3] = tex->pcData[i].a;
+            outPix[i * 4 + 0] = tex->pcData[i].r;
+            outPix[i * 4 + 1] = tex->pcData[i].g;
+            outPix[i * 4 + 2] = tex->pcData[i].b;
+            outPix[i * 4 + 3] = tex->pcData[i].a;
         }
     }
+}
+
+// Resolve an external texture reference (as stored in the model, often a stale
+// absolute path or one with backslashes) to a real file. Tries it as given
+// relative to the model, then the bare filename in the model dir, then in every
+// sibling and sub directory -- so textures kept in a folder next to the models
+// are still found. Empty if nothing matches.
+std::string findTextureFile(const std::string& baseDir, const std::string& ref) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::string r = ref;
+    for (char& c : r) if (c == '\\') c = '/';
+    const std::string base = fs::path(r).filename().string();
+    if (base.empty()) return {};
+
+    if (fs::path(r).is_absolute() && fs::exists(r, ec)) return r;
+    fs::path p = fs::path(baseDir) / r;                 // as given, relative
+    if (fs::exists(p, ec)) return p.generic_string();
+    p = fs::path(baseDir) / base;                       // bare name in model dir
+    if (fs::exists(p, ec)) return p.generic_string();
+    // Bare name in sibling dirs of the model dir, then in sub dirs of it.
+    for (const fs::path& dir : {fs::path(baseDir).parent_path(), fs::path(baseDir)})
+        for (const auto& d : fs::directory_iterator(dir, ec)) {
+            if (!d.is_directory(ec)) continue;
+            fs::path cand = d.path() / base;
+            if (fs::exists(cand, ec)) return cand.generic_string();
+        }
+    return {};
+}
+
+// Load a material's texture of `type` (embedded or an external file resolved via
+// findTextureFile) into an RGBA buffer + dimensions.
+void loadAiTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
+                   const std::string& baseDir, std::vector<std::uint8_t>& outPix,
+                   int& outW, int& outH) {
+    aiString texPath;
+    if (mat->GetTexture(type, 0, &texPath) != AI_SUCCESS || texPath.length == 0) return;
+    if (texPath.data[0] == '*') { // embedded (*N -> scene->mTextures)
+        const int ti = std::atoi(texPath.C_Str() + 1);
+        if (ti >= 0 && ti < static_cast<int>(scene->mNumTextures))
+            decodeAiTexture(scene->mTextures[ti], outPix, outW, outH);
+        return;
+    }
+    const std::string file = findTextureFile(baseDir, texPath.C_Str());
+    if (file.empty()) {
+        std::fprintf(stderr, "[Fitzel] model texture not found: '%s' (near %s)\n",
+                     texPath.C_Str(), baseDir.c_str());
+        return;
+    }
+    stbi_set_flip_vertically_on_load(0);
+    int w = 0, h = 0, ch = 0;
+    storePixels(stbi_load(file.c_str(), &w, &h, &ch, 4), w, h, outPix, outW, outH);
 }
 
 // Walk the node tree, baking each node's world transform into its meshes so the
@@ -366,7 +416,7 @@ void decodeAiTexture(const aiTexture* tex, ModelPrimitive& mp) {
 // Convert one assimp mesh into a de-indexed ModelPrimitive, baking `world` into
 // the positions/normals (matching loadGltf's static output).
 ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
-                                 const glm::mat4& world) {
+                                 const glm::mat4& world, const std::string& baseDir) {
     const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(world)));
     ModelPrimitive mp;
     if (mesh->mMaterialIndex < scene->mNumMaterials) {
@@ -381,13 +431,18 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
         float opacity = 1.0f;
         if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS && opacity < 0.999f)
             mp.alphaCutout = true;
-        aiString texPath; // embedded textures only
-        if (mat->GetTexture(aiTextureType_DIFFUSE, 0, &texPath) == AI_SUCCESS &&
-            texPath.length > 1 && texPath.data[0] == '*') {
-            const int ti = std::atoi(texPath.C_Str() + 1);
-            if (ti >= 0 && ti < static_cast<int>(scene->mNumTextures))
-                decodeAiTexture(scene->mTextures[ti], mp);
-        }
+        // Base colour (embedded or external file next to the model).
+        loadAiTexture(scene, mat, aiTextureType_DIFFUSE, baseDir,
+                      mp.texPixels, mp.texWidth, mp.texHeight);
+        if (mp.texPixels.empty()) // some FBX put the colour map under BASE_COLOR
+            loadAiTexture(scene, mat, aiTextureType_BASE_COLOR, baseDir,
+                          mp.texPixels, mp.texWidth, mp.texHeight);
+        // Normal map (FBX often uses HEIGHT/bump for it).
+        loadAiTexture(scene, mat, aiTextureType_NORMALS, baseDir,
+                      mp.normalPixels, mp.normalWidth, mp.normalHeight);
+        if (mp.normalPixels.empty())
+            loadAiTexture(scene, mat, aiTextureType_HEIGHT, baseDir,
+                          mp.normalPixels, mp.normalWidth, mp.normalHeight);
     }
     const bool hasN  = mesh->HasNormals();
     const bool hasUV = mesh->HasTextureCoords(0);
@@ -417,13 +472,13 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
 }
 
 void collectColladaNode(const aiScene* scene, const aiNode* node,
-                        const glm::mat4& parent, ModelData& out,
-                        float& lo, float& hi) {
+                        const glm::mat4& parent, const std::string& baseDir,
+                        ModelData& out, float& lo, float& hi) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
         const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
         if (!mesh || mesh->mNumFaces == 0) continue;
-        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world);
+        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir);
         for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
             lo = glm::min(lo, mp.vertices[i + 1]);
             hi = glm::max(hi, mp.vertices[i + 1]);
@@ -431,14 +486,15 @@ void collectColladaNode(const aiScene* scene, const aiNode* node,
         if (mp.vertexCount() > 0) out.primitives.push_back(std::move(mp));
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
-        collectColladaNode(scene, node->mChildren[c], world, out, lo, hi);
+        collectColladaNode(scene, node->mChildren[c], world, baseDir, out, lo, hi);
 }
 
 // Structure-preserving walk: one ModelNode per mesh-bearing node, its meshes
 // world-baked then recentred on their combined AABB (so each sits at the origin;
 // `center` is where that origin belongs in model space).
 void collectStructuredNode(const aiScene* scene, const aiNode* node,
-                           const glm::mat4& parent, std::vector<ModelNode>& out) {
+                           const glm::mat4& parent, const std::string& baseDir,
+                           std::vector<ModelNode>& out) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     if (node->mNumMeshes > 0) {
         ModelNode mn;
@@ -447,7 +503,7 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
             const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
             if (!mesh || mesh->mNumFaces == 0) continue;
-            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world);
+            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir);
             if (mp.vertexCount() == 0) continue;
             for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
                 lo = glm::min(lo, glm::vec3(mp.vertices[i], mp.vertices[i+1], mp.vertices[i+2]));
@@ -470,7 +526,7 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         }
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
-        collectStructuredNode(scene, node->mChildren[c], world, out);
+        collectStructuredNode(scene, node->mChildren[c], world, baseDir, out);
 }
 
 } // namespace
@@ -488,9 +544,11 @@ ModelData loadCollada(const std::string& path) {
         return out;
     }
 
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
-    collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), out, lo, hi);
+    collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, out, lo, hi);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
     return out;
 }
@@ -507,7 +565,9 @@ std::vector<ModelNode> loadModelNodes(const std::string& path) {
                      path.c_str(), imp.GetErrorString());
         return out;
     }
-    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), out);
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
+    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, out);
     return out;
 }
 
