@@ -2797,6 +2797,49 @@ int main(int argc, char** argv) {
                     shapeBtn(EntityType::Cylinder, "Cylinder");
                     shapeBtn(EntityType::Sphere, "Sphere");
                     shapeBtn(EntityType::Light, "Light");
+
+                    // Gap, then the transform-gizmo modes (Q/W/E).
+                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
+                    ImGui::SameLine();
+                    auto modeBtn = [&](ImGuizmo::OPERATION op, const char* tip) {
+                        ImGui::PushID(100 + static_cast<int>(op));
+                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        const bool clicked = ImGui::Button("##m", bs);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
+                        const float r = 8.0f, a = 3.5f;
+                        const ImU32 col = (gizmoOp == op)
+                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
+                        if (op == ImGuizmo::TRANSLATE) {          // 4-way arrow
+                            dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.6f);
+                            dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.6f);
+                            dl->AddTriangleFilled({c.x + r, c.y}, {c.x + r - a, c.y - a}, {c.x + r - a, c.y + a}, col);
+                            dl->AddTriangleFilled({c.x - r, c.y}, {c.x - r + a, c.y - a}, {c.x - r + a, c.y + a}, col);
+                            dl->AddTriangleFilled({c.x, c.y - r}, {c.x - a, c.y - r + a}, {c.x + a, c.y - r + a}, col);
+                            dl->AddTriangleFilled({c.x, c.y + r}, {c.x - a, c.y + r - a}, {c.x + a, c.y + r - a}, col);
+                        } else if (op == ImGuizmo::ROTATE) {      // circular arrow
+                            dl->PathArcTo(c, r, 0.6f, 5.4f, 20);
+                            dl->PathStroke(col, 0, 1.8f);
+                            const ImVec2 e(c.x + std::cos(5.4f) * r, c.y + std::sin(5.4f) * r);
+                            const ImVec2 tg(-std::sin(5.4f), std::cos(5.4f));
+                            const ImVec2 no(std::cos(5.4f), std::sin(5.4f));
+                            dl->AddTriangleFilled({e.x + tg.x * a, e.y + tg.y * a},
+                                                  {e.x - no.x * a * 0.7f, e.y - no.y * a * 0.7f},
+                                                  {e.x + no.x * a * 0.7f, e.y + no.y * a * 0.7f}, col);
+                        } else {                                  // scale: diagonal + boxes
+                            dl->AddLine({c.x - r * 0.7f, c.y + r * 0.7f}, {c.x + r * 0.7f, c.y - r * 0.7f}, col, 1.8f);
+                            dl->AddRectFilled({c.x + r * 0.7f - 3, c.y - r * 0.7f - 3},
+                                              {c.x + r * 0.7f + 3, c.y - r * 0.7f + 3}, col);
+                            dl->AddRect({c.x - r * 0.7f - 3, c.y + r * 0.7f - 3},
+                                        {c.x - r * 0.7f + 3, c.y + r * 0.7f + 3}, col, 0.0f, 0, 1.5f);
+                        }
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                        if (clicked) gizmoOp = op;
+                    };
+                    modeBtn(ImGuizmo::TRANSLATE, "Move (Q)");
+                    modeBtn(ImGuizmo::ROTATE, "Rotate (W)");
+                    modeBtn(ImGuizmo::SCALE, "Scale (E)");
                 }
                 ImGui::End();
                 ImGui::PopStyleVar();
@@ -3528,17 +3571,6 @@ int main(int argc, char** argv) {
             ImGui::End(); }
 
             if (ImGui::Begin("Hierarchy")) {
-                ImGui::TextDisabled("Gizmo (Q/W/E):");
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Move", gizmoOp == ImGuizmo::TRANSLATE))
-                    gizmoOp = ImGuizmo::TRANSLATE;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Rotate", gizmoOp == ImGuizmo::ROTATE))
-                    gizmoOp = ImGuizmo::ROTATE;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Scale", gizmoOp == ImGuizmo::SCALE))
-                    gizmoOp = ImGuizmo::SCALE;
-
                 ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
                 if (ImGui::Button("Duplicate")) duplicateEntity(entitySel);
                 ImGui::SameLine();
