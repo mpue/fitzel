@@ -1,9 +1,34 @@
 #pragma once
 
+#include <memory>
+#include <string>
+#include <vector>
+
 #include <glm/glm.hpp>
 
+#include <fitzel/asset/AssetId.hpp>
+#include <fitzel/graphics/Texture.hpp>
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/world/Terrain.hpp>
+
+namespace fitzel { class AssetDatabase; }
+
+// The most terrain texture layers the lit shader blends (units 3..3+N-1).
+inline constexpr int kMaxTerrainLayers = 8;
+
+// One terrain texture layer: its albedo texture and the height + slope band it
+// covers. The shader blends every layer whose band contains a fragment's world
+// height and surface slope, so overlapping bands cross-fade.
+struct TerrainLayer {
+    fitzel::AssetId                  texId;   // texture asset GUID (save/load)
+    std::shared_ptr<fitzel::Texture> tex;     // resolved albedo (bound per frame)
+    std::string                      name;
+    float heightStart = -1000.0f;  // world Y where the layer begins
+    float heightEnd   =  1000.0f;  // ..and ends
+    float slopeStart  =  0.0f;      // surface slope in degrees (0 flat .. 90 vertical)
+    float slopeEnd    =  90.0f;
+    float scale       =  0.08f;     // triplanar texture scale (world units)
+};
 
 // Slope/height-driven terrain palette, fed to the lit shader as material params.
 // Owned by main (as `look`); the shared definition lives here so the terrain
@@ -18,6 +43,7 @@ struct TerrainLook {
     float slopeSharpness = 0.14f;
     float detailScale    = 0.35f; // micro-detail frequency
     float detailStrength = 1.5f;  // normal-perturbation strength
+    std::vector<TerrainLayer> layers; // texture layers (empty -> flat base colour)
 };
 
 // The editor's "Terrain" panel: terrain-generator parameters + the slope-material
@@ -37,6 +63,7 @@ struct PanelState {
     bool&                    grassDirty;   // set true to regrow vegetation
     glm::vec2&               treeCenter;   // reset to force a tree regrow
     bool&                    roadDirty;    // set true to re-drape roads
+    fitzel::AssetDatabase&   assetDb;      // for the per-layer texture picker
 };
 
 void drawPanel(const PanelState& s);

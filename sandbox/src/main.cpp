@@ -185,16 +185,10 @@ int main(int argc, char** argv) {
         float normalStrength = 1.0f;
 
         // Materials describe surface appearance; the renderer feeds in lighting.
+        // Terrain texturing is driven by editor layers (uLayerTex[], bound each
+        // frame to units 3..); the palette here is just the no-layer fallback.
         Material terrainMat(lit);
-        terrainMat.set("uColorMode", 1)
-                  .setTexture("uTexSand", texMoon, 6)
-                  .setTexture("uTexGround", texMoon, 3)
-                  .setTexture("uTexCliff", texMoon, 4)
-                  .setTexture("uTexSnow", texMoon, 5)
-                  .setTexture("uTexSandN", texMoonN, 8)
-                  .setTexture("uTexGroundN", texMoonN, 9)
-                  .setTexture("uTexCliffN", texMoonN, 10)
-                  .setTexture("uTexSnowN", texMoonN, 11);
+        terrainMat.set("uColorMode", 1);
 
         // World streaming + renderer with cascaded shadows.
         TerrainSettings settings;
@@ -1412,9 +1406,30 @@ int main(int argc, char** argv) {
         // and rebuilds the terrain + regrows vegetation (like Regenerate does).
         writeSettingsFn = [&](nlohmann::json& j){
             for (const Setting& s : tunables) s.write(j);
+            nlohmann::json larr = nlohmann::json::array();
+            for (const TerrainLayer& L : look.layers)
+                larr.push_back({{"tex", L.texId.toString()}, {"name", L.name},
+                                {"hStart", L.heightStart}, {"hEnd", L.heightEnd},
+                                {"sStart", L.slopeStart}, {"sEnd", L.slopeEnd},
+                                {"scale", L.scale}});
+            j["terrainLayers"] = larr;
         };
         readSettingsFn = [&](const nlohmann::json& j){
             for (const Setting& s : tunables) s.read(j);
+            look.layers.clear();
+            if (j.contains("terrainLayers") && j["terrainLayers"].is_array())
+                for (const auto& lj : j["terrainLayers"]) {
+                    TerrainLayer L;
+                    L.texId       = AssetId::fromString(lj.value("tex", std::string{}));
+                    L.name        = lj.value("name", std::string{});
+                    L.heightStart = lj.value("hStart", -1000.0f);
+                    L.heightEnd   = lj.value("hEnd",    1000.0f);
+                    L.slopeStart  = lj.value("sStart",  0.0f);
+                    L.slopeEnd    = lj.value("sEnd",    90.0f);
+                    L.scale       = lj.value("scale",   0.08f);
+                    if (L.texId.valid()) L.tex = assetDb.loadTexture(L.texId);
+                    look.layers.push_back(std::move(L));
+                }
             streamer.settings() = uiSettings;
             streamer.rebuild();
             streamer.update(camera.position());
@@ -3102,6 +3117,7 @@ int main(int argc, char** argv) {
             terrainui::drawPanel({
                 showTerrain, uiSettings, streamer, camera, look,
                 texScale, normalStrength, grassDirty, treeCenter, roadDirty,
+                assetDb,
             });
 
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
@@ -3988,16 +4004,30 @@ int main(int argc, char** argv) {
 
             } // end editor UI (skipped in presentation mode)
 
-            // Push the (possibly edited) terrain blend params into the material.
-            terrainMat.set("uSnowLevel", look.snowLevel)
-                      .set("uRockSlope", look.rockSlope)
-                      .set("uSlopeSharpness", look.slopeSharpness)
-                      .set("uDetailScale", look.detailScale)
+            // Push the (possibly edited) terrain params into the material, plus
+            // the texture layers: bind each layer with a texture to its own unit
+            // (3..3+N-1) and upload its height/slope band + tiling. Layers without
+            // a texture are skipped, so uLayerCount is the bound count.
+            terrainMat.set("uDetailScale", look.detailScale)
                       .set("uDetailStrength", look.detailStrength)
                       .set("uTexScale", texScale)
-                      .set("uSandLevel", waterLevel + 1.0f)
                       .set("uNormalStrength", normalStrength)
-                      .set("uWaterLevel", waterLevel);
+                      .set("uWaterLevel", waterLevel)
+                      .set("uAlbedo", look.grass); // fallback where no layer covers
+            {
+                int bound = 0;
+                for (const TerrainLayer& L : look.layers) {
+                    if (!L.tex || bound >= kMaxTerrainLayers) continue;
+                    const std::string ix = std::to_string(bound);
+                    terrainMat.setTexture("uLayerTex[" + ix + "]", *L.tex, 3 + bound)
+                              .set("uLayerBand[" + ix + "]",
+                                   glm::vec4(L.heightStart, L.heightEnd,
+                                             L.slopeStart, L.slopeEnd))
+                              .set("uLayerScale[" + ix + "]", L.scale);
+                    ++bound;
+                }
+                terrainMat.set("uLayerCount", bound);
+            }
 
             // --- Submit the opaque scene once ---------------------------
             // Render at the docked viewport panel's size, not the whole window.

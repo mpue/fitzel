@@ -116,20 +116,16 @@ uniform float uSnowLevel;      // world height at which snow appears
 uniform float uRockSlope;      // slope (normal.y) below which faces turn to rock
 uniform float uSlopeSharpness; // blend width of the rock transition
 
-// Triplanar terrain textures (uColorMode == 1).
-uniform sampler2D uTexSand;    // low ground near water
-uniform sampler2D uTexGround;  // flat ground / rocky soil
-uniform sampler2D uTexCliff;   // steep rock
-uniform sampler2D uTexSnow;    // high, flat snow
-uniform float     uTexScale;   // world units -> texture tiling
-uniform float     uSandLevel;  // height below which sand dominates
-
-// Matching triplanar normal maps (OpenGL convention).
-uniform sampler2D uTexSandN;
-uniform sampler2D uTexGroundN;
-uniform sampler2D uTexCliffN;
-uniform sampler2D uTexSnowN;
-uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal map
+// Data-driven terrain texture layers (uColorMode == 1). Each layer paints where
+// a fragment's world height and surface slope both fall inside its band; layers
+// with overlapping bands cross-fade. Fed from the terrain editor.
+const int MAX_TERRAIN_LAYERS = 8;
+uniform sampler2D uLayerTex[MAX_TERRAIN_LAYERS];
+uniform int       uLayerCount;
+uniform vec4      uLayerBand[MAX_TERRAIN_LAYERS];  // (hStart, hEnd, slopeStart, slopeEnd deg)
+uniform float     uLayerScale[MAX_TERRAIN_LAYERS]; // triplanar tiling per layer
+uniform float     uTexScale;   // world units -> texture tiling (fallback)
+uniform float     uNormalStrength; // kept for compatibility (unused in layer mode)
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 
 // Procedural micro-detail (uColorMode == 1).
@@ -221,50 +217,53 @@ vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale) {
     return normalize(tx.zyx * bw.x + ty.xzy * bw.y + tz.xyz * bw.z);
 }
 
-// Normal-mapped surface normal, blended across the same material masks as the
-// albedo (masks derived from the smooth geometry normal `n`).
+// Terrain normal. Layer mode keeps the geometry normal (per-layer normal maps
+// were dropped for the data-driven layers); the procedural detail still nudges
+// the geometry normal slightly for close-up relief.
 vec3 terrainNormal(vec3 wp, vec3 n, float detail) {
-    float flatness = smoothstep(uRockSlope - uSlopeSharpness,
-                                uRockSlope + uSlopeSharpness, n.y);
-    vec3 sandN   = triplanarNormal(uTexSandN,   wp, n, uTexScale * 1.4);
-    vec3 groundN = triplanarNormal(uTexGroundN, wp, n, uTexScale);
-    vec3 cliffN  = triplanarNormal(uTexCliffN,  wp, n, uTexScale * 0.7);
-    vec3 snowN   = triplanarNormal(uTexSnowN,   wp, n, uTexScale);
-
-    float sandH     = uSandLevel + (detail - 0.5) * 3.0;
-    float groundMix = smoothstep(sandH, sandH + 5.0, wp.y);
-    vec3  lowN      = mix(sandN, groundN, groundMix);
-
-    float snowH    = uSnowLevel + (detail - 0.5) * 6.0;
-    float snowMask = smoothstep(snowH - 2.5, snowH + 2.5, wp.y) * flatness;
-
-    vec3 baseN = mix(cliffN, lowN, flatness);
-    baseN = mix(baseN, snowN, snowMask);
-    return normalize(mix(n, baseN, uNormalStrength));
+    return n;
 }
 
-// Height- and slope-based terrain albedo from three triplanar textures.
-// `slope` is the upward component of the surface normal: 1 = flat, ~0 = vertical.
+// One layer's coverage: 1 inside its [start,end] band, smoothly 0 outside. A
+// fixed feather softens both edges so adjacent bands cross-fade.
+float band(float x, float start, float end, float feather) {
+    return smoothstep(start - feather, start + feather, x) *
+           (1.0 - smoothstep(end - feather, end + feather, x));
+}
+
+// Triplanar-sample a layer by index using CONSTANT sampler indices only --
+// GLSL 3.30 forbids indexing a sampler array with a non-constant expression.
+vec3 layerTriplanar(int i, vec3 wp, vec3 n, float scale) {
+    if (i == 0) return triplanar(uLayerTex[0], wp, n, scale);
+    if (i == 1) return triplanar(uLayerTex[1], wp, n, scale);
+    if (i == 2) return triplanar(uLayerTex[2], wp, n, scale);
+    if (i == 3) return triplanar(uLayerTex[3], wp, n, scale);
+    if (i == 4) return triplanar(uLayerTex[4], wp, n, scale);
+    if (i == 5) return triplanar(uLayerTex[5], wp, n, scale);
+    if (i == 6) return triplanar(uLayerTex[6], wp, n, scale);
+    return triplanar(uLayerTex[7], wp, n, scale);
+}
+
+// Height- and slope-driven albedo, blended from the configured texture layers.
 vec3 terrainAlbedo(vec3 wp, vec3 n, float detail) {
-    float flatness = smoothstep(uRockSlope - uSlopeSharpness,
-                                uRockSlope + uSlopeSharpness, n.y);
+    if (uLayerCount == 0) return uAlbedo; // no layers -> flat base colour
 
-    vec3 sand   = triplanar(uTexSand,   wp, n, uTexScale * 1.4);
-    vec3 ground = triplanar(uTexGround, wp, n, uTexScale);
-    vec3 cliff  = triplanar(uTexCliff,  wp, n, uTexScale * 0.7);
-    vec3 snow   = triplanar(uTexSnow,   wp, n, uTexScale);
+    float slopeDeg = degrees(acos(clamp(n.y, -1.0, 1.0))); // 0 flat .. 90 vertical
+    float h        = wp.y + (detail - 0.5) * 3.0;          // jitter the height edges
 
-    // Sand near the water line, blending up into rocky ground.
-    float sandH      = uSandLevel + (detail - 0.5) * 3.0;
-    float groundMix  = smoothstep(sandH, sandH + 5.0, wp.y);
-    vec3  lowGround  = mix(sand, ground, groundMix);
-
-    // Break the snow line with noise so it isn't a hard contour.
-    float snowH    = uSnowLevel + (detail - 0.5) * 6.0;
-    float snowMask = smoothstep(snowH - 2.5, snowH + 2.5, wp.y) * flatness;
-
-    vec3 base = mix(cliff, lowGround, flatness);
-    return mix(base, snow, snowMask);
+    vec3  acc  = vec3(0.0);
+    float wsum = 0.0;
+    for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i) {
+        if (i >= uLayerCount) break;
+        vec4  b = uLayerBand[i];
+        float w = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
+        if (w > 0.0) {
+            acc  += layerTriplanar(i, wp, n, uLayerScale[i]) * w;
+            wsum += w;
+        }
+    }
+    if (wsum < 1e-4) return uAlbedo; // gap between bands -> flat base colour
+    return acc / wsum;
 }
 
 // Apply exponential height fog with sun-tinted in-scatter to a shaded colour.
