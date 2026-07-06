@@ -264,6 +264,64 @@ void CameraSwitcherComponent::load(const nlohmann::json& j) {
     target = j.value("target", -1);
 }
 
+const std::vector<Property>& DoorComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property slide;
+        slide.label = "Slide"; slide.key = "slide"; slide.kind = PropKind::Bool;
+        slide.field = [](void* o) -> void* { return &static_cast<DoorComponent*>(o)->slide; };
+        p.push_back(std::move(slide));
+        Property angle;
+        angle.label = "Swing angle"; angle.key = "angle"; angle.kind = PropKind::Float;
+        angle.slider = true; angle.min = -180.0f; angle.max = 180.0f; angle.fmt = "%.0f deg";
+        angle.visible = [](const void* o) { return !static_cast<const DoorComponent*>(o)->slide; };
+        angle.field = [](void* o) -> void* { return &static_cast<DoorComponent*>(o)->angle; };
+        p.push_back(std::move(angle));
+        Property offset;
+        offset.label = "Slide offset"; offset.key = "offset"; offset.kind = PropKind::Vec3;
+        offset.speed = 0.05f;
+        offset.visible = [](const void* o) { return static_cast<const DoorComponent*>(o)->slide; };
+        offset.field = [](void* o) -> void* { return &static_cast<DoorComponent*>(o)->offset; };
+        p.push_back(std::move(offset));
+        Property speed;
+        speed.label = "Speed"; speed.key = "speed"; speed.kind = PropKind::Float;
+        speed.slider = true; speed.min = 0.2f; speed.max = 10.0f; speed.fmt = "%.1f /s";
+        speed.field = [](void* o) -> void* { return &static_cast<DoorComponent*>(o)->speed; };
+        p.push_back(std::move(speed));
+        Property startOpen;
+        startOpen.label = "Start open"; startOpen.key = "startOpen"; startOpen.kind = PropKind::Bool;
+        startOpen.field = [](void* o) -> void* { return &static_cast<DoorComponent*>(o)->startOpen; };
+        p.push_back(std::move(startOpen));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& DoorOpenerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<DoorOpenerComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property stay;
+        stay.label = "Stay open"; stay.key = "stayOpen"; stay.kind = PropKind::Bool;
+        stay.field = [](void* o) -> void* { return &static_cast<DoorOpenerComponent*>(o)->stayOpen; };
+        p.push_back(std::move(stay));
+        return p;
+    }();
+    return props;
+}
+void DoorOpenerComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["target"] = target;
+}
+void DoorOpenerComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    target = j.value("target", -1);
+}
+
 const std::vector<Property>& PusherComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -461,6 +519,10 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
         components::registerType({"pusher", "Pusher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
+        components::registerType({"door", "Door",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<DoorComponent>()); }});
+        components::registerType({"door_opener", "Door Opener",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<DoorOpenerComponent>()); }});
         components::registerType({"lift", "Lift",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LiftComponent>()); }});
         components::registerType({"camera", "Camera",

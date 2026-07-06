@@ -270,6 +270,79 @@ public:
     }
 };
 
+// --- Built-in component: Door (swings or slides open on command) --------------
+// A door that opens when `open` is set (by a DoorOpener or startOpen) and closes
+// when it clears. `slide` translates by `offset`; otherwise it swings by `angle`
+// degrees around Y. `speed` is the open/close rate (fraction per second). Writes
+// LOCAL transform (scene-graph children ride along) and drives a kinematic
+// collider (bodyId) so it physically blocks when closed and clears when open.
+// home/homeRot/t/started/bodyId are transient runtime state. Don't also add a
+// Physics component to a door.
+class DoorComponent : public ComponentBase {
+public:
+    bool      slide     = false;             // slide (translate) vs swing (rotate)
+    float     angle     = 90.0f;             // swing angle (degrees, around Y)
+    glm::vec3 offset{0.0f, 0.0f, 2.0f};      // slide travel
+    float     speed     = 2.5f;              // open/close rate (1/sec)
+    bool      startOpen = false;             // initial state at Play start
+
+    bool      open    = false;   // runtime: target state (set by a DoorOpener)
+    float     t       = 0.0f;    // runtime: 0 closed .. 1 open
+    glm::vec3 home{0.0f};        // runtime: closed local position
+    glm::vec3 homeRot{0.0f};     // runtime: closed local rotation
+    bool      started = false;
+    unsigned  bodyId  = 0;       // runtime: kinematic collider (PhysicsBodyId)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<DoorComponent>(*this);
+    }
+    const char* typeId() const override { return "door"; }
+    const char* displayName() const override { return "Door"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        if (slide) {
+            g.line(c, c + offset, {0.6f, 0.85f, 1.0f, 1.0f});
+            g.sphere(c + offset, 0.2f, {0.6f, 0.85f, 1.0f, 0.8f});
+        } else { // swing: show the closed and open leading edges
+            const glm::vec3 closedDir = rot * glm::vec3(0.0f, 0.0f, -1.0f);
+            const glm::vec3 openDir =
+                (rot * glm::angleAxis(glm::radians(angle), glm::vec3(0, 1, 0)))
+                * glm::vec3(0.0f, 0.0f, -1.0f);
+            g.line(c, c + closedDir * 1.5f, {0.6f, 0.85f, 1.0f, 0.5f});
+            g.line(c, c + openDir * 1.5f, {0.6f, 1.0f, 0.8f, 1.0f});
+        }
+    }
+};
+
+// --- Built-in component: DoorOpener (opens a Door on player approach) ----------
+// A proximity zone: while the player is within `radius`, its target Door is open;
+// when they leave it closes -- unless `stayOpen` latches it open after the first
+// entry. `target` is a Door entity id (-1 = the entity this opener is attached to,
+// i.e. an automatic door). Serializes the target id itself.
+class DoorOpenerComponent : public ComponentBase {
+public:
+    int   target   = -1;     // Door entity id (-1 = self)
+    float radius   = 3.0f;
+    bool  stayOpen = false;  // latch open after the first trigger
+
+    bool insideLast = false; // runtime
+    bool opened     = false; // runtime: latch for stayOpen
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<DoorOpenerComponent>(*this);
+    }
+    const char* typeId() const override { return "door_opener"; }
+    const char* displayName() const override { return "Door Opener"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        g.sphere(c, radius, {0.5f, 0.9f, 1.0f, 0.8f}); // sensor zone
+    }
+};
+
 // --- Built-in component: Pusher (a directional force field in Play) -----------
 // Data-authored, no scripting: while playing it pushes every dynamic body within
 // `radius` along `direction`. `continuous` = a steady force each frame (wind,

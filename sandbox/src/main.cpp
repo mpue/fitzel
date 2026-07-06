@@ -2332,6 +2332,22 @@ int main(int argc, char** argv) {
                                     }
                             at->insideLast = inside;
                         }
+                        // DoorOpener: the target Door (or self, target<0) is open
+                        // while the player is in range; `stayOpen` latches it.
+                        if (auto* dop = e.components.get<DoorOpenerComponent>()) {
+                            const bool inside = glm::distance(playerC, e.center) <= dop->radius;
+                            Entity* doorEnt = dop->target >= 0 ? document.find(dop->target) : &e;
+                            if (doorEnt)
+                                if (auto* door = doorEnt->components.get<DoorComponent>()) {
+                                    if (dop->stayOpen) {
+                                        if (inside) dop->opened = true;
+                                        door->open = dop->opened;
+                                    } else {
+                                        door->open = inside;
+                                    }
+                                }
+                            dop->insideLast = inside;
+                        }
                         // Lift: rise while the player is within range, descend when
                         // they leave, between the start (bottom) and start+offset
                         // (top) at `speed`. Writes LOCAL position; a kinematic
@@ -2374,6 +2390,38 @@ int main(int argc, char** argv) {
                         mv->phase += dt / glm::max(mv->duration, 0.05f);
                         const float s = 0.5f - 0.5f * std::cos(6.2831853f * mv->phase);
                         e.localCenter = mv->home + mv->offset * s;
+                    }
+
+                // Door: ease toward open/closed (open set by a DoorOpener), swing
+                // or slide from the captured closed pose. A kinematic collider
+                // follows it so a shut door blocks and an open one clears. Writes
+                // LOCAL transform (children ride along). World == local for an
+                // unparented door (the normal case).
+                for (Entity& e : entities)
+                    if (auto* d = e.components.get<DoorComponent>()) {
+                        if (!d->started) {
+                            d->started = true;
+                            d->home = e.localCenter; d->homeRot = e.localRotation;
+                            d->open = d->startOpen; d->t = d->startOpen ? 1.0f : 0.0f;
+                        }
+                        const float target = d->open ? 1.0f : 0.0f;
+                        const float step   = d->speed * dt;
+                        if (d->t < target) d->t = glm::min(d->t + step, target);
+                        else               d->t = glm::max(d->t - step, target);
+                        if (d->slide) {
+                            e.localCenter   = d->home + d->offset * d->t;
+                            e.localRotation = d->homeRot;
+                        } else {
+                            e.localCenter   = d->home;
+                            e.localRotation = d->homeRot + glm::vec3(0.0f, d->angle * d->t, 0.0f);
+                        }
+                        if (physics) {
+                            const glm::quat q = glm::quat(glm::radians(e.localRotation));
+                            if (d->bodyId == 0)
+                                d->bodyId = physics->addKinematicBox(e.half, e.localCenter, q);
+                            else
+                                physics->setKinematicTarget(d->bodyId, e.localCenter, q, dt);
+                        }
                     }
 
                 // Spawner: emit a dynamic solid above itself every `interval`, up
@@ -3670,6 +3718,21 @@ int main(int argc, char** argv) {
                                         if (te.components.get<AnimationComponent>())
                                             if (ImGui::Selectable(te.name.c_str(), at->target == te.id))
                                                 at->target = te.id;
+                                    ImGui::EndCombo();
+                                }
+                            } else if (auto* dop = dynamic_cast<DoorOpenerComponent*>(c)) {
+                                // Radius/stayOpen from metadata; Target = a Door
+                                // entity ((self) for the door this is attached to).
+                                for (const Property& pr : dop->props()) drawProperty(pr, dop);
+                                const Entity* cur = document.find(dop->target);
+                                const std::string label = cur ? cur->name : "(self)";
+                                if (ImGui::BeginCombo("Target door", label.c_str())) {
+                                    if (ImGui::Selectable("(self)", dop->target < 0))
+                                        dop->target = -1;
+                                    for (const Entity& te : entities)
+                                        if (te.components.get<DoorComponent>())
+                                            if (ImGui::Selectable(te.name.c_str(), dop->target == te.id))
+                                                dop->target = te.id;
                                     ImGui::EndCombo();
                                 }
                             } else {
