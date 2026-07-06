@@ -17,8 +17,10 @@ public:
 
     bool ok() const;
     void setMasterVolume(float volume);
+    // Volume of the one-shot (SFX) bus that playOneShot routes through.
+    void setSfxVolume(float volume);
 
-    // Fire-and-forget one-shot (loads + plays + auto-frees).
+    // Fire-and-forget one-shot on the SFX bus (loads + plays + auto-frees).
     void playOneShot(const std::string& path);
 
     struct Impl;

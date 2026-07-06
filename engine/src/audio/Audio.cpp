@@ -14,8 +14,10 @@
 namespace fitzel {
 
 struct Audio::Impl {
-    ma_engine engine;
-    bool      ok = false;
+    ma_engine       engine;
+    ma_sound_group  sfx;        // one-shot bus (mixer "SFX" channel)
+    bool            sfxOk = false;
+    bool            ok    = false;
 };
 
 Audio::Audio() : m_impl(std::make_unique<Impl>()) {
@@ -23,11 +25,15 @@ Audio::Audio() : m_impl(std::make_unique<Impl>()) {
     m_impl->ok = (r == MA_SUCCESS);
     if (!m_impl->ok) {
         std::fprintf(stderr, "[Fitzel] audio engine init failed (%d)\n", r);
+        return;
     }
+    m_impl->sfxOk = ma_sound_group_init(&m_impl->engine, 0, nullptr, &m_impl->sfx)
+                    == MA_SUCCESS;
 }
 
 Audio::~Audio() {
     if (m_impl && m_impl->ok) {
+        if (m_impl->sfxOk) ma_sound_group_uninit(&m_impl->sfx);
         ma_engine_uninit(&m_impl->engine);
     }
 }
@@ -38,8 +44,14 @@ void Audio::setMasterVolume(float volume) {
     if (ok()) ma_engine_set_volume(&m_impl->engine, volume);
 }
 
+void Audio::setSfxVolume(float volume) {
+    if (ok() && m_impl->sfxOk) ma_sound_group_set_volume(&m_impl->sfx, volume);
+}
+
 void Audio::playOneShot(const std::string& path) {
-    if (ok()) ma_engine_play_sound(&m_impl->engine, path.c_str(), nullptr);
+    if (ok())
+        ma_engine_play_sound(&m_impl->engine, path.c_str(),
+                             m_impl->sfxOk ? &m_impl->sfx : nullptr);
 }
 
 struct Sound::Impl {

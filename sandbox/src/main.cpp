@@ -777,7 +777,15 @@ int main(int argc, char** argv) {
         bool showRoads       = false;
         bool showVehiclePanel = false;
         bool showEnv         = false;
+        bool showMixer       = false;
         std::string modelFile;       // selected file in the Models panel
+
+        // The "Mitzel" -- fitzel's audio mixer. Master (masterVolume/muted below)
+        // scales everything via the device; Ambient scales the looping weather/
+        // zone voices; SFX scales the one-shot bus. Each channel: level + mute.
+        struct MixChannel { float level = 1.0f; bool mute = false;
+                            float gain() const { return mute ? 0.0f : level; } };
+        MixChannel mixAmbient, mixSfx;
 
         // Projects: a project is a folder chosen by the user (New Project wizard)
         // containing <name>.fitzel + materials/. currentProject is the open
@@ -1428,6 +1436,8 @@ int main(int argc, char** argv) {
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
+        addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
+        addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
         addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
         addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
@@ -2253,13 +2263,17 @@ int main(int argc, char** argv) {
             // Weather audio: cross-fade the looping layers, fire thunder on a
             // fresh lightning flash. Only audible while playing -- the editor
             // stays silent.
+            // Mitzel routing: Master to the device, SFX to the one-shot bus,
+            // Ambient scales the looping weather layers.
             audio.setMasterVolume(muted ? 0.0f : masterVolume);
-            rainSnd.setVolume(playMode ? rainIntensity : 0.0f);
-            windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, weather) * 0.9f : 0.0f);
-            breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f : 0.0f);
+            audio.setSfxVolume(mixSfx.gain());
+            const float amb = mixAmbient.gain();
+            rainSnd.setVolume(playMode ? rainIntensity * amb : 0.0f);
+            windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, weather) * 0.9f * amb : 0.0f);
+            breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f * amb : 0.0f);
             const bool flashOn = flash > 0.25f;
             if (playMode && flashOn && !prevFlashOn) {
-                thunderSnd.setVolume(glm::clamp(weather, 0.3f, 1.0f));
+                thunderSnd.setVolume(glm::clamp(weather, 0.3f, 1.0f) * amb);
                 thunderSnd.play();
             }
             prevFlashOn = flashOn;
@@ -2398,7 +2412,7 @@ int main(int argc, char** argv) {
                                             audio, resolveSoundPath(ts->sound), true);
                                     if (!ts->insideLast) voice.play(); // (re)start on entry
                                     const float fall = glm::clamp(1.0f - dist / glm::max(ts->radius, 0.01f), 0.0f, 1.0f);
-                                    voice.setVolume(ts->volume * fall);
+                                    voice.setVolume(ts->volume * fall * mixAmbient.gain());
                                 } else if (voice.isValid()) {
                                     voice.stop();
                                 }
@@ -2731,6 +2745,7 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginMenu("View")) {
                     ImGui::MenuItem("Stats",           nullptr, &showStats);
                     ImGui::MenuItem("Camera",          nullptr, &showCamera);
+                    ImGui::MenuItem("Mitzel (mixer)",  nullptr, &showMixer);
                     ImGui::MenuItem("Weather & audio", nullptr, &showWeather);
                     ImGui::MenuItem("Sky & atmosphere",nullptr, &showSky);
                     ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
@@ -3352,6 +3367,34 @@ int main(int argc, char** argv) {
                     camera.setYaw(camYaw);
                 if (ImGui::SliderFloat("Pitch", &camPitch, -89.0f, 89.0f, "%.0f"))
                     camera.setPitch(camPitch);
+            }
+            ImGui::End(); }
+
+            // The Mitzel: fitzel's audio mixer, as a strip of vertical faders.
+            if (showMixer) { if (ImGui::Begin("Mitzel", &showMixer)) {
+                ImGui::TextDisabled("the mitzel \xE2\x80\x94 fitzel's mixer");
+                ImGui::Separator();
+                auto fader = [&](const char* name, float* level, bool* mute) {
+                    ImGui::PushID(name);
+                    ImGui::BeginGroup();
+                    ImGui::TextUnformatted(name);
+                    if (*mute) ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(185, 65, 60, 255));
+                    if (ImGui::Button("Mute", ImVec2(46.0f, 0.0f))) *mute = !*mute;
+                    if (*mute) ImGui::PopStyleColor();
+                    ImGui::VSliderFloat("##v", ImVec2(46.0f, 150.0f), level, 0.0f, 1.0f, "");
+                    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+                        ImGui::SetTooltip("%.0f%%", *level * 100.0f);
+                    ImGui::Text("%3.0f%%", *level * 100.0f);
+                    ImGui::EndGroup();
+                    ImGui::PopID();
+                    ImGui::SameLine();
+                };
+                fader("Master",  &masterVolume,     &muted);
+                fader("Ambient", &mixAmbient.level, &mixAmbient.mute);
+                fader("SFX",     &mixSfx.level,     &mixSfx.mute);
+                ImGui::NewLine();
+                ImGui::TextDisabled("Master feeds the device; Ambient the weather/\n"
+                                    "zone loops; SFX the one-shot bus.");
             }
             ImGui::End(); }
 
