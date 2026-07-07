@@ -1097,6 +1097,71 @@ int main(int argc, char** argv) {
             return out;
         };
 
+        // Spawn a new entity of `type` as a child of `parentId` (-1 = root),
+        // placed at world position/rotation (wPos/wRot). Mirrors addEntity's
+        // material/light setup but lets the hierarchy context menu build parented
+        // nodes. Returns the new entity's id. One undoable step.
+        auto spawnChild = [&](int parentId, EntityType type,
+                              const glm::vec3& wPos, const glm::vec3& wRot) -> int {
+            Entity nb;
+            nb.type = type;
+            nb.half = (type == EntityType::Light) ? glm::vec3(0.3f)
+                    : (type == EntityType::Empty) ? glm::vec3(0.5f)
+                    : entityNewHalf;
+            if (type == EntityType::Light)
+                nb.components.items.push_back(std::make_unique<LightComponent>());
+            const bool solid = type == EntityType::Box || type == EntityType::Ramp ||
+                               type == EntityType::Cylinder || type == EntityType::Sphere;
+            if (solid && !materials.empty()) {
+                auto mc = std::make_unique<MaterialComponent>();
+                mc->material = materials[glm::clamp(matSel, 0,
+                                   static_cast<int>(materials.size()) - 1)].assetId;
+                nb.components.items.push_back(std::move(mc));
+            }
+            nb.id     = entityCounter++;
+            nb.parent = parentId;
+            nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
+            Entity* p = (parentId >= 0) ? document.find(parentId) : nullptr;
+            const glm::mat4 pw = p ? worldOf(*p) : glm::mat4(1.0f);
+            setWorld(nb, wPos, wRot, p ? &pw : nullptr);
+            history.push(std::make_unique<AddEntityCmd>(nb), document);
+            return nb.id;
+        };
+        // Context-menu helpers (index-based; capture the id first so the entities
+        // vector may safely grow underneath).
+        auto addEmptyChild = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            const Entity& n = entities[idx];
+            const int id = spawnChild(n.id, EntityType::Empty, n.center, n.rotation);
+            entitySel = document.indexOf(id);
+        };
+        auto addPrimitiveChild = [&](int idx, EntityType type) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            const Entity& n = entities[idx];
+            const int id = spawnChild(n.id, type, n.center, glm::vec3(0.0f));
+            entitySel = document.indexOf(id);
+        };
+        // Insert a new Empty between `idx` and its current parent, then reparent
+        // `idx` under it -- keeping the node put. Groups the node under a fresh
+        // pivot, like Unity's "Create Empty Parent".
+        auto addEmptyParent = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            if (entities[idx].type == EntityType::Sun) return; // the sun stays root
+            const int       nodeId      = entities[idx].id;
+            const int       grandparent = entities[idx].parent;
+            const glm::vec3 wPos        = entities[idx].center;
+            const glm::vec3 wRot        = entities[idx].rotation;
+            const int emptyId = spawnChild(grandparent, EntityType::Empty, wPos, wRot);
+            Entity* node = document.find(nodeId);
+            Entity* emp  = document.find(emptyId);
+            if (node && emp) {
+                node->parent = emptyId;
+                const glm::mat4 pw = worldOf(*emp);
+                rebaseLocal(*node, &pw); // keep the child where it was
+            }
+            entitySel = document.indexOf(emptyId);
+        };
+
         // Tree instances live here (filled by regenTrees below); declared early
         // so flower placement can cluster blooms around the trees.
         std::vector<float> treeInst;
@@ -3753,6 +3818,10 @@ int main(int argc, char** argv) {
                 // space to unparent); right-click for Duplicate/Delete.
                 int reparentSrc = -1, reparentTo = -2; // -2 = none, -1 = root
                 int dupReq = -1, delReq = -1;
+                // Deferred context-menu creation requests (applied after the tree
+                // is drawn, so entities isn't mutated mid-iteration).
+                int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
+                EntityType primChildType = EntityType::Box;
                 auto typeColor = [](EntityType t) -> ImU32 {
                     switch (t) {
                         case EntityType::Light:    return IM_COL32(255, 224, 130, 255);
@@ -3822,6 +3891,21 @@ int main(int argc, char** argv) {
                             entitySel = i;
                             if (ImGui::MenuItem("Rename", "F2")) beginRename();
                             if (ImGui::MenuItem("Duplicate")) dupReq = i;
+                            ImGui::Separator();
+                            if (ImGui::MenuItem("Create Empty Parent")) emptyParentReq = i;
+                            if (ImGui::MenuItem("Create Empty Child"))  emptyChildReq = i;
+                            if (ImGui::BeginMenu("Add Primitive")) {
+                                if (ImGui::MenuItem("Box"))
+                                    { primChildReq = i; primChildType = EntityType::Box; }
+                                if (ImGui::MenuItem("Ramp"))
+                                    { primChildReq = i; primChildType = EntityType::Ramp; }
+                                if (ImGui::MenuItem("Cylinder"))
+                                    { primChildReq = i; primChildType = EntityType::Cylinder; }
+                                if (ImGui::MenuItem("Sphere"))
+                                    { primChildReq = i; primChildType = EntityType::Sphere; }
+                                ImGui::EndMenu();
+                            }
+                            ImGui::Separator();
                             ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
                             if (ImGui::MenuItem("Delete")) delReq = i;
                             ImGui::EndDisabled();
@@ -3862,8 +3946,11 @@ int main(int argc, char** argv) {
                     ImGui::EndDragDropTarget();
                 }
                 ImGui::EndChild();
-                if (dupReq >= 0)      duplicateEntity(dupReq);
-                else if (delReq >= 0) deleteEntity(delReq);
+                if (dupReq >= 0)             duplicateEntity(dupReq);
+                else if (delReq >= 0)        deleteEntity(delReq);
+                else if (emptyParentReq >= 0) addEmptyParent(emptyParentReq);
+                else if (emptyChildReq >= 0)  addEmptyChild(emptyChildReq);
+                else if (primChildReq >= 0)   addPrimitiveChild(primChildReq, primChildType);
                 // Apply a requested reparent (rejecting cycles).
                 if (reparentSrc >= 0 && reparentTo != -2) {
                     int si = -1;
