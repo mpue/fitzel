@@ -751,6 +751,9 @@ int main(int argc, char** argv) {
         CommandStack history;
         std::vector<Entity>& entities = document.entities();
         int       entitySel      = -1;
+        int       renameId       = -1;   // hierarchy node being inline-renamed (entity id)
+        bool      renameFocus    = false; // request keyboard focus on the rename field
+        char      renameBuf[128] = "";
         bool      entityEditMode = true; // start ready to edit; Esc -> selection
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
         EntityType entityNewType = EntityType::Box; // type placed on click
@@ -3759,30 +3762,69 @@ int main(int argc, char** argv) {
                     if (!hasChildren)   flags |= ImGuiTreeNodeFlags_Leaf;
                     const char* nm = entities[i].name.empty() ? "(unnamed)"
                                                               : entities[i].name.c_str();
+                    // Start renaming this node: seed the buffer and grab focus.
+                    auto beginRename = [&] {
+                        renameId = entities[i].id;
+                        std::snprintf(renameBuf, sizeof(renameBuf), "%s",
+                                      entities[i].name.c_str());
+                        renameFocus = true;
+                    };
+                    const bool renaming = (entities[i].id == renameId);
+
                     ImGui::PushStyleColor(ImGuiCol_Text, typeColor(entities[i].type));
-                    const bool open = ImGui::TreeNodeEx("##n", flags, "%s", nm);
+                    // While renaming, draw the row with a blank label and overlay an
+                    // edit field, keeping the tree's arrow + indentation intact.
+                    const bool open = ImGui::TreeNodeEx("##n", flags, "%s",
+                                                        renaming ? "" : nm);
                     ImGui::PopStyleColor();
-                    if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) entitySel = i;
-                    if (ImGui::BeginPopupContextItem()) {
-                        entitySel = i;
-                        if (ImGui::MenuItem("Duplicate")) dupReq = i;
-                        ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
-                        if (ImGui::MenuItem("Delete")) delReq = i;
-                        ImGui::EndDisabled();
-                        ImGui::EndPopup();
-                    }
-                    if (ImGui::BeginDragDropSource()) {
-                        const int sid = entities[i].id;
-                        ImGui::SetDragDropPayload("SOLID_ID", &sid, sizeof(int));
-                        ImGui::Text("%s", nm);
-                        ImGui::EndDragDropSource();
-                    }
-                    if (ImGui::BeginDragDropTarget()) {
-                        if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
-                            reparentSrc = *static_cast<const int*>(pl->Data);
-                            reparentTo  = entities[i].id;
+
+                    if (renaming) {
+                        ImGui::SameLine();
+                        if (renameFocus) { ImGui::SetKeyboardFocusHere(); renameFocus = false; }
+                        ImGui::SetNextItemWidth(-1.0f);
+                        const bool enter = ImGui::InputText("##rename", renameBuf,
+                            sizeof(renameBuf), ImGuiInputTextFlags_EnterReturnsTrue |
+                                               ImGuiInputTextFlags_AutoSelectAll);
+                        const bool esc = ImGui::IsKeyPressed(ImGuiKey_Escape);
+                        // Commit on Enter or when the field loses focus; Escape cancels.
+                        if (enter || (ImGui::IsItemDeactivated() && !esc)) {
+                            entities[i].name = renameBuf;
+                            renameId = -1;
+                        } else if (esc) {
+                            renameId = -1;
                         }
-                        ImGui::EndDragDropTarget();
+                    } else {
+                        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) entitySel = i;
+                        // F2 on the selected node (or a double-click on its label)
+                        // starts an inline rename, Unity-style.
+                        if (i == entitySel && ImGui::IsWindowFocused() &&
+                            ImGui::IsKeyPressed(ImGuiKey_F2))
+                            beginRename();
+                        if (ImGui::IsItemHovered() && !ImGui::IsItemToggledOpen() &&
+                            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                            beginRename();
+                        if (ImGui::BeginPopupContextItem()) {
+                            entitySel = i;
+                            if (ImGui::MenuItem("Rename", "F2")) beginRename();
+                            if (ImGui::MenuItem("Duplicate")) dupReq = i;
+                            ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
+                            if (ImGui::MenuItem("Delete")) delReq = i;
+                            ImGui::EndDisabled();
+                            ImGui::EndPopup();
+                        }
+                        if (ImGui::BeginDragDropSource()) {
+                            const int sid = entities[i].id;
+                            ImGui::SetDragDropPayload("SOLID_ID", &sid, sizeof(int));
+                            ImGui::Text("%s", nm);
+                            ImGui::EndDragDropSource();
+                        }
+                        if (ImGui::BeginDragDropTarget()) {
+                            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
+                                reparentSrc = *static_cast<const int*>(pl->Data);
+                                reparentTo  = entities[i].id;
+                            }
+                            ImGui::EndDragDropTarget();
+                        }
                     }
                     if (open) {
                         if (hasChildren)
