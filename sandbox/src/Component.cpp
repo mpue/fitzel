@@ -165,6 +165,11 @@ const std::vector<Property>& SpawnerComponent::properties() {
         speed.slider = true; speed.min = 0.0f; speed.max = 30.0f; speed.fmt = "%.1f m/s";
         speed.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->speed; };
         p.push_back(std::move(speed));
+        Property spread;
+        spread.label = "Spread"; spread.key = "spread"; spread.kind = PropKind::Float;
+        spread.slider = true; spread.min = 0.0f; spread.max = 180.0f; spread.fmt = "%.0f deg";
+        spread.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->spread; };
+        p.push_back(std::move(spread));
         Property maxCount;
         maxCount.label = "Max count"; maxCount.key = "maxCount"; maxCount.kind = PropKind::Float;
         maxCount.min = 1.0f; maxCount.max = 200.0f; maxCount.speed = 1.0f; maxCount.fmt = "%.0f";

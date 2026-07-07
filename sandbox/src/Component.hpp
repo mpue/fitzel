@@ -218,7 +218,9 @@ class SpawnerComponent : public ComponentBase {
 public:
     int   spawnType = 3;      // EntityType to emit (0 Box .. 3 Sphere)
     float interval  = 1.0f;   // seconds between spawns
-    float speed     = 4.0f;   // initial upward velocity (m/s)
+    float speed     = 4.0f;   // initial launch velocity (m/s)
+    float spread    = 0.0f;   // launch-direction randomization: cone half-angle
+                              // in degrees around +Y (0 = straight up, 180 = any)
     float maxCount  = 20.0f;  // stop after this many (whole number)
 
     float timer   = 0.0f;     // runtime: time since the last spawn

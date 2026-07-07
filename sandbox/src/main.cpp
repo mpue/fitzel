@@ -1221,6 +1221,10 @@ int main(int argc, char** argv) {
         const float fireflyRadius = 34.0f;
         std::mt19937 flyRng(9001u);
         std::uniform_real_distribution<float> flyU(0.0f, 1.0f);
+        // Gameplay RNG for spawner launch-direction randomization (persists across
+        // spawns so successive emits vary within a Play session).
+        std::mt19937 spawnRng(1234u);
+        std::uniform_real_distribution<float> spawnU(0.0f, 1.0f);
         // Home xz + blink phase per firefly; homes start "far" so they seed near
         // the camera on the first night frame.
         std::vector<glm::vec3> fireflies(256, glm::vec3(1e9f, 1e9f, 0.0f));
@@ -2586,7 +2590,18 @@ int main(int argc, char** argv) {
                     s.pos     = e.center + glm::vec3(0.0f, e.half.y + 0.4f, 0.0f);
                     s.half    = glm::vec3(0.3f);
                     s.physics = 2; // dynamic
-                    s.vel     = glm::vec3(0.0f, sw->speed, 0.0f);
+                    // Launch direction: random within a cone of half-angle `spread`
+                    // (deg) around +Y. Sampling cos(theta) uniformly over the cap
+                    // gives an even spread; spread 0 -> straight up, 180 -> any dir.
+                    {
+                        const float spreadRad =
+                            glm::radians(glm::clamp(sw->spread, 0.0f, 180.0f));
+                        const float ct = glm::mix(std::cos(spreadRad), 1.0f, spawnU(spawnRng));
+                        const float st = std::sqrt(glm::max(0.0f, 1.0f - ct * ct));
+                        const float ph = 6.2831853f * spawnU(spawnRng);
+                        const glm::vec3 dir(st * std::cos(ph), ct, st * std::sin(ph));
+                        s.vel = dir * sw->speed;
+                    }
                     s.name    = "spawned";
                     host.spawn(s);
                     ++sw->spawned;
