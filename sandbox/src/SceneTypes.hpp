@@ -17,9 +17,12 @@
 
 // A scene entity: a placed, selectable object. Box/Ramp/Cylinder/Sphere are
 // solid, walkable geometry; Model is an imported glTF/GLB; Light is a point
-// light; Sun is the (singleton) directional light driving the whole sky.
-// Model is appended last so the palette combo (index == enum value) is unaffected.
-enum class EntityType { Box, Ramp, Cylinder, Sphere, Light, Sun, Model };
+// light; Sun is the (singleton) directional light driving the whole sky. Empty
+// is a transform-only node (no geometry) used to group and parent other objects,
+// exactly like an empty GameObject in Unity.
+// New types are appended last so the enum value (== serialized index, palette
+// combo index) of the existing ones is unaffected.
+enum class EntityType { Box, Ramp, Cylinder, Sphere, Light, Sun, Model, Empty };
 
 inline const char* entityTypeName(EntityType t) {
     switch (t) {
@@ -30,6 +33,7 @@ inline const char* entityTypeName(EntityType t) {
         case EntityType::Light:    return "Light";
         case EntityType::Sun:      return "Sun";
         case EntityType::Model:    return "Model";
+        case EntityType::Empty:    return "Empty";
     }
     return "Entity";
 }

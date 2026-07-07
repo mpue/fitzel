@@ -11,7 +11,9 @@ using E = EntityType;
 
 constexpr unsigned bit(E t) { return 1u << static_cast<unsigned>(t); }
 const unsigned SOLID    = bit(E::Box) | bit(E::Ramp) | bit(E::Cylinder) | bit(E::Sphere);
-const unsigned MOVABLE  = SOLID | bit(E::Model) | bit(E::Light); // has a world position
+// Everything with an editable world position -- solids, models, lights, and the
+// transform-only Empty grouping node.
+const unsigned MOVABLE  = SOLID | bit(E::Model) | bit(E::Light) | bit(E::Empty);
 const unsigned ALLTYPES = ~0u;
 
 // Accessor helpers: build a `void*(void*)` that returns the address of member M
@@ -42,7 +44,7 @@ const std::vector<Property>& entityProperties() {
 
         Property rot;
         rot.label = "Rotation"; rot.key = "rotation"; rot.kind = PropKind::Vec3;
-        rot.typeMask = SOLID | bit(E::Model); rot.speed = 1.0f; rot.fmt = "%.0f deg";
+        rot.typeMask = SOLID | bit(E::Model) | bit(E::Empty); rot.speed = 1.0f; rot.fmt = "%.0f deg";
         rot.field = at(&Entity::localRotation);
         p.push_back(std::move(rot));
 

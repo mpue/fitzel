@@ -842,7 +842,11 @@ int main(int argc, char** argv) {
         auto addEntity = [&](glm::vec3 groundPos, EntityType type) {
             Entity nb;
             nb.type   = type;
-            nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f) : entityNewHalf;
+            // Light/Empty are markers with no real geometry: give them a small,
+            // fixed half so they still get a clickable pick box in the viewport.
+            nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f)
+                      : (type == EntityType::Empty) ? glm::vec3(0.5f)
+                      : entityNewHalf;
             nb.localCenter = nb.center =
                 glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             if (type == EntityType::Light)
@@ -2126,7 +2130,8 @@ int main(int argc, char** argv) {
                 float groundY = streamer.heightAt(pos.x, pos.z);
                 for (const Entity& b : entities) {
                     if (b.type == EntityType::Light || b.type == EntityType::Sun ||
-                        b.type == EntityType::Model) continue; // models: no AABB stand
+                        b.type == EntityType::Model || b.type == EntityType::Empty)
+                        continue; // markers/models: no AABB stand surface
                     if (pos.x + pr > b.center.x - b.half.x && pos.x - pr < b.center.x + b.half.x &&
                         pos.z + pr > b.center.z - b.half.z && pos.z - pr < b.center.z + b.half.z) {
                         float top;
@@ -2869,6 +2874,11 @@ int main(int argc, char** argv) {
                                                 {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
                                 }
                                 break;
+                            case EntityType::Empty: // small dashed cross = transform node
+                                dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.5f);
+                                dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.5f);
+                                dl->AddCircle(c, r * 0.4f, col, 0, 1.5f);
+                                break;
                             default: break;
                         }
                         ImGui::PopID();
@@ -2884,6 +2894,7 @@ int main(int argc, char** argv) {
                     shapeBtn(EntityType::Cylinder, "Cylinder");
                     shapeBtn(EntityType::Sphere, "Sphere");
                     shapeBtn(EntityType::Light, "Light");
+                    shapeBtn(EntityType::Empty, "Empty (transform-only grouping node)");
 
                     // Gap, then the transform-gizmo modes (Q/W/E).
                     ImGui::Dummy(ImVec2(10.0f, 1.0f));
@@ -3327,6 +3338,31 @@ int main(int argc, char** argv) {
                             comp->onGizmo(gz, b.center, glm::quat(glm::radians(b.rotation)));
                     }
 
+                    // Empties have no mesh, so draw a constant-size screen icon at
+                    // each one (editor only) -- otherwise they'd be invisible and
+                    // only reachable from the hierarchy. Their AABB pick box still
+                    // makes them clickable in the viewport.
+                    if (!playMode) {
+                        ImDrawList* odl = ImGui::GetWindowDrawList();
+                        for (const Entity& e : entities) {
+                            if (e.type != EntityType::Empty) continue;
+                            const glm::vec4 cc = vp * glm::vec4(e.center, 1.0f);
+                            if (cc.w <= 1e-4f) continue;
+                            const glm::vec3 n = glm::vec3(cc) / cc.w;
+                            if (n.z > 1.0f) continue;
+                            const ImVec2 sc(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            const float r = 7.0f;
+                            const ImU32 col = IM_COL32(170, 175, 185, 220);
+                            odl->AddLine({sc.x - r, sc.y}, {sc.x + r, sc.y}, col, 1.5f);
+                            odl->AddLine({sc.x, sc.y - r}, {sc.x, sc.y + r}, col, 1.5f);
+                            odl->AddCircle(sc, r * 0.45f, col, 0, 1.5f);
+                            if (!e.name.empty())
+                                odl->AddText({sc.x + r + 3.0f, sc.y - 7.0f}, col,
+                                             e.name.c_str());
+                        }
+                    }
+
                     // Click to select/place, but not while grabbing the gizmo.
                     if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
                         viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -3706,6 +3742,7 @@ int main(int argc, char** argv) {
                         case EntityType::Model:    return IM_COL32(150, 200, 255, 255);
                         case EntityType::Sphere:   return IM_COL32(190, 230, 200, 255);
                         case EntityType::Cylinder: return IM_COL32(200, 210, 235, 255);
+                        case EntityType::Empty:    return IM_COL32(170, 175, 185, 255);
                         default:                   return IM_COL32(220, 220, 225, 255);
                     }
                 };
@@ -4587,7 +4624,8 @@ int main(int argc, char** argv) {
             std::vector<Material> lightMats;
             lightMats.reserve(entities.size());
             for (const Entity& b : entities) {
-                if (b.type == EntityType::Sun) continue; // directional, no geometry
+                if (b.type == EntityType::Sun) continue;   // directional, no geometry
+                if (b.type == EntityType::Empty) continue;  // grouping node, no geometry
                 // Player-start markers are authoring aids -- hidden while playing.
                 if (playMode && b.components.get<PlayerStartComponent>()) continue;
                 if (b.type == EntityType::Model) {
