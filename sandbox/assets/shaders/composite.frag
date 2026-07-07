@@ -104,8 +104,15 @@ void main() {
     vec2 uv  = vNdc * 0.5 + 0.5;
     vec3 hdr = dofColor(uv);
 
-    // Ambient occlusion darkens creases/valleys (bilinear-upscaled half-res AO).
-    float ao = mix(1.0, texture(uAO, uv).r, uAoStrength);
+    // Ambient occlusion darkens creases/valleys. The half-res AO carries the
+    // SSAO kernel's per-pixel dither, so denoise it with a 4x4 box blur (step =
+    // one AO texel = two full-res texels) before applying -- this is the SSAO
+    // blur pass, folded into the composite to avoid a separate target.
+    float aoSum = 0.0;
+    for (int x = -2; x <= 1; ++x)
+        for (int y = -2; y <= 1; ++y)
+            aoSum += texture(uAO, uv + vec2(x, y) * uTexel * 2.0).r;
+    float ao = mix(1.0, aoSum / 16.0, uAoStrength);
     hdr *= ao;
 
     // --- Bloom: gaussian-weighted blur of the bright pass (5x5, wider step) --
