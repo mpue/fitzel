@@ -88,7 +88,73 @@ bool pickFolder(std::string& out, const std::string& initialDir) {
 
 } // namespace ed
 
-#else // non-Windows: no native dialog (caller falls back to a path text field).
+#elif defined(__APPLE__)
+
+#include <array>
+#include <cstdio>
+#include <filesystem>
+#include <string>
+
+namespace ed {
+
+namespace {
+
+// Wrap a string as a single-quoted shell token, escaping embedded single quotes
+// so the whole thing survives being passed through /bin/sh via popen().
+std::string shellQuote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else           out += c;
+    }
+    out += "'";
+    return out;
+}
+
+} // namespace
+
+bool pickFolder(std::string& out, const std::string& initialDir) {
+    // macOS has no COM file dialog; drive AppleScript's native "choose folder"
+    // via osascript instead. No extra dependency, and it returns the chosen
+    // POSIX path on stdout (with a trailing slash). On cancel osascript exits
+    // non-zero and prints nothing usable.
+    std::string script = "choose folder with prompt \"Select folder\"";
+    std::error_code ec;
+    if (!initialDir.empty() && std::filesystem::exists(initialDir, ec)) {
+        // AppleScript string literal: escape backslash and double-quote.
+        std::string esc;
+        for (char c : initialDir) {
+            if (c == '\\' || c == '"') esc += '\\';
+            esc += c;
+        }
+        script += " default location (POSIX file \"" + esc + "\")";
+    }
+    script = "POSIX path of (" + script + ")";
+
+    const std::string cmd = "osascript -e " + shellQuote(script) + " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+
+    std::string result;
+    std::array<char, 512> buf;
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe))
+        result += buf.data();
+    const int rc = pclose(pipe);
+
+    // osascript appends a newline; "choose folder" yields a trailing slash.
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+        result.pop_back();
+    while (result.size() > 1 && result.back() == '/')
+        result.pop_back();
+
+    if (rc != 0 || result.empty()) return false; // cancelled or failed
+    out = std::filesystem::path(result).generic_string();
+    return !out.empty();
+}
+
+} // namespace ed
+
+#else // other platforms: no native dialog (caller falls back to a text field).
 
 namespace ed {
 bool pickFolder(std::string&, const std::string&) { return false; }

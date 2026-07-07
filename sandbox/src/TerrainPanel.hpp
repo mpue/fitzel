@@ -14,7 +14,10 @@
 namespace fitzel { class AssetDatabase; }
 
 // The most terrain texture layers the lit shader blends (units 3..3+N-1).
-inline constexpr int kMaxTerrainLayers = 8;
+// 6, not 8: the lit shader also declares shadow/env/material samplers, and macOS
+// (Metal) caps a program at 16 active fragment samplers. 6 layers keeps the
+// total at exactly 16.
+inline constexpr int kMaxTerrainLayers = 6;
 
 // One terrain texture layer: its albedo texture and the height + slope band it
 // covers. The shader blends every layer whose band contains a fragment's world

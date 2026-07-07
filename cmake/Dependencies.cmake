@@ -115,7 +115,17 @@ set(ASSIMP_BUILD_TESTS         OFF  CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ASSIMP_TOOLS  OFF  CACHE BOOL "" FORCE)
 set(ASSIMP_INSTALL             OFF  CACHE BOOL "" FORCE)
 set(ASSIMP_WARNINGS_AS_ERRORS  OFF  CACHE BOOL "" FORCE)
-set(ASSIMP_BUILD_ZLIB          ON   CACHE BOOL "" FORCE)
+# assimp's bundled zlib (zutil.h) redefines fdopen() to NULL on Apple because
+# TargetConditionals.h always defines TARGET_OS_MAC=1 -- that macro predates the
+# NeXT/OS X split and here it wrongly triggers the "classic Mac, no fdopen"
+# path, which then clashes with the SDK's <stdio.h> and fails to compile on
+# recent clang. macOS ships zlib in the SDK, so use the system copy there and
+# keep the bundled build on Windows (which has no system zlib).
+if(APPLE)
+    set(ASSIMP_BUILD_ZLIB      OFF  CACHE BOOL "" FORCE)
+else()
+    set(ASSIMP_BUILD_ZLIB      ON   CACHE BOOL "" FORCE)
+endif()
 set(ASSIMP_BUILD_DRACO         OFF  CACHE BOOL "" FORCE)
 set(ASSIMP_INJECT_DEBUG_POSTFIX OFF CACHE BOOL "" FORCE)
 

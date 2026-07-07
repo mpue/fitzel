@@ -78,13 +78,20 @@ void applyTheme() {
     c[ImGuiCol_TextSelectedBg]       = accentDim;
 }
 
-// Load a crisp, larger UI font (Segoe UI on Windows). Falls back to scaling the
-// built-in font up if no TTF is found, so text is never tiny.
+// Load a crisp, larger UI font (Segoe UI on Windows, San Francisco on macOS).
+// Falls back to scaling the built-in font up if no TTF is found, so text is
+// never tiny. The first existing path wins, so per-platform paths can share one
+// list -- the others simply don't exist on the current OS.
 void loadFont(ImGuiIO& io) {
     const char* candidates[] = {
+        // Windows
         "C:\\Windows\\Fonts\\segoeui.ttf",
         "C:\\Windows\\Fonts\\SegoeUI.ttf",
         "C:\\Windows\\Fonts\\tahoma.ttf",
+        // macOS: San Francisco (system UI font), then Helvetica/Arial fallbacks
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
     };
     ImFontConfig cfg;
     cfg.OversampleH = 2;

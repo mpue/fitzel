@@ -121,7 +121,7 @@ uniform float uSlopeSharpness; // blend width of the rock transition
 // Data-driven terrain texture layers (uColorMode == 1). Each layer paints where
 // a fragment's world height and surface slope both fall inside its band; layers
 // with overlapping bands cross-fade. Fed from the terrain editor.
-const int MAX_TERRAIN_LAYERS = 8;
+const int MAX_TERRAIN_LAYERS = 6;
 uniform sampler2D uLayerTex[MAX_TERRAIN_LAYERS];
 uniform int       uLayerCount;
 uniform vec4      uLayerBand[MAX_TERRAIN_LAYERS];  // (hStart, hEnd, slopeStart, slopeEnd deg)
@@ -241,9 +241,7 @@ vec3 layerTriplanar(int i, vec3 wp, vec3 n, float scale) {
     if (i == 2) return triplanar(uLayerTex[2], wp, n, scale);
     if (i == 3) return triplanar(uLayerTex[3], wp, n, scale);
     if (i == 4) return triplanar(uLayerTex[4], wp, n, scale);
-    if (i == 5) return triplanar(uLayerTex[5], wp, n, scale);
-    if (i == 6) return triplanar(uLayerTex[6], wp, n, scale);
-    return triplanar(uLayerTex[7], wp, n, scale);
+    return triplanar(uLayerTex[5], wp, n, scale);
 }
 
 // Height- and slope-driven albedo, blended from the configured texture layers.
