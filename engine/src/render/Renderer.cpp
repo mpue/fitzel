@@ -121,8 +121,9 @@ void Renderer::begin(const Camera& camera, float aspect,
 
 void Renderer::submit(const Mesh& mesh, const Material& material,
                       const glm::mat4& model, bool castsPointShadow,
-                      bool reflective, float opacity) {
-    m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective, opacity});
+                      bool reflective, float opacity, bool forceTransparent) {
+    m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective,
+                       opacity, forceTransparent});
 }
 
 void Renderer::prepareShadows(const ShadowCaster& extra) {
@@ -247,6 +248,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uAlpha", r.opacity);
         s->setInt("uGlass", 0);
         s->setInt("uHasNormalMap", 0);
+        s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
 
         r.material->apply(); // binds shader + material params/textures
 
@@ -336,7 +338,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     std::vector<const Renderable*> opaque, transparent;
     for (const auto& r : m_queue) {
         if (skipReflective && r.reflective) continue;
-        (r.opacity < 0.999f ? transparent : opaque).push_back(&r);
+        (r.opacity < 0.999f || r.forceTransparent ? transparent : opaque).push_back(&r);
     }
     for (const Renderable* r : opaque) drawOne(*r);
     if (!transparent.empty()) {

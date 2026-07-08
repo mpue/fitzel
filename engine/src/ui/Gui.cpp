@@ -105,6 +105,30 @@ void loadFont(ImGuiIO& io) {
     io.FontGlobalScale = 1.35f; // no system font available: scale the default
 }
 
+// Load a fixed-width font for code views (the Lua editor). Returns the loaded
+// ImFont, or nullptr if no monospace TTF is present (caller then falls back to
+// the proportional UI font). Added after the UI font, so it is not the default.
+ImFont* loadMonoFont(ImGuiIO& io) {
+    const char* candidates[] = {
+        // Windows
+        "C:\\Windows\\Fonts\\consola.ttf",   // Consolas
+        "C:\\Windows\\Fonts\\cour.ttf",      // Courier New
+        // macOS
+        "/System/Library/Fonts/Menlo.ttc",
+        "/System/Library/Fonts/SFNSMono.ttf",
+        // Linux
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    };
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 2;
+    for (const char* path : candidates)
+        if (std::ifstream(path).good())
+            return io.Fonts->AddFontFromFileTTF(path, 18.0f, &cfg);
+    return nullptr;
+}
+
 } // namespace
 
 Gui::Gui(Window& window) {
@@ -116,6 +140,7 @@ Gui::Gui(Window& window) {
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // allow panels to dock
 
     loadFont(io);
+    m_mono = loadMonoFont(io);
     applyTheme();
 
     // install_callbacks = true: ImGui chains the callbacks Input already set.

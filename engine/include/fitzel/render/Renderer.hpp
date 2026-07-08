@@ -96,10 +96,12 @@ public:
     // excluded from the probe render (so it doesn't reflect its own interior).
     // `opacity` < 1 marks the mesh transparent: it is drawn after the opaque
     // queue, back-to-front, with alpha blending and depth writes disabled, and
-    // the lit shader multiplies its output alpha by it.
+    // the lit shader multiplies its output alpha by it. `forceTransparent` puts
+    // the mesh in that same blended queue even when opacity == 1 (for materials
+    // whose transparency lives in a texture alpha channel, not the scalar).
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model,
                 bool castsPointShadow = true, bool reflective = false,
-                float opacity = 1.0f);
+                float opacity = 1.0f, bool forceTransparent = false);
 
     // Render the scene (opaque queue minus reflective surfaces + the sky drawn
     // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
@@ -142,6 +144,7 @@ private:
         bool            castsPointShadow;
         bool            reflective;
         float           opacity;
+        bool            forceTransparent;
     };
 
     CascadedShadowMap m_csm;

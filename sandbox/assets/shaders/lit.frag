@@ -106,6 +106,8 @@ uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
 uniform vec3 uAlbedo;
 uniform float uAlpha;         // material opacity (1 = opaque); * texture alpha
 uniform int   uGlass;         // 1 = Fresnel alpha (clear head-on, opaque rim)
+uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlphaCutoff
+uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
 uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
 uniform int   uHasNormalMap;  // 1 = perturb the normal with uNormalMap
 
@@ -312,6 +314,9 @@ void main() {
     } else {
         albedo = uAlbedo;
     }
+    // Masked transparency ("transparency map", Cutout mode): drop fully/mostly
+    // transparent texels before any lighting so they never write colour or depth.
+    if (uAlphaCutout == 1 && texA < uAlphaCutoff) discard;
     albedo = pow(albedo, vec3(2.2)); // sRGB -> linear for correct lighting
 
     // Submerged (and just-above-waterline) surfaces are wet -> darker, with a

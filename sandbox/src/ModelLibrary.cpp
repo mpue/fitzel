@@ -31,18 +31,19 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
                          mdPtr->animated() ? mdPtr : nullptr, assetDb, materials);
 }
 
-const std::vector<ModelNode>& ModelLibrary::nodes(const std::string& path) {
-    auto it = nodeCache_.find(path);
+const std::vector<ModelNode>& ModelLibrary::nodes(const std::string& path, bool flipV) {
+    const std::string key = path + (flipV ? "#f" : "#n");
+    auto it = nodeCache_.find(key);
     if (it == nodeCache_.end())
-        it = nodeCache_.emplace(path, loadModelNodes(path)).first;
+        it = nodeCache_.emplace(key, loadModelNodes(path, flipV)).first;
     return it->second;
 }
 
-int ModelLibrary::importNode(const std::string& path, int nodeIndex,
+int ModelLibrary::importNode(const std::string& path, int nodeIndex, bool flipV,
                              AssetDatabase& assetDb, std::vector<MaterialDef>& materials) {
-    const std::string key = path + "#" + std::to_string(nodeIndex);
+    const std::string key = path + "#" + std::to_string(nodeIndex) + (flipV ? "f" : "n");
     for (auto& lm : models_) if (lm->path == key) return lm->id;
-    const std::vector<ModelNode>& ns = nodes(path);
+    const std::vector<ModelNode>& ns = nodes(path, flipV);
     if (nodeIndex < 0 || nodeIndex >= static_cast<int>(ns.size())) return -1;
     return buildFromData(ns[nodeIndex].name, key, assetDb.idForPath(path),
                          ns[nodeIndex].data, nullptr, assetDb, materials);
@@ -87,6 +88,11 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
         if (!p.texPixels.empty())
             def.tex = std::make_shared<Texture>(Texture::fromPixels(
                 p.texPixels.data(), p.texWidth, p.texHeight, 4));
+        // Import a MASK/BLEND material whose colour map carries an alpha channel
+        // as Cutout so its "transparency map" reads through by default (switch to
+        // Blend in the Materials panel for soft/glassy translucency).
+        if (p.alphaCutout && !p.texPixels.empty())
+            def.alphaMode = AlphaMode::Cutout;
         if (!p.normalPixels.empty())
             def.normalTex = std::make_shared<Texture>(Texture::fromPixels(
                 p.normalPixels.data(), p.normalWidth, p.normalHeight, 4));

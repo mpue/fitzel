@@ -58,6 +58,81 @@ extern "C" {
 }
 #endif
 
+namespace {
+
+// One entry in the Lua editor's code-completion list: the identifier to insert
+// plus a short signature/description shown greyed after it.
+struct Completion { const char* text; const char* hint; };
+
+// Top-level identifiers: Lua keywords + the stdlib bits scripts use + the script
+// lifecycle functions and the `e` entity fields. Offered when the word being
+// typed is not a `game.` member.
+const Completion kTopLevel[] = {
+    {"function", "def"}, {"local", "scope"}, {"return", ""}, {"end", ""},
+    {"then", ""}, {"else", ""}, {"elseif", ""}, {"for", ""}, {"while", ""},
+    {"repeat", ""}, {"until", ""}, {"break", ""}, {"true", ""}, {"false", ""},
+    {"nil", ""}, {"and", ""}, {"or", ""}, {"not", ""}, {"in", ""},
+    {"start", "start(e)  -- called once on spawn"},
+    {"update", "update(e, dt, t)  -- called each frame"},
+    {"game", "engine API table"},
+    {"print", "print(...)"}, {"pairs", "pairs(t)"}, {"ipairs", "ipairs(t)"},
+    {"tostring", "tostring(v)"}, {"tonumber", "tonumber(v)"}, {"type", "type(v)"},
+    {"math", "math.*"}, {"string", "string.*"}, {"table", "table.*"},
+};
+
+// Members of the `game` table (functions + constants), offered after "game.".
+// Signatures mirror ScriptSystem.cpp's C bindings.
+const Completion kGameMembers[] = {
+    {"keyDown", "keyDown(KEY) -> bool  (held)"},
+    {"keyPressed", "keyPressed(KEY) -> bool  (this frame)"},
+    {"mouseDown", "mouseDown(btn) -> bool"},
+    {"mousePressed", "mousePressed(btn) -> bool"},
+    {"cameraPos", "cameraPos() -> x, y, z"},
+    {"cameraDir", "cameraDir() -> x, y, z"},
+    {"spawn", "spawn{type=,x=,y=,z=,...} -> id"},
+    {"destroy", "destroy(id)"},
+    {"getPos", "getPos(id) -> x, y, z"},
+    {"setPos", "setPos(id, x, y, z)"},
+    {"setVelocity", "setVelocity(id, x, y, z)"},
+    {"applyImpulse", "applyImpulse(id, x, y, z)"},
+    {"playSound", "playSound(name)"},
+    {"addScore", "addScore(n)"}, {"getScore", "getScore() -> n"},
+    {"setHud", "setHud(text)"},
+    {"BOX", "type 0"}, {"RAMP", "type 1"}, {"CYLINDER", "type 2"}, {"SPHERE", "type 3"},
+    {"MOUSE_LEFT", "0"}, {"MOUSE_RIGHT", "1"}, {"MOUSE_MIDDLE", "2"},
+    {"KEY_SPACE", "32"}, {"KEY_ENTER", "257"}, {"KEY_ESCAPE", "256"},
+    {"KEY_LSHIFT", "340"}, {"KEY_LCTRL", "341"},
+    {"KEY_LEFT", "263"}, {"KEY_RIGHT", "262"}, {"KEY_UP", "265"}, {"KEY_DOWN", "264"},
+    {"KEY_W", "87"}, {"KEY_A", "65"}, {"KEY_S", "83"}, {"KEY_D", "68"},
+};
+
+// New-script templates, offered in the "New Script" dialog. An "empty component"
+// is just the two lifecycle stubs; the documented one lists the entity fields
+// and the game API as a starting reference.
+const char* kTemplateEmpty =
+    "-- %s : entity component (runs in Play)\n\n"
+    "function start(e)\n"
+    "end\n\n"
+    "function update(e, dt, t)\n"
+    "end\n";
+
+const char* kTemplateDocumented =
+    "-- %s : entity component (runs in Play)\n"
+    "-- e fields: x/y/z pos, rx/ry/rz rot(deg), sx/sy/sz half-size, name, id\n"
+    "--           (mutate them to move/rotate/scale this entity)\n"
+    "-- API: game.keyDown/keyPressed(KEY_*), game.mouseDown/mousePressed(MOUSE_*),\n"
+    "--      game.spawn{...}, game.destroy(id), game.setPos/getPos(id,...),\n"
+    "--      game.setVelocity/applyImpulse(id,...), game.playSound(name),\n"
+    "--      game.addScore(n)/getScore(), game.setHud(text), game.cameraPos/Dir()\n\n"
+    "function start(e)\n"
+    "    -- called once when the entity enters Play\n"
+    "end\n\n"
+    "function update(e, dt, t)\n"
+    "    -- dt = seconds since last frame, t = seconds since Play started\n"
+    "end\n";
+
+} // namespace
+
 int main(int argc, char** argv) {
     try {
         // Resolve all relative paths (assets/, content/, scripts/, game.json,
@@ -782,7 +857,19 @@ int main(int argc, char** argv) {
         bool showVehiclePanel = false;
         bool showEnv         = false;
         bool showMixer       = false;
+        bool showUnityImport = false;
         std::string modelFile;       // selected file in the Models panel
+        // "Import Unity Asset" panel: a browsed asset folder, the chosen FBX, and
+        // a cached texture-match preview (recomputed when the selection changes).
+        std::string unityDir;        // asset folder being browsed (default: models/)
+        std::string unityFbx;        // selected .fbx (absolute path), "" = none
+        std::vector<std::pair<std::string, std::string>> unityFbxList; // (rel, abs)
+        std::string unityFbxScanDir; // folder unityFbxList was scanned for ("" = stale)
+        std::vector<fitzel::UnityTexMatch> unityPreview;
+        std::vector<std::string> unityNearby; // image files near the selected FBX
+        std::string unityPreviewFor; // path unityPreview was computed for
+        bool        unityFlipV = true;   // mirror V on import (FBX UV convention)
+        std::string unityStatus;         // last import result, shown in the panel
 
         // The "Mitzel" -- fitzel's audio mixer. Master (masterVolume/muted below)
         // scales everything via the device; Ambient scales the looping weather/
@@ -905,8 +992,9 @@ int main(int argc, char** argv) {
         };
         // Structure-preserving import: one entity per model node under a group
         // root, so each element is separately selectable/movable in the scene.
-        auto addModelHierarchy = [&](glm::vec3 groundPos, const std::string& path) {
-            const auto& ns = models.nodes(path);
+        auto addModelHierarchy = [&](glm::vec3 groundPos, const std::string& path,
+                                     bool flipV = true) {
+            const auto& ns = models.nodes(path, flipV);
             if (ns.empty()) { // no node structure -> fall back to a single model
                 const int id = models.import(path, assetDb, materials);
                 if (id >= 0) addModelEntity(groundPos, id);
@@ -916,7 +1004,7 @@ int main(int argc, char** argv) {
             std::vector<glm::vec3> nodeHalf(ns.size(), glm::vec3(0.1f));
             glm::vec3 lo(1e30f), hi(-1e30f);
             for (std::size_t i = 0; i < ns.size(); ++i) {
-                nodeIds[i] = models.importNode(path, static_cast<int>(i), assetDb, materials);
+                nodeIds[i] = models.importNode(path, static_cast<int>(i), flipV, assetDb, materials);
                 if (LoadedModel* lm = models.byId(nodeIds[i])) nodeHalf[i] = modelHalf(*lm, 1.0f);
                 lo = glm::min(lo, ns[i].center - nodeHalf[i]);
                 hi = glm::max(hi, ns[i].center + nodeHalf[i]);
@@ -952,10 +1040,22 @@ int main(int argc, char** argv) {
             }
             entitySel = document.indexOf(rootId);
         };
-        auto isStructuredModel = [](const std::string& p) {
+        // Decide whether a model imports as a hierarchy (one entity per node,
+        // separately selectable) or as a single flat Model entity.
+        //   - FBX has no flat (cgltf) loader, so it always takes the structured
+        //     (assimp) path -- its single- and multi-node cases both work there.
+        //   - Animated (skinned) glTF must stay on the flat cgltf path so CPU
+        //     skinning still runs; the structured path bakes node transforms and
+        //     drops the skeleton, so it's never used for animated models.
+        //   - Other formats (glTF/GLB/DAE) split only when they actually have
+        //     more than one mesh node; a single-part model stays one clean entity.
+        auto isStructuredModel = [&](const std::string& p) {
             std::string e = std::filesystem::path(p).extension().string();
             for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            return e == ".fbx";
+            if (e == ".fbx") return true;
+            if (e != ".glb" && e != ".gltf" && e != ".dae") return false;
+            if (auto md = assetDb.loadModelData(p); md && md->animated()) return false;
+            return models.nodes(p).size() > 1;
         };
 
         // --- Project (scene) save / load / export ----------------------------
@@ -971,7 +1071,7 @@ int main(int argc, char** argv) {
             assetDb, contentRoot, modelDir,
             [&]{ seedDefaultMaterials(); },
             [&](const std::string& p){ return models.import(p, assetDb, materials); },
-            [&](const std::string& p, int n){ return models.importNode(p, n, assetDb, materials); },
+            [&](const std::string& p, int n){ return models.importNode(p, n, true, assetDb, materials); },
             [&](int id){ return models.byId(id); },
             [&]{ models.clear(); },
             writeSettingsFn, readSettingsFn,
@@ -1596,6 +1696,18 @@ int main(int argc, char** argv) {
         std::string editorPath;          // "scripts/<file>.lua" open ("" = none)
         bool        editorDirty = false;  // unsaved changes
         char        newScriptName[64] = "";
+        int         newScriptTemplate = 0; // 0 = empty component, 1 = documented
+        // Code-completion popup state for the Lua editor. `compItems` are the
+        // matches for the identifier currently under the cursor; the popup shows
+        // while non-empty and the editor is focused (Tab/Enter accepts, arrows
+        // navigate, Esc dismisses -- see the editor window below).
+        std::vector<Completion> compItems;
+        std::string             compPrefix;   // the partial word being completed
+        int                     compSel  = 0; // highlighted match
+        bool                    compOpen = false;
+        bool                    compGameMember = false; // completing after "game."
+        bool                    compManualClose = false; // Esc: stay closed until
+        std::string             compClosedPrefix;        // the prefix changes
         // Where entity scripts live: the open project's scripts/ folder, or the
         // bundled scripts/ next to the exe when no project is open (demo scripts).
         auto scriptsDir = [&]() -> std::string {
@@ -1634,6 +1746,61 @@ int main(int argc, char** argv) {
             if (editorPath.empty()) return;
             std::ofstream out(editorPath);
             if (out) { out << luaEditor.GetText(); scripts.reset(); editorDirty = false; }
+        };
+        // Refresh the code-completion candidates from the identifier under the
+        // cursor. Fills compPrefix/compItems/compGameMember and toggles compOpen.
+        // Called each frame after the editor renders (so it sees the latest edit).
+        auto recomputeCompletion = [&](){
+            compItems.clear();
+            const auto cur = luaEditor.GetCursorPosition();
+            const std::string line = luaEditor.GetCurrentLineText();
+            const int tab = luaEditor.GetTabSize();
+            // Map the tab-expanded cursor column back to a byte index in the line.
+            int idx = 0, col = 0;
+            while (idx < static_cast<int>(line.size()) && col < cur.mColumn) {
+                col += (line[idx] == '\t') ? (tab - (col % tab)) : 1;
+                ++idx;
+            }
+            auto isIdent = [](char c){
+                return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
+            int start = idx;
+            while (start > 0 && isIdent(line[start - 1])) --start;
+            compPrefix = line.substr(start, idx - start);
+            // "game." member context: a '.' right before the word, and the token
+            // before the dot is exactly "game".
+            compGameMember = false;
+            if (start > 0 && line[start - 1] == '.') {
+                int ws = start - 1;
+                while (ws > 0 && isIdent(line[ws - 1])) --ws;
+                compGameMember = (line.substr(ws, (start - 1) - ws) == "game");
+            }
+            if (compPrefix.empty() && !compGameMember) {
+                compOpen = false; compManualClose = false; return;
+            }
+            // Esc keeps the popup closed until the prefix actually changes.
+            if (compManualClose) {
+                if (compPrefix == compClosedPrefix) { compOpen = false; return; }
+                compManualClose = false;
+            }
+            auto lower = [](std::string s){
+                for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                return s; };
+            const std::string pfx = lower(compPrefix);
+            auto consider = [&](const Completion* arr, std::size_t count){
+                for (std::size_t i = 0; i < count; ++i)
+                    if (lower(arr[i].text).rfind(pfx, 0) == 0) compItems.push_back(arr[i]);
+            };
+            if (compGameMember)
+                consider(kGameMembers, sizeof(kGameMembers) / sizeof(kGameMembers[0]));
+            else
+                consider(kTopLevel, sizeof(kTopLevel) / sizeof(kTopLevel[0]));
+            // Nothing useful to offer (no match, or the sole match is already typed).
+            if (compItems.empty() ||
+                (compItems.size() == 1 && lower(compItems[0].text) == pfx)) {
+                compOpen = false; return;
+            }
+            if (compSel >= static_cast<int>(compItems.size())) compSel = 0;
+            compOpen = true;
         };
         // Sound assets known to the asset database (engine + project), by bare
         // filename -- what game.playSound / CollectibleComponent resolve against.
@@ -2884,6 +3051,7 @@ int main(int argc, char** argv) {
                     ImGui::Separator();
                     ImGui::MenuItem("Glotzel (materials)", nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
+                    ImGui::MenuItem("Import Unity asset", nullptr, &showUnityImport);
                     ImGui::MenuItem("Assets",          nullptr, &showAssets);
                     ImGui::MenuItem("Schnipsel (scripts)", nullptr, &showScriptEditor);
                     ImGui::MenuItem("Environment",     nullptr, &showEnv);
@@ -4252,6 +4420,16 @@ int main(int argc, char** argv) {
                         ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
                         ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
                         ImGui::SliderFloat("Opacity", &md.opacity, 0.0f, 1.0f);
+                        // Texture-alpha handling ("transparency map"). Cutout
+                        // masks (hard edges); Blend alpha-blends (soft/glassy).
+                        const char* alphaModes[] = { "Opaque", "Cutout", "Blend" };
+                        int am = static_cast<int>(md.alphaMode);
+                        if (ImGui::Combo("Alpha mode", &am, alphaModes, 3))
+                            md.alphaMode = static_cast<AlphaMode>(am);
+                        if (md.alphaMode == AlphaMode::Cutout)
+                            ImGui::SliderFloat("Cutoff", &md.alphaCutoff, 0.0f, 1.0f);
+                        if (md.alphaMode != AlphaMode::Opaque && !md.tex)
+                            ImGui::TextDisabled("(needs a base texture with an alpha channel)");
                         ImGui::Checkbox("Glass", &md.glass);
                         if (md.glass) {
                             ImGui::SameLine();
@@ -4363,6 +4541,207 @@ int main(int argc, char** argv) {
                 ImGui::End();
             }
 
+            // Import Unity asset: browse an asset folder, preview which textures
+            // map by Unity naming convention, then import the FBX as a hierarchy
+            // with those maps auto-assigned (the matching also runs on reload).
+            if (showUnityImport) {
+                ImGui::SetNextWindowSize(ImVec2(560.0f, 470.0f), ImGuiCond_FirstUseEver);
+                if (ImGui::Begin("Import Unity asset", &showUnityImport)) {
+                    if (unityDir.empty()) unityDir = modelDir;
+                    ImGui::TextWrapped(
+                        "Unity FBX files don't reference their textures directly, so a plain "
+                        "import leaves them unmapped. Point this at an asset's folder: maps "
+                        "kept in a Textures/ folder and named like the material or model "
+                        "(e.g. Rock_Albedo, Rock_Normal) are matched automatically.");
+                    ImGui::Separator();
+
+                    ImGui::TextWrapped("Folder: %s",
+                                       unityDir.empty() ? "(none)" : unityDir.c_str());
+                    if (ImGui::Button("Browse...")) {
+                        std::string picked;
+                        if (ed::pickFolder(picked, unityDir)) {
+                            unityDir = picked; unityFbx.clear(); unityFbxScanDir.clear();
+                        }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Use models/ folder")) {
+                        unityDir = modelDir; unityFbx.clear(); unityFbxScanDir.clear();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Rescan")) unityFbxScanDir.clear();
+
+                    // (Re)scan only when the folder changes -- a manual directory
+                    // stack so one unreadable or over-long subfolder can't abort the
+                    // whole listing (recursive_directory_iterator aborts on the first
+                    // error), and so we don't hit the disk every frame.
+                    if (unityDir != unityFbxScanDir) {
+                        unityFbxList.clear();
+                        unityFbxScanDir = unityDir;
+                        std::vector<std::filesystem::path> stack;
+                        if (!unityDir.empty()) stack.push_back(std::filesystem::path(unityDir));
+                        int scanned = 0;
+                        while (!stack.empty() && unityFbxList.size() < 2000 && scanned < 40000) {
+                            const std::filesystem::path dir = stack.back();
+                            stack.pop_back();
+                            std::error_code lec;
+                            std::filesystem::directory_iterator
+                                dit(dir, std::filesystem::directory_options::skip_permission_denied, lec),
+                                dend;
+                            for (; !lec && dit != dend; dit.increment(lec)) {
+                                ++scanned;
+                                std::error_code tec;
+                                if (dit->is_directory(tec)) { stack.push_back(dit->path()); continue; }
+                                std::string ext = dit->path().extension().string();
+                                for (char& c : ext) c = static_cast<char>(std::tolower(
+                                    static_cast<unsigned char>(c)));
+                                if (ext != ".fbx") continue;
+                                std::error_code rec;
+                                std::string rel = std::filesystem::relative(
+                                    dit->path(), unityDir, rec).generic_string();
+                                if (rel.empty()) rel = dit->path().filename().string();
+                                unityFbxList.push_back({ rel, dit->path().generic_string() });
+                            }
+                        }
+                        std::sort(unityFbxList.begin(), unityFbxList.end());
+                    }
+
+                    ImGui::Spacing();
+                    ImGui::Text("FBX files (%d):", static_cast<int>(unityFbxList.size()));
+                    ImGui::BeginChild("##fbxlist", ImVec2(0.0f, 130.0f), true);
+                    for (const auto& h : unityFbxList)
+                        if (ImGui::Selectable(h.first.c_str(), unityFbx == h.second))
+                            unityFbx = h.second;
+                    if (unityFbxList.empty())
+                        ImGui::TextDisabled("(no .fbx found under this folder)");
+                    ImGui::EndChild();
+
+                    // Recompute the texture-match preview when the selection changes.
+                    if (unityFbx != unityPreviewFor) {
+                        unityPreview = unityFbx.empty()
+                            ? std::vector<fitzel::UnityTexMatch>{}
+                            : fitzel::previewUnityTextures(unityFbx);
+                        unityNearby = unityFbx.empty()
+                            ? std::vector<std::string>{}
+                            : fitzel::nearbyTextureFiles(unityFbx);
+                        unityPreviewFor = unityFbx;
+                    }
+
+                    if (!unityFbx.empty()) {
+                        ImGui::Text("Materials & matched maps:");
+                        if (ImGui::BeginTable("##unitytex", 3,
+                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                ImGuiTableFlags_SizingStretchProp |
+                                ImGuiTableFlags_ScrollY,
+                                ImVec2(0.0f, 150.0f))) {
+                            ImGui::TableSetupColumn("Material");
+                            ImGui::TableSetupColumn("Albedo");
+                            ImGui::TableSetupColumn("Normal");
+                            ImGui::TableHeadersRow();
+                            const ImVec4 ok(0.55f, 0.85f, 0.55f, 1.0f);
+                            const ImVec4 no(0.6f, 0.6f, 0.6f, 1.0f);
+                            for (const auto& m : unityPreview) {
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                ImGui::TextUnformatted(m.material.c_str());
+                                ImGui::TableSetColumnIndex(1);
+                                if (m.albedo.empty()) ImGui::TextColored(no, "- none");
+                                else ImGui::TextColored(ok, "%s", std::filesystem::path(
+                                    m.albedo).filename().string().c_str());
+                                ImGui::TableSetColumnIndex(2);
+                                if (m.normal.empty()) ImGui::TextColored(no, "- none");
+                                else ImGui::TextColored(ok, "%s", std::filesystem::path(
+                                    m.normal).filename().string().c_str());
+                            }
+                            ImGui::EndTable();
+                        }
+                        if (unityPreview.empty())
+                            ImGui::TextDisabled("(no materials found in this FBX)");
+
+                        // Diagnostic: the actual image files the matcher looked at.
+                        // If maps show "- none" above but files are listed here, the
+                        // naming is unusual -- tell me these names and I'll tune it.
+                        if (ImGui::TreeNode("Texture files found nearby "
+                                            "(diagnostic)")) {
+                            if (unityNearby.empty())
+                                ImGui::TextDisabled("(no image files found in the "
+                                                    "usual Textures/ folders)");
+                            for (const std::string& n : unityNearby)
+                                ImGui::BulletText("%s", n.c_str());
+                            ImGui::TreePop();
+                        }
+                    }
+
+                    ImGui::Separator();
+                    ImGui::BeginDisabled(unityFbx.empty());
+                    if (ImGui::Button("Import to scene", ImVec2(160.0f, 0.0f))) {
+                        std::error_code cec;
+                        std::string src = unityFbx;
+                        // A model imported from OUTSIDE the project's asset tree has
+                        // no persistent GUID, so it would vanish on reload and never
+                        // show in Assets. Copy it (plus the maps the matcher resolved)
+                        // into the project's models/ folder, register it, and import
+                        // the copy -- now it round-trips through save/load by GUID.
+                        if (!assetDb.idForPath(unityFbx).valid()) {
+                            const std::filesystem::path fp(unityFbx);
+                            std::string parent = fp.parent_path().filename().string();
+                            for (char& c : parent) c = static_cast<char>(std::tolower(
+                                static_cast<unsigned char>(c)));
+                            const bool inMeshDir = parent == "meshes" || parent == "models" ||
+                                                   parent == "mesh"   || parent == "fbx";
+                            const std::string pack = (inMeshDir
+                                ? fp.parent_path().parent_path().filename()
+                                : fp.parent_path().filename()).string();
+                            const std::string destPack = modelDir + "/" +
+                                (pack.empty() ? fp.stem().string() : pack);
+                            const std::string destMesh = destPack + "/Meshes";
+                            const std::string destTex  = destPack + "/Textures";
+                            std::filesystem::create_directories(destMesh, cec);
+                            std::filesystem::create_directories(destTex, cec);
+                            const std::string destFbx = destMesh + "/" + fp.filename().string();
+                            std::filesystem::copy_file(unityFbx, destFbx,
+                                std::filesystem::copy_options::overwrite_existing, cec);
+                            int nTex = 0;
+                            std::unordered_set<std::string> done;
+                            for (const auto& m : fitzel::previewUnityTextures(unityFbx))
+                                for (const std::string& t : {m.albedo, m.normal})
+                                    if (!t.empty() && done.insert(t).second) {
+                                        std::error_code fc;
+                                        std::filesystem::copy_file(t, destTex + "/" +
+                                            std::filesystem::path(t).filename().string(),
+                                            std::filesystem::copy_options::skip_existing, fc);
+                                        if (!fc) ++nTex;
+                                    }
+                            assetDb.refresh(); // register the copied FBX + maps (GUIDs)
+                            src = destFbx;
+                            char buf[256];
+                            std::snprintf(buf, sizeof(buf),
+                                "Copied into project (%d map(s)); it now persists and "
+                                "appears in Assets.", nTex);
+                            unityStatus = buf;
+                        } else {
+                            unityStatus = "Imported (already in the project).";
+                        }
+                        const glm::vec3 p = camera.position() + camera.front() * 8.0f;
+                        const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
+                        addModelHierarchy(g, src, unityFlipV);
+                    }
+                    ImGui::EndDisabled();
+                    if (!unityStatus.empty()) ImGui::TextDisabled("%s", unityStatus.c_str());
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("One entity per part.");
+                    ImGui::Checkbox("Flip texture V", &unityFlipV);
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("(?)");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("If the texture looks misplaced on an atlas, toggle "
+                                          "this and re-import.\nFBX/DAE usually need it on; some "
+                                          "packs need it off.");
+                    ImGui::TextDisabled("Tip: keep the asset inside your project so it "
+                                        "reloads with the scene.");
+                }
+                ImGui::End();
+            }
+
             // Asset browser: every asset in the database, grouped by source
             // (Engine vs Project) and labelled by type. Drag a Model onto the
             // viewport to place it, or a Texture onto a material's Base texture
@@ -4454,12 +4833,96 @@ int main(int argc, char** argv) {
                     }
 
                     // Ctrl+S saves while the editor window is focused.
-                    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
-                        ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
+                    const bool winFocused =
+                        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+                    if (winFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
                         doSave = true;
 
+                    // Code completion: intercept navigate/accept/dismiss keys BEFORE
+                    // the editor consumes them. We disable the editor's keyboard only
+                    // on the exact frame we act on a key, so typing is unaffected.
+                    ImFont* mono = gui.monoFont();
+                    bool acceptComp = false, suppressKb = false;
+                    if (compOpen && winFocused && !compItems.empty()) {
+                        const int n = static_cast<int>(compItems.size());
+                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+                            compSel = (compSel + 1) % n; suppressKb = true;
+                        } else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+                            compSel = (compSel - 1 + n) % n; suppressKb = true;
+                        } else if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
+                            acceptComp = true; suppressKb = true;
+                        } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                            compOpen = false; suppressKb = true;
+                            compManualClose = true; compClosedPrefix = compPrefix;
+                        }
+                    }
+
+                    if (mono) ImGui::PushFont(mono);
+                    if (suppressKb) luaEditor.SetHandleKeyboardInputs(false);
                     luaEditor.Render("LuaText");
+                    if (suppressKb) luaEditor.SetHandleKeyboardInputs(true);
+                    const ImVec2 edMin = ImGui::GetItemRectMin();
+                    const ImVec2 edMax = ImGui::GetItemRectMax();
+                    const float  charW = mono ? ImGui::CalcTextSize("A").x : 8.0f;
+                    const float  lineH = ImGui::GetTextLineHeightWithSpacing();
+                    if (mono) ImGui::PopFont();
+
                     if (luaEditor.IsTextChanged()) editorDirty = true;
+
+                    // Accept the highlighted match: insert the identifier's tail
+                    // after the already-typed prefix.
+                    if (acceptComp && compSel >= 0 && compSel < static_cast<int>(compItems.size())) {
+                        const std::string full = compItems[compSel].text;
+                        if (full.size() > compPrefix.size())
+                            luaEditor.InsertText(full.substr(compPrefix.size()));
+                        compOpen = false; editorDirty = true;
+                    }
+
+                    // Recompute candidates from the new cursor/text (skip on the
+                    // frame we suppressed the editor, so navigation/dismiss stick).
+                    if (!winFocused) compOpen = false;
+                    else if (!suppressKb) recomputeCompletion();
+
+                    // Completion popup, best-effort anchored under the caret and
+                    // clamped inside the editor rect.
+                    if (compOpen && !compItems.empty()) {
+                        const auto cur = luaEditor.GetCursorPosition();
+                        ImVec2 at(edMin.x + charW * (6.0f + cur.mColumn),
+                                  edMin.y + lineH * (cur.mLine + 1));
+                        at.x = std::min(at.x, edMax.x - 300.0f);
+                        at.y = std::min(at.y, edMax.y - lineH);
+                        at.x = std::max(at.x, edMin.x);
+                        at.y = std::max(at.y, edMin.y);
+                        ImGui::SetNextWindowPos(at);
+                        ImGui::SetNextWindowSizeConstraints(
+                            ImVec2(240.0f, 0.0f), ImVec2(520.0f, lineH * 10.0f + 12.0f));
+                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+                        if (ImGui::Begin("##luacomplete", nullptr,
+                                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing |
+                                ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_AlwaysAutoResize |
+                                ImGuiWindowFlags_NoSavedSettings)) {
+                            for (int i = 0; i < static_cast<int>(compItems.size()); ++i) {
+                                const bool sel = (i == compSel);
+                                if (mono) ImGui::PushFont(mono);
+                                if (ImGui::Selectable(compItems[i].text, sel)) {
+                                    const std::string full = compItems[i].text;
+                                    if (full.size() > compPrefix.size())
+                                        luaEditor.InsertText(full.substr(compPrefix.size()));
+                                    compOpen = false; editorDirty = true;
+                                }
+                                if (mono) ImGui::PopFont();
+                                if (compItems[i].hint && compItems[i].hint[0]) {
+                                    ImGui::SameLine();
+                                    ImGui::TextDisabled("%s", compItems[i].hint);
+                                }
+                                if (sel) ImGui::SetScrollHereY();
+                            }
+                        }
+                        ImGui::End();
+                        ImGui::PopStyleVar();
+                    }
+
                     if (doSave) saveEditor();
                 }
                 ImGui::End();
@@ -4470,6 +4933,10 @@ int main(int argc, char** argv) {
                                            ImGuiWindowFlags_AlwaysAutoResize)) {
                     ImGui::SetNextItemWidth(260.0f);
                     ImGui::InputText("Name", newScriptName, sizeof(newScriptName));
+                    const char* templates[] = { "Empty component",
+                                                "Component (documented)" };
+                    ImGui::SetNextItemWidth(260.0f);
+                    ImGui::Combo("Template", &newScriptTemplate, templates, 2);
                     const std::string safe = safeName(newScriptName);
                     const std::string file = safe + ".lua";
                     std::error_code sec;
@@ -4483,11 +4950,14 @@ int main(int argc, char** argv) {
                         std::error_code ec;
                         std::filesystem::create_directories(scriptsDir(), ec);
                         std::ofstream out(scriptPath(file));
-                        if (out)
-                            out << "-- " << file << " : entity behaviour (runs in Play)\n"
-                                   "-- e: x/y/z pos, rx/ry/rz rot(deg), sx/sy/sz half, name, id\n\n"
-                                   "function start(e)\nend\n\n"
-                                   "function update(e, dt, t)\nend\n";
+                        if (out) {
+                            char body[2048];
+                            std::snprintf(body, sizeof(body),
+                                newScriptTemplate == 1 ? kTemplateDocumented
+                                                       : kTemplateEmpty,
+                                file.c_str());
+                            out << body;
+                        }
                         newScriptName[0] = '\0';
                         openScript(file);
                         ImGui::CloseCurrentPopup();
@@ -4764,6 +5234,12 @@ int main(int argc, char** argv) {
                     m.setTexture("uNormalMap", *md.normalTex, 1).set("uHasNormalMap", 1);
                 else
                     m.set("uHasNormalMap", 0);
+                // Cutout ("transparency map"): let the shader discard masked
+                // texels. Blend routes through the transparent queue at submit.
+                if (md.alphaMode == AlphaMode::Cutout)
+                    m.set("uAlphaCutout", 1).set("uAlphaCutoff", md.alphaCutoff);
+                else
+                    m.set("uAlphaCutout", 0);
             }
             std::vector<Material> lightMats;
             lightMats.reserve(entities.size());
@@ -4791,7 +5267,8 @@ int main(int argc, char** argv) {
                         const int mi = document.materialIndex(lm->primMaterialId[i]);
                         renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
                                         materials[mi].reflectivity > 0.0f,
-                                        materials[mi].opacity);
+                                        materials[mi].opacity,
+                                        materials[mi].alphaMode == AlphaMode::Blend);
                     }
                     continue;
                 }
@@ -4817,7 +5294,8 @@ int main(int argc, char** argv) {
                     const int mi = document.materialIndex(mc ? mc->material : AssetId{});
                     renderer.submit(mesh, gpuMats[mi], m, true,
                                     materials[mi].reflectivity > 0.0f,
-                                    materials[mi].opacity);
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
                 }
             }
 

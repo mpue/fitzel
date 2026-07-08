@@ -25,6 +25,9 @@ content/models/*.bin
 !content/models/tree1.glb
 !content/models/tree1.gltf
 !content/models/tree1.bin
+# Imported asset packs (Unity FBX etc.) are copied into per-pack subfolders by
+# the Unity importer; those stay local (large binaries + third-party content).
+content/models/*/
 
 # Audio assets (provided/generated locally, not tracked)
 /content/sounds/

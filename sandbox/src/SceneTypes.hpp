@@ -58,6 +58,15 @@ struct Entity {
     glm::vec3   localRotation{0.0f};
 };
 
+// How a material's texture-alpha channel is interpreted. The scalar `opacity`
+// below is independent and always applies; this governs the *texture*'s alpha:
+//   Opaque  - ignore texture alpha (fully solid regardless of the map)
+//   Cutout  - discard fragments whose texture alpha < `alphaCutoff` (foliage,
+//             fences, gratings); stays in the opaque queue, no sorting needed
+//   Blend   - route to the transparent queue and alpha-blend (glass, decals,
+//             soft-edged transparency), even when scalar opacity == 1
+enum class AlphaMode { Opaque = 0, Cutout = 1, Blend = 2 };
+
 // A reusable surface material asset, saved as a `.fmat` file in the project's
 // materials/ folder. Solids reference one by its `assetId` (GUID); several meshes
 // can share a material, and editing it updates them all. Drives the lit shader's
@@ -71,6 +80,11 @@ struct MaterialDef {
     float       roughness    = 0.2f;         // reflection blur (0 sharp)
     float       opacity      = 1.0f;         // 1 opaque .. 0 invisible (alpha blend)
     bool        glass        = false;        // Fresnel alpha: clear centre, reflective rim
+    // How the base-colour texture's alpha channel drives transparency (a
+    // "transparency map"). See AlphaMode above. `alphaCutoff` is the Cutout
+    // discard threshold (unused for Opaque/Blend).
+    AlphaMode   alphaMode    = AlphaMode::Opaque;
+    float       alphaCutoff  = 0.5f;
     // Optional base-colour texture (shared so MaterialDef stays copyable). When
     // set, the surface samples it (uColorMode 2) instead of the flat albedo.
     std::shared_ptr<fitzel::Texture> tex;

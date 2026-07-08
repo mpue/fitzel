@@ -98,7 +98,8 @@ ModelData loadGltf(const std::string& path);
 // Load a Collada (.dae) file via assimp: node transforms are baked into the
 // vertices exactly like loadGltf, so it feeds the same static render path.
 // (Skeleton/animation parsing is a later phase.) Empty ModelData on failure.
-ModelData loadCollada(const std::string& path);
+// `flipV` mirrors the V texture coordinate (FBX/DAE usually need it; see below).
+ModelData loadCollada(const std::string& path, bool flipV = true);
 
 // One mesh-bearing node of a model imported with its structure preserved: the
 // node's meshes (world transform baked, then recentred on their combined AABB so
@@ -112,7 +113,29 @@ struct ModelNode {
 
 // Load a model via assimp (FBX, DAE, ...), one ModelNode per mesh-bearing node,
 // so the caller can create a separate entity per element (structure preserved,
-// no animation). Empty on failure.
-std::vector<ModelNode> loadModelNodes(const std::string& path);
+// no animation). Empty on failure. `flipV` mirrors the V texture coordinate:
+// most FBX/DAE author UVs bottom-left (glTF/our upload are top-left), so V needs
+// flipping -- but it varies per exporter, hence the toggle.
+std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV = true);
+
+// One material's Unity-convention texture matches, for the import-preview UI.
+// `albedo`/`normal` are absolute paths of the maps found next to the model
+// ("<Material or Model>_Albedo" etc.), or empty when none matched.
+struct UnityTexMatch {
+    std::string material;
+    std::string albedo;
+    std::string normal;
+};
+
+// Inspect a model file WITHOUT importing: list its materials and the albedo /
+// normal maps found for each by Unity naming convention (sibling Textures/
+// folders). Drives the "Import Unity Asset" panel's preview; the same matching
+// runs during the real import (see loadModelNodes), so a preview is faithful.
+std::vector<UnityTexMatch> previewUnityTextures(const std::string& path);
+
+// The image files found in the folders the matcher searches around `path` (bare
+// filenames, sorted, de-duplicated). Diagnostic for the import panel: shows what
+// textures are actually present so mismatched naming is visible at a glance.
+std::vector<std::string> nearbyTextureFiles(const std::string& path);
 
 } // namespace fitzel

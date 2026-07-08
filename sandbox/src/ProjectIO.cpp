@@ -47,6 +47,8 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["roughness"]    = md.roughness;
     m["opacity"]      = md.opacity;
     m["glass"]        = md.glass;
+    m["alphaMode"]    = static_cast<int>(md.alphaMode);
+    m["alphaCutoff"]  = md.alphaCutoff;
     if (md.texId.valid())       m["texture"]   = md.texId.toString();
     if (md.normalTexId.valid()) m["normalMap"] = md.normalTexId.toString();
     std::ofstream f(file); if (f) f << m.dump(2) << '\n';
@@ -192,6 +194,9 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         md.roughness    = m.value("roughness", md.roughness);
         md.opacity      = m.value("opacity", md.opacity);
         md.glass        = m.value("glass", md.glass);
+        md.alphaMode    = static_cast<AlphaMode>(
+                              m.value("alphaMode", static_cast<int>(md.alphaMode)));
+        md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
         if (m.contains("texture")) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
@@ -239,6 +244,9 @@ bool loadScene(Context& ctx, const std::string& path) {
                 md.roughness    = m.value("roughness", md.roughness);
                 md.opacity      = m.value("opacity", md.opacity);
                 md.glass        = m.value("glass", md.glass);
+                md.alphaMode    = static_cast<AlphaMode>(
+                                      m.value("alphaMode", static_cast<int>(md.alphaMode)));
+                md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
                 if (m.contains("texture")) {
                     md.texId = AssetId::fromString(m["texture"].get<std::string>());
                     if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);

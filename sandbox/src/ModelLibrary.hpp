@@ -25,13 +25,15 @@ public:
                std::vector<MaterialDef>& materials);
 
     // Structure-preserving import (FBX, DAE, ...): the model's mesh-bearing nodes
-    // (cached per path). The caller makes one entity per node, positioned at
-    // node.center, referencing importNode(path, i).
-    const std::vector<fitzel::ModelNode>& nodes(const std::string& path);
+    // (cached per path+flipV). The caller makes one entity per node, positioned at
+    // node.center, referencing importNode(path, i, flipV). `flipV` mirrors the V
+    // texture coordinate (see loadModelNodes) -- part of the cache key so both
+    // conventions can coexist for A/B comparison.
+    const std::vector<fitzel::ModelNode>& nodes(const std::string& path, bool flipV = true);
 
     // Load a single node of a structured model into the registry and return its
-    // id (-1 on failure). Reuses an already-loaded (path, nodeIndex).
-    int importNode(const std::string& path, int nodeIndex,
+    // id (-1 on failure). Reuses an already-loaded (path, nodeIndex, flipV).
+    int importNode(const std::string& path, int nodeIndex, bool flipV,
                    fitzel::AssetDatabase& assetDb, std::vector<MaterialDef>& materials);
 
     // Look up a loaded model by id (nullptr if unknown).

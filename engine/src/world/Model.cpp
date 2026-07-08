@@ -1,6 +1,7 @@
 #include "fitzel/world/Model.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -9,6 +10,7 @@
 #include <functional>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -408,15 +410,190 @@ void loadAiTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType ty
     }
     stbi_set_flip_vertically_on_load(0);
     int w = 0, h = 0, ch = 0;
-    storePixels(stbi_load(file.c_str(), &w, &h, &ch, 4), w, h, outPix, outW, outH);
+    // Separate statement: see loadTextureFileRGBA -- passing stbi_load() and w/h
+    // to storePixels() in one call reads w/h before stbi_load() sets them.
+    unsigned char* px = stbi_load(file.c_str(), &w, &h, &ch, 4);
+    storePixels(px, w, h, outPix, outW, outH);
+}
+
+// Load an external image file into an RGBA buffer + dimensions (empty on fail).
+void loadTextureFileRGBA(const std::string& file, std::vector<std::uint8_t>& outPix,
+                         int& outW, int& outH) {
+    if (file.empty()) return;
+    stbi_set_flip_vertically_on_load(0);
+    int w = 0, h = 0, ch = 0;
+    // Load into its own variable first: passing stbi_load() as an argument
+    // *alongside* w/h reads w/h before the call populates them (argument
+    // evaluation order is unspecified), yielding a 0x0 image on MSVC.
+    unsigned char* px = stbi_load(file.c_str(), &w, &h, &ch, 4);
+    storePixels(px, w, h, outPix, outW, outH);
+}
+
+// --- Unity-style external texture matching ---------------------------------
+// Unity FBX exports carry no usable texture references (materials live in
+// separate .mat files), so assimp finds nothing to load. Purchased assets ship
+// the maps as PNG/TGA in a Textures/ folder near the model, named by convention
+// like "<set>_<Role>" -- e.g. Rock_01_Albedo, T_Rock_BC, wall_Normal, oak_N.
+// We resolve those so the maps map automatically. Matching is token-based (split
+// on _ - space .), so prefix mismatches (M_Rock vs T_Rock) and role
+// abbreviations (BC/D/N) are handled.
+
+bool isImageExt(std::string e) {
+    for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return e == ".png" || e == ".jpg" || e == ".jpeg" || e == ".tga" ||
+           e == ".tif" || e == ".tiff" || e == ".bmp" || e == ".psd";
+}
+
+// Lowercase tokens of a name, split on the usual separators.
+std::vector<std::string> tokenize(const std::string& s) {
+    std::vector<std::string> t; std::string cur;
+    for (unsigned char c : s) {
+        if (c == '_' || c == '-' || c == ' ' || c == '.' || c == '(' || c == ')') {
+            if (!cur.empty()) { t.push_back(cur); cur.clear(); }
+        } else cur.push_back(static_cast<char>(std::tolower(c)));
+    }
+    if (!cur.empty()) t.push_back(cur);
+    return t;
+}
+
+// Classify a single filename token: 1 = albedo/colour, 2 = normal, 3 = some other
+// known map (metallic/roughness/AO/...), 0 = not a role word.
+int tokenRole(const std::string& t) {
+    static const std::unordered_set<std::string> A = {
+        "albedo", "albedotransparency", "basecolor", "base", "diffuse", "diff",
+        "color", "colour", "col", "alb", "bc", "d", "c", "dif", "basecolour"};
+    static const std::unordered_set<std::string> N = {
+        "normal", "normals", "normalmap", "normalgl", "normaldx", "nrm", "norm",
+        "nor", "n", "nml"};
+    static const std::unordered_set<std::string> O = {
+        "metallic", "metalness", "metal", "metallicsmoothness", "metalsmoothness",
+        "smoothness", "roughness", "rough", "specular", "spec", "gloss", "glossiness",
+        "height", "displacement", "displace", "disp", "occlusion", "ambientocclusion",
+        "ao", "mask", "emission", "emissive", "emit", "opacity", "alpha", "transparency",
+        "curvature", "cavity", "detail", "subsurface", "sss", "orm", "rma", "packed",
+        "illum", "illumination", "glow", "ms", "mg", "m", "r", "s", "h", "e", "g"};
+    if (A.count(t)) return 1;
+    if (N.count(t)) return 2;
+    if (O.count(t)) return 3;
+    if (t.find("albedo") != std::string::npos || t.find("basecolor") != std::string::npos ||
+        t.find("diffuse") != std::string::npos) return 1;
+    if (t.find("normal") != std::string::npos) return 2;
+    return 0;
+}
+
+enum class UnityRole { Albedo, Normal };
+
+// Gather image files from the folders Unity assets keep textures in, relative to
+// the model dir. Falls back to a bounded recursive sweep of the asset root when
+// none of the usual folders hold any -- so unconventional layouts still resolve.
+std::vector<std::filesystem::path> gatherCandidateImages(const std::string& baseDir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path b(baseDir), up = b.parent_path(), up2 = up.parent_path();
+    const std::vector<fs::path> dirs = {
+        b, b / "Textures", b / "Texture", b / "textures", b / "Tex", b / "Materials",
+        b / "Maps", up, up / "Textures", up / "Texture", up / "textures", up / "Tex",
+        up / "Materials", up / "Maps", up2 / "Textures", up2 / "Materials",
+    };
+    std::vector<fs::path> imgs;
+    for (const fs::path& d : dirs) {
+        if (!fs::is_directory(d, ec)) continue;
+        for (const auto& f : fs::directory_iterator(d, ec))
+            if (f.is_regular_file(ec) && isImageExt(f.path().extension().string()))
+                imgs.push_back(f.path());
+    }
+    if (imgs.empty()) { // nothing in the usual places -> sweep the asset root
+        std::vector<fs::path> stack{ up.empty() ? b : up };
+        int scanned = 0;
+        while (!stack.empty() && imgs.size() < 4000 && scanned < 60000) {
+            const fs::path d = stack.back(); stack.pop_back();
+            std::error_code lec;
+            fs::directory_iterator it(d, fs::directory_options::skip_permission_denied, lec), end;
+            for (; !lec && it != end; it.increment(lec)) {
+                ++scanned;
+                std::error_code tec;
+                if (it->is_directory(tec)) { stack.push_back(it->path()); continue; }
+                if (isImageExt(it->path().extension().string())) imgs.push_back(it->path());
+            }
+        }
+    }
+    return imgs;
+}
+
+// Pick the `role` map for `matName` (or the model `modelStem`) from a gathered
+// image list. CONSERVATIVE: a texture is only assigned when the file's name
+// genuinely ties to the material (or, as a fallback, the model) -- so materials
+// that have no matching map (e.g. "Glass", "Metal") stay untextured instead of
+// grabbing an unrelated atlas. Never crosses roles; empty when nothing ties.
+std::string matchUnityTexture(const std::vector<std::filesystem::path>& imgs,
+                              const std::string& matName, const std::string& modelStem,
+                              UnityRole role) {
+    const int wantRole = (role == UnityRole::Albedo) ? 1 : 2;
+    static const std::unordered_set<std::string> matPrefix = {
+        "m", "mat", "mi", "material", "sm", "sk", "mesh"};
+    auto allDigits = [](const std::string& t) {
+        for (char c : t) if (!std::isdigit(static_cast<unsigned char>(c))) return false;
+        return !t.empty();
+    };
+    // Material tokens keep numbers -- in atlas kits the material name IS the
+    // texture stem ("Wall_Atlas_04_Dif"), so the digit "04" is what distinguishes
+    // atlas 04 from 01. Model tokens are the weak fallback and DROP bare numbers
+    // and 1-2 char tokens, so a shared "01" between "Dome_Angle_01" and
+    // "Wall_Atlas_01" can't texture an unrelated material.
+    auto tokenSet = [&](const std::string& s, bool strict) {
+        std::unordered_set<std::string> out;
+        for (const std::string& t : tokenize(s))
+            if (!matPrefix.count(t) && (!strict || (t.size() >= 3 && !allDigits(t))))
+                out.insert(t);
+        return out;
+    };
+    const std::unordered_set<std::string> matToks = tokenSet(matName, false);
+    const std::unordered_set<std::string> modToks = tokenSet(modelStem, true);
+
+    std::string bestNamed, bestAtlas;
+    int scNamed = -1;
+    for (const std::filesystem::path& f : imgs) {
+        const std::vector<std::string> toks = tokenize(f.stem().string());
+        if (toks.empty()) continue;
+        // The file's role is its right-most token that names a map role.
+        int fileRole = 0, roleFromEnd = -1;
+        for (int i = static_cast<int>(toks.size()) - 1; i >= 0; --i)
+            if (int r = tokenRole(toks[i])) {
+                fileRole = r; roleFromEnd = static_cast<int>(toks.size()) - 1 - i; break;
+            }
+        // Shared-token counts. Material overlap dominates; model overlap is a weak
+        // tie-breaker; a trailing role token (…_Dif) beats a variant (…_Dif_02).
+        int matO = 0, modO = 0;
+        const std::unordered_set<std::string> uniq(toks.begin(), toks.end());
+        for (const std::string& t : uniq) {
+            if (matToks.count(t)) ++matO;
+            if (modToks.count(t)) ++modO;
+        }
+        if (matO == 0 && modO == 0) continue; // no real tie -> not this material's map
+        if (fileRole == wantRole) {
+            const int score = matO * 100 + modO * 10 + (roleFromEnd == 0 ? 3 : 0);
+            if (score > scNamed) { scNamed = score; bestNamed = f.generic_string(); }
+        } else if (fileRole == 0 && wantRole == 1 && bestAtlas.empty()) {
+            bestAtlas = f.generic_string(); // albedo atlas, no role suffix, name-tied
+        }
+    }
+    return !bestNamed.empty() ? bestNamed : bestAtlas;
+}
+
+// Convenience for the loader: gather + match in one call (per primitive).
+std::string findUnityTexture(const std::string& baseDir, const std::string& matName,
+                             const std::string& modelStem, UnityRole role) {
+    return matchUnityTexture(gatherCandidateImages(baseDir), matName, modelStem, role);
 }
 
 // Walk the node tree, baking each node's world transform into its meshes so the
 // output matches loadGltf (de-indexed 8-float verts, one primitive per mesh).
 // Convert one assimp mesh into a de-indexed ModelPrimitive, baking `world` into
-// the positions/normals (matching loadGltf's static output).
+// the positions/normals (matching loadGltf's static output). `modelStem` is the
+// source file's name (no ext), used as a fallback key for Unity texture matching.
 ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
-                                 const glm::mat4& world, const std::string& baseDir) {
+                                 const glm::mat4& world, const std::string& baseDir,
+                                 const std::string& modelStem, bool flipV) {
     const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(world)));
     ModelPrimitive mp;
     if (mesh->mMaterialIndex < scene->mNumMaterials) {
@@ -443,6 +620,16 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
         if (mp.normalPixels.empty())
             loadAiTexture(scene, mat, aiTextureType_HEIGHT, baseDir,
                           mp.normalPixels, mp.normalWidth, mp.normalHeight);
+        // Unity/PBR fallback: no (resolvable) texture in the FBX -> look for maps
+        // shipped alongside it under Unity naming conventions.
+        if (mp.texPixels.empty())
+            loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
+                                                 UnityRole::Albedo),
+                                mp.texPixels, mp.texWidth, mp.texHeight);
+        if (mp.normalPixels.empty())
+            loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
+                                                 UnityRole::Normal),
+                                mp.normalPixels, mp.normalWidth, mp.normalHeight);
     }
     const bool hasN  = mesh->HasNormals();
     const bool hasUV = mesh->HasTextureCoords(0);
@@ -462,7 +649,10 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
             float u = 0.0f, v = 0.0f;
             if (hasUV) {
                 const aiVector3D& T = mesh->mTextureCoords[0][idx];
-                u = T.x; v = T.y;
+                // FBX/Collada often author UVs with a bottom-left origin while the
+                // glTF path (and our texture upload) use top-left, so V usually
+                // needs flipping. But it varies per exporter/pack -> `flipV`.
+                u = T.x; v = flipV ? 1.0f - T.y : T.y;
             }
             mp.vertices.insert(mp.vertices.end(),
                 {wp.x, wp.y, wp.z, wn.x, wn.y, wn.z, u, v});
@@ -473,12 +663,13 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
 
 void collectColladaNode(const aiScene* scene, const aiNode* node,
                         const glm::mat4& parent, const std::string& baseDir,
-                        ModelData& out, float& lo, float& hi) {
+                        const std::string& modelStem, bool flipV, ModelData& out,
+                        float& lo, float& hi) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
         const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
         if (!mesh || mesh->mNumFaces == 0) continue;
-        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir);
+        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem, flipV);
         for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
             lo = glm::min(lo, mp.vertices[i + 1]);
             hi = glm::max(hi, mp.vertices[i + 1]);
@@ -486,7 +677,7 @@ void collectColladaNode(const aiScene* scene, const aiNode* node,
         if (mp.vertexCount() > 0) out.primitives.push_back(std::move(mp));
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
-        collectColladaNode(scene, node->mChildren[c], world, baseDir, out, lo, hi);
+        collectColladaNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV, out, lo, hi);
 }
 
 // Structure-preserving walk: one ModelNode per mesh-bearing node, its meshes
@@ -494,6 +685,7 @@ void collectColladaNode(const aiScene* scene, const aiNode* node,
 // `center` is where that origin belongs in model space).
 void collectStructuredNode(const aiScene* scene, const aiNode* node,
                            const glm::mat4& parent, const std::string& baseDir,
+                           const std::string& modelStem, bool flipV,
                            std::vector<ModelNode>& out) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     if (node->mNumMeshes > 0) {
@@ -503,7 +695,7 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
             const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
             if (!mesh || mesh->mNumFaces == 0) continue;
-            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir);
+            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem, flipV);
             if (mp.vertexCount() == 0) continue;
             for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
                 lo = glm::min(lo, glm::vec3(mp.vertices[i], mp.vertices[i+1], mp.vertices[i+2]));
@@ -526,12 +718,12 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         }
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
-        collectStructuredNode(scene, node->mChildren[c], world, baseDir, out);
+        collectStructuredNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV, out);
 }
 
 } // namespace
 
-ModelData loadCollada(const std::string& path) {
+ModelData loadCollada(const std::string& path, bool flipV) {
     ModelData out;
     Assimp::Importer imp;
     const aiScene* scene = imp.ReadFile(
@@ -546,14 +738,16 @@ ModelData loadCollada(const std::string& path) {
 
     const std::string baseDir =
         std::filesystem::path(path).parent_path().generic_string();
+    const std::string stem = std::filesystem::path(path).stem().string();
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
-    collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, out, lo, hi);
+    collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
+                       flipV, out, lo, hi);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
     return out;
 }
 
-std::vector<ModelNode> loadModelNodes(const std::string& path) {
+std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV) {
     std::vector<ModelNode> out;
     Assimp::Importer imp;
     const aiScene* scene = imp.ReadFile(
@@ -567,8 +761,45 @@ std::vector<ModelNode> loadModelNodes(const std::string& path) {
     }
     const std::string baseDir =
         std::filesystem::path(path).parent_path().generic_string();
-    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, out);
+    const std::string stem = std::filesystem::path(path).stem().string();
+    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem, flipV, out);
     return out;
+}
+
+std::vector<UnityTexMatch> previewUnityTextures(const std::string& path) {
+    std::vector<UnityTexMatch> out;
+    Assimp::Importer imp;
+    const aiScene* scene = imp.ReadFile(path, aiProcess_Triangulate);
+    if (!scene) {
+        std::fprintf(stderr, "[Fitzel] Unity preview: cannot read '%s': %s\n",
+                     path.c_str(), imp.GetErrorString());
+        return out;
+    }
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
+    const std::string stem = std::filesystem::path(path).stem().string();
+    const std::vector<std::filesystem::path> imgs = gatherCandidateImages(baseDir);
+    for (unsigned i = 0; i < scene->mNumMaterials; ++i) {
+        aiString nm;
+        scene->mMaterials[i]->Get(AI_MATKEY_NAME, nm);
+        UnityTexMatch m;
+        m.material = nm.length ? nm.C_Str() : ("material " + std::to_string(i));
+        m.albedo = matchUnityTexture(imgs, m.material, stem, UnityRole::Albedo);
+        m.normal = matchUnityTexture(imgs, m.material, stem, UnityRole::Normal);
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+std::vector<std::string> nearbyTextureFiles(const std::string& path) {
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
+    std::vector<std::string> names;
+    for (const std::filesystem::path& p : gatherCandidateImages(baseDir))
+        names.push_back(p.filename().string());
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    return names;
 }
 
 namespace {

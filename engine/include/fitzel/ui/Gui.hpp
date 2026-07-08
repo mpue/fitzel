@@ -1,5 +1,7 @@
 #pragma once
 
+struct ImFont;
+
 namespace fitzel {
 
 class Window;
@@ -34,8 +36,14 @@ public:
     bool wantsMouse() const;
     bool wantsKeyboard() const;
 
+    // The fixed-width font (Consolas/Menlo/DejaVu Sans Mono) loaded alongside the
+    // UI font, for code views (the Lua editor). Null if none was found -- callers
+    // should null-check before ImGui::PushFont. Not the default font.
+    ImFont* monoFont() const { return m_mono; }
+
 private:
     bool m_active = false;
+    ImFont* m_mono = nullptr;
 };
 
 } // namespace fitzel
