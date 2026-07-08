@@ -63,6 +63,27 @@ struct TerrainEditField {
                  float amount, float target);
     void smooth (const TerrainSettings& s, glm::vec2 center, float radius,
                  float amount);
+
+    // Thermal erosion: over the brush disc, material on slopes steeper than the
+    // talus angle slides to lower neighbours, weathering ridges into scree and
+    // filling hollows. `rate` (0..1) scales how much moves per call; `iterations`
+    // is the relaxation sweeps per call (holding the brush accumulates more).
+    void erode  (const TerrainSettings& s, glm::vec2 center, float radius,
+                 float rate, int iterations = 8);
+
+    // Stamp a procedural landform additively under the brush. `height` is the
+    // peak offset in world units (negative digs the shape in instead); `shape`
+    // selects the profile: 0 dome, 1 cone, 2 plateau/mesa, 3 crater, 4 ridge.
+    // `rotation` (radians) orients the ridge. Apply once per click, not held.
+    void stamp  (glm::vec2 center, float radius, float height, int shape,
+                 float rotation = 0.0f);
+
+    // Roughen: add signed fBm noise under the brush to break up smooth ground.
+    // `amount` scales the bump height this call; `frequency` sets the feature
+    // size; `seed` decorrelates successive dabs so holding layers detail rather
+    // than amplifying one fixed pattern.
+    void roughen(glm::vec2 center, float radius, float amount, float frequency,
+                 float seed);
 };
 
 // Pure procedural height, with no manual edits applied. Thread-safe.

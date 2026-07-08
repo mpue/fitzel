@@ -132,8 +132,10 @@ uniform sampler2D uLayerTex[MAX_TERRAIN_LAYERS];
 uniform int       uLayerCount;
 uniform vec4      uLayerBand[MAX_TERRAIN_LAYERS];  // (hStart, hEnd, slopeStart, slopeEnd deg)
 uniform float     uLayerScale[MAX_TERRAIN_LAYERS]; // triplanar tiling per layer
+uniform sampler2D uLayerNorm[MAX_TERRAIN_LAYERS];  // optional per-layer normal map
+uniform int       uLayerHasNorm[MAX_TERRAIN_LAYERS]; // 1 = layer i has a normal map
 uniform float     uTexScale;   // world units -> texture tiling (fallback)
-uniform float     uNormalStrength; // kept for compatibility (unused in layer mode)
+uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal-map relief
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 
 // Procedural micro-detail (uColorMode == 1).
@@ -225,13 +227,6 @@ vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale) {
     return normalize(tx.zyx * bw.x + ty.xzy * bw.y + tz.xyz * bw.z);
 }
 
-// Terrain normal. Layer mode keeps the geometry normal (per-layer normal maps
-// were dropped for the data-driven layers); the procedural detail still nudges
-// the geometry normal slightly for close-up relief.
-vec3 terrainNormal(vec3 wp, vec3 n, float detail) {
-    return n;
-}
-
 // One layer's coverage: 1 inside its [start,end] band, smoothly 0 outside. A
 // fixed feather softens both edges so adjacent bands cross-fade.
 float band(float x, float start, float end, float feather) {
@@ -250,26 +245,46 @@ vec3 layerTriplanar(int i, vec3 wp, vec3 n, float scale) {
     return triplanar(uLayerTex[5], wp, n, scale);
 }
 
-// Height- and slope-driven albedo, blended from the configured texture layers.
-vec3 terrainAlbedo(vec3 wp, vec3 n, float detail) {
-    if (uLayerCount == 0) return uAlbedo; // no layers -> flat base colour
+// Same constant-index dispatch for the per-layer normal maps.
+vec3 layerTriplanarNormal(int i, vec3 wp, vec3 n, float scale) {
+    if (i == 0) return triplanarNormal(uLayerNorm[0], wp, n, scale);
+    if (i == 1) return triplanarNormal(uLayerNorm[1], wp, n, scale);
+    if (i == 2) return triplanarNormal(uLayerNorm[2], wp, n, scale);
+    if (i == 3) return triplanarNormal(uLayerNorm[3], wp, n, scale);
+    if (i == 4) return triplanarNormal(uLayerNorm[4], wp, n, scale);
+    return triplanarNormal(uLayerNorm[5], wp, n, scale);
+}
+
+// Height- and slope-driven terrain surface: blends the configured texture layers
+// by coverage, producing both the albedo and the perturbed normal in one pass.
+// Layer coverage (height band x slope band) weights both, so a layer's normal
+// map only shows where its texture shows. uNormalStrength dials the relief in.
+void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 normalOut) {
+    normalOut = n;
+    if (uLayerCount == 0) { albedo = uAlbedo; return; } // no layers -> flat base
 
     float slopeDeg = degrees(acos(clamp(n.y, -1.0, 1.0))); // 0 flat .. 90 vertical
     float h        = wp.y + (detail - 0.5) * 3.0;          // jitter the height edges
 
     vec3  acc  = vec3(0.0);
+    vec3  nacc = vec3(0.0);
     float wsum = 0.0;
     for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i) {
         if (i >= uLayerCount) break;
         vec4  b = uLayerBand[i];
         float w = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
         if (w > 0.0) {
-            acc  += layerTriplanar(i, wp, n, uLayerScale[i]) * w;
+            acc += layerTriplanar(i, wp, n, uLayerScale[i]) * w;
+            vec3 ln = (uLayerHasNorm[i] == 1)
+                    ? layerTriplanarNormal(i, wp, n, uLayerScale[i]) : n;
+            nacc += ln * w;
             wsum += w;
         }
     }
-    if (wsum < 1e-4) return uAlbedo; // gap between bands -> flat base colour
-    return acc / wsum;
+    if (wsum < 1e-4) { albedo = uAlbedo; return; } // gap between bands -> flat base
+    albedo = acc / wsum;
+    vec3 mapped = normalize(nacc / wsum);
+    normalOut = normalize(mix(n, mapped, clamp(uNormalStrength, 0.0, 1.0)));
 }
 
 // Apply exponential height fog with sun-tinted in-scatter to a shaded colour.
@@ -309,9 +324,10 @@ void main() {
     float detail = (uColorMode == 1) ? detailFbm(vWorldPos.xz * uDetailScale) : 0.0;
 
     vec3 albedo;
+    vec3 terrainNrm = N; // terrain's perturbed normal (filled in layer mode)
     float texA = 1.0; // texture alpha, folded into the output alpha
     if (uColorMode == 1) {
-        albedo = terrainAlbedo(vWorldPos, N, detail);
+        terrainSurface(vWorldPos, N, detail, albedo, terrainNrm);
     } else if (uColorMode == 2) {
         vec4 t = texture(uTexture, vUV);
         albedo = t.rgb; texA = t.a;
@@ -331,7 +347,7 @@ void main() {
     // Surface normal: terrain uses its own path; object materials optionally
     // perturb the geometry normal with a tangent-space normal map.
     if (uColorMode == 1) {
-        N = terrainNormal(vWorldPos, N, detail);
+        N = terrainNrm;
     } else if (uHasNormalMap == 1) {
         N = applyNormalMap(N, vWorldPos, vUV, uNormalMap);
     }

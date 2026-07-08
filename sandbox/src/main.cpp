@@ -564,10 +564,15 @@ int main(int argc, char** argv) {
         };
         publishSculpt();                     // install the (empty) snapshot
         bool  sculptMode     = false;
-        int   sculptTool     = 0;            // 0 raise, 1 lower, 2 smooth, 3 flatten
+        int   sculptTool     = 0;            // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise
         float sculptRadius   = 8.0f;         // world units
         float sculptStrength = 0.5f;         // 0..1 brush intensity
         float sculptFlattenH = 0.0f;         // flatten target height (grabbed on press)
+        int   stampShape     = 0;            // 0 dome 1 cone 2 plateau 3 crater 4 ridge
+        float stampHeight    = 12.0f;        // stamp peak height (m); negative digs in
+        float stampRot       = 0.0f;         // ridge orientation (radians)
+        float noiseFreq      = 0.35f;        // roughen feature size
+        float noiseSeed      = 0.0f;         // advanced per dab so detail layers up
 
         // Grass placement runs on a worker thread (pure noise queries, no GL) so
         // moving never stalls the frame; the result is uploaded on the main thread.
@@ -1746,6 +1751,7 @@ int main(int argc, char** argv) {
             nlohmann::json larr = nlohmann::json::array();
             for (const TerrainLayer& L : look.layers)
                 larr.push_back({{"tex", L.texId.toString()}, {"name", L.name},
+                                {"norm", L.normId.toString()},
                                 {"hStart", L.heightStart}, {"hEnd", L.heightEnd},
                                 {"sStart", L.slopeStart}, {"sEnd", L.slopeEnd},
                                 {"scale", L.scale}});
@@ -1777,13 +1783,15 @@ int main(int argc, char** argv) {
                 for (const auto& lj : j["terrainLayers"]) {
                     TerrainLayer L;
                     L.texId       = AssetId::fromString(lj.value("tex", std::string{}));
+                    L.normId      = AssetId::fromString(lj.value("norm", std::string{}));
                     L.name        = lj.value("name", std::string{});
                     L.heightStart = lj.value("hStart", -1000.0f);
                     L.heightEnd   = lj.value("hEnd",    1000.0f);
                     L.slopeStart  = lj.value("sStart",  0.0f);
                     L.slopeEnd    = lj.value("sEnd",    90.0f);
                     L.scale       = lj.value("scale",   0.08f);
-                    if (L.texId.valid()) L.tex = assetDb.loadTexture(L.texId);
+                    if (L.texId.valid())  L.tex  = assetDb.loadTexture(L.texId);
+                    if (L.normId.valid()) L.norm = assetDb.loadTexture(L.normId);
                     look.layers.push_back(std::move(L));
                 }
             // Restore hand-painted grass (empty for scenes saved before it existed).
@@ -3661,7 +3669,13 @@ int main(int argc, char** argv) {
                     if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                         sculptFlattenH = center.y;
 
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                    // Stamp drops a landform once per click; the other tools apply
+                    // continuously while the button is held.
+                    const bool stampTool = (sculptTool == 5);
+                    const bool apply = onGround &&
+                        (stampTool ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
+                                   : ImGui::IsMouseDown(ImGuiMouseButton_Left));
+                    if (apply) {
                         const glm::vec2 c(center.x, center.z);
                         const bool invert = ImGui::GetIO().KeyAlt;
                         switch (sculptTool) {
@@ -3681,10 +3695,26 @@ int main(int argc, char** argv) {
                                     glm::clamp(sculptStrength * 5.0f * dt, 0.0f, 1.0f),
                                     sculptFlattenH);
                                 break;
+                            case 4:                           // erode (weathering)
+                                sculptWork.erode(streamer.settings(), c, sculptRadius,
+                                    glm::clamp(sculptStrength * 6.0f * dt, 0.0f, 1.0f));
+                                break;
+                            case 5:                           // stamp a landform
+                                sculptWork.stamp(c, sculptRadius,
+                                    invert ? -stampHeight : stampHeight,
+                                    stampShape, stampRot);
+                                break;
+                            case 6:                           // noise / roughen
+                                sculptWork.roughen(c, sculptRadius,
+                                    sculptStrength * 3.0f * dt, noiseFreq, noiseSeed);
+                                noiseSeed += 1.7f;            // decorrelate next dab
+                                break;
                         }
                         // Publish the new shape, then rebuild the touched chunks.
+                        // Erosion/stamp reach a little past the disc, so pad the
+                        // rebuilt rectangle beyond the radius.
                         publishSculpt();
-                        const float m = sculptRadius + sculptWork.cell;
+                        const float m = sculptRadius + 3.0f * sculptWork.cell;
                         streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
                                               glm::vec2(c.x + m, c.y + m));
                         grassDirty = true; // vegetation re-drapes on the new ground
@@ -3695,6 +3725,9 @@ int main(int argc, char** argv) {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         const ImU32 col = sculptTool == 2 ? IM_COL32(120, 200, 255, 225)
                                         : sculptTool == 3 ? IM_COL32(255, 210, 90, 225)
+                                        : sculptTool == 4 ? IM_COL32(200, 150, 110, 225)
+                                        : sculptTool == 5 ? IM_COL32(200, 140, 255, 225)
+                                        : sculptTool == 6 ? IM_COL32(180, 180, 190, 225)
                                         : sculptTool == 1 ? IM_COL32(255, 130, 90, 225)
                                                           : IM_COL32(140, 235, 140, 225);
                         const int SEG = 56;
@@ -4056,13 +4089,34 @@ int main(int argc, char** argv) {
                 else
                     ImGui::TextDisabled("Enable to reshape the ground with the brush");
 
-                const char* tools[] = {"Raise", "Lower", "Smooth", "Flatten"};
+                const char* tools[] = {"Raise", "Lower", "Smooth", "Flatten",
+                                       "Erode", "Stamp", "Noise"};
                 ImGui::Combo("Tool", &sculptTool, tools, IM_ARRAYSIZE(tools));
                 ImGui::SliderFloat("Radius", &sculptRadius, 1.0f, 40.0f, "%.1f m");
                 ImGui::SliderFloat("Strength", &sculptStrength, 0.05f, 1.0f);
                 if (sculptTool == 3)
                     ImGui::SliderFloat("Flatten height", &sculptFlattenH,
                                        -40.0f, 60.0f, "%.1f m");
+                if (sculptTool == 4)
+                    ImGui::TextDisabled("Weathers slopes: material slides downhill.");
+                if (sculptTool == 6)
+                    ImGui::SliderFloat("Feature size", &noiseFreq, 0.08f, 1.0f,
+                                       "%.2f");
+                if (sculptTool == 5) {
+                    const char* shapes[] = {"Dome", "Cone", "Plateau",
+                                            "Crater", "Ridge"};
+                    ImGui::Combo("Shape", &stampShape, shapes, IM_ARRAYSIZE(shapes));
+                    ImGui::SliderFloat("Stamp height", &stampHeight,
+                                       -30.0f, 30.0f, "%.1f m");
+                    if (stampShape == 4) {
+                        float deg = glm::degrees(stampRot);
+                        if (ImGui::SliderFloat("Rotation", &deg, -180.0f, 180.0f,
+                                               "%.0f deg"))
+                            stampRot = glm::radians(deg);
+                    }
+                    ImGui::TextColored(ImVec4(0.8f, 0.6f, 1.0f, 1.0f),
+                                       "Click to stamp | Alt inverts (digs in)");
+                }
 
                 // Grid spacing only makes sense to change before any edits exist
                 // (the map keys are cell indices at the current spacing).
@@ -5447,6 +5501,15 @@ int main(int argc, char** argv) {
                                    glm::vec4(L.heightStart, L.heightEnd,
                                              L.slopeStart, L.slopeEnd))
                               .set("uLayerScale[" + ix + "]", L.scale);
+                    // Optional normal map on a high unit (18+) so it clears the
+                    // shadow/env/IBL samplers the renderer binds lower down.
+                    if (L.norm) {
+                        terrainMat.setTexture("uLayerNorm[" + ix + "]", *L.norm,
+                                              18 + bound)
+                                  .set("uLayerHasNorm[" + ix + "]", 1);
+                    } else {
+                        terrainMat.set("uLayerHasNorm[" + ix + "]", 0);
+                    }
                     ++bound;
                 }
                 terrainMat.set("uLayerCount", bound);

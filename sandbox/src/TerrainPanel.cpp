@@ -63,6 +63,21 @@ void drawPanel(const PanelState& s) {
                         }
                     ImGui::EndCombo();
                 }
+                // Optional normal map: adds tangent-space surface relief for this
+                // layer (triplanar Whiteout blend), dialled by "Normal strength".
+                const std::string curN = L.normId.valid() ? "(assigned)" : "(none)";
+                if (ImGui::BeginCombo("Normal", curN.c_str())) {
+                    if (ImGui::Selectable("(none)", !L.normId.valid())) {
+                        L.normId = AssetId{};
+                        L.norm.reset();
+                    }
+                    for (const auto& [id, rel] : texAssets)
+                        if (ImGui::Selectable(rel.c_str(), id == L.normId)) {
+                            L.normId = id;
+                            L.norm   = s.assetDb.loadTexture(id);
+                        }
+                    ImGui::EndCombo();
+                }
                 ImGui::DragFloatRange2("Height", &L.heightStart, &L.heightEnd,
                                        0.2f, -200.0f, 200.0f, "%.1f", "%.1f");
                 ImGui::DragFloatRange2("Slope", &L.slopeStart, &L.slopeEnd,

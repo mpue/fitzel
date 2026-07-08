@@ -153,6 +153,141 @@ void TerrainEditField::smooth(const TerrainSettings& s, glm::vec2 c,
     for (const Upd& u : ups) deltas[u.k] = u.v;
 }
 
+void TerrainEditField::erode(const TerrainSettings& s, glm::vec2 c, float radius,
+                             float rate, int iterations) {
+    if (radius <= 0.0f) return;
+    // Work on a dense local grid covering the disc plus a one-cell apron (so the
+    // interior cells can read all four neighbours). Sampling the procedural base
+    // once here keeps the inner relaxation loop pure array arithmetic.
+    const int x0 = static_cast<int>(std::floor((c.x - radius) / cell)) - 1;
+    const int x1 = static_cast<int>(std::ceil ((c.x + radius) / cell)) + 1;
+    const int z0 = static_cast<int>(std::floor((c.y - radius) / cell)) - 1;
+    const int z1 = static_cast<int>(std::ceil ((c.y + radius) / cell)) + 1;
+    const int W = x1 - x0 + 1, H = z1 - z0 + 1;
+    if (W <= 2 || H <= 2) return;
+    auto idx = [&](int x, int z) { return (z - z0) * W + (x - x0); };
+
+    std::vector<float> h(static_cast<std::size_t>(W) * H);
+    std::vector<float> base(static_cast<std::size_t>(W) * H);
+    for (int iz = z0; iz <= z1; ++iz)
+        for (int ix = x0; ix <= x1; ++ix) {
+            const float b  = terrainBaseHeight(s, ix * cell, iz * cell);
+            const auto  it = deltas.find(cellKey(ix, iz));
+            base[idx(ix, iz)] = b;
+            h[idx(ix, iz)]    = b + (it == deltas.end() ? 0.0f : it->second);
+        }
+
+    // Talus: the max stable height step between neighbouring cells. Excess above
+    // it is shed downhill, split across the lower neighbours by how steep each is.
+    const float talus = 0.7f * cell;
+    const float carry = 0.5f * glm::clamp(rate, 0.0f, 1.0f);
+    std::vector<float> move(static_cast<std::size_t>(W) * H);
+    for (int it = 0; it < iterations; ++it) {
+        std::fill(move.begin(), move.end(), 0.0f);
+        for (int iz = z0 + 1; iz < z1; ++iz)
+            for (int ix = x0 + 1; ix < x1; ++ix) {
+                const int   i  = idx(ix, iz);
+                const float hi = h[i];
+                const int   nb[4] = {idx(ix - 1, iz), idx(ix + 1, iz),
+                                     idx(ix, iz - 1), idx(ix, iz + 1)};
+                float d[4], dsum = 0.0f, dmax = 0.0f;
+                for (int k = 0; k < 4; ++k) {
+                    d[k] = hi - h[nb[k]] - talus;
+                    if (d[k] < 0.0f) d[k] = 0.0f;
+                    dsum += d[k];
+                    if (d[k] > dmax) dmax = d[k];
+                }
+                if (dsum <= 0.0f) continue;
+                const float shed = carry * dmax; // material leaving this cell
+                move[i] -= shed;
+                for (int k = 0; k < 4; ++k)
+                    move[nb[k]] += shed * (d[k] / dsum);
+            }
+        for (std::size_t n = 0; n < h.size(); ++n) h[n] += move[n];
+    }
+
+    // Write the eroded surface back as deltas, faded by the brush falloff so the
+    // disc rim blends into the untouched ground.
+    const float r2 = radius * radius;
+    for (int iz = z0 + 1; iz < z1; ++iz)
+        for (int ix = x0 + 1; ix < x1; ++ix) {
+            const float wx = ix * cell, wz = iz * cell;
+            const float d2 = (wx - c.x) * (wx - c.x) + (wz - c.y) * (wz - c.y);
+            if (d2 > r2) continue;
+            const float t = 1.0f - std::sqrt(d2) / radius;
+            const float w = t * t * (3.0f - 2.0f * t);
+            const int          i   = idx(ix, iz);
+            const std::int64_t k   = cellKey(ix, iz);
+            const auto         itc = deltas.find(k);
+            const float        cur = (itc == deltas.end()) ? 0.0f : itc->second;
+            deltas[k] = glm::mix(cur, h[i] - base[i], w);
+        }
+}
+
+// Procedural stamp profiles, evaluated in normalised, rotated disc coordinates
+// (u, v) in [-1, 1]. Returns the height weight (0 outside the shape's support;
+// the crater is signed: a raised rim around a sunken floor).
+static float stampProfile(int shape, float u, float v) {
+    const float r = std::sqrt(u * u + v * v);
+    switch (shape) {
+        case 1: // cone
+            return (r >= 1.0f) ? 0.0f : (1.0f - r);
+        case 2: { // plateau / mesa: flat top, soft skirt
+            if (r >= 1.0f) return 0.0f;
+            return 1.0f - glm::smoothstep(0.55f, 1.0f, r);
+        }
+        case 3: { // crater: gaussian rim minus a bowl
+            if (r >= 1.1f) return 0.0f;
+            const float rim  = std::exp(-((r - 0.75f) * (r - 0.75f)) /
+                                        (2.0f * 0.09f * 0.09f));
+            const float bowl = (r < 0.75f) ? (1.0f - r / 0.75f) : 0.0f;
+            return rim * 0.8f - bowl;
+        }
+        case 4: { // ridge: elongated along u, falls off across v
+            if (std::fabs(u) >= 1.0f || std::fabs(v) >= 1.0f) return 0.0f;
+            const float along  = 1.0f - glm::smoothstep(0.6f, 1.0f, std::fabs(u));
+            float       across = glm::clamp(1.0f - std::fabs(v), 0.0f, 1.0f);
+            across = across * across * (3.0f - 2.0f * across);
+            return along * across;
+        }
+        default: { // dome: smooth bell
+            if (r >= 1.0f) return 0.0f;
+            const float t = 1.0f - r;
+            return t * t * (3.0f - 2.0f * t);
+        }
+    }
+}
+
+void TerrainEditField::stamp(glm::vec2 c, float radius, float height, int shape,
+                             float rotation) {
+    if (radius <= 0.0f) return;
+    const float cs = std::cos(rotation), sn = std::sin(rotation);
+    // Cover the bounding square (the ridge/plateau reach into the corners).
+    const int x0 = static_cast<int>(std::floor((c.x - radius) / cell));
+    const int x1 = static_cast<int>(std::ceil ((c.x + radius) / cell));
+    const int z0 = static_cast<int>(std::floor((c.y - radius) / cell));
+    const int z1 = static_cast<int>(std::ceil ((c.y + radius) / cell));
+    for (int iz = z0; iz <= z1; ++iz)
+        for (int ix = x0; ix <= x1; ++ix) {
+            const float dx = (ix * cell - c.x) / radius;
+            const float dz = (iz * cell - c.y) / radius;
+            const float u  = dx * cs - dz * sn; // rotate into stamp space
+            const float v  = dx * sn + dz * cs;
+            const float val = stampProfile(shape, u, v);
+            if (val == 0.0f) continue;
+            deltas[cellKey(ix, iz)] += height * val;
+        }
+}
+
+void TerrainEditField::roughen(glm::vec2 c, float radius, float amount,
+                               float frequency, float seed) {
+    forBrushCells(cell, c, radius, [&](int ix, int iz, float wx, float wz, float w) {
+        const float n = stb_perlin_fbm_noise3((wx + seed) * frequency, seed * 0.7f,
+                                              (wz + seed) * frequency, 2.0f, 0.5f, 4);
+        deltas[cellKey(ix, iz)] += amount * w * n;
+    });
+}
+
 // --- Global deformation snapshot ------------------------------------------
 
 namespace {

@@ -23,8 +23,10 @@ inline constexpr int kMaxTerrainLayers = 6;
 // covers. The shader blends every layer whose band contains a fragment's world
 // height and surface slope, so overlapping bands cross-fade.
 struct TerrainLayer {
-    fitzel::AssetId                  texId;   // texture asset GUID (save/load)
+    fitzel::AssetId                  texId;   // albedo texture asset GUID (save/load)
     std::shared_ptr<fitzel::Texture> tex;     // resolved albedo (bound per frame)
+    fitzel::AssetId                  normId;  // optional normal-map asset GUID
+    std::shared_ptr<fitzel::Texture> norm;    // resolved normal map (bound per frame)
     std::string                      name;
     float heightStart = -1000.0f;  // world Y where the layer begins
     float heightEnd   =  1000.0f;  // ..and ends
