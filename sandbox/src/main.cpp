@@ -940,6 +940,15 @@ int main(int argc, char** argv) {
         bool showMaterials   = false;
         bool showModels      = false;
         bool showAssets      = false;
+        // Asset browser: lazily-built, cached preview thumbnails (small textures,
+        // kept alive here so they stay resident), plus its view options. Decoding
+        // runs on worker threads (assetThumbJobs); only the tiny GL upload happens
+        // on the render thread, so a 4K source never stalls the frame.
+        std::unordered_map<fitzel::AssetId, std::shared_ptr<Texture>>    assetThumbs;
+        std::unordered_map<fitzel::AssetId, std::future<fitzel::ImagePixels>> assetThumbJobs;
+        float assetThumbSize = 76.0f;
+        char  assetFilter[64] = "";
+        bool  assetTexturesOnly = false;
         bool showScriptEditor = false;
         bool showStats       = false;
         bool showCamera      = false;
@@ -1361,8 +1370,12 @@ int main(int argc, char** argv) {
         };
 
         // Tree instances live here (filled by regenTrees below); declared early
-        // so flower placement can cluster blooms around the trees.
-        std::vector<float> treeInst;
+        // so flower placement can cluster blooms around the trees. The buffer is
+        // procedural forest first, then the hand-painted trees appended -- so both
+        // draw through the same instanced 3D/billboard/shadow path.
+        std::vector<float> treeInst;              // combined draw buffer (5 floats/tree)
+        std::vector<float> paintedTrees;          // hand-painted trees (world space, saved)
+        std::size_t        proceduralFloats = 0;  // size of the procedural prefix in treeInst
         int                treeCount = 0;
 
         // --- Flowers: GPU-instanced blooms scattered through lush grass ---
@@ -1498,6 +1511,27 @@ int main(int argc, char** argv) {
         float     treeDensity  = 1.0f;
         const float treeRadius = 120.0f;
         std::mt19937 trng(555u);
+
+        // Hand-painted tree brush state.
+        bool  treePaintMode   = false;
+        float treeBrushRadius = 8.0f;
+        float treeBrushDensity= 1.0f;   // attempts per m^2 (trees stay sparse)
+        float treeMinSpacing  = 4.0f;   // reject placements closer than this
+        float treePaintScale  = treeSize;
+
+        // Re-upload the instance buffer = procedural prefix + painted trees, and
+        // refresh treeCount. Painting rebuilds only the painted tail, so the
+        // procedural forest never reshuffles under an edit.
+        auto rebuildTreeBuffer = [&] {
+            treeInst.resize(proceduralFloats);
+            treeInst.insert(treeInst.end(), paintedTrees.begin(), paintedTrees.end());
+            treeCount = static_cast<int>(treeInst.size() / 5);
+            glBindBuffer(GL_ARRAY_BUFFER, treeInstVBO);
+            glBufferData(GL_ARRAY_BUFFER,
+                         static_cast<GLsizeiptr>(treeInst.size() * sizeof(float)),
+                         treeInst.data(), GL_DYNAMIC_DRAW);
+        };
+
         auto regenTrees = [&](glm::vec2 cc) {
             treeInst.clear();
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
@@ -1532,12 +1566,62 @@ int main(int argc, char** argv) {
                         glm::mix(treeSize * 0.75f, treeSize * 1.3f, u(trng))});
                 }
             }
-            treeCount = static_cast<int>(treeInst.size() / 5);
-            glBindBuffer(GL_ARRAY_BUFFER, treeInstVBO);
-            glBufferData(GL_ARRAY_BUFFER,
-                         static_cast<GLsizeiptr>(treeInst.size() * sizeof(float)),
-                         treeInst.data(), GL_DYNAMIC_DRAW);
+            proceduralFloats = treeInst.size();
+            rebuildTreeBuffer();  // append the painted trees and upload
             treeCenter = cc;
+        };
+
+        // --- Paint / erase hand-placed trees (world space, saved with the scene).
+        // Scatter into the brush disc, drop each on the terrain, reject steep /
+        // underwater / above-snow spots and any placement too close to another
+        // painted tree, so a forest stays believable. Erase drops painted trees
+        // whose base lies in the disc. Both re-append to the shared draw buffer.
+        auto stampTree = [&](glm::vec2 c, float radius) {
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            const float area  = 3.14159265f * radius * radius;
+            const int   tries = std::max(1, static_cast<int>(area * 0.02f * treeBrushDensity));
+            const float minSp2 = treeMinSpacing * treeMinSpacing;
+            for (int i = 0; i < tries; ++i) {
+                const float ang = u(brushRng) * 6.2831853f;
+                const float rad = std::sqrt(u(brushRng)) * radius; // uniform in disc
+                const float wx  = c.x + std::cos(ang) * rad;
+                const float wz  = c.y + std::sin(ang) * rad;
+                const float h   = streamer.heightAt(wx, wz);
+                if (h < waterLevel + 0.8f || h > look.snowLevel - 2.0f) continue;
+                const float e = 1.5f;
+                const glm::vec3 n = glm::normalize(glm::vec3(
+                    streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
+                    2.0f * e,
+                    streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
+                if (n.y < 0.86f) continue; // too steep for a trunk
+                bool tooClose = false;
+                for (std::size_t t = 0; t + 5 <= paintedTrees.size(); t += 5) {
+                    const float dx = wx - paintedTrees[t], dz = wz - paintedTrees[t + 2];
+                    if (dx * dx + dz * dz < minSp2) { tooClose = true; break; }
+                }
+                if (tooClose) continue;
+                const float sc = glm::mix(treePaintScale * 0.8f, treePaintScale * 1.25f,
+                                          u(brushRng));
+                paintedTrees.insert(paintedTrees.end(), {
+                    wx, streamer.heightAt(wx, wz) - 0.3f, wz,
+                    u(brushRng) * 6.2831853f, sc});
+            }
+            rebuildTreeBuffer();
+        };
+        auto eraseTree = [&](glm::vec2 c, float radius) {
+            const float r2 = radius * radius;
+            std::vector<float> kept;
+            kept.reserve(paintedTrees.size());
+            for (std::size_t i = 0; i + 5 <= paintedTrees.size(); i += 5) {
+                const float dx = paintedTrees[i] - c.x, dz = paintedTrees[i + 2] - c.y;
+                if (dx * dx + dz * dz <= r2) continue; // inside brush -> remove
+                kept.insert(kept.end(), paintedTrees.begin() + i,
+                                        paintedTrees.begin() + i + 5);
+            }
+            if (kept.size() != paintedTrees.size()) {
+                paintedTrees.swap(kept);
+                rebuildTreeBuffer();
+            }
         };
 
         // --- Audio: weather-driven sound layers --------------------------
@@ -1763,6 +1847,11 @@ int main(int argc, char** argv) {
             gs.precision(7);
             for (float v : paintedBlades) gs << v << ' ';
             j["paintedGrass"] = gs.str();
+            // Hand-painted trees: same compact float blob (5 per tree).
+            std::ostringstream ts;
+            ts.precision(7);
+            for (float v : paintedTrees) ts << v << ' ';
+            j["paintedTrees"] = ts.str();
             // Terrain sculpt: grid spacing + a compact "ix iz delta ..." blob of
             // every edited cell (one JSON string, same reasoning as the grass).
             j["terrainEditCell"] = sculptWork.cell;
@@ -1803,6 +1892,15 @@ int main(int argc, char** argv) {
                 paintedBlades.resize(paintedBlades.size() / 7 * 7); // whole blades
             }
             paintedDirty = true; // re-upload to the GPU next frame
+            // Restore hand-painted trees (regenTrees re-appends them next frame,
+            // triggered by the treeCenter reset below).
+            paintedTrees.clear();
+            if (j.contains("paintedTrees") && j["paintedTrees"].is_string()) {
+                std::istringstream ts(j["paintedTrees"].get<std::string>());
+                float v;
+                while (ts >> v) paintedTrees.push_back(v);
+                paintedTrees.resize(paintedTrees.size() / 5 * 5); // whole trees
+            }
             // Restore terrain sculpt edits (empty for scenes saved before it
             // existed). Publish before the rebuild below so chunks bake them in.
             sculptWork.deltas.clear();
@@ -3654,6 +3752,52 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Tree brush: scatter/erase hand-placed trees under a circular
+                //     3D brush. Drag LMB to plant; hold Alt (or Erase) to remove.
+                if (treePaintMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 center;
+                    const bool onGround = viewportHovered &&
+                                          roadPickTerrain(viewportMouseNdc, vp, center);
+                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
+
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        lastStampPos = glm::vec2(1e9f);
+
+                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 cxz(center.x, center.z);
+                        if (erasing) {
+                            eraseTree(cxz, treeBrushRadius);
+                        } else if (glm::length(cxz - lastStampPos) > treeBrushRadius * 0.5f) {
+                            stampTree(cxz, treeBrushRadius);
+                            lastStampPos = cxz;
+                        }
+                    }
+
+                    if (onGround) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
+                                                  : IM_COL32(90, 200, 120, 220);
+                        const int SEG = 48;
+                        ImVec2 prev; bool have = false;
+                        for (int i = 0; i <= SEG; ++i) {
+                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
+                            const float wx = center.x + std::cos(a) * treeBrushRadius;
+                            const float wz = center.z + std::sin(a) * treeBrushRadius;
+                            const glm::vec4 c = vp * glm::vec4(
+                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
+                            if (c.w <= 1e-4f) { have = false; continue; }
+                            const glm::vec3 n = glm::vec3(c) / c.w;
+                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            if (have) dl->AddLine(prev, sp, col, 2.0f);
+                            prev = sp; have = true;
+                        }
+                    }
+                }
+
                 // --- Terrain sculpt brush: raise/lower/smooth/flatten the ground
                 //     under a 3D disc that hugs the surface. Hold LMB to apply;
                 //     Alt inverts raise/lower. -------------------------------
@@ -4082,7 +4226,7 @@ int main(int argc, char** argv) {
 
             if (showSculpt) { if (ImGui::Begin("Terrain Sculpt", &showSculpt)) {
                 if (ImGui::Checkbox("Sculpt mode", &sculptMode) && sculptMode)
-                    grassPaintMode = roadEditMode = false; // brush owns the LMB
+                    grassPaintMode = roadEditMode = treePaintMode = false; // brush owns the LMB
                 if (sculptMode)
                     ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
                         "Hold LMB to sculpt | Alt inverts raise/lower");
@@ -4152,7 +4296,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint grass (3D brush)");
                 if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
-                    roadEditMode = sculptMode = false; // brush owns the left button
+                    roadEditMode = sculptMode = treePaintMode = false; // brush owns the left button
                 if (grassPaintMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                         "Drag = paint | hold Alt = erase");
@@ -4195,6 +4339,27 @@ int main(int argc, char** argv) {
                 if (retree) treeCenter = glm::vec2(1e9f);
                 ImGui::SliderFloat("Tree LOD dist", &lodNear, 15.0f, 200.0f);
                 ImGui::Text("Trees: %d", treeCount);
+
+                ImGui::SeparatorText("Paint trees (3D brush)");
+                if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode)
+                    grassPaintMode = roadEditMode = sculptMode = false; // own the LMB
+                if (treePaintMode)
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f),
+                        "Drag = plant | hold Alt = erase");
+                else
+                    ImGui::TextDisabled("Enable to plant trees onto the terrain");
+                ImGui::Checkbox("Erase##tree", &brushErase);
+                ImGui::SliderFloat("Brush size##tree", &treeBrushRadius, 1.0f, 40.0f, "%.1f m");
+                ImGui::SliderFloat("Density##tree", &treeBrushDensity, 0.1f, 4.0f);
+                ImGui::SliderFloat("Min spacing", &treeMinSpacing, 1.0f, 15.0f, "%.1f m");
+                ImGui::SliderFloat("Paint size", &treePaintScale, 2.0f, 25.0f, "%.1f m");
+                ImGui::Text("Painted trees: %d", static_cast<int>(paintedTrees.size() / 5));
+                ImGui::BeginDisabled(paintedTrees.empty());
+                if (ImGui::Button("Clear painted##tree")) {
+                    paintedTrees.clear();
+                    rebuildTreeBuffer();
+                }
+                ImGui::EndDisabled();
 
                 ImGui::SeparatorText("Flowers");
                 ImGui::Checkbox("Flowers", &flowerEnabled);
@@ -4289,7 +4454,7 @@ int main(int argc, char** argv) {
             if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
                 ImGui::Checkbox("Show roads", &roadEnabled);
                 if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
-                    grassPaintMode = sculptMode = false; // don't fight over LMB
+                    grassPaintMode = sculptMode = treePaintMode = false; // don't fight over LMB
                 if (roadEditMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "Click ground = add | drag handle = move | Del = delete");
@@ -5177,9 +5342,46 @@ int main(int argc, char** argv) {
             // slot. Double-click a Model to drop it ahead of the camera.
             if (showAssets) {
                 if (ImGui::Begin("Assets", &showAssets)) {
-                    ImGui::TextDisabled("Drag a model to the viewport, or a "
-                                        "texture onto a material's Base texture.");
+                    // Toolbar: preview size, name filter, texture-only toggle.
+                    ImGui::SetNextItemWidth(120.0f);
+                    ImGui::SliderFloat("Size", &assetThumbSize, 48.0f, 160.0f, "%.0f");
+                    ImGui::SameLine();
+                    ImGui::SetNextItemWidth(150.0f);
+                    ImGui::InputTextWithHint("##assetFilter", "filter...",
+                                             assetFilter, sizeof(assetFilter));
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Textures only", &assetTexturesOnly);
+                    ImGui::TextDisabled("Drag a tile onto a material slot / the "
+                                        "viewport; double-click a model to place it.");
                     ImGui::Separator();
+
+                    // Upload any thumbnails whose decode finished on a worker thread
+                    // (the GL upload of a 128px image is effectively free).
+                    for (auto it = assetThumbJobs.begin(); it != assetThumbJobs.end(); ) {
+                        if (it->second.wait_for(std::chrono::seconds(0)) ==
+                            std::future_status::ready) {
+                            auto t = std::make_shared<Texture>(
+                                Texture::fromImagePixels(it->second.get()));
+                            assetThumbs[it->first] = t->isValid() ? t : nullptr;
+                            it = assetThumbJobs.erase(it);
+                        } else {
+                            ++it;
+                        }
+                    }
+
+                    // Case-insensitive substring match for the filter box.
+                    std::string flt = assetFilter;
+                    std::transform(flt.begin(), flt.end(), flt.begin(),
+                        [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                    auto matches = [&](const std::string& s){
+                        if (flt.empty()) return true;
+                        std::string l = s;
+                        std::transform(l.begin(), l.end(), l.begin(),
+                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+                        return l.find(flt) != std::string::npos;
+                    };
+
+                    const float pad  = ImGui::GetStyle().ItemSpacing.x;
                     const auto& srcs = assetDb.sources();
                     for (int si = 0; si < static_cast<int>(srcs.size()); ++si) {
                         const char* kind = srcs[si].kind == AssetSourceKind::Engine
@@ -5190,14 +5392,51 @@ int main(int argc, char** argv) {
                                                      ImGuiTreeNodeFlags_DefaultOpen))
                             continue;
                         ImGui::PushID(si);
-                        int shown = 0;
+                        const float avail = ImGui::GetContentRegionAvail().x;
+                        const int   cols  = std::max(1,
+                            static_cast<int>(avail / (assetThumbSize + pad)));
+                        int shown = 0, col = 0;
                         for (AssetId id : assetDb.allAssets()) {
                             const AssetDatabase::Entry* e = assetDb.entry(id);
                             if (!e || e->sourceIndex != si) continue;
+                            const bool isTex = (e->type == AssetType::Texture);
+                            if (assetTexturesOnly && !isTex) continue;
+                            if (!matches(e->relPath)) continue;
                             ++shown;
-                            const std::string lbl = std::string(assetTypeName(e->type)) +
-                                                    "  " + e->relPath + "##a" + id.toString();
-                            ImGui::Selectable(lbl.c_str());
+                            if (col != 0) ImGui::SameLine();
+
+                            ImGui::PushID(id.toString().c_str());
+                            ImGui::BeginGroup();
+
+                            // Resolve (and lazily build) a small preview thumbnail.
+                            std::shared_ptr<Texture> thumb;
+                            if (isTex) {
+                                auto it = assetThumbs.find(id);
+                                if (it != assetThumbs.end()) {
+                                    thumb = it->second; // decoded (or null = bad file)
+                                } else if (assetThumbJobs.find(id) == assetThumbJobs.end() &&
+                                           assetThumbJobs.size() < 4 &&
+                                           ImGui::IsRectVisible(
+                                               ImVec2(assetThumbSize, assetThumbSize))) {
+                                    // Kick off an off-thread decode; uploaded when ready.
+                                    const std::string p = e->absPath.string();
+                                    assetThumbJobs.emplace(id, std::async(std::launch::async,
+                                        [p]{ return Texture::decodeThumbnail(p, 128); }));
+                                }
+                            }
+
+                            const ImVec2 sz(assetThumbSize, assetThumbSize);
+                            if (thumb && thumb->isValid()) {
+                                ImGui::ImageButton("##thumb",
+                                    (ImTextureID)(intptr_t)thumb->id(), sz);
+                            } else {
+                                const char* tag = isTex ? "TEX"
+                                    : e->type == AssetType::Model ? "MDL"
+                                    : e->type == AssetType::Sound ? "SND" : "?";
+                                ImGui::Button(tag, sz);
+                            }
+
+                            // Drag source (same GUID payload the drop targets expect).
                             if (ImGui::BeginDragDropSource(
                                     ImGuiDragDropFlags_SourceAllowNullID)) {
                                 const std::string g = id.toString();
@@ -5206,6 +5445,9 @@ int main(int argc, char** argv) {
                                             e->relPath.c_str());
                                 ImGui::EndDragDropSource();
                             }
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip("%s\n%s", assetTypeName(e->type),
+                                                  e->relPath.c_str());
                             if (e->type == AssetType::Model &&
                                 ImGui::IsItemHovered() &&
                                 ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -5218,6 +5460,22 @@ int main(int argc, char** argv) {
                                     if (id2 >= 0) addModelEntity(g, id2);
                                 }
                             }
+
+                            // Caption: file name, clipped to the tile width.
+                            std::string stem =
+                                std::filesystem::path(e->relPath).filename().string();
+                            const int maxCh = std::max(4,
+                                static_cast<int>(assetThumbSize / 7.0f));
+                            if (static_cast<int>(stem.size()) > maxCh)
+                                stem = stem.substr(0, maxCh - 1) + "\xE2\x80\xA6"; // ellipsis
+                            ImGui::PushTextWrapPos(
+                                ImGui::GetCursorPosX() + assetThumbSize);
+                            ImGui::TextUnformatted(stem.c_str());
+                            ImGui::PopTextWrapPos();
+
+                            ImGui::EndGroup();
+                            ImGui::PopID();
+                            col = (col + 1) % cols;
                         }
                         if (shown == 0) ImGui::TextDisabled("  (empty)");
                         ImGui::PopID();

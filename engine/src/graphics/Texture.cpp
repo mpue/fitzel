@@ -142,6 +142,71 @@ Texture Texture::checkerboard(int size, int cells) {
     return fromPixels(pixels.data(), size, size, 3);
 }
 
+ImagePixels Texture::decodeThumbnail(const std::string& path, int maxDim) {
+    // Decode to a tightly-packed 8-bit buffer (upright: no vertical flip). No GL
+    // here -- this runs on worker threads. The flip flag is thread-local (see
+    // stb_image_impl.cpp), so touching it can't disturb the render thread.
+    ImagePixels img;
+    std::vector<unsigned char>& buf = img.pixels;
+    int w = 0, h = 0, ch = 0;
+    if (endsWithExr(path)) {
+        float* rgba = nullptr;
+        const char* err = nullptr;
+        if (LoadEXR(&rgba, &w, &h, path.c_str(), &err) != TINYEXR_SUCCESS) {
+            if (err) FreeEXRErrorMessage(err);
+            return {};
+        }
+        ch = 3;
+        buf.resize(static_cast<std::size_t>(w) * h * 3);
+        for (std::size_t i = 0; i < static_cast<std::size_t>(w) * h; ++i)
+            for (int c = 0; c < 3; ++c)
+                buf[i * 3 + c] = static_cast<unsigned char>(
+                    std::clamp(rgba[i * 4 + c], 0.0f, 1.0f) * 255.0f + 0.5f);
+        std::free(rgba);
+    } else {
+        stbi_set_flip_vertically_on_load_thread(0);
+        unsigned char* data = stbi_load(path.c_str(), &w, &h, &ch, 0);
+        if (!data) return {};
+        buf.assign(data, data + static_cast<std::size_t>(w) * h * ch);
+        stbi_image_free(data);
+    }
+    if (w <= 0 || h <= 0 || ch <= 0) return {};
+
+    // Repeatedly average 2x2 blocks until the longest side fits maxDim (mip-like
+    // box filter -- cheap and clean enough for a thumbnail).
+    while (std::max(w, h) > maxDim && w > 1 && h > 1) {
+        const int nw = std::max(1, w / 2), nh = std::max(1, h / 2);
+        std::vector<unsigned char> half(static_cast<std::size_t>(nw) * nh * ch);
+        for (int y = 0; y < nh; ++y)
+            for (int x = 0; x < nw; ++x) {
+                const int x0 = x * 2, x1 = std::min(x * 2 + 1, w - 1);
+                const int y0 = y * 2, y1 = std::min(y * 2 + 1, h - 1);
+                for (int c = 0; c < ch; ++c) {
+                    const int s = buf[(static_cast<std::size_t>(y0) * w + x0) * ch + c]
+                                + buf[(static_cast<std::size_t>(y0) * w + x1) * ch + c]
+                                + buf[(static_cast<std::size_t>(y1) * w + x0) * ch + c]
+                                + buf[(static_cast<std::size_t>(y1) * w + x1) * ch + c];
+                    half[(static_cast<std::size_t>(y) * nw + x) * ch + c] =
+                        static_cast<unsigned char>(s / 4);
+                }
+            }
+        buf.swap(half);
+        w = nw; h = nh;
+    }
+
+    img.width = w; img.height = h; img.channels = ch;
+    return img;
+}
+
+Texture Texture::fromImagePixels(const ImagePixels& img) {
+    if (!img.valid()) return Texture{};
+    return fromPixels(img.pixels.data(), img.width, img.height, img.channels);
+}
+
+Texture Texture::thumbnail(const std::string& path, int maxDim) {
+    return fromImagePixels(decodeThumbnail(path, maxDim));
+}
+
 void Texture::bind(std::uint32_t unit) const {
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, m_id);
