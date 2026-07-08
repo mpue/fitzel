@@ -1394,8 +1394,27 @@ int main(int argc, char** argv) {
         int   flowerCount   = 0;
         bool  flowerEnabled = true;
         float flowerDensity = 1.0f;
+
+        // Combined instance buffer (8 floats/flower): procedural meadow first,
+        // then the hand-painted flowers appended. Mirrors the tree buffer.
+        std::vector<float> flowerInst;
+        std::vector<float> paintedFlowers;          // hand-painted (world space, saved)
+        std::size_t        proceduralFlowerFloats = 0;
+        bool  flowerPaintMode   = false;
+        float flowerBrushRadius = 6.0f;
+        float flowerBrushDensity= 1.0f;
+
+        auto rebuildFlowerBuffer = [&] {
+            flowerInst.resize(proceduralFlowerFloats);
+            flowerInst.insert(flowerInst.end(),
+                              paintedFlowers.begin(), paintedFlowers.end());
+            flowerField.upload(flowerInst);
+            flowerCount = flowerField.count();
+        };
+
         auto regenFlowers = [&](glm::vec2 c) {
-            std::vector<float> out;
+            std::vector<float>& out = flowerInst;
+            out.clear();
             std::mt19937 rng(4242u);
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
             const float R = grassRadius, spacing = 0.9f;
@@ -1453,8 +1472,60 @@ int main(int argc, char** argv) {
                                            col.r, col.g, col.b});
                 }
             }
-            flowerField.upload(out);
-            flowerCount = flowerField.count();
+            proceduralFlowerFloats = out.size();
+            rebuildFlowerBuffer();  // append the painted flowers and upload
+        };
+
+        // --- Paint / erase hand-placed flowers (world space, saved with scene).
+        // Scatter blooms into the brush disc on suitable ground; erase drops
+        // painted flowers whose base lies in the disc. Both re-append to the
+        // shared flower buffer without disturbing the procedural meadow.
+        auto stampFlower = [&](glm::vec2 c, float radius) {
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            const float area  = 3.14159265f * radius * radius;
+            const int   tries = std::max(2, static_cast<int>(area * 0.7f * flowerBrushDensity));
+            const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f}, {0.94f, 0.55f, 0.12f},
+                                          {0.95f, 0.95f, 0.88f}, {0.86f, 0.46f, 0.55f},
+                                          {0.60f, 0.55f, 0.82f}};
+            for (int i = 0; i < tries; ++i) {
+                const float ang = u(brushRng) * 6.2831853f;
+                const float rad = std::sqrt(u(brushRng)) * radius;
+                const float wx  = c.x + std::cos(ang) * rad;
+                const float wz  = c.y + std::sin(ang) * rad;
+                const float h   = streamer.heightAt(wx, wz);
+                if (h < waterLevel + 0.6f || h > look.snowLevel - 2.0f) continue;
+                const float e = 1.0f;
+                const glm::vec3 n = glm::normalize(glm::vec3(
+                    streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
+                    2.0f * e,
+                    streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
+                if (n.y < 0.90f) continue; // flowers want fairly flat ground
+                const float cr = u(brushRng);
+                const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
+                             : cr < 0.92f ? 3 : 4;
+                const glm::vec3 col = palette[ci];
+                const float sr = u(brushRng);
+                const float scale = glm::mix(0.32f, 0.75f, sr * sr);
+                paintedFlowers.insert(paintedFlowers.end(), {
+                    wx, streamer.heightAt(wx, wz) - 0.02f, wz,
+                    u(brushRng) * 6.2831853f, scale, col.r, col.g, col.b});
+            }
+            rebuildFlowerBuffer();
+        };
+        auto eraseFlower = [&](glm::vec2 c, float radius) {
+            const float r2 = radius * radius;
+            std::vector<float> kept;
+            kept.reserve(paintedFlowers.size());
+            for (std::size_t i = 0; i + 8 <= paintedFlowers.size(); i += 8) {
+                const float dx = paintedFlowers[i] - c.x, dz = paintedFlowers[i + 2] - c.y;
+                if (dx * dx + dz * dz <= r2) continue;
+                kept.insert(kept.end(), paintedFlowers.begin() + i,
+                                        paintedFlowers.begin() + i + 8);
+            }
+            if (kept.size() != paintedFlowers.size()) {
+                paintedFlowers.swap(kept);
+                rebuildFlowerBuffer();
+            }
         };
 
         // --- Birds: a small flock of flapping billboards circling overhead --
@@ -1852,6 +1923,11 @@ int main(int argc, char** argv) {
             ts.precision(7);
             for (float v : paintedTrees) ts << v << ' ';
             j["paintedTrees"] = ts.str();
+            // Hand-painted flowers (8 per bloom: pos3, yaw, scale, rgb).
+            std::ostringstream fs;
+            fs.precision(7);
+            for (float v : paintedFlowers) fs << v << ' ';
+            j["paintedFlowers"] = fs.str();
             // Terrain sculpt: grid spacing + a compact "ix iz delta ..." blob of
             // every edited cell (one JSON string, same reasoning as the grass).
             j["terrainEditCell"] = sculptWork.cell;
@@ -1900,6 +1976,15 @@ int main(int argc, char** argv) {
                 float v;
                 while (ts >> v) paintedTrees.push_back(v);
                 paintedTrees.resize(paintedTrees.size() / 5 * 5); // whole trees
+            }
+            // Restore hand-painted flowers (regenFlowers re-appends them when the
+            // grass pass runs, triggered by the grassDirty reset below).
+            paintedFlowers.clear();
+            if (j.contains("paintedFlowers") && j["paintedFlowers"].is_string()) {
+                std::istringstream fs(j["paintedFlowers"].get<std::string>());
+                float v;
+                while (fs >> v) paintedFlowers.push_back(v);
+                paintedFlowers.resize(paintedFlowers.size() / 8 * 8); // whole flowers
             }
             // Restore terrain sculpt edits (empty for scenes saved before it
             // existed). Publish before the rebuild below so chunks bake them in.
@@ -3798,6 +3883,52 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Flower brush: scatter/erase hand-placed blooms under a
+                //     circular 3D brush. Drag LMB to plant; Alt (or Erase) removes.
+                if (flowerPaintMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 center;
+                    const bool onGround = viewportHovered &&
+                                          roadPickTerrain(viewportMouseNdc, vp, center);
+                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
+
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        lastStampPos = glm::vec2(1e9f);
+
+                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 cxz(center.x, center.z);
+                        if (erasing) {
+                            eraseFlower(cxz, flowerBrushRadius);
+                        } else if (glm::length(cxz - lastStampPos) > flowerBrushRadius * 0.4f) {
+                            stampFlower(cxz, flowerBrushRadius);
+                            lastStampPos = cxz;
+                        }
+                    }
+
+                    if (onGround) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
+                                                  : IM_COL32(240, 150, 210, 220);
+                        const int SEG = 48;
+                        ImVec2 prev; bool have = false;
+                        for (int i = 0; i <= SEG; ++i) {
+                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
+                            const float wx = center.x + std::cos(a) * flowerBrushRadius;
+                            const float wz = center.z + std::sin(a) * flowerBrushRadius;
+                            const glm::vec4 c = vp * glm::vec4(
+                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
+                            if (c.w <= 1e-4f) { have = false; continue; }
+                            const glm::vec3 n = glm::vec3(c) / c.w;
+                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            if (have) dl->AddLine(prev, sp, col, 2.0f);
+                            prev = sp; have = true;
+                        }
+                    }
+                }
+
                 // --- Terrain sculpt brush: raise/lower/smooth/flatten the ground
                 //     under a 3D disc that hugs the surface. Hold LMB to apply;
                 //     Alt inverts raise/lower. -------------------------------
@@ -4226,7 +4357,7 @@ int main(int argc, char** argv) {
 
             if (showSculpt) { if (ImGui::Begin("Terrain Sculpt", &showSculpt)) {
                 if (ImGui::Checkbox("Sculpt mode", &sculptMode) && sculptMode)
-                    grassPaintMode = roadEditMode = treePaintMode = false; // brush owns the LMB
+                    grassPaintMode = roadEditMode = treePaintMode = flowerPaintMode = false; // brush owns the LMB
                 if (sculptMode)
                     ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
                         "Hold LMB to sculpt | Alt inverts raise/lower");
@@ -4296,7 +4427,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint grass (3D brush)");
                 if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
-                    roadEditMode = sculptMode = treePaintMode = false; // brush owns the left button
+                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = false; // brush owns the left button
                 if (grassPaintMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                         "Drag = paint | hold Alt = erase");
@@ -4342,7 +4473,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint trees (3D brush)");
                 if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = false; // own the LMB
+                    grassPaintMode = roadEditMode = sculptMode = flowerPaintMode = false; // own the LMB
                 if (treePaintMode)
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f),
                         "Drag = plant | hold Alt = erase");
@@ -4368,6 +4499,26 @@ int main(int argc, char** argv) {
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Regrow")) grassDirty = true;
                 ImGui::Text("Flowers: %d", flowerCount);
+
+                ImGui::SeparatorText("Paint flowers (3D brush)");
+                if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
+                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = false;
+                if (flowerPaintMode)
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f),
+                        "Drag = plant | hold Alt = erase");
+                else
+                    ImGui::TextDisabled("Enable to plant flowers onto the terrain");
+                ImGui::Checkbox("Erase##flower", &brushErase);
+                ImGui::SliderFloat("Brush size##flower", &flowerBrushRadius, 1.0f, 30.0f, "%.1f m");
+                ImGui::SliderFloat("Density##flower", &flowerBrushDensity, 0.1f, 4.0f);
+                ImGui::Text("Painted flowers: %d",
+                            static_cast<int>(paintedFlowers.size() / 8));
+                ImGui::BeginDisabled(paintedFlowers.empty());
+                if (ImGui::Button("Clear painted##flower")) {
+                    paintedFlowers.clear();
+                    rebuildFlowerBuffer();
+                }
+                ImGui::EndDisabled();
 
                 ImGui::SeparatorText("Birds");
                 ImGui::Checkbox("Birds", &birdsEnabled);
@@ -4454,7 +4605,7 @@ int main(int argc, char** argv) {
             if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
                 ImGui::Checkbox("Show roads", &roadEnabled);
                 if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
-                    grassPaintMode = sculptMode = treePaintMode = false; // don't fight over LMB
+                    grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = false; // don't fight over LMB
                 if (roadEditMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "Click ground = add | drag handle = move | Del = delete");
