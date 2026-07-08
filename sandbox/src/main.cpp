@@ -477,6 +477,98 @@ int main(int argc, char** argv) {
         float     grassRadius  = 46.0f;
         glm::vec3 grassTint(1.0f, 1.0f, 1.0f);
 
+        // --- Grass painting -------------------------------------------------
+        // A hand-painted grass layer that coexists with the procedural field
+        // above. Blades live in absolute world space (7 floats each, the same
+        // layout as `grassField`) so they stay put as the camera roams and can
+        // be persisted with the scene. A 3D brush stamps/erases them.
+        InstancedMesh paintedGrass = InstancedMesh::create(
+            blade, sizeof(blade) / sizeof(float), 2 * sizeof(float), {{0, 2, 0}},
+            7 * sizeof(float),
+            {{1, 3, 0}, {2, 1, 3 * sizeof(float)}, {3, 1, 4 * sizeof(float)},
+             {4, 1, 5 * sizeof(float)}, {5, 1, 6 * sizeof(float)}});
+        std::vector<float> paintedBlades;      // 7 floats/blade, world space
+        bool      paintedDirty   = false;      // GPU re-upload pending
+        bool      grassPaintMode = false;      // brush tool active
+        bool      brushErase     = false;      // stamp vs erase
+        float     brushRadius    = 4.0f;       // world units
+        float     brushDensity   = 1.0f;       // scatter-count multiplier
+        glm::vec2 lastStampPos(1e9f);          // throttles stamping during a drag
+        std::mt19937 brushRng(0xB1A5Eu);
+
+        // Scatter blades across the brush disc. Each candidate is dropped on the
+        // terrain and rejected on steep slopes / underwater / above the snow line
+        // -- the same suitability test the procedural field uses -- so painted
+        // grass never floats on cliffs or pokes through lakes.
+        auto stampGrass = [&](glm::vec2 c, float radius) {
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            const float area  = 3.14159265f * radius * radius;
+            const int   tries = std::max(4, static_cast<int>(
+                                    area * 2.2f * brushDensity * grassDensity));
+            const TerrainSettings& s = streamer.settings();
+            for (int i = 0; i < tries; ++i) {
+                const float ang = u(brushRng) * 6.2831853f;
+                const float rad = std::sqrt(u(brushRng)) * radius; // uniform in disc
+                const float wx  = c.x + std::cos(ang) * rad;
+                const float wz  = c.y + std::sin(ang) * rad;
+                const float h   = streamer.heightAt(wx, wz);
+                if (h < waterLevel + 0.5f || h > look.snowLevel - 1.5f) continue;
+                const float e = 1.0f;
+                const glm::vec3 n = glm::normalize(glm::vec3(
+                    streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
+                    2.0f * e,
+                    streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
+                if (n.y < 0.80f) continue; // too steep
+                const float lush = glm::clamp(terrainMoisture(s, wx, wz), 0.0f, 1.0f);
+                // Store a *relative* height (per-blade jitter only); the global
+                // "Blade height" slider is applied live at draw via uHeightScale,
+                // so moving it rescales already-painted grass too.
+                const float bh   = glm::mix(0.8f, 1.15f, u(brushRng));
+                paintedBlades.insert(paintedBlades.end(), {
+                    wx, h, wz,
+                    u(brushRng) * 6.2831853f,          // yaw
+                    bh,                                // relative blade height
+                    u(brushRng) * 6.2831853f,          // sway phase
+                    glm::clamp(lush + (u(brushRng) - 0.5f) * 0.2f, 0.0f, 1.0f)});
+            }
+            paintedDirty = true;
+        };
+
+        // Drop every painted blade whose base lies within the brush disc.
+        auto eraseGrass = [&](glm::vec2 c, float radius) {
+            const float r2 = radius * radius;
+            const int   stride = 7;
+            std::vector<float> kept;
+            kept.reserve(paintedBlades.size());
+            for (std::size_t i = 0; i + stride <= paintedBlades.size(); i += stride) {
+                const float dx = paintedBlades[i]     - c.x;
+                const float dz = paintedBlades[i + 2] - c.y;
+                if (dx * dx + dz * dz <= r2) continue; // inside brush -> remove
+                kept.insert(kept.end(), paintedBlades.begin() + i,
+                                        paintedBlades.begin() + i + stride);
+            }
+            if (kept.size() != paintedBlades.size()) {
+                paintedBlades.swap(kept);
+                paintedDirty = true;
+            }
+        };
+
+        // --- Terrain sculpting ---------------------------------------------
+        // `sculptWork` is the live, main-thread-only edit field; every change is
+        // published as an immutable snapshot the terrain samples (see
+        // TerrainEditField). A 3D brush raises/lowers/smooths/flattens it.
+        TerrainEditField sculptWork;
+        sculptWork.cell = 1.0f;              // ~1 m grid (finer = more detail/RAM)
+        auto publishSculpt = [&]{
+            setTerrainEditSnapshot(std::make_shared<const TerrainEditField>(sculptWork));
+        };
+        publishSculpt();                     // install the (empty) snapshot
+        bool  sculptMode     = false;
+        int   sculptTool     = 0;            // 0 raise, 1 lower, 2 smooth, 3 flatten
+        float sculptRadius   = 8.0f;         // world units
+        float sculptStrength = 0.5f;         // 0..1 brush intensity
+        float sculptFlattenH = 0.0f;         // flatten target height (grabbed on press)
+
         // Grass placement runs on a worker thread (pure noise queries, no GL) so
         // moving never stalls the frame; the result is uploaded on the main thread.
         std::future<std::vector<float>> grassFuture;
@@ -851,6 +943,7 @@ int main(int argc, char** argv) {
         bool showColorGrade  = false;
         bool showWater       = false;
         bool showTerrain     = false;
+        bool showSculpt      = false;
         bool showVegetation  = false;
         bool showCamPath     = false;
         bool showRoads       = false;
@@ -1657,6 +1750,25 @@ int main(int argc, char** argv) {
                                 {"sStart", L.slopeStart}, {"sEnd", L.slopeEnd},
                                 {"scale", L.scale}});
             j["terrainLayers"] = larr;
+            // Hand-painted grass: a compact space-separated float blob (7 per
+            // blade). Stored as one JSON string so pretty-printing doesn't
+            // explode into a line per number.
+            std::ostringstream gs;
+            gs.precision(7);
+            for (float v : paintedBlades) gs << v << ' ';
+            j["paintedGrass"] = gs.str();
+            // Terrain sculpt: grid spacing + a compact "ix iz delta ..." blob of
+            // every edited cell (one JSON string, same reasoning as the grass).
+            j["terrainEditCell"] = sculptWork.cell;
+            std::ostringstream es;
+            es.precision(7);
+            for (const auto& [k, d] : sculptWork.deltas) {
+                const int ix = static_cast<int>(k >> 32);
+                const int iz = static_cast<int>(
+                    static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
+                es << ix << ' ' << iz << ' ' << d << ' ';
+            }
+            j["terrainEdits"] = es.str();
         };
         readSettingsFn = [&](const nlohmann::json& j){
             for (const Setting& s : tunables) s.read(j);
@@ -1674,6 +1786,26 @@ int main(int argc, char** argv) {
                     if (L.texId.valid()) L.tex = assetDb.loadTexture(L.texId);
                     look.layers.push_back(std::move(L));
                 }
+            // Restore hand-painted grass (empty for scenes saved before it existed).
+            paintedBlades.clear();
+            if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
+                std::istringstream gs(j["paintedGrass"].get<std::string>());
+                float v;
+                while (gs >> v) paintedBlades.push_back(v);
+                paintedBlades.resize(paintedBlades.size() / 7 * 7); // whole blades
+            }
+            paintedDirty = true; // re-upload to the GPU next frame
+            // Restore terrain sculpt edits (empty for scenes saved before it
+            // existed). Publish before the rebuild below so chunks bake them in.
+            sculptWork.deltas.clear();
+            sculptWork.cell = j.value("terrainEditCell", 1.0f);
+            if (j.contains("terrainEdits") && j["terrainEdits"].is_string()) {
+                std::istringstream es(j["terrainEdits"].get<std::string>());
+                int ix, iz; float d;
+                while (es >> ix >> iz >> d)
+                    sculptWork.deltas[TerrainEditField::cellKey(ix, iz)] = d;
+            }
+            publishSculpt();
             streamer.settings() = uiSettings;
             streamer.rebuild();
             streamer.update(camera.position());
@@ -2509,6 +2641,10 @@ int main(int argc, char** argv) {
                     // Flowers share the grass area; regenerate them to match.
                     if (flowerEnabled) regenFlowers(grassPendingCenter);
                 }
+                if (paintedDirty) { // painted blades changed -> push to the GPU
+                    paintedGrass.upload(paintedBlades);
+                    paintedDirty = false;
+                }
                 if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f) regenTrees(camXZ);
             }
 
@@ -3044,6 +3180,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
                     ImGui::MenuItem("Water",           nullptr, &showWater);
                     ImGui::MenuItem("Buddel (terrain)", nullptr, &showTerrain);
+                    ImGui::MenuItem("Terrain sculpt",  nullptr, &showSculpt);
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
@@ -3458,6 +3595,126 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Grass brush: stamp/erase instanced blades under a circular
+                //     3D brush that hugs the terrain. Hold LMB and drag to paint;
+                //     hold Alt (or toggle Erase) to rub grass out. -------------
+                if (grassPaintMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 center;
+                    const bool onGround = viewportHovered &&
+                                          roadPickTerrain(viewportMouseNdc, vp, center);
+                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
+
+                    // A fresh press starts a stroke; forget the last stamp point.
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        lastStampPos = glm::vec2(1e9f);
+
+                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 cxz(center.x, center.z);
+                        if (erasing) {
+                            eraseGrass(cxz, brushRadius);
+                        } else if (glm::length(cxz - lastStampPos) > brushRadius * 0.4f) {
+                            // Throttle so a slow drag doesn't pile blades up: step
+                            // ~0.4 radius between stamps for an even trail.
+                            stampGrass(cxz, brushRadius);
+                            lastStampPos = cxz;
+                        }
+                    }
+
+                    // Brush cursor: a ground-hugging ring drawn in the overlay.
+                    if (onGround) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
+                                                  : IM_COL32(120, 235, 120, 220);
+                        const int SEG = 48;
+                        ImVec2 prev; bool have = false;
+                        for (int i = 0; i <= SEG; ++i) {
+                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
+                            const float wx = center.x + std::cos(a) * brushRadius;
+                            const float wz = center.z + std::sin(a) * brushRadius;
+                            const glm::vec4 c = vp * glm::vec4(
+                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
+                            if (c.w <= 1e-4f) { have = false; continue; }
+                            const glm::vec3 n = glm::vec3(c) / c.w;
+                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            if (have) dl->AddLine(prev, sp, col, 2.0f);
+                            prev = sp; have = true;
+                        }
+                    }
+                }
+
+                // --- Terrain sculpt brush: raise/lower/smooth/flatten the ground
+                //     under a 3D disc that hugs the surface. Hold LMB to apply;
+                //     Alt inverts raise/lower. -------------------------------
+                if (sculptMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 center;
+                    const bool onGround = viewportHovered &&
+                                          roadPickTerrain(viewportMouseNdc, vp, center);
+
+                    // Grab the flatten target from the surface on press.
+                    if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        sculptFlattenH = center.y;
+
+                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 c(center.x, center.z);
+                        const bool invert = ImGui::GetIO().KeyAlt;
+                        switch (sculptTool) {
+                            case 0: case 1: {                 // raise / lower
+                                float dir = (sculptTool == 1) ? -1.0f : 1.0f;
+                                if (invert) dir = -dir;
+                                sculptWork.raise(c, sculptRadius,
+                                                 dir * sculptStrength * 14.0f * dt);
+                                break;
+                            }
+                            case 2:                           // smooth
+                                sculptWork.smooth(streamer.settings(), c, sculptRadius,
+                                    glm::clamp(sculptStrength * 5.0f * dt, 0.0f, 1.0f));
+                                break;
+                            case 3:                           // flatten to grabbed height
+                                sculptWork.flatten(streamer.settings(), c, sculptRadius,
+                                    glm::clamp(sculptStrength * 5.0f * dt, 0.0f, 1.0f),
+                                    sculptFlattenH);
+                                break;
+                        }
+                        // Publish the new shape, then rebuild the touched chunks.
+                        publishSculpt();
+                        const float m = sculptRadius + sculptWork.cell;
+                        streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
+                                              glm::vec2(c.x + m, c.y + m));
+                        grassDirty = true; // vegetation re-drapes on the new ground
+                    }
+
+                    // Brush cursor: a ground-hugging ring, coloured per tool.
+                    if (onGround) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const ImU32 col = sculptTool == 2 ? IM_COL32(120, 200, 255, 225)
+                                        : sculptTool == 3 ? IM_COL32(255, 210, 90, 225)
+                                        : sculptTool == 1 ? IM_COL32(255, 130, 90, 225)
+                                                          : IM_COL32(140, 235, 140, 225);
+                        const int SEG = 56;
+                        ImVec2 prev; bool have = false;
+                        for (int i = 0; i <= SEG; ++i) {
+                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
+                            const float wx = center.x + std::cos(a) * sculptRadius;
+                            const float wz = center.z + std::sin(a) * sculptRadius;
+                            const glm::vec4 cc = vp * glm::vec4(
+                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
+                            if (cc.w <= 1e-4f) { have = false; continue; }
+                            const glm::vec3 n = glm::vec3(cc) / cc.w;
+                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            if (have) dl->AddLine(prev, sp, col, 2.0f);
+                            prev = sp; have = true;
+                        }
+                    }
+                }
+
                 // --- Solid blocks: click to select an existing box or place a
                 //     new one on the terrain; Del removes the selected block. ----
                 {   // Viewport interaction: selecting works in both modes; the
@@ -3614,8 +3871,10 @@ int main(int argc, char** argv) {
                         }
                     }
 
-                    // Click to select/place, but not while grabbing the gizmo.
-                    if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
+                    // Click to select/place, but not while grabbing the gizmo or
+                    // painting grass (the brush owns the left button then).
+                    if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && !grassPaintMode &&
+                        !sculptMode &&
                         viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         const glm::mat4 inv = glm::inverse(vp);
                         glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
@@ -3788,6 +4047,44 @@ int main(int argc, char** argv) {
                 assetDb,
             });
 
+            if (showSculpt) { if (ImGui::Begin("Terrain Sculpt", &showSculpt)) {
+                if (ImGui::Checkbox("Sculpt mode", &sculptMode) && sculptMode)
+                    grassPaintMode = roadEditMode = false; // brush owns the LMB
+                if (sculptMode)
+                    ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
+                        "Hold LMB to sculpt | Alt inverts raise/lower");
+                else
+                    ImGui::TextDisabled("Enable to reshape the ground with the brush");
+
+                const char* tools[] = {"Raise", "Lower", "Smooth", "Flatten"};
+                ImGui::Combo("Tool", &sculptTool, tools, IM_ARRAYSIZE(tools));
+                ImGui::SliderFloat("Radius", &sculptRadius, 1.0f, 40.0f, "%.1f m");
+                ImGui::SliderFloat("Strength", &sculptStrength, 0.05f, 1.0f);
+                if (sculptTool == 3)
+                    ImGui::SliderFloat("Flatten height", &sculptFlattenH,
+                                       -40.0f, 60.0f, "%.1f m");
+
+                // Grid spacing only makes sense to change before any edits exist
+                // (the map keys are cell indices at the current spacing).
+                float grid = sculptWork.cell;
+                ImGui::BeginDisabled(!sculptWork.deltas.empty());
+                if (ImGui::SliderFloat("Grid", &grid, 0.5f, 4.0f, "%.2f m"))
+                    sculptWork.cell = grid;
+                ImGui::EndDisabled();
+
+                ImGui::Text("Edited cells: %d",
+                            static_cast<int>(sculptWork.deltas.size()));
+                ImGui::BeginDisabled(sculptWork.deltas.empty());
+                if (ImGui::Button("Clear sculpt")) {
+                    sculptWork.deltas.clear();
+                    publishSculpt();
+                    streamer.rebuild(); // drop all edits -> regenerate the terrain
+                    grassDirty = true;
+                }
+                ImGui::EndDisabled();
+            }
+            ImGui::End(); }
+
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ImGui::SeparatorText("Grass");
                 ImGui::Checkbox("Grass", &grassEnabled);
@@ -3798,6 +4095,44 @@ int main(int argc, char** argv) {
                 if (regrow) grassDirty = true; // baked per blade -> regrow
                 ImGui::ColorEdit3("Tint", &grassTint.x);
                 ImGui::Text("Blades: %d", grassCount);
+
+                ImGui::SeparatorText("Paint grass (3D brush)");
+                if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
+                    roadEditMode = sculptMode = false; // brush owns the left button
+                if (grassPaintMode) {
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                        "Drag = paint | hold Alt = erase");
+                } else {
+                    ImGui::TextDisabled("Enable to paint blades onto the terrain");
+                }
+                ImGui::Checkbox("Erase", &brushErase);
+                ImGui::SliderFloat("Brush size", &brushRadius, 0.5f, 40.0f, "%.1f m");
+                ImGui::SliderFloat("Brush density", &brushDensity, 0.1f, 4.0f);
+                ImGui::Text("Painted blades: %d", paintedGrass.count());
+                if (ImGui::Button("Clear painted")) {
+                    paintedBlades.clear();
+                    paintedDirty = true;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Save##grass")) {
+                    std::ofstream f("grass.txt");
+                    for (std::size_t i = 0; i < paintedBlades.size(); ++i)
+                        f << paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Load##grass")) {
+                    std::ifstream f("grass.txt");
+                    if (f) {
+                        paintedBlades.clear();
+                        float v;
+                        while (f >> v) paintedBlades.push_back(v);
+                        paintedBlades.resize(paintedBlades.size() / 7 * 7); // whole blades
+                        paintedDirty = true;
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled("(grass.txt)");
+
                 ImGui::SeparatorText("Trees");
                 ImGui::Checkbox("Trees", &treeEnabled);
                 bool retree = false;
@@ -3899,7 +4234,8 @@ int main(int argc, char** argv) {
 
             if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
                 ImGui::Checkbox("Show roads", &roadEnabled);
-                ImGui::Checkbox("Edit mode", &roadEditMode);
+                if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
+                    grassPaintMode = sculptMode = false; // don't fight over LMB
                 if (roadEditMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "Click ground = add | drag handle = move | Del = delete");
@@ -5537,8 +5873,12 @@ int main(int argc, char** argv) {
             drawBackground(glm::inverse(mainVP), camPos, false);
             renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
 
-            // Grass (instanced) into the HDR buffer, lit + fogged like the terrain.
-            if (grassEnabled && grassCount > 0) {
+            // Grass (instanced) into the HDR buffer, lit + fogged like the
+            // terrain. Both the procedural field and the hand-painted layer share
+            // the shader/uniforms, so bind once and draw whichever has blades.
+            const bool drawProc    = grassEnabled && grassCount > 0;
+            const bool drawPainted = paintedGrass.count() > 0;
+            if (drawProc || drawPainted) {
                 glDisable(GL_CULL_FACE);
                 grass.bind();
                 grass.setMat4("uViewProj", mainVP);
@@ -5555,7 +5895,16 @@ int main(int argc, char** argv) {
                 grass.setFloat("uFogDensity", fog.density);
                 grass.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 grass.setFloat("uFogHeight", fog.height);
-                grassField.draw(GL_TRIANGLE_STRIP, 7);
+                // Procedural blades bake absolute height (scale 1); painted blades
+                // store a relative height and take the live "Blade height" slider.
+                if (drawProc) {
+                    grass.setFloat("uHeightScale", 1.0f);
+                    grassField.draw(GL_TRIANGLE_STRIP, 7);
+                }
+                if (drawPainted) {
+                    grass.setFloat("uHeightScale", grassHeight);
+                    paintedGrass.draw(GL_TRIANGLE_STRIP, 7);
+                }
                 glEnable(GL_CULL_FACE);
             }
 

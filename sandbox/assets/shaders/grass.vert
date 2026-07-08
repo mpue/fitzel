@@ -11,6 +11,7 @@ uniform mat4  uViewProj;
 uniform float uTime;
 uniform vec2  uWindDir;
 uniform float uWindStrength;
+uniform float uHeightScale; // global blade-height multiplier (1 = as baked)
 
 out float vH;
 out vec3  vWorldPos;
@@ -45,7 +46,7 @@ void main() {
 
     float h01 = aBlade.y;
     float w   = 0.016 * (1.0 - 0.4 * h01);       // thin blade, tapering to the tip
-    vec3  local = vec3(aBlade.x * 2.0 * w, h01 * iHeight, 0.0);
+    vec3  local = vec3(aBlade.x * 2.0 * w, h01 * iHeight * uHeightScale, 0.0);
 
     float c = cos(iRot), s = sin(iRot);
     local = vec3(local.x * c, local.y, local.x * s); // yaw the blade

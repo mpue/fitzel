@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <queue>
 #include <thread>
@@ -40,8 +41,43 @@ struct TerrainSettings {
     float terrace      = 0.35f;   // 0..1 plateau/terracing amount
 };
 
-// World-space terrain height at (x, z). Continuous and cheap enough to query
-// (e.g. for placing objects on the ground). Thread-safe (pure function).
+// --- Editable deformation layer -------------------------------------------
+// A sparse grid of manual height offsets, sampled bilinearly and layered on top
+// of the procedural terrain by terrainHeight(). A sculpt brush edits it. Cells
+// are keyed by integer grid coordinate at `cell` spacing (world units), so only
+// touched ground costs memory -- the terrain stays effectively infinite.
+struct TerrainEditField {
+    float cell = 1.0f;                              // grid spacing (world units)
+    std::unordered_map<std::int64_t, float> deltas; // cell -> height offset
+
+    bool  empty() const { return deltas.empty(); }
+    float sample(float worldX, float worldZ) const; // bilinear; 0 where unedited
+
+    static std::int64_t cellKey(int ix, int iz);
+
+    // Sculpt operations over a circular world-space brush. `amount` is the step
+    // applied this call; raise() uses it as a height delta (negative = lower),
+    // flatten()/smooth() use it as a 0..1 blend rate toward the target/average.
+    void raise  (glm::vec2 center, float radius, float amount);
+    void flatten(const TerrainSettings& s, glm::vec2 center, float radius,
+                 float amount, float target);
+    void smooth (const TerrainSettings& s, glm::vec2 center, float radius,
+                 float amount);
+};
+
+// Pure procedural height, with no manual edits applied. Thread-safe.
+float terrainBaseHeight(const TerrainSettings& settings, float worldX, float worldZ);
+
+// The global deformation snapshot terrainHeight() layers on top. Mutex-guarded
+// shared_ptr swap: the render thread publishes a new immutable field, worker
+// threads (and everyone querying heights) read the current one. Never null after
+// the first publish; treat null as "no edits".
+std::shared_ptr<const TerrainEditField> terrainEditSnapshot();
+void setTerrainEditSnapshot(std::shared_ptr<const TerrainEditField> field);
+
+// World-space terrain height at (x, z) = procedural base + manual edits.
+// Continuous and cheap enough to query (e.g. for placing objects on the ground,
+// draping roads, scattering grass). Thread-safe.
 float terrainHeight(const TerrainSettings& settings, float worldX, float worldZ);
 
 // A 0..1 "moisture / lushness" field (independent low-frequency noise) for
@@ -90,6 +126,13 @@ public:
     // Discard everything and regenerate (e.g. after settings changed).
     void rebuild();
 
+    // Terrain edits changed: rebuild the already-loaded chunks overlapping the
+    // world-space rectangle [worldMin, worldMax] against the latest edit
+    // snapshot. The old mesh keeps rendering until its replacement is ready, so
+    // sculpting never punches a hole in the ground. Call after publishing the
+    // new snapshot with setTerrainEditSnapshot().
+    void editsChanged(const glm::vec2& worldMin, const glm::vec2& worldMax);
+
     // View distance in chunks. Changing it streams the new ring in/out.
     int  radius() const { return m_radius; }
     void setRadius(int r) {
@@ -110,10 +153,11 @@ public:
     int pendingChunkCount() const { return static_cast<int>(m_pending.size()); }
 
 private:
-    struct Job    { glm::ivec2 coord; TerrainSettings settings; std::uint64_t generation; };
-    struct Result { glm::ivec2 coord; std::uint64_t generation; MeshData data; };
+    struct Job    { glm::ivec2 coord; TerrainSettings settings; std::uint64_t generation; std::uint64_t editVersion; };
+    struct Result { glm::ivec2 coord; std::uint64_t generation; std::uint64_t editVersion; MeshData data; };
 
     static std::int64_t key(glm::ivec2 c);
+    static glm::ivec2   coordOf(std::int64_t k);
     glm::ivec2 chunkCoordOf(const glm::vec3& pos) const;
     bool       inRange(glm::ivec2 c, glm::ivec2 center) const;
     void       refreshVisible();
@@ -128,6 +172,12 @@ private:
     std::unordered_map<std::int64_t, TerrainChunk> m_chunks;
     std::unordered_set<std::int64_t>               m_pending; // queued/in-flight
     std::vector<const TerrainChunk*>               m_visible;
+
+    // Sculpt bookkeeping: which edit-field version a loaded chunk was built at,
+    // and which loaded chunks still need a rebuild to catch up to it.
+    std::uint64_t                                  m_editVersion = 0;
+    std::unordered_set<std::int64_t>               m_editDirty;
+    std::unordered_map<std::int64_t, std::uint64_t> m_chunkEdit;
 
     // Worker pool + job/result queues.
     std::vector<std::thread> m_workers;
