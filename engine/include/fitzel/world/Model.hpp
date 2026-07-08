@@ -60,6 +60,9 @@ struct ModelPrimitive {
     std::vector<std::uint8_t>  normalPixels; // RGBA tangent-space normal map (opt)
     int   normalWidth  = 0;
     int   normalHeight = 0;
+    std::vector<std::uint8_t>  emissionPixels; // RGBA emission/_Illum map (opt)
+    int   emissionWidth  = 0;
+    int   emissionHeight = 0;
     bool  alphaCutout = false;            // material uses MASK/BLEND (foliage)
     float baseColor[4] = {0.8f, 0.8f, 0.8f, 1.0f}; // PBR base-colour factor (tint)
     std::string materialName;             // glTF material name (may be empty)
@@ -125,6 +128,7 @@ struct UnityTexMatch {
     std::string material;
     std::string albedo;
     std::string normal;
+    std::string emission; // matched _Illum/emission map, empty if none
 };
 
 // Inspect a model file WITHOUT importing: list its materials and the albedo /

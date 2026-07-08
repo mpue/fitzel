@@ -4435,6 +4435,15 @@ int main(int argc, char** argv) {
                             ImGui::SameLine();
                             ImGui::TextDisabled("(clear centre, reflective rim)");
                         }
+                        // Emission: self-illumination (glow). Colour + strength apply
+                        // to all materials; the optional emission-map slot (below,
+                        // file-backed materials only) restricts the glow to its texels.
+                        ImGui::ColorEdit3("Emission", &md.emission.x);
+                        ImGui::SliderFloat("Emission strength", &md.emissionStrength,
+                                           0.0f, 8.0f);
+                        if (md.emission != glm::vec3(0.0f))
+                            ImGui::TextDisabled("Strength >~1.5 makes the glow bloom "
+                                                "into the surroundings.");
                         // Base-colour texture slot: drop a Texture asset here from
                         // the Assets browser. File-backed textures persist by GUID
                         // (md.texId) into the .fmat; model-embedded ones don't.
@@ -4493,6 +4502,35 @@ int main(int argc, char** argv) {
                                 if (ImGui::SmallButton("Clear##nrm")) {
                                     md.normalTexId = {};
                                     md.normalTex.reset();
+                                }
+                            }
+
+                            // Emission map slot (Unity _Illum): masks the glow.
+                            std::string eslot = "(none)";
+                            if (md.emissionTexId.valid()) {
+                                const AssetDatabase::Entry* ee = assetDb.entry(md.emissionTexId);
+                                eslot = ee ? ee->relPath : md.emissionTexId.toString();
+                            }
+                            ImGui::Text("Emission map:");
+                            ImGui::SameLine();
+                            ImGui::Button((eslot + "##emslot").c_str());
+                            if (ImGui::BeginDragDropTarget()) {
+                                if (const ImGuiPayload* pl =
+                                        ImGui::AcceptDragDropPayload("ASSET_GUID")) {
+                                    const AssetId gid = AssetId::fromString(std::string(
+                                        static_cast<const char*>(pl->Data), pl->DataSize));
+                                    if (assetDb.typeForId(gid) == AssetType::Texture) {
+                                        md.emissionTexId = gid;
+                                        md.emissionTex   = assetDb.loadTexture(gid);
+                                    }
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+                            if (md.emissionTexId.valid()) {
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Clear##em")) {
+                                    md.emissionTexId = {};
+                                    md.emissionTex.reset();
                                 }
                             }
                         }
@@ -4628,7 +4666,7 @@ int main(int argc, char** argv) {
 
                     if (!unityFbx.empty()) {
                         ImGui::Text("Materials & matched maps:");
-                        if (ImGui::BeginTable("##unitytex", 3,
+                        if (ImGui::BeginTable("##unitytex", 4,
                                 ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                                 ImGuiTableFlags_SizingStretchProp |
                                 ImGuiTableFlags_ScrollY,
@@ -4636,21 +4674,22 @@ int main(int argc, char** argv) {
                             ImGui::TableSetupColumn("Material");
                             ImGui::TableSetupColumn("Albedo");
                             ImGui::TableSetupColumn("Normal");
+                            ImGui::TableSetupColumn("Emission");
                             ImGui::TableHeadersRow();
                             const ImVec4 ok(0.55f, 0.85f, 0.55f, 1.0f);
                             const ImVec4 no(0.6f, 0.6f, 0.6f, 1.0f);
+                            auto cell = [&](const std::string& p){
+                                if (p.empty()) ImGui::TextColored(no, "- none");
+                                else ImGui::TextColored(ok, "%s",
+                                    std::filesystem::path(p).filename().string().c_str());
+                            };
                             for (const auto& m : unityPreview) {
                                 ImGui::TableNextRow();
                                 ImGui::TableSetColumnIndex(0);
                                 ImGui::TextUnformatted(m.material.c_str());
-                                ImGui::TableSetColumnIndex(1);
-                                if (m.albedo.empty()) ImGui::TextColored(no, "- none");
-                                else ImGui::TextColored(ok, "%s", std::filesystem::path(
-                                    m.albedo).filename().string().c_str());
-                                ImGui::TableSetColumnIndex(2);
-                                if (m.normal.empty()) ImGui::TextColored(no, "- none");
-                                else ImGui::TextColored(ok, "%s", std::filesystem::path(
-                                    m.normal).filename().string().c_str());
+                                ImGui::TableSetColumnIndex(1); cell(m.albedo);
+                                ImGui::TableSetColumnIndex(2); cell(m.normal);
+                                ImGui::TableSetColumnIndex(3); cell(m.emission);
                             }
                             ImGui::EndTable();
                         }
@@ -4703,7 +4742,7 @@ int main(int argc, char** argv) {
                             int nTex = 0;
                             std::unordered_set<std::string> done;
                             for (const auto& m : fitzel::previewUnityTextures(unityFbx))
-                                for (const std::string& t : {m.albedo, m.normal})
+                                for (const std::string& t : {m.albedo, m.normal, m.emission})
                                     if (!t.empty() && done.insert(t).second) {
                                         std::error_code fc;
                                         std::filesystem::copy_file(t, destTex + "/" +
@@ -5240,6 +5279,14 @@ int main(int argc, char** argv) {
                     m.set("uAlphaCutout", 1).set("uAlphaCutoff", md.alphaCutoff);
                 else
                     m.set("uAlphaCutout", 0);
+                // Emission (self-illumination): colour * strength, optionally
+                // masked by an _Illum map (unit 3 -- free for object materials).
+                m.set("uEmission", md.emission)
+                 .set("uEmissionStrength", md.emissionStrength);
+                if (md.emissionTex)
+                    m.setTexture("uEmissionMap", *md.emissionTex, 3).set("uHasEmissionMap", 1);
+                else
+                    m.set("uHasEmissionMap", 0);
             }
             std::vector<Material> lightMats;
             lightMats.reserve(entities.size());

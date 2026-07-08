@@ -96,6 +96,15 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
         if (!p.normalPixels.empty())
             def.normalTex = std::make_shared<Texture>(Texture::fromPixels(
                 p.normalPixels.data(), p.normalWidth, p.normalHeight, 4));
+        // Emission (_Illum) map: glow white through the map's lit texels. Strength
+        // > 1 pushes the lit texels past the bloom threshold so the glow blooms
+        // (spills into the surroundings) instead of only self-illuminating.
+        if (!p.emissionPixels.empty()) {
+            def.emissionTex = std::make_shared<Texture>(Texture::fromPixels(
+                p.emissionPixels.data(), p.emissionWidth, p.emissionHeight, 4));
+            def.emission = glm::vec3(1.0f);
+            def.emissionStrength = 3.0f;
+        }
         const AssetId matId = def.assetId;
         materials.push_back(std::move(def));
         lm->primMaterialId.push_back(matId);

@@ -456,8 +456,9 @@ std::vector<std::string> tokenize(const std::string& s) {
     return t;
 }
 
-// Classify a single filename token: 1 = albedo/colour, 2 = normal, 3 = some other
-// known map (metallic/roughness/AO/...), 0 = not a role word.
+// Classify a single filename token: 1 = albedo/colour, 2 = normal, 3 = emission
+// (_Illum/glow), 4 = some other known map (metallic/roughness/AO/...), 0 = not a
+// role word.
 int tokenRole(const std::string& t) {
     static const std::unordered_set<std::string> A = {
         "albedo", "albedotransparency", "basecolor", "base", "diffuse", "diff",
@@ -465,23 +466,28 @@ int tokenRole(const std::string& t) {
     static const std::unordered_set<std::string> N = {
         "normal", "normals", "normalmap", "normalgl", "normaldx", "nrm", "norm",
         "nor", "n", "nml"};
+    static const std::unordered_set<std::string> E = {
+        "illum", "illumination", "emission", "emissive", "emissivemap", "emit",
+        "glow", "selfillum", "self", "illumin"};
     static const std::unordered_set<std::string> O = {
         "metallic", "metalness", "metal", "metallicsmoothness", "metalsmoothness",
         "smoothness", "roughness", "rough", "specular", "spec", "gloss", "glossiness",
         "height", "displacement", "displace", "disp", "occlusion", "ambientocclusion",
-        "ao", "mask", "emission", "emissive", "emit", "opacity", "alpha", "transparency",
+        "ao", "mask", "opacity", "alpha", "transparency",
         "curvature", "cavity", "detail", "subsurface", "sss", "orm", "rma", "packed",
-        "illum", "illumination", "glow", "ms", "mg", "m", "r", "s", "h", "e", "g"};
+        "ms", "mg", "m", "r", "s", "h", "g"};
     if (A.count(t)) return 1;
     if (N.count(t)) return 2;
-    if (O.count(t)) return 3;
+    if (E.count(t)) return 3;
+    if (O.count(t)) return 4;
     if (t.find("albedo") != std::string::npos || t.find("basecolor") != std::string::npos ||
         t.find("diffuse") != std::string::npos) return 1;
     if (t.find("normal") != std::string::npos) return 2;
+    if (t.find("illum") != std::string::npos || t.find("emissi") != std::string::npos) return 3;
     return 0;
 }
 
-enum class UnityRole { Albedo, Normal };
+enum class UnityRole { Albedo, Normal, Emission };
 
 // Gather image files from the folders Unity assets keep textures in, relative to
 // the model dir. Falls back to a bounded recursive sweep of the asset root when
@@ -528,7 +534,8 @@ std::vector<std::filesystem::path> gatherCandidateImages(const std::string& base
 std::string matchUnityTexture(const std::vector<std::filesystem::path>& imgs,
                               const std::string& matName, const std::string& modelStem,
                               UnityRole role) {
-    const int wantRole = (role == UnityRole::Albedo) ? 1 : 2;
+    const int wantRole = (role == UnityRole::Albedo) ? 1
+                       : (role == UnityRole::Normal) ? 2 : 3;
     static const std::unordered_set<std::string> matPrefix = {
         "m", "mat", "mi", "material", "sm", "sk", "mesh"};
     auto allDigits = [](const std::string& t) {
@@ -630,6 +637,10 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
             loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
                                                  UnityRole::Normal),
                                 mp.normalPixels, mp.normalWidth, mp.normalHeight);
+        // Emission (_Illum) map, if the pack ships one for this material.
+        loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
+                                             UnityRole::Emission),
+                            mp.emissionPixels, mp.emissionWidth, mp.emissionHeight);
     }
     const bool hasN  = mesh->HasNormals();
     const bool hasUV = mesh->HasTextureCoords(0);
@@ -784,8 +795,9 @@ std::vector<UnityTexMatch> previewUnityTextures(const std::string& path) {
         scene->mMaterials[i]->Get(AI_MATKEY_NAME, nm);
         UnityTexMatch m;
         m.material = nm.length ? nm.C_Str() : ("material " + std::to_string(i));
-        m.albedo = matchUnityTexture(imgs, m.material, stem, UnityRole::Albedo);
-        m.normal = matchUnityTexture(imgs, m.material, stem, UnityRole::Normal);
+        m.albedo   = matchUnityTexture(imgs, m.material, stem, UnityRole::Albedo);
+        m.normal   = matchUnityTexture(imgs, m.material, stem, UnityRole::Normal);
+        m.emission = matchUnityTexture(imgs, m.material, stem, UnityRole::Emission);
         out.push_back(std::move(m));
     }
     return out;

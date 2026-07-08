@@ -249,6 +249,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uGlass", 0);
         s->setInt("uHasNormalMap", 0);
         s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
+        s->setVec3("uEmission", glm::vec3(0.0f)); // baseline: no glow
+        s->setFloat("uEmissionStrength", 1.0f);
+        s->setInt("uHasEmissionMap", 0);
 
         r.material->apply(); // binds shader + material params/textures
 

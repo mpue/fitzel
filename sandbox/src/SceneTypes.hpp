@@ -95,6 +95,14 @@ struct MaterialDef {
     // Optional tangent-space normal map (same conventions as `tex`).
     std::shared_ptr<fitzel::Texture> normalTex;
     fitzel::AssetId normalTexId;
+    // Emission: self-illumination added on top of lighting. `emission` is the
+    // glow colour (sRGB), `emissionStrength` scales it (>1 for a strong glow).
+    // With an `emissionTex` (e.g. a Unity _Illum map) only the lit texels glow;
+    // without one the whole surface glows in `emission`.
+    glm::vec3   emission{0.0f};
+    float       emissionStrength = 1.0f;
+    std::shared_ptr<fitzel::Texture> emissionTex;
+    fitzel::AssetId emissionTexId;
     bool        fromModel = false;           // created by a model import
 };
 

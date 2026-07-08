@@ -110,6 +110,10 @@ uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlp
 uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
 uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
 uniform int   uHasNormalMap;  // 1 = perturb the normal with uNormalMap
+uniform vec3  uEmission;         // emissive colour (sRGB); 0 = none
+uniform float uEmissionStrength; // scales the emission (>1 for a strong glow)
+uniform sampler2D uEmissionMap;  // optional emission mask/colour (Unity _Illum)
+uniform int   uHasEmissionMap;   // 1 = modulate emission by uEmissionMap
 
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
@@ -396,6 +400,14 @@ void main() {
         float fres = F0 + (1.0 - F0) * pow(1.0 - NoV, 5.0);
         color = mix(color, env, clamp(fres, 0.0, 1.0));
     }
+
+    // Emission: self-illumination added after lighting/reflection (so it isn't
+    // dimmed by them) but before fog (distant glows still haze). An emission map
+    // (Unity _Illum) restricts the glow to its lit texels.
+    vec3 emissive = pow(uEmission, vec3(2.2)) * uEmissionStrength;
+    if (uHasEmissionMap == 1)
+        emissive *= pow(texture(uEmissionMap, vUV).rgb, vec3(2.2));
+    color += emissive;
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 

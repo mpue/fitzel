@@ -49,8 +49,11 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["glass"]        = md.glass;
     m["alphaMode"]    = static_cast<int>(md.alphaMode);
     m["alphaCutoff"]  = md.alphaCutoff;
-    if (md.texId.valid())       m["texture"]   = md.texId.toString();
-    if (md.normalTexId.valid()) m["normalMap"] = md.normalTexId.toString();
+    m["emission"]         = vec3Json(md.emission);
+    m["emissionStrength"] = md.emissionStrength;
+    if (md.texId.valid())         m["texture"]     = md.texId.toString();
+    if (md.normalTexId.valid())   m["normalMap"]   = md.normalTexId.toString();
+    if (md.emissionTexId.valid()) m["emissionMap"] = md.emissionTexId.toString();
     std::ofstream f(file); if (f) f << m.dump(2) << '\n';
     writeMeta(file, md.assetId, "Material");
 }
@@ -197,6 +200,8 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         md.alphaMode    = static_cast<AlphaMode>(
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
+        md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
+        md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
         if (m.contains("texture")) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
@@ -204,6 +209,10 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         if (m.contains("normalMap")) {
             md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
             if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
+        }
+        if (m.contains("emissionMap")) {
+            md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
+            if (md.emissionTexId.valid()) md.emissionTex = ctx.assetDb.loadTexture(md.emissionTexId);
         }
         ctx.materials.push_back(std::move(md));
     }
@@ -247,6 +256,13 @@ bool loadScene(Context& ctx, const std::string& path) {
                 md.alphaMode    = static_cast<AlphaMode>(
                                       m.value("alphaMode", static_cast<int>(md.alphaMode)));
                 md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
+                md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
+                md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
+                if (m.contains("emissionMap")) {
+                    md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
+                    if (md.emissionTexId.valid())
+                        md.emissionTex = ctx.assetDb.loadTexture(md.emissionTexId);
+                }
                 if (m.contains("texture")) {
                     md.texId = AssetId::fromString(m["texture"].get<std::string>());
                     if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
