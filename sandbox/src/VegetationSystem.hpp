@@ -3,12 +3,14 @@
 #include <cstdint>
 #include <future>
 #include <random>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 #include <fitzel/graphics/InstancedMesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/graphics/Texture.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 namespace fitzel { class Camera; }
@@ -31,10 +33,14 @@ struct VegDrawContext {
 class VegetationSystem {
 public:
     VegetationSystem(fitzel::TerrainStreamer& streamer, fitzel::Camera& camera);
+    ~VegetationSystem(); // frees the tree GL buffers
 
-    // Load shaders + build instanced meshes. Needs a live GL context; returns
-    // false if a shader failed to compile.
+    // Load grass/bird/firefly shaders + build instanced meshes. Needs a live GL
+    // context; returns false if a shader failed to compile.
     bool init();
+    // Load the tree model + build its instanced/billboard GL buffers. Separate so
+    // the caller can supply the content directories. Returns false on shader fail.
+    bool initTrees(const std::string& modelDir, const std::string& texDir);
 
     // --- Grass ---------------------------------------------------------------
     // Hand-painted blades: stamp scatters into the brush disc (dropped on the
@@ -51,6 +57,23 @@ public:
                      float roadClear, float waterLevel, float snowLevel);
     void drawGrass(const VegDrawContext& ctx);
     glm::vec2 grassCenter() const { return m_grassCenter; }
+
+    // --- Trees ---------------------------------------------------------------
+    // Regrow the procedural forest when the camera has strayed far enough from
+    // its last center (painted trees always ride along). Paint/erase place or
+    // remove hand-placed trees (world space). Draw methods cover the shadow pass,
+    // the lit 3D pass and the distant-billboard LOD pass.
+    void updateTrees(glm::vec2 camXZ, const std::vector<glm::vec2>& road,
+                     float roadWidth, float waterLevel, float snowLevel);
+    void stampTree(glm::vec2 c, float radius, std::mt19937& rng,
+                   float waterLevel, float snowLevel);
+    void eraseTree(glm::vec2 c, float radius);
+    void clearPaintedTrees() { paintedTrees.clear(); rebuildTreeBuffer(); }
+    void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather);
+    void drawTrees(const VegDrawContext& ctx);
+    void drawTreeBillboards(const VegDrawContext& ctx, const glm::vec3& camRight);
+    // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
+    const std::vector<float>& treeInstances() const { return m_treeInst; }
 
     // --- Birds + fireflies ---------------------------------------------------
     void drawBirds(const glm::mat4& viewProj, double time, const glm::vec3& camPos);
@@ -69,6 +92,18 @@ public:
     std::vector<float> paintedBlades;  // 7 floats/blade, world space (saved)
     bool  paintedDirty = false;        // GPU re-upload of painted blades pending
 
+    bool      treeEnabled = true;
+    float     treeDensity = 1.0f;
+    float     treeSize    = 9.0f;      // average tree height (world units)
+    float     lodNear     = 45.0f;     // 3D trees within this range, billboards beyond
+    glm::vec2 treeCenter{1e9f};        // last procedural-forest center; 1e9 forces regen
+    int       treeCount   = 0;         // total drawn (procedural + painted)
+    std::vector<float> paintedTrees;   // 5 floats/tree, world space (saved)
+    float     treeBrushRadius  = 8.0f;
+    float     treeBrushDensity = 1.0f; // attempts per m^2 (trees stay sparse)
+    float     treeMinSpacing   = 4.0f; // reject placements closer than this
+    float     treePaintScale   = 9.0f; // painted-tree height (m)
+
     bool  birdsEnabled   = true;
     bool  fireflyEnabled = true;
 
@@ -77,6 +112,18 @@ private:
         fitzel::TerrainSettings s, glm::vec2 c, float waterLvl, float snowLvl,
         float gHeight, float gDensity, float R, std::uint32_t seed,
         std::vector<glm::vec2> road, float roadClear);
+
+    void regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road, float roadWidth,
+                    float waterLevel, float snowLevel);
+    void rebuildTreeBuffer(); // re-upload procedural prefix + painted trees
+
+    // One draw group of the tree model (a material/texture slice of the mesh).
+    struct TreePrim {
+        fitzel::Texture tex;
+        bool hasTex = false;
+        int  first = 0, count = 0;
+        bool cutout = false;
+    };
 
     fitzel::TerrainStreamer& m_streamer;
     fitzel::Camera&          m_camera;
@@ -89,6 +136,18 @@ private:
     bool          m_grassPending = false;
     glm::vec2     m_grassPendingCenter{0.0f};
     std::uint32_t m_grassSeed = 1234u;
+
+    // Trees.
+    fitzel::Shader        m_tree, m_treeDepth, m_billboard;
+    fitzel::Texture       m_billboardTex;
+    std::vector<TreePrim> m_treePrims;
+    std::uint32_t         m_treeVAO = 0, m_treeVBO = 0, m_treeInstVBO = 0, m_bbVAO = 0;
+    const float           m_treeLocalHeight = 1.0f;
+    float                 m_bbAspect = 0.93f;
+    const float           m_treeRadius = 120.0f;
+    std::mt19937          m_trng{555u};
+    std::vector<float>    m_treeInst;              // procedural prefix + painted trees
+    std::size_t           m_proceduralFloats = 0;  // size of the procedural prefix
 
     // Birds.
     fitzel::Shader        m_bird;

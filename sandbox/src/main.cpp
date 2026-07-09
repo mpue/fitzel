@@ -493,113 +493,8 @@ int main(int argc, char** argv) {
         float noiseSeed      = 0.0f;         // advanced per dab so detail layers up
 
 
-        // --- Trees: instanced low-poly pines (trunk + 3 foliage cones) ---
-        Shader tree = Shader::fromFiles("assets/shaders/tree.vert",
-                                        "assets/shaders/tree.frag");
-        Shader treeDepth = Shader::fromFiles("assets/shaders/treedepth.vert",
-                                             "assets/shaders/treedepth.frag");
-        if (!tree.isValid() || !treeDepth.isValid()) {
-            std::fprintf(stderr, "Failed to load tree shaders\n"); return 1;
-        }
-        // Load the textured, multi-material tree model and split it into draw
-        // groups (one per material/texture). Geometry is normalized to unit
-        // height; the instance scale gives the actual world size.
-        struct TreePrim { Texture tex; bool hasTex = false; int first = 0; int count = 0; bool cutout = false; };
-        std::vector<TreePrim> treePrims;
-        std::vector<float>    treeVerts; // combined: pos3 normal3 uv2
-        const float treeLocalHeight = 1.0f;
-        float       treeSize = 9.0f;     // average tree height (world units)
-        showProgress(0.55f, "Loading tree model...");
-        {
-            ModelData md = loadGltf(modelDir + "/tree1.glb");
-            if (md.empty() || md.height() < 0.01f) {
-                std::fprintf(stderr, "Tree model failed to load\n");
-            } else {
-                const float scale = 1.0f / md.height();
-                for (ModelPrimitive& p : md.primitives) {
-                    TreePrim tp;
-                    tp.first  = static_cast<int>(treeVerts.size() / 8);
-                    tp.count  = p.vertexCount();
-                    tp.cutout = p.alphaCutout;
-                    tp.hasTex = !p.texPixels.empty();
-                    if (tp.hasTex)
-                        tp.tex = Texture::fromPixels(p.texPixels.data(), p.texWidth, p.texHeight, 4);
-                    for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
-                        treeVerts.push_back(p.vertices[i + 0] * scale);
-                        treeVerts.push_back((p.vertices[i + 1] - md.minY) * scale);
-                        treeVerts.push_back(p.vertices[i + 2] * scale);
-                        treeVerts.push_back(p.vertices[i + 3]);
-                        treeVerts.push_back(p.vertices[i + 4]);
-                        treeVerts.push_back(p.vertices[i + 5]);
-                        treeVerts.push_back(p.vertices[i + 6]);
-                        treeVerts.push_back(p.vertices[i + 7]);
-                    }
-                    treePrims.push_back(std::move(tp));
-                }
-                std::printf("[Fitzel] tree model: %d primitives, %d verts\n",
-                            static_cast<int>(treePrims.size()),
-                            static_cast<int>(treeVerts.size() / 8));
-            }
-        }
-        GLuint treeVAO = 0, treeVBO = 0, treeInstVBO = 0;
-        {
-            glGenVertexArrays(1, &treeVAO);
-            glBindVertexArray(treeVAO);
-            glGenBuffers(1, &treeVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, treeVBO);
-            glBufferData(GL_ARRAY_BUFFER,
-                         static_cast<GLsizeiptr>(treeVerts.size() * sizeof(float)),
-                         treeVerts.data(), GL_STATIC_DRAW);
-            const GLsizei ms = 8 * sizeof(float);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ms, (void*)0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, ms, (void*)(3 * sizeof(float)));
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, ms, (void*)(6 * sizeof(float)));
-            glGenBuffers(1, &treeInstVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, treeInstVBO);
-            const GLsizei is = 5 * sizeof(float);
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-            glVertexAttribDivisor(3, 1);
-            glEnableVertexAttribArray(4);
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-            glVertexAttribDivisor(4, 1);
-            glEnableVertexAttribArray(5);
-            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
-            glVertexAttribDivisor(5, 1);
-            glBindVertexArray(0);
-        }
-
-        // Tree billboards (LOD for distant trees): a camera-facing textured quad
-        // that reuses the tree instance buffer; the corner comes from gl_VertexID.
-        showProgress(0.68f, "Loading tree billboards...");
-        Texture billboardTex = Texture::fromFile(texDir + "/billboard_tree_bled.png");
-        Shader  billboard = Shader::fromFiles("assets/shaders/billboard.vert",
-                                              "assets/shaders/billboard.frag");
-        if (!billboard.isValid()) { std::fprintf(stderr, "Failed to load billboard shader\n"); return 1; }
-        if (!billboardTex.isValid()) std::fprintf(stderr, "Warning: tree billboard texture missing\n");
-        const float bbAspect = (billboardTex.height() > 0)
-            ? static_cast<float>(billboardTex.width()) / billboardTex.height() : 0.93f;
-        float  lodNear = 45.0f; // 3D trees within this range, billboards beyond
-        GLuint bbVAO = 0;
-        {
-            glGenVertexArrays(1, &bbVAO);
-            glBindVertexArray(bbVAO);
-            glBindBuffer(GL_ARRAY_BUFFER, treeInstVBO);
-            const GLsizei is = 5 * sizeof(float);
-            glEnableVertexAttribArray(3);
-            glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
-            glVertexAttribDivisor(3, 1);
-            glEnableVertexAttribArray(4);
-            glVertexAttribPointer(4, 1, GL_FLOAT, GL_FALSE, is, (void*)(3 * sizeof(float)));
-            glVertexAttribDivisor(4, 1);
-            glEnableVertexAttribArray(5);
-            glVertexAttribPointer(5, 1, GL_FLOAT, GL_FALSE, is, (void*)(4 * sizeof(float)));
-            glVertexAttribDivisor(5, 1);
-            glBindVertexArray(0);
-        }
+        // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
+        if (!veg.initTrees(modelDir, texDir)) return 1;
 
         // --- Roads / paths -----------------------------------------------
         // A road is a ribbon mesh lofted along a Catmull-Rom spline through
@@ -1221,14 +1116,6 @@ int main(int argc, char** argv) {
             entitySel = document.indexOf(emptyId);
         };
 
-        // Tree instances live here (filled by regenTrees below); declared early
-        // so flower placement can cluster blooms around the trees. The buffer is
-        // procedural forest first, then the hand-painted trees appended -- so both
-        // draw through the same instanced 3D/billboard/shadow path.
-        std::vector<float> treeInst;              // combined draw buffer (5 floats/tree)
-        std::vector<float> paintedTrees;          // hand-painted trees (world space, saved)
-        std::size_t        proceduralFloats = 0;  // size of the procedural prefix in treeInst
-        int                treeCount = 0;
 
         // --- Flowers: GPU-instanced blooms scattered through lush grass ---
         Shader flower = Shader::fromFiles("assets/shaders/flower.vert",
@@ -1299,9 +1186,9 @@ int main(int argc, char** argv) {
 
                     // Flowers gather in the shade around tree trunks.
                     float treeP = 0.0f;
-                    for (int t = 0; t < treeCount; ++t) {
-                        const float dx = wx - treeInst[t * 5 + 0];
-                        const float dz = wz - treeInst[t * 5 + 2];
+                    for (int t = 0; t < veg.treeCount; ++t) {
+                        const float dx = wx - veg.treeInstances()[t * 5 + 0];
+                        const float dz = wz - veg.treeInstances()[t * 5 + 2];
                         const float dd = dx * dx + dz * dz;
                         if (dd < 30.0f) treeP = std::max(treeP, glm::smoothstep(30.0f, 3.0f, dd));
                     }
@@ -1385,123 +1272,8 @@ int main(int argc, char** argv) {
         std::mt19937 spawnRng(1234u);
         std::uniform_real_distribution<float> spawnU(0.0f, 1.0f);
 
-        glm::vec2 treeCenter(1e9f);
-        bool      treeEnabled  = true;
-        float     treeDensity  = 1.0f;
-        const float treeRadius = 120.0f;
-        std::mt19937 trng(555u);
-
-        // Hand-painted tree brush state.
-        bool  treePaintMode   = false;
-        float treeBrushRadius = 8.0f;
-        float treeBrushDensity= 1.0f;   // attempts per m^2 (trees stay sparse)
-        float treeMinSpacing  = 4.0f;   // reject placements closer than this
-        float treePaintScale  = treeSize;
-
-        // Re-upload the instance buffer = procedural prefix + painted trees, and
-        // refresh treeCount. Painting rebuilds only the painted tail, so the
-        // procedural forest never reshuffles under an edit.
-        auto rebuildTreeBuffer = [&] {
-            treeInst.resize(proceduralFloats);
-            treeInst.insert(treeInst.end(), paintedTrees.begin(), paintedTrees.end());
-            treeCount = static_cast<int>(treeInst.size() / 5);
-            glBindBuffer(GL_ARRAY_BUFFER, treeInstVBO);
-            glBufferData(GL_ARRAY_BUFFER,
-                         static_cast<GLsizeiptr>(treeInst.size() * sizeof(float)),
-                         treeInst.data(), GL_DYNAMIC_DRAW);
-        };
-
-        auto regenTrees = [&](glm::vec2 cc) {
-            treeInst.clear();
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float spacing = 7.0f;
-            for (float z = -treeRadius; z <= treeRadius; z += spacing) {
-                for (float x = -treeRadius; x <= treeRadius; x += spacing) {
-                    if (x * x + z * z > treeRadius * treeRadius) continue;
-                    const float wx = cc.x + x, wz = cc.y + z;
-                    const float roadClear = roadWidth * 0.5f + 3.0f; // keep trees clear
-                    if (roadDistanceSq(roadCenterline, wx, wz) < roadClear * roadClear) continue;
-                    const float h = streamer.heightAt(wx, wz);
-                    if (h < waterLevel + 0.8f || h > look.snowLevel - 2.0f) continue;
-                    const float e = 1.5f;
-                    const glm::vec3 n = glm::normalize(glm::vec3(
-                        streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
-                        2.0f * e,
-                        streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
-                    if (n.y < 0.86f) continue;
-                    // Forests cluster in moist regions; dry biomes stay open.
-                    const float moist  = terrainMoisture(streamer.settings(), wx, wz);
-                    const float forest = 0.5f + 0.35f * std::sin(wx * 0.03f)
-                                              + 0.35f * std::cos(wz * 0.026f + 1.3f);
-                    const float prob = glm::clamp(forest, 0.0f, 1.0f)
-                                     * glm::smoothstep(0.35f, 0.75f, moist)
-                                     * 0.6f * treeDensity;
-                    if (u(trng) > prob) continue;
-                    const float tx = wx + (u(trng) - 0.5f) * spacing;
-                    const float tz = wz + (u(trng) - 0.5f) * spacing;
-                    treeInst.insert(treeInst.end(), {
-                        tx, streamer.heightAt(tx, tz) - 0.3f, tz,
-                        u(trng) * 6.2831f,
-                        glm::mix(treeSize * 0.75f, treeSize * 1.3f, u(trng))});
-                }
-            }
-            proceduralFloats = treeInst.size();
-            rebuildTreeBuffer();  // append the painted trees and upload
-            treeCenter = cc;
-        };
-
-        // --- Paint / erase hand-placed trees (world space, saved with the scene).
-        // Scatter into the brush disc, drop each on the terrain, reject steep /
-        // underwater / above-snow spots and any placement too close to another
-        // painted tree, so a forest stays believable. Erase drops painted trees
-        // whose base lies in the disc. Both re-append to the shared draw buffer.
-        auto stampTree = [&](glm::vec2 c, float radius) {
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float area  = 3.14159265f * radius * radius;
-            const int   tries = std::max(1, static_cast<int>(area * 0.02f * treeBrushDensity));
-            const float minSp2 = treeMinSpacing * treeMinSpacing;
-            for (int i = 0; i < tries; ++i) {
-                const float ang = u(brushRng) * 6.2831853f;
-                const float rad = std::sqrt(u(brushRng)) * radius; // uniform in disc
-                const float wx  = c.x + std::cos(ang) * rad;
-                const float wz  = c.y + std::sin(ang) * rad;
-                const float h   = streamer.heightAt(wx, wz);
-                if (h < waterLevel + 0.8f || h > look.snowLevel - 2.0f) continue;
-                const float e = 1.5f;
-                const glm::vec3 n = glm::normalize(glm::vec3(
-                    streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
-                    2.0f * e,
-                    streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
-                if (n.y < 0.86f) continue; // too steep for a trunk
-                bool tooClose = false;
-                for (std::size_t t = 0; t + 5 <= paintedTrees.size(); t += 5) {
-                    const float dx = wx - paintedTrees[t], dz = wz - paintedTrees[t + 2];
-                    if (dx * dx + dz * dz < minSp2) { tooClose = true; break; }
-                }
-                if (tooClose) continue;
-                const float sc = glm::mix(treePaintScale * 0.8f, treePaintScale * 1.25f,
-                                          u(brushRng));
-                paintedTrees.insert(paintedTrees.end(), {
-                    wx, streamer.heightAt(wx, wz) - 0.3f, wz,
-                    u(brushRng) * 6.2831853f, sc});
-            }
-            rebuildTreeBuffer();
-        };
-        auto eraseTree = [&](glm::vec2 c, float radius) {
-            const float r2 = radius * radius;
-            std::vector<float> kept;
-            kept.reserve(paintedTrees.size());
-            for (std::size_t i = 0; i + 5 <= paintedTrees.size(); i += 5) {
-                const float dx = paintedTrees[i] - c.x, dz = paintedTrees[i + 2] - c.y;
-                if (dx * dx + dz * dz <= r2) continue; // inside brush -> remove
-                kept.insert(kept.end(), paintedTrees.begin() + i,
-                                        paintedTrees.begin() + i + 5);
-            }
-            if (kept.size() != paintedTrees.size()) {
-                paintedTrees.swap(kept);
-                rebuildTreeBuffer();
-            }
-        };
+        // Tree brush mode flag; the rest of the tree state/logic lives in veg.
+        bool treePaintMode = false;
 
         // --- Audio: weather-driven sound layers --------------------------
         showProgress(0.82f, "Loading audio...");
@@ -1628,12 +1400,12 @@ int main(int argc, char** argv) {
                 uiSettings.continentAmp = 0.0f;
                 uiSettings.warpStrength = 0.0f;
                 uiSettings.terrace      = 0.0f;
-                veg.grassEnabled = treeEnabled = flowerEnabled = false;
+                veg.grassEnabled = veg.treeEnabled = flowerEnabled = false;
                 veg.birdsEnabled = veg.fireflyEnabled = false;
                 waterLevel = -1000.0f;
             } else {                       // Nature: restore the outdoor world
                 uiSettings = natureSettings;
-                veg.grassEnabled = treeEnabled = flowerEnabled = true;
+                veg.grassEnabled = veg.treeEnabled = flowerEnabled = true;
                 veg.birdsEnabled = veg.fireflyEnabled = true;
                 waterLevel = -2.0f;
             }
@@ -1641,7 +1413,7 @@ int main(int argc, char** argv) {
             streamer.rebuild();
             streamer.update(camera.position());
             veg.grassDirty = true;
-            treeCenter = glm::vec2(1e9f);
+            veg.treeCenter = glm::vec2(1e9f);
             roadDirty  = true;
         };
         applyScene(scene); // start in the selected scene (Empty by default)
@@ -1699,12 +1471,12 @@ int main(int argc, char** argv) {
         addF("texScale", texScale);            addF("normalStrength", normalStrength);
         addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
-        addB("veg.grassEnabled", veg.grassEnabled);    addF("veg.grassDensity", veg.grassDensity);
-        addF("veg.grassRadius", veg.grassRadius);      addF("veg.grassHeight", veg.grassHeight);
-        addF("veg.grassTintR", veg.grassTint.x);       addF("veg.grassTintG", veg.grassTint.y);
-        addF("veg.grassTintB", veg.grassTint.z);
-        addB("treeEnabled", treeEnabled);      addF("treeDensity", treeDensity);
-        addF("treeSize", treeSize);            addF("lodNear", lodNear);
+        addB("grassEnabled", veg.grassEnabled);    addF("grassDensity", veg.grassDensity);
+        addF("grassRadius", veg.grassRadius);      addF("grassHeight", veg.grassHeight);
+        addF("grassTintR", veg.grassTint.x);       addF("grassTintG", veg.grassTint.y);
+        addF("grassTintB", veg.grassTint.z);
+        addB("treeEnabled", veg.treeEnabled);      addF("treeDensity", veg.treeDensity);
+        addF("treeSize", veg.treeSize);            addF("lodNear", veg.lodNear);
 
         // Wire the serialization hooks now that every tunable and the terrain/
         // vegetation state they drive are in scope. Reading settings applies them
@@ -1729,7 +1501,7 @@ int main(int argc, char** argv) {
             // Hand-painted trees: same compact float blob (5 per tree).
             std::ostringstream ts;
             ts.precision(7);
-            for (float v : paintedTrees) ts << v << ' ';
+            for (float v : veg.paintedTrees) ts << v << ' ';
             j["paintedTrees"] = ts.str();
             // Hand-painted flowers (8 per bloom: pos3, yaw, scale, rgb).
             std::ostringstream fs;
@@ -1777,13 +1549,13 @@ int main(int argc, char** argv) {
             }
             veg.paintedDirty = true; // re-upload to the GPU next frame
             // Restore hand-painted trees (regenTrees re-appends them next frame,
-            // triggered by the treeCenter reset below).
-            paintedTrees.clear();
+            // triggered by the veg.treeCenter reset below).
+            veg.paintedTrees.clear();
             if (j.contains("paintedTrees") && j["paintedTrees"].is_string()) {
                 std::istringstream ts(j["paintedTrees"].get<std::string>());
                 float v;
-                while (ts >> v) paintedTrees.push_back(v);
-                paintedTrees.resize(paintedTrees.size() / 5 * 5); // whole trees
+                while (ts >> v) veg.paintedTrees.push_back(v);
+                veg.paintedTrees.resize(veg.paintedTrees.size() / 5 * 5); // whole trees
             }
             // Restore hand-painted flowers (regenFlowers re-appends them when the
             // grass pass runs, triggered by the veg.grassDirty reset below).
@@ -1809,7 +1581,7 @@ int main(int argc, char** argv) {
             streamer.rebuild();
             streamer.update(camera.position());
             veg.grassDirty = true;
-            treeCenter = glm::vec2(1e9f);
+            veg.treeCenter = glm::vec2(1e9f);
             roadDirty  = true;
         };
 
@@ -2613,7 +2385,7 @@ int main(int argc, char** argv) {
             if (roadVegDirty && !roadDragging) {
                 roadVegDirty = false;
                 veg.grassDirty   = true;
-                treeCenter   = glm::vec2(1e9f);
+                veg.treeCenter   = glm::vec2(1e9f);
             }
 
             // Regrow grass (async) / trees when the camera has moved far enough.
@@ -2622,7 +2394,7 @@ int main(int argc, char** argv) {
                 if (veg.updateGrass(camXZ, roadCenterline, roadWidth * 0.5f + 1.5f,
                                     waterLevel, look.snowLevel) && flowerEnabled)
                     regenFlowers(veg.grassCenter()); // flowers share the grass area
-                if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f) regenTrees(camXZ);
+                veg.updateTrees(camXZ, roadCenterline, roadWidth, waterLevel, look.snowLevel);
             }
 
             // --- Weather: drift (auto) and derive storm parameters ----------
@@ -3641,9 +3413,10 @@ int main(int argc, char** argv) {
                     if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                         const glm::vec2 cxz(center.x, center.z);
                         if (erasing) {
-                            eraseTree(cxz, treeBrushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > treeBrushRadius * 0.5f) {
-                            stampTree(cxz, treeBrushRadius);
+                            veg.eraseTree(cxz, veg.treeBrushRadius);
+                        } else if (glm::length(cxz - lastStampPos) > veg.treeBrushRadius * 0.5f) {
+                            veg.stampTree(cxz, veg.treeBrushRadius, brushRng, waterLevel,
+                                          look.snowLevel);
                             lastStampPos = cxz;
                         }
                     }
@@ -3656,8 +3429,8 @@ int main(int argc, char** argv) {
                         ImVec2 prev; bool have = false;
                         for (int i = 0; i <= SEG; ++i) {
                             const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * treeBrushRadius;
-                            const float wz = center.z + std::sin(a) * treeBrushRadius;
+                            const float wx = center.x + std::cos(a) * veg.treeBrushRadius;
+                            const float wz = center.z + std::sin(a) * veg.treeBrushRadius;
                             const glm::vec4 c = vp * glm::vec4(
                                 wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
                             if (c.w <= 1e-4f) { have = false; continue; }
@@ -4138,7 +3911,7 @@ int main(int argc, char** argv) {
 
             terrainui::drawPanel({
                 showTerrain, uiSettings, streamer, camera, look,
-                texScale, normalStrength, veg.grassDirty, treeCenter, roadDirty,
+                texScale, normalStrength, veg.grassDirty, veg.treeCenter, roadDirty,
                 assetDb,
             });
 
@@ -4251,13 +4024,13 @@ int main(int argc, char** argv) {
                 ImGui::TextDisabled("(grass.txt)");
 
                 ImGui::SeparatorText("Trees");
-                ImGui::Checkbox("Trees", &treeEnabled);
+                ImGui::Checkbox("Trees", &veg.treeEnabled);
                 bool retree = false;
-                retree |= ImGui::SliderFloat("Tree density", &treeDensity, 0.0f, 2.0f);
-                retree |= ImGui::SliderFloat("Tree size", &treeSize, 2.0f, 25.0f);
-                if (retree) treeCenter = glm::vec2(1e9f);
-                ImGui::SliderFloat("Tree LOD dist", &lodNear, 15.0f, 200.0f);
-                ImGui::Text("Trees: %d", treeCount);
+                retree |= ImGui::SliderFloat("Tree density", &veg.treeDensity, 0.0f, 2.0f);
+                retree |= ImGui::SliderFloat("Tree size", &veg.treeSize, 2.0f, 25.0f);
+                if (retree) veg.treeCenter = glm::vec2(1e9f);
+                ImGui::SliderFloat("Tree LOD dist", &veg.lodNear, 15.0f, 200.0f);
+                ImGui::Text("Trees: %d", veg.treeCount);
 
                 ImGui::SeparatorText("Paint trees (3D brush)");
                 if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode)
@@ -4268,15 +4041,14 @@ int main(int argc, char** argv) {
                 else
                     ImGui::TextDisabled("Enable to plant trees onto the terrain");
                 ImGui::Checkbox("Erase##tree", &brushErase);
-                ImGui::SliderFloat("Brush size##tree", &treeBrushRadius, 1.0f, 40.0f, "%.1f m");
-                ImGui::SliderFloat("Density##tree", &treeBrushDensity, 0.1f, 4.0f);
-                ImGui::SliderFloat("Min spacing", &treeMinSpacing, 1.0f, 15.0f, "%.1f m");
-                ImGui::SliderFloat("Paint size", &treePaintScale, 2.0f, 25.0f, "%.1f m");
-                ImGui::Text("Painted trees: %d", static_cast<int>(paintedTrees.size() / 5));
-                ImGui::BeginDisabled(paintedTrees.empty());
+                ImGui::SliderFloat("Brush size##tree", &veg.treeBrushRadius, 1.0f, 40.0f, "%.1f m");
+                ImGui::SliderFloat("Density##tree", &veg.treeBrushDensity, 0.1f, 4.0f);
+                ImGui::SliderFloat("Min spacing", &veg.treeMinSpacing, 1.0f, 15.0f, "%.1f m");
+                ImGui::SliderFloat("Paint size", &veg.treePaintScale, 2.0f, 25.0f, "%.1f m");
+                ImGui::Text("Painted trees: %d", static_cast<int>(veg.paintedTrees.size() / 5));
+                ImGui::BeginDisabled(veg.paintedTrees.empty());
                 if (ImGui::Button("Clear painted##tree")) {
-                    paintedTrees.clear();
-                    rebuildTreeBuffer();
+                    veg.clearPaintedTrees();
                 }
                 ImGui::EndDisabled();
 
@@ -5955,23 +5727,7 @@ int main(int argc, char** argv) {
             // --- Multi-pass render with sky and planar water ------------
             // Trees cast shadows: drawn into every cascade via this callback.
             auto treeShadowCaster = [&](const glm::mat4& lightSpace) {
-                if (!treeEnabled || treeCount == 0 || treePrims.empty()) return;
-                glDisable(GL_CULL_FACE);
-                treeDepth.bind();
-                treeDepth.setMat4("uLightSpace", lightSpace);
-                treeDepth.setFloat("uTime", static_cast<float>(now));
-                treeDepth.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-                treeDepth.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
-                treeDepth.setFloat("uTreeHeight", treeLocalHeight);
-                treeDepth.setInt("uTex", 0);
-                glBindVertexArray(treeVAO);
-                for (const TreePrim& tp : treePrims) {
-                    if (tp.hasTex) tp.tex.bind(0);
-                    treeDepth.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-                    glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, treeCount);
-                }
-                glBindVertexArray(0);
-                glEnable(GL_CULL_FACE);
+                veg.drawTreeShadow(lightSpace, now, weather);
             };
             renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
 
@@ -6032,36 +5788,6 @@ int main(int argc, char** argv) {
 
             // Instanced 3D trees for a given view (used by the main pass and the
             // water reflection, so trees mirror in the water). Two-sided.
-            auto drawTrees = [&](const glm::mat4& vp, const glm::vec3& eye) {
-                if (!treeEnabled || treeCount == 0 || treePrims.empty()) return;
-                glDisable(GL_CULL_FACE);
-                tree.bind();
-                tree.setMat4("uViewProj", vp);
-                tree.setFloat("uTime", static_cast<float>(now));
-                tree.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-                tree.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
-                tree.setFloat("uTreeHeight", treeLocalHeight);
-                tree.setVec3("uCamPos", eye);
-                tree.setFloat("uLodNear", lodNear);
-                tree.setVec3("uViewPos", eye);
-                tree.setVec3("uLightDir", light.direction);
-                tree.setVec3("uLightColor", light.color);
-                tree.setVec3("uAmbient", light.ambient);
-                tree.setVec3("uFogColor", fog.color);
-                tree.setVec3("uFogSunColor", fog.sunColor);
-                tree.setFloat("uFogDensity", fog.density);
-                tree.setFloat("uFogHeightFalloff", fog.heightFalloff);
-                tree.setFloat("uFogHeight", fog.height);
-                tree.setInt("uTex", 0);
-                glBindVertexArray(treeVAO);
-                for (const TreePrim& tp : treePrims) {
-                    if (tp.hasTex) tp.tex.bind(0);
-                    tree.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-                    glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, treeCount);
-                }
-                glBindVertexArray(0);
-                glEnable(GL_CULL_FACE);
-            };
 
             // 0) Environment probe: capture the scene into a cubemap from the
             //    first reflective object's position, so reflective materials
@@ -6102,7 +5828,22 @@ int main(int argc, char** argv) {
             renderer.renderScene(reflView, proj, reflEye,
                                  glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
             glCullFace(GL_BACK);
-            drawTrees(proj * reflView, reflEye); // trees mirror in the water
+            {   // trees mirror in the water (reflected view/eye)
+                VegDrawContext rctx;
+                rctx.viewProj         = proj * reflView;
+                rctx.camPos           = reflEye;
+                rctx.time             = now;
+                rctx.weather          = weather;
+                rctx.lightDir         = light.direction;
+                rctx.lightColor       = light.color;
+                rctx.ambient          = light.ambient;
+                rctx.fogColor         = fog.color;
+                rctx.fogSunColor      = fog.sunColor;
+                rctx.fogDensity       = fog.density;
+                rctx.fogHeightFalloff = fog.heightFalloff;
+                rctx.fogHeight        = fog.height;
+                veg.drawTrees(rctx);
+            }
 
             // 2) Refraction: scene only, clipping above water (deep-water clear).
             refractRT.bind();
@@ -6125,24 +5866,22 @@ int main(int argc, char** argv) {
             drawBackground(glm::inverse(mainVP), camPos, false);
             renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
 
-            // Grass (procedural + painted) into the HDR buffer, lit + fogged like
-            // the terrain.
-            {
-                VegDrawContext gctx;
-                gctx.viewProj         = mainVP;
-                gctx.camPos           = camPos;
-                gctx.time             = now;
-                gctx.weather          = weather;
-                gctx.lightDir         = light.direction;
-                gctx.lightColor       = light.color;
-                gctx.ambient          = light.ambient;
-                gctx.fogColor         = fog.color;
-                gctx.fogSunColor      = fog.sunColor;
-                gctx.fogDensity       = fog.density;
-                gctx.fogHeightFalloff = fog.heightFalloff;
-                gctx.fogHeight        = fog.height;
-                veg.drawGrass(gctx);
-            }
+            // Shared draw context for the lit vegetation (grass, trees, billboards)
+            // in this HDR pass.
+            VegDrawContext gctx;
+            gctx.viewProj         = mainVP;
+            gctx.camPos           = camPos;
+            gctx.time             = now;
+            gctx.weather          = weather;
+            gctx.lightDir         = light.direction;
+            gctx.lightColor       = light.color;
+            gctx.ambient          = light.ambient;
+            gctx.fogColor         = fog.color;
+            gctx.fogSunColor      = fog.sunColor;
+            gctx.fogDensity       = fog.density;
+            gctx.fogHeightFalloff = fog.heightFalloff;
+            gctx.fogHeight        = fog.height;
+            veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
 
             // Flowers (instanced) into the HDR buffer, lit + fogged like grass.
             if (flowerEnabled && flowerCount > 0) {
@@ -6165,35 +5904,9 @@ int main(int argc, char** argv) {
                 glEnable(GL_CULL_FACE);
             }
 
-            // Trees (instanced, per-material) into the HDR buffer.
-            drawTrees(mainVP, camPos);
-
-            // Distant trees as camera-facing billboards (alpha cutout).
-            if (treeEnabled && treeCount > 0 && billboardTex.isValid()) {
-                glDisable(GL_CULL_FACE);
-                billboard.bind();
-                billboard.setMat4("uViewProj", mainVP);
-                billboard.setVec3("uCamRight", camera.right());
-                billboard.setVec3("uCamPos", camPos);
-                billboard.setFloat("uLodNear", lodNear);
-                billboard.setFloat("uTreeHeight", treeLocalHeight);
-                billboard.setFloat("uAspect", bbAspect);
-                billboard.setVec3("uViewPos", camPos);
-                billboard.setVec3("uLightDir", light.direction);
-                billboard.setVec3("uLightColor", light.color);
-                billboard.setVec3("uAmbient", light.ambient);
-                billboard.setVec3("uFogColor", fog.color);
-                billboard.setVec3("uFogSunColor", fog.sunColor);
-                billboard.setFloat("uFogDensity", fog.density);
-                billboard.setFloat("uFogHeightFalloff", fog.heightFalloff);
-                billboard.setFloat("uFogHeight", fog.height);
-                billboard.setInt("uTex", 0);
-                billboardTex.bind(0);
-                glBindVertexArray(bbVAO);
-                glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, treeCount);
-                glBindVertexArray(0);
-                glEnable(GL_CULL_FACE);
-            }
+            // Trees (instanced, per-material) + distant billboards into the HDR.
+            veg.drawTrees(gctx);
+            veg.drawTreeBillboards(gctx, camera.right());
 
             // Birds: a flock wheeling above the camera, two-sided into the HDR.
             veg.drawBirds(mainVP, now, camPos);
@@ -6407,10 +6120,6 @@ int main(int argc, char** argv) {
 
         glDeleteBuffers(1, &rainVBO);
         glDeleteVertexArrays(1, &rainVAO);
-        glDeleteBuffers(1, &treeVBO);
-        glDeleteBuffers(1, &treeInstVBO);
-        glDeleteVertexArrays(1, &treeVAO);
-        glDeleteVertexArrays(1, &bbVAO);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
         return 1;
