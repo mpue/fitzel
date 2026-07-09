@@ -9,7 +9,8 @@ add_executable(sandbox
     src/TerrainPanel.cpp
     src/PropertyMeta.cpp
     src/Component.cpp
-    src/FolderDialog.cpp)
+    src/FolderDialog.cpp
+    src/VegetationSystem.cpp)
 
 target_link_libraries(sandbox PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
 

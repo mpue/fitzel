@@ -46,6 +46,7 @@
 #include "ProjectIO.hpp"
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
+#include "VegetationSystem.hpp"
 
 using namespace fitzel;
 
@@ -1528,54 +1529,16 @@ int main(int argc, char** argv) {
             }
         };
 
-        // --- Birds: a small flock of flapping billboards circling overhead --
-        Shader bird = Shader::fromFiles("assets/shaders/bird.vert",
-                                        "assets/shaders/bird.frag");
-        if (!bird.isValid()) { std::fprintf(stderr, "Failed to load bird shader\n"); return 1; }
-        // Gull silhouette: small body + swept, bent wings. pos3, flap (flap
-        // rises toward the tips so the wings flex when they beat). +Z forward.
-        const float bm[] = {
-                // body (diamond: nose, shoulders, tail)
-                 0.00f, 0.0f,  0.45f, 0.0f,  -0.12f, 0.0f, 0.05f, 0.0f,   0.12f, 0.0f, 0.05f, 0.0f,
-                -0.12f, 0.0f,  0.05f, 0.0f,   0.00f, 0.0f,-0.55f, 0.0f,   0.12f, 0.0f, 0.05f, 0.0f,
-                // left wing (inner + outer panel, trailing to the tail)
-                -0.12f, 0.0f,  0.05f, 0.0f,  -0.55f, 0.05f,-0.05f, 0.4f,  0.00f, 0.0f,-0.55f, 0.0f,
-                -0.55f, 0.05f,-0.05f, 0.4f,  -1.05f, 0.0f,-0.35f, 1.0f,   0.00f, 0.0f,-0.55f, 0.0f,
-                // right wing
-                 0.12f, 0.0f,  0.05f, 0.0f,   0.00f, 0.0f,-0.55f, 0.0f,   0.55f, 0.05f,-0.05f, 0.4f,
-                 0.55f, 0.05f,-0.05f, 0.4f,   0.00f, 0.0f,-0.55f, 0.0f,   1.05f, 0.0f,-0.35f, 1.0f };
-        // base: pos3 + flap ; instance: iPos3, iYaw, iPhase.
-        InstancedMesh birdField = InstancedMesh::create(
-            bm, sizeof(bm) / sizeof(float), 4 * sizeof(float),
-            {{0, 3, 0}, {1, 1, 3 * sizeof(float)}},
-            5 * sizeof(float),
-            {{2, 3, 0}, {3, 1, 3 * sizeof(float)}, {4, 1, 4 * sizeof(float)}});
-        bool  birdsEnabled = true;
-        int   birdCount    = 18;
-        float birdSize     = 2.2f;
+        // --- Ambient wildlife: birds + fireflies -----------------------------
+        // First slice of vegetation extracted out of main.cpp; owns its own
+        // shaders/meshes. Grass/trees/flowers still live below (for now).
+        VegetationSystem veg(streamer, camera);
+        if (!veg.init()) return 1;
 
-        // --- Fireflies: additive glowing points that wander the grass at night --
-        Shader firefly = Shader::fromFiles("assets/shaders/firefly.vert",
-                                           "assets/shaders/firefly.frag");
-        if (!firefly.isValid()) { std::fprintf(stderr, "Failed to load firefly shader\n"); return 1; }
-        // Instance-only (quad corner comes from gl_VertexID): iPos3, iPhase.
-        InstancedMesh fireflyField = InstancedMesh::create(
-            nullptr, 0, 0, {}, 4 * sizeof(float),
-            {{0, 3, 0}, {1, 1, 3 * sizeof(float)}});
-        bool  fireflyEnabled = true;
-        int   fireflyCount   = 70;
-        float fireflySize    = 0.09f;
-        const float fireflyRadius = 34.0f;
-        std::mt19937 flyRng(9001u);
-        std::uniform_real_distribution<float> flyU(0.0f, 1.0f);
         // Gameplay RNG for spawner launch-direction randomization (persists across
         // spawns so successive emits vary within a Play session).
         std::mt19937 spawnRng(1234u);
         std::uniform_real_distribution<float> spawnU(0.0f, 1.0f);
-        // Home xz + blink phase per firefly; homes start "far" so they seed near
-        // the camera on the first night frame.
-        std::vector<glm::vec3> fireflies(256, glm::vec3(1e9f, 1e9f, 0.0f));
-        for (auto& f : fireflies) f.z = flyU(flyRng) * 6.2831f;
 
         glm::vec2 treeCenter(1e9f);
         bool      treeEnabled  = true;
@@ -1821,12 +1784,12 @@ int main(int argc, char** argv) {
                 uiSettings.warpStrength = 0.0f;
                 uiSettings.terrace      = 0.0f;
                 grassEnabled = treeEnabled = flowerEnabled = false;
-                birdsEnabled = fireflyEnabled = false;
+                veg.birdsEnabled = veg.fireflyEnabled = false;
                 waterLevel = -1000.0f;
             } else {                       // Nature: restore the outdoor world
                 uiSettings = natureSettings;
                 grassEnabled = treeEnabled = flowerEnabled = true;
-                birdsEnabled = fireflyEnabled = true;
+                veg.birdsEnabled = veg.fireflyEnabled = true;
                 waterLevel = -2.0f;
             }
             streamer.settings() = uiSettings;
@@ -4520,15 +4483,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::EndDisabled();
 
-                ImGui::SeparatorText("Birds");
-                ImGui::Checkbox("Birds", &birdsEnabled);
-                ImGui::SliderInt("Flock size", &birdCount, 0, 60);
-                ImGui::SliderFloat("Bird size", &birdSize, 0.8f, 5.0f);
-
-                ImGui::SeparatorText("Fireflies (night)");
-                ImGui::Checkbox("Fireflies", &fireflyEnabled);
-                ImGui::SliderInt("Count", &fireflyCount, 0, 256);
-                ImGui::SliderFloat("Firefly size", &fireflySize, 0.03f, 0.25f, "%.2f");
+                veg.panelBirdsFireflies();
             }
             ImGui::End(); }
 
@@ -6431,34 +6386,8 @@ int main(int argc, char** argv) {
                 glEnable(GL_CULL_FACE);
             }
 
-            // Birds: a flock wheeling above the camera (positions on the CPU,
-            // wingbeat in the shader). Drawn two-sided into the HDR buffer.
-            if (birdsEnabled && birdCount > 0) {
-                const float cx = camPos.x, cz = camPos.z;
-                const float baseY = streamer.heightAt(cx, cz) + 95.0f; // fly higher
-                std::vector<float> bi;
-                bi.reserve(birdCount * 5);
-                for (int i = 0; i < birdCount; ++i) {
-                    const float ph = static_cast<float>(i) * 2.39996f;
-                    const float R  = 50.0f + 45.0f * vhash2(static_cast<float>(i), 3.0f);
-                    const float sp = 0.12f + 0.10f * vhash2(static_cast<float>(i), 9.0f);
-                    const float hY = baseY + 30.0f * vhash2(static_cast<float>(i), 5.0f);
-                    const float ang = static_cast<float>(now) * sp + ph;
-                    const float bx = cx + std::cos(ang) * R;
-                    const float bz = cz + std::sin(ang) * R;
-                    const float by = hY + 3.0f * std::sin(ang * 0.7f + ph);
-                    bi.insert(bi.end(), {bx, by, bz, ang, ph});
-                }
-                glDisable(GL_CULL_FACE);
-                birdField.upload(bi);
-                bird.bind();
-                bird.setMat4("uViewProj", mainVP);
-                bird.setFloat("uTime", static_cast<float>(now));
-                bird.setFloat("uSize", birdSize);
-                bird.setVec3("uColor", glm::vec3(0.02f, 0.02f, 0.03f));
-                birdField.draw(GL_TRIANGLES, 18);
-                glEnable(GL_CULL_FACE);
-            }
+            // Birds: a flock wheeling above the camera, two-sided into the HDR.
+            veg.drawBirds(mainVP, now, camPos);
 
             // 4) The water surface: a large quad following the camera, sampling
             //    the reflection/refraction targets with Fresnel + ripples.
@@ -6524,48 +6453,7 @@ int main(int argc, char** argv) {
             }
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
-            const float nightF = 1.0f - dayF;
-            if (fireflyEnabled && fireflyCount > 0 && nightF > 0.03f) {
-                const glm::vec2 camXZ(camPos.x, camPos.z);
-                std::vector<float> fi;
-                fi.reserve(fireflyCount * 4);
-                for (int i = 0; i < fireflyCount; ++i) {
-                    glm::vec3& f = fireflies[i];
-                    glm::vec2 home(f.x, f.y);
-                    if (glm::length(home - camXZ) > fireflyRadius) {
-                        const float ang = flyU(flyRng) * 6.2831f;
-                        const float rad = std::sqrt(flyU(flyRng)) * fireflyRadius;
-                        home = camXZ + rad * glm::vec2(std::cos(ang), std::sin(ang));
-                        f.x = home.x; f.y = home.y;
-                    }
-                    const float ph = f.z;
-                    const float t  = static_cast<float>(now);
-                    const float wx = home.x + std::sin(t * 0.7f + ph) * 1.3f;
-                    const float wz = home.y + std::cos(t * 0.9f + ph * 1.7f) * 1.3f;
-                    const float hover = 0.5f + 0.5f * std::sin(t * 1.1f + ph * 2.3f);
-                    const float wy = streamer.heightAt(wx, wz) + 0.4f + hover * 0.9f;
-                    fi.insert(fi.end(), {wx, wy, wz, ph});
-                }
-                const glm::vec3 camRight = camera.right();
-                const glm::vec3 camUp = glm::normalize(glm::cross(camRight, camera.front()));
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_ONE, GL_ONE); // additive glow
-                glDepthMask(GL_FALSE);
-                glDisable(GL_CULL_FACE);
-                fireflyField.upload(fi);
-                firefly.bind();
-                firefly.setMat4("uViewProj", mainVP);
-                firefly.setVec3("uCamRight", camRight);
-                firefly.setVec3("uCamUp", camUp);
-                firefly.setFloat("uSize", fireflySize);
-                firefly.setFloat("uTime", static_cast<float>(now));
-                firefly.setFloat("uNight", nightF);
-                firefly.setVec3("uColor", glm::vec3(0.7f, 1.0f, 0.35f));
-                fireflyField.draw(GL_TRIANGLE_STRIP, 4);
-                glDepthMask(GL_TRUE);
-                glDisable(GL_BLEND);
-                glEnable(GL_CULL_FACE);
-            }
+            veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
 
             // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
             ssaoRT.bind();
