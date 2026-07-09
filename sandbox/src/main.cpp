@@ -47,6 +47,7 @@
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
 #include "VegetationSystem.hpp"
+#include "RoadSystem.hpp"
 
 using namespace fitzel;
 
@@ -496,48 +497,15 @@ int main(int argc, char** argv) {
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
         if (!veg.initTrees(modelDir, texDir)) return 1;
 
-        // --- Roads / paths -----------------------------------------------
-        // A road is a ribbon mesh lofted along a Catmull-Rom spline through
-        // control points, draped onto the terrain and textured with asphalt.
-        // Submitted through the Renderer, so it gets lighting/shadows/fog free.
-        // Loaded through the asset database (cached/deduplicated): the surface
-        // picker below can re-select a texture without re-reading it from disk.
-        // Held as a shared handle so the object stays alive while roadMat binds it.
-        std::shared_ptr<Texture> roadTex =
-            assetDb.loadTexture(texDir + "/asphalt_02_diff_4k.jpg");
-        Material roadMat(lit);
-        roadMat.set("uColorMode", 2);
-        if (roadTex) roadMat.setTexture("uTexture", *roadTex, 0);
-        // Selectable surface: gather the diffuse/albedo textures from textures/.
-        std::vector<std::string> roadTexFiles;
-        int roadTexSel = 0;
-        {
-            std::error_code ec;
-            for (const auto& e : std::filesystem::directory_iterator(texDir, ec)) {
-                const std::string name = e.path().filename().string();
-                const std::string ext  = e.path().extension().string();
-                if ((ext == ".jpg" || ext == ".jpeg" || ext == ".png") &&
-                    name.find("diff") != std::string::npos)
-                    roadTexFiles.push_back(name);
-            }
-            std::sort(roadTexFiles.begin(), roadTexFiles.end());
-            for (int i = 0; i < static_cast<int>(roadTexFiles.size()); ++i)
-                if (roadTexFiles[i].find("asphalt") != std::string::npos) roadTexSel = i;
-        }
-        std::vector<glm::vec2> roadPts;   // control points (world x,z)
-        Mesh  roadMesh;
-        int   roadVerts    = 0;
-        std::vector<glm::vec3>     roadCollVerts;   // road geometry for physics
-        std::vector<std::uint32_t> roadCollIndices;
-        bool  roadEnabled  = true;
-        bool  roadEditMode = false;
-        bool  roadDirty    = false;
-        int   roadSel      = -1;          // selected control point (-1 = none)
-        bool  roadDragging = false;       // dragging the selected handle
-        bool  roadVegDirty = false;       // road changed -> clear vegetation on it
-        float roadWidth    = 5.0f;
-        float roadTexTile  = 8.0f;        // world metres per texture tile
-        std::vector<glm::vec2> roadCenterline; // sampled centre (for veg masking)
+        // --- Roads / paths (owned by RoadSystem) -----------------------------
+        // Ribbon mesh along a Catmull-Rom spline, draped on the terrain. RoadSystem
+        // owns the mesh/material/collider/centreline; main keeps the control-point
+        // editor state (shares the LMB) and the roadPickTerrain helper below (used
+        // by every viewport brush, not just roads).
+        RoadSystem road(lit, assetDb, streamer, texDir);
+        bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
+        int  roadSel      = -1;       // selected control point (-1 = none)
+        bool roadDragging = false;    // dragging the selected handle
         // Raycast the terrain under a viewport NDC point; true + world hit on success.
         auto roadPickTerrain = [&](glm::vec2 ndc, const glm::mat4& vp, glm::vec3& out) {
             const glm::mat4 inv = glm::inverse(vp);
@@ -553,71 +521,6 @@ int main(int argc, char** argv) {
                 t += std::max(0.25f, (p.y - h) * 0.4f);
             }
             return false;
-        };
-        auto buildRoad = [&] {
-            roadDirty = false;
-            roadVegDirty = true;  // vegetation must re-evaluate against the new road
-            roadCenterline.clear();
-            MeshData md;
-            const int n = static_cast<int>(roadPts.size());
-            if (n < 2) {
-                roadMesh = Mesh(); roadVerts = 0;
-                roadCollVerts.clear(); roadCollIndices.clear();
-                return;
-            }
-
-            // Smooth centreline: Catmull-Rom through the points, draped on terrain.
-            std::vector<glm::vec3> center;
-            const int SUB = 14;
-            for (int i = 0; i < n - 1; ++i) {
-                const glm::vec2 p0 = roadPts[std::max(0, i - 1)];
-                const glm::vec2 p1 = roadPts[i];
-                const glm::vec2 p2 = roadPts[i + 1];
-                const glm::vec2 p3 = roadPts[std::min(n - 1, i + 2)];
-                const int last = (i == n - 2) ? SUB : SUB - 1;
-                for (int s = 0; s <= last; ++s) {
-                    const glm::vec2 c = catmull(p0, p1, p2, p3, static_cast<float>(s) / SUB);
-                    center.push_back({c.x, streamer.heightAt(c.x, c.y), c.y});
-                }
-            }
-
-            // Keep the flat centreline for vegetation masking.
-            roadCenterline.reserve(center.size());
-            for (const glm::vec3& p : center) roadCenterline.push_back({p.x, p.z});
-
-            // Loft left/right edges perpendicular to the path (in the XZ plane).
-            const float half = roadWidth * 0.5f;
-            float vlen = 0.0f;
-            for (size_t i = 0; i < center.size(); ++i) {
-                glm::vec3 fwd = (i == 0)                 ? center[1] - center[0]
-                              : (i + 1 == center.size()) ? center[i] - center[i - 1]
-                                                         : center[i + 1] - center[i - 1];
-                fwd.y = 0.0f;
-                if (glm::length(fwd) < 1e-4f) fwd = glm::vec3(0, 0, 1);
-                fwd = glm::normalize(fwd);
-                const glm::vec3 side = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
-                if (i > 0) vlen += glm::length(center[i] - center[i - 1]);
-                const float v = vlen / roadTexTile;
-                glm::vec3 Lp = center[i] - side * half;
-                glm::vec3 Rp = center[i] + side * half;
-                Lp.y = streamer.heightAt(Lp.x, Lp.z) + 0.10f; // lift off the ground
-                Rp.y = streamer.heightAt(Rp.x, Rp.z) + 0.10f;
-                const glm::vec3 up(0.0f, 1.0f, 0.0f);
-                md.vertices.push_back({Lp, up, {0.0f, v}});
-                md.vertices.push_back({Rp, up, {roadWidth / roadTexTile, v}});
-            }
-            // Two triangles per rung, wound CCW-from-above (front faces up).
-            for (std::uint32_t i = 0; i + 1 < center.size(); ++i) {
-                const std::uint32_t a = 2 * i;
-                md.indices.insert(md.indices.end(), {a, a + 2, a + 1, a + 1, a + 2, a + 3});
-            }
-            roadMesh  = Mesh::create(md);
-            roadVerts = static_cast<int>(md.vertices.size());
-            // Keep the CPU geometry for the physics mesh collider (Play mode).
-            roadCollVerts.clear();
-            roadCollVerts.reserve(md.vertices.size());
-            for (const Vertex& vtx : md.vertices) roadCollVerts.push_back(vtx.position);
-            roadCollIndices = md.indices;
         };
 
         // --- Test-drive vehicle ------------------------------------------
@@ -1268,7 +1171,7 @@ int main(int argc, char** argv) {
             streamer.update(camera.position());
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
-            roadDirty  = true;
+            road.dirty  = true;
         };
         applyScene(scene); // start in the selected scene (Empty by default)
 
@@ -1436,7 +1339,7 @@ int main(int argc, char** argv) {
             streamer.update(camera.position());
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
-            roadDirty  = true;
+            road.dirty  = true;
         };
 
         // --- Play mode: run the scene as a game -------------------------------
@@ -1728,12 +1631,12 @@ int main(int argc, char** argv) {
             }
             // Roads: a static triangle-mesh collider (draped on the terrain), so
             // the player and objects can walk/drive on them.
-            if (roadDirty) buildRoad();
-            if (roadEnabled && roadCollIndices.size() >= 3)
-                physics->addMesh(roadCollVerts.data(),
-                                 static_cast<int>(roadCollVerts.size()),
-                                 roadCollIndices.data(),
-                                 static_cast<int>(roadCollIndices.size()));
+            road.rebuildIfDirty();
+            if (road.enabled && road.collIndices().size() >= 3)
+                physics->addMesh(road.collVerts().data(),
+                                 static_cast<int>(road.collVerts().size()),
+                                 road.collIndices().data(),
+                                 static_cast<int>(road.collIndices().size()));
             physicsBody.clear();
             for (Entity& e : entities) {
                 const auto* pc = e.components.get<PhysicsComponent>();
@@ -2236,8 +2139,8 @@ int main(int argc, char** argv) {
 
             // When the road settles (not mid-drag), regrow vegetation so it
             // clears off the new road; debounced to avoid thrashing while editing.
-            if (roadVegDirty && !roadDragging) {
-                roadVegDirty = false;
+            if (road.vegDirty && !roadDragging) {
+                road.vegDirty = false;
                 veg.grassDirty   = true;
                 veg.treeCenter   = glm::vec2(1e9f);
             }
@@ -2245,11 +2148,11 @@ int main(int argc, char** argv) {
             // Regrow grass (async) / trees when the camera has moved far enough.
             {
                 const glm::vec2 camXZ(camera.position().x, camera.position().z);
-                if (veg.updateGrass(camXZ, roadCenterline, roadWidth * 0.5f + 1.5f,
+                if (veg.updateGrass(camXZ, road.centerline(), road.width * 0.5f + 1.5f,
                                     waterLevel, look.snowLevel) && veg.flowerEnabled)
-                    veg.regenFlowers(veg.grassCenter(), roadCenterline, roadWidth,
+                    veg.regenFlowers(veg.grassCenter(), road.centerline(), road.width,
                                      waterLevel, look.snowLevel);
-                veg.updateTrees(camXZ, roadCenterline, roadWidth, waterLevel, look.snowLevel);
+                veg.updateTrees(camXZ, road.centerline(), road.width, waterLevel, look.snowLevel);
             }
 
             // --- Weather: drift (auto) and derive storm parameters ----------
@@ -3127,9 +3030,9 @@ int main(int argc, char** argv) {
                     const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
                     const ImVec2 org = rmin; // image top-left in screen space
                     auto handleWorld = [&](int i) {
-                        return glm::vec3(roadPts[i].x,
-                                         streamer.heightAt(roadPts[i].x, roadPts[i].y) + 0.10f,
-                                         roadPts[i].y);
+                        return glm::vec3(road.roadPts[i].x,
+                                         streamer.heightAt(road.roadPts[i].x, road.roadPts[i].y) + 0.10f,
+                                         road.roadPts[i].y);
                     };
                     auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
                         const glm::vec4 c = vp * glm::vec4(wp, 1.0f);
@@ -3145,7 +3048,7 @@ int main(int argc, char** argv) {
                     if (viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         int  best = -1;
                         float bestD = 12.0f; // pixel grab radius
-                        for (int i = 0; i < static_cast<int>(roadPts.size()); ++i) {
+                        for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
                             ImVec2 sp;
                             if (!toScreen(handleWorld(i), sp)) continue;
                             const float d = std::hypot(sp.x - mp.x, sp.y - mp.y);
@@ -3155,40 +3058,40 @@ int main(int argc, char** argv) {
                         else {
                             glm::vec3 h;
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
-                                roadPts.push_back({h.x, h.z});
-                                roadSel = static_cast<int>(roadPts.size()) - 1;
-                                roadDirty = true;
+                                road.roadPts.push_back({h.x, h.z});
+                                roadSel = static_cast<int>(road.roadPts.size()) - 1;
+                                road.dirty = true;
                             }
                         }
                     }
                     // Drag the selected handle across the terrain.
                     if (roadDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
-                        roadSel >= 0 && roadSel < static_cast<int>(roadPts.size())) {
+                        roadSel >= 0 && roadSel < static_cast<int>(road.roadPts.size())) {
                         glm::vec3 h;
                         if (roadPickTerrain(viewportMouseNdc, vp, h)) {
-                            roadPts[roadSel] = glm::vec2(h.x, h.z);
-                            roadDirty = true;
+                            road.roadPts[roadSel] = glm::vec2(h.x, h.z);
+                            road.dirty = true;
                         }
                     }
                     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) roadDragging = false;
                     // Delete the selected point.
-                    if (roadSel >= 0 && roadSel < static_cast<int>(roadPts.size()) &&
+                    if (roadSel >= 0 && roadSel < static_cast<int>(road.roadPts.size()) &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        roadPts.erase(roadPts.begin() + roadSel);
+                        road.roadPts.erase(road.roadPts.begin() + roadSel);
                         roadSel = -1;
-                        roadDirty = true;
+                        road.dirty = true;
                     }
 
                     // Draw the path preview line, then the handles on top.
                     ImDrawList* dl = ImGui::GetWindowDrawList();
                     ImVec2 prev; bool havePrev = false;
-                    for (int i = 0; i < static_cast<int>(roadPts.size()); ++i) {
+                    for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
                         ImVec2 sp;
                         if (!toScreen(handleWorld(i), sp)) { havePrev = false; continue; }
                         if (havePrev) dl->AddLine(prev, sp, IM_COL32(255, 220, 80, 150), 2.0f);
                         prev = sp; havePrev = true;
                     }
-                    for (int i = 0; i < static_cast<int>(roadPts.size()); ++i) {
+                    for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
                         ImVec2 sp;
                         if (!toScreen(handleWorld(i), sp)) continue;
                         const bool s = (i == roadSel);
@@ -3767,7 +3670,7 @@ int main(int argc, char** argv) {
 
             terrainui::drawPanel({
                 showTerrain, uiSettings, streamer, camera, look,
-                texScale, normalStrength, veg.grassDirty, veg.treeCenter, roadDirty,
+                texScale, normalStrength, veg.grassDirty, veg.treeCenter, road.dirty,
                 assetDb,
             });
 
@@ -4010,7 +3913,7 @@ int main(int argc, char** argv) {
             ImGui::End(); }
 
             if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
-                ImGui::Checkbox("Show roads", &roadEnabled);
+                ImGui::Checkbox("Show roads", &road.enabled);
                 if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
                     grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = false; // don't fight over LMB
                 if (roadEditMode) {
@@ -4019,65 +3922,62 @@ int main(int argc, char** argv) {
                 } else {
                     ImGui::TextDisabled("Enable edit mode to place and drag handles");
                 }
-                ImGui::Text("Points: %d", static_cast<int>(roadPts.size()));
+                ImGui::Text("Points: %d", static_cast<int>(road.roadPts.size()));
                 ImGui::SameLine();
                 if (roadSel >= 0) ImGui::Text("| selected #%d", roadSel);
                 else              ImGui::TextDisabled("| none selected");
 
                 bool rc = false;
-                rc |= ImGui::SliderFloat("Width", &roadWidth, 1.0f, 20.0f, "%.1f m");
-                rc |= ImGui::SliderFloat("Texture tile", &roadTexTile, 2.0f, 24.0f, "%.1f m");
-                if (rc) roadDirty = true;
+                rc |= ImGui::SliderFloat("Width", &road.width, 1.0f, 20.0f, "%.1f m");
+                rc |= ImGui::SliderFloat("Texture tile", &road.texTile, 2.0f, 24.0f, "%.1f m");
+                if (rc) road.dirty = true;
 
                 // Surface texture picker (any diffuse texture in textures/).
-                if (!roadTexFiles.empty() &&
-                    ImGui::BeginCombo("Surface", roadTexFiles[roadTexSel].c_str())) {
-                    for (int i = 0; i < static_cast<int>(roadTexFiles.size()); ++i) {
-                        const bool sel = (i == roadTexSel);
-                        if (ImGui::Selectable(roadTexFiles[i].c_str(), sel)) {
-                            if (auto t = assetDb.loadTexture(texDir + "/" + roadTexFiles[i])) {
-                                roadTex = std::move(t);
-                                roadMat.setTexture("uTexture", *roadTex, 0);
-                                roadTexSel = i;
-                            }
+                if (!road.texFiles.empty() &&
+                    ImGui::BeginCombo("Surface", road.texFiles[road.texSel].c_str())) {
+                    for (int i = 0; i < static_cast<int>(road.texFiles.size()); ++i) {
+                        const bool sel = (i == road.texSel);
+                        if (ImGui::Selectable(road.texFiles[i].c_str(), sel)) {
+                            road.setSurface(road.texFiles[i]);
+                            road.texSel = i;
                         }
                         if (sel) ImGui::SetItemDefaultFocus();
                     }
                     ImGui::EndCombo();
                 }
 
-                ImGui::BeginDisabled(roadSel < 0 || roadSel >= static_cast<int>(roadPts.size()));
+                ImGui::BeginDisabled(roadSel < 0 || roadSel >= static_cast<int>(road.roadPts.size()));
                 if (ImGui::Button("Delete selected")) {
-                    roadPts.erase(roadPts.begin() + roadSel);
+                    road.roadPts.erase(road.roadPts.begin() + roadSel);
                     roadSel = -1;
-                    roadDirty = true;
+                    road.dirty = true;
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
-                ImGui::BeginDisabled(roadPts.empty());
+                ImGui::BeginDisabled(road.roadPts.empty());
                 if (ImGui::Button("Undo point")) {
-                    roadPts.pop_back();
-                    if (roadSel >= static_cast<int>(roadPts.size())) roadSel = -1;
-                    roadDirty = true;
+                    road.roadPts.pop_back();
+                    if (roadSel >= static_cast<int>(road.roadPts.size())) roadSel = -1;
+                    road.dirty = true;
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Clear")) { roadPts.clear(); roadSel = -1; roadDirty = true; }
+                if (ImGui::Button("Clear")) { road.roadPts.clear(); roadSel = -1; road.dirty = true; }
                 ImGui::EndDisabled();
 
                 ImGui::Separator();
                 if (ImGui::Button("Save")) {
                     std::ofstream f("road.txt");
-                    for (const glm::vec2& p : roadPts) f << p.x << ' ' << p.y << '\n';
+                    for (const glm::vec2& p : road.roadPts) f << p.x << ' ' << p.y << '\n';
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Load")) {
                     std::ifstream f("road.txt");
                     if (f) {
-                        roadPts.clear();
+                        road.roadPts.clear();
                         glm::vec2 p;
-                        while (f >> p.x >> p.y) roadPts.push_back(p);
+                        while (f >> p.x >> p.y) road.roadPts.push_back(p);
                         roadSel = -1;
-                        roadDirty = true;
+                        road.dirty = true;
                     }
                 }
                 ImGui::SameLine();
@@ -5345,10 +5245,10 @@ int main(int argc, char** argv) {
             }
 
             // Road mesh is (re)built when points/width change (edited in the UI).
-            if (roadDirty) buildRoad();
-            if (roadEnabled && roadVerts > 0) {
-                roadMat.set("uWaterLevel", waterLevel); // wet-darken submerged parts
-                renderer.submit(roadMesh, roadMat, glm::mat4(1.0f), false);
+            road.rebuildIfDirty();
+            if (road.enabled && road.verts() > 0) {
+                road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
+                renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false);
             }
 
             // --- Physics car: draw the chassis + wheels from Jolt transforms.
