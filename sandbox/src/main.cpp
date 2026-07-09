@@ -1117,155 +1117,9 @@ int main(int argc, char** argv) {
         };
 
 
-        // --- Flowers: GPU-instanced blooms scattered through lush grass ---
-        Shader flower = Shader::fromFiles("assets/shaders/flower.vert",
-                                          "assets/shaders/flower.frag");
-        if (!flower.isValid()) { std::fprintf(stderr, "Failed to load flower shader\n"); return 1; }
-        // base: pos3, normal3, tint ; instance: iPos3, iYaw, iScale, iColor3.
-        const std::vector<float> flowerMesh = makeFlowerMesh();
-        const int flowerVerts = static_cast<int>(flowerMesh.size() / 7);
-        InstancedMesh flowerField = InstancedMesh::create(
-            flowerMesh.data(), flowerMesh.size(), 7 * sizeof(float),
-            {{0, 3, 0}, {1, 3, 3 * sizeof(float)}, {2, 1, 6 * sizeof(float)}},
-            8 * sizeof(float),
-            {{3, 3, 0}, {4, 1, 3 * sizeof(float)}, {5, 1, 4 * sizeof(float)},
-             {6, 3, 5 * sizeof(float)}});
-        int   flowerCount   = 0;
-        bool  flowerEnabled = true;
-        float flowerDensity = 1.0f;
-
-        // Combined instance buffer (8 floats/flower): procedural meadow first,
-        // then the hand-painted flowers appended. Mirrors the tree buffer.
-        std::vector<float> flowerInst;
-        std::vector<float> paintedFlowers;          // hand-painted (world space, saved)
-        std::size_t        proceduralFlowerFloats = 0;
-        bool  flowerPaintMode   = false;
-        float flowerBrushRadius = 6.0f;
-        float flowerBrushDensity= 1.0f;
-
-        auto rebuildFlowerBuffer = [&] {
-            flowerInst.resize(proceduralFlowerFloats);
-            flowerInst.insert(flowerInst.end(),
-                              paintedFlowers.begin(), paintedFlowers.end());
-            flowerField.upload(flowerInst);
-            flowerCount = flowerField.count();
-        };
-
-        auto regenFlowers = [&](glm::vec2 c) {
-            std::vector<float>& out = flowerInst;
-            out.clear();
-            std::mt19937 rng(4242u);
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float R = veg.grassRadius, spacing = 0.9f;
-            const float clear = roadWidth * 0.5f + 1.5f;
-            // Natural meadow palette, weighted toward buttercup yellow and white.
-            const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
-                                          {0.94f, 0.55f, 0.12f},  // warm orange
-                                          {0.95f, 0.95f, 0.88f},  // daisy white
-                                          {0.86f, 0.46f, 0.55f},  // soft pink
-                                          {0.60f, 0.55f, 0.82f}}; // pale lavender
-            for (float z = -R; z <= R; z += spacing) {
-                for (float x = -R; x <= R; x += spacing) {
-                    if (x * x + z * z > R * R) continue;
-                    const float wx = c.x + x, wz = c.y + z;
-                    if (roadDistanceSq(roadCenterline, wx, wz) < clear * clear) continue;
-                    const float h = streamer.heightAt(wx, wz);
-                    if (h < waterLevel + 0.6f || h > look.snowLevel - 2.0f) continue;
-                    const float e = 1.0f;
-                    const glm::vec3 n = glm::normalize(glm::vec3(
-                        streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz), 2.0f * e,
-                        streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
-                    if (n.y < 0.9f) continue;
-                    const float moist = terrainMoisture(streamer.settings(), wx, wz);
-                    if (moist < 0.3f) continue; // flowers want greener ground
-
-                    // Clumps where a mid-frequency noise peaks; a small background
-                    // chance sprinkles lone flowers between the groups.
-                    const float clump  = valNoise2(wx * 0.16f + 50.0f, wz * 0.16f + 50.0f);
-                    const float groupP = glm::smoothstep(0.66f, 0.9f, clump);
-
-                    // Flowers gather in the shade around tree trunks.
-                    float treeP = 0.0f;
-                    for (int t = 0; t < veg.treeCount; ++t) {
-                        const float dx = wx - veg.treeInstances()[t * 5 + 0];
-                        const float dz = wz - veg.treeInstances()[t * 5 + 2];
-                        const float dd = dx * dx + dz * dz;
-                        if (dd < 30.0f) treeP = std::max(treeP, glm::smoothstep(30.0f, 3.0f, dd));
-                    }
-
-                    const float prob = (0.02f + groupP * 0.9f + treeP * 0.75f)
-                                     * glm::smoothstep(0.3f, 0.7f, moist) * flowerDensity;
-                    if (u(rng) > prob) continue;
-                    const float fx = wx + (u(rng) - 0.5f) * spacing;
-                    const float fz = wz + (u(rng) - 0.5f) * spacing;
-                    // Weighted pick: mostly yellow/orange/white, few pink/lavender.
-                    const float cr = u(rng);
-                    const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
-                                 : cr < 0.92f ? 3 : 4;
-                    const glm::vec3 col = palette[ci];
-                    // Meadow flowers are small; squared roll keeps most of them tiny.
-                    const float sr = u(rng);
-                    const float scale = glm::mix(0.32f, 0.75f, sr * sr);
-                    out.insert(out.end(), {fx, streamer.heightAt(fx, fz) - 0.02f, fz,
-                                           u(rng) * 6.2831f, scale,
-                                           col.r, col.g, col.b});
-                }
-            }
-            proceduralFlowerFloats = out.size();
-            rebuildFlowerBuffer();  // append the painted flowers and upload
-        };
-
-        // --- Paint / erase hand-placed flowers (world space, saved with scene).
-        // Scatter blooms into the brush disc on suitable ground; erase drops
-        // painted flowers whose base lies in the disc. Both re-append to the
-        // shared flower buffer without disturbing the procedural meadow.
-        auto stampFlower = [&](glm::vec2 c, float radius) {
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float area  = 3.14159265f * radius * radius;
-            const int   tries = std::max(2, static_cast<int>(area * 0.7f * flowerBrushDensity));
-            const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f}, {0.94f, 0.55f, 0.12f},
-                                          {0.95f, 0.95f, 0.88f}, {0.86f, 0.46f, 0.55f},
-                                          {0.60f, 0.55f, 0.82f}};
-            for (int i = 0; i < tries; ++i) {
-                const float ang = u(brushRng) * 6.2831853f;
-                const float rad = std::sqrt(u(brushRng)) * radius;
-                const float wx  = c.x + std::cos(ang) * rad;
-                const float wz  = c.y + std::sin(ang) * rad;
-                const float h   = streamer.heightAt(wx, wz);
-                if (h < waterLevel + 0.6f || h > look.snowLevel - 2.0f) continue;
-                const float e = 1.0f;
-                const glm::vec3 n = glm::normalize(glm::vec3(
-                    streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
-                    2.0f * e,
-                    streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
-                if (n.y < 0.90f) continue; // flowers want fairly flat ground
-                const float cr = u(brushRng);
-                const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
-                             : cr < 0.92f ? 3 : 4;
-                const glm::vec3 col = palette[ci];
-                const float sr = u(brushRng);
-                const float scale = glm::mix(0.32f, 0.75f, sr * sr);
-                paintedFlowers.insert(paintedFlowers.end(), {
-                    wx, streamer.heightAt(wx, wz) - 0.02f, wz,
-                    u(brushRng) * 6.2831853f, scale, col.r, col.g, col.b});
-            }
-            rebuildFlowerBuffer();
-        };
-        auto eraseFlower = [&](glm::vec2 c, float radius) {
-            const float r2 = radius * radius;
-            std::vector<float> kept;
-            kept.reserve(paintedFlowers.size());
-            for (std::size_t i = 0; i + 8 <= paintedFlowers.size(); i += 8) {
-                const float dx = paintedFlowers[i] - c.x, dz = paintedFlowers[i + 2] - c.y;
-                if (dx * dx + dz * dz <= r2) continue;
-                kept.insert(kept.end(), paintedFlowers.begin() + i,
-                                        paintedFlowers.begin() + i + 8);
-            }
-            if (kept.size() != paintedFlowers.size()) {
-                paintedFlowers.swap(kept);
-                rebuildFlowerBuffer();
-            }
-        };
+        // --- Flowers (owned by VegetationSystem) -----------------------------
+        if (!veg.initFlowers()) return 1;
+        bool flowerPaintMode = false; // brush mode flag; rest of flower state in veg
 
         // Gameplay RNG for spawner launch-direction randomization (persists across
         // spawns so successive emits vary within a Play session).
@@ -1400,12 +1254,12 @@ int main(int argc, char** argv) {
                 uiSettings.continentAmp = 0.0f;
                 uiSettings.warpStrength = 0.0f;
                 uiSettings.terrace      = 0.0f;
-                veg.grassEnabled = veg.treeEnabled = flowerEnabled = false;
+                veg.grassEnabled = veg.treeEnabled = veg.flowerEnabled = false;
                 veg.birdsEnabled = veg.fireflyEnabled = false;
                 waterLevel = -1000.0f;
             } else {                       // Nature: restore the outdoor world
                 uiSettings = natureSettings;
-                veg.grassEnabled = veg.treeEnabled = flowerEnabled = true;
+                veg.grassEnabled = veg.treeEnabled = veg.flowerEnabled = true;
                 veg.birdsEnabled = veg.fireflyEnabled = true;
                 waterLevel = -2.0f;
             }
@@ -1506,7 +1360,7 @@ int main(int argc, char** argv) {
             // Hand-painted flowers (8 per bloom: pos3, yaw, scale, rgb).
             std::ostringstream fs;
             fs.precision(7);
-            for (float v : paintedFlowers) fs << v << ' ';
+            for (float v : veg.paintedFlowers) fs << v << ' ';
             j["paintedFlowers"] = fs.str();
             // Terrain sculpt: grid spacing + a compact "ix iz delta ..." blob of
             // every edited cell (one JSON string, same reasoning as the grass).
@@ -1559,12 +1413,12 @@ int main(int argc, char** argv) {
             }
             // Restore hand-painted flowers (regenFlowers re-appends them when the
             // grass pass runs, triggered by the veg.grassDirty reset below).
-            paintedFlowers.clear();
+            veg.paintedFlowers.clear();
             if (j.contains("paintedFlowers") && j["paintedFlowers"].is_string()) {
                 std::istringstream fs(j["paintedFlowers"].get<std::string>());
                 float v;
-                while (fs >> v) paintedFlowers.push_back(v);
-                paintedFlowers.resize(paintedFlowers.size() / 8 * 8); // whole flowers
+                while (fs >> v) veg.paintedFlowers.push_back(v);
+                veg.paintedFlowers.resize(veg.paintedFlowers.size() / 8 * 8); // whole flowers
             }
             // Restore terrain sculpt edits (empty for scenes saved before it
             // existed). Publish before the rebuild below so chunks bake them in.
@@ -2392,8 +2246,9 @@ int main(int argc, char** argv) {
             {
                 const glm::vec2 camXZ(camera.position().x, camera.position().z);
                 if (veg.updateGrass(camXZ, roadCenterline, roadWidth * 0.5f + 1.5f,
-                                    waterLevel, look.snowLevel) && flowerEnabled)
-                    regenFlowers(veg.grassCenter()); // flowers share the grass area
+                                    waterLevel, look.snowLevel) && veg.flowerEnabled)
+                    veg.regenFlowers(veg.grassCenter(), roadCenterline, roadWidth,
+                                     waterLevel, look.snowLevel);
                 veg.updateTrees(camXZ, roadCenterline, roadWidth, waterLevel, look.snowLevel);
             }
 
@@ -3460,9 +3315,10 @@ int main(int argc, char** argv) {
                     if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                         const glm::vec2 cxz(center.x, center.z);
                         if (erasing) {
-                            eraseFlower(cxz, flowerBrushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > flowerBrushRadius * 0.4f) {
-                            stampFlower(cxz, flowerBrushRadius);
+                            veg.eraseFlower(cxz, veg.flowerBrushRadius);
+                        } else if (glm::length(cxz - lastStampPos) > veg.flowerBrushRadius * 0.4f) {
+                            veg.stampFlower(cxz, veg.flowerBrushRadius, brushRng, waterLevel,
+                                            look.snowLevel);
                             lastStampPos = cxz;
                         }
                     }
@@ -3475,8 +3331,8 @@ int main(int argc, char** argv) {
                         ImVec2 prev; bool have = false;
                         for (int i = 0; i <= SEG; ++i) {
                             const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * flowerBrushRadius;
-                            const float wz = center.z + std::sin(a) * flowerBrushRadius;
+                            const float wx = center.x + std::cos(a) * veg.flowerBrushRadius;
+                            const float wz = center.z + std::sin(a) * veg.flowerBrushRadius;
                             const glm::vec4 c = vp * glm::vec4(
                                 wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
                             if (c.w <= 1e-4f) { have = false; continue; }
@@ -4053,12 +3909,12 @@ int main(int argc, char** argv) {
                 ImGui::EndDisabled();
 
                 ImGui::SeparatorText("Flowers");
-                ImGui::Checkbox("Flowers", &flowerEnabled);
-                if (ImGui::SliderFloat("Flower density", &flowerDensity, 0.0f, 2.0f))
+                ImGui::Checkbox("Flowers", &veg.flowerEnabled);
+                if (ImGui::SliderFloat("Flower density", &veg.flowerDensity, 0.0f, 2.0f))
                     veg.grassDirty = true; // flowers regenerate with the grass pass
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Regrow")) veg.grassDirty = true;
-                ImGui::Text("Flowers: %d", flowerCount);
+                ImGui::Text("Flowers: %d", veg.flowerCount);
 
                 ImGui::SeparatorText("Paint flowers (3D brush)");
                 if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
@@ -4069,14 +3925,13 @@ int main(int argc, char** argv) {
                 else
                     ImGui::TextDisabled("Enable to plant flowers onto the terrain");
                 ImGui::Checkbox("Erase##flower", &brushErase);
-                ImGui::SliderFloat("Brush size##flower", &flowerBrushRadius, 1.0f, 30.0f, "%.1f m");
-                ImGui::SliderFloat("Density##flower", &flowerBrushDensity, 0.1f, 4.0f);
+                ImGui::SliderFloat("Brush size##flower", &veg.flowerBrushRadius, 1.0f, 30.0f, "%.1f m");
+                ImGui::SliderFloat("Density##flower", &veg.flowerBrushDensity, 0.1f, 4.0f);
                 ImGui::Text("Painted flowers: %d",
-                            static_cast<int>(paintedFlowers.size() / 8));
-                ImGui::BeginDisabled(paintedFlowers.empty());
+                            static_cast<int>(veg.paintedFlowers.size() / 8));
+                ImGui::BeginDisabled(veg.paintedFlowers.empty());
                 if (ImGui::Button("Clear painted##flower")) {
-                    paintedFlowers.clear();
-                    rebuildFlowerBuffer();
+                    veg.clearPaintedFlowers();
                 }
                 ImGui::EndDisabled();
 
@@ -5883,26 +5738,8 @@ int main(int argc, char** argv) {
             gctx.fogHeight        = fog.height;
             veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
 
-            // Flowers (instanced) into the HDR buffer, lit + fogged like grass.
-            if (flowerEnabled && flowerCount > 0) {
-                glDisable(GL_CULL_FACE);
-                flower.bind();
-                flower.setMat4("uViewProj", mainVP);
-                flower.setFloat("uTime", static_cast<float>(now));
-                flower.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-                flower.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, weather));
-                flower.setVec3("uViewPos", camPos);
-                flower.setVec3("uLightDir", light.direction);
-                flower.setVec3("uLightColor", light.color);
-                flower.setVec3("uAmbient", light.ambient);
-                flower.setVec3("uFogColor", fog.color);
-                flower.setVec3("uFogSunColor", fog.sunColor);
-                flower.setFloat("uFogDensity", fog.density);
-                flower.setFloat("uFogHeightFalloff", fog.heightFalloff);
-                flower.setFloat("uFogHeight", fog.height);
-                flowerField.draw(GL_TRIANGLES, flowerVerts);
-                glEnable(GL_CULL_FACE);
-            }
+            // Flowers into the HDR buffer, lit + fogged like grass.
+            veg.drawFlowers(gctx);
 
             // Trees (instanced, per-material) + distant billboards into the HDR.
             veg.drawTrees(gctx);

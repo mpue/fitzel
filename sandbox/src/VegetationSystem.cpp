@@ -14,6 +14,7 @@
 #include <fitzel/world/Model.hpp>
 #include <fitzel/world/Terrain.hpp>
 
+#include "Primitives.hpp"
 #include "SandboxMath.hpp"
 
 using fitzel::InstancedMesh;
@@ -624,5 +625,166 @@ void VegetationSystem::drawTreeBillboards(const VegDrawContext& c,
     glBindVertexArray(m_bbVAO);
     glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, treeCount);
     glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+}
+
+// --- Flowers ----------------------------------------------------------------
+
+bool VegetationSystem::initFlowers() {
+    m_flower = Shader::fromFiles("assets/shaders/flower.vert", "assets/shaders/flower.frag");
+    if (!m_flower.isValid()) { std::fprintf(stderr, "Failed to load flower shader\n"); return false; }
+    // base: pos3, normal3, tint ; instance: iPos3, iYaw, iScale, iColor3.
+    const std::vector<float> mesh = makeFlowerMesh();
+    m_flowerVerts = static_cast<int>(mesh.size() / 7);
+    m_flowerField = InstancedMesh::create(
+        mesh.data(), mesh.size(), 7 * sizeof(float),
+        {{0, 3, 0}, {1, 3, 3 * sizeof(float)}, {2, 1, 6 * sizeof(float)}},
+        8 * sizeof(float),
+        {{3, 3, 0}, {4, 1, 3 * sizeof(float)}, {5, 1, 4 * sizeof(float)},
+         {6, 3, 5 * sizeof(float)}});
+    return true;
+}
+
+void VegetationSystem::rebuildFlowerBuffer() {
+    m_flowerInst.resize(m_proceduralFlowerFloats);
+    m_flowerInst.insert(m_flowerInst.end(),
+                        paintedFlowers.begin(), paintedFlowers.end());
+    m_flowerField.upload(m_flowerInst);
+    flowerCount = m_flowerField.count();
+}
+
+void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& road,
+                                    float roadWidth, float waterLevel, float snowLevel) {
+    std::vector<float>& out = m_flowerInst;
+    out.clear();
+    std::mt19937 rng(4242u);
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    const float R = grassRadius, spacing = 0.9f;
+    const float clear = roadWidth * 0.5f + 1.5f;
+    // Natural meadow palette, weighted toward buttercup yellow and white.
+    const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
+                                  {0.94f, 0.55f, 0.12f},  // warm orange
+                                  {0.95f, 0.95f, 0.88f},  // daisy white
+                                  {0.86f, 0.46f, 0.55f},  // soft pink
+                                  {0.60f, 0.55f, 0.82f}}; // pale lavender
+    for (float z = -R; z <= R; z += spacing) {
+        for (float x = -R; x <= R; x += spacing) {
+            if (x * x + z * z > R * R) continue;
+            const float wx = c.x + x, wz = c.y + z;
+            if (roadDistanceSq(road, wx, wz) < clear * clear) continue;
+            const float h = m_streamer.heightAt(wx, wz);
+            if (h < waterLevel + 0.6f || h > snowLevel - 2.0f) continue;
+            const float e = 1.0f;
+            const glm::vec3 n = glm::normalize(glm::vec3(
+                m_streamer.heightAt(wx - e, wz) - m_streamer.heightAt(wx + e, wz), 2.0f * e,
+                m_streamer.heightAt(wx, wz - e) - m_streamer.heightAt(wx, wz + e)));
+            if (n.y < 0.9f) continue;
+            const float moist = terrainMoisture(m_streamer.settings(), wx, wz);
+            if (moist < 0.3f) continue; // flowers want greener ground
+
+            // Clumps where a mid-frequency noise peaks; a small background chance
+            // sprinkles lone flowers between the groups.
+            const float clump  = valNoise2(wx * 0.16f + 50.0f, wz * 0.16f + 50.0f);
+            const float groupP = glm::smoothstep(0.66f, 0.9f, clump);
+
+            // Flowers gather in the shade around tree trunks.
+            float treeP = 0.0f;
+            for (int t = 0; t < treeCount; ++t) {
+                const float dx = wx - m_treeInst[t * 5 + 0];
+                const float dz = wz - m_treeInst[t * 5 + 2];
+                const float dd = dx * dx + dz * dz;
+                if (dd < 30.0f) treeP = std::max(treeP, glm::smoothstep(30.0f, 3.0f, dd));
+            }
+
+            const float prob = (0.02f + groupP * 0.9f + treeP * 0.75f)
+                             * glm::smoothstep(0.3f, 0.7f, moist) * flowerDensity;
+            if (u(rng) > prob) continue;
+            const float fx = wx + (u(rng) - 0.5f) * spacing;
+            const float fz = wz + (u(rng) - 0.5f) * spacing;
+            // Weighted pick: mostly yellow/orange/white, few pink/lavender.
+            const float cr = u(rng);
+            const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
+                         : cr < 0.92f ? 3 : 4;
+            const glm::vec3 col = palette[ci];
+            // Meadow flowers are small; squared roll keeps most of them tiny.
+            const float sr = u(rng);
+            const float scale = glm::mix(0.32f, 0.75f, sr * sr);
+            out.insert(out.end(), {fx, m_streamer.heightAt(fx, fz) - 0.02f, fz,
+                                   u(rng) * 6.2831f, scale,
+                                   col.r, col.g, col.b});
+        }
+    }
+    m_proceduralFlowerFloats = out.size();
+    rebuildFlowerBuffer();  // append the painted flowers and upload
+}
+
+void VegetationSystem::stampFlower(glm::vec2 c, float radius, std::mt19937& rng,
+                                   float waterLevel, float snowLevel) {
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    const float area  = 3.14159265f * radius * radius;
+    const int   tries = std::max(2, static_cast<int>(area * 0.7f * flowerBrushDensity));
+    const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f}, {0.94f, 0.55f, 0.12f},
+                                  {0.95f, 0.95f, 0.88f}, {0.86f, 0.46f, 0.55f},
+                                  {0.60f, 0.55f, 0.82f}};
+    for (int i = 0; i < tries; ++i) {
+        const float ang = u(rng) * 6.2831853f;
+        const float rad = std::sqrt(u(rng)) * radius;
+        const float wx  = c.x + std::cos(ang) * rad;
+        const float wz  = c.y + std::sin(ang) * rad;
+        const float h   = m_streamer.heightAt(wx, wz);
+        if (h < waterLevel + 0.6f || h > snowLevel - 2.0f) continue;
+        const float e = 1.0f;
+        const glm::vec3 n = glm::normalize(glm::vec3(
+            m_streamer.heightAt(wx - e, wz) - m_streamer.heightAt(wx + e, wz),
+            2.0f * e,
+            m_streamer.heightAt(wx, wz - e) - m_streamer.heightAt(wx, wz + e)));
+        if (n.y < 0.90f) continue; // flowers want fairly flat ground
+        const float cr = u(rng);
+        const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
+                     : cr < 0.92f ? 3 : 4;
+        const glm::vec3 col = palette[ci];
+        const float sr = u(rng);
+        const float scale = glm::mix(0.32f, 0.75f, sr * sr);
+        paintedFlowers.insert(paintedFlowers.end(), {
+            wx, m_streamer.heightAt(wx, wz) - 0.02f, wz,
+            u(rng) * 6.2831853f, scale, col.r, col.g, col.b});
+    }
+    rebuildFlowerBuffer();
+}
+
+void VegetationSystem::eraseFlower(glm::vec2 c, float radius) {
+    const float r2 = radius * radius;
+    std::vector<float> kept;
+    kept.reserve(paintedFlowers.size());
+    for (std::size_t i = 0; i + 8 <= paintedFlowers.size(); i += 8) {
+        const float dx = paintedFlowers[i] - c.x, dz = paintedFlowers[i + 2] - c.y;
+        if (dx * dx + dz * dz <= r2) continue;
+        kept.insert(kept.end(), paintedFlowers.begin() + i,
+                                paintedFlowers.begin() + i + 8);
+    }
+    if (kept.size() != paintedFlowers.size()) {
+        paintedFlowers.swap(kept);
+        rebuildFlowerBuffer();
+    }
+}
+
+void VegetationSystem::drawFlowers(const VegDrawContext& c) {
+    if (!flowerEnabled || flowerCount <= 0) return;
+    glDisable(GL_CULL_FACE);
+    m_flower.bind();
+    m_flower.setMat4("uViewProj", c.viewProj);
+    m_flower.setFloat("uTime", static_cast<float>(c.time));
+    m_flower.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
+    m_flower.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, c.weather));
+    m_flower.setVec3("uViewPos", c.camPos);
+    m_flower.setVec3("uLightDir", c.lightDir);
+    m_flower.setVec3("uLightColor", c.lightColor);
+    m_flower.setVec3("uAmbient", c.ambient);
+    m_flower.setVec3("uFogColor", c.fogColor);
+    m_flower.setVec3("uFogSunColor", c.fogSunColor);
+    m_flower.setFloat("uFogDensity", c.fogDensity);
+    m_flower.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
+    m_flower.setFloat("uFogHeight", c.fogHeight);
+    m_flowerField.draw(GL_TRIANGLES, m_flowerVerts);
     glEnable(GL_CULL_FACE);
 }

@@ -41,6 +41,8 @@ public:
     // Load the tree model + build its instanced/billboard GL buffers. Separate so
     // the caller can supply the content directories. Returns false on shader fail.
     bool initTrees(const std::string& modelDir, const std::string& texDir);
+    // Load the flower shader + instanced mesh. Returns false on shader fail.
+    bool initFlowers();
 
     // --- Grass ---------------------------------------------------------------
     // Hand-painted blades: stamp scatters into the brush disc (dropped on the
@@ -75,6 +77,17 @@ public:
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
     const std::vector<float>& treeInstances() const { return m_treeInst; }
 
+    // --- Flowers -------------------------------------------------------------
+    // Procedural blooms regrow with the grass pass (clustering in moist ground
+    // and around tree trunks); paint/erase place hand-flowers (world space).
+    void regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& road, float roadWidth,
+                      float waterLevel, float snowLevel);
+    void stampFlower(glm::vec2 c, float radius, std::mt19937& rng,
+                     float waterLevel, float snowLevel);
+    void eraseFlower(glm::vec2 c, float radius);
+    void clearPaintedFlowers() { paintedFlowers.clear(); rebuildFlowerBuffer(); }
+    void drawFlowers(const VegDrawContext& ctx);
+
     // --- Birds + fireflies ---------------------------------------------------
     void drawBirds(const glm::mat4& viewProj, double time, const glm::vec3& camPos);
     void drawFireflies(const glm::mat4& viewProj, double time, float night,
@@ -104,6 +117,13 @@ public:
     float     treeMinSpacing   = 4.0f; // reject placements closer than this
     float     treePaintScale   = 9.0f; // painted-tree height (m)
 
+    bool  flowerEnabled = true;
+    float flowerDensity = 1.0f;
+    int   flowerCount   = 0;
+    std::vector<float> paintedFlowers;    // 8 floats/flower, world space (saved)
+    float flowerBrushRadius  = 6.0f;
+    float flowerBrushDensity = 1.0f;
+
     bool  birdsEnabled   = true;
     bool  fireflyEnabled = true;
 
@@ -115,7 +135,8 @@ private:
 
     void regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road, float roadWidth,
                     float waterLevel, float snowLevel);
-    void rebuildTreeBuffer(); // re-upload procedural prefix + painted trees
+    void rebuildTreeBuffer();   // re-upload procedural prefix + painted trees
+    void rebuildFlowerBuffer(); // re-upload procedural prefix + painted flowers
 
     // One draw group of the tree model (a material/texture slice of the mesh).
     struct TreePrim {
@@ -148,6 +169,13 @@ private:
     std::mt19937          m_trng{555u};
     std::vector<float>    m_treeInst;              // procedural prefix + painted trees
     std::size_t           m_proceduralFloats = 0;  // size of the procedural prefix
+
+    // Flowers.
+    fitzel::Shader        m_flower;
+    fitzel::InstancedMesh m_flowerField;
+    int                   m_flowerVerts = 0;
+    std::vector<float>    m_flowerInst;
+    std::size_t           m_proceduralFlowerFloats = 0;
 
     // Birds.
     fitzel::Shader        m_bird;
