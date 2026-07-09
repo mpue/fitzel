@@ -29,3 +29,30 @@ T catmull(const T& a, const T& b, const T& c, const T& d, float t) {
 // and pose channels are Catmull-Rom smoothed; the path is clamped at both ends.
 void samplePath(const std::vector<CamKey>& k, float time,
                 glm::vec3& pos, float& yaw, float& pitch, float& fov);
+
+namespace fitzel { class Camera; }
+
+// Records the fly camera into a spline path and plays it back. update() advances
+// recording/playback each frame (driving the camera while playing); panel() draws
+// the "Camera path" window contents. Save/Load persist to campath.txt.
+class CameraPathRecorder {
+public:
+    // `allowPlay` gates playback (e.g. off while a vehicle owns the camera).
+    void update(fitzel::Camera& cam, float dt, bool allowPlay);
+    void panel(fitzel::Camera& cam);
+
+private:
+    void append(fitzel::Camera& cam, float t); // snapshot the camera at time t
+    void save() const;
+    void load();
+
+    std::vector<CamKey> m_keys;
+    bool  m_playing        = false;
+    bool  m_recording      = false;
+    float m_time           = 0.0f;  // current play/record/scrub time
+    float m_speed          = 1.0f;  // playback speed multiplier
+    bool  m_loop           = false;
+    float m_keySpacing     = 2.0f;  // seconds granted to a manually added key
+    float m_recordInterval = 0.15f; // seconds between samples while recording
+    float m_recordAccum    = 0.0f;
+};

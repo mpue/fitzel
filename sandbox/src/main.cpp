@@ -1100,44 +1100,8 @@ int main(int argc, char** argv) {
         bool        grounded = false;
         const float eyeHeight = 1.8f;
 
-        // Camera path recorder/player state.
-        std::vector<CamKey> camPath;
-        bool  pathPlaying    = false;
-        bool  pathRecording  = false;
-        float pathTime       = 0.0f;   // current play/record/scrub time
-        float pathSpeed      = 1.0f;   // playback speed multiplier
-        bool  pathLoop       = false;
-        float keySpacing     = 2.0f;   // seconds granted to a manually added key
-        float recordInterval = 0.15f;  // seconds between samples while recording
-        float recordAccum    = 0.0f;
-
-        // Snapshot the current camera as a keyframe at time `t`, unwrapping yaw so
-        // it stays continuous with the previous key (no 360-degree spin on replay).
-        auto appendKey = [&](float t) {
-            float y = camera.yaw();
-            if (!camPath.empty()) {
-                const float prev = camPath.back().yaw;
-                while (y - prev >  180.0f) y -= 360.0f;
-                while (y - prev < -180.0f) y += 360.0f;
-            }
-            camPath.push_back({t, camera.position(), y, camera.pitch(), camera.fov()});
-        };
-        const char* kPathFile = "campath.txt";
-        auto savePath = [&] {
-            std::ofstream f(kPathFile);
-            for (const CamKey& k : camPath)
-                f << k.t << ' ' << k.pos.x << ' ' << k.pos.y << ' ' << k.pos.z << ' '
-                  << k.yaw << ' ' << k.pitch << ' ' << k.fov << '\n';
-        };
-        auto loadPath = [&] {
-            std::ifstream f(kPathFile);
-            if (!f) return;
-            std::vector<CamKey> loaded;
-            CamKey k;
-            while (f >> k.t >> k.pos.x >> k.pos.y >> k.pos.z >> k.yaw >> k.pitch >> k.fov)
-                loaded.push_back(k);
-            if (!loaded.empty()) { camPath = std::move(loaded); pathPlaying = false; pathTime = 0.0f; }
-        };
+        // Camera path recorder/player (record/play/scrub + save, in CameraPath).
+        CameraPathRecorder camPathRec;
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -2107,27 +2071,7 @@ int main(int argc, char** argv) {
             }
 
             // --- Camera path: record samples or drive playback ----------
-            if (pathRecording) {
-                pathTime    += dt;
-                recordAccum += dt;
-                if (recordAccum >= recordInterval) {
-                    recordAccum -= recordInterval;
-                    appendKey(pathTime);
-                }
-            } else if (!vehicleMode && pathPlaying && camPath.size() >= 2) {
-                pathTime += dt * pathSpeed;
-                const float tmax = camPath.back().t;
-                if (pathTime >= tmax) {
-                    if (pathLoop) pathTime = std::fmod(pathTime, tmax);
-                    else { pathTime = tmax; pathPlaying = false; }
-                }
-                glm::vec3 p; float y, pi, fv;
-                samplePath(camPath, pathTime, p, y, pi, fv);
-                camera.setPosition(p);
-                camera.setYaw(y);
-                camera.setPitch(pi);
-                camera.setFov(fv);
-            }
+            camPathRec.update(camera, dt, !vehicleMode);
 
             // View distance: drive the streaming radius and the camera far plane.
             streamer.setRadius(viewRadius);
@@ -3843,72 +3787,7 @@ int main(int argc, char** argv) {
             ImGui::End(); }
 
             if (showCamPath) { if (ImGui::Begin("Camera path", &showCamPath)) {
-                ImGui::Text("Keyframes: %d", static_cast<int>(camPath.size()));
-                if (pathRecording) ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1),
-                                                      "RECORDING  %.1fs", pathTime);
-                else if (pathPlaying) ImGui::TextColored(ImVec4(0.4f, 1, 0.5f, 1),
-                                                         "PLAYING  %.1fs", pathTime);
-                else ImGui::TextDisabled("idle");
-
-                // Record continuously samples the camera while you fly; Add keyframe
-                // snapshots the current pose. Both build the same spline path.
-                if (ImGui::Button(pathRecording ? "Stop recording" : "Record")) {
-                    pathRecording = !pathRecording;
-                    if (pathRecording) {
-                        camPath.clear();
-                        pathPlaying = false;
-                        pathTime = 0.0f;
-                        recordAccum = 0.0f;
-                        appendKey(0.0f); // anchor at the start pose
-                    }
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Add keyframe")) {
-                    const float t = camPath.empty() ? 0.0f : camPath.back().t + keySpacing;
-                    appendKey(t);
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Clear")) {
-                    camPath.clear();
-                    pathPlaying = pathRecording = false;
-                    pathTime = 0.0f;
-                }
-
-                ImGui::BeginDisabled(camPath.size() < 2);
-                if (ImGui::Button(pathPlaying ? "Stop" : "Play")) {
-                    pathPlaying = !pathPlaying;
-                    pathRecording = false;
-                    if (pathPlaying) pathTime = 0.0f;
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::Checkbox("Loop", &pathLoop);
-
-                ImGui::SliderFloat("Speed", &pathSpeed, 0.1f, 4.0f, "%.2fx");
-                ImGui::SliderFloat("Key spacing", &keySpacing, 0.5f, 10.0f, "%.1f s");
-                ImGui::SliderFloat("Rec interval", &recordInterval, 0.05f, 1.0f, "%.2f s");
-
-                if (camPath.size() >= 2) {
-                    const float tmax = camPath.back().t;
-                    ImGui::Text("Duration: %.1f s", tmax);
-                    // Scrubbing previews the pose and pauses playback.
-                    if (ImGui::SliderFloat("Scrub", &pathTime, 0.0f, tmax, "%.2f s")) {
-                        glm::vec3 p; float y, pi, fv;
-                        samplePath(camPath, pathTime, p, y, pi, fv);
-                        camera.setPosition(p);
-                        camera.setYaw(y);
-                        camera.setPitch(pi);
-                        camera.setFov(fv);
-                        pathPlaying = false;
-                    }
-                }
-
-                ImGui::Separator();
-                if (ImGui::Button("Save")) savePath();
-                ImGui::SameLine();
-                if (ImGui::Button("Load")) loadPath();
-                ImGui::SameLine();
-                ImGui::TextDisabled("(%s)", kPathFile);
+                camPathRec.panel(camera);
             }
             ImGui::End(); }
 
