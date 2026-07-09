@@ -11,6 +11,8 @@ uniform int   uKernelSize;
 uniform float uRadius;
 uniform float uBias;
 uniform float uPower;
+uniform float uFadeStart; // view distance where AO begins to fade out
+uniform float uFadeEnd;   // ..and where it reaches zero
 
 float hash12(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -45,6 +47,16 @@ void main() {
     vec3 ddy = (abs(Pu.z - P.z) < abs(P.z - Pd.z)) ? (Pu - P) : (P - Pd);
     vec3 N = normalize(cross(ddx, ddy));
 
+    // A wide-baseline normal (several texels apart) averages out the terrain
+    // mesh's facets into a stable ground normal. The tight 1-texel N above is too
+    // noisy on distant/grazing terrain -- it picks up each mesh row and points
+    // toward the camera, which is exactly what terraces the AO into horizontal
+    // stripes. Ns drives the grazing fade below.
+    const float WB = 5.0;
+    vec3 Ns = normalize(cross(
+        viewPos(uv + vec2(texel.x, 0.0) * WB) - viewPos(uv - vec2(texel.x, 0.0) * WB),
+        viewPos(uv + vec2(0.0, texel.y) * WB) - viewPos(uv - vec2(0.0, texel.y) * WB)));
+
     // Random per-pixel rotation of the kernel (cheap dither).
     float a = hash12(gl_FragCoord.xy) * 6.2831853;
     vec3  rnd = vec3(cos(a), sin(a), 0.0);
@@ -71,6 +83,14 @@ void main() {
         occlusion += (sampleZ >= samplePos.z + bias ? 1.0 : 0.0) * range;
     }
 
-    occlusion = 1.0 - occlusion / float(uKernelSize);
+    // Fade AO at grazing angles (surface nearly parallel to the view ray), where
+    // depth-from-SSAO is unreliable and terraces the ground into horizontal
+    // stripes. Uses the stable wide-baseline normal Ns so the fade actually
+    // triggers on the terrain. Plus a plain distance fade for the far horizon.
+    vec3  V         = normalize(-P);                  // toward the camera (view space)
+    float grazeFade = smoothstep(0.25, 0.60, abs(dot(Ns, V)));
+    float distFade  = 1.0 - smoothstep(uFadeStart, uFadeEnd, -P.z);
+
+    occlusion = 1.0 - (occlusion * grazeFade * distFade) / float(uKernelSize);
     FragColor = vec4(pow(occlusion, uPower));
 }

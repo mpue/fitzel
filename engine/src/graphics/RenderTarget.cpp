@@ -30,7 +30,10 @@ RenderTarget::RenderTarget(int width, int height, Format format, bool depthAsTex
     if (depthAsTexture) {
         glGenTextures(1, &m_depthTex);
         glBindTexture(GL_TEXTURE_2D, m_depthTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, width, height, 0,
+        // 32-bit float depth: 24-bit fixed-point quantises badly at distance under
+        // a far plane that grows with the view distance, which terraces SSAO into
+        // horizontal stripes on grazing terrain. 32F keeps the reconstruction clean.
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
                      GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);

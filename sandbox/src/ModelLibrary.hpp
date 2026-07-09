@@ -39,6 +39,12 @@ public:
     // Look up a loaded model by id (nullptr if unknown).
     LoadedModel* byId(int id);
 
+    // Iterate every loaded model (for saving/restoring per-material overrides).
+    std::size_t  count() const { return models_.size(); }
+    LoadedModel* at(std::size_t i) {
+        return i < models_.size() ? models_[i].get() : nullptr;
+    }
+
     void        clear() { models_.clear(); nodeCache_.clear(); }
     std::size_t size() const { return models_.size(); }
 

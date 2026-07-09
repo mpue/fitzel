@@ -1241,6 +1241,38 @@ int main(int argc, char** argv) {
                 es << ix << ' ' << iz << ' ' << d << ' ';
             }
             j["terrainEdits"] = es.str();
+
+            // Model-material overrides: edits to materials that come from an
+            // imported model aren't written as standalone .fmat files (the model
+            // owns them and regenerates them on re-import), so their user edits
+            // would be lost. Persist them here keyed by a stable identity
+            // (model file GUID | model/node name | primitive index) and re-apply
+            // after the model re-imports on load.
+            nlohmann::json ov = nlohmann::json::object();
+            for (std::size_t mi = 0; mi < models.count(); ++mi) {
+                const LoadedModel* lm = models.at(mi);
+                if (!lm) continue;
+                for (std::size_t p = 0; p < lm->primMaterialId.size(); ++p) {
+                    const int idx = document.materialIndex(lm->primMaterialId[p]);
+                    if (idx < 0 || !materials[idx].fromModel) continue;
+                    const MaterialDef& md = materials[idx];
+                    const std::string key = lm->assetId.toString() + "|" +
+                                            lm->name + "|" + std::to_string(p);
+                    ov[key] = {
+                        {"name", md.name},
+                        {"albedo", {md.albedo.x, md.albedo.y, md.albedo.z}},
+                        {"reflectivity", md.reflectivity},
+                        {"roughness", md.roughness},
+                        {"opacity", md.opacity},
+                        {"glass", md.glass},
+                        {"alphaMode", static_cast<int>(md.alphaMode)},
+                        {"alphaCutoff", md.alphaCutoff},
+                        {"emission", {md.emission.x, md.emission.y, md.emission.z}},
+                        {"emissionStrength", md.emissionStrength},
+                    };
+                }
+            }
+            j["modelMaterialOverrides"] = std::move(ov);
         };
         readSettingsFn = [&](const nlohmann::json& j){
             for (const Setting& s : tunables) s.read(j);
@@ -1304,6 +1336,43 @@ int main(int argc, char** argv) {
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
             road.dirty  = true;
+
+            // Re-apply model-material overrides now that every model has
+            // re-imported (see writeSettings). Matched by the same stable key so
+            // edits to model-owned materials survive save/load.
+            if (j.contains("modelMaterialOverrides") &&
+                j["modelMaterialOverrides"].is_object()) {
+                const auto& ov = j["modelMaterialOverrides"];
+                auto rd3 = [](const nlohmann::json& a, glm::vec3 d) {
+                    return (a.is_array() && a.size() == 3)
+                        ? glm::vec3(a[0].get<float>(), a[1].get<float>(), a[2].get<float>())
+                        : d;
+                };
+                for (std::size_t mi = 0; mi < models.count(); ++mi) {
+                    LoadedModel* lm = models.at(mi);
+                    if (!lm) continue;
+                    for (std::size_t p = 0; p < lm->primMaterialId.size(); ++p) {
+                        const std::string key = lm->assetId.toString() + "|" +
+                                                lm->name + "|" + std::to_string(p);
+                        if (!ov.contains(key)) continue;
+                        const int idx = document.materialIndex(lm->primMaterialId[p]);
+                        if (idx < 0) continue;
+                        MaterialDef& md = materials[idx];
+                        const auto& e = ov[key];
+                        md.name          = e.value("name", md.name);
+                        md.albedo        = rd3(e.value("albedo", nlohmann::json{}), md.albedo);
+                        md.reflectivity  = e.value("reflectivity", md.reflectivity);
+                        md.roughness     = e.value("roughness", md.roughness);
+                        md.opacity       = e.value("opacity", md.opacity);
+                        md.glass         = e.value("glass", md.glass);
+                        md.alphaMode     = static_cast<AlphaMode>(
+                            e.value("alphaMode", static_cast<int>(md.alphaMode)));
+                        md.alphaCutoff   = e.value("alphaCutoff", md.alphaCutoff);
+                        md.emission      = rd3(e.value("emission", nlohmann::json{}), md.emission);
+                        md.emissionStrength = e.value("emissionStrength", md.emissionStrength);
+                    }
+                }
+            }
         };
 
         // --- Play mode: run the scene as a game -------------------------------
@@ -5607,6 +5676,10 @@ int main(int argc, char** argv) {
             ssao.setFloat("uRadius", ssaoRadius);
             ssao.setFloat("uBias", ssaoBias);
             ssao.setFloat("uPower", ssaoPower);
+            // Fade AO out past the near/mid field so distant, low-precision terrain
+            // toward the horizon can't band into horizontal stripes.
+            ssao.setFloat("uFadeStart", 50.0f);
+            ssao.setFloat("uFadeEnd", 120.0f);
             fsQuad.draw();
             glDepthMask(GL_TRUE);
             glEnable(GL_DEPTH_TEST);
