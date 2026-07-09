@@ -456,103 +456,20 @@ int main(int argc, char** argv) {
             glBindVertexArray(0);
         }
 
-        // --- Grass: GPU-instanced blades placed on suitable terrain ------
-        Shader grass = Shader::fromFiles("assets/shaders/grass.vert",
-                                         "assets/shaders/grass.frag");
-        if (!grass.isValid()) { std::fprintf(stderr, "Failed to load grass shader\n"); return 1; }
-        // base: aBlade(x,h01) triangle strip ; instance: iPos3, iRot, iHeight,
-        // iPhase, iLush.
-        const float blade[] = {
-            -0.5f, 0.0f,  0.5f, 0.0f,  -0.45f, 0.33f,  0.45f, 0.33f,
-            -0.30f, 0.66f, 0.30f, 0.66f,  0.0f, 1.0f };
-        InstancedMesh grassField = InstancedMesh::create(
-            blade, sizeof(blade) / sizeof(float), 2 * sizeof(float), {{0, 2, 0}},
-            7 * sizeof(float),
-            {{1, 3, 0}, {2, 1, 3 * sizeof(float)}, {3, 1, 4 * sizeof(float)},
-             {4, 1, 5 * sizeof(float)}, {5, 1, 6 * sizeof(float)}});
-        int       grassCount   = 0;
-        glm::vec2 grassCenter(1e9f); // forces generation on the first frame
-        bool      grassEnabled = true;
-        float     grassHeight  = 0.35f;
-        float     grassDensity = 1.0f;
-        float     grassRadius  = 46.0f;
-        glm::vec3 grassTint(1.0f, 1.0f, 1.0f);
+        // --- Vegetation: grass + ambient wildlife (birds/fireflies) ----------
+        // Grass/birds/fireflies live in VegetationSystem now; main keeps the
+        // shared paint-brush state (also used by the tree/flower brushes) and
+        // orchestrates. Constructed here (before regenFlowers, which reads veg's
+        // grass params) -- streamer/camera already exist above.
+        VegetationSystem veg(streamer, camera);
+        if (!veg.init()) return 1;
 
-        // --- Grass painting -------------------------------------------------
-        // A hand-painted grass layer that coexists with the procedural field
-        // above. Blades live in absolute world space (7 floats each, the same
-        // layout as `grassField`) so they stay put as the camera roams and can
-        // be persisted with the scene. A 3D brush stamps/erases them.
-        InstancedMesh paintedGrass = InstancedMesh::create(
-            blade, sizeof(blade) / sizeof(float), 2 * sizeof(float), {{0, 2, 0}},
-            7 * sizeof(float),
-            {{1, 3, 0}, {2, 1, 3 * sizeof(float)}, {3, 1, 4 * sizeof(float)},
-             {4, 1, 5 * sizeof(float)}, {5, 1, 6 * sizeof(float)}});
-        std::vector<float> paintedBlades;      // 7 floats/blade, world space
-        bool      paintedDirty   = false;      // GPU re-upload pending
-        bool      grassPaintMode = false;      // brush tool active
-        bool      brushErase     = false;      // stamp vs erase
-        float     brushRadius    = 4.0f;       // world units
-        float     brushDensity   = 1.0f;       // scatter-count multiplier
+        bool      grassPaintMode = false;      // grass brush active
+        bool      brushErase     = false;      // stamp vs erase (shared)
+        float     brushRadius    = 4.0f;       // world units (shared)
+        float     brushDensity   = 1.0f;       // scatter-count multiplier (shared)
         glm::vec2 lastStampPos(1e9f);          // throttles stamping during a drag
         std::mt19937 brushRng(0xB1A5Eu);
-
-        // Scatter blades across the brush disc. Each candidate is dropped on the
-        // terrain and rejected on steep slopes / underwater / above the snow line
-        // -- the same suitability test the procedural field uses -- so painted
-        // grass never floats on cliffs or pokes through lakes.
-        auto stampGrass = [&](glm::vec2 c, float radius) {
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float area  = 3.14159265f * radius * radius;
-            const int   tries = std::max(4, static_cast<int>(
-                                    area * 2.2f * brushDensity * grassDensity));
-            const TerrainSettings& s = streamer.settings();
-            for (int i = 0; i < tries; ++i) {
-                const float ang = u(brushRng) * 6.2831853f;
-                const float rad = std::sqrt(u(brushRng)) * radius; // uniform in disc
-                const float wx  = c.x + std::cos(ang) * rad;
-                const float wz  = c.y + std::sin(ang) * rad;
-                const float h   = streamer.heightAt(wx, wz);
-                if (h < waterLevel + 0.5f || h > look.snowLevel - 1.5f) continue;
-                const float e = 1.0f;
-                const glm::vec3 n = glm::normalize(glm::vec3(
-                    streamer.heightAt(wx - e, wz) - streamer.heightAt(wx + e, wz),
-                    2.0f * e,
-                    streamer.heightAt(wx, wz - e) - streamer.heightAt(wx, wz + e)));
-                if (n.y < 0.80f) continue; // too steep
-                const float lush = glm::clamp(terrainMoisture(s, wx, wz), 0.0f, 1.0f);
-                // Store a *relative* height (per-blade jitter only); the global
-                // "Blade height" slider is applied live at draw via uHeightScale,
-                // so moving it rescales already-painted grass too.
-                const float bh   = glm::mix(0.8f, 1.15f, u(brushRng));
-                paintedBlades.insert(paintedBlades.end(), {
-                    wx, h, wz,
-                    u(brushRng) * 6.2831853f,          // yaw
-                    bh,                                // relative blade height
-                    u(brushRng) * 6.2831853f,          // sway phase
-                    glm::clamp(lush + (u(brushRng) - 0.5f) * 0.2f, 0.0f, 1.0f)});
-            }
-            paintedDirty = true;
-        };
-
-        // Drop every painted blade whose base lies within the brush disc.
-        auto eraseGrass = [&](glm::vec2 c, float radius) {
-            const float r2 = radius * radius;
-            const int   stride = 7;
-            std::vector<float> kept;
-            kept.reserve(paintedBlades.size());
-            for (std::size_t i = 0; i + stride <= paintedBlades.size(); i += stride) {
-                const float dx = paintedBlades[i]     - c.x;
-                const float dz = paintedBlades[i + 2] - c.y;
-                if (dx * dx + dz * dz <= r2) continue; // inside brush -> remove
-                kept.insert(kept.end(), paintedBlades.begin() + i,
-                                        paintedBlades.begin() + i + stride);
-            }
-            if (kept.size() != paintedBlades.size()) {
-                paintedBlades.swap(kept);
-                paintedDirty = true;
-            }
-        };
 
         // --- Terrain sculpting ---------------------------------------------
         // `sculptWork` is the live, main-thread-only edit field; every change is
@@ -575,72 +492,6 @@ int main(int argc, char** argv) {
         float noiseFreq      = 0.35f;        // roughen feature size
         float noiseSeed      = 0.0f;         // advanced per dab so detail layers up
 
-        // Grass placement runs on a worker thread (pure noise queries, no GL) so
-        // moving never stalls the frame; the result is uploaded on the main thread.
-        std::future<std::vector<float>> grassFuture;
-        bool          grassPending = false;
-        bool          grassDirty   = true; // force the first generation
-        glm::vec2     grassPendingCenter(0.0f);
-        std::uint32_t grassSeed = 1234u;
-        auto computeGrass = [](TerrainSettings s, glm::vec2 c, float waterLvl,
-                               float snowLvl, float gHeight, float gDensity,
-                               float R, std::uint32_t seed,
-                               std::vector<glm::vec2> road, float roadClear)
-                               -> std::vector<float> {
-            std::vector<float> out;
-            std::mt19937 rng(seed);
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float spacing = 0.6f; // sampling grid (one ground query per cell)
-            const int   per = std::max(1, static_cast<int>(120.0f * gDensity));
-            for (float z = -R; z <= R; z += spacing) {
-                for (float x = -R; x <= R; x += spacing) {
-                    if (x * x + z * z > R * R) continue;
-                    const float wx = c.x + x, wz = c.y + z;
-                    if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
-                    const float h = terrainHeight(s, wx, wz);
-                    if (h < waterLvl + 0.5f || h > snowLvl - 1.5f) continue;
-                    const float e = 1.0f;
-                    const glm::vec3 n = glm::normalize(glm::vec3(
-                        terrainHeight(s, wx - e, wz) - terrainHeight(s, wx + e, wz),
-                        2.0f * e,
-                        terrainHeight(s, wx, wz - e) - terrainHeight(s, wx, wz + e)));
-                    if (n.y < 0.82f) continue;
-                    const float lush = glm::clamp(
-                        terrainMoisture(s, wx, wz)
-                            - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
-                        0.0f, 1.0f);
-                    if (lush < 0.22f) continue;
-                    // Meadow patchiness: clumps of dense/thin grass and bare gaps.
-                    const float patch = valNoise2(wx * 0.05f, wz * 0.05f);
-                    const float bare  = valNoise2(wx * 0.13f + 19.0f, wz * 0.13f + 7.0f);
-                    if (bare < 0.26f) continue; // bare ground -> no grass in this cell
-                    const float dens  = glm::mix(0.25f, 1.25f, patch);
-                    const float dist  = std::sqrt(x * x + z * z);
-                    const float rim   = 1.0f - glm::smoothstep(R * 0.82f, R, dist);
-                    // Distance LOD: thin out far cells (most of the area) hard --
-                    // near grass stays full, distant grass is a fraction. Big win.
-                    const float lod   = glm::mix(1.0f, 0.22f,
-                                                 glm::smoothstep(0.28f, 1.0f, dist / R));
-                    const int   count = static_cast<int>(per * dens
-                                        * glm::mix(0.35f, 1.0f, lush) * rim * lod);
-                    for (int b = 0; b < count; ++b) {
-                        // Scatter well past the cell so the sampling grid vanishes.
-                        // Height follows the patch (taller clumps) plus per-blade jitter.
-                        const float bh = gHeight * glm::mix(0.65f, 1.25f, patch)
-                                                 * glm::mix(0.8f, 1.1f, u(rng));
-                        out.insert(out.end(), {
-                            wx + (u(rng) - 0.5f) * spacing * 2.2f, h,
-                            wz + (u(rng) - 0.5f) * spacing * 2.2f,
-                            u(rng) * 6.2831f,
-                            bh,
-                            u(rng) * 6.2831f,
-                            glm::clamp(lush + (patch - 0.5f) * 0.4f
-                                            + (u(rng) - 0.5f) * 0.12f, 0.0f, 1.0f)});
-                    }
-                }
-            }
-            return out;
-        };
 
         // --- Trees: instanced low-poly pines (trunk + 3 foliage cones) ---
         Shader tree = Shader::fromFiles("assets/shaders/tree.vert",
@@ -1418,7 +1269,7 @@ int main(int argc, char** argv) {
             out.clear();
             std::mt19937 rng(4242u);
             std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            const float R = grassRadius, spacing = 0.9f;
+            const float R = veg.grassRadius, spacing = 0.9f;
             const float clear = roadWidth * 0.5f + 1.5f;
             // Natural meadow palette, weighted toward buttercup yellow and white.
             const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
@@ -1528,12 +1379,6 @@ int main(int argc, char** argv) {
                 rebuildFlowerBuffer();
             }
         };
-
-        // --- Ambient wildlife: birds + fireflies -----------------------------
-        // First slice of vegetation extracted out of main.cpp; owns its own
-        // shaders/meshes. Grass/trees/flowers still live below (for now).
-        VegetationSystem veg(streamer, camera);
-        if (!veg.init()) return 1;
 
         // Gameplay RNG for spawner launch-direction randomization (persists across
         // spawns so successive emits vary within a Play session).
@@ -1783,19 +1628,19 @@ int main(int argc, char** argv) {
                 uiSettings.continentAmp = 0.0f;
                 uiSettings.warpStrength = 0.0f;
                 uiSettings.terrace      = 0.0f;
-                grassEnabled = treeEnabled = flowerEnabled = false;
+                veg.grassEnabled = treeEnabled = flowerEnabled = false;
                 veg.birdsEnabled = veg.fireflyEnabled = false;
                 waterLevel = -1000.0f;
             } else {                       // Nature: restore the outdoor world
                 uiSettings = natureSettings;
-                grassEnabled = treeEnabled = flowerEnabled = true;
+                veg.grassEnabled = treeEnabled = flowerEnabled = true;
                 veg.birdsEnabled = veg.fireflyEnabled = true;
                 waterLevel = -2.0f;
             }
             streamer.settings() = uiSettings;
             streamer.rebuild();
             streamer.update(camera.position());
-            grassDirty = true;
+            veg.grassDirty = true;
             treeCenter = glm::vec2(1e9f);
             roadDirty  = true;
         };
@@ -1854,10 +1699,10 @@ int main(int argc, char** argv) {
         addF("texScale", texScale);            addF("normalStrength", normalStrength);
         addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
-        addB("grassEnabled", grassEnabled);    addF("grassDensity", grassDensity);
-        addF("grassRadius", grassRadius);      addF("grassHeight", grassHeight);
-        addF("grassTintR", grassTint.x);       addF("grassTintG", grassTint.y);
-        addF("grassTintB", grassTint.z);
+        addB("veg.grassEnabled", veg.grassEnabled);    addF("veg.grassDensity", veg.grassDensity);
+        addF("veg.grassRadius", veg.grassRadius);      addF("veg.grassHeight", veg.grassHeight);
+        addF("veg.grassTintR", veg.grassTint.x);       addF("veg.grassTintG", veg.grassTint.y);
+        addF("veg.grassTintB", veg.grassTint.z);
         addB("treeEnabled", treeEnabled);      addF("treeDensity", treeDensity);
         addF("treeSize", treeSize);            addF("lodNear", lodNear);
 
@@ -1879,7 +1724,7 @@ int main(int argc, char** argv) {
             // explode into a line per number.
             std::ostringstream gs;
             gs.precision(7);
-            for (float v : paintedBlades) gs << v << ' ';
+            for (float v : veg.paintedBlades) gs << v << ' ';
             j["paintedGrass"] = gs.str();
             // Hand-painted trees: same compact float blob (5 per tree).
             std::ostringstream ts;
@@ -1923,14 +1768,14 @@ int main(int argc, char** argv) {
                     look.layers.push_back(std::move(L));
                 }
             // Restore hand-painted grass (empty for scenes saved before it existed).
-            paintedBlades.clear();
+            veg.paintedBlades.clear();
             if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
                 std::istringstream gs(j["paintedGrass"].get<std::string>());
                 float v;
-                while (gs >> v) paintedBlades.push_back(v);
-                paintedBlades.resize(paintedBlades.size() / 7 * 7); // whole blades
+                while (gs >> v) veg.paintedBlades.push_back(v);
+                veg.paintedBlades.resize(veg.paintedBlades.size() / 7 * 7); // whole blades
             }
-            paintedDirty = true; // re-upload to the GPU next frame
+            veg.paintedDirty = true; // re-upload to the GPU next frame
             // Restore hand-painted trees (regenTrees re-appends them next frame,
             // triggered by the treeCenter reset below).
             paintedTrees.clear();
@@ -1941,7 +1786,7 @@ int main(int argc, char** argv) {
                 paintedTrees.resize(paintedTrees.size() / 5 * 5); // whole trees
             }
             // Restore hand-painted flowers (regenFlowers re-appends them when the
-            // grass pass runs, triggered by the grassDirty reset below).
+            // grass pass runs, triggered by the veg.grassDirty reset below).
             paintedFlowers.clear();
             if (j.contains("paintedFlowers") && j["paintedFlowers"].is_string()) {
                 std::istringstream fs(j["paintedFlowers"].get<std::string>());
@@ -1963,7 +1808,7 @@ int main(int argc, char** argv) {
             streamer.settings() = uiSettings;
             streamer.rebuild();
             streamer.update(camera.position());
-            grassDirty = true;
+            veg.grassDirty = true;
             treeCenter = glm::vec2(1e9f);
             roadDirty  = true;
         };
@@ -2767,38 +2612,16 @@ int main(int argc, char** argv) {
             // clears off the new road; debounced to avoid thrashing while editing.
             if (roadVegDirty && !roadDragging) {
                 roadVegDirty = false;
-                grassDirty   = true;
+                veg.grassDirty   = true;
                 treeCenter   = glm::vec2(1e9f);
             }
 
             // Regrow grass (async) / trees when the camera has moved far enough.
             {
                 const glm::vec2 camXZ(camera.position().x, camera.position().z);
-                if (grassEnabled && !grassPending &&
-                    (grassDirty || glm::length(camXZ - grassCenter) > 10.0f)) {
-                    grassPending = true;
-                    grassDirty   = false;
-                    grassPendingCenter = camXZ;
-                    grassFuture = std::async(std::launch::async, computeGrass,
-                                             streamer.settings(), camXZ, waterLevel,
-                                             look.snowLevel, grassHeight, grassDensity,
-                                             grassRadius, grassSeed++,
-                                             roadCenterline, roadWidth * 0.5f + 1.5f);
-                }
-                if (grassPending && grassFuture.valid() &&
-                    grassFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-                    const std::vector<float> data = grassFuture.get();
-                    grassField.upload(data);
-                    grassCount = grassField.count();
-                    grassCenter = grassPendingCenter;
-                    grassPending = false;
-                    // Flowers share the grass area; regenerate them to match.
-                    if (flowerEnabled) regenFlowers(grassPendingCenter);
-                }
-                if (paintedDirty) { // painted blades changed -> push to the GPU
-                    paintedGrass.upload(paintedBlades);
-                    paintedDirty = false;
-                }
+                if (veg.updateGrass(camXZ, roadCenterline, roadWidth * 0.5f + 1.5f,
+                                    waterLevel, look.snowLevel) && flowerEnabled)
+                    regenFlowers(veg.grassCenter()); // flowers share the grass area
                 if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f) regenTrees(camXZ);
             }
 
@@ -3768,11 +3591,12 @@ int main(int argc, char** argv) {
                     if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                         const glm::vec2 cxz(center.x, center.z);
                         if (erasing) {
-                            eraseGrass(cxz, brushRadius);
+                            veg.eraseGrass(cxz, brushRadius);
                         } else if (glm::length(cxz - lastStampPos) > brushRadius * 0.4f) {
                             // Throttle so a slow drag doesn't pile blades up: step
                             // ~0.4 radius between stamps for an even trail.
-                            stampGrass(cxz, brushRadius);
+                            veg.stampGrass(cxz, brushRadius, brushRng, brushDensity,
+                                           waterLevel, look.snowLevel);
                             lastStampPos = cxz;
                         }
                     }
@@ -3955,7 +3779,7 @@ int main(int argc, char** argv) {
                         const float m = sculptRadius + 3.0f * sculptWork.cell;
                         streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
                                               glm::vec2(c.x + m, c.y + m));
-                        grassDirty = true; // vegetation re-drapes on the new ground
+                        veg.grassDirty = true; // vegetation re-drapes on the new ground
                     }
 
                     // Brush cursor: a ground-hugging ring, coloured per tool.
@@ -4314,7 +4138,7 @@ int main(int argc, char** argv) {
 
             terrainui::drawPanel({
                 showTerrain, uiSettings, streamer, camera, look,
-                texScale, normalStrength, grassDirty, treeCenter, roadDirty,
+                texScale, normalStrength, veg.grassDirty, treeCenter, roadDirty,
                 assetDb,
             });
 
@@ -4371,7 +4195,7 @@ int main(int argc, char** argv) {
                     sculptWork.deltas.clear();
                     publishSculpt();
                     streamer.rebuild(); // drop all edits -> regenerate the terrain
-                    grassDirty = true;
+                    veg.grassDirty = true;
                 }
                 ImGui::EndDisabled();
             }
@@ -4379,14 +4203,14 @@ int main(int argc, char** argv) {
 
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ImGui::SeparatorText("Grass");
-                ImGui::Checkbox("Grass", &grassEnabled);
+                ImGui::Checkbox("Grass", &veg.grassEnabled);
                 bool regrow = false;
-                regrow |= ImGui::SliderFloat("Density", &grassDensity, 0.1f, 3.0f);
-                regrow |= ImGui::SliderFloat("Grass range", &grassRadius, 20.0f, 90.0f);
-                regrow |= ImGui::SliderFloat("Blade height", &grassHeight, 0.2f, 1.2f);
-                if (regrow) grassDirty = true; // baked per blade -> regrow
-                ImGui::ColorEdit3("Tint", &grassTint.x);
-                ImGui::Text("Blades: %d", grassCount);
+                regrow |= ImGui::SliderFloat("Density", &veg.grassDensity, 0.1f, 3.0f);
+                regrow |= ImGui::SliderFloat("Grass range", &veg.grassRadius, 20.0f, 90.0f);
+                regrow |= ImGui::SliderFloat("Blade height", &veg.grassHeight, 0.2f, 1.2f);
+                if (regrow) veg.grassDirty = true; // baked per blade -> regrow
+                ImGui::ColorEdit3("Tint", &veg.grassTint.x);
+                ImGui::Text("Blades: %d", veg.grassCount);
 
                 ImGui::SeparatorText("Paint grass (3D brush)");
                 if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
@@ -4400,26 +4224,27 @@ int main(int argc, char** argv) {
                 ImGui::Checkbox("Erase", &brushErase);
                 ImGui::SliderFloat("Brush size", &brushRadius, 0.5f, 40.0f, "%.1f m");
                 ImGui::SliderFloat("Brush density", &brushDensity, 0.1f, 4.0f);
-                ImGui::Text("Painted blades: %d", paintedGrass.count());
+                ImGui::Text("Painted blades: %d",
+                            static_cast<int>(veg.paintedBlades.size() / 7));
                 if (ImGui::Button("Clear painted")) {
-                    paintedBlades.clear();
-                    paintedDirty = true;
+                    veg.paintedBlades.clear();
+                    veg.paintedDirty = true;
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Save##grass")) {
                     std::ofstream f("grass.txt");
-                    for (std::size_t i = 0; i < paintedBlades.size(); ++i)
-                        f << paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
+                    for (std::size_t i = 0; i < veg.paintedBlades.size(); ++i)
+                        f << veg.paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Load##grass")) {
                     std::ifstream f("grass.txt");
                     if (f) {
-                        paintedBlades.clear();
+                        veg.paintedBlades.clear();
                         float v;
-                        while (f >> v) paintedBlades.push_back(v);
-                        paintedBlades.resize(paintedBlades.size() / 7 * 7); // whole blades
-                        paintedDirty = true;
+                        while (f >> v) veg.paintedBlades.push_back(v);
+                        veg.paintedBlades.resize(veg.paintedBlades.size() / 7 * 7); // whole blades
+                        veg.paintedDirty = true;
                     }
                 }
                 ImGui::SameLine();
@@ -4458,9 +4283,9 @@ int main(int argc, char** argv) {
                 ImGui::SeparatorText("Flowers");
                 ImGui::Checkbox("Flowers", &flowerEnabled);
                 if (ImGui::SliderFloat("Flower density", &flowerDensity, 0.0f, 2.0f))
-                    grassDirty = true; // flowers regenerate with the grass pass
+                    veg.grassDirty = true; // flowers regenerate with the grass pass
                 ImGui::SameLine();
-                if (ImGui::SmallButton("Regrow")) grassDirty = true;
+                if (ImGui::SmallButton("Regrow")) veg.grassDirty = true;
                 ImGui::Text("Flowers: %d", flowerCount);
 
                 ImGui::SeparatorText("Paint flowers (3D brush)");
@@ -6300,39 +6125,23 @@ int main(int argc, char** argv) {
             drawBackground(glm::inverse(mainVP), camPos, false);
             renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
 
-            // Grass (instanced) into the HDR buffer, lit + fogged like the
-            // terrain. Both the procedural field and the hand-painted layer share
-            // the shader/uniforms, so bind once and draw whichever has blades.
-            const bool drawProc    = grassEnabled && grassCount > 0;
-            const bool drawPainted = paintedGrass.count() > 0;
-            if (drawProc || drawPainted) {
-                glDisable(GL_CULL_FACE);
-                grass.bind();
-                grass.setMat4("uViewProj", mainVP);
-                grass.setFloat("uTime", static_cast<float>(now));
-                grass.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-                grass.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, weather));
-                grass.setVec3("uTint", grassTint);
-                grass.setVec3("uViewPos", camPos);
-                grass.setVec3("uLightDir", light.direction);
-                grass.setVec3("uLightColor", light.color);
-                grass.setVec3("uAmbient", light.ambient);
-                grass.setVec3("uFogColor", fog.color);
-                grass.setVec3("uFogSunColor", fog.sunColor);
-                grass.setFloat("uFogDensity", fog.density);
-                grass.setFloat("uFogHeightFalloff", fog.heightFalloff);
-                grass.setFloat("uFogHeight", fog.height);
-                // Procedural blades bake absolute height (scale 1); painted blades
-                // store a relative height and take the live "Blade height" slider.
-                if (drawProc) {
-                    grass.setFloat("uHeightScale", 1.0f);
-                    grassField.draw(GL_TRIANGLE_STRIP, 7);
-                }
-                if (drawPainted) {
-                    grass.setFloat("uHeightScale", grassHeight);
-                    paintedGrass.draw(GL_TRIANGLE_STRIP, 7);
-                }
-                glEnable(GL_CULL_FACE);
+            // Grass (procedural + painted) into the HDR buffer, lit + fogged like
+            // the terrain.
+            {
+                VegDrawContext gctx;
+                gctx.viewProj         = mainVP;
+                gctx.camPos           = camPos;
+                gctx.time             = now;
+                gctx.weather          = weather;
+                gctx.lightDir         = light.direction;
+                gctx.lightColor       = light.color;
+                gctx.ambient          = light.ambient;
+                gctx.fogColor         = fog.color;
+                gctx.fogSunColor      = fog.sunColor;
+                gctx.fogDensity       = fog.density;
+                gctx.fogHeightFalloff = fog.heightFalloff;
+                gctx.fogHeight        = fog.height;
+                veg.drawGrass(gctx);
             }
 
             // Flowers (instanced) into the HDR buffer, lit + fogged like grass.
