@@ -5,6 +5,7 @@
 in vec3  vWorldPos;
 in vec3  vNormal;
 in vec2  vUV;
+in vec4  vPaint;      // terrain texture-paint weights for layers 0..3 (0 = auto)
 in float vViewDepth;
 out vec4 FragColor;
 
@@ -266,13 +267,22 @@ void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 nor
     float slopeDeg = degrees(acos(clamp(n.y, -1.0, 1.0))); // 0 flat .. 90 vertical
     float h        = wp.y + (detail - 0.5) * 3.0;          // jitter the height edges
 
+    // Manual texture paint (layers 0..3): `paintCover` is how much of this fragment
+    // was hand-painted. Where painted, the automatic height/slope weights are faded
+    // out and the painted layer weights take over; unpainted (paint == 0) leaves the
+    // automatic blend untouched, so this is a pure additive override.
+    vec4  paint      = clamp(vPaint, 0.0, 1.0);
+    float paintCover = clamp(paint.x + paint.y + paint.z + paint.w, 0.0, 1.0);
+
     vec3  acc  = vec3(0.0);
     vec3  nacc = vec3(0.0);
     float wsum = 0.0;
     for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i) {
         if (i >= uLayerCount) break;
         vec4  b = uLayerBand[i];
-        float w = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
+        float autoW = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
+        float pw    = (i < 4) ? paint[i] : 0.0;
+        float w     = autoW * (1.0 - paintCover) + pw;
         if (w > 0.0) {
             acc += layerTriplanar(i, wp, n, uLayerScale[i]) * w;
             vec3 ln = (uLayerHasNorm[i] == 1)

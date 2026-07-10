@@ -11,6 +11,10 @@ struct Vertex {
     glm::vec3 position;
     glm::vec3 normal;
     glm::vec2 uv;
+    // Terrain texture-paint weights for the first four layers (see TerrainPaintField).
+    // Zero on every non-terrain mesh -> the shader ignores it. Baked per terrain
+    // vertex so it interpolates across the surface like any other attribute.
+    glm::vec4 paint{0.0f};
 };
 
 // CPU-side geometry, separated from the GPU upload so it can be built off the

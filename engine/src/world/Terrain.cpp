@@ -37,11 +37,16 @@ float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
         wx * f + s.seed, 0.0f, wz * f + s.seed, s.lacunarity, s.gain, s.octaves)
         * s.heightScale * 0.5f * (0.3f + 0.7f * rough);
 
-    // 4) Sharp ridged mountains, only on rugged highlands.
+    // 4) Sharp ridged mountains, only on rugged highlands. peakSharpness bends the
+    //    ridge profile: >1 pinches summits into sharp alpine crests, <1 rounds them
+    //    into broad hills. Kept exact at 1.0 so old scenes are unchanged.
     const float ridge = stb_perlin_ridge_noise3(
         wx * f * 1.9f + s.seed, 0.0f, wz * f * 1.9f + s.seed,
         2.0f, 0.5f, 1.0f, s.octaves);
-    const float mountains = ridge * s.ridgeScale * rough * highland;
+    float ridgeShaped = ridge;
+    if (std::fabs(s.peakSharpness - 1.0f) > 0.001f)
+        ridgeShaped = std::pow(std::max(ridge, 0.0f), s.peakSharpness);
+    const float mountains = ridgeShaped * s.ridgeScale * rough * highland;
 
     float h = baseElev + hills + mountains;
 
@@ -56,6 +61,22 @@ float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
         const float soft = q + step * glm::smoothstep(0.35f, 0.65f, frac);
         h = glm::mix(h, soft, tMask * s.terrace);
     }
+
+    // 6) Valleys / canyons: carve meandering channels that follow a low-frequency
+    //    ridged "river network" -- deepest along the channel centre-lines, tapering
+    //    to nothing at the banks. Biased toward the lowlands (weaker on highlands)
+    //    so mountain country keeps its ridges while basins gain river gorges.
+    if (s.valleyDepth > 0.001f) {
+        const float rv = stb_perlin_ridge_noise3(
+            (wx + 512.0f) * f * 0.6f + s.seed, 0.0f,
+            (wz - 377.0f) * f * 0.6f + s.seed, 2.0f, 0.5f, 1.0f, 4);
+        const float channel = glm::smoothstep(0.55f, 0.95f, rv);
+        h -= channel * s.valleyDepth * (1.2f - 0.6f * highland);
+    }
+
+    // 7) Master relief exaggeration: scale the whole silhouette for a more dramatic,
+    //    "epic" vertical range without having to re-tune every other knob.
+    h *= s.reliefGain;
 
     return h;
 }
@@ -151,6 +172,29 @@ void TerrainEditField::smooth(const TerrainSettings& s, glm::vec2 c,
         ups.push_back({cellKey(ix, iz), target - base});
     });
     for (const Upd& u : ups) deltas[u.k] = u.v;
+}
+
+void TerrainEditField::carve(const TerrainSettings& s, glm::vec2 c, float radius,
+                             float rate, float depth) {
+    if (radius <= 0.0f) return;
+    // Each cell aims at `depth` below (or above, if negative) the *procedural base*
+    // at that cell -- a fixed per-cell target, so holding the brush converges to a
+    // clean valley floor at that depth instead of sinking without bound, while a
+    // drag still follows the terrain because every cell tracks its own base height.
+    const bool digging = depth > 0.0f;
+    forBrushCells(cell, c, radius, [&](int ix, int iz, float wx, float wz, float w) {
+        const std::int64_t k      = cellKey(ix, iz);
+        const auto         it     = deltas.find(k);
+        const float        cur    = (it == deltas.end()) ? 0.0f : it->second;
+        const float        base   = terrainBaseHeight(s, wx, wz);
+        const float        target = base - depth;      // -depth => valley, +|d| => crest
+        const float        combined = base + cur;
+        // One-sided: digging only lowers, raising only lifts -- so overlapping dabs
+        // deepen a valley (or build a crest) instead of fighting each other.
+        if (digging ? (combined <= target) : (combined >= target)) return;
+        const float want = glm::mix(combined, target, glm::clamp(rate * w, 0.0f, 1.0f));
+        deltas[k] = cur + (want - combined);
+    });
 }
 
 void TerrainEditField::erode(const TerrainSettings& s, glm::vec2 c, float radius,
@@ -250,6 +294,17 @@ static float stampProfile(int shape, float u, float v) {
             across = across * across * (3.0f - 2.0f * across);
             return along * across;
         }
+        case 5: { // mountain range: a rugged crest of several summits along u
+            if (std::fabs(u) >= 1.0f || std::fabs(v) >= 1.0f) return 0.0f;
+            // Two incommensurate waves make distinct peaks and saddles, never a
+            // clean sine; a floor keeps the ridge continuous between summits.
+            float crest = 0.5f + 0.5f * std::sin(u * 6.3f + 0.7f) * std::cos(u * 2.7f);
+            crest = 0.35f + 0.65f * glm::clamp(crest, 0.0f, 1.0f);
+            const float along  = 1.0f - glm::smoothstep(0.8f, 1.0f, std::fabs(u));
+            float       across = glm::clamp(1.0f - std::fabs(v), 0.0f, 1.0f);
+            across = across * across * (3.0f - 2.0f * across); // smooth foothill skirts
+            return crest * along * across;
+        }
         default: { // dome: smooth bell
             if (r >= 1.0f) return 0.0f;
             const float t = 1.0f - r;
@@ -311,6 +366,58 @@ float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
     return h;
 }
 
+// --- Editable texture-paint layer -----------------------------------------
+
+glm::vec4 TerrainPaintField::sample(float worldX, float worldZ) const {
+    if (weights.empty()) return glm::vec4(0.0f);
+    const float gx = worldX / cell, gz = worldZ / cell;
+    const int   ix = static_cast<int>(std::floor(gx));
+    const int   iz = static_cast<int>(std::floor(gz));
+    const float fx = gx - ix, fz = gz - iz;
+    auto at = [&](int x, int z) -> glm::vec4 {
+        const auto it = weights.find(TerrainEditField::cellKey(x, z));
+        return it == weights.end() ? glm::vec4(0.0f) : it->second;
+    };
+    const glm::vec4 w00 = at(ix,     iz),     w10 = at(ix + 1, iz);
+    const glm::vec4 w01 = at(ix,     iz + 1), w11 = at(ix + 1, iz + 1);
+    return glm::mix(glm::mix(w00, w10, fx), glm::mix(w01, w11, fx), fz);
+}
+
+void TerrainPaintField::paint(glm::vec2 c, float radius, int layer, float amount) {
+    if (layer < 0 || layer > 3) return;
+    forBrushCells(cell, c, radius, [&](int ix, int iz, float, float, float wgt) {
+        glm::vec4&  p = weights[TerrainEditField::cellKey(ix, iz)];
+        const float a = glm::clamp(amount * wgt, 0.0f, 1.0f);
+        // Raise the painted layer toward 1, fade the others toward 0, so a stroke
+        // converges to "this layer only" and overlapping dabs don't overshoot.
+        for (int k = 0; k < 4; ++k)
+            p[k] = (k == layer) ? p[k] + (1.0f - p[k]) * a : p[k] * (1.0f - a);
+    });
+}
+
+void TerrainPaintField::erase(glm::vec2 c, float radius, float amount) {
+    forBrushCells(cell, c, radius, [&](int ix, int iz, float, float, float wgt) {
+        const auto it = weights.find(TerrainEditField::cellKey(ix, iz));
+        if (it == weights.end()) return;
+        it->second *= (1.0f - glm::clamp(amount * wgt, 0.0f, 1.0f));
+    });
+}
+
+namespace {
+std::mutex                                g_paintMutex;
+std::shared_ptr<const TerrainPaintField>  g_paints;
+} // namespace
+
+std::shared_ptr<const TerrainPaintField> terrainPaintSnapshot() {
+    std::lock_guard<std::mutex> lock(g_paintMutex);
+    return g_paints;
+}
+
+void setTerrainPaintSnapshot(std::shared_ptr<const TerrainPaintField> field) {
+    std::lock_guard<std::mutex> lock(g_paintMutex);
+    g_paints = std::move(field);
+}
+
 MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord) {
     MeshData data;
 
@@ -321,7 +428,8 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
 
     // Grab the edit snapshot once for the whole chunk (avoids a mutex-guarded
     // shared_ptr load per vertex); sample base noise + this chunk's edits.
-    const std::shared_ptr<const TerrainEditField> edits = terrainEditSnapshot();
+    const std::shared_ptr<const TerrainEditField>  edits  = terrainEditSnapshot();
+    const std::shared_ptr<const TerrainPaintField> paints = terrainPaintSnapshot();
     auto height = [&](float wx, float wz) {
         float h = terrainBaseHeight(s, wx, wz);
         if (edits) h += edits->sample(wx, wz);
@@ -347,6 +455,7 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
             v.normal   = normal;
             v.uv       = {static_cast<float>(x) / s.resolution,
                           static_cast<float>(z) / s.resolution};
+            v.paint    = paints ? paints->sample(wx, wz) : glm::vec4(0.0f);
             data.vertices.push_back(v);
         }
     }

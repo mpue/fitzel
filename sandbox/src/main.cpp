@@ -44,6 +44,8 @@
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
 #include "ProjectIO.hpp"
+#include "PaintPanel.hpp"
+#include "SculptPanel.hpp"
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
 #include "VegetationSystem.hpp"
@@ -492,6 +494,23 @@ int main(int argc, char** argv) {
         float stampRot       = 0.0f;         // ridge orientation (radians)
         float noiseFreq      = 0.35f;        // roughen feature size
         float noiseSeed      = 0.0f;         // advanced per dab so detail layers up
+        float carveDepth     = 12.0f;        // valley depth (m); Alt raises a ridge
+
+        // --- Terrain texture painting --------------------------------------
+        // A parallel sparse field of per-layer paint weights, baked into the terrain
+        // vertices and blended over the automatic height/slope look. A 3D brush
+        // paints the chosen layer, or erases back toward the automatic blend.
+        TerrainPaintField paintWork;
+        paintWork.cell = 1.0f;
+        auto publishPaint = [&]{
+            setTerrainPaintSnapshot(std::make_shared<const TerrainPaintField>(paintWork));
+        };
+        publishPaint();                      // install the (empty) snapshot
+        bool  paintMode     = false;
+        int   paintLayer    = 0;             // which of the first 4 texture layers to paint
+        float paintRadius   = 8.0f;          // world units
+        float paintStrength = 0.5f;          // 0..1 brush intensity
+        bool  paintErase    = false;         // paint vs revert-to-auto
 
 
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
@@ -608,6 +627,7 @@ int main(int argc, char** argv) {
         bool showWater       = false;
         bool showTerrain     = false;
         bool showSculpt      = false;
+        bool showPaint       = false;
         bool showVegetation  = false;
         bool showCamPath     = false;
         bool showRoads       = false;
@@ -1189,6 +1209,8 @@ int main(int argc, char** argv) {
         addF("terrTerrace", uiSettings.terrace);      addF("terrWarp", uiSettings.warpStrength);
         addF("terrFreq", uiSettings.frequency);       addI("terrOctaves", uiSettings.octaves);
         addF("terrSeed", uiSettings.seed);
+        addF("terrValley", uiSettings.valleyDepth);   addF("terrPeak", uiSettings.peakSharpness);
+        addF("terrRelief", uiSettings.reliefGain);
         addF("texScale", texScale);            addF("normalStrength", normalStrength);
         addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
@@ -1241,6 +1263,20 @@ int main(int argc, char** argv) {
                 es << ix << ' ' << iz << ' ' << d << ' ';
             }
             j["terrainEdits"] = es.str();
+
+            // Terrain texture paint: grid spacing + an "ix iz r g b a ..." blob of
+            // every painted cell's four layer weights (same compact-string scheme).
+            j["terrainPaintCell"] = paintWork.cell;
+            std::ostringstream ps;
+            ps.precision(5);
+            for (const auto& [k, w] : paintWork.weights) {
+                const int ix = static_cast<int>(k >> 32);
+                const int iz = static_cast<int>(
+                    static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
+                ps << ix << ' ' << iz << ' '
+                   << w.x << ' ' << w.y << ' ' << w.z << ' ' << w.w << ' ';
+            }
+            j["terrainPaint"] = ps.str();
 
             // Model-material overrides: edits to materials that come from an
             // imported model aren't written as standalone .fmat files (the model
@@ -1330,6 +1366,19 @@ int main(int argc, char** argv) {
                     sculptWork.deltas[TerrainEditField::cellKey(ix, iz)] = d;
             }
             publishSculpt();
+
+            // Restore terrain texture paint (empty for older scenes). Publish before
+            // the rebuild so the streamed chunks bake the weights into their vertices.
+            paintWork.weights.clear();
+            paintWork.cell = j.value("terrainPaintCell", 1.0f);
+            if (j.contains("terrainPaint") && j["terrainPaint"].is_string()) {
+                std::istringstream ps(j["terrainPaint"].get<std::string>());
+                int ix, iz; glm::vec4 w;
+                while (ps >> ix >> iz >> w.x >> w.y >> w.z >> w.w)
+                    paintWork.weights[TerrainEditField::cellKey(ix, iz)] = w;
+            }
+            publishPaint();
+
             streamer.settings() = uiSettings;
             streamer.rebuild();
             streamer.update(camera.position());
@@ -2701,6 +2750,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Water",           nullptr, &showWater);
                     ImGui::MenuItem("Buddel (terrain)", nullptr, &showTerrain);
                     ImGui::MenuItem("Terrain sculpt",  nullptr, &showSculpt);
+                    ImGui::MenuItem("Terrain paint",   nullptr, &showPaint);
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
@@ -3316,6 +3366,11 @@ int main(int argc, char** argv) {
                                     sculptStrength * 3.0f * dt, noiseFreq, noiseSeed);
                                 noiseSeed += 1.7f;            // decorrelate next dab
                                 break;
+                            case 7:                           // carve valley (Alt: ridge)
+                                sculptWork.carve(streamer.settings(), c, sculptRadius,
+                                    glm::clamp(sculptStrength * 4.0f * dt, 0.0f, 1.0f),
+                                    invert ? -carveDepth : carveDepth);
+                                break;
                         }
                         // Publish the new shape, then rebuild the touched chunks.
                         // Erosion/stamp reach a little past the disc, so pad the
@@ -3335,6 +3390,7 @@ int main(int argc, char** argv) {
                                         : sculptTool == 4 ? IM_COL32(200, 150, 110, 225)
                                         : sculptTool == 5 ? IM_COL32(200, 140, 255, 225)
                                         : sculptTool == 6 ? IM_COL32(180, 180, 190, 225)
+                                        : sculptTool == 7 ? IM_COL32(90, 170, 255, 225)
                                         : sculptTool == 1 ? IM_COL32(255, 130, 90, 225)
                                                           : IM_COL32(140, 235, 140, 225);
                         const int SEG = 56;
@@ -3343,6 +3399,53 @@ int main(int argc, char** argv) {
                             const float a  = static_cast<float>(i) / SEG * 6.2831853f;
                             const float wx = center.x + std::cos(a) * sculptRadius;
                             const float wz = center.z + std::sin(a) * sculptRadius;
+                            const glm::vec4 cc = vp * glm::vec4(
+                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
+                            if (cc.w <= 1e-4f) { have = false; continue; }
+                            const glm::vec3 n = glm::vec3(cc) / cc.w;
+                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            if (have) dl->AddLine(prev, sp, col, 2.0f);
+                            prev = sp; have = true;
+                        }
+                    }
+                }
+
+                // --- Terrain texture paint brush: paint the chosen layer onto the
+                //     ground under a 3D disc. Hold LMB to paint; Alt (or Erase)
+                //     reverts toward the automatic height/slope blend. ----------
+                if (paintMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 center;
+                    const bool onGround = viewportHovered &&
+                                          roadPickTerrain(viewportMouseNdc, vp, center);
+                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 c(center.x, center.z);
+                        const bool  erasing = paintErase || ImGui::GetIO().KeyAlt;
+                        const float rate = glm::clamp(paintStrength * 4.0f * dt, 0.0f, 1.0f);
+                        if (erasing) paintWork.erase(c, paintRadius, rate);
+                        else         paintWork.paint(c, paintRadius, paintLayer, rate);
+                        // Republish + rebuild the touched chunks (paint is baked into
+                        // the mesh, so it rides the same edit-rebuild path as sculpt).
+                        publishPaint();
+                        const float m = paintRadius + 2.0f * paintWork.cell;
+                        streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
+                                              glm::vec2(c.x + m, c.y + m));
+                    }
+                    // Brush cursor: a ground-hugging ring (teal paint / grey erase).
+                    if (onGround) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const bool erasing = paintErase || ImGui::GetIO().KeyAlt;
+                        const ImU32 col = erasing ? IM_COL32(205, 205, 215, 225)
+                                                  : IM_COL32(90, 230, 210, 225);
+                        const int SEG = 56;
+                        ImVec2 prev; bool have = false;
+                        for (int i = 0; i <= SEG; ++i) {
+                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
+                            const float wx = center.x + std::cos(a) * paintRadius;
+                            const float wz = center.z + std::sin(a) * paintRadius;
                             const glm::vec4 cc = vp * glm::vec4(
                                 wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
                             if (cc.w <= 1e-4f) { have = false; continue; }
@@ -3514,7 +3617,7 @@ int main(int argc, char** argv) {
                     // Click to select/place, but not while grabbing the gizmo or
                     // painting grass (the brush owns the left button then).
                     if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && !grassPaintMode &&
-                        !sculptMode &&
+                        !sculptMode && !paintMode &&
                         viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         const glm::mat4 inv = glm::inverse(vp);
                         glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
@@ -3687,64 +3790,20 @@ int main(int argc, char** argv) {
                 assetDb,
             });
 
-            if (showSculpt) { if (ImGui::Begin("Terrain Sculpt", &showSculpt)) {
-                if (ImGui::Checkbox("Sculpt mode", &sculptMode) && sculptMode)
-                    grassPaintMode = roadEditMode = treePaintMode = flowerPaintMode = false; // brush owns the LMB
-                if (sculptMode)
-                    ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
-                        "Hold LMB to sculpt | Alt inverts raise/lower");
-                else
-                    ImGui::TextDisabled("Enable to reshape the ground with the brush");
+            sculptui::drawPanel({
+                showSculpt, sculptMode,
+                grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, paintMode,
+                sculptTool, sculptRadius, sculptStrength, sculptFlattenH,
+                stampShape, stampHeight, stampRot, noiseFreq, carveDepth,
+                sculptWork, streamer, veg.grassDirty, publishSculpt,
+            });
 
-                const char* tools[] = {"Raise", "Lower", "Smooth", "Flatten",
-                                       "Erode", "Stamp", "Noise"};
-                ImGui::Combo("Tool", &sculptTool, tools, IM_ARRAYSIZE(tools));
-                ImGui::SliderFloat("Radius", &sculptRadius, 1.0f, 40.0f, "%.1f m");
-                ImGui::SliderFloat("Strength", &sculptStrength, 0.05f, 1.0f);
-                if (sculptTool == 3)
-                    ImGui::SliderFloat("Flatten height", &sculptFlattenH,
-                                       -40.0f, 60.0f, "%.1f m");
-                if (sculptTool == 4)
-                    ImGui::TextDisabled("Weathers slopes: material slides downhill.");
-                if (sculptTool == 6)
-                    ImGui::SliderFloat("Feature size", &noiseFreq, 0.08f, 1.0f,
-                                       "%.2f");
-                if (sculptTool == 5) {
-                    const char* shapes[] = {"Dome", "Cone", "Plateau",
-                                            "Crater", "Ridge"};
-                    ImGui::Combo("Shape", &stampShape, shapes, IM_ARRAYSIZE(shapes));
-                    ImGui::SliderFloat("Stamp height", &stampHeight,
-                                       -30.0f, 30.0f, "%.1f m");
-                    if (stampShape == 4) {
-                        float deg = glm::degrees(stampRot);
-                        if (ImGui::SliderFloat("Rotation", &deg, -180.0f, 180.0f,
-                                               "%.0f deg"))
-                            stampRot = glm::radians(deg);
-                    }
-                    ImGui::TextColored(ImVec4(0.8f, 0.6f, 1.0f, 1.0f),
-                                       "Click to stamp | Alt inverts (digs in)");
-                }
-
-                // Grid spacing only makes sense to change before any edits exist
-                // (the map keys are cell indices at the current spacing).
-                float grid = sculptWork.cell;
-                ImGui::BeginDisabled(!sculptWork.deltas.empty());
-                if (ImGui::SliderFloat("Grid", &grid, 0.5f, 4.0f, "%.2f m"))
-                    sculptWork.cell = grid;
-                ImGui::EndDisabled();
-
-                ImGui::Text("Edited cells: %d",
-                            static_cast<int>(sculptWork.deltas.size()));
-                ImGui::BeginDisabled(sculptWork.deltas.empty());
-                if (ImGui::Button("Clear sculpt")) {
-                    sculptWork.deltas.clear();
-                    publishSculpt();
-                    streamer.rebuild(); // drop all edits -> regenerate the terrain
-                    veg.grassDirty = true;
-                }
-                ImGui::EndDisabled();
-            }
-            ImGui::End(); }
+            paintui::drawPanel({
+                showPaint, paintMode,
+                grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, sculptMode,
+                look, paintLayer, paintRadius, paintStrength, paintErase,
+                paintWork, streamer, publishPaint,
+            });
 
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ImGui::SeparatorText("Grass");
@@ -3759,7 +3818,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint grass (3D brush)");
                 if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
-                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = false; // brush owns the left button
+                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = false; // brush owns the left button
                 if (grassPaintMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                         "Drag = paint | hold Alt = erase");
@@ -3806,7 +3865,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint trees (3D brush)");
                 if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = flowerPaintMode = false; // own the LMB
+                    grassPaintMode = roadEditMode = sculptMode = flowerPaintMode = paintMode = false; // own the LMB
                 if (treePaintMode)
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f),
                         "Drag = plant | hold Alt = erase");
@@ -3834,7 +3893,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint flowers (3D brush)");
                 if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = false;
+                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = paintMode = false;
                 if (flowerPaintMode)
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f),
                         "Drag = plant | hold Alt = erase");
@@ -3863,7 +3922,7 @@ int main(int argc, char** argv) {
             if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
                 ImGui::Checkbox("Show roads", &road.enabled);
                 if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
-                    grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = false; // don't fight over LMB
+                    grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = false; // don't fight over LMB
                 if (roadEditMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "Click ground = add | drag handle = move | Del = delete");

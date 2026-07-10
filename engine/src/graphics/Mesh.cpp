@@ -94,6 +94,11 @@ Mesh Mesh::create(const std::vector<Vertex>& vertices,
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, uv)));
 
+    // layout(location = 3) in vec4 aPaint; (terrain texture-paint weights)
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+                          reinterpret_cast<void*>(offsetof(Vertex, paint)));
+
     glBindVertexArray(0);
     return mesh;
 }

@@ -39,6 +39,12 @@ struct TerrainSettings {
     float continentAmp = 1.5f;    // strength of the big elevation swings
     float biomeFreq    = 0.0017f; // size of regions (lower = larger)
     float terrace      = 0.35f;   // 0..1 plateau/terracing amount
+
+    // Epic-scale shaping. All default to a no-op, so scenes saved before these
+    // existed (and the plain generator) look exactly as they did.
+    float valleyDepth   = 0.0f;   // carve meandering valleys/canyons (world units)
+    float peakSharpness = 1.0f;   // >1 pinches sharp alpine crests, <1 rounds peaks
+    float reliefGain    = 1.0f;   // master vertical exaggeration of the whole relief
 };
 
 // --- Editable deformation layer -------------------------------------------
@@ -64,6 +70,14 @@ struct TerrainEditField {
     void smooth (const TerrainSettings& s, glm::vec2 center, float radius,
                  float amount);
 
+    // Carve a valley (or, with negative depth, raise a ridge) by pulling the
+    // surface toward `depth` below the brush-centre ground with a smooth
+    // cross-section. Digging never fills and raising never digs, so holding and
+    // dragging cuts a continuous channel (or piles a continuous crest) that follows
+    // the land. `rate` (0..1) is the blend applied this call.
+    void carve  (const TerrainSettings& s, glm::vec2 center, float radius,
+                 float rate, float depth);
+
     // Thermal erosion: over the brush disc, material on slopes steeper than the
     // talus angle slides to lower neighbours, weathering ridges into scree and
     // filling hollows. `rate` (0..1) scales how much moves per call; `iterations`
@@ -73,8 +87,9 @@ struct TerrainEditField {
 
     // Stamp a procedural landform additively under the brush. `height` is the
     // peak offset in world units (negative digs the shape in instead); `shape`
-    // selects the profile: 0 dome, 1 cone, 2 plateau/mesa, 3 crater, 4 ridge.
-    // `rotation` (radians) orients the ridge. Apply once per click, not held.
+    // selects the profile: 0 dome, 1 cone, 2 plateau/mesa, 3 crater, 4 ridge,
+    // 5 mountain range (a rugged multi-peak crest). `rotation` (radians) orients
+    // the ridge/range. Apply once per click, not held.
     void stamp  (glm::vec2 center, float radius, float height, int shape,
                  float rotation = 0.0f);
 
@@ -85,6 +100,30 @@ struct TerrainEditField {
     void roughen(glm::vec2 center, float radius, float amount, float frequency,
                  float seed);
 };
+
+// --- Editable texture-paint layer -----------------------------------------
+// A sparse world grid of per-layer paint weights for the first four terrain
+// texture layers, sampled bilinearly and baked into terrain vertices by
+// buildMeshData. Zero everywhere unpainted, so the shader falls back to the
+// automatic height/slope blend -- painting is a purely additive override.
+struct TerrainPaintField {
+    float cell = 1.0f;                                   // grid spacing (world units)
+    std::unordered_map<std::int64_t, glm::vec4> weights; // cell -> paint (layers 0..3)
+
+    bool      empty() const { return weights.empty(); }
+    glm::vec4 sample(float worldX, float worldZ) const;  // bilinear; 0 where unpainted
+
+    // Paint `layer` (0..3) up over a circular brush, pushing the other three down so
+    // the painted layer comes to dominate. `amount` (0..1) is the step this call.
+    void paint(glm::vec2 center, float radius, int layer, float amount);
+    // Erase: fade all weights toward 0 over the brush (revert to the auto blend).
+    void erase(glm::vec2 center, float radius, float amount);
+};
+
+// The global texture-paint snapshot buildMeshData bakes into terrain vertices.
+// Same publish/read discipline as the edit snapshot. Treat null as "unpainted".
+std::shared_ptr<const TerrainPaintField> terrainPaintSnapshot();
+void setTerrainPaintSnapshot(std::shared_ptr<const TerrainPaintField> field);
 
 // Pure procedural height, with no manual edits applied. Thread-safe.
 float terrainBaseHeight(const TerrainSettings& settings, float worldX, float worldZ);

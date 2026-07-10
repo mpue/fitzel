@@ -1,5 +1,6 @@
 #include "TerrainPanel.hpp"
 
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <utility>
@@ -13,27 +14,96 @@ namespace terrainui {
 
 using fitzel::AssetId;
 
+namespace {
+
+// A one-click landscape flavour: a tuned bundle of generator params. The user's
+// seed is deliberately left untouched, so applying a preset re-shapes the world
+// they're already looking at instead of teleporting them to a new one.
+struct GenPreset {
+    const char* name;
+    float heightScale, ridgeScale, continentAmp, biomeFreq, terrace,
+          warpStrength, frequency, valleyDepth, peakSharpness, reliefGain;
+    int   octaves;
+};
+
+constexpr GenPreset kPresets[] = {
+    // name              hgt  ridge cont   biome   terr  warp  freq   valley peak relief oct
+    {"Sanfte Hügel", 10.f,  6.f, 1.0f, 0.0018f, 0.0f, 10.f, 0.014f,  0.f, 0.8f, 1.0f, 5},
+    {"Alpen",             16.f, 40.f, 1.6f, 0.0014f, 0.1f, 16.f, 0.013f,  8.f, 1.9f, 1.5f, 7},
+    {"Canyon",            12.f, 10.f, 1.2f, 0.0016f, 0.7f, 12.f, 0.012f, 22.f, 1.0f, 1.2f, 6},
+    {"Mesa / Plateau",    12.f, 14.f, 1.3f, 0.0016f, 0.9f, 10.f, 0.011f,  6.f, 1.1f, 1.1f, 6},
+    {"Archipel",          14.f, 10.f, 2.6f, 0.0012f, 0.0f, 18.f, 0.015f,  4.f, 1.2f, 1.3f, 6},
+    {"Fjorde",            16.f, 28.f, 2.2f, 0.0013f, 0.1f, 16.f, 0.013f, 26.f, 1.6f, 1.6f, 7},
+};
+
+void applyPreset(fitzel::TerrainSettings& u, const GenPreset& p) {
+    u.heightScale  = p.heightScale;  u.ridgeScale    = p.ridgeScale;
+    u.continentAmp = p.continentAmp; u.biomeFreq     = p.biomeFreq;
+    u.terrace      = p.terrace;      u.warpStrength  = p.warpStrength;
+    u.frequency    = p.frequency;    u.valleyDepth   = p.valleyDepth;
+    u.peakSharpness= p.peakSharpness;u.reliefGain    = p.reliefGain;
+    u.octaves      = p.octaves;
+}
+
+} // namespace
+
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
+    // Live preview: regenerate as soon as a slider is released (see below). On by
+    // default -- toggle off for surgical tweaks without a rebuild per drag.
+    static bool autoPreview = true;
+
     if (ImGui::Begin("Buddel", &s.show)) {
-        ImGui::SeparatorText("Generator");
-        ImGui::SliderFloat("Height",     &s.uiSettings.heightScale, 0.0f, 30.0f);
-        ImGui::SliderFloat("Ridges",     &s.uiSettings.ridgeScale, 0.0f, 50.0f);
-        ImGui::SliderFloat("Continents", &s.uiSettings.continentAmp, 0.0f, 3.0f);
-        ImGui::SliderFloat("Biome size", &s.uiSettings.biomeFreq, 0.0005f, 0.004f, "%.4f");
-        ImGui::SliderFloat("Terraces",   &s.uiSettings.terrace, 0.0f, 1.0f);
-        ImGui::SliderFloat("Warp",       &s.uiSettings.warpStrength, 0.0f, 40.0f);
-        ImGui::SliderFloat("Frequency",  &s.uiSettings.frequency, 0.003f, 0.05f, "%.3f");
-        ImGui::SliderInt  ("Octaves",    &s.uiSettings.octaves, 1, 8);
-        ImGui::SliderFloat("Seed",       &s.uiSettings.seed, 0.0f, 100.0f);
-        if (ImGui::Button("Regenerate")) {
+        // Push new generator params into the streamer and rebuild the world.
+        auto regenerate = [&] {
             s.streamer.settings() = s.uiSettings;
             s.streamer.rebuild();
             s.streamer.update(s.camera.position());
             s.grassDirty = true;            // regrow vegetation on the new terrain
             s.treeCenter = glm::vec2(1e9f);
             s.roadDirty  = true;            // re-drape roads on the new heights
+        };
+
+        ImGui::SeparatorText("Presets");
+        ImGui::TextDisabled("One click = a whole landscape. Fine-tune below.");
+        for (int i = 0; i < IM_ARRAYSIZE(kPresets); ++i) {
+            if (i % 3) ImGui::SameLine();
+            if (ImGui::Button(kPresets[i].name, ImVec2(112, 0))) {
+                applyPreset(s.uiSettings, kPresets[i]);
+                regenerate();
+            }
         }
+
+        ImGui::SeparatorText("Generator");
+        // `released` fires once when a slider is let go after editing -- that's the
+        // cue to rebuild (rebuilding every frame mid-drag would thrash the streamer).
+        bool released = false;
+        auto slid = [&] { released |= ImGui::IsItemDeactivatedAfterEdit(); };
+
+        ImGui::SliderFloat("Height",     &s.uiSettings.heightScale, 0.0f, 30.0f);   slid();
+        ImGui::SliderFloat("Relief boost", &s.uiSettings.reliefGain, 0.5f, 2.5f);   slid();
+        ImGui::SliderFloat("Ridges",     &s.uiSettings.ridgeScale, 0.0f, 50.0f);    slid();
+        ImGui::SliderFloat("Peak sharpness", &s.uiSettings.peakSharpness, 0.5f, 3.0f); slid();
+        ImGui::SliderFloat("Valleys",    &s.uiSettings.valleyDepth, 0.0f, 30.0f, "%.1f m"); slid();
+        ImGui::SliderFloat("Continents", &s.uiSettings.continentAmp, 0.0f, 3.0f);   slid();
+        ImGui::SliderFloat("Biome size", &s.uiSettings.biomeFreq, 0.0005f, 0.004f, "%.4f"); slid();
+        ImGui::SliderFloat("Terraces",   &s.uiSettings.terrace, 0.0f, 1.0f);        slid();
+        ImGui::SliderFloat("Warp",       &s.uiSettings.warpStrength, 0.0f, 40.0f);  slid();
+        ImGui::SliderFloat("Frequency",  &s.uiSettings.frequency, 0.003f, 0.05f, "%.3f"); slid();
+        ImGui::SliderInt  ("Octaves",    &s.uiSettings.octaves, 1, 8);              slid();
+        ImGui::SliderFloat("Seed",       &s.uiSettings.seed, 0.0f, 100.0f);         slid();
+
+        if (autoPreview && released) regenerate();
+
+        ImGui::Checkbox("Live preview", &autoPreview);
+        ImGui::SameLine();
+        if (ImGui::Button("Regenerate")) regenerate();
+        ImGui::SameLine();
+        if (ImGui::Button("Reroll")) {   // nudge the seed for a fresh variation
+            s.uiSettings.seed = std::fmod(s.uiSettings.seed + 17.3f, 100.0f);
+            regenerate();
+        }
+
         ImGui::SeparatorText("Texture layers");
         ImGui::TextDisabled("A layer paints where BOTH the height and the slope "
                             "fall in its band; overlapping bands cross-fade.");

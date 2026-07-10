@@ -7,6 +7,8 @@ add_executable(sandbox
     src/ScriptSystem.cpp
     src/ProjectIO.cpp
     src/TerrainPanel.cpp
+    src/SculptPanel.cpp
+    src/PaintPanel.cpp
     src/PropertyMeta.cpp
     src/Component.cpp
     src/FolderDialog.cpp

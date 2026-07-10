@@ -102,7 +102,9 @@ hold right mouse to look, scroll to zoom, ESC to quit.
   **triplanar-mapped** (projected on the three world axes, blended by the normal) so
   steep faces don't stretch, and blended by height + slope. Each contributes an albedo
   *and a normal map* (triplanar Whiteout blend) for surface relief. EXR images load via
-  **tinyexr**.
+  **tinyexr**. Beyond the automatic blend, a **paint brush** hand-paints any of the
+  first four layers onto the ground — stored as per-vertex weights baked into the
+  terrain mesh, overriding the height/slope rule only where painted.
 - **Water**: planar reflection/refraction (rendered at half-res, distortion hides it)
   with multi-octave animated normals, **Schlick Fresnel**, depth-tinted refraction and
   a sharp HDR sun glint that the bloom picks up. The refraction pass keeps a depth
@@ -182,6 +184,15 @@ for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
   rugged mountains) and **plateau** control maps, with a rolling fBm base and a
   ridged-multifractal mountain layer raised only on rugged highlands — so different
   regions and seeds give genuinely different landscapes.
+- **Terrain editor**: live ImGui tooling to shape the world. One-click landscape
+  **presets** (rolling hills, alpine, canyon, mesa, archipelago, fjords) and epic-scale
+  generator knobs — **valley carving**, **peak sharpness**, **relief exaggeration** —
+  with a **live preview** that rebuilds on slider release. A 3D **sculpt brush** edits a
+  sparse world-space height layer sampled on top of the noise: raise / lower / smooth /
+  flatten / **thermal erosion** / landform **stamp** (dome, cone, mesa, crater, ridge,
+  **mountain range**) / **carve** (drag a valley, Alt piles a ridge). And a **texture
+  paint** brush over the automatic material blend. Sculpt edits and paint persist with
+  the scene and re-drape the streamed chunks in-place without stalling the frame.
 - **Terrain colour** is procedural (sand → grass → rock → snow) by world height and
   slope — steep faces turn to rock, snow only settles on flat high ground.
 - **Sky & day/night**: a fullscreen pass reconstructs the world view ray per pixel
