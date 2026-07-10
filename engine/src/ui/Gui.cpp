@@ -82,7 +82,7 @@ void applyTheme() {
 // Falls back to scaling the built-in font up if no TTF is found, so text is
 // never tiny. The first existing path wins, so per-platform paths can share one
 // list -- the others simply don't exist on the current OS.
-void loadFont(ImGuiIO& io) {
+void loadFont(ImGuiIO& io, float scale) {
     const char* candidates[] = {
         // Windows
         "C:\\Windows\\Fonts\\segoeui.ttf",
@@ -96,19 +96,21 @@ void loadFont(ImGuiIO& io) {
     ImFontConfig cfg;
     cfg.OversampleH = 2;
     cfg.OversampleV = 2;
+    // Bake the font at the display's content scale so it stays crisp on HiDPI
+    // (rather than scaling one small bitmap up).
     for (const char* path : candidates) {
         if (std::ifstream(path).good()) {
-            io.Fonts->AddFontFromFileTTF(path, 18.0f, &cfg);
+            io.Fonts->AddFontFromFileTTF(path, 18.0f * scale, &cfg);
             return;
         }
     }
-    io.FontGlobalScale = 1.35f; // no system font available: scale the default
+    io.FontGlobalScale = 1.35f * scale; // no system font available: scale the default
 }
 
 // Load a fixed-width font for code views (the Lua editor). Returns the loaded
 // ImFont, or nullptr if no monospace TTF is present (caller then falls back to
 // the proportional UI font). Added after the UI font, so it is not the default.
-ImFont* loadMonoFont(ImGuiIO& io) {
+ImFont* loadMonoFont(ImGuiIO& io, float scale) {
     const char* candidates[] = {
         // Windows
         "C:\\Windows\\Fonts\\consola.ttf",   // Consolas
@@ -125,7 +127,7 @@ ImFont* loadMonoFont(ImGuiIO& io) {
     cfg.OversampleV = 2;
     for (const char* path : candidates)
         if (std::ifstream(path).good())
-            return io.Fonts->AddFontFromFileTTF(path, 18.0f, &cfg);
+            return io.Fonts->AddFontFromFileTTF(path, 18.0f * scale, &cfg);
     return nullptr;
 }
 
@@ -139,9 +141,20 @@ Gui::Gui(Window& window) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable; // allow panels to dock
 
-    loadFont(io);
-    m_mono = loadMonoFont(io);
+    // HiDPI: scale fonts + the whole style by the monitor's content scale so the
+    // UI isn't tiny on 4K/high-DPI displays. GLFW reports e.g. 1.5 at 150% Windows
+    // scaling (and 1.0 on a normal display). Clamp to a sane range.
+    float sx = 1.0f, sy = 1.0f;
+    if (GLFWwindow* w = window.nativeHandle())
+        glfwGetWindowContentScale(w, &sx, &sy);
+    float scale = (sx > 0.0f) ? sx : 1.0f;
+    if (scale < 1.0f) scale = 1.0f;
+    if (scale > 4.0f) scale = 4.0f;
+
+    loadFont(io, scale);
+    m_mono = loadMonoFont(io, scale);
     applyTheme();
+    ImGui::GetStyle().ScaleAllSizes(scale); // padding/rounding/scrollbars/etc.
 
     // install_callbacks = true: ImGui chains the callbacks Input already set.
     ImGui_ImplGlfw_InitForOpenGL(window.nativeHandle(), true);

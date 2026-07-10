@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,6 +70,9 @@ struct PanelState {
     glm::vec2&               treeCenter;   // reset to force a tree regrow
     bool&                    roadDirty;    // set true to re-drape roads
     fitzel::AssetDatabase&   assetDb;      // for the per-layer texture picker
+    // Resolve a texture asset id to a small preview GL id (0 until decoded). Backed
+    // by the shared thumbnail cache in main; used to preview the layer textures.
+    std::function<unsigned(fitzel::AssetId)> thumbFor;
 };
 
 void drawPanel(const PanelState& s);

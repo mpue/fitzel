@@ -2,17 +2,21 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <sstream>
 #include <future>
 #include <random>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -63,6 +67,68 @@ extern "C" {
 #endif
 
 namespace {
+
+// --- Thumbnail disk cache --------------------------------------------------
+// Decoding a 4K texture (or a huge EXR) down to a 128px preview is expensive and
+// hammers the disk -- opening the Assets browser would otherwise re-read every
+// source texture in full. We cache each decoded preview to a tiny file keyed by
+// the asset GUID and tagged with the source's last-write time (so edits
+// invalidate it); the thumbnail worker loads these instead of re-decoding.
+std::filesystem::path thumbCacheDir() {
+    std::error_code ec;
+    std::filesystem::path d =
+        std::filesystem::temp_directory_path(ec) / "fitzel_thumbs";
+    std::filesystem::create_directories(d, ec);
+    return d;
+}
+
+long long sourceMtime(const std::string& path) {
+    std::error_code ec;
+    const auto t = std::filesystem::last_write_time(path, ec);
+    return ec ? 0 : static_cast<long long>(t.time_since_epoch().count());
+}
+
+// Cache file layout: magic 'FTH1' | int64 srcMtime | int32 w,h,ch | raw pixels.
+bool loadThumbCache(const std::filesystem::path& file, long long srcMtime,
+                    fitzel::ImagePixels& out) {
+    std::ifstream f(file, std::ios::binary);
+    if (!f) return false;
+    char magic[4] = {};
+    f.read(magic, 4);
+    if (!f || magic[0] != 'F' || magic[1] != 'T' ||
+        magic[2] != 'H' || magic[3] != '1') return false;
+    long long mt = 0; int w = 0, h = 0, ch = 0;
+    f.read(reinterpret_cast<char*>(&mt), sizeof mt);
+    f.read(reinterpret_cast<char*>(&w),  sizeof w);
+    f.read(reinterpret_cast<char*>(&h),  sizeof h);
+    f.read(reinterpret_cast<char*>(&ch), sizeof ch);
+    if (!f || mt != srcMtime ||
+        w < 0 || h < 0 || ch < 0 || w > 4096 || h > 4096 || ch > 4) return false;
+    const std::size_t n = static_cast<std::size_t>(w) * h * ch;
+    if (n == 0) { out = {}; return true; } // negative cache: source has no usable preview
+    out.pixels.resize(n);
+    f.read(reinterpret_cast<char*>(out.pixels.data()),
+           static_cast<std::streamsize>(n));
+    if (!f) { out.pixels.clear(); return false; }
+    out.width = w; out.height = h; out.channels = ch;
+    return true;
+}
+
+// Always writes -- an invalid image is stored as a zero-size "negative" entry so a
+// source that can't produce a preview is not re-decoded on every session.
+void saveThumbCache(const std::filesystem::path& file, long long srcMtime,
+                    const fitzel::ImagePixels& img) {
+    std::ofstream f(file, std::ios::binary | std::ios::trunc);
+    if (!f) return;
+    f.write("FTH1", 4);
+    f.write(reinterpret_cast<const char*>(&srcMtime), sizeof srcMtime);
+    const int w = img.width, h = img.height, ch = img.channels;
+    f.write(reinterpret_cast<const char*>(&w),  sizeof w);
+    f.write(reinterpret_cast<const char*>(&h),  sizeof h);
+    f.write(reinterpret_cast<const char*>(&ch), sizeof ch);
+    f.write(reinterpret_cast<const char*>(img.pixels.data()),
+            static_cast<std::streamsize>(img.pixels.size()));
+}
 
 // One entry in the Lua editor's code-completion list: the identifier to insert
 // plus a short signature/description shown greyed after it.
@@ -324,12 +390,15 @@ int main(int argc, char** argv) {
         RenderTarget refractRT(640, 360, RenderTarget::Format::RGBA8, /*depthTex=*/true);
 
         float     waterLevel   = -2.0f;
-        glm::vec3 waterColor{0.10f, 0.30f, 0.38f};
-        float     waveStrength = 0.018f;
+        glm::vec3 waterColor{0.08f, 0.24f, 0.30f};
+        float     waveStrength = 0.022f;
         float     waveScale    = 0.06f;
         float     foamWidth    = 2.5f;
         float     waveHeight   = 0.6f; // Gerstner swell amplitude
         float     waveChoppy   = 0.6f;
+        float     waterReflectivity = 0.65f; // max mirror strength (Fresnel cap)
+        float     waterClarity      = 1.0f;  // higher = clearer (less depth tint)
+        float     waterIor          = 1.33f; // index of refraction (drives Fresnel + bend)
 
         // Sky + volumetric clouds (fullscreen raymarch pass).
         Shader sky = Shader::fromFiles("assets/shaders/sky.vert",
@@ -541,6 +610,16 @@ int main(int argc, char** argv) {
             }
             return false;
         };
+        // Commit the road: grade it into the terrain deformation field (so the
+        // ground under it is flush + gently sloped), republish the snapshot and
+        // rebuild the affected chunks, then loft the drivable mesh + collider.
+        auto buildRoad = [&] {
+            glm::vec2 mn, mx;
+            if (road.build(sculptWork, mn, mx)) {
+                publishSculpt();
+                streamer.editsChanged(mn, mx);
+            }
+        };
 
         // --- Test-drive vehicle ------------------------------------------
         // A primitive car: a scaled cube for the body/cabin plus four cylinder
@@ -611,13 +690,105 @@ int main(int argc, char** argv) {
         bool showAssets      = false;
         // Asset browser: lazily-built, cached preview thumbnails (small textures,
         // kept alive here so they stay resident), plus its view options. Decoding
-        // runs on worker threads (assetThumbJobs); only the tiny GL upload happens
-        // on the render thread, so a 4K source never stalls the frame.
-        std::unordered_map<fitzel::AssetId, std::shared_ptr<Texture>>    assetThumbs;
-        std::unordered_map<fitzel::AssetId, std::future<fitzel::ImagePixels>> assetThumbJobs;
+        // runs on ONE persistent background thread fed by a queue (thumbWork); the
+        // render thread uploads finished decodes. A single worker -- rather than a
+        // std::async per request -- avoids thread churn and keeps decoding serial,
+        // so a texture panel listing dozens of images can't spawn a storm of
+        // threads or rethrow a worker exception into the UI (which used to crash).
+        // `assetThumbs` and `thumbRequested` are touched only on the render thread.
+        std::unordered_map<fitzel::AssetId, std::shared_ptr<Texture>> assetThumbs;
+        std::unordered_set<fitzel::AssetId>                           thumbRequested;
         float assetThumbSize = 76.0f;
         char  assetFilter[64] = "";
         bool  assetTexturesOnly = false;
+
+        struct ThumbWork {
+            std::mutex              mutex;
+            std::condition_variable cv;
+            std::deque<std::pair<fitzel::AssetId, std::string>> queue;   // to decode
+            std::vector<std::pair<fitzel::AssetId, fitzel::ImagePixels>> done; // decoded
+            bool stop = false;
+        };
+        ThumbWork thumbWork;
+        std::thread thumbThread([&thumbWork]{
+            const std::filesystem::path cacheDir = thumbCacheDir();
+            for (;;) {
+                std::pair<fitzel::AssetId, std::string> job;
+                {
+                    std::unique_lock<std::mutex> lk(thumbWork.mutex);
+                    thumbWork.cv.wait(lk, [&]{
+                        return thumbWork.stop || !thumbWork.queue.empty(); });
+                    if (thumbWork.stop) return;
+                    job = std::move(thumbWork.queue.front());
+                    thumbWork.queue.pop_front();
+                }
+                // Prefer the tiny disk-cached preview; only fall back to a full
+                // (expensive) source decode when it's missing or stale, and cache
+                // the result. decodeThumbnail never throws (empty image on failure).
+                const std::filesystem::path cacheFile =
+                    cacheDir / (job.first.toString() + ".fth");
+                const long long mt = sourceMtime(job.second);
+                fitzel::ImagePixels img;
+                if (!loadThumbCache(cacheFile, mt, img)) {
+                    img = Texture::decodeThumbnail(job.second, 128);
+                    saveThumbCache(cacheFile, mt, img);
+                }
+                std::lock_guard<std::mutex> lk(thumbWork.mutex);
+                thumbWork.done.emplace_back(job.first, std::move(img));
+            }
+        });
+        // Stop + join the worker on any scope exit (normal or exception unwinding),
+        // BEFORE thumbThread's own destructor runs -- a joinable std::thread that is
+        // destroyed unjoined calls std::terminate. Declared after the thread so it
+        // is destroyed first (reverse order).
+        struct ThumbJoiner {
+            ThumbWork& w; std::thread& t;
+            ~ThumbJoiner() {
+                { std::lock_guard<std::mutex> lk(w.mutex); w.stop = true; }
+                w.cv.notify_all();
+                if (t.joinable()) t.join();
+            }
+        } thumbJoiner{thumbWork, thumbThread};
+        // Upload any thumbnails the worker finished (a 128px GL upload is basically
+        // free). Runs once per frame so the cache serves every panel.
+        auto pumpThumbnails = [&]{
+            std::vector<std::pair<fitzel::AssetId, fitzel::ImagePixels>> done;
+            {
+                std::lock_guard<std::mutex> lk(thumbWork.mutex);
+                done.swap(thumbWork.done);
+            }
+            for (auto& [id, img] : done) {
+                auto t = std::make_shared<Texture>(Texture::fromImagePixels(img));
+                assetThumbs[id] = t->isValid() ? t : nullptr; // null = bad/blank
+            }
+        };
+        // Resolve a texture asset to a small preview GL id (0 until it is ready),
+        // enqueueing a decode on first request. Shared by the material + terrain
+        // texture pickers and the Assets browser. Render-thread only.
+        auto thumbFor = [&](fitzel::AssetId id) -> unsigned {
+            if (!id.valid()) return 0;
+            const auto it = assetThumbs.find(id);
+            if (it != assetThumbs.end()) return it->second ? it->second->id() : 0;
+            if (thumbRequested.insert(id).second) { // enqueue once per id
+                const std::string p = assetDb.pathForId(id).string();
+                if (!p.empty()) {
+                    std::lock_guard<std::mutex> lk(thumbWork.mutex);
+                    thumbWork.queue.emplace_back(id, p);
+                    thumbWork.cv.notify_one();
+                }
+            }
+            return 0;
+        };
+        // Draw a frame-height texture preview (image + SameLine) inline before a
+        // slot/combo. Prefers the already-loaded full-res handle, else the shared
+        // thumbnail cache, else a blank square so the row still lines up.
+        auto texSwatch = [&](const std::shared_ptr<Texture>& tex, fitzel::AssetId id) {
+            const float h = ImGui::GetFrameHeight();
+            const unsigned t = (tex && tex->isValid()) ? tex->id() : thumbFor(id);
+            if (t) ImGui::Image((ImTextureID)(intptr_t)t, ImVec2(h, h));
+            else   ImGui::Dummy(ImVec2(h, h));
+            ImGui::SameLine();
+        };
         bool showScriptEditor = false;
         bool showStats       = false;
         bool showCamera      = false;
@@ -1155,7 +1326,7 @@ int main(int argc, char** argv) {
             streamer.update(camera.position());
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
-            road.dirty  = true;
+            road.rebuildMesh(); // re-drape the committed road on the new terrain
         };
         applyScene(scene); // start in the selected scene (Empty by default)
 
@@ -1204,6 +1375,8 @@ int main(int argc, char** argv) {
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
         addF("waterColorR", waterColor.x);     addF("waterColorG", waterColor.y);
         addF("waterColorB", waterColor.z);
+        addF("waterReflectivity", waterReflectivity); addF("waterClarity", waterClarity);
+        addF("waterIor", waterIor);
         addF("terrHeight", uiSettings.heightScale);   addF("terrRidge", uiSettings.ridgeScale);
         addF("terrContinent", uiSettings.continentAmp); addF("terrBiome", uiSettings.biomeFreq);
         addF("terrTerrace", uiSettings.terrace);      addF("terrWarp", uiSettings.warpStrength);
@@ -1309,6 +1482,25 @@ int main(int argc, char** argv) {
                 }
             }
             j["modelMaterialOverrides"] = std::move(ov);
+
+            // Road: control points (compact "x z x z ..." blob) plus its build
+            // params and chosen surface. The graded terrain corridor itself rides
+            // along in "terrainEdits" above; on load we just re-loft the mesh.
+            std::ostringstream rs;
+            rs.precision(7);
+            for (const glm::vec2& p : road.roadPts) rs << p.x << ' ' << p.y << ' ';
+            j["road"] = {
+                {"points",  rs.str()},
+                {"closed",  road.closed},
+                {"enabled", road.enabled},
+                {"width",   road.width},
+                {"texTile", road.texTile},
+                {"grade",   road.grade},
+                {"shoulder",road.shoulder},
+                {"surface", (road.texSel >= 0 &&
+                             road.texSel < static_cast<int>(road.texFiles.size()))
+                                ? road.texFiles[road.texSel] : std::string()},
+            };
         };
         readSettingsFn = [&](const nlohmann::json& j){
             for (const Setting& s : tunables) s.read(j);
@@ -1384,7 +1576,34 @@ int main(int argc, char** argv) {
             streamer.update(camera.position());
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
-            road.dirty  = true;
+
+            // Road: restore control points + build params (empty for scenes saved
+            // before roads were persisted; the old road.txt Save/Load still works).
+            if (j.contains("road") && j["road"].is_object()) {
+                const auto& r = j["road"];
+                road.roadPts.clear();
+                if (r.contains("points") && r["points"].is_string()) {
+                    std::istringstream rs(r["points"].get<std::string>());
+                    glm::vec2 p;
+                    while (rs >> p.x >> p.y) road.roadPts.push_back(p);
+                }
+                road.closed   = r.value("closed",  false);
+                road.enabled  = r.value("enabled", true);
+                road.width    = r.value("width",   5.0f);
+                road.texTile  = r.value("texTile", 8.0f);
+                road.grade    = r.value("grade",   0.55f);
+                road.shoulder = r.value("shoulder",3.0f);
+                const std::string surf = r.value("surface", std::string());
+                if (!surf.empty()) {
+                    road.setSurface(surf);
+                    for (int i = 0; i < static_cast<int>(road.texFiles.size()); ++i)
+                        if (road.texFiles[i] == surf) road.texSel = i;
+                }
+                roadSel = -1;
+            }
+            // The graded corridor is already baked into the restored terrain
+            // edits above, so just re-loft the committed mesh on that ground.
+            road.rebuildMesh();
 
             // Re-apply model-material overrides now that every model has
             // re-imported (see writeSettings). Matched by the same stable key so
@@ -1711,9 +1930,8 @@ int main(int argc, char** argv) {
                         heights[z * N + x] = streamer.heightAt(ox + x * sp, oz + z * sp);
                 physics->addHeightField(heights.data(), N, glm::vec3(ox, 0.0f, oz), sp);
             }
-            // Roads: a static triangle-mesh collider (draped on the terrain), so
-            // the player and objects can walk/drive on them.
-            road.rebuildIfDirty();
+            // Roads: a static triangle-mesh collider (from the last Build, graded
+            // into the terrain), so the player and objects can walk/drive on them.
             if (road.enabled && road.collIndices().size() >= 3)
                 physics->addMesh(road.collVerts().data(),
                                  static_cast<int>(road.collVerts().size()),
@@ -3123,7 +3341,7 @@ int main(int argc, char** argv) {
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
                                 road.roadPts.push_back({h.x, h.z});
                                 roadSel = static_cast<int>(road.roadPts.size()) - 1;
-                                road.dirty = true;
+                                road.needsBuild = true;
                             }
                         }
                     }
@@ -3133,7 +3351,7 @@ int main(int argc, char** argv) {
                         glm::vec3 h;
                         if (roadPickTerrain(viewportMouseNdc, vp, h)) {
                             road.roadPts[roadSel] = glm::vec2(h.x, h.z);
-                            road.dirty = true;
+                            road.needsBuild = true;
                         }
                     }
                     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) roadDragging = false;
@@ -3142,18 +3360,31 @@ int main(int argc, char** argv) {
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
                         road.roadPts.erase(road.roadPts.begin() + roadSel);
                         roadSel = -1;
-                        road.dirty = true;
+                        road.needsBuild = true;
                     }
 
-                    // Draw the path preview line, then the handles on top.
+                    // Live preview: the smoothed spline as it will be built -- the
+                    // curved centreline plus its left/right edges at the road width.
+                    // Yellow = not yet built, cyan = matches the committed road.
                     ImDrawList* dl = ImGui::GetWindowDrawList();
-                    ImVec2 prev; bool havePrev = false;
-                    for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
-                        ImVec2 sp;
-                        if (!toScreen(handleWorld(i), sp)) { havePrev = false; continue; }
-                        if (havePrev) dl->AddLine(prev, sp, IM_COL32(255, 220, 80, 150), 2.0f);
-                        prev = sp; havePrev = true;
-                    }
+                    const RoadSystem::Preview pv = road.previewGeometry();
+                    const ImU32 edgeCol = road.needsBuild ? IM_COL32(255, 210, 70, 200)
+                                                          : IM_COL32(90, 210, 190, 190);
+                    const ImU32 midCol  = road.needsBuild ? IM_COL32(255, 235, 140, 150)
+                                                          : IM_COL32(150, 235, 220, 130);
+                    auto drawPolyline = [&](const std::vector<glm::vec3>& line,
+                                            ImU32 col, float th) {
+                        ImVec2 prev; bool have = false;
+                        for (const glm::vec3& wp : line) {
+                            ImVec2 sp;
+                            if (!toScreen(wp, sp)) { have = false; continue; }
+                            if (have) dl->AddLine(prev, sp, col, th);
+                            prev = sp; have = true;
+                        }
+                    };
+                    drawPolyline(pv.left,  edgeCol, 2.0f);
+                    drawPolyline(pv.right, edgeCol, 2.0f);
+                    drawPolyline(pv.center, midCol, 1.5f);
                     for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
                         ImVec2 sp;
                         if (!toScreen(handleWorld(i), sp)) continue;
@@ -3780,14 +4011,30 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Ripples",     &waveStrength, 0.0f, 0.05f, "%.3f");
                 ImGui::SliderFloat("Ripple size", &waveScale, 0.01f, 0.2f, "%.3f");
                 ImGui::SliderFloat("Shore foam",  &foamWidth, 0.0f, 8.0f);
+                ImGui::SliderFloat("Reflectivity",&waterReflectivity, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Max mirror strength. Lower = less glassy,\n"
+                                      "more of the water body shows through.");
+                ImGui::SliderFloat("Clarity",     &waterClarity, 0.2f, 3.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How clear the water is. Higher = see the bed\n"
+                                      "deeper; lower = murkier, tints sooner.");
+                ImGui::SliderFloat("IOR",         &waterIor, 1.0f, 2.0f, "%.3f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Index of refraction. Water = 1.33 (~2%% edge-on\n"
+                                      "reflection); higher = more reflective + more bend.");
                 ImGui::ColorEdit3("Tint",         &waterColor.x);
             }
             ImGui::End(); }
 
+            // Serve finished texture thumbnails to every panel drawn this frame
+            // (materials, terrain, assets) from the shared cache.
+            pumpThumbnails();
+
             terrainui::drawPanel({
                 showTerrain, uiSettings, streamer, camera, look,
-                texScale, normalStrength, veg.grassDirty, veg.treeCenter, road.dirty,
-                assetDb,
+                texScale, normalStrength, veg.grassDirty, veg.treeCenter, road.needsBuild,
+                assetDb, thumbFor,
             });
 
             sculptui::drawPanel({
@@ -3934,10 +4181,42 @@ int main(int argc, char** argv) {
                 if (roadSel >= 0) ImGui::Text("| selected #%d", roadSel);
                 else              ImGui::TextDisabled("| none selected");
 
+                // --- Build: commit the previewed spline into the terrain --------
+                // Editing only updates the preview; Build grades the road into the
+                // ground (flush + smooth) and lofts the drivable mesh + collider.
+                ImGui::Separator();
+                if (road.needsBuild)
+                    ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.30f, 1.0f),
+                                       "Preview \xE2\x80\x93 not built yet");
+                else if (road.verts() > 0)
+                    ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
+                                       "Built \xE2\x80\x93 embedded in terrain");
+                else
+                    ImGui::TextDisabled("No road built");
+                ImGui::BeginDisabled(road.roadPts.size() < 2);
+                if (ImGui::Button(road.needsBuild ? "Build road into terrain"
+                                                  : "Rebuild road",
+                                  ImVec2(-1.0f, 0.0f)))
+                    buildRoad();
+                ImGui::EndDisabled();
+                ImGui::Separator();
+
                 bool rc = false;
+                rc |= ImGui::Checkbox("Closed loop", &road.closed);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Join the last control point back to the first\n"
+                                      "(needs at least 3 points).");
                 rc |= ImGui::SliderFloat("Width", &road.width, 1.0f, 20.0f, "%.1f m");
+                rc |= ImGui::SliderFloat("Smoothing", &road.grade, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How much the road grade is flattened along its\n"
+                                      "length (higher = smoother/steadier slope).");
+                rc |= ImGui::SliderFloat("Shoulder", &road.shoulder, 0.0f, 12.0f, "%.1f m");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Width of the terrain blend beyond the road edge\n"
+                                      "that eases back into the natural ground.");
                 rc |= ImGui::SliderFloat("Texture tile", &road.texTile, 2.0f, 24.0f, "%.1f m");
-                if (rc) road.dirty = true;
+                if (rc) road.needsBuild = true;
 
                 // Surface texture picker (any diffuse texture in textures/).
                 if (!road.texFiles.empty() &&
@@ -3957,7 +4236,7 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("Delete selected")) {
                     road.roadPts.erase(road.roadPts.begin() + roadSel);
                     roadSel = -1;
-                    road.dirty = true;
+                    road.needsBuild = true;
                 }
                 ImGui::EndDisabled();
                 ImGui::SameLine();
@@ -3965,10 +4244,10 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("Undo point")) {
                     road.roadPts.pop_back();
                     if (roadSel >= static_cast<int>(road.roadPts.size())) roadSel = -1;
-                    road.dirty = true;
+                    road.needsBuild = true;
                 }
                 ImGui::SameLine();
-                if (ImGui::Button("Clear")) { road.roadPts.clear(); roadSel = -1; road.dirty = true; }
+                if (ImGui::Button("Clear")) { road.roadPts.clear(); roadSel = -1; road.needsBuild = true; }
                 ImGui::EndDisabled();
 
                 ImGui::Separator();
@@ -3984,7 +4263,7 @@ int main(int argc, char** argv) {
                         glm::vec2 p;
                         while (f >> p.x >> p.y) road.roadPts.push_back(p);
                         roadSel = -1;
-                        road.dirty = true;
+                        road.needsBuild = true;
                     }
                 }
                 ImGui::SameLine();
@@ -4475,6 +4754,7 @@ int main(int argc, char** argv) {
                             }
                             ImGui::Text("Base texture:");
                             ImGui::SameLine();
+                            texSwatch(md.tex, md.texId);
                             ImGui::Button((slot + "##texslot").c_str());
                             if (ImGui::BeginDragDropTarget()) {
                                 if (const ImGuiPayload* pl =
@@ -4504,6 +4784,7 @@ int main(int argc, char** argv) {
                             }
                             ImGui::Text("Normal map:");
                             ImGui::SameLine();
+                            texSwatch(md.normalTex, md.normalTexId);
                             ImGui::Button((nslot + "##nrmslot").c_str());
                             if (ImGui::BeginDragDropTarget()) {
                                 if (const ImGuiPayload* pl =
@@ -4533,6 +4814,7 @@ int main(int argc, char** argv) {
                             }
                             ImGui::Text("Emission map:");
                             ImGui::SameLine();
+                            texSwatch(md.emissionTex, md.emissionTexId);
                             ImGui::Button((eslot + "##emslot").c_str());
                             if (ImGui::BeginDragDropTarget()) {
                                 if (const ImGuiPayload* pl =
@@ -4820,19 +5102,8 @@ int main(int argc, char** argv) {
                                         "viewport; double-click a model to place it.");
                     ImGui::Separator();
 
-                    // Upload any thumbnails whose decode finished on a worker thread
-                    // (the GL upload of a 128px image is effectively free).
-                    for (auto it = assetThumbJobs.begin(); it != assetThumbJobs.end(); ) {
-                        if (it->second.wait_for(std::chrono::seconds(0)) ==
-                            std::future_status::ready) {
-                            auto t = std::make_shared<Texture>(
-                                Texture::fromImagePixels(it->second.get()));
-                            assetThumbs[it->first] = t->isValid() ? t : nullptr;
-                            it = assetThumbJobs.erase(it);
-                        } else {
-                            ++it;
-                        }
-                    }
+                    // (Thumbnails finished off-thread are uploaded once per frame by
+                    // pumpThumbnails(), before the panels are drawn.)
 
                     // Case-insensitive substring match for the filter box.
                     std::string flt = assetFilter;
@@ -4873,27 +5144,24 @@ int main(int argc, char** argv) {
                             ImGui::PushID(id.toString().c_str());
                             ImGui::BeginGroup();
 
-                            // Resolve (and lazily build) a small preview thumbnail.
-                            std::shared_ptr<Texture> thumb;
+                            // Resolve a small preview thumbnail via the shared cache.
+                            // Only request a decode when the tile is actually on
+                            // screen, so scrolling a big browser doesn't queue every
+                            // texture at once.
+                            unsigned tid = 0;
                             if (isTex) {
                                 auto it = assetThumbs.find(id);
-                                if (it != assetThumbs.end()) {
-                                    thumb = it->second; // decoded (or null = bad file)
-                                } else if (assetThumbJobs.find(id) == assetThumbJobs.end() &&
-                                           assetThumbJobs.size() < 4 &&
-                                           ImGui::IsRectVisible(
-                                               ImVec2(assetThumbSize, assetThumbSize))) {
-                                    // Kick off an off-thread decode; uploaded when ready.
-                                    const std::string p = e->absPath.string();
-                                    assetThumbJobs.emplace(id, std::async(std::launch::async,
-                                        [p]{ return Texture::decodeThumbnail(p, 128); }));
-                                }
+                                if (it != assetThumbs.end())
+                                    tid = it->second ? it->second->id() : 0;
+                                else if (ImGui::IsRectVisible(
+                                             ImVec2(assetThumbSize, assetThumbSize)))
+                                    tid = thumbFor(id);
                             }
 
                             const ImVec2 sz(assetThumbSize, assetThumbSize);
-                            if (thumb && thumb->isValid()) {
+                            if (tid) {
                                 ImGui::ImageButton("##thumb",
-                                    (ImTextureID)(intptr_t)thumb->id(), sz);
+                                    (ImTextureID)(intptr_t)tid, sz);
                             } else {
                                 const char* tag = isTex ? "TEX"
                                     : e->type == AssetType::Model ? "MDL"
@@ -5251,8 +5519,8 @@ int main(int argc, char** argv) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
             }
 
-            // Road mesh is (re)built when points/width change (edited in the UI).
-            road.rebuildIfDirty();
+            // The committed road mesh only changes on Build (see the Roads panel);
+            // editing shows a live preview instead (drawn in the viewport overlay).
             if (road.enabled && road.verts() > 0) {
                 road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
                 renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false);
@@ -5671,6 +5939,9 @@ int main(int argc, char** argv) {
             water.setVec3("uWaterColor", waterColor);
             water.setFloat("uWaveStrength", waveStrength);
             water.setFloat("uWaveScale", waveScale);
+            water.setFloat("uReflectivity", waterReflectivity);
+            water.setFloat("uClarity", waterClarity);
+            water.setFloat("uIor", waterIor);
             water.setFloat("uWaveHeight", effWaveH);
             water.setFloat("uChoppy", effWaveC);
             water.setVec3("uAmbient", light.ambient);

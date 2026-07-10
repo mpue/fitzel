@@ -1,6 +1,7 @@
 #include "RoadSystem.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <filesystem>
 #include <system_error>
@@ -11,6 +12,20 @@
 
 #include "CameraPath.hpp" // catmull()
 
+namespace {
+// Number of subdivisions per control-point span when sampling the spline.
+constexpr int kSpanSub = 14;
+
+// Squared distance from point p to segment [a,b], plus the projection param t.
+float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
+    const glm::vec2 ab = b - a;
+    const float len2 = glm::dot(ab, ab);
+    t = (len2 > 1e-8f) ? glm::clamp(glm::dot(p - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+    const glm::vec2 proj = a + ab * t;
+    return glm::dot(p - proj, p - proj);
+}
+} // namespace
+
 RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                        fitzel::TerrainStreamer& streamer, const std::string& texDir)
     : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit) {
@@ -20,13 +35,24 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
     m_mat.set("uColorMode", 2);
     if (m_tex) m_mat.setTexture("uTexture", *m_tex, 0);
 
-    // Selectable surface: gather the diffuse/albedo textures from the texture dir.
+    // Selectable surface: gather the colour/albedo textures from the texture dir.
+    // We can't require "diff" in the name -- the folder's PNGs are all support
+    // maps (nor/disp/spec/...) and its albedos are .jpg, so that would hide every
+    // PNG. Instead accept any jpg/jpeg/png that isn't a known non-colour map, so
+    // custom PNG road textures show up too.
+    auto isSupportMap = [](const std::string& n) {
+        for (const char* tok : {"_nor", "_disp", "_spec", "_rough", "_ao",
+                                "_arm", "_metal", "_height", "_bump", "_mask",
+                                "_gl", "translucent", "billboar", "tree"})
+            if (n.find(tok) != std::string::npos) return true;
+        return false;
+    };
     std::error_code ec;
     for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec)) {
         const std::string name = e.path().filename().string();
         const std::string ext  = e.path().extension().string();
         if ((ext == ".jpg" || ext == ".jpeg" || ext == ".png") &&
-            name.find("diff") != std::string::npos)
+            !isSupportMap(name))
             texFiles.push_back(name);
     }
     std::sort(texFiles.begin(), texFiles.end());
@@ -41,54 +67,57 @@ void RoadSystem::setSurface(const std::string& file) {
     }
 }
 
-void RoadSystem::rebuild() {
-    dirty    = false;
-    vegDirty = true; // vegetation must re-evaluate against the new road
-    m_centerline.clear();
-    fitzel::MeshData md;
+std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ() const {
+    std::vector<glm::vec2> center;
     const int n = static_cast<int>(roadPts.size());
-    if (n < 2) {
-        m_mesh = fitzel::Mesh(); m_verts = 0;
-        m_collVerts.clear(); m_collIndices.clear();
-        return;
+    if (n < 2) return center;
+    // A closed loop needs >= 3 points to be more than a back-and-forth. When
+    // looping, control points wrap around (modulo n) so the tangents are
+    // continuous across the seam; the extra segment n-1 -> 0 closes the ring.
+    const bool loop = closed && n >= 3;
+    auto pt = [&](int i) -> glm::vec2 {
+        return loop ? roadPts[((i % n) + n) % n]
+                    : roadPts[std::clamp(i, 0, n - 1)];
+    };
+    const int segs = loop ? n : n - 1;
+    for (int i = 0; i < segs; ++i) {
+        const glm::vec2 p0 = pt(i - 1);
+        const glm::vec2 p1 = pt(i);
+        const glm::vec2 p2 = pt(i + 1);
+        const glm::vec2 p3 = pt(i + 2);
+        // Each span drops its final sample (it repeats the next span's first);
+        // only the very last segment keeps it, to terminate the open line or to
+        // land back on the start point and close the loop.
+        const int last = (i == segs - 1) ? kSpanSub : kSpanSub - 1;
+        for (int s = 0; s <= last; ++s)
+            center.push_back(catmull(p0, p1, p2, p3,
+                                     static_cast<float>(s) / kSpanSub));
     }
+    return center;
+}
 
-    // Smooth centreline: Catmull-Rom through the points, draped on terrain.
-    std::vector<glm::vec3> center;
-    const int SUB = 14;
-    for (int i = 0; i < n - 1; ++i) {
-        const glm::vec2 p0 = roadPts[std::max(0, i - 1)];
-        const glm::vec2 p1 = roadPts[i];
-        const glm::vec2 p2 = roadPts[i + 1];
-        const glm::vec2 p3 = roadPts[std::min(n - 1, i + 2)];
-        const int last = (i == n - 2) ? SUB : SUB - 1;
-        for (int s = 0; s <= last; ++s) {
-            const glm::vec2 c = catmull(p0, p1, p2, p3, static_cast<float>(s) / SUB);
-            center.push_back({c.x, m_streamer.heightAt(c.x, c.y), c.y});
-        }
-    }
+void RoadSystem::loft(const std::vector<glm::vec2>& center,
+                      const std::vector<float>& height) {
+    fitzel::MeshData md;
+    m_centerline = center; // flat centre for vegetation masking
 
-    // Keep the flat centreline for vegetation masking.
-    m_centerline.reserve(center.size());
-    for (const glm::vec3& p : center) m_centerline.push_back({p.x, p.z});
-
-    // Loft left/right edges perpendicular to the path (in the XZ plane).
     const float half = width * 0.5f;
     float vlen = 0.0f;
     for (std::size_t i = 0; i < center.size(); ++i) {
-        glm::vec3 fwd = (i == 0)                 ? center[1] - center[0]
+        glm::vec2 fwd = (i == 0)                 ? center[1] - center[0]
                       : (i + 1 == center.size()) ? center[i] - center[i - 1]
                                                  : center[i + 1] - center[i - 1];
-        fwd.y = 0.0f;
-        if (glm::length(fwd) < 1e-4f) fwd = glm::vec3(0, 0, 1);
+        if (glm::length(fwd) < 1e-4f) fwd = glm::vec2(0, 1);
         fwd = glm::normalize(fwd);
-        const glm::vec3 side = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
+        // Perpendicular in XZ, matching cross((0,1,0), fwd) so the ribbon winds
+        // front-face-up (see the index order below).
+        const glm::vec2 side(fwd.y, -fwd.x);
         if (i > 0) vlen += glm::length(center[i] - center[i - 1]);
         const float v = vlen / texTile;
-        glm::vec3 Lp = center[i] - side * half;
-        glm::vec3 Rp = center[i] + side * half;
-        Lp.y = m_streamer.heightAt(Lp.x, Lp.z) + 0.10f; // lift off the ground
-        Rp.y = m_streamer.heightAt(Rp.x, Rp.z) + 0.10f;
+        const glm::vec3 Lp(center[i].x - side.x * half, height[i],
+                           center[i].y - side.y * half);
+        const glm::vec3 Rp(center[i].x + side.x * half, height[i],
+                           center[i].y + side.y * half);
         const glm::vec3 up(0.0f, 1.0f, 0.0f);
         md.vertices.push_back({Lp, up, {0.0f, v}});
         md.vertices.push_back({Rp, up, {width / texTile, v}});
@@ -106,4 +135,127 @@ void RoadSystem::rebuild() {
     m_collVerts.reserve(md.vertices.size());
     for (const fitzel::Vertex& vtx : md.vertices) m_collVerts.push_back(vtx.position);
     m_collIndices = md.indices;
+}
+
+void RoadSystem::rebuildMesh() {
+    needsBuild = false;
+    const std::vector<glm::vec2> center = sampleCenterlineXZ();
+    if (center.size() < 2) {
+        m_mesh = fitzel::Mesh(); m_verts = 0;
+        m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
+        return;
+    }
+    // Drape on the current terrain (which already holds the graded corridor after
+    // a build/scene-load), lifted a touch so the ribbon reads above the ground.
+    std::vector<float> h(center.size());
+    for (std::size_t i = 0; i < center.size(); ++i)
+        h[i] = m_streamer.heightAt(center[i].x, center[i].y) + 0.06f;
+    loft(center, h);
+}
+
+bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
+                       glm::vec2& outMax) {
+    needsBuild = false;
+    vegDirty   = true; // vegetation must re-evaluate against the new road
+
+    const std::vector<glm::vec2> center = sampleCenterlineXZ();
+    if (center.size() < 2) {
+        m_mesh = fitzel::Mesh(); m_verts = 0;
+        m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
+        return false;
+    }
+
+    const fitzel::TerrainSettings& s = m_streamer.settings();
+
+    // 1) Longitudinal profile: start from the *base* (procedural) terrain height
+    //    under each sample, then low-pass it so the road grades smoothly instead of
+    //    following every bump. Anchor the ends to the ground so the road meets the
+    //    terrain where it begins/ends. Working from the base makes rebuilds
+    //    idempotent (independent of any corridor already baked in).
+    std::vector<float> prof(center.size());
+    for (std::size_t i = 0; i < center.size(); ++i)
+        prof[i] = terrainBaseHeight(s, center[i].x, center[i].y);
+    const int passes = 3 + static_cast<int>(grade * 30.0f);
+    std::vector<float> tmp = prof;
+    for (int p = 0; p < passes; ++p) {
+        for (std::size_t i = 1; i + 1 < prof.size(); ++i)
+            tmp[i] = 0.5f * prof[i] + 0.25f * (prof[i - 1] + prof[i + 1]);
+        std::swap(prof, tmp); // ends stay fixed (anchored to the terrain)
+    }
+
+    // 2) Loft the ribbon on the graded profile (lifted a hair above the surface).
+    std::vector<float> surf(prof.size());
+    for (std::size_t i = 0; i < prof.size(); ++i) surf[i] = prof[i] + 0.06f;
+    loft(center, surf);
+
+    // 3) Grade a corridor into the terrain edit field: cells within half-width get
+    //    the road height; a `shoulder` band eases back to the natural ground. All
+    //    deltas are stored relative to the base terrain, so the corridor is fully
+    //    owned/overwritten here (repeatable, and it flattens whatever was under it).
+    const float half   = width * 0.5f;
+    const float reach  = half + shoulder;
+    glm::vec2 lo(center[0]), hi(center[0]);
+    for (const glm::vec2& c : center) {
+        lo = glm::min(lo, c); hi = glm::max(hi, c);
+    }
+    lo -= glm::vec2(reach); hi += glm::vec2(reach);
+
+    const float cell = edit.cell;
+    const int ix0 = static_cast<int>(std::floor(lo.x / cell));
+    const int ix1 = static_cast<int>(std::ceil (hi.x / cell));
+    const int iz0 = static_cast<int>(std::floor(lo.y / cell));
+    const int iz1 = static_cast<int>(std::ceil (hi.y / cell));
+    for (int iz = iz0; iz <= iz1; ++iz) {
+        for (int ix = ix0; ix <= ix1; ++ix) {
+            const glm::vec2 w(ix * cell, iz * cell);
+            // Nearest point on the centreline + the road height there.
+            float bestD2 = reach * reach + 1.0f, roadH = 0.0f;
+            for (std::size_t k = 0; k + 1 < center.size(); ++k) {
+                float t;
+                const float d2 = distToSeg(w, center[k], center[k + 1], t);
+                if (d2 < bestD2) {
+                    bestD2 = d2;
+                    roadH  = glm::mix(prof[k], prof[k + 1], t);
+                }
+            }
+            const float d = std::sqrt(bestD2);
+            if (d > reach) continue; // outside the corridor -> leave the ground be
+            const float base = terrainBaseHeight(s, w.x, w.y);
+            float target = roadH;
+            if (d > half) {
+                const float e = glm::clamp((d - half) / shoulder, 0.0f, 1.0f);
+                target = glm::mix(roadH, base, e * e * (3.0f - 2.0f * e));
+            }
+            edit.deltas[fitzel::TerrainEditField::cellKey(ix, iz)] = target - base;
+        }
+    }
+
+    outMin = lo - glm::vec2(cell);
+    outMax = hi + glm::vec2(cell);
+    return true;
+}
+
+RoadSystem::Preview RoadSystem::previewGeometry() const {
+    Preview pv;
+    const std::vector<glm::vec2> center = sampleCenterlineXZ();
+    if (center.size() < 2) return pv;
+    const float half = width * 0.5f;
+    pv.center.reserve(center.size());
+    pv.left.reserve(center.size());
+    pv.right.reserve(center.size());
+    for (std::size_t i = 0; i < center.size(); ++i) {
+        glm::vec2 fwd = (i == 0)                 ? center[1] - center[0]
+                      : (i + 1 == center.size()) ? center[i] - center[i - 1]
+                                                 : center[i + 1] - center[i - 1];
+        if (glm::length(fwd) < 1e-4f) fwd = glm::vec2(0, 1);
+        fwd = glm::normalize(fwd);
+        const glm::vec2 side(fwd.y, -fwd.x);
+        const glm::vec2 c = center[i];
+        const glm::vec2 l = c - side * half;
+        const glm::vec2 r = c + side * half;
+        pv.center.push_back({c.x, m_streamer.heightAt(c.x, c.y) + 0.10f, c.y});
+        pv.left.push_back  ({l.x, m_streamer.heightAt(l.x, l.y) + 0.10f, l.y});
+        pv.right.push_back ({r.x, m_streamer.heightAt(r.x, r.y) + 0.10f, r.y});
+    }
+    return pv;
 }

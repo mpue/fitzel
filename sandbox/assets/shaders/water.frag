@@ -21,6 +21,9 @@ uniform float uTime;
 uniform vec3  uWaterColor;
 uniform float uWaveStrength; // ripple distortion amount
 uniform float uWaveScale;    // ripple frequency
+uniform float uReflectivity; // max mirror strength (Fresnel cap), 0..1
+uniform float uClarity;      // water clarity: higher = clearer (less depth tint)
+uniform float uIor;          // index of refraction (water ~1.33)
 
 // Atmospheric fog (matches lit.frag).
 uniform vec3  uFogColor;
@@ -72,11 +75,14 @@ float linearDepth(float d) {
 // and directions -> richer, less uniform ripples.
 vec3 waterNormal(vec2 p) {
     float e = 0.30;
-    vec2 q1 = p * uWaveScale       + vec2(uTime * 0.05, uTime * 0.035);
+    // Three scrolling octaves at different scales/directions -- the fine third
+    // layer breaks up the reflection so the surface reads as water, not a mirror.
+    vec2 q1 = p * uWaveScale       + vec2(uTime * 0.05,  uTime * 0.035);
     vec2 q2 = p * uWaveScale * 2.7 - vec2(uTime * 0.028, uTime * 0.06);
-    float h  = fbm(q1)              + 0.5 * fbm(q2);
-    float hx = fbm(q1 + vec2(e, 0)) + 0.5 * fbm(q2 + vec2(e, 0));
-    float hz = fbm(q1 + vec2(0, e)) + 0.5 * fbm(q2 + vec2(0, e));
+    vec2 q3 = p * uWaveScale * 6.1 + vec2(uTime * 0.09, -uTime * 0.05);
+    float h  = fbm(q1)              + 0.5 * fbm(q2)              + 0.25 * fbm(q3);
+    float hx = fbm(q1 + vec2(e, 0)) + 0.5 * fbm(q2 + vec2(e, 0)) + 0.25 * fbm(q3 + vec2(e, 0));
+    float hz = fbm(q1 + vec2(0, e)) + 0.5 * fbm(q2 + vec2(0, e)) + 0.25 * fbm(q3 + vec2(0, e));
     return normalize(vec3(h - hx, e * 2.0, h - hz));
 }
 
@@ -86,29 +92,50 @@ void main() {
     // oriented -- both targets sample at the fragment's own screen UV.
     vec2 ndc = (vClip.xy / vClip.w) * 0.5 + 0.5;
 
-    // Combine the large Gerstner swell normal with fine noise ripples.
+    // Combine the large Gerstner swell normal with fine noise ripples. The ripple
+    // is weighted up a touch so the reflection breaks rather than mirroring.
     vec3  ripple = waterNormal(vWorldPos.xz);
-    vec3  N = normalize(vWaveNormal + vec3(ripple.x, 0.0, ripple.z));
+    vec3  N = normalize(vWaveNormal + vec3(ripple.x, 0.0, ripple.z) * 1.4);
     vec3  V = normalize(uCameraPos - vWorldPos);
 
-    // Ripple distortion linked to the surface normal.
-    vec2 distortion = N.xz * uWaveStrength;
+    // Water column thickness = scene depth behind the water minus the surface
+    // depth. Sampled at the *undistorted* screen position so it tracks the real
+    // shoreline. `shallow` runs 0 at the waterline -> 1 in open water.
+    float sceneZ = linearDepth(texture(uRefractionDepth, ndc).r);
+    float waterZ = linearDepth(gl_FragCoord.z);
+    float thickness = max(sceneZ - waterZ, 0.0);
+    float shallow   = smoothstep(0.0, 1.2, thickness);
+
+    // Ripple distortion, damped in the shallows so the near-shore bed stays
+    // readable (no smeared, hard edge). The apparent refraction scales with the
+    // air->water index contrast, normalised so water's 1.33 matches the tuned look.
+    float bend = (uIor - 1.0) / 0.33;
+    vec2 distortion = N.xz * uWaveStrength * shallow * bend;
     vec2 refractUV  = clamp(ndc + distortion, 0.002, 0.998);
     vec2 reflectUV  = clamp(ndc + distortion, 0.002, 0.998);
 
     vec3 reflectCol = texture(uReflection, reflectUV).rgb;
     vec3 refractCol = texture(uRefraction, refractUV).rgb;
 
-    // Schlick Fresnel: ~2% reflectance head-on, ~100% at grazing angles.
+    // Beer-Lambert depth absorption: clear over a shallow bed, tinting toward the
+    // water colour with depth. Red is absorbed fastest -> natural blue-green.
+    // `uClarity` scales the extinction (higher = clearer water, less tint).
+    vec3  absorb = vec3(0.30, 0.14, 0.10) / max(uClarity, 0.05);
+    vec3  trans  = exp(-absorb * thickness);
+    vec3  deep   = pow(uWaterColor, vec3(2.2));
+    vec3  body   = mix(deep, refractCol, trans); // shallow -> bed, deep -> tint
+
+    // Schlick Fresnel with the reflectance-at-normal-incidence derived from the
+    // index of refraction: F0 = ((1-n)/(1+n))^2  (~0.02 for water's 1.33). Never a
+    // perfect mirror (capped), and reduced over shallow water where you'd see the
+    // bed, not the sky -- kills the oily, glass-like look.
     float cosT = clamp(dot(V, N), 0.0, 1.0);
-    float F = 0.02 + 0.98 * pow(1.0 - cosT, 5.0);
+    float f0 = (1.0 - uIor) / (1.0 + uIor);
+    f0 *= f0;
+    float F = f0 + (1.0 - f0) * pow(1.0 - cosT, 5.0);
+    F = min(F, uReflectivity) * mix(0.35, 1.0, shallow);
 
-    // Deep water absorbs light: tint the refracted view toward the water colour,
-    // more so at grazing angles (longer path through water).
-    vec3 deep = pow(uWaterColor, vec3(2.2));
-    refractCol = mix(refractCol, deep, mix(0.35, 0.8, 1.0 - cosT));
-
-    vec3 color = mix(refractCol, reflectCol, F);
+    vec3 color = mix(body, reflectCol, F);
 
     // Sharp specular sun glint (HDR, picked up by bloom).
     vec3  L = normalize(uLightDir);
@@ -116,27 +143,21 @@ void main() {
     float spec = pow(max(dot(N, H), 0.0), 300.0);
     color += uLightColor * spec * 3.0;
 
-    // Shoreline foam: thickness of the water column = scene depth behind the
-    // water minus the water surface depth. Thin water (shallow shore) -> foam.
-    // Sample depth at the *undistorted* screen position so the foam tracks the
-    // real shoreline geometry (the refraction colour is still distorted).
-    float sceneZ = linearDepth(texture(uRefractionDepth, ndc).r);
-    float waterZ = linearDepth(gl_FragCoord.z);
-    float thickness = sceneZ - waterZ;
+    // Shoreline foam: a thin, soft band where the water is shallow (no hard line).
     float shoreF = 1.0 - smoothstep(0.0, uFoamWidth, thickness);
     float fn     = fbm(vWorldPos.xz * 0.6 + vec2(uTime * 0.08, -uTime * 0.05));
-    shoreF       = smoothstep(0.45, 0.95, shoreF * (0.55 + 0.9 * fn));
+    shoreF       = smoothstep(0.30, 0.85, shoreF) * (0.4 + 0.6 * fn);
 
     // Whitecaps / spray on the steep wave crests.
     float capNoise = fbm(vWorldPos.xz * 0.35 - vec2(uTime * 0.06));
-    float whitecap = smoothstep(0.55, 0.9, vCrest) * smoothstep(0.35, 0.85, capNoise);
+    float whitecap = smoothstep(0.60, 0.92, vCrest) * smoothstep(0.40, 0.85, capNoise);
 
-    float foam = clamp(max(shoreF, whitecap * 0.85), 0.0, 1.0);
+    float foam = clamp(max(shoreF, whitecap * 0.7), 0.0, 1.0);
 
-    // Foam is a lit surface, not a flat white decal: it responds to the sun and
-    // dims at night.
-    vec3 foamColor = uAmbient * 1.5 + uLightColor * max(dot(N, L), 0.0);
-    color = mix(color, foamColor, foam * 0.9);
+    // Foam is a lit surface (responds to the sun, dims at night), kept softer so
+    // it reads as spray rather than a bright decal.
+    vec3 foamColor = uAmbient * 1.1 + uLightColor * max(dot(N, L), 0.0) * 0.8;
+    color = mix(color, foamColor, foam * 0.7);
 
     // Atmospheric fog so distant water blends into the horizon haze.
     vec3  toFrag = vWorldPos - uCameraPos;
