@@ -232,21 +232,40 @@ ModelData loadGltf(const std::string& path) {
 
             const cgltf_accessor* pos = nullptr;
             const cgltf_accessor* nrm = nullptr;
-            const cgltf_accessor* uv  = nullptr;
             const cgltf_accessor* jnt = nullptr;
             const cgltf_accessor* wgt = nullptr;
+            // Keep every UV set (TEXCOORD_n) indexed by n: a material's base-colour
+            // texture chooses which one it samples, and multi-material models often
+            // route different materials through different sets.
+            const cgltf_accessor* uvSets[8] = {};
             for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
-                switch (prim.attributes[ai].type) {
-                    case cgltf_attribute_type_position: pos = prim.attributes[ai].data; break;
-                    case cgltf_attribute_type_normal:   nrm = prim.attributes[ai].data; break;
-                    case cgltf_attribute_type_texcoord: if (!uv)  uv  = prim.attributes[ai].data; break;
-                    case cgltf_attribute_type_joints:   if (!jnt) jnt = prim.attributes[ai].data; break;
-                    case cgltf_attribute_type_weights:  if (!wgt) wgt = prim.attributes[ai].data; break;
+                const cgltf_attribute& at = prim.attributes[ai];
+                switch (at.type) {
+                    case cgltf_attribute_type_position: pos = at.data; break;
+                    case cgltf_attribute_type_normal:   nrm = at.data; break;
+                    case cgltf_attribute_type_texcoord:
+                        if (at.index >= 0 && at.index < 8 && !uvSets[at.index])
+                            uvSets[at.index] = at.data;
+                        break;
+                    case cgltf_attribute_type_joints:   if (!jnt) jnt = at.data; break;
+                    case cgltf_attribute_type_weights:  if (!wgt) wgt = at.data; break;
                     default: break;
                 }
             }
             if (!pos) continue;
             const bool primSkinned = skinnedNode && jnt && wgt && nskin && !out.skeleton.empty();
+
+            // UV routing for this primitive's base-colour texture: which TEXCOORD
+            // set it samples, and the KHR_texture_transform (offset/rotation/scale)
+            // that remaps the coords -- both fixed per material. Atlas-packed
+            // multi-material models rely on the transform to place each material in
+            // its own atlas tile; ignoring it maps every material to the same
+            // region. Baked into the UVs below so the render path stays uniform.
+            int   uvSet       = 0;
+            bool  uvHasXform  = false;
+            float uvOffset[2] = {0.0f, 0.0f};
+            float uvScale[2]  = {1.0f, 1.0f};
+            float uvRotation  = 0.0f;
 
             ModelPrimitive mp;
             if (prim.material) {
@@ -256,16 +275,32 @@ ModelData loadGltf(const std::string& path) {
                 // Support both PBR workflows: metallic-roughness base colour and
                 // the KHR spec-gloss diffuse (older exporters). Whichever provides
                 // the colour texture wins -- a model mixing them keeps all its maps.
-                const cgltf_texture* colorTex = nullptr;
+                const cgltf_texture*      colorTex  = nullptr;
+                const cgltf_texture_view* colorView = nullptr;
                 if (mat->has_pbr_metallic_roughness) {
                     const auto& pbr = mat->pbr_metallic_roughness;
                     for (int c = 0; c < 4; ++c) mp.baseColor[c] = pbr.base_color_factor[c];
-                    colorTex = pbr.base_color_texture.texture;
+                    colorTex  = pbr.base_color_texture.texture;
+                    colorView = &pbr.base_color_texture;
                 }
                 if (!colorTex && mat->has_pbr_specular_glossiness) {
                     const auto& sg = mat->pbr_specular_glossiness;
                     for (int c = 0; c < 4; ++c) mp.baseColor[c] = sg.diffuse_factor[c];
-                    colorTex = sg.diffuse_texture.texture;
+                    colorTex  = sg.diffuse_texture.texture;
+                    colorView = &sg.diffuse_texture;
+                }
+                // The base-colour view drives the vertex UVs (base colour, normal
+                // and emission share one set in every workflow we target).
+                if (colorView && colorView->texture) {
+                    uvSet = colorView->texcoord;
+                    if (colorView->has_transform) {
+                        const cgltf_texture_transform& tr = colorView->transform;
+                        uvHasXform  = true;
+                        uvOffset[0] = tr.offset[0]; uvOffset[1] = tr.offset[1];
+                        uvScale[0]  = tr.scale[0];  uvScale[1]  = tr.scale[1];
+                        uvRotation  = tr.rotation;
+                        if (tr.has_texcoord) uvSet = tr.texcoord; // may override the set
+                    }
                 }
                 if (colorTex)
                     decodeImage(colorTex->image, baseDir,
@@ -276,6 +311,13 @@ ModelData loadGltf(const std::string& path) {
                                 mp.normalPixels, mp.normalWidth, mp.normalHeight,
                                 mp.materialName);
             }
+
+            // Resolve the UV accessor for the chosen set, falling back to the first
+            // available set when the requested one is absent.
+            const cgltf_accessor* uv =
+                (uvSet >= 0 && uvSet < 8) ? uvSets[uvSet] : nullptr;
+            if (!uv)
+                for (const cgltf_accessor* a : uvSets) if (a) { uv = a; break; }
 
             const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
             mp.vertices.reserve(count * 8);
@@ -288,6 +330,12 @@ ModelData loadGltf(const std::string& path) {
                 cgltf_accessor_read_float(pos, idx, p, 3);
                 if (nrm) cgltf_accessor_read_float(nrm, idx, n, 3);
                 if (uv)  cgltf_accessor_read_float(uv,  idx, t, 2);
+                if (uvHasXform) { // KHR_texture_transform: scale, then rotate, then offset
+                    const float u = t[0], v = t[1];
+                    const float cs = std::cos(uvRotation), sn = std::sin(uvRotation);
+                    t[0] = uvScale[0] * u * cs - uvScale[1] * v * sn + uvOffset[0];
+                    t[1] = uvScale[0] * u * sn + uvScale[1] * v * cs + uvOffset[1];
+                }
 
                 const glm::vec3 wp = glm::vec3(model * glm::vec4(p[0], p[1], p[2], 1.0f));
                 const glm::vec3 wn = glm::normalize(normalM * glm::vec3(n[0], n[1], n[2]));
