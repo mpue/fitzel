@@ -679,6 +679,13 @@ int main(int argc, char** argv) {
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
 
+        // Blender-style 3D cursor: a world-space reference point placed with
+        // Shift+Right-click, used as a snap/placement anchor (see the "3D Cursor"
+        // panel). cursorGrid is the step for the grid-snap operations.
+        glm::vec3 cursor3D{0.0f};
+        bool      cursorVisible = true;
+        float     cursorGrid    = 1.0f;
+
         // Material library: named surface assets solids can be assigned. New
         // objects get the material selected in the Materials panel (matSel).
         std::vector<MaterialDef>& materials = document.materials();
@@ -802,6 +809,7 @@ int main(int argc, char** argv) {
         bool showVegetation  = false;
         bool showCamPath     = false;
         bool showRoads       = false;
+        bool showCursor      = false; // 3D cursor panel
         bool showVehiclePanel = false;
         bool showEnv         = false;
         bool showMixer       = false;
@@ -1091,6 +1099,31 @@ int main(int argc, char** argv) {
             const Entity* p = document.find(e.parent);
             return p ? worldOf(*p) : glm::mat4(1.0f);
         };
+
+        // --- 3D-cursor snap operations (shared by the panel + the Shift+S popup) --
+        auto cursorHaveSel = [&] {
+            return entitySel >= 0 && entitySel < static_cast<int>(entities.size());
+        };
+        auto snapToGrid = [&](glm::vec3 p) {
+            const float g = cursorGrid;
+            if (g <= 0.0f) return p;
+            return glm::vec3(std::round(p.x / g) * g, std::round(p.y / g) * g,
+                             std::round(p.z / g) * g);
+        };
+        // Move the selected entity to a world position (via the local source of
+        // truth, so it respects any parent -- same path the gizmo/inspector use).
+        auto moveSelectionTo = [&](const glm::vec3& wPos) {
+            if (!cursorHaveSel()) return;
+            Entity& b = entities[entitySel];
+            const glm::mat4 pw = parentWorldMat(b);
+            setWorld(b, wPos, b.rotation, b.parent >= 0 ? &pw : nullptr);
+        };
+        auto snapCursorToOrigin    = [&] { cursor3D = glm::vec3(0.0f); };
+        auto snapCursorToGrid      = [&] { cursor3D = snapToGrid(cursor3D); };
+        auto snapCursorToTerrain   = [&] { cursor3D.y = streamer.heightAt(cursor3D.x, cursor3D.z); };
+        auto snapCursorToSelection = [&] { if (cursorHaveSel()) cursor3D = entities[entitySel].center; };
+        auto snapSelectionToCursor = [&] { moveSelectionTo(cursor3D); };
+        auto snapSelectionToGrid   = [&] { if (cursorHaveSel()) moveSelectionTo(snapToGrid(entities[entitySel].center)); };
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
         auto isUnderId = [&](int a, int ancestorId) {
@@ -1377,6 +1410,8 @@ int main(int argc, char** argv) {
         addF("waterColorB", waterColor.z);
         addF("waterReflectivity", waterReflectivity); addF("waterClarity", waterClarity);
         addF("waterIor", waterIor);
+        addF("cursorX", cursor3D.x); addF("cursorY", cursor3D.y); addF("cursorZ", cursor3D.z);
+        addF("cursorGrid", cursorGrid);
         addF("terrHeight", uiSettings.heightScale);   addF("terrRidge", uiSettings.ridgeScale);
         addF("terrContinent", uiSettings.continentAmp); addF("terrBiome", uiSettings.biomeFreq);
         addF("terrTerrace", uiSettings.terrace);      addF("terrWarp", uiSettings.warpStrength);
@@ -2359,7 +2394,12 @@ int main(int argc, char** argv) {
             } else {
                 // Look only when dragging over the viewport panel (or already
                 // locked into a drag); the surrounding dock panels keep the mouse.
+                // Shift+Right is reserved for placing the 3D cursor (Blender-style),
+                // so it must not also grab mouse-look.
+                const bool shiftHeld = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                       input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
                 const bool mouseLook = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
+                                       && !shiftHeld
                                        && (viewportHovered || presentMode || input.isCursorLocked());
                 if (mouseLook != input.isCursorLocked()) {
                     input.setCursorLocked(mouseLook);
@@ -2972,6 +3012,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
+                    ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
                     ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
                     ImGui::Separator();
                     ImGui::MenuItem("Glotzel (materials)", nullptr, &showMaterials);
@@ -3698,6 +3739,79 @@ int main(int argc, char** argv) {
                     const glm::mat4 proj = camera.projectionMatrix(asp);
                     const glm::mat4 vp = proj * view;
 
+                    // --- Blender-style 3D cursor -----------------------------
+                    // Shift+Right-click drops the cursor onto the terrain (the look
+                    // control ignores right-drag while Shift is held, see above).
+                    if (!playMode && viewportHovered && ImGui::GetIO().KeyShift &&
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                        glm::vec3 h;
+                        if (roadPickTerrain(viewportMouseNdc, vp, h)) cursor3D = h;
+                    }
+                    // Draw it: a red/white split ring with crosshair ticks, always
+                    // on top (2D overlay), so it reads like Blender's cursor.
+                    if (cursorVisible && !playMode) {
+                        const glm::vec4 cc = vp * glm::vec4(cursor3D, 1.0f);
+                        if (cc.w > 1e-4f) {
+                            const glm::vec3 n = glm::vec3(cc) / cc.w;
+                            if (n.z <= 1.0f) {
+                                const ImVec2 c(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
+                                               rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                                ImDrawList* cdl = ImGui::GetWindowDrawList();
+                                const float R = 10.0f;
+                                const ImU32 red = IM_COL32(232, 66, 66, 255);
+                                const ImU32 wht = IM_COL32(245, 245, 245, 255);
+                                for (int s = 0; s < 8; ++s) {
+                                    const float a0 = s * 0.7853982f, a1 = (s + 1) * 0.7853982f;
+                                    cdl->PathArcTo(c, R, a0, a1, 8);
+                                    cdl->PathStroke((s & 1) ? wht : red, 0, 2.2f);
+                                }
+                                const ImU32 k = IM_COL32(20, 20, 20, 220);
+                                cdl->AddLine({c.x - R - 5, c.y}, {c.x - R + 1, c.y}, k, 1.4f);
+                                cdl->AddLine({c.x + R - 1, c.y}, {c.x + R + 5, c.y}, k, 1.4f);
+                                cdl->AddLine({c.x, c.y - R - 5}, {c.x, c.y - R + 1}, k, 1.4f);
+                                cdl->AddLine({c.x, c.y + R - 1}, {c.x, c.y + R + 5}, k, 1.4f);
+                                cdl->AddCircleFilled(c, 1.6f, k);
+                            }
+                        }
+                    }
+                    // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
+                    if (!playMode && viewportHovered && !ImGui::GetIO().WantTextInput &&
+                        ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl &&
+                        ImGui::IsKeyPressed(ImGuiKey_S))
+                        ImGui::OpenPopup("##snapMenu");
+                    // Moderate outer padding; the menu labels get an explicit left
+                    // (and matching right) inset via Indent, since MenuItem renders
+                    // its label flush to the window's inner edge otherwise.
+                    const ImVec2 basePad = ImGui::GetStyle().WindowPadding;
+                    const float  inset   = basePad.x * 0.9f;
+                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                                        ImVec2(basePad.x, basePad.y * 1.7f));
+                    if (ImGui::BeginPopup("##snapMenu")) {
+                        const bool haveSel = cursorHaveSel();
+                        ImGui::Indent(inset);
+                        ImGui::TextDisabled("Snap");
+                        ImGui::Unindent(inset);
+                        ImGui::Separator();
+                        ImGui::Indent(inset);
+                        // Trailing spaces reserve right-edge room so the label isn't
+                        // flush against the popup's right border either.
+                        if (ImGui::MenuItem("Cursor to World Origin      ")) snapCursorToOrigin();
+                        if (ImGui::MenuItem("Cursor to Grid      "))         snapCursorToGrid();
+                        if (ImGui::MenuItem("Cursor to Terrain      "))      snapCursorToTerrain();
+                        if (ImGui::MenuItem("Cursor to Selection      ", nullptr, false, haveSel))
+                            snapCursorToSelection();
+                        ImGui::Unindent(inset);
+                        ImGui::Separator();
+                        ImGui::Indent(inset);
+                        if (ImGui::MenuItem("Selection to Cursor      ", nullptr, false, haveSel))
+                            snapSelectionToCursor();
+                        if (ImGui::MenuItem("Selection to Grid      ", nullptr, false, haveSel))
+                            snapSelectionToGrid();
+                        ImGui::Unindent(inset);
+                        ImGui::EndPopup();
+                    }
+                    ImGui::PopStyleVar(); // WindowPadding
+
                     // Transform gizmo for the selected block (move / scale).
                     if (entityEditMode) {
                         ImGuizmo::SetOrthographic(false);
@@ -4268,6 +4382,41 @@ int main(int argc, char** argv) {
                 }
                 ImGui::SameLine();
                 ImGui::TextDisabled("(road.txt)");
+            }
+            ImGui::End(); }
+
+            if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
+                ImGui::Checkbox("Show cursor", &cursorVisible);
+                ImGui::TextDisabled("Shift+Right-click in the viewport to place it.");
+                ImGui::DragFloat3("Position", &cursor3D.x, 0.05f, 0.0f, 0.0f, "%.2f");
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::DragFloat("Grid step", &cursorGrid, 0.05f, 0.01f, 100.0f, "%.2f m");
+                ImGui::TextDisabled("Shift+S in the viewport opens the snap menu.");
+
+                const bool haveSel = cursorHaveSel();
+
+                ImGui::SeparatorText("Snap cursor");
+                if (ImGui::Button("To world origin")) snapCursorToOrigin();
+                ImGui::SameLine();
+                if (ImGui::Button("To grid"))         snapCursorToGrid();
+                if (ImGui::Button("To terrain"))      snapCursorToTerrain();
+                ImGui::SameLine();
+                ImGui::BeginDisabled(!haveSel);
+                if (ImGui::Button("To selection"))    snapCursorToSelection();
+                ImGui::EndDisabled();
+
+                ImGui::SeparatorText("Snap selection");
+                ImGui::BeginDisabled(!haveSel);
+                if (ImGui::Button("Selection to cursor")) snapSelectionToCursor();
+                ImGui::SameLine();
+                if (ImGui::Button("Selection to grid"))   snapSelectionToGrid();
+                ImGui::EndDisabled();
+
+                ImGui::SeparatorText("Create");
+                if (ImGui::Button("Add object at cursor"))
+                    addEntity(cursor3D, entityNewType);
+                ImGui::SameLine();
+                ImGui::TextDisabled("(base rests on the cursor)");
             }
             ImGui::End(); }
 
