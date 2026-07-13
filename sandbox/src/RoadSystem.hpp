@@ -52,8 +52,15 @@ public:
     };
     Preview previewGeometry() const;
 
-    // Swap the surface texture (by file name under the texture dir).
+    // Swap the surface texture (by file name; resolved against the scanned
+    // texture dirs, see refreshTextures).
     void setSurface(const std::string& file);
+
+    // Rebuild the selectable-surface list from the built-in content texture dir
+    // plus the open project folder (`projectDir`, scanned recursively; pass "" for
+    // none). Call it whenever the project changes so project-local road textures
+    // appear in the picker. The current selection is preserved by file name.
+    void refreshTextures(const std::string& projectDir);
 
     // --- Accessors for the renderer / physics / vegetation -------------------
     const fitzel::Mesh& mesh() const { return m_mesh; }
@@ -70,11 +77,12 @@ public:
     bool                     enabled   = true;
     float                    width     = 5.0f;
     float                    texTile   = 8.0f; // world metres per texture tile
+    float                    fadeWidth = 0.0f; // metres of edge alpha-fade (0 = off)
     float                    grade     = 0.55f; // 0..1 longitudinal smoothing (flatter road)
     float                    shoulder  = 3.0f; // metres of terrain blend beyond the edge
     bool                     needsBuild = false; // roadPts/width/grade changed since Build
     bool                     vegDirty  = false; // road changed -> re-clear plants
-    std::vector<std::string> texFiles;         // selectable diffuse textures
+    std::vector<std::string> texFiles;         // selectable diffuse textures (display names)
     int                      texSel = 0;
 
 private:
@@ -87,6 +95,7 @@ private:
     fitzel::AssetDatabase&   m_assetDb;
     fitzel::TerrainStreamer& m_streamer;
     std::string              m_texDir;
+    std::vector<std::string> m_texPaths; // full paths, parallel to texFiles
 
     std::shared_ptr<fitzel::Texture> m_tex; // kept alive while the material binds it
     fitzel::Material         m_mat;

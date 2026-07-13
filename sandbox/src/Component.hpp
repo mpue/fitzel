@@ -378,6 +378,7 @@ public:
     float     antiRoll       = 1000.0f;       // anti-roll bar stiffness (0 = none)
     float     grip           = 1.5f;          // tyre friction scale (1 = default)
     int       drive          = 0;             // 0 = RWD, 1 = FWD, 2 = AWD
+    float     uprightAssist  = 6.0f;          // keep-upright roll torque (0 = pure sim)
 
     // Follow (chase) camera while driving: how the view trails the vehicle.
     float camDistance   = 7.0f;               // m behind the vehicle

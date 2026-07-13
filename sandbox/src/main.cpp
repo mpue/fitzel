@@ -656,6 +656,10 @@ int main(int argc, char** argv) {
         PhysicsBodyId physCarId = 0;   // Jolt vehicle chassis (Play-mode drive)
         bool  carPlaced   = false;
         bool  showVehicle = true;
+        // Play-start options (per-scene, serialized): drop straight into the car
+        // when Play begins, and whether the aiming crosshair is drawn in Play.
+        bool  startInVehicleMode = false;
+        bool  showCrosshair      = true;
         // Scene vehicle (a model with a VehicleComponent) being driven: its
         // entity id, and -- for the editor test-drive -- the transform snapshot
         // restored when drive mode ends (a test-drive must not edit the scene).
@@ -1161,8 +1165,11 @@ int main(int argc, char** argv) {
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
         // Loading/creating a project replaces the document, so the undo history
         // must not survive the boundary.
-        auto openProjectFolder    = [&](const std::string& f){ const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
-        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); };
+        // Rescan road-surface textures to include the project being opened before
+        // the scene loads (loadScene restores the saved surface by name, so the
+        // project's textures must already be in the list at that point).
+        auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
+        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); road.refreshTextures(std::string()); };
 
         // World transform (translate*rotate, ImGuizmo Euler convention) of an
         // entity's cached world center/rotation. Scale is not part of the
@@ -1331,6 +1338,28 @@ int main(int argc, char** argv) {
             setWorld(nb, wPos, wRot, p ? &pw : nullptr);
             history.push(std::make_unique<AddEntityCmd>(nb), document);
             return nb.id;
+        };
+        // Make the Camera on entity `entId` the single Main Camera: the view that
+        // Play (and the exported game) starts from. Sets its CameraComponent's
+        // activeOnStart and clears it on every other camera, so exactly one is the
+        // main camera. Pass -1 to clear all cameras (Play starts from the player
+        // view). One undoable step over all camera entities; a no-op if `entId`
+        // has no CameraComponent.
+        auto setMainCamera = [&](int entId) {
+            if (entId >= 0) {
+                const Entity* e = document.find(entId);
+                if (!e || !e->components.get<CameraComponent>()) return;
+            }
+            std::vector<int> camIds;
+            for (const Entity& e : entities)
+                if (e.components.get<CameraComponent>()) camIds.push_back(e.id);
+            if (camIds.empty()) return;
+            std::vector<Entity> before = snapshotEntities(camIds);
+            for (Entity& e : entities)
+                if (auto* cc = e.components.get<CameraComponent>())
+                    cc->activeOnStart = (e.id == entId);
+            auto cmd = std::make_unique<ModifyEntitiesCmd>(before, snapshotEntities(camIds));
+            if (!cmd->trivial()) history.push(std::move(cmd), document);
         };
         // Context-menu helpers (index-based; capture the id first so the entities
         // vector may safely grow underneath).
@@ -1519,6 +1548,8 @@ int main(int argc, char** argv) {
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
+        addB("startInVehicleMode", startInVehicleMode);
+        addB("showCrosshair", showCrosshair);
         addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
         addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
@@ -1668,6 +1699,7 @@ int main(int argc, char** argv) {
                 {"enabled", road.enabled},
                 {"width",   road.width},
                 {"texTile", road.texTile},
+                {"fadeWidth",road.fadeWidth},
                 {"grade",   road.grade},
                 {"shoulder",road.shoulder},
                 {"surface", (road.texSel >= 0 &&
@@ -1779,6 +1811,7 @@ int main(int argc, char** argv) {
                 road.enabled  = r.value("enabled", true);
                 road.width    = r.value("width",   5.0f);
                 road.texTile  = r.value("texTile", 8.0f);
+                road.fadeWidth= r.value("fadeWidth", 0.0f);
                 road.grade    = r.value("grade",   0.55f);
                 road.shoulder = r.value("shoulder",3.0f);
                 const std::string surf = r.value("surface", std::string());
@@ -2028,6 +2061,7 @@ int main(int argc, char** argv) {
             tuning.antiRoll       = vc->antiRoll;
             tuning.grip           = vc->grip;
             tuning.drive          = vc->drive;
+            tuning.uprightAssist  = vc->uprightAssist;
             physCarId = physics->addVehicle(
                 glm::max(vc->chassisHalf, glm::vec3(0.05f)), vc->mass, sp, q,
                 vc->wheelRadius, vc->wheelWidth, vc->halfTrack,
@@ -2254,8 +2288,8 @@ int main(int argc, char** argv) {
             physics = std::make_unique<PhysicsWorld>();
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             {
-                const int   N  = 128;   // heightfield resolution (even)
-                const float sp = 4.0f;  // metres per sample (~512 m span)
+                const int   N  = 192;   // heightfield resolution (even)
+                const float sp = 4.0f;  // metres per sample (~768 m span)
                 const glm::vec3 cc = camera.position();
                 const float ox = cc.x - (N * 0.5f) * sp;
                 const float oz = cc.z - (N * 0.5f) * sp;
@@ -2348,6 +2382,14 @@ int main(int argc, char** argv) {
                 if (const auto* a = e.components.get<AudioSourceComponent>();
                     a && a->playOnStart)
                     startAudioSource(e.id);
+
+            // Optionally start behind the wheel instead of the walking player.
+            // enterVehicleMode spawns/drives the nearest scene vehicle (or a
+            // fallback car) and takes over from the first-person setup above.
+            if (startInVehicleMode) {
+                vehicleMode = true;
+                enterVehicleMode();
+            }
         };
         auto stopPlay = [&] {
             if (!playMode) return;
@@ -4843,6 +4885,14 @@ int main(int argc, char** argv) {
                 rc |= ImGui::SliderFloat("Texture tile", &road.texTile, 2.0f, 24.0f, "%.1f m");
                 if (rc) road.needsBuild = true;
 
+                // Edge fade is a pure shader effect (alpha taper at the ribbon
+                // edges) -- it needs no rebuild, so it's kept out of `rc`.
+                ImGui::SliderFloat("Edge fade", &road.fadeWidth, 0.0f,
+                                   road.width * 0.5f, "%.1f m");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Fade the road to transparent over this many metres\n"
+                                      "at each edge, blending it into the terrain (0 = off).");
+
                 // Surface texture picker (any diffuse texture in textures/).
                 if (!road.texFiles.empty() &&
                     ImGui::BeginCombo("Surface", road.texFiles[road.texSel].c_str())) {
@@ -5032,6 +5082,12 @@ int main(int argc, char** argv) {
                                     { primChildReq = i; primChildType = EntityType::Sphere; }
                                 ImGui::EndMenu();
                             }
+                            if (const auto* cc = entities[i].components.get<CameraComponent>()) {
+                                ImGui::Separator();
+                                if (ImGui::MenuItem("Set as Main Camera", nullptr,
+                                                    cc->activeOnStart))
+                                    setMainCamera(entities[i].id);
+                            }
                             ImGui::Separator();
                             ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
                             if (ImGui::MenuItem("Delete")) delReq = i;
@@ -5103,6 +5159,10 @@ int main(int argc, char** argv) {
                     // widget below mutates it (committed at the block's end).
                     const std::vector<int> inspFrameIds   = collectSubtreeIds(b.id);
                     std::vector<Entity>    inspFrameStart = snapshotEntities(inspFrameIds);
+                    // Set true when the Camera branch below sets the Main Camera via
+                    // setMainCamera(): that pushes its own multi-camera undo step, so
+                    // the per-entity edit wrapper must not also log this frame.
+                    bool                   mainCamJustSet = false;
                     ImGui::SeparatorText(entityTypeName(b.type));
 
                     // Auto-generated fields: the property table (PropertyMeta.hpp)
@@ -5232,6 +5292,24 @@ int main(int argc, char** argv) {
                                 ImGui::SameLine();
                                 if (ImGui::Button("Stop##audiosrc")) stopAudioSource(be.id);
                                 ImGui::EndDisabled();
+                            } else if (auto* cam = dynamic_cast<CameraComponent*>(c)) {
+                                // FOV from metadata; the Main Camera button marks this
+                                // the view Play and the exported game start from,
+                                // clearing the flag on every other camera. (The raw
+                                // activeOnStart bool is hidden: set it here so exactly
+                                // one camera can ever be the main one.)
+                                for (const Property& pr : cam->props())
+                                    if (pr.key != "activeOnStart") drawProperty(pr, cam);
+                                if (cam->activeOnStart) {
+                                    ImGui::TextColored(ImVec4(0.5f, 0.85f, 1.0f, 1.0f),
+                                                       "* Main Camera");
+                                    ImGui::SameLine();
+                                    if (ImGui::SmallButton("Clear")) {
+                                        setMainCamera(-1); mainCamJustSet = true;
+                                    }
+                                } else if (ImGui::Button("Set as Main Camera")) {
+                                    setMainCamera(be.id); mainCamJustSet = true;
+                                }
                             } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
                                 // Radius from metadata; Target is a picker over the
                                 // scene's Camera entities (plus the player view).
@@ -5323,7 +5401,11 @@ int main(int argc, char** argv) {
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
                         const int  selId      = entities[entitySel].id;
                         const bool inspActive = ImGui::IsAnyItemActive();
-                        if (inspActive && inspEditId != selId) {
+                        if (mainCamJustSet) {
+                            // setMainCamera() already pushed its own undo step (over
+                            // all cameras); don't let this wrapper log a duplicate.
+                            inspEditId = -1;
+                        } else if (inspActive && inspEditId != selId) {
                             inspEditId     = selId;
                             inspEditIds    = inspFrameIds;
                             inspEditBefore = inspFrameStart;
@@ -6137,6 +6219,11 @@ int main(int argc, char** argv) {
                 else
                     ImGui::TextDisabled("Press V or tick above to drive");
 
+                // Per-scene Play options (saved with the scene / exported game).
+                ImGui::SeparatorText("Play start");
+                ImGui::Checkbox("Start Play in vehicle mode", &startInVehicleMode);
+                ImGui::Checkbox("Show crosshair", &showCrosshair);
+
                 // Scene vehicles: hook a model into the vehicle system with one
                 // click. The auto-setup edit goes through the undo history.
                 auto makeDrivable = [&](int rootId) -> std::string {
@@ -6218,7 +6305,15 @@ int main(int argc, char** argv) {
             // editing shows a live preview instead (drawn in the viewport overlay).
             if (road.enabled && road.verts() > 0) {
                 road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
-                renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false);
+                // Edge fade: pass the fade band + the UV-to-metres mapping, and route
+                // the road through the transparent (alpha-blended) queue when it's on.
+                const bool roadFades = road.fadeWidth > 0.0f;
+                road.material().set("uRoadFade",  roadFades ? road.fadeWidth : 0.0f);
+                road.material().set("uRoadWidth", road.width);
+                road.material().set("uRoadUMax",  road.texTile > 1e-4f
+                                                      ? road.width / road.texTile : 0.0f);
+                renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false,
+                                false, 1.0f, /*forceTransparent=*/roadFades);
             }
 
             // --- Physics car: draw the chassis + wheels from Jolt transforms.
@@ -6816,11 +6911,14 @@ int main(int argc, char** argv) {
                 }
                 const ImVec2 c(vmin.x + vsize.x * 0.5f, vmin.y + vsize.y * 0.5f);
 
-                // Crosshair, sized to the view.
-                const float ch = std::max(10.0f, vsize.y * 0.018f);
-                const ImU32 white = IM_COL32(255, 255, 255, 220);
-                dl->AddLine(ImVec2(c.x - ch, c.y), ImVec2(c.x + ch, c.y), white, 2.0f);
-                dl->AddLine(ImVec2(c.x, c.y - ch), ImVec2(c.x, c.y + ch), white, 2.0f);
+                // Crosshair, sized to the view. Hidden when disabled, and always
+                // hidden while driving (you aim on foot, not from the car).
+                if (showCrosshair && !vehicleMode) {
+                    const float ch = std::max(10.0f, vsize.y * 0.018f);
+                    const ImU32 white = IM_COL32(255, 255, 255, 220);
+                    dl->AddLine(ImVec2(c.x - ch, c.y), ImVec2(c.x + ch, c.y), white, 2.0f);
+                    dl->AddLine(ImVec2(c.x, c.y - ch), ImVec2(c.x, c.y + ch), white, 2.0f);
+                }
 
                 // Score + HUD line, scaled to the view height and drawn with a
                 // dark shadow so it stays legible over any scene.

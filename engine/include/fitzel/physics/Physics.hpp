@@ -50,6 +50,12 @@ public:
         float antiRoll       = 1000.0f; // anti-roll bar stiffness (0 = none)
         int   drive          = 0;       // 0 = RWD, 1 = FWD, 2 = AWD
         float grip           = 1.5f;    // tyre friction scale (1 = Jolt default)
+        // Roll-stabilising "keep upright" assist: an arcade righting torque about
+        // the car's forward axis that fights body roll (0 = pure simulation, the
+        // car can tip freely; higher = harder to roll over). `uprightDamp` bleeds
+        // off roll spin so the assist settles instead of oscillating.
+        float uprightAssist  = 6.0f;    // righting torque strength (0 = off)
+        float uprightDamp    = 2.5f;    // roll-rate damping for the assist
     };
     // Spawn a physics car: a dynamic box chassis with four wheels (suspension,
     // engine, steering). One vehicle per world. Forward is the body's +Z; front

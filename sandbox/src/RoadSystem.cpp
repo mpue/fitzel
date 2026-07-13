@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <system_error>
+#include <unordered_set>
 
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/graphics/Shader.hpp>
@@ -15,6 +16,20 @@
 namespace {
 // Number of subdivisions per control-point span when sampling the spline.
 constexpr int kSpanSub = 14;
+
+// A road surface must be a colour/albedo map. We can't require "diff" in the
+// name (the content folder's PNGs are all support maps and its albedos are .jpg,
+// so that would hide every PNG); instead reject the known non-colour maps so
+// custom jpg/png road textures still show up.
+bool isRoadAlbedo(const std::string& filename) {
+    const std::string ext = std::filesystem::path(filename).extension().string();
+    if (ext != ".jpg" && ext != ".jpeg" && ext != ".png") return false;
+    for (const char* tok : {"_nor", "_disp", "_spec", "_rough", "_ao", "_arm",
+                            "_metal", "_height", "_bump", "_mask", "_gl",
+                            "translucent", "billboar", "tree"})
+        if (filename.find(tok) != std::string::npos) return false;
+    return true;
+}
 
 // Squared distance from point p to segment [a,b], plus the projection param t.
 float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
@@ -29,39 +44,71 @@ float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
 RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                        fitzel::TerrainStreamer& streamer, const std::string& texDir)
     : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit) {
-    // Loaded through the asset database (cached/deduplicated); held as a shared
-    // handle so it stays alive while the material binds it.
-    m_tex = m_assetDb.loadTexture(m_texDir + "/asphalt_02_diff_4k.jpg");
     m_mat.set("uColorMode", 2);
+    // Populate the picker from the built-in content textures (no project yet).
+    refreshTextures(std::string());
+    // Default surface. Loaded through the asset database (cached/deduplicated);
+    // held as a shared handle so it stays alive while the material binds it.
+    m_tex = m_assetDb.loadTexture(m_texDir + "/asphalt_02_diff_4k.jpg");
     if (m_tex) m_mat.setTexture("uTexture", *m_tex, 0);
-
-    // Selectable surface: gather the colour/albedo textures from the texture dir.
-    // We can't require "diff" in the name -- the folder's PNGs are all support
-    // maps (nor/disp/spec/...) and its albedos are .jpg, so that would hide every
-    // PNG. Instead accept any jpg/jpeg/png that isn't a known non-colour map, so
-    // custom PNG road textures show up too.
-    auto isSupportMap = [](const std::string& n) {
-        for (const char* tok : {"_nor", "_disp", "_spec", "_rough", "_ao",
-                                "_arm", "_metal", "_height", "_bump", "_mask",
-                                "_gl", "translucent", "billboar", "tree"})
-            if (n.find(tok) != std::string::npos) return true;
-        return false;
-    };
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec)) {
-        const std::string name = e.path().filename().string();
-        const std::string ext  = e.path().extension().string();
-        if ((ext == ".jpg" || ext == ".jpeg" || ext == ".png") &&
-            !isSupportMap(name))
-            texFiles.push_back(name);
-    }
-    std::sort(texFiles.begin(), texFiles.end());
     for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
         if (texFiles[i].find("asphalt") != std::string::npos) texSel = i;
 }
 
+void RoadSystem::refreshTextures(const std::string& projectDir) {
+    // Remember the current selection so a project switch doesn't reset it.
+    const std::string prevSel =
+        (texSel >= 0 && texSel < static_cast<int>(texFiles.size()))
+            ? texFiles[texSel] : std::string();
+
+    texFiles.clear();
+    m_texPaths.clear();
+    std::unordered_set<std::string> seen; // dedupe by display name
+
+    auto add = [&](const std::filesystem::path& p) {
+        const std::string name = p.filename().string();
+        if (!isRoadAlbedo(name) || !seen.insert(name).second) return;
+        texFiles.push_back(name);
+        m_texPaths.push_back(p.generic_string());
+    };
+
+    // Built-in content textures (flat scan, as before).
+    std::error_code ec;
+    for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec))
+        add(e.path());
+    // Project-local textures (recursive), so surfaces dropped into the open
+    // project show up too. Names already present in content are kept (not shadowed).
+    if (!projectDir.empty() && std::filesystem::is_directory(projectDir, ec))
+        for (const auto& e :
+             std::filesystem::recursive_directory_iterator(projectDir, ec))
+            if (!e.is_directory()) add(e.path());
+
+    // Sort display names and keep the parallel path list aligned.
+    std::vector<int> order(texFiles.size());
+    for (int i = 0; i < static_cast<int>(order.size()); ++i) order[i] = i;
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return texFiles[a] < texFiles[b]; });
+    std::vector<std::string> sf, sp;
+    sf.reserve(order.size()); sp.reserve(order.size());
+    for (int i : order) { sf.push_back(texFiles[i]); sp.push_back(m_texPaths[i]); }
+    texFiles.swap(sf);
+    m_texPaths.swap(sp);
+
+    // Restore the selection by name (else clamp into range).
+    texSel = 0;
+    for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
+        if (texFiles[i] == prevSel) { texSel = i; break; }
+}
+
 void RoadSystem::setSurface(const std::string& file) {
-    if (auto t = m_assetDb.loadTexture(m_texDir + "/" + file)) {
+    // Resolve the display name to a full path via the scanned list; fall back to
+    // the content dir for names not in the list (e.g. a scene saved with a
+    // texture that is no longer present, or loaded before the list is built).
+    std::string path;
+    for (std::size_t i = 0; i < texFiles.size(); ++i)
+        if (texFiles[i] == file) { path = m_texPaths[i]; break; }
+    if (path.empty()) path = m_texDir + "/" + file;
+    if (auto t = m_assetDb.loadTexture(path)) {
         m_tex = t;
         m_mat.setTexture("uTexture", *m_tex, 0);
     }

@@ -111,6 +111,9 @@ struct PhysicsWorld::Impl {
     JPH::Ref<JPH::VehicleConstraint>      vehicle;      // the (single) car
     JPH::Ref<JPH::VehicleCollisionTester> vehicleTest;
     JPH::BodyID                           vehicleBody;
+    float vehicleUpright     = 0.0f;  // keep-upright torque strength (0 = off)
+    float vehicleUprightDamp = 0.0f;  // roll-rate damping for the assist
+    float vehicleMass        = 0.0f;  // chassis mass (scales the assist torque)
 
     Impl() {
         system.Init(/*maxBodies=*/4096, /*numBodyMutexes=*/0,
@@ -211,10 +214,17 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
                                   JPH::EMotionType::Dynamic, Layers::MOVING);
     bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
     bcs.mMassPropertiesOverride.mMass = mass;
+    // Swept (continuous) collision: a fast car over a coarse terrain heightfield
+    // would otherwise tunnel straight through between steps and fall out of the
+    // world. LinearCast makes the chassis cast its motion against static geometry.
+    bcs.mMotionQuality = JPH::EMotionQuality::LinearCast;
     JPH::Body* body = bi.CreateBody(bcs);
     if (!body) return 0;
     bi.AddBody(body->GetID(), JPH::EActivation::Activate);
     d.vehicleBody = body->GetID();
+    d.vehicleUpright     = glm::max(tuning.uprightAssist, 0.0f);
+    d.vehicleUprightDamp = glm::max(tuning.uprightDamp, 0.0f);
+    d.vehicleMass        = mass;
 
     JPH::VehicleConstraintSettings vc;
     vc.mMaxPitchRollAngle = JPH::DegreesToRadians(60.0f);
@@ -380,8 +390,33 @@ void PhysicsWorld::step(float dt) {
     if (dt <= 0.0f) return;
     // Clamp long frames so a hitch can't explode the simulation.
     const float clamped = dt > 0.1f ? 0.1f : dt;
-    m_impl->system.Update(clamped, /*collisionSteps=*/1, &m_impl->temp,
-                          &m_impl->jobs);
+    // Roll-stabilising assist: before stepping, apply a righting torque about the
+    // car's forward axis proportional to how far it has rolled (minus its roll
+    // rate). Jolt's wheeled controller has no anti-rollover of its own; with the
+    // COM already at the floor this arcade aid is what keeps hard corners from
+    // flipping the car. It only touches roll -- pitch (hills) and yaw (steering)
+    // are left to the simulation. Scaled by mass so light and heavy cars right
+    // themselves at the same rate (roll inertia grows with mass).
+    Impl& d = *m_impl;
+    if (d.vehicle && d.vehicleUpright > 0.0f) {
+        JPH::BodyInterface& bi = d.system.GetBodyInterface();
+        if (bi.IsAdded(d.vehicleBody) &&
+            bi.GetMotionType(d.vehicleBody) == JPH::EMotionType::Dynamic) {
+            const JPH::Quat q   = bi.GetRotation(d.vehicleBody);
+            const JPH::Vec3 up  = q * JPH::Vec3(0, 1, 0);
+            const JPH::Vec3 fwd = q * JPH::Vec3(0, 0, 1);
+            // cross(bodyUp, worldUp) ~ sin(tilt) along the tilt axis; its forward
+            // component is the roll (a pitch tilt lands on the right axis instead).
+            const float rollErr  = up.Cross(JPH::Vec3(0, 1, 0)).Dot(fwd);
+            const float rollRate = bi.GetAngularVelocity(d.vehicleBody).Dot(fwd);
+            const float t = (d.vehicleUpright * rollErr - d.vehicleUprightDamp * rollRate)
+                          * d.vehicleMass;
+            bi.AddTorque(d.vehicleBody, fwd * t);
+        }
+    }
+    // Two collision sub-steps: halves the distance a body moves per solve, which
+    // keeps fast bodies (the vehicle) from punching through thin/coarse colliders.
+    d.system.Update(clamped, /*collisionSteps=*/2, &d.temp, &d.jobs);
 }
 
 bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,

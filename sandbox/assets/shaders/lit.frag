@@ -104,6 +104,14 @@ vec3 envBRDFApprox(vec3 F0, float rough, float NoV) {
 // Surface.
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
+
+// Road edge fade: alpha tapers to 0 over the outer `uRoadFade` metres of the
+// ribbon so the road blends into the terrain instead of ending on a hard line.
+// 0 disables it (the default for every non-road textured surface). vUV.x runs
+// 0..uRoadUMax across the road width, so it maps linearly to metres across.
+uniform float uRoadFade;      // fade band width in metres (0 = off)
+uniform float uRoadWidth;     // road width in metres
+uniform float uRoadUMax;      // vUV.x at the road's far edge (width / texTile)
 uniform vec3 uAlbedo;
 uniform float uAlpha;         // material opacity (1 = opaque); * texture alpha
 uniform int   uGlass;         // 1 = Fresnel alpha (clear head-on, opaque rim)
@@ -449,6 +457,13 @@ void main() {
         float NoV = max(dot(N, V), 0.0);
         float fr  = pow(1.0 - NoV, 5.0);
         outA = mix(uAlpha, 1.0, fr) * texA;
+    }
+    // Road edge fade: distance (in metres) from the nearest ribbon edge, ramped
+    // over uRoadFade. Only active on the road material (uRoadFade > 0).
+    if (uRoadFade > 0.0 && uRoadUMax > 0.0) {
+        float frac  = clamp(vUV.x / uRoadUMax, 0.0, 1.0); // 0 left .. 1 right edge
+        float edgeM = min(frac, 1.0 - frac) * uRoadWidth; // metres from nearest edge
+        outA *= clamp(edgeM / uRoadFade, 0.0, 1.0);
     }
     FragColor = vec4(toOutput(color), outA);
 }
