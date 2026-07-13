@@ -42,14 +42,24 @@ public:
     void setKinematicTarget(PhysicsBodyId id, glm::vec3 pos, glm::quat rot, float dt);
 
     // --- Wheeled vehicle (Jolt VehicleConstraint) ---------------------------
+    // Handling knobs that keep the car planted (defaults match the tuned car).
+    struct VehicleTuning {
+        float comLower       = 1.0f;    // 0..1 of chassisHalf.y to drop the COM
+        float suspensionFreq = 2.0f;    // suspension spring stiffness (Hz)
+        float suspensionDamp = 0.7f;    // suspension spring damping (0..1)
+        float antiRoll       = 1000.0f; // anti-roll bar stiffness (0 = none)
+        int   drive          = 0;       // 0 = RWD, 1 = FWD, 2 = AWD
+        float grip           = 1.5f;    // tyre friction scale (1 = Jolt default)
+    };
     // Spawn a physics car: a dynamic box chassis with four wheels (suspension,
     // engine, steering). One vehicle per world. Forward is the body's +Z; front
-    // wheels (0,1) steer, rear (2,3) drive. Returns the chassis body id (read it
-    // with getTransform); wheel transforms via getWheelTransform.
+    // wheels (0,1) steer. Which axle drives depends on `tuning.drive`. Returns
+    // the chassis body id (read it with getTransform); wheels via getWheelTransform.
     PhysicsBodyId addVehicle(glm::vec3 chassisHalf, float mass, glm::vec3 pos,
                              glm::quat rot, float wheelRadius, float wheelWidth,
                              float halfTrack, float frontZ, float rearZ,
-                             float maxSteerDeg, float engineTorque);
+                             float maxSteerDeg, float engineTorque,
+                             const VehicleTuning& tuning = {});
     // Driver input for this frame: `forward` accelerates (-1 reverse .. 1),
     // `right` steers (-1 left .. 1 right), `brake`/`handBrake` are 0..1.
     void setVehicleInput(float forward, float right, float brake, float handBrake);
@@ -96,6 +106,8 @@ public:
 
     // World transform of a body. False if the id is unknown.
     bool getTransform(PhysicsBodyId id, glm::vec3& pos, glm::quat& rot) const;
+    // World-space linear velocity (m/s) of a body. False if the id is unknown.
+    bool getLinearVelocity(PhysicsBodyId id, glm::vec3& out) const;
 
     // Runtime edits to a dynamic body (used by Lua scripts during Play). All are
     // no-ops if the id is unknown or the body is static/removed.

@@ -34,7 +34,7 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 void main() {
     // Part select: 0 = stem (green), 1 = petal (instance colour), 2 = centre.
     vec3 base;
-    if (vTint < 0.5)      base = vec3(0.05, 0.12, 0.03);
+    if (vTint < 0.5)      base = vec3(0.11, 0.20, 0.06); // stem: lighter green, not near-black
     else if (vTint < 1.5) base = vColor;
     else                  base = vec3(0.96, 0.82, 0.16);
     vec3 albedo = pow(base, vec3(2.2)); // sRGB -> linear

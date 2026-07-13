@@ -24,6 +24,7 @@ struct PanelState {
     bool& treePaintMode;
     bool& flowerPaintMode;
     bool& paintMode;
+    bool& scatterMode;
 
     // Brush parameters (owned by main, shared with the viewport application code).
     int&   tool;          // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve

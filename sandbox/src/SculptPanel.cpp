@@ -9,7 +9,7 @@ void drawPanel(const PanelState& s) {
     if (ImGui::Begin("Terrain Sculpt", &s.show)) {
         if (ImGui::Checkbox("Sculpt mode", &s.sculptMode) && s.sculptMode)
             s.grassPaintMode = s.roadEditMode = s.treePaintMode =
-                s.flowerPaintMode = s.paintMode = false; // brush owns the LMB
+                s.flowerPaintMode = s.paintMode = s.scatterMode = false; // brush owns the LMB
         if (s.sculptMode)
             ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
                 "Hold LMB to sculpt | Alt inverts raise/lower");

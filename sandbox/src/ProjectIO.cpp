@@ -425,7 +425,18 @@ void exportGame(Context& ctx, const std::string& outDir) {
         ctx.projNameBuf[0] ? std::string(ctx.projNameBuf) : std::string("game");
     const auto rec = fs::copy_options::recursive |
                      fs::copy_options::overwrite_existing;
-    fs::copy_file(exeDir / "sandbox.exe", out / (game + ".exe"),
+    // Ship the editor-free player, not the editor itself. It lives next to the
+    // editor in the same bin/ dir; if it's missing (player target not built),
+    // stop with a clear message rather than shipping a broken export.
+    const fs::path player = exeDir / "player.exe";
+    if (!fs::exists(player, ec)) {
+        ctx.exportStatus =
+            "player.exe not found next to the editor - build the 'player' target "
+            "(build-release.bat builds both) and export again.";
+        std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
+        return;
+    }
+    fs::copy_file(player, out / (game + ".exe"),
                   fs::copy_options::overwrite_existing, ec);
     fs::copy(exeDir / "assets", out / "assets", rec, ec);
     fs::copy(ctx.contentRoot,   out / "content", rec, ec);

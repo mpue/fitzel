@@ -20,7 +20,7 @@ void main() {
     vec2 corner = vec2((gl_VertexID == 1 || gl_VertexID == 3) ? 0.5 : -0.5,
                        (gl_VertexID >= 2) ? 1.0 : 0.0);
 
-    float bh = uTreeHeight * iScale * 1.05;      // billboard height (~mesh height)
+    float bh = uTreeHeight * iScale;             // billboard height (uTreeHeight = per-species size factor)
     float bw = bh * uAspect;
     vec3  right = normalize(vec3(uCamRight.x, 0.0, uCamRight.z)); // upright (cylindrical)
 

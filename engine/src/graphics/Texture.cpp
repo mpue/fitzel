@@ -17,6 +17,7 @@ namespace {
 GLenum formatForChannels(int channels) {
     switch (channels) {
         case 1:  return GL_RED;
+        case 2:  return GL_RG;
         case 3:  return GL_RGB;
         case 4:  return GL_RGBA;
         default: return GL_RGB;
@@ -57,6 +58,24 @@ Texture& Texture::operator=(Texture&& other) noexcept {
 
 Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
                             int channels) {
+    // Grey+alpha sources (2-channel PNGs, e.g. the *_disp displacement maps):
+    // expand to RGBA on the CPU. These used to fall through to GL_RGB, telling
+    // the driver to read width*height*3 bytes from a width*height*2 buffer --
+    // an out-of-bounds read that crashed inside the driver whenever the
+    // allocation ended near a page boundary (the frequent Assets-browser
+    // crash: its 128px thumbnails hit that layout almost every time).
+    if (channels == 2 && pixels && width > 0 && height > 0) {
+        const std::size_t n = static_cast<std::size_t>(width) * height;
+        std::vector<unsigned char> rgba(n * 4);
+        for (std::size_t i = 0; i < n; ++i) {
+            const unsigned char l = pixels[i * 2 + 0];
+            rgba[i * 4 + 0] = l;
+            rgba[i * 4 + 1] = l;
+            rgba[i * 4 + 2] = l;
+            rgba[i * 4 + 3] = pixels[i * 2 + 1];
+        }
+        return fromPixels(rgba.data(), width, height, 4);
+    }
     Texture tex;
     tex.m_width  = width;
     tex.m_height = height;

@@ -230,6 +230,41 @@ const std::vector<Property>& TriggerSoundComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& AudioSourceComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property sound;
+        sound.label = "Sound"; sound.key = "sound"; sound.kind = PropKind::Text;
+        sound.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->sound; };
+        p.push_back(std::move(sound));
+        Property vol;
+        vol.label = "Volume"; vol.key = "volume"; vol.kind = PropKind::Float;
+        vol.slider = true; vol.min = 0.0f; vol.max = 1.0f; vol.fmt = "%.2f";
+        vol.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->volume; };
+        p.push_back(std::move(vol));
+        Property loop;
+        loop.label = "Loop"; loop.key = "loop"; loop.kind = PropKind::Bool;
+        loop.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->loop; };
+        p.push_back(std::move(loop));
+        Property pos;
+        pos.label = "Play on start"; pos.key = "playOnStart"; pos.kind = PropKind::Bool;
+        pos.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->playOnStart; };
+        p.push_back(std::move(pos));
+        Property sp;
+        sp.label = "Spatial (3D)"; sp.key = "spatial"; sp.kind = PropKind::Bool;
+        sp.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->spatial; };
+        p.push_back(std::move(sp));
+        Property rad;
+        rad.label = "Radius"; rad.key = "radius"; rad.kind = PropKind::Float;
+        rad.slider = true; rad.min = 0.5f; rad.max = 80.0f; rad.fmt = "%.1f m";
+        rad.visible = [](const void* o) { return static_cast<const AudioSourceComponent*>(o)->spatial; };
+        rad.field = [](void* o) -> void* { return &static_cast<AudioSourceComponent*>(o)->radius; };
+        p.push_back(std::move(rad));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& CameraComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -327,6 +362,72 @@ void DoorOpenerComponent::save(nlohmann::json& j) const {
 void DoorOpenerComponent::load(const nlohmann::json& j) {
     readProps(j, props(), this);
     target = j.value("target", -1);
+}
+
+const std::vector<Property>& VehicleComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float VehicleComponent::* m,
+                            bool slider, float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = slider; f.min = lo; f.max = hi; f.speed = 0.05f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<VehicleComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addFloat("Mass",          "mass",        &VehicleComponent::mass,        true, 100.0f, 8000.0f, "%.0f kg");
+        addFloat("Engine torque", "torque",      &VehicleComponent::engineTorque,true, 200.0f, 12000.0f, "%.0f Nm");
+        addFloat("Max steer",     "maxSteer",    &VehicleComponent::maxSteerDeg, true, 5.0f,  60.0f,  "%.0f deg");
+        addFloat("Steer speed",   "steerSpeed",  &VehicleComponent::steerSpeed,  true, 1.0f,  20.0f,  "%.1f");
+        addFloat("Wheel radius",  "wheelRadius", &VehicleComponent::wheelRadius, false, 0.05f, 3.0f,  "%.2f m");
+        addFloat("Wheel width",   "wheelWidth",  &VehicleComponent::wheelWidth,  false, 0.05f, 2.0f,  "%.2f m");
+        Property ch;
+        ch.label = "Chassis half"; ch.key = "chassisHalf"; ch.kind = PropKind::Vec3;
+        ch.speed = 0.05f;
+        ch.field = [](void* o) -> void* { return &static_cast<VehicleComponent*>(o)->chassisHalf; };
+        p.push_back(std::move(ch));
+        addFloat("Half track",    "halfTrack", &VehicleComponent::halfTrack, false, 0.1f, 5.0f,   "%.2f m");
+        addFloat("Front axle Z",  "frontZ",    &VehicleComponent::frontZ,    false, -10.0f, 10.0f, "%.2f m");
+        addFloat("Rear axle Z",   "rearZ",     &VehicleComponent::rearZ,     false, -10.0f, 10.0f, "%.2f m");
+        Property fwd;
+        fwd.label = "Model nose"; fwd.key = "forward"; fwd.kind = PropKind::EnumInt;
+        fwd.enumLabels = {"+Z", "-Z"};
+        fwd.field = [](void* o) -> void* { return &static_cast<VehicleComponent*>(o)->forward; };
+        p.push_back(std::move(fwd));
+        addFloat("Wheel height Y", "wheelY",   &VehicleComponent::wheelY,    false, -5.0f, 5.0f,   "%.2f m");
+        // Handling tuning (grouped under a "Handling" header in the inspector,
+        // starting at "comLower" -- see vehicleui::inspector).
+        addFloat("COM lower",     "comLower",   &VehicleComponent::comLower,       true, 0.0f, 1.0f,   "%.2f");
+        addFloat("Suspension Hz", "suspFreq",   &VehicleComponent::suspensionFreq, true, 0.5f, 5.0f,   "%.2f Hz");
+        addFloat("Suspension damp","suspDamp",  &VehicleComponent::suspensionDamp, true, 0.0f, 1.0f,   "%.2f");
+        addFloat("Anti-roll",     "antiRoll",   &VehicleComponent::antiRoll,       true, 0.0f, 5000.0f,"%.0f");
+        addFloat("Grip",          "grip",       &VehicleComponent::grip,           true, 0.3f, 3.0f,   "%.2f");
+        Property drv;
+        drv.label = "Drive"; drv.key = "drive"; drv.kind = PropKind::EnumInt;
+        drv.enumLabels = {"RWD", "FWD", "AWD"};
+        drv.field = [](void* o) -> void* { return &static_cast<VehicleComponent*>(o)->drive; };
+        p.push_back(std::move(drv));
+        // Follow-camera tuning (kept last so the inspector can group them under
+        // a "Follow camera" header -- see vehicleui::inspector).
+        addFloat("Cam distance",   "camDistance",   &VehicleComponent::camDistance,   true, 1.0f, 100.0f, "%.1f m");
+        addFloat("Cam height",     "camHeight",     &VehicleComponent::camHeight,     true, 0.0f, 40.0f,  "%.1f m");
+        addFloat("Cam side",       "camSide",       &VehicleComponent::camSide,       true, -30.0f, 30.0f,"%.1f m");
+        addFloat("Cam look height","camLookHeight", &VehicleComponent::camLookHeight, true, 0.0f, 10.0f,  "%.1f m");
+        addFloat("Cam stiffness",  "camStiffness",  &VehicleComponent::camStiffness,  true, 0.5f, 20.0f,  "%.1f");
+        return p;
+    }();
+    return props;
+}
+// Persists the properties above plus the wheel child entity ids (raw entity
+// references, like the trigger targets -- ids are stable across save/load).
+void VehicleComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["wheels"] = {wheelId[0], wheelId[1], wheelId[2], wheelId[3]};
+}
+void VehicleComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    if (j.contains("wheels") && j["wheels"].is_array())
+        for (std::size_t i = 0; i < 4 && i < j["wheels"].size(); ++i)
+            wheelId[i] = j["wheels"][i].is_number_integer() ? j["wheels"][i].get<int>() : -1;
 }
 
 const std::vector<Property>& PusherComponent::properties() {
@@ -520,12 +621,16 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerComponent>()); }});
         components::registerType({"trigger_sound", "Trigger Sound",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerSoundComponent>()); }});
+        components::registerType({"audio_source", "Audio Source",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<AudioSourceComponent>()); }});
         components::registerType({"mover", "Mover",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
         components::registerType({"spawner", "Spawner",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
         components::registerType({"pusher", "Pusher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
+        components::registerType({"vehicle", "Fahrzel",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<VehicleComponent>()); }});
         components::registerType({"door", "Door",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<DoorComponent>()); }});
         components::registerType({"door_opener", "Door Opener",

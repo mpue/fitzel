@@ -110,13 +110,14 @@ if defined PYEXE (
 REM --- Bauen -----------------------------------------------------------------
 REM  Hinweis: laeuft das Spiel/der Editor noch, ist bin\sandbox.exe gesperrt
 REM  und der Linker meldet LNK1104 -- dann zuerst die laufende Instanz schliessen.
-echo Baue sandbox ^(Release^)...
-"%CMAKE%" --build build\release --target sandbox
+echo Baue sandbox + player ^(Release^)...
+"%CMAKE%" --build build\release --target sandbox player
 if %errorlevel% neq 0 (
     echo [Fehler] Build fehlgeschlagen ^(laeuft die exe noch?^).
     exit /b 1
 )
 
 echo.
-echo Fertig:  build\release\bin\sandbox.exe
+echo Fertig:  build\release\bin\sandbox.exe  ^(Editor^)
+echo          build\release\bin\player.exe   ^(exportiertes Spiel^)
 endlocal

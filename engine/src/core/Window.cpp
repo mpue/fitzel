@@ -117,6 +117,10 @@ void Window::pollEvents() {
     glfwPollEvents();
 }
 
+void Window::waitEventsTimeout(double seconds) {
+    glfwWaitEventsTimeout(seconds);
+}
+
 void Window::framebufferSize(int& width, int& height) const {
     glfwGetFramebufferSize(m_handle, &width, &height);
 }

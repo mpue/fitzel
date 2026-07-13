@@ -23,6 +23,7 @@ struct PanelState {
     bool& treePaintMode;
     bool& flowerPaintMode;
     bool& sculptMode;
+    bool& scatterMode;
 
     const TerrainLook& look;   // layer list, for naming the paint targets
     int&   layer;              // paint slot (0..3) = which textured layer to paint

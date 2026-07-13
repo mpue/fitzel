@@ -11,7 +11,7 @@ void drawPanel(const PanelState& s) {
     if (ImGui::Begin("Terrain Paint", &s.show)) {
         if (ImGui::Checkbox("Paint mode", &s.paintMode) && s.paintMode)
             s.grassPaintMode = s.roadEditMode = s.treePaintMode =
-                s.flowerPaintMode = s.sculptMode = false; // brush owns the LMB
+                s.flowerPaintMode = s.sculptMode = s.scatterMode = false; // brush owns the LMB
         if (s.paintMode)
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.85f, 1.0f),
                 "Hold LMB to paint | Alt (or Erase) reverts to the auto blend");

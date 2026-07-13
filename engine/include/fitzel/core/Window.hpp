@@ -35,6 +35,10 @@ public:
     // Swap buffers and poll input events. Call once per frame.
     void swapBuffers();
     void pollEvents();
+    // Block until an event arrives or `seconds` elapse, then process events.
+    // Like pollEvents() but sleeps instead of spinning -- used to cap the idle
+    // editor to a low frame rate without busy-waiting (wakes instantly on input).
+    void waitEventsTimeout(double seconds);
 
     // Framebuffer size in pixels (may differ from window size on HiDPI).
     void framebufferSize(int& width, int& height) const;

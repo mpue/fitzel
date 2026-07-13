@@ -27,9 +27,11 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <imgui.h>
-#include <imgui_internal.h> // DockBuilder API for the default panel layout
-#include <ImGuizmo.h>       // 3D transform gizmos in the viewport
-#include <TextEditor.h>     // ImGuiColorTextEdit: the Lua script editor
+#include <ImGuizmo.h>       // 3D transform gizmos in the viewport (+ runtime matrix decompose)
+#ifndef FITZEL_PLAYER
+#include <imgui_internal.h> // DockBuilder API for the default panel layout (editor only)
+#include <TextEditor.h>     // ImGuiColorTextEdit: the Lua script editor (editor only)
+#endif
 #include <glm/gtc/type_ptr.hpp>
 
 #include <nlohmann/json.hpp>
@@ -54,6 +56,9 @@
 #include "FolderDialog.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
+#include "ScatterTool.hpp"
+#include "VehicleTool.hpp"
+#include "CarAudio.hpp"
 
 using namespace fitzel;
 
@@ -66,6 +71,7 @@ extern "C" {
 }
 #endif
 
+#ifndef FITZEL_PLAYER
 namespace {
 
 // --- Thumbnail disk cache --------------------------------------------------
@@ -202,6 +208,7 @@ const char* kTemplateDocumented =
     "end\n";
 
 } // namespace
+#endif // !FITZEL_PLAYER
 
 int main(int argc, char** argv) {
     try {
@@ -581,6 +588,13 @@ int main(int argc, char** argv) {
         float paintStrength = 0.5f;          // 0..1 brush intensity
         bool  paintErase    = false;         // paint vs revert-to-auto
 
+        // --- Object scatter -------------------------------------------------
+        // A 3D brush that sprinkles imported models over the terrain as regular
+        // Model entities, grouped under a root "Scattered" Empty; one stamp =
+        // one undo step. Settings/placement/panel live in ScatterTool.
+        bool               scatterMode = false;
+        scatterui::Settings scatterCfg;
+
 
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
         if (!veg.initTrees(modelDir, texDir)) return 1;
@@ -642,11 +656,24 @@ int main(int argc, char** argv) {
         PhysicsBodyId physCarId = 0;   // Jolt vehicle chassis (Play-mode drive)
         bool  carPlaced   = false;
         bool  showVehicle = true;
+        // Scene vehicle (a model with a VehicleComponent) being driven: its
+        // entity id, and -- for the editor test-drive -- the transform snapshot
+        // restored when drive mode ends (a test-drive must not edit the scene).
+        int                 driveVehicleId    = -1;
+        bool                editorDriveActive = false;
+        std::vector<Entity> driveBackup;
         glm::vec3 carPos(0.0f);
         float carYaw     = 0.0f;   // heading (radians)
         float carSpeed   = 0.0f;   // m/s (negative = reverse)
         float wheelSpin  = 0.0f;   // rolling angle (radians)
-        float steerAngle = 0.0f;   // front-wheel steer (radians)
+        float steerAngle = 0.0f;   // front-wheel steer (radians, arcade sim)
+        float physSteer  = 0.0f;   // smoothed steer input -1..1 (Jolt car)
+        // Engine-sound feed, refreshed each frame by whichever drive block runs
+        // (physics or arcade); consumed in the audio mix block.
+        bool  engineDriving  = false;
+        float engineSpeedMps = 0.0f;
+        float engineThrottle = 0.0f;
+        float engineWheelR   = 0.42f;
         glm::vec3 camChase(0.0f);  // smoothed chase-camera position
         const float wheelR = 0.42f, bodyW = 1.8f, bodyH = 0.7f, bodyL = 4.0f;
         const float cabW = 1.5f, cabH = 0.6f, cabL = 1.8f;
@@ -671,6 +698,12 @@ int main(int argc, char** argv) {
         CommandStack history;
         std::vector<Entity>& entities = document.entities();
         int       entitySel      = -1;
+        // Round-robin picking: the entity ids the last click's ray passed through
+        // (nearest first) and which one is currently selected, so repeated clicks
+        // at the same spot cycle to the next overlapping entity (a parent group's
+        // bounding box no longer permanently swallows clicks meant for a child).
+        std::vector<int> pickStack;
+        int       pickIdx        = -1;
         int       renameId       = -1;   // hierarchy node being inline-renamed (entity id)
         bool      renameFocus    = false; // request keyboard focus on the rename field
         char      renameBuf[128] = "";
@@ -703,6 +736,7 @@ int main(int argc, char** argv) {
         // so a texture panel listing dozens of images can't spawn a storm of
         // threads or rethrow a worker exception into the UI (which used to crash).
         // `assetThumbs` and `thumbRequested` are touched only on the render thread.
+#ifndef FITZEL_PLAYER
         std::unordered_map<fitzel::AssetId, std::shared_ptr<Texture>> assetThumbs;
         std::unordered_set<fitzel::AssetId>                           thumbRequested;
         float assetThumbSize = 76.0f;
@@ -796,6 +830,7 @@ int main(int argc, char** argv) {
             else   ImGui::Dummy(ImVec2(h, h));
             ImGui::SameLine();
         };
+#endif // !FITZEL_PLAYER
         bool showScriptEditor = false;
         bool showStats       = false;
         bool showCamera      = false;
@@ -807,6 +842,7 @@ int main(int argc, char** argv) {
         bool showSculpt      = false;
         bool showPaint       = false;
         bool showVegetation  = false;
+        bool showScatter     = false;
         bool showCamPath     = false;
         bool showRoads       = false;
         bool showCursor      = false; // 3D cursor panel
@@ -996,6 +1032,89 @@ int main(int argc, char** argv) {
             }
             entitySel = document.indexOf(rootId);
         };
+        // --- Object scatter helpers (the brush application lives in the
+        //     viewport block; panel + placement math live in ScatterTool) -----
+        // Editor-only: scattered objects persist as ordinary Model entities, so
+        // the player needs none of this (and ScatterTool is not linked into it).
+#ifndef FITZEL_PLAYER
+        // The root Empty grouping every scattered object, or -1 when absent.
+        auto findScatterGroup = [&]() -> int {
+            for (const Entity& e : entities)
+                if (e.parent < 0 && e.type == EntityType::Empty &&
+                    e.name == "Scattered")
+                    return e.id;
+            return -1;
+        };
+        // XZ of the group's children (spacing rejects placements against them).
+        auto scatterOccupied = [&](int groupId) {
+            std::vector<glm::vec2> out;
+            if (groupId < 0) return out;
+            for (const Entity& e : entities)
+                if (e.parent == groupId)
+                    out.emplace_back(e.center.x, e.center.z);
+            return out;
+        };
+        // Adopt freshly built placements: assign ids/parent/name suffix and push
+        // them (plus the group, if it had to be created) as ONE undoable step.
+        auto commitScatter = [&](std::vector<Entity> placed) {
+            if (placed.empty()) return;
+            int groupId = findScatterGroup();
+            std::vector<Entity> batch;
+            batch.reserve(placed.size() + 1);
+            if (groupId < 0) {
+                Entity g;
+                g.type = EntityType::Empty;
+                g.half = glm::vec3(0.5f);
+                g.name = "Scattered";
+                g.id   = entityCounter++;
+                groupId = g.id;
+                batch.push_back(std::move(g));
+            }
+            for (Entity& e : placed) {
+                e.id     = entityCounter++;
+                e.parent = groupId;
+                e.name  += " " + std::to_string(e.id);
+                batch.push_back(std::move(e));
+            }
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(batch), "Scatter"),
+                         document);
+        };
+        // One scatter-brush stamp at world XZ `c`.
+        auto scatterStamp = [&](glm::vec2 c) {
+            commitScatter(scatterui::buildStamp(
+                scatterCfg, models, streamer, c, waterLevel,
+                scatterOccupied(findScatterGroup()), brushRng));
+        };
+        // Erase scattered objects under the brush as one undoable step.
+        auto scatterErase = [&](glm::vec2 c) {
+            const auto ids = scatterui::collectInBrush(document, findScatterGroup(),
+                                                       c, scatterCfg.radius);
+            if (!ids.empty())
+                history.push(std::make_unique<DeleteEntitiesCmd>(document, ids),
+                             document);
+        };
+        // Populate both roadsides (well, the configured side(s)) in one click.
+        auto scatterRoadside = [&]() {
+            const RoadSystem::Preview pv = road.previewGeometry();
+            if (pv.center.size() < 2) return;
+            std::vector<glm::vec2> cl;
+            cl.reserve(pv.center.size());
+            for (const glm::vec3& p : pv.center) cl.emplace_back(p.x, p.z);
+            commitScatter(scatterui::buildRoadside(
+                scatterCfg, models, streamer, cl, road.width * 0.5f, waterLevel,
+                scatterOccupied(findScatterGroup()), brushRng));
+        };
+        // Undoable "Clear all": the group and every child in one step.
+        auto scatterClearAll = [&]() {
+            const int groupId = findScatterGroup();
+            if (groupId < 0) return;
+            std::vector<int> ids{groupId};
+            for (const Entity& e : entities)
+                if (e.parent == groupId) ids.push_back(e.id);
+            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
+            entitySel = -1;
+        };
+#endif // !FITZEL_PLAYER
         // Decide whether a model imports as a hierarchy (one entity per node,
         // separately selectable) or as a single flat Model entity.
         //   - FBX has no flat (cgltf) loader, so it always takes the structured
@@ -1140,8 +1259,13 @@ int main(int argc, char** argv) {
         auto deleteEntity = [&](int idx) {
             if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
             if (entities[idx].type == EntityType::Sun) return; // the sun is permanent
-            history.push(std::make_unique<DeleteEntityCmd>(document, entities[idx].id),
-                         document);
+            // Delete the whole subtree: the entity plus every descendant, as one
+            // undoable step (deleting a parent shouldn't orphan its child parts).
+            std::vector<int> ids{entities[idx].id};
+            for (std::size_t k = 0; k < ids.size(); ++k)
+                for (const Entity& e : entities)
+                    if (e.parent == ids[k]) ids.push_back(e.id);
+            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
             entitySel = -1;
         };
         // Duplicate an entity (offset copy, unparented) as one undoable step.
@@ -1268,6 +1392,10 @@ int main(int argc, char** argv) {
         rainSnd.setVolume(0.0f);   rainSnd.play();   // loops; volume follows weather
         windSnd.setVolume(0.0f);   windSnd.play();
         breezeSnd.setVolume(0.0f); breezeSnd.play();
+        // Engine sound: RPM-layered loops + an automatic gearbox. Voiced only
+        // while a vehicle is being driven (see the audio mix block below).
+        CarAudio carAudio;
+        carAudio.load(audio, soundDir);
         float masterVolume = 0.8f;
         bool  muted        = false;
         bool  prevFlashOn  = false;
@@ -1424,10 +1552,17 @@ int main(int argc, char** argv) {
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
         addB("grassEnabled", veg.grassEnabled);    addF("grassDensity", veg.grassDensity);
         addF("grassRadius", veg.grassRadius);      addF("grassHeight", veg.grassHeight);
+        addF("grassChaos", veg.grassChaos);
         addF("grassTintR", veg.grassTint.x);       addF("grassTintG", veg.grassTint.y);
         addF("grassTintB", veg.grassTint.z);
-        addB("treeEnabled", veg.treeEnabled);      addF("treeDensity", veg.treeDensity);
-        addF("treeSize", veg.treeSize);            addF("lodNear", veg.lodNear);
+        // The other vegetation on/off toggles (and flower density) persist too,
+        // so a saved scene reloads with each layer in the state it was left in.
+        addB("treeEnabled", veg.treeEnabled);
+        addB("flowerEnabled", veg.flowerEnabled);  addF("flowerDensity", veg.flowerDensity);
+        addB("birdsEnabled", veg.birdsEnabled);
+        addB("fireflyEnabled", veg.fireflyEnabled);
+        // Tree species config (name/LODs/billboard/density) is serialized as a
+        // structured block by veg.serializeTrees() in writeSettingsFn below.
 
         // Wire the serialization hooks now that every tunable and the terrain/
         // vegetation state they drive are in scope. Reading settings applies them
@@ -1449,11 +1584,14 @@ int main(int argc, char** argv) {
             gs.precision(7);
             for (float v : veg.paintedBlades) gs << v << ' ';
             j["paintedGrass"] = gs.str();
-            // Hand-painted trees: same compact float blob (5 per tree).
+            // Tree species: name, LOD meshes, billboard config and per-species density.
+            veg.serializeTrees(j);
+            // Hand-painted trees: compact float blob (6 per tree: pos3, yaw, scale,
+            // speciesIdx).
             std::ostringstream ts;
             ts.precision(7);
             for (float v : veg.paintedTrees) ts << v << ' ';
-            j["paintedTrees"] = ts.str();
+            j["paintedTrees2"] = ts.str();
             // Hand-painted flowers (8 per bloom: pos3, yaw, scale, rgb).
             std::ostringstream fs;
             fs.precision(7);
@@ -1564,14 +1702,29 @@ int main(int argc, char** argv) {
                 veg.paintedBlades.resize(veg.paintedBlades.size() / 7 * 7); // whole blades
             }
             veg.paintedDirty = true; // re-upload to the GPU next frame
+            // Restore the tree species config (LODs, billboards, densities). Falls
+            // back to the default single species when the scene predates it.
+            veg.deserializeTrees(j);
             // Restore hand-painted trees (regenTrees re-appends them next frame,
-            // triggered by the veg.treeCenter reset below).
+            // triggered by the veg.treeCenter reset below). New scenes store 6
+            // floats/tree (with a species index); legacy scenes stored 5 -> species 0.
             veg.paintedTrees.clear();
-            if (j.contains("paintedTrees") && j["paintedTrees"].is_string()) {
-                std::istringstream ts(j["paintedTrees"].get<std::string>());
+            if (j.contains("paintedTrees2") && j["paintedTrees2"].is_string()) {
+                std::istringstream ts(j["paintedTrees2"].get<std::string>());
                 float v;
                 while (ts >> v) veg.paintedTrees.push_back(v);
-                veg.paintedTrees.resize(veg.paintedTrees.size() / 5 * 5); // whole trees
+                veg.paintedTrees.resize(veg.paintedTrees.size() / 6 * 6); // whole trees
+            } else if (j.contains("paintedTrees") && j["paintedTrees"].is_string()) {
+                std::istringstream ts(j["paintedTrees"].get<std::string>());
+                std::vector<float> old;
+                float v;
+                while (ts >> v) old.push_back(v);
+                old.resize(old.size() / 5 * 5);
+                for (std::size_t i = 0; i + 5 <= old.size(); i += 5) {
+                    veg.paintedTrees.insert(veg.paintedTrees.end(),
+                                            old.begin() + i, old.begin() + i + 5);
+                    veg.paintedTrees.push_back(0.0f); // legacy trees -> species 0
+                }
             }
             // Restore hand-painted flowers (regenFlowers re-appends them when the
             // grass pass runs, triggered by the veg.grassDirty reset below).
@@ -1686,6 +1839,7 @@ int main(int argc, char** argv) {
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
+#ifndef FITZEL_PLAYER
         TextEditor  luaEditor;
         luaEditor.SetLanguageDefinition(TextEditor::LanguageDefinition::Lua());
         luaEditor.SetPalette(TextEditor::GetDarkPalette());
@@ -1704,6 +1858,7 @@ int main(int argc, char** argv) {
         bool                    compGameMember = false; // completing after "game."
         bool                    compManualClose = false; // Esc: stay closed until
         std::string             compClosedPrefix;        // the prefix changes
+#endif // !FITZEL_PLAYER
         // Where entity scripts live: the open project's scripts/ folder, or the
         // bundled scripts/ next to the exe when no project is open (demo scripts).
         auto scriptsDir = [&]() -> std::string {
@@ -1715,6 +1870,7 @@ int main(int argc, char** argv) {
         auto scriptPath = [&](const std::string& file){
             return scriptsDir() + "/" + file;
         };
+#ifndef FITZEL_PLAYER
         // .lua files currently in the scripts dir (bare names, sorted).
         auto listScripts = [&](){
             std::vector<std::string> out;
@@ -1798,6 +1954,7 @@ int main(int argc, char** argv) {
             if (compSel >= static_cast<int>(compItems.size())) compSel = 0;
             compOpen = true;
         };
+#endif // !FITZEL_PLAYER
         // Sound assets known to the asset database (engine + project), by bare
         // filename -- what game.playSound / CollectibleComponent resolve against.
         // Backs the Collectible sound picker so it's chosen, not typed.
@@ -1831,6 +1988,114 @@ int main(int argc, char** argv) {
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
         std::map<int, PhysicsBodyId>  physicsBody;  // entity id -> body handle
+
+        // --- Scene-vehicle drive helpers (see VehicleTool for the setup UI) ---
+        // The nearest entity carrying a VehicleComponent, or -1.
+        auto findNearestVehicle = [&]() -> int {
+            int best = -1;
+            float bestD = 1e30f;
+            const glm::vec3 cp = camera.position();
+            for (const Entity& e : entities) {
+                if (!e.components.get<VehicleComponent>()) continue;
+                const float d = glm::length(e.center - cp);
+                if (d < bestD) { bestD = d; best = e.id; }
+            }
+            return best;
+        };
+        // Where the model sits relative to the physics chassis: the box centre
+        // rides higher than the model so the wheels (which hang 0.3-0.5 m of
+        // suspension below the box bottom) land where they were modelled.
+        auto vehicleVisualY = [](const VehicleComponent& vc) {
+            return -vc.chassisHalf.y - 0.4f - vc.wheelY;
+        };
+        // Spawn the Jolt car from the entity's component at its transform (in
+        // Play). True on success; physCarId/driveVehicleId are set.
+        auto spawnSceneVehicle = [&](int id) -> bool {
+            Entity* e = document.find(id);
+            auto* vc = e ? e->components.get<VehicleComponent>() : nullptr;
+            if (!vc || !physics) return false;
+            glm::quat q = glm::quat(glm::radians(e->rotation));
+            if (vc->forward == 1) // nose points -Z: chassis frame is yawed 180
+                q = q * glm::angleAxis(glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
+            // Undo the render offset and nudge up so the suspension settles.
+            const glm::vec3 sp = e->center -
+                q * glm::vec3(0.0f, vehicleVisualY(*vc), 0.0f) +
+                glm::vec3(0.0f, 0.3f, 0.0f);
+            fitzel::PhysicsWorld::VehicleTuning tuning;
+            tuning.comLower       = vc->comLower;
+            tuning.suspensionFreq = vc->suspensionFreq;
+            tuning.suspensionDamp = vc->suspensionDamp;
+            tuning.antiRoll       = vc->antiRoll;
+            tuning.grip           = vc->grip;
+            tuning.drive          = vc->drive;
+            physCarId = physics->addVehicle(
+                glm::max(vc->chassisHalf, glm::vec3(0.05f)), vc->mass, sp, q,
+                vc->wheelRadius, vc->wheelWidth, vc->halfTrack,
+                vc->frontZ, vc->rearZ, vc->maxSteerDeg, vc->engineTorque, tuning);
+            driveVehicleId = (physCarId != 0) ? id : -1;
+            return physCarId != 0;
+        };
+        // Editor test-drive: snapshot the root + wheels, then glue the arcade
+        // sim onto the entity. endEditorDrive restores the snapshot -- driving
+        // around in the editor never counts as a scene edit.
+        auto beginEditorDrive = [&](int id) {
+            Entity* e = document.find(id);
+            auto* vc = e ? e->components.get<VehicleComponent>() : nullptr;
+            if (!vc) return;
+            driveBackup.clear();
+            driveBackup.push_back(*e);
+            for (int i = 0; i < 4; ++i)
+                if (const Entity* w = document.find(vc->wheelId[i]))
+                    driveBackup.push_back(*w);
+            driveVehicleId    = id;
+            editorDriveActive = true;
+            carPos   = glm::vec3(e->center.x,
+                                 streamer.heightAt(e->center.x, e->center.z),
+                                 e->center.z);
+            carYaw   = glm::radians(e->rotation.y) +
+                       (vc->forward == 1 ? glm::pi<float>() : 0.0f);
+            carSpeed = 0.0f;
+        };
+        auto endEditorDrive = [&] {
+            if (!editorDriveActive) return;
+            for (const Entity& b : driveBackup)
+                if (Entity* e = document.find(b.id)) {
+                    e->center = b.center;         e->rotation = b.rotation;
+                    e->localCenter = b.localCenter; e->localRotation = b.localRotation;
+                }
+            driveBackup.clear();
+            editorDriveActive = false;
+            driveVehicleId    = -1;
+        };
+        // Enter drive mode (V key / Vehicle-panel checkbox): a scene vehicle
+        // nearest to the camera takes precedence; with none, the primitive
+        // test car behaves exactly as before.
+        auto enterVehicleMode = [&] {
+            fpsMode = false;
+            input.setCursorLocked(false);
+            const int sceneVeh = findNearestVehicle();
+            if (playMode && physics) {
+                if (!physics->hasVehicle()) {
+                    if (sceneVeh < 0 || !spawnSceneVehicle(sceneVeh)) {
+                        const glm::vec3 p = camera.position();
+                        glm::vec3 f = camera.front(); f.y = 0.0f;
+                        if (glm::length(f) < 1e-3f) f = glm::vec3(0, 0, 1);
+                        f = glm::normalize(f);
+                        const glm::quat q = glm::angleAxis(std::atan2(f.x, f.z),
+                                                           glm::vec3(0, 1, 0));
+                        const glm::vec3 sp(p.x, streamer.heightAt(p.x, p.z) + 1.2f, p.z);
+                        physCarId = physics->addVehicle(
+                            glm::vec3(0.9f, 0.35f, 2.0f), 1200.0f, sp, q,
+                            0.42f, 0.30f, 0.85f, 1.35f, -1.35f, 32.0f, 2500.0f);
+                    }
+                }
+            } else if (sceneVeh >= 0) {
+                beginEditorDrive(sceneVeh);
+            } else if (!carPlaced) {
+                placeCar();
+            }
+            camChase = camera.position();
+        };
 
         // --- Lua `game` API bridge -------------------------------------------
         // Scripts mutate the entity list only through deferred queues (the tick
@@ -1892,9 +2157,17 @@ int main(int argc, char** argv) {
             auto it = physicsBody.find(id);
             if (physics && it != physicsBody.end()) physics->applyImpulse(it->second, j);
         };
-        // Resolve a sound filename to a path: prefer the open project's
-        // content/sounds/, fall back to the engine's bundled sounds.
+        // Resolve a sound filename to a path. Prefer the asset database -- it holds
+        // the exact absolute path of every mounted sound (the same assets the
+        // picker lists), so a picked sound always resolves to the right file
+        // regardless of where the project lives. Fall back to the open project's
+        // content/sounds/, then the engine's bundled sounds.
         auto resolveSoundPath = [&](const std::string& n) -> std::string {
+            for (const AssetId& id : assetDb.allAssets())
+                if (assetDb.typeForId(id) == AssetType::Sound)
+                    if (const auto* e = assetDb.entry(id))
+                        if (e->absPath.filename().string() == n)
+                            return e->absPath.generic_string();
             if (!currentProject.empty()) {
                 const std::string projSnd =
                     (std::filesystem::path(currentProject).parent_path() /
@@ -1908,6 +2181,32 @@ int main(int argc, char** argv) {
         // Looping ambient voices for TriggerSound zones (entity id -> Sound),
         // created lazily in Play and cleared on stop. Sound is move-only.
         std::unordered_map<int, Sound> zoneSounds;
+        // AudioSource voices (entity id -> Sound): music/ambient loops or one-shots,
+        // started by playOnStart or by game.playAudio from a script, freed on stop.
+        std::unordered_map<int, Sound> audioVoices;
+        auto startAudioSource = [&](int id) {
+            Entity* e = document.find(id);
+            auto*   a = e ? e->components.get<AudioSourceComponent>() : nullptr;
+            if (!a || a->sound.empty()) return;
+            const std::string path = resolveSoundPath(a->sound);
+            Sound& v = audioVoices[id];
+            // Rebuild the voice each start (a one-shot voice can't be relooped),
+            // then play it.
+            v = Sound::fromFile(audio, path, a->loop);
+            if (!v.isValid()) {
+                std::fprintf(stderr, "[AudioSource] could not load '%s' (resolved '%s')\n",
+                             a->sound.c_str(), path.c_str());
+                return;
+            }
+            v.setVolume(a->volume * mixAmbient.gain());
+            v.play();
+        };
+        auto stopAudioSource = [&](int id) {
+            auto it = audioVoices.find(id);
+            if (it != audioVoices.end() && it->second.isValid()) it->second.stop();
+        };
+        host.playAudio = [&](int id){ startAudioSource(id); };
+        host.stopAudio = [&](int id){ stopAudioSource(id); };
         scripts.setHost(&host);
 
         glm::vec3 playCamPos{0.0f};
@@ -1917,6 +2216,7 @@ int main(int argc, char** argv) {
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
         auto startPlay = [&] {
             if (playMode) return;
+            endEditorDrive(); // a test-drive must not leak into the Play backup
             playMode      = true;
             playEntities  = entities;
             playMaterials = materials;
@@ -2042,14 +2342,22 @@ int main(int argc, char** argv) {
             fpsVelY = 0.0f;
             camera.setPosition({startPos.x,
                 streamer.heightAt(startPos.x, startPos.z) + eyeHeight, startPos.z});
+
+            // Auto-start every AudioSource flagged play-on-start (music/ambient).
+            for (const Entity& e : entities)
+                if (const auto* a = e.components.get<AudioSourceComponent>();
+                    a && a->playOnStart)
+                    startAudioSource(e.id);
         };
         auto stopPlay = [&] {
             if (!playMode) return;
             playMode  = false;
-            vehicleMode = false; // the physics car is gone with the world
+            vehicleMode = false;    // the physics car is gone with the world
+            driveVehicleId = -1;    // the scene restore below un-drives the model
             physics.reset();
             physicsBody.clear();
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
+            audioVoices.clear(); // stop + free any AudioSource voices
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
@@ -2091,8 +2399,21 @@ int main(int argc, char** argv) {
         double lastTime = window.time();
         double nextAssetPoll = 0.0; // next wall-clock time to scan for asset edits
 
+        // Idle throttle: while the editor sits with no input (and isn't playing),
+        // cap redraws to ~15 FPS by sleeping on events instead of spinning at the
+        // monitor rate. Any input wakes it instantly; a short grace after the last
+        // activity keeps interactions and their easing smooth. Play/player mode
+        // and active input always run full speed. `activeFrame` decides the NEXT
+        // iteration's wait, so it's recomputed near the end of each frame.
+        bool         activeFrame = true;
+        double       lastActive  = window.time();
+        const double kIdleGrace  = 0.4;        // s of full-rate after last input
+        const double kIdleFrame  = 1.0 / 15.0; // idle cap period
+
         while (window.isOpen()) {
-            window.pollEvents();
+            const bool idleWait = !activeFrame && !playMode && !playerMode;
+            if (idleWait) window.waitEventsTimeout(kIdleFrame);
+            else          window.pollEvents();
             input.update();
 
             const double now = window.time();
@@ -2142,32 +2463,16 @@ int main(int argc, char** argv) {
             }
             prevF = fDown;
 
-            // V toggles the drive-a-vehicle mode. In Play it drives a real Jolt
-            // physics car (spawned once at the camera); in the editor, the arcade car.
+            // V toggles the drive-a-vehicle mode. A scene vehicle (a model with
+            // a Fahrzel component, nearest to the camera) takes precedence: in
+            // Play it spawns the Jolt car from the component at the model, in
+            // the editor the arcade sim test-drives the model itself. With no
+            // scene vehicle, the primitive test car behaves as before.
             const bool vDown = input.isKeyDown(GLFW_KEY_V);
             if (vDown && !prevV) {
                 vehicleMode = !vehicleMode;
-                if (vehicleMode) {
-                    fpsMode = false;
-                    input.setCursorLocked(false);
-                    if (playMode && physics) {
-                        if (!physics->hasVehicle()) {
-                            const glm::vec3 p = camera.position();
-                            glm::vec3 f = camera.front(); f.y = 0.0f;
-                            if (glm::length(f) < 1e-3f) f = glm::vec3(0, 0, 1);
-                            f = glm::normalize(f);
-                            const glm::quat q = glm::angleAxis(std::atan2(f.x, f.z),
-                                                              glm::vec3(0, 1, 0));
-                            const glm::vec3 sp(p.x, streamer.heightAt(p.x, p.z) + 1.2f, p.z);
-                            physCarId = physics->addVehicle(
-                                glm::vec3(0.9f, 0.35f, 2.0f), 1200.0f, sp, q,
-                                0.42f, 0.30f, 0.85f, 1.35f, -1.35f, 32.0f, 2500.0f);
-                        }
-                    } else if (!carPlaced) {
-                        placeCar();
-                    }
-                    camChase = camera.position();
-                }
+                if (vehicleMode) enterVehicleMode();
+                else             endEditorDrive();
             }
             prevV = vDown;
 
@@ -2196,7 +2501,7 @@ int main(int argc, char** argv) {
                     glfwSetWindowMonitor(window.nativeHandle(), nullptr,
                                          savedWX, savedWY, savedWW, savedWH, 0);
                 } else if (playMode)     { stopPlay(); }
-                else if (vehicleMode)    { vehicleMode = false; }
+                else if (vehicleMode)    { vehicleMode = false; endEditorDrive(); }
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
                 // Plain editor: Esc steps back to selection (drop the transform
                 // tool), then a second Esc clears the selection. Never quits.
@@ -2239,21 +2544,48 @@ int main(int argc, char** argv) {
                 prevUndo = prevRedo = false;
             }
 
+            engineDriving = false; // re-armed by whichever drive block runs below
+
             if (vehicleMode && playMode && physics && physics->hasVehicle()) {
                 // Physics car: WASD -> engine/steer/brake; chase camera from the
                 // chassis. The vehicle updates during the physics step below.
                 const float fwdIn = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
                                     (input.isKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
-                const float steer = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
-                                    (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                const float steerIn = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
+                                      (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
                 const float brake = input.isKeyDown(GLFW_KEY_SPACE) ? 1.0f : 0.0f;
-                physics->setVehicleInput(fwdIn, steer, brake, 0.0f);
+                // Ease the steer input toward the target at the component's steer
+                // speed so the wheels don't snap to full lock in a single frame.
+                Entity* sv  = (driveVehicleId >= 0) ? document.find(driveVehicleId) : nullptr;
+                auto*   svc = sv ? sv->components.get<VehicleComponent>() : nullptr;
+                const float steerSpd = svc ? svc->steerSpeed : 7.0f;
+                physSteer += (steerIn - physSteer) * std::min(1.0f, dt * steerSpd);
+                physics->setVehicleInput(fwdIn, physSteer, brake, 0.0f);
+                // Feed the engine sound from the chassis' horizontal speed.
+                glm::vec3 vel(0.0f);
+                physics->getLinearVelocity(physCarId, vel);
+                engineDriving  = true;
+                engineSpeedMps = glm::length(glm::vec2(vel.x, vel.z));
+                engineThrottle = std::abs(fwdIn);
+                engineWheelR   = svc ? svc->wheelRadius : 0.42f;
                 glm::vec3 cp; glm::quat cq;
                 if (physics->getTransform(physCarId, cp, cq)) {
+                    // Follow-cam tuning from the driven vehicle's component
+                    // (built-in default car has none -> the fallback values).
+                    Entity* dv = (driveVehicleId >= 0) ? document.find(driveVehicleId)
+                                                       : nullptr;
+                    auto*   dvc = dv ? dv->components.get<VehicleComponent>() : nullptr;
+                    const float camDist  = dvc ? dvc->camDistance   : 7.0f;
+                    const float camH     = dvc ? dvc->camHeight     : 3.2f;
+                    const float camSide  = dvc ? dvc->camSide       : 0.0f;
+                    const float camLook  = dvc ? dvc->camLookHeight : 1.2f;
+                    const float camStiff = dvc ? dvc->camStiffness  : 4.0f;
                     const glm::vec3 fwd = cq * glm::vec3(0.0f, 0.0f, 1.0f);
-                    const glm::vec3 target = cp + glm::vec3(0.0f, 1.2f, 0.0f);
-                    const glm::vec3 wanted = cp - fwd * 7.0f + glm::vec3(0.0f, 3.2f, 0.0f);
-                    camChase += (wanted - camChase) * std::min(1.0f, dt * 4.0f);
+                    const glm::vec3 right = cq * glm::vec3(1.0f, 0.0f, 0.0f);
+                    const glm::vec3 target = cp + glm::vec3(0.0f, camLook, 0.0f);
+                    const glm::vec3 wanted = cp - fwd * camDist + right * camSide +
+                                             glm::vec3(0.0f, camH, 0.0f);
+                    camChase += (wanted - camChase) * std::min(1.0f, dt * camStiff);
                     camera.setPosition(camChase);
                     const glm::vec3 d = glm::normalize(target - camChase);
                     camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
@@ -2261,6 +2593,14 @@ int main(int argc, char** argv) {
                 }
             } else if (vehicleMode) {
                 // Arcade car: throttle + steering, drag, bicycle-model heading.
+                // When a scene vehicle is being test-driven, its component
+                // supplies the geometry and the sim glues the model along.
+                Entity* dv  = (driveVehicleId >= 0) ? document.find(driveVehicleId)
+                                                    : nullptr;
+                auto*   dvc = dv ? dv->components.get<VehicleComponent>() : nullptr;
+                const float wb = dvc ? glm::max(dvc->frontZ - dvc->rearZ, 0.5f) : 2.7f;
+                const float wr = dvc ? glm::max(dvc->wheelRadius, 0.05f) : wheelR;
+
                 const bool kW = input.isKeyDown(GLFW_KEY_W);
                 const bool kS = input.isKeyDown(GLFW_KEY_S);
                 const bool kA = input.isKeyDown(GLFW_KEY_A);
@@ -2269,8 +2609,10 @@ int main(int argc, char** argv) {
                 const float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
                 const float steerIn  = (kA ? 1.0f : 0.0f) - (kD ? 1.0f : 0.0f);
 
-                const float maxSteer = glm::radians(32.0f);
-                steerAngle += (steerIn * maxSteer - steerAngle) * std::min(1.0f, dt * 7.0f);
+                const float maxSteer =
+                    glm::radians(dvc ? dvc->maxSteerDeg : 32.0f);
+                const float steerSpd = dvc ? dvc->steerSpeed : 7.0f;
+                steerAngle += (steerIn * maxSteer - steerAngle) * std::min(1.0f, dt * steerSpd);
 
                 carSpeed += throttle * 14.0f * dt;                    // accelerate
                 if (kBrake) carSpeed -= glm::sign(carSpeed) * 26.0f * dt;
@@ -2279,16 +2621,58 @@ int main(int argc, char** argv) {
                 carSpeed = glm::clamp(carSpeed, -8.0f, 26.0f);
                 if (std::abs(carSpeed) < 0.02f) carSpeed = 0.0f;
 
-                carYaw += (carSpeed / 2.7f) * std::tan(steerAngle) * dt; // wheelbase 2.7m
+                // Feed the engine sound from the arcade sim's speed/throttle.
+                engineDriving  = true;
+                engineSpeedMps = std::abs(carSpeed);
+                engineThrottle = std::abs(throttle);
+                engineWheelR   = wr;
+
+                carYaw += (carSpeed / wb) * std::tan(steerAngle) * dt;
                 const glm::vec3 fwd(std::sin(carYaw), 0.0f, std::cos(carYaw));
                 carPos   += fwd * carSpeed * dt;
                 carPos.y  = streamer.heightAt(carPos.x, carPos.z);
-                wheelSpin += (carSpeed / wheelR) * dt;
+                wheelSpin += (carSpeed / wr) * dt;
 
-                // Chase camera: behind and above, smoothly following, looking ahead.
-                const glm::vec3 target = carPos + glm::vec3(0.0f, 1.2f, 0.0f);
-                const glm::vec3 wanted = carPos - fwd * 7.0f + glm::vec3(0.0f, 3.2f, 0.0f);
-                camChase += (wanted - camChase) * std::min(1.0f, dt * 4.0f);
+                // Glue the driven model onto the sim: the root follows the
+                // heading at its rest ride height, wheel children spin/steer
+                // (restored from the snapshot when drive mode ends).
+                if (dv && dvc) {
+                    const float restY  = wr - dvc->wheelY; // ground -> body centre
+                    const float yawDeg = glm::degrees(carYaw) -
+                                         (dvc->forward == 1 ? 180.0f : 0.0f);
+                    const glm::mat4 pw = parentWorldMat(*dv);
+                    setWorld(*dv, carPos + glm::vec3(0.0f, restY, 0.0f),
+                             glm::vec3(0.0f, yawDeg, 0.0f),
+                             dv->parent >= 0 ? &pw : nullptr);
+                    const float spinSign = (dvc->forward == 1) ? -1.0f : 1.0f;
+                    auto restOf = [&](int id) -> const Entity* {
+                        for (const Entity& b : driveBackup)
+                            if (b.id == id) return &b;
+                        return nullptr;
+                    };
+                    for (int i = 0; i < 4; ++i) {
+                        Entity*       w    = document.find(dvc->wheelId[i]);
+                        const Entity* rest = restOf(dvc->wheelId[i]);
+                        if (!w || !rest) continue;
+                        glm::vec3 rot = rest->localRotation;
+                        rot.x += glm::degrees(wheelSpin) * spinSign;
+                        if (i < 2) rot.y += glm::degrees(steerAngle); // fronts steer
+                        w->localRotation = rot;
+                    }
+                }
+
+                // Chase camera: behind and above, smoothly following, looking
+                // ahead; distance/height/stiffness come from the vehicle component.
+                const float camDist  = dvc ? dvc->camDistance   : 7.0f;
+                const float camH     = dvc ? dvc->camHeight     : 3.2f;
+                const float camSide  = dvc ? dvc->camSide       : 0.0f;
+                const float camLook  = dvc ? dvc->camLookHeight : 1.2f;
+                const float camStiff = dvc ? dvc->camStiffness  : 4.0f;
+                const glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
+                const glm::vec3 target = carPos + glm::vec3(0.0f, camLook, 0.0f);
+                const glm::vec3 wanted = carPos - fwd * camDist + right * camSide +
+                                         glm::vec3(0.0f, camH, 0.0f);
+                camChase += (wanted - camChase) * std::min(1.0f, dt * camStiff);
                 camera.setPosition(camChase);
                 const glm::vec3 d = glm::normalize(target - camChase);
                 camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
@@ -2523,6 +2907,16 @@ int main(int argc, char** argv) {
             }
             prevFlashOn = flashOn;
 
+            // Engine sound: run the RPM-layered loops + auto gearbox while a car
+            // is being driven; silence (and reset the box) the moment it stops.
+            if (engineDriving) {
+                if (!carAudio.running()) carAudio.start();
+                carAudio.update(dt, engineSpeedMps, engineThrottle, engineWheelR,
+                                mixSfx.gain());
+            } else if (carAudio.running()) {
+                carAudio.stop();
+            }
+
             // --- Day/night: advance time, derive sun direction and lighting ---
             if (!timePaused && dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
@@ -2593,6 +2987,44 @@ int main(int argc, char** argv) {
                     const glm::mat4 pw = parentWorldMat(e);
                     setWorld(e, glm::vec3(t[0], t[1], t[2]), glm::vec3(r[0], r[1], r[2]),
                              e.parent >= 0 ? &pw : nullptr);
+                }
+
+                // Scene vehicle: stream the Jolt chassis + wheel transforms back
+                // into the driven model and its wheel children, so the actual
+                // imported car drives (the primitive test car renders itself
+                // from Jolt directly and needs none of this).
+                if (physics->hasVehicle() && driveVehicleId >= 0) {
+                    Entity* ve = document.find(driveVehicleId);
+                    auto*   vc = ve ? ve->components.get<VehicleComponent>() : nullptr;
+                    glm::vec3 cp; glm::quat cq;
+                    if (ve && vc && physics->getTransform(physCarId, cp, cq)) {
+                        glm::quat q = cq;
+                        if (vc->forward == 1) // chassis frame is yawed 180
+                            q = q * glm::angleAxis(glm::pi<float>(),
+                                                   glm::vec3(0.0f, 1.0f, 0.0f));
+                        const glm::vec3 p =
+                            cp + cq * glm::vec3(0.0f, vehicleVisualY(*vc), 0.0f);
+                        const glm::mat4 mm =
+                            glm::translate(glm::mat4(1.0f), p) * glm::mat4_cast(q);
+                        float t[3], r[3], s[3];
+                        ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(mm), t, r, s);
+                        const glm::mat4 pw = parentWorldMat(*ve);
+                        setWorld(*ve, glm::vec3(t[0], t[1], t[2]),
+                                 glm::vec3(r[0], r[1], r[2]),
+                                 ve->parent >= 0 ? &pw : nullptr);
+                        for (int i = 0; i < 4; ++i) {
+                            Entity* we = document.find(vc->wheelId[i]);
+                            glm::vec3 wp; glm::quat wq;
+                            if (!we || !physics->getWheelTransform(i, wp, wq)) continue;
+                            const glm::mat4 wm =
+                                glm::translate(glm::mat4(1.0f), wp) * glm::mat4_cast(wq);
+                            ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(wm), t, r, s);
+                            const glm::mat4 pww = parentWorldMat(*we);
+                            setWorld(*we, glm::vec3(t[0], t[1], t[2]),
+                                     glm::vec3(r[0], r[1], r[2]),
+                                     we->parent >= 0 ? &pww : nullptr);
+                        }
+                    }
                 }
             }
 
@@ -2667,6 +3099,22 @@ int main(int argc, char** argv) {
                                 host.playSound(ts->sound); // one-shot (no per-voice volume)
                             }
                             ts->insideLast = inside;
+                        }
+                        // AudioSource: keep a playing voice's level live -- track
+                        // volume/mix changes and, when spatial, fade with distance
+                        // from the player. Start/stop is driven by playOnStart and
+                        // game.playAudio/stopAudio, not proximity.
+                        if (const auto* as = e.components.get<AudioSourceComponent>()) {
+                            auto it = audioVoices.find(e.id);
+                            if (it != audioVoices.end() && it->second.isValid()) {
+                                float vol = as->volume * mixAmbient.gain();
+                                if (as->spatial) {
+                                    const float dist = glm::distance(playerC, e.center);
+                                    vol *= glm::clamp(1.0f - dist / glm::max(as->radius, 0.01f),
+                                                      0.0f, 1.0f);
+                                }
+                                it->second.setVolume(vol);
+                            }
                         }
                         // AnimationTrigger: on entry, (re)start the target entity's
                         // Animation from its range start (the anim tick honours restart).
@@ -2909,7 +3357,9 @@ int main(int argc, char** argv) {
                 // Presentation: hide the editor UI, render the scene full-window.
                 window.framebufferSize(viewW, viewH);
                 viewportHovered = true;
-            } else {
+            }
+#ifndef FITZEL_PLAYER
+            else {
             // --- Main menu bar (File / Edit / View) ----------------------
             if (ImGui::BeginMainMenuBar()) {
                 if (ImGui::BeginMenu("File")) {
@@ -3010,6 +3460,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Terrain sculpt",  nullptr, &showSculpt);
                     ImGui::MenuItem("Terrain paint",   nullptr, &showPaint);
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
+                    ImGui::MenuItem("Scatter",         nullptr, &showScatter);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
                     ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
@@ -3583,6 +4034,56 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Object scatter brush: sprinkle weighted random models under
+                //     a circular 3D brush (one stamp = one undo step). Drag LMB
+                //     to scatter; hold Alt (or Erase) to remove scattered objects.
+                if (scatterMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 center;
+                    const bool onGround = viewportHovered &&
+                                          roadPickTerrain(viewportMouseNdc, vp, center);
+                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
+
+                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        lastStampPos = glm::vec2(1e9f);
+
+                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 cxz(center.x, center.z);
+                        if (erasing) {
+                            scatterErase(cxz);
+                        } else if (glm::length(cxz - lastStampPos) > scatterCfg.radius * 0.6f) {
+                            // Throttle so a slow drag doesn't pile objects up: step
+                            // ~0.6 radius between stamps for an even trail.
+                            scatterStamp(cxz);
+                            lastStampPos = cxz;
+                        }
+                    }
+
+                    // Brush cursor: a ground-hugging ring drawn in the overlay.
+                    if (onGround) {
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
+                                                  : IM_COL32(255, 190, 90, 220);
+                        const int SEG = 48;
+                        ImVec2 prev; bool have = false;
+                        for (int i = 0; i <= SEG; ++i) {
+                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
+                            const float wx = center.x + std::cos(a) * scatterCfg.radius;
+                            const float wz = center.z + std::sin(a) * scatterCfg.radius;
+                            const glm::vec4 c = vp * glm::vec4(
+                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
+                            if (c.w <= 1e-4f) { have = false; continue; }
+                            const glm::vec3 n = glm::vec3(c) / c.w;
+                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            if (have) dl->AddLine(prev, sp, col, 2.0f);
+                            prev = sp; have = true;
+                        }
+                    }
+                }
+
                 // --- Terrain sculpt brush: raise/lower/smooth/flatten the ground
                 //     under a 3D disc that hugs the surface. Hold LMB to apply;
                 //     Alt inverts raise/lower. -------------------------------
@@ -3962,26 +4463,37 @@ int main(int argc, char** argv) {
                     // Click to select/place, but not while grabbing the gizmo or
                     // painting grass (the brush owns the left button then).
                     if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && !grassPaintMode &&
-                        !sculptMode && !paintMode &&
+                        !sculptMode && !paintMode && !scatterMode &&
                         viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         const glm::mat4 inv = glm::inverse(vp);
                         glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
                         glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
                         const glm::vec3 ro = glm::vec3(pn);
                         const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                        int hit = -1; float bestT = 1e30f;
+                        // Every AABB the ray passes through, nearest first.
+                        std::vector<std::pair<float, int>> hits;
                         for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
                             const float t = rayAABB(ro, rd, entities[i].center - entities[i].half,
                                                             entities[i].center + entities[i].half);
-                            if (t >= 0.0f && t < bestT) { bestT = t; hit = i; }
+                            if (t >= 0.0f) hits.emplace_back(t, entities[i].id);
                         }
-                        if (hit >= 0) {
-                            entitySel = hit; // clicked a block -> select it
+                        std::sort(hits.begin(), hits.end());
+                        if (!hits.empty()) {
+                            std::vector<int> ids;
+                            ids.reserve(hits.size());
+                            for (const auto& h : hits) ids.push_back(h.second);
+                            // Same overlapping stack as last click -> advance to the
+                            // next candidate; a new stack -> start at the nearest.
+                            if (ids == pickStack)
+                                pickIdx = (pickIdx + 1) % static_cast<int>(ids.size());
+                            else { pickStack = ids; pickIdx = 0; }
+                            entitySel = document.indexOf(ids[pickIdx]);
                         } else if (entityEditMode) {
                             glm::vec3 h; // Edit mode: empty ground -> drop a new block
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) addEntity(h, entityNewType);
                         } else {
                             entitySel = -1; // Selection mode: empty click clears it
+                            pickStack.clear(); pickIdx = -1;
                         }
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
@@ -4154,6 +4666,7 @@ int main(int argc, char** argv) {
             sculptui::drawPanel({
                 showSculpt, sculptMode,
                 grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, paintMode,
+                scatterMode,
                 sculptTool, sculptRadius, sculptStrength, sculptFlattenH,
                 stampShape, stampHeight, stampRot, noiseFreq, carveDepth,
                 sculptWork, streamer, veg.grassDirty, publishSculpt,
@@ -4162,9 +4675,27 @@ int main(int argc, char** argv) {
             paintui::drawPanel({
                 showPaint, paintMode,
                 grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, sculptMode,
+                scatterMode,
                 look, paintLayer, paintRadius, paintStrength, paintErase,
                 paintWork, streamer, publishPaint,
             });
+
+            {
+                // Children of the "Scattered" group, for the panel's counter.
+                int scatteredCount = 0;
+                const int sg = findScatterGroup();
+                if (sg >= 0)
+                    for (const Entity& e : entities)
+                        if (e.parent == sg) ++scatteredCount;
+                scatterui::drawPanel({
+                    showScatter, scatterMode,
+                    grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode,
+                    sculptMode, paintMode,
+                    brushErase, scatterCfg, models, scatteredCount,
+                    road.roadPts.size() >= 2,
+                    scatterRoadside, scatterClearAll,
+                });
+            }
 
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ImGui::SeparatorText("Grass");
@@ -4173,13 +4704,17 @@ int main(int argc, char** argv) {
                 regrow |= ImGui::SliderFloat("Density", &veg.grassDensity, 0.1f, 3.0f);
                 regrow |= ImGui::SliderFloat("Grass range", &veg.grassRadius, 20.0f, 90.0f);
                 regrow |= ImGui::SliderFloat("Blade height", &veg.grassHeight, 0.2f, 1.2f);
+                regrow |= ImGui::SliderFloat("Chaos", &veg.grassChaos, 0.0f, 2.0f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Irregularity of height, density and gaps\n"
+                                      "0 = even lawn, 1 = wild meadow");
                 if (regrow) veg.grassDirty = true; // baked per blade -> regrow
                 ImGui::ColorEdit3("Tint", &veg.grassTint.x);
                 ImGui::Text("Blades: %d", veg.grassCount);
 
                 ImGui::SeparatorText("Paint grass (3D brush)");
                 if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
-                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = false; // brush owns the left button
+                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = scatterMode = false; // brush owns the left button
                 if (grassPaintMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                         "Drag = paint | hold Alt = erase");
@@ -4215,34 +4750,10 @@ int main(int argc, char** argv) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(grass.txt)");
 
-                ImGui::SeparatorText("Trees");
-                ImGui::Checkbox("Trees", &veg.treeEnabled);
-                bool retree = false;
-                retree |= ImGui::SliderFloat("Tree density", &veg.treeDensity, 0.0f, 2.0f);
-                retree |= ImGui::SliderFloat("Tree size", &veg.treeSize, 2.0f, 25.0f);
-                if (retree) veg.treeCenter = glm::vec2(1e9f);
-                ImGui::SliderFloat("Tree LOD dist", &veg.lodNear, 15.0f, 200.0f);
-                ImGui::Text("Trees: %d", veg.treeCount);
-
-                ImGui::SeparatorText("Paint trees (3D brush)");
-                if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = flowerPaintMode = paintMode = false; // own the LMB
-                if (treePaintMode)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f),
-                        "Drag = plant | hold Alt = erase");
-                else
-                    ImGui::TextDisabled("Enable to plant trees onto the terrain");
-                ImGui::Checkbox("Erase##tree", &brushErase);
-                ImGui::SliderFloat("Brush size##tree", &veg.treeBrushRadius, 1.0f, 40.0f, "%.1f m");
-                ImGui::SliderFloat("Density##tree", &veg.treeBrushDensity, 0.1f, 4.0f);
-                ImGui::SliderFloat("Min spacing", &veg.treeMinSpacing, 1.0f, 15.0f, "%.1f m");
-                ImGui::SliderFloat("Paint size", &veg.treePaintScale, 2.0f, 25.0f, "%.1f m");
-                ImGui::Text("Painted trees: %d", static_cast<int>(veg.paintedTrees.size() / 5));
-                ImGui::BeginDisabled(veg.paintedTrees.empty());
-                if (ImGui::Button("Clear painted##tree")) {
-                    veg.clearPaintedTrees();
-                }
-                ImGui::EndDisabled();
+                veg.panelTrees(treePaintMode, brushErase, [&]{
+                    grassPaintMode = roadEditMode = sculptMode =
+                        flowerPaintMode = paintMode = scatterMode = false; // own the LMB
+                });
 
                 ImGui::SeparatorText("Flowers");
                 ImGui::Checkbox("Flowers", &veg.flowerEnabled);
@@ -4254,7 +4765,7 @@ int main(int argc, char** argv) {
 
                 ImGui::SeparatorText("Paint flowers (3D brush)");
                 if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = paintMode = false;
+                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = paintMode = scatterMode = false;
                 if (flowerPaintMode)
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f),
                         "Drag = plant | hold Alt = erase");
@@ -4283,7 +4794,7 @@ int main(int argc, char** argv) {
             if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
                 ImGui::Checkbox("Show roads", &road.enabled);
                 if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
-                    grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = false; // don't fight over LMB
+                    grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = scatterMode = false; // don't fight over LMB
                 if (roadEditMode) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "Click ground = add | drag handle = move | Del = delete");
@@ -4708,6 +5219,19 @@ int main(int argc, char** argv) {
                                 // Radius/volume/loop/once from metadata; Sound picker.
                                 for (const Property& pr : ts->props()) drawProperty(pr, ts);
                                 soundPickerCombo("Sound", ts->sound);
+                            } else if (auto* as = dynamic_cast<AudioSourceComponent*>(c)) {
+                                // Volume/loop/play-on-start/spatial from metadata;
+                                // Sound is a picker over the project's Sound assets.
+                                for (const Property& pr : as->props())
+                                    if (pr.key != "sound") drawProperty(pr, as);
+                                soundPickerCombo("Sound", as->sound);
+                                // Editor preview: audition the sound right here
+                                // without entering Play (uses the same voice path).
+                                ImGui::BeginDisabled(as->sound.empty());
+                                if (ImGui::Button("Preview")) startAudioSource(be.id);
+                                ImGui::SameLine();
+                                if (ImGui::Button("Stop##audiosrc")) stopAudioSource(be.id);
+                                ImGui::EndDisabled();
                             } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
                                 // Radius from metadata; Target is a picker over the
                                 // scene's Camera entities (plus the player view).
@@ -4772,6 +5296,10 @@ int main(int argc, char** argv) {
                                                 dop->target = te.id;
                                     ImGui::EndCombo();
                                 }
+                            } else if (auto* vh = dynamic_cast<VehicleComponent*>(c)) {
+                                // Props + wheel-slot pickers + re-detect
+                                // (see VehicleTool).
+                                vehicleui::inspector(*vh, be, document);
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
@@ -5600,18 +6128,35 @@ int main(int argc, char** argv) {
 
             if (showVehiclePanel) { if (ImGui::Begin("Vehicle", &showVehiclePanel)) {
                 if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
-                    if (vehicleMode) {
-                        fpsMode = false;
-                        input.setCursorLocked(false);
-                        if (!carPlaced) placeCar();
-                        camChase = camera.position();
-                    }
+                    if (vehicleMode) enterVehicleMode();
+                    else             endEditorDrive();
                 }
                 if (vehicleMode)
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                        "W/S drive, A/D steer, Space brake, Esc exit");
                 else
                     ImGui::TextDisabled("Press V or tick above to drive");
+
+                // Scene vehicles: hook a model into the vehicle system with one
+                // click. The auto-setup edit goes through the undo history.
+                auto makeDrivable = [&](int rootId) -> std::string {
+                    Entity* e = document.find(rootId);
+                    if (!e) return std::string();
+                    const Entity before = *e;
+                    std::string rep = vehicleui::autoSetup(document, rootId);
+                    if (Entity* after = document.find(rootId)) {
+                        auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
+                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                    }
+                    return rep;
+                };
+                const int selId =
+                    (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
+                        ? entities[entitySel].id : -1;
+                const int pick = vehicleui::panelSection(document, selId, makeDrivable);
+                if (pick >= 0) entitySel = document.indexOf(pick);
+
+                ImGui::SeparatorText("Test car");
                 ImGui::Checkbox("Show vehicle", &showVehicle);
                 if (ImGui::Button("Place at camera")) placeCar();
                 if (carPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(carSpeed) * 3.6f);
@@ -5620,6 +6165,7 @@ int main(int argc, char** argv) {
             ImGui::End(); }
 
             } // end editor UI (skipped in presentation mode)
+#endif // !FITZEL_PLAYER
 
             // Push the (possibly edited) terrain params into the material, plus
             // the texture layers: bind each layer with a texture to its own unit
@@ -5676,7 +6222,10 @@ int main(int argc, char** argv) {
             }
 
             // --- Physics car: draw the chassis + wheels from Jolt transforms.
-            if (vehicleMode && playMode && physics && physics->hasVehicle()) {
+            //     (Only the primitive test car -- a driven scene model renders
+            //     itself through the entity pass, synced from Jolt above.)
+            if (vehicleMode && playMode && physics && physics->hasVehicle() &&
+                driveVehicleId < 0) {
                 glm::vec3 cp; glm::quat cq;
                 if (physics->getTransform(physCarId, cp, cq)) {
                     const glm::mat4 chassis =
@@ -5695,7 +6244,7 @@ int main(int argc, char** argv) {
                 }
             }
             // --- Arcade vehicle (editor): terrain-aligned body + rolling wheels --
-            else if (showVehicle && carPlaced && !playMode) {
+            else if (showVehicle && carPlaced && !playMode && driveVehicleId < 0) {
                 const float e = 1.2f;
                 const glm::vec3 N = glm::normalize(glm::vec3(
                     streamer.heightAt(carPos.x - e, carPos.z) - streamer.heightAt(carPos.x + e, carPos.z),
@@ -5968,22 +6517,31 @@ int main(int argc, char** argv) {
             // Instanced 3D trees for a given view (used by the main pass and the
             // water reflection, so trees mirror in the water). Two-sided.
 
-            // 0) Environment probe: capture the scene into a cubemap from the
-            //    first reflective object's position, so reflective materials
-            //    mirror the surrounding world. One shared probe (v1); its parallax
-            //    is only exact at that point. Skipped when nothing is reflective.
-            glm::vec3 probePos(0.0f);
-            bool hasReflective = false;
-            for (const Entity& b : entities) {
-                const auto* mc = b.components.get<MaterialComponent>();
-                if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
-                    materials[document.materialIndex(mc->material)].reflectivity > 0.0f) {
-                    probePos = b.center;
-                    hasReflective = true;
-                    break;
+            // 0) Environment probe: capture the scene into a cubemap so reflective
+            //    materials mirror the surrounding world. One shared probe (v1); its
+            //    parallax is only exact at its capture point. The trigger is that a
+            //    reflective material EXISTS in the library -- not that a placed
+            //    object already uses one -- so a surface reflects the instant its
+            //    material is made reflective, without first having to drop in an
+            //    object with a reflective material. Still skipped entirely when
+            //    nothing in the scene is reflective (the common case), so the
+            //    cubemap render is not paid for a matte scene.
+            bool wantProbe = false;
+            for (const MaterialDef& md : materials)
+                if (md.reflectivity > 0.0f) { wantProbe = true; break; }
+            if (wantProbe) {
+                // Capture at the first reflective object if there is one (best
+                // parallax there); otherwise around the camera, so reflective
+                // terrain / not-yet-placed materials still get a sensible probe.
+                glm::vec3 probePos = camPos;
+                for (const Entity& b : entities) {
+                    const auto* mc = b.components.get<MaterialComponent>();
+                    if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
+                        materials[document.materialIndex(mc->material)].reflectivity > 0.0f) {
+                        probePos = b.center;
+                        break;
+                    }
                 }
-            }
-            if (hasReflective) {
                 renderer.prepareEnvProbe(probePos,
                     [&](const glm::mat4& ivp, const glm::vec3& eye) {
                         drawBackground(ivp, eye, false);
@@ -6281,6 +6839,33 @@ int main(int argc, char** argv) {
                     shadowText(vmin.x + pad, vmin.y + pad + fs * 1.2f,
                                IM_COL32(235, 235, 240, 235), host.hud.c_str());
             }
+
+            // --- Idle throttle: decide whether the NEXT frame runs full-rate ---
+            // Anything that needs continuous redraws counts as activity: mouse
+            // movement/wheel/buttons, an active ImGui widget or text field, a
+            // gizmo drag, an in-progress vehicle drive, or a held camera/tool key
+            // (held keys emit no repeat events, so poll them explicitly). A short
+            // grace after the last activity keeps easing/hover smooth.
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool mouseActive =
+                io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f ||
+                io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f ||
+                io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2];
+            const bool keyHeld =
+                input.isKeyDown(GLFW_KEY_W) || input.isKeyDown(GLFW_KEY_A) ||
+                input.isKeyDown(GLFW_KEY_S) || input.isKeyDown(GLFW_KEY_D) ||
+                input.isKeyDown(GLFW_KEY_Q) || input.isKeyDown(GLFW_KEY_E) ||
+                input.isKeyDown(GLFW_KEY_R) || input.isKeyDown(GLFW_KEY_F) ||
+                input.isKeyDown(GLFW_KEY_SPACE) ||
+                input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                input.isKeyDown(GLFW_KEY_UP) || input.isKeyDown(GLFW_KEY_DOWN) ||
+                input.isKeyDown(GLFW_KEY_LEFT) || input.isKeyDown(GLFW_KEY_RIGHT);
+            const bool interacting =
+                mouseActive || keyHeld || io.WantTextInput ||
+                ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || vehicleMode;
+            if (interacting) lastActive = now;
+            activeFrame = (now - lastActive) < kIdleGrace;
 
             gui.endFrame();
             window.swapBuffers();

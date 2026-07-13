@@ -119,6 +119,83 @@ private:
     std::vector<int> m_children;
 };
 
+// Add several entities as one undoable step (a scatter stamp drops a whole
+// handful of objects; undoing them one by one would be misery). Insertion
+// order is preserved, so parents can precede their children in the batch.
+class AddEntitiesCmd : public Command {
+public:
+    AddEntitiesCmd(std::vector<Entity> es, const char* label)
+        : m_entities(std::move(es)), m_label(label) {}
+    void redo(Document& d) override {
+        for (const Entity& e : m_entities) d.entities().push_back(e);
+    }
+    void undo(Document& d) override {
+        auto& es = d.entities();
+        for (auto it = m_entities.rbegin(); it != m_entities.rend(); ++it)
+            for (auto e = es.begin(); e != es.end(); ++e)
+                if (e->id == it->id) { es.erase(e); break; }
+    }
+    const char* name() const override { return m_label; }
+
+private:
+    std::vector<Entity> m_entities;
+    const char*         m_label; // static string ("Scatter", ...)
+};
+
+// Delete a set of entities as one undoable step (the scatter erase brush).
+// Mirrors DeleteEntityCmd's semantics per entity: a child that is NOT itself
+// in the set is reparented onto its nearest surviving ancestor. Undo restores
+// every entity at its original index and every reparented child's old parent.
+class DeleteEntitiesCmd : public Command {
+public:
+    DeleteEntitiesCmd(const Document& d, const std::vector<int>& ids) {
+        auto inSet = [&](int id) {
+            return std::find(ids.begin(), ids.end(), id) != ids.end();
+        };
+        for (int id : ids) {
+            const int idx = d.indexOf(id);
+            if (idx >= 0) m_items.push_back({d.entities()[idx], idx});
+        }
+        std::sort(m_items.begin(), m_items.end(),
+                  [](const Item& a, const Item& b) { return a.index < b.index; });
+        // Surviving children: climb past deleted ancestors to the first kept one.
+        for (const Entity& e : d.entities()) {
+            if (inSet(e.id) || !inSet(e.parent)) continue;
+            int np = e.parent;
+            while (np >= 0 && inSet(np)) {
+                const Entity* p = d.find(np);
+                np = p ? p->parent : -1;
+            }
+            m_reparent.push_back({e.id, e.parent, np});
+        }
+    }
+    void redo(Document& d) override {
+        for (const Reparent& r : m_reparent)
+            if (Entity* c = d.find(r.child)) c->parent = r.newParent;
+        auto& es = d.entities();
+        for (const Item& it : m_items)
+            for (auto e = es.begin(); e != es.end(); ++e)
+                if (e->id == it.entity.id) { es.erase(e); break; }
+    }
+    void undo(Document& d) override {
+        auto& es = d.entities();
+        for (const Item& it : m_items) { // ascending indices -> insert in order
+            const int at = std::min<int>(it.index, static_cast<int>(es.size()));
+            es.insert(es.begin() + at, it.entity);
+        }
+        for (const Reparent& r : m_reparent)
+            if (Entity* c = d.find(r.child)) c->parent = r.oldParent;
+    }
+    const char* name() const override { return "Delete"; }
+    bool empty() const { return m_items.empty(); }
+
+private:
+    struct Item     { Entity entity; int index; };
+    struct Reparent { int child, oldParent, newParent; };
+    std::vector<Item>     m_items;
+    std::vector<Reparent> m_reparent;
+};
+
 // Modify one entity in place via a before/after snapshot. One command type
 // covers every per-entity field edit (transform, colour, physics, script, ...)
 // because Entity is a small, cheaply-copied value. Callers snapshot the entity

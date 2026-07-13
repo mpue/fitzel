@@ -52,6 +52,11 @@ struct ScriptHost {
     // Play a one-shot sound file from the project's sounds/ folder.
     std::function<void(const std::string&)> playSound;
 
+    // Start / stop an entity's AudioSource component by id (game.playAudio /
+    // game.stopAudio). No-ops on ids without an AudioSource.
+    std::function<void(int)> playAudio;
+    std::function<void(int)> stopAudio;
+
     // Host-side game state. Lua script environments are per-entity (isolated), so
     // shared state like the score lives here and is reached via game.addScore /
     // game.getScore / game.setHud.

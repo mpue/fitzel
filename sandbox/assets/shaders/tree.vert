@@ -13,7 +13,8 @@ uniform vec2  uWindDir;
 uniform float uWindStrength;
 uniform float uTreeHeight; // local tree height, for sway weight
 uniform vec3  uCamPos;
-uniform float uLodNear;    // beyond this, billboards take over (clip the mesh)
+uniform float uLodMin;     // below this distance this LOD is clipped (finer LOD covers it)
+uniform float uLodNear;    // beyond this, the next LOD / billboard takes over (clip the mesh)
 
 out vec3 vWorldPos;
 out vec3 vNormal;
@@ -38,8 +39,10 @@ void main() {
     vUv       = aUv;
     gl_Position = uViewProj * vec4(wp, 1.0);
 
-    // LOD: clip the full 3D tree beyond the near range (billboards replace it).
-    if (length(iPos.xz - uCamPos.xz) > uLodNear) {
+    // LOD banding: this mesh level only draws within [uLodMin, uLodNear); the
+    // finer level covers nearer trees, the coarser level / billboard covers farther.
+    float lodDist = length(iPos.xz - uCamPos.xz);
+    if (lodDist < uLodMin || lodDist > uLodNear) {
         gl_Position = vec4(0.0, 0.0, 2.0, 1.0); // outside the far plane -> clipped
     }
 }

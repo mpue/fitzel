@@ -23,7 +23,7 @@ std::vector<float> makeFlowerMesh() {
         push(a, n, t); push(b, n, t); push(c, n, t);
         push(a, n, t); push(c, n, t); push(d, n, t);
     };
-    const float sh = 0.55f, hw = 0.018f;
+    const float sh = 0.50f, hw = 0.028f; // shorter, thicker stem (was a hairline)
     quad({-hw, 0, 0}, {hw, 0, 0}, {hw, sh, 0}, {-hw, sh, 0}, {0, 0, 1}, 0.0f);
     quad({0, 0, -hw}, {0, 0, hw}, {0, sh, hw}, {0, sh, -hw}, {1, 0, 0}, 0.0f);
 

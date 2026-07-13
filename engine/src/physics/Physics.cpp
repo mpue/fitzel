@@ -20,6 +20,7 @@
 #include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
+#include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
@@ -190,12 +191,22 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
                                        glm::vec3 pos, glm::quat rot,
                                        float wheelRadius, float wheelWidth,
                                        float halfTrack, float frontZ, float rearZ,
-                                       float maxSteerDeg, float engineTorque) {
+                                       float maxSteerDeg, float engineTorque,
+                                       const VehicleTuning& tuning) {
     Impl& d = *m_impl;
     JPH::BodyInterface& bi = d.system.GetBodyInterface();
 
+    const glm::vec3 ch = glm::max(chassisHalf, glm::vec3(0.05f));
+    // Drop the centre of mass toward the wheel line. A box's COM sits at its
+    // geometric centre, which is high for a car -- the main reason it flips when
+    // cornering hard. OffsetCenterOfMassShape keeps the geometry (and the wheel
+    // attachment points below) in place while moving only the COM downward.
+    const float comDrop = ch.y * glm::clamp(tuning.comLower, 0.0f, 1.0f);
+    JPH::RefConst<JPH::Shape> box =
+        new JPH::BoxShape(toJolt(ch));
     JPH::RefConst<JPH::Shape> shape =
-        new JPH::BoxShape(toJolt(glm::max(chassisHalf, glm::vec3(0.05f))));
+        JPH::OffsetCenterOfMassShapeSettings(JPH::Vec3(0.0f, -comDrop, 0.0f), box)
+            .Create().Get();
     JPH::BodyCreationSettings bcs(shape, toJolt(pos), toJolt(rot),
                                   JPH::EMotionType::Dynamic, Layers::MOVING);
     bcs.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
@@ -207,7 +218,7 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
 
     JPH::VehicleConstraintSettings vc;
     vc.mMaxPitchRollAngle = JPH::DegreesToRadians(60.0f);
-    const float wy = -chassisHalf.y; // wheel attachment near the chassis bottom
+    const float wy = -ch.y; // wheel attachment near the chassis bottom
     const struct { float x, z; bool front; } wp[4] = {
         {-halfTrack, frontZ, true}, {halfTrack, frontZ, true},
         {-halfTrack, rearZ,  false}, {halfTrack, rearZ,  false}};
@@ -218,17 +229,61 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
         w->mWidth               = wheelWidth;
         w->mSuspensionMinLength = 0.3f;
         w->mSuspensionMaxLength = 0.5f;
+        // A stiffer, well-damped suspension resists body roll and settles the
+        // weight transfer instead of letting it pitch the car over.
+        w->mSuspensionSpring.mFrequency = glm::max(tuning.suspensionFreq, 0.1f);
+        w->mSuspensionSpring.mDamping   = glm::clamp(tuning.suspensionDamp, 0.0f, 1.0f);
+        // Tyre grip: rebuild Jolt's default friction curves scaled by `grip`
+        // (peak / plateau of the longitudinal + lateral slip curves). Higher =
+        // more traction under power and in corners.
+        const float g = glm::max(tuning.grip, 0.05f);
+        w->mLongitudinalFriction.Clear();
+        w->mLongitudinalFriction.Reserve(3);
+        w->mLongitudinalFriction.AddPoint(0.0f, 0.0f);
+        w->mLongitudinalFriction.AddPoint(0.06f, 1.2f * g);
+        w->mLongitudinalFriction.AddPoint(0.2f,  1.0f * g);
+        w->mLateralFriction.Clear();
+        w->mLateralFriction.Reserve(3);
+        w->mLateralFriction.AddPoint(0.0f,  0.0f);
+        w->mLateralFriction.AddPoint(3.0f,  1.2f * g);
+        w->mLateralFriction.AddPoint(20.0f, 1.0f * g);
         w->mMaxSteerAngle       = wp[i].front ? JPH::DegreesToRadians(maxSteerDeg) : 0.0f;
         w->mMaxHandBrakeTorque  = wp[i].front ? 0.0f : 4000.0f; // handbrake locks rear
         vc.mWheels.push_back(w);
+    }
+    // Anti-roll bars couple each axle's left/right suspension so cornering load
+    // is shared across the axle rather than compressing one side and tipping.
+    if (tuning.antiRoll > 0.0f) {
+        vc.mAntiRollBars.resize(2);
+        vc.mAntiRollBars[0].mLeftWheel = 0; vc.mAntiRollBars[0].mRightWheel = 1; // front
+        vc.mAntiRollBars[1].mLeftWheel = 2; vc.mAntiRollBars[1].mRightWheel = 3; // rear
+        vc.mAntiRollBars[0].mStiffness = tuning.antiRoll;
+        vc.mAntiRollBars[1].mStiffness = tuning.antiRoll;
     }
     JPH::WheeledVehicleControllerSettings* ctrl =
         new JPH::WheeledVehicleControllerSettings;
     ctrl->mEngine.mMaxTorque = engineTorque;
     ctrl->mEngine.mMaxRPM    = 6000.0f;
-    ctrl->mDifferentials.resize(1);         // rear-wheel drive
-    ctrl->mDifferentials[0].mLeftWheel  = 2;
-    ctrl->mDifferentials[0].mRightWheel = 3;
+    // Driven axle(s): RWD (rear 2,3), FWD (front 0,1), or AWD (both, torque
+    // split 50/50). Front-drive pulls the nose through a corner and is far
+    // harder to spin out under power than rear-drive.
+    if (tuning.drive == 1) {                 // FWD
+        ctrl->mDifferentials.resize(1);
+        ctrl->mDifferentials[0].mLeftWheel  = 0;
+        ctrl->mDifferentials[0].mRightWheel = 1;
+    } else if (tuning.drive == 2) {          // AWD
+        ctrl->mDifferentials.resize(2);
+        ctrl->mDifferentials[0].mLeftWheel  = 0;
+        ctrl->mDifferentials[0].mRightWheel = 1;
+        ctrl->mDifferentials[1].mLeftWheel  = 2;
+        ctrl->mDifferentials[1].mRightWheel = 3;
+        ctrl->mDifferentials[0].mEngineTorqueRatio = 0.5f;
+        ctrl->mDifferentials[1].mEngineTorqueRatio = 0.5f;
+    } else {                                 // RWD (default)
+        ctrl->mDifferentials.resize(1);
+        ctrl->mDifferentials[0].mLeftWheel  = 2;
+        ctrl->mDifferentials[0].mRightWheel = 3;
+    }
     vc.mController = ctrl;
 
     d.vehicle     = new JPH::VehicleConstraint(*body, vc);
@@ -337,6 +392,14 @@ bool PhysicsWorld::getTransform(PhysicsBodyId id, glm::vec3& pos,
     JPH::RVec3 p = bi.GetPosition(bid);
     pos = glm::vec3(float(p.GetX()), float(p.GetY()), float(p.GetZ()));
     rot = toGlm(bi.GetRotation(bid));
+    return true;
+}
+
+bool PhysicsWorld::getLinearVelocity(PhysicsBodyId id, glm::vec3& out) const {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return false;
+    out = toGlm(bi.GetLinearVelocity(bid));
     return true;
 }
 

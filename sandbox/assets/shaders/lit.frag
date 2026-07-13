@@ -164,14 +164,18 @@ float computeShadow(int layer, vec3 N, vec3 L) {
     vec2  texel   = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
     float current = proj.z;
     float shadow  = 0.0;
-    for (int x = -1; x <= 1; ++x) {
-        for (int y = -1; y <= 1; ++y) {
+    // Wider 5x5 PCF at 1.35-texel spacing: a broader, softer penumbra so cast
+    // shadows (e.g. a tree on the meadow) fade out instead of ending on a hard
+    // edge. Nearer cascades cover less ground per texel, so their edge is softest.
+    const float spread = 1.35;
+    for (int x = -2; x <= 2; ++x) {
+        for (int y = -2; y <= 2; ++y) {
             float closest = texture(uShadowMap,
-                                    vec3(proj.xy + vec2(x, y) * texel, float(layer))).r;
+                vec3(proj.xy + vec2(x, y) * texel * spread, float(layer))).r;
             shadow += (current - bias > closest) ? 1.0 : 0.0;
         }
     }
-    return shadow / 9.0;
+    return shadow / 25.0;
 }
 
 // --- Cheap procedural value-noise fBm for surface micro-detail -------------

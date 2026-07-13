@@ -76,37 +76,71 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
                 {p.vertices[i + 6], p.vertices[i + 7]}});
         }
         lm->meshes.push_back(Mesh::create(verts));
-        // Register this glTF material as a library material so it shows up
-        // (and is editable) in the Materials panel.
-        MaterialDef def;
-        def.assetId   = AssetId::generate(); // ephemeral (recreated on import)
-        def.fromModel = true;
-        def.name      = lm->name + ":" + (p.materialName.empty()
-                            ? std::to_string(primIdx) : p.materialName);
-        def.albedo    = glm::vec3(p.baseColor[0], p.baseColor[1], p.baseColor[2]);
-        def.opacity   = p.baseColor[3]; // glTF/Collada base-colour alpha
-        if (!p.texPixels.empty())
-            def.tex = std::make_shared<Texture>(Texture::fromPixels(
-                p.texPixels.data(), p.texWidth, p.texHeight, 4));
-        // Import a MASK/BLEND material whose colour map carries an alpha channel
-        // as Cutout so its "transparency map" reads through by default (switch to
-        // Blend in the Materials panel for soft/glassy translucency).
-        if (p.alphaCutout && !p.texPixels.empty())
-            def.alphaMode = AlphaMode::Cutout;
-        if (!p.normalPixels.empty())
-            def.normalTex = std::make_shared<Texture>(Texture::fromPixels(
-                p.normalPixels.data(), p.normalWidth, p.normalHeight, 4));
-        // Emission (_Illum) map: glow white through the map's lit texels. Strength
-        // > 1 pushes the lit texels past the bloom threshold so the glow blooms
-        // (spills into the surroundings) instead of only self-illuminating.
-        if (!p.emissionPixels.empty()) {
-            def.emissionTex = std::make_shared<Texture>(Texture::fromPixels(
-                p.emissionPixels.data(), p.emissionWidth, p.emissionHeight, 4));
-            def.emission = glm::vec3(1.0f);
-            def.emissionStrength = 3.0f;
+        // Register this material as a library material so it shows up (and is
+        // editable) in the Materials panel -- but first look for an identical
+        // model-material already imported: a model whose parts all share one
+        // material (very common) otherwise spawns a duplicate for every part.
+        const glm::vec3 albedo(p.baseColor[0], p.baseColor[1], p.baseColor[2]);
+        const float     opacity  = p.baseColor[3]; // glTF/Collada base-colour alpha
+        const AlphaMode alpha    = (p.alphaCutout && !p.texPixels.empty())
+                                       ? AlphaMode::Cutout : AlphaMode::Opaque;
+        const bool      hasTex   = !p.texPixels.empty();
+        const bool      hasNorm  = !p.normalPixels.empty();
+        const bool      hasEmis  = !p.emissionPixels.empty();
+        // A match needs the same source name, colour, alpha and the same set of
+        // maps at the same resolutions -- close enough to be the same material,
+        // strict enough that two different maps under a shared name (e.g. the
+        // generic "Material") don't get merged.
+        auto sameTex = [](const std::shared_ptr<Texture>& t, bool has, int w, int h) {
+            if ((t != nullptr) != has) return false;
+            return !has || (t->width() == w && t->height() == h);
+        };
+        AssetId matId;
+        bool    reused = false;
+        if (!p.materialName.empty())
+            for (const MaterialDef& m : materials) {
+                if (!m.fromModel || m.name != p.materialName) continue;
+                if (glm::any(glm::greaterThan(glm::abs(m.albedo - albedo), glm::vec3(1e-3f))))
+                    continue;
+                if (std::abs(m.opacity - opacity) > 1e-3f || m.alphaMode != alpha) continue;
+                if (!sameTex(m.tex, hasTex, p.texWidth, p.texHeight)) continue;
+                if (!sameTex(m.normalTex, hasNorm, p.normalWidth, p.normalHeight)) continue;
+                if (!sameTex(m.emissionTex, hasEmis, p.emissionWidth, p.emissionHeight)) continue;
+                matId = m.assetId; reused = true; break;
+            }
+        if (!reused) {
+            MaterialDef def;
+            def.assetId   = AssetId::generate(); // ephemeral (recreated on import)
+            def.fromModel = true;
+            // Name by the source material (shared across parts) so re-runs and
+            // sibling parts dedupe against it; unnamed mats stay per-part unique.
+            def.name      = p.materialName.empty()
+                                ? lm->name + ":" + std::to_string(primIdx)
+                                : p.materialName;
+            def.albedo    = albedo;
+            def.opacity   = opacity;
+            if (hasTex)
+                def.tex = std::make_shared<Texture>(Texture::fromPixels(
+                    p.texPixels.data(), p.texWidth, p.texHeight, 4));
+            // Import a MASK/BLEND material whose colour map carries an alpha channel
+            // as Cutout so its "transparency map" reads through by default (switch to
+            // Blend in the Materials panel for soft/glassy translucency).
+            def.alphaMode = alpha;
+            if (hasNorm)
+                def.normalTex = std::make_shared<Texture>(Texture::fromPixels(
+                    p.normalPixels.data(), p.normalWidth, p.normalHeight, 4));
+            // Emission (_Illum) map: glow white through the map's lit texels. Strength
+            // > 1 pushes the lit texels past the bloom threshold so the glow blooms
+            // (spills into the surroundings) instead of only self-illuminating.
+            if (hasEmis) {
+                def.emissionTex = std::make_shared<Texture>(Texture::fromPixels(
+                    p.emissionPixels.data(), p.emissionWidth, p.emissionHeight, 4));
+                def.emission = glm::vec3(1.0f);
+                def.emissionStrength = 3.0f;
+            }
+            matId = def.assetId;
+            materials.push_back(std::move(def));
         }
-        const AssetId matId = def.assetId;
-        materials.push_back(std::move(def));
         lm->primMaterialId.push_back(matId);
         ++primIdx;
     }

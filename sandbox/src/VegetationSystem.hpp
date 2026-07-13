@@ -1,12 +1,14 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <random>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <nlohmann/json_fwd.hpp>
 
 #include <fitzel/graphics/InstancedMesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
@@ -70,12 +72,61 @@ public:
     void stampTree(glm::vec2 c, float radius, std::mt19937& rng,
                    float waterLevel, float snowLevel);
     void eraseTree(glm::vec2 c, float radius);
-    void clearPaintedTrees() { paintedTrees.clear(); rebuildTreeBuffer(); }
+    void clearPaintedTrees() { paintedTrees.clear(); rebuildTreeBuffers(); }
     void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather);
     void drawTrees(const VegDrawContext& ctx);
     void drawTreeBillboards(const VegDrawContext& ctx, const glm::vec3& camRight);
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
     const std::vector<float>& treeInstances() const { return m_treeInst; }
+
+    // One detail level of a tree species: a mesh file dropped over the terrain,
+    // shown only within [prev.dist, dist) of the camera (the last mesh LOD runs
+    // out to the billboard start / far plane). LOD0 is the highest detail.
+    struct TreeLOD {
+        std::string   model;         // .glb filename (relative to the model dir)
+        float         dist = 40.0f;  // switch to the next level beyond this (m)
+        struct Prim { fitzel::Texture tex; bool hasTex = false;
+                      int first = 0, count = 0; bool cutout = false; };
+        std::vector<Prim> prims;     // per-material draw groups
+        std::uint32_t vao = 0, vbo = 0;
+    };
+    // A configurable tree type: an ordered LOD chain + a far billboard, its own
+    // density/size and its own GPU instance buffer (5 floats/tree: pos3,yaw,scale).
+    struct TreeSpecies {
+        std::string          name = "Tree";
+        std::vector<TreeLOD> lods;               // LOD0..n, ascending dist
+        std::string          billboard;          // PNG name ("" = none)
+        fitzel::Texture      bbTex;
+        bool  bbEnabled = true;
+        float bbStart   = 60.0f;                 // distance the billboard takes over
+        float bbAspect  = 0.93f;
+        float bbSize    = 1.05f;                 // billboard height factor vs mesh
+        std::uint32_t bbVAO = 0;
+        bool  enabled = true;
+        float density = 1.0f;                    // per-species distribution weight
+        float size    = 9.0f;                    // average height (m)
+        std::uint32_t      instVBO = 0;
+        std::vector<float> inst;                 // procedural prefix + painted (this species)
+        std::size_t        proceduralFloats = 0;
+        int                count = 0;
+    };
+
+    // Species/LOD editing (used by panelTrees). Each mutates GPU state and, where
+    // it changes placement, expects the caller to force a regrow (treeCenter reset).
+    int  addSpecies();                           // returns the new species index
+    void removeSpecies(int s);
+    void addLOD(int s);
+    void removeLOD(int s, int lod);
+    void setLODModel(int s, int lod, const std::string& file);
+    void setBillboard(int s, const std::string& file);
+    // The whole Trees + Paint-trees editor panel (keeps main.cpp small). onGrabLMB
+    // switches the sibling viewport brushes off when tree paint mode is enabled.
+    void panelTrees(bool& treePaintMode, bool& brushErase,
+                    const std::function<void()>& onGrabLMB);
+    // Scene persistence for the species config (main threads these into its own
+    // settings JSON block). Painted trees are saved separately by main.
+    void serializeTrees(nlohmann::json& j) const;
+    void deserializeTrees(const nlohmann::json& j);
 
     // --- Flowers -------------------------------------------------------------
     // Procedural blooms regrow with the grass pass (clustering in moist ground
@@ -98,6 +149,7 @@ public:
     bool  grassEnabled = true;
     float grassHeight  = 0.35f;
     float grassDensity = 1.0f;
+    float grassChaos   = 1.0f;  // 0 = even lawn, 1 = wild meadow, >1 = unruly
     float grassRadius  = 46.0f;
     glm::vec3 grassTint{1.0f, 1.0f, 1.0f};
     int   grassCount   = 0;
@@ -106,16 +158,17 @@ public:
     bool  paintedDirty = false;        // GPU re-upload of painted blades pending
 
     bool      treeEnabled = true;
-    float     treeDensity = 1.0f;
-    float     treeSize    = 9.0f;      // average tree height (world units)
-    float     lodNear     = 45.0f;     // 3D trees within this range, billboards beyond
+    // Independent tree sources: the procedural forest and the hand-painted trees.
+    // Either may run alone (only painted / only generated) or both together.
+    bool      treeProcedural = true;   // generate the procedural forest
+    bool      treePainted    = true;   // include hand-painted trees
     glm::vec2 treeCenter{1e9f};        // last procedural-forest center; 1e9 forces regen
-    int       treeCount   = 0;         // total drawn (procedural + painted)
-    std::vector<float> paintedTrees;   // 5 floats/tree, world space (saved)
+    int       treeCount   = 0;         // total drawn across all species (proc + painted)
+    std::vector<float> paintedTrees;   // 6 floats/tree: pos3, yaw, scale, speciesIdx (saved)
+    int       paintSpecies    = 0;     // species the tree brush plants
     float     treeBrushRadius  = 8.0f;
     float     treeBrushDensity = 1.0f; // attempts per m^2 (trees stay sparse)
     float     treeMinSpacing   = 4.0f; // reject placements closer than this
-    float     treePaintScale   = 9.0f; // painted-tree height (m)
 
     bool  flowerEnabled = true;
     float flowerDensity = 1.0f;
@@ -131,20 +184,16 @@ private:
     static std::vector<float> computeGrass(
         fitzel::TerrainSettings s, glm::vec2 c, float waterLvl, float snowLvl,
         float gHeight, float gDensity, float R, std::uint32_t seed,
-        std::vector<glm::vec2> road, float roadClear);
+        std::vector<glm::vec2> road, float roadClear, float chaos);
 
     void regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road, float roadWidth,
                     float waterLevel, float snowLevel);
-    void rebuildTreeBuffer();   // re-upload procedural prefix + painted trees
+    void rebuildTreeBuffers();  // re-upload every species (procedural prefix + painted)
     void rebuildFlowerBuffer(); // re-upload procedural prefix + painted flowers
-
-    // One draw group of the tree model (a material/texture slice of the mesh).
-    struct TreePrim {
-        fitzel::Texture tex;
-        bool hasTex = false;
-        int  first = 0, count = 0;
-        bool cutout = false;
-    };
+    // Load a .glb into `lod` (fills prims + creates its VAO/VBO bound to the
+    // species' instance buffer). Returns false if the model failed to load.
+    bool loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod);
+    void scanTreeAssets(); // populate m_modelFiles / m_texFiles from the content dirs
 
     fitzel::TerrainStreamer& m_streamer;
     fitzel::Camera&          m_camera;
@@ -158,17 +207,17 @@ private:
     glm::vec2     m_grassPendingCenter{0.0f};
     std::uint32_t m_grassSeed = 1234u;
 
-    // Trees.
-    fitzel::Shader        m_tree, m_treeDepth, m_billboard;
-    fitzel::Texture       m_billboardTex;
-    std::vector<TreePrim> m_treePrims;
-    std::uint32_t         m_treeVAO = 0, m_treeVBO = 0, m_treeInstVBO = 0, m_bbVAO = 0;
-    const float           m_treeLocalHeight = 1.0f;
-    float                 m_bbAspect = 0.93f;
-    const float           m_treeRadius = 120.0f;
-    std::mt19937          m_trng{555u};
-    std::vector<float>    m_treeInst;              // procedural prefix + painted trees
-    std::size_t           m_proceduralFloats = 0;  // size of the procedural prefix
+    // Trees. Shaders are shared across all species (bound once, uniforms per draw).
+    fitzel::Shader           m_tree, m_treeDepth, m_billboard;
+    std::vector<TreeSpecies> m_species;
+    std::vector<std::string> m_modelFiles;  // *.glb in the model dir (panel dropdown)
+    std::vector<std::string> m_texFiles;    // *.png in the texture dir (billboard dropdown)
+    std::string              m_modelDir, m_texDir;
+    const float              m_treeRadius = 120.0f;
+    std::mt19937             m_trng{555u};
+    // Combined positions of every species (5 floats/tree) -- feeds flower
+    // clustering around trunks and the treeInstances() accessor.
+    std::vector<float>       m_treeInst;
 
     // Flowers.
     fitzel::Shader        m_flower;

@@ -147,6 +147,18 @@ int l_playSound(lua_State* L) {
     if (h && h->playSound) h->playSound(name);
     return 0;
 }
+int l_playAudio(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (h && h->playAudio) h->playAudio(id);
+    return 0;
+}
+int l_stopAudio(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (h && h->stopAudio) h->stopAudio(id);
+    return 0;
+}
 int l_addScore(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int n = static_cast<int>(luaL_optinteger(L, 1, 1));
@@ -199,6 +211,7 @@ void ScriptSystem::installApi() {
     fn("getPos", l_getPos);           fn("setPos", l_setPos);
     fn("setVelocity", l_setVelocity); fn("applyImpulse", l_applyImpulse);
     fn("playSound", l_playSound);
+    fn("playAudio", l_playAudio);     fn("stopAudio", l_stopAudio);
     fn("addScore", l_addScore);       fn("getScore", l_getScore);
     fn("setHud", l_setHud);
 

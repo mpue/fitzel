@@ -345,6 +345,60 @@ public:
     }
 };
 
+// --- Built-in component: Fahrzel (makes this model a drivable vehicle) --------
+// Attach to a model's root entity to hook it into the vehicle system: in Play,
+// V spawns the Jolt physics car from this geometry at the entity's transform
+// and streams the chassis/wheel transforms back into the entity (and its wheel
+// children), so the actual model drives; in the editor, V test-drives it with
+// the arcade sim. `wheelId` holds the four wheel child entity ids (FL FR RL RR,
+// -1 = none: the body still drives, that wheel just doesn't animate). The
+// Vehicle panel's "Make drivable" fills everything from the model's AABBs.
+class VehicleComponent : public ComponentBase {
+public:
+    float     mass         = 1200.0f;         // chassis mass (kg)
+    float     engineTorque = 2500.0f;         // N*m
+    float     maxSteerDeg  = 32.0f;           // front-wheel steering lock
+    float     steerSpeed   = 7.0f;            // how fast the wheels reach lock
+    float     wheelRadius  = 0.42f;           // m (all four wheels)
+    float     wheelWidth   = 0.30f;
+    glm::vec3 chassisHalf{0.9f, 0.35f, 2.0f}; // collision-box half extents
+    float     halfTrack = 0.85f;              // half the left-right wheel distance
+    float     frontZ    = 1.35f;              // front axle Z (chassis frame, +Z fwd)
+    float     rearZ     = -1.35f;             // rear axle Z
+    int       forward   = 0;                  // model's nose: 0 = +Z, 1 = -Z
+    float     wheelY    = -0.35f;             // wheel-centre height (model-local Y)
+
+    // Handling (Jolt physics car): keep it planted through corners. comLower
+    // drops the centre of mass toward the wheels (1 = onto the wheel line, the
+    // biggest anti-rollover lever); the suspension + anti-roll bar resist body
+    // roll; drive picks which axle(s) get engine torque.
+    float     comLower       = 1.0f;          // 0..1 of chassisHalf.y to drop COM
+    float     suspensionFreq = 2.0f;          // spring stiffness (Hz)
+    float     suspensionDamp = 0.7f;          // spring damping (0..1)
+    float     antiRoll       = 1000.0f;       // anti-roll bar stiffness (0 = none)
+    float     grip           = 1.5f;          // tyre friction scale (1 = default)
+    int       drive          = 0;             // 0 = RWD, 1 = FWD, 2 = AWD
+
+    // Follow (chase) camera while driving: how the view trails the vehicle.
+    float camDistance   = 7.0f;               // m behind the vehicle
+    float camHeight     = 3.2f;               // m above the vehicle
+    float camSide       = 0.0f;               // m sideways (+ = vehicle's right)
+    float camLookHeight = 1.2f;               // look-at point height above it
+    float camStiffness  = 4.0f;               // follow rate (higher = snappier)
+
+    int wheelId[4] = {-1, -1, -1, -1};        // wheel child entity ids: FL FR RL RR
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<VehicleComponent>(*this);
+    }
+    const char* typeId() const override { return "vehicle"; }
+    const char* displayName() const override { return "Fahrzel"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override; // props + the wheel entity ids
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Pusher (a directional force field in Play) -----------
 // Data-authored, no scripting: while playing it pushes every dynamic body within
 // `radius` along `direction`. `continuous` = a steady force each frame (wind,
@@ -406,6 +460,34 @@ public:
     static const std::vector<Property>& properties();
     void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, radius, {0.4f, 0.9f, 0.7f, 0.8f}); // sound zone
+    }
+};
+
+// --- Built-in component: AudioSource (play a sound/music from an object) -------
+// Attach to any entity to emit audio. `playOnStart` fires it automatically when
+// Play begins (the static case); scripts can start/stop it on demand through
+// game.playAudio(id) / game.stopAudio(id). `loop` keeps it looping (music, a
+// hum) vs a one-shot. `spatial` attenuates the volume with distance from the
+// player within `radius` (a positional effect); off = a constant, non-positional
+// bed (background music). The playing voice is owned by main (audioVoices map).
+class AudioSourceComponent : public ComponentBase {
+public:
+    std::string sound;              // file under the project's sounds/ ("" = none)
+    float       volume      = 1.0f; // 0..1
+    bool        loop        = true; // loop (music/ambient) vs one-shot
+    bool        playOnStart = true; // auto-play when Play begins
+    bool        spatial     = false;// attenuate with distance vs global (music)
+    float       radius      = 15.0f;// audible distance when spatial
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<AudioSourceComponent>(*this);
+    }
+    const char* typeId() const override { return "audio_source"; }
+    const char* displayName() const override { return "Audio Source"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        if (spatial) g.sphere(c, radius, {0.5f, 0.8f, 1.0f, 0.8f}); // audible range
     }
 };
 
