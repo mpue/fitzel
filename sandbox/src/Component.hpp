@@ -374,7 +374,7 @@ public:
     // roll; drive picks which axle(s) get engine torque.
     float     comLower       = 1.0f;          // 0..1 of chassisHalf.y to drop COM
     float     suspensionFreq = 2.0f;          // spring stiffness (Hz)
-    float     suspensionDamp = 0.7f;          // spring damping (0..1)
+    float     suspensionDamp = 0.85f;         // spring damping (0..1)
     float     antiRoll       = 1000.0f;       // anti-roll bar stiffness (0 = none)
     float     grip           = 1.5f;          // tyre friction scale (1 = default)
     int       drive          = 0;             // 0 = RWD, 1 = FWD, 2 = AWD

@@ -56,6 +56,7 @@
 #include "FolderDialog.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
+#include "SkidSystem.hpp"
 #include "ScatterTool.hpp"
 #include "VehicleTool.hpp"
 #include "CarAudio.hpp"
@@ -605,6 +606,7 @@ int main(int argc, char** argv) {
         // editor state (shares the LMB) and the roadPickTerrain helper below (used
         // by every viewport brush, not just roads).
         RoadSystem road(lit, assetDb, streamer, texDir);
+        SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         bool roadDragging = false;    // dragging the selected handle
@@ -1205,6 +1207,8 @@ int main(int argc, char** argv) {
                 if (!done.insert(e.id).second) return;
                 Entity* p = (e.parent >= 0) ? document.find(e.parent) : nullptr;
                 if (p) resolveOne(*p, done);
+                // Effective visibility: off if this object or any ancestor is off.
+                e.activeInHierarchy = e.active && (!p || p->activeInHierarchy);
                 if (!p) { e.center = e.localCenter; e.rotation = e.localRotation; }
                 else {
                     const glm::mat4 w =
@@ -1550,6 +1554,8 @@ int main(int argc, char** argv) {
         addB("muted", muted);                  addF("volume", masterVolume);
         addB("startInVehicleMode", startInVehicleMode);
         addB("showCrosshair", showCrosshair);
+        addB("skidMarks", skids.enabled);      addF("skidSlip", skids.slipThresh);
+        addF("skidWidth", skids.markHalfW);    addF("skidDark", skids.opacity);
         addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
         addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
@@ -1581,6 +1587,7 @@ int main(int argc, char** argv) {
         addF("texScale", texScale);            addF("normalStrength", normalStrength);
         addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
+        addF("terrainGloss", look.gloss);
         addB("grassEnabled", veg.grassEnabled);    addF("grassDensity", veg.grassDensity);
         addF("grassRadius", veg.grassRadius);      addF("grassHeight", veg.grassHeight);
         addF("grassChaos", veg.grassChaos);
@@ -2046,7 +2053,7 @@ int main(int argc, char** argv) {
         auto spawnSceneVehicle = [&](int id) -> bool {
             Entity* e = document.find(id);
             auto* vc = e ? e->components.get<VehicleComponent>() : nullptr;
-            if (!vc || !physics) return false;
+            if (!vc || !physics || !e->activeInHierarchy) return false;
             glm::quat q = glm::quat(glm::radians(e->rotation));
             if (vc->forward == 1) // nose points -Z: chassis frame is yawed 180
                 q = q * glm::angleAxis(glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f));
@@ -2248,6 +2255,30 @@ int main(int argc, char** argv) {
         float     playCamFov = 60.0f;
         bool      playPrevEdit = false;
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
+
+        // Terrain physics collider: a static heightfield around the action. It is
+        // finite, so it follows the player/vehicle -- when the focus drifts more
+        // than a quarter-span from the field centre it is rebuilt around the focus,
+        // so driving far never runs off the collision. (~768 m span at 4 m samples.)
+        PhysicsBodyId terrainCollId = 0;
+        glm::vec2     terrainCollCenter{0.0f};
+        const int     kThfN  = 192;   // heightfield resolution (even)
+        const float   kThfSp = 4.0f;  // metres per sample
+        auto refitTerrainCollision = [&](glm::vec2 centerXZ) {
+            if (!physics) return;
+            const float ox = centerXZ.x - (kThfN * 0.5f) * kThfSp;
+            const float oz = centerXZ.y - (kThfN * 0.5f) * kThfSp;
+            std::vector<float> heights(static_cast<std::size_t>(kThfN) * kThfN);
+            for (int z = 0; z < kThfN; ++z)
+                for (int x = 0; x < kThfN; ++x)
+                    heights[z * kThfN + x] =
+                        streamer.heightAt(ox + x * kThfSp, oz + z * kThfSp);
+            if (terrainCollId) physics->removeBody(terrainCollId);
+            terrainCollId = physics->addHeightField(
+                heights.data(), kThfN, glm::vec3(ox, 0.0f, oz), kThfSp);
+            terrainCollCenter = centerXZ;
+        };
+
         auto startPlay = [&] {
             if (playMode) return;
             endEditorDrive(); // a test-drive must not leak into the Play backup
@@ -2287,18 +2318,10 @@ int main(int argc, char** argv) {
             // ground, plus a rigid body per physics-tagged entity.
             physics = std::make_unique<PhysicsWorld>();
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
-            {
-                const int   N  = 192;   // heightfield resolution (even)
-                const float sp = 4.0f;  // metres per sample (~768 m span)
-                const glm::vec3 cc = camera.position();
-                const float ox = cc.x - (N * 0.5f) * sp;
-                const float oz = cc.z - (N * 0.5f) * sp;
-                std::vector<float> heights(static_cast<std::size_t>(N) * N);
-                for (int z = 0; z < N; ++z)
-                    for (int x = 0; x < N; ++x)
-                        heights[z * N + x] = streamer.heightAt(ox + x * sp, oz + z * sp);
-                physics->addHeightField(heights.data(), N, glm::vec3(ox, 0.0f, oz), sp);
-            }
+            // Fresh world: the previous collider id is void. Build the terrain
+            // heightfield around the start position; it follows the focus below.
+            terrainCollId = 0;
+            refitTerrainCollision(glm::vec2(camera.position().x, camera.position().z));
             // Roads: a static triangle-mesh collider (from the last Build, graded
             // into the terrain), so the player and objects can walk/drive on them.
             if (road.enabled && road.collIndices().size() >= 3)
@@ -2306,10 +2329,12 @@ int main(int argc, char** argv) {
                                  static_cast<int>(road.collVerts().size()),
                                  road.collIndices().data(),
                                  static_cast<int>(road.collIndices().size()));
+            skids.clear(); // no skid marks carry over from a previous Play session
             physicsBody.clear();
             for (Entity& e : entities) {
                 const auto* pc = e.components.get<PhysicsComponent>();
-                if (!pc || e.type == EntityType::Light || e.type == EntityType::Sun)
+                if (!pc || !e.activeInHierarchy ||
+                    e.type == EntityType::Light || e.type == EntityType::Sun)
                     continue;
                 const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
                 const glm::quat q = glm::quat(glm::radians(e.rotation));
@@ -2377,10 +2402,11 @@ int main(int argc, char** argv) {
             camera.setPosition({startPos.x,
                 streamer.heightAt(startPos.x, startPos.z) + eyeHeight, startPos.z});
 
-            // Auto-start every AudioSource flagged play-on-start (music/ambient).
+            // Auto-start every AudioSource flagged play-on-start (music/ambient),
+            // unless the object (or an ancestor) is deactivated.
             for (const Entity& e : entities)
                 if (const auto* a = e.components.get<AudioSourceComponent>();
-                    a && a->playOnStart)
+                    a && a->playOnStart && e.activeInHierarchy)
                     startAudioSource(e.id);
 
             // Optionally start behind the wheel instead of the walking player.
@@ -2396,6 +2422,8 @@ int main(int argc, char** argv) {
             playMode  = false;
             vehicleMode = false;    // the physics car is gone with the world
             driveVehicleId = -1;    // the scene restore below un-drives the model
+            skids.clear();          // drop skid marks so they don't linger in the editor
+            terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
             physicsBody.clear();
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -2591,18 +2619,33 @@ int main(int argc, char** argv) {
             if (vehicleMode && playMode && physics && physics->hasVehicle()) {
                 // Physics car: WASD -> engine/steer/brake; chase camera from the
                 // chassis. The vehicle updates during the physics step below.
-                const float fwdIn = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
-                                    (input.isKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
-                const float steerIn = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
-                                      (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
-                const float brake = input.isKeyDown(GLFW_KEY_SPACE) ? 1.0f : 0.0f;
+                float fwdIn = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
+                              (input.isKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+                float steerIn = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f) -
+                                (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                float brake     = input.isKeyDown(GLFW_KEY_SPACE) ? 1.0f : 0.0f;
+                float handBrake = 0.0f;
+                // Gamepad (Xbox): RT accelerate, LT reverse, left stick steer,
+                // A / right-bumper handbrake, B foot-brake. Added to the keyboard
+                // inputs and clamped, so either can drive.
+                if (input.hasGamepad()) {
+                    fwdIn = glm::clamp(fwdIn
+                        + input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
+                        - input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER), -1.0f, 1.0f);
+                    steerIn = glm::clamp(
+                        steerIn + input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X), -1.0f, 1.0f);
+                    if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
+                        input.gamepadButton(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER))
+                        handBrake = 1.0f;
+                    if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) brake = 1.0f;
+                }
                 // Ease the steer input toward the target at the component's steer
                 // speed so the wheels don't snap to full lock in a single frame.
                 Entity* sv  = (driveVehicleId >= 0) ? document.find(driveVehicleId) : nullptr;
                 auto*   svc = sv ? sv->components.get<VehicleComponent>() : nullptr;
                 const float steerSpd = svc ? svc->steerSpeed : 7.0f;
                 physSteer += (steerIn - physSteer) * std::min(1.0f, dt * steerSpd);
-                physics->setVehicleInput(fwdIn, physSteer, brake, 0.0f);
+                physics->setVehicleInput(fwdIn, physSteer, brake, handBrake);
                 // Feed the engine sound from the chassis' horizontal speed.
                 glm::vec3 vel(0.0f);
                 physics->getLinearVelocity(physCarId, vel);
@@ -2647,9 +2690,19 @@ int main(int argc, char** argv) {
                 const bool kS = input.isKeyDown(GLFW_KEY_S);
                 const bool kA = input.isKeyDown(GLFW_KEY_A);
                 const bool kD = input.isKeyDown(GLFW_KEY_D);
-                const bool kBrake = input.isKeyDown(GLFW_KEY_SPACE);
-                const float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
-                const float steerIn  = (kA ? 1.0f : 0.0f) - (kD ? 1.0f : 0.0f);
+                bool  kBrake   = input.isKeyDown(GLFW_KEY_SPACE);
+                float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
+                float steerIn  = (kA ? 1.0f : 0.0f) - (kD ? 1.0f : 0.0f);
+                // Gamepad: RT accelerate / LT reverse; left stick steers (note this
+                // model's steerIn is left-positive, so subtract the stick); B brakes.
+                if (input.hasGamepad()) {
+                    throttle = glm::clamp(throttle
+                        + input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
+                        - input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER), -1.0f, 1.0f);
+                    steerIn = glm::clamp(
+                        steerIn - input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X), -1.0f, 1.0f);
+                    if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) kBrake = true;
+                }
 
                 const float maxSteer =
                     glm::radians(dvc ? dvc->maxSteerDeg : 32.0f);
@@ -2723,6 +2776,14 @@ int main(int argc, char** argv) {
                 // Mouse look is always active; movement is on the ground plane.
                 const glm::vec2 d = input.mouseDelta();
                 camera.processMouse(d.x, d.y);
+                // Gamepad right stick looks around (~120 deg/s at full deflection;
+                // scaled by dt into the same pixel-delta units processMouse expects).
+                if (input.hasGamepad()) {
+                    const float look = 1200.0f * dt;
+                    camera.processMouse(
+                         input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_X) * look,
+                        -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
+                }
 
                 if (playMode && physics && physics->hasCharacter()) {
                     // Physics character controller: collides with the terrain
@@ -2736,8 +2797,13 @@ int main(int argc, char** argv) {
                     if (input.isKeyDown(GLFW_KEY_S)) mv -= cf;
                     if (input.isKeyDown(GLFW_KEY_D)) mv += cr;
                     if (input.isKeyDown(GLFW_KEY_A)) mv -= cr;
-                    if (glm::length(mv) > 1e-4f) mv = glm::normalize(mv);
-                    const bool space = input.isKeyDown(GLFW_KEY_SPACE);
+                    if (input.hasGamepad()) { // left stick walks (analog)
+                        mv += cf * -input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y);
+                        mv += cr *  input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X);
+                    }
+                    if (glm::length(mv) > 1.0f) mv = glm::normalize(mv);
+                    const bool space = input.isKeyDown(GLFW_KEY_SPACE) ||
+                                       input.gamepadButton(GLFW_GAMEPAD_BUTTON_A);
                     const bool jump  = space && !prevSpace;
                     prevSpace = space;
                     bool onGround = false;
@@ -2755,7 +2821,11 @@ int main(int argc, char** argv) {
                 if (input.isKeyDown(GLFW_KEY_S)) move -= fwd;
                 if (input.isKeyDown(GLFW_KEY_D)) move += rgt;
                 if (input.isKeyDown(GLFW_KEY_A)) move -= rgt;
-                if (glm::length(move) > 1e-4f) move = glm::normalize(move);
+                if (input.hasGamepad()) { // left stick walks (analog)
+                    move += fwd * -input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y);
+                    move += rgt *  input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X);
+                }
+                if (glm::length(move) > 1.0f) move = glm::normalize(move);
 
                 // --- Move + collide against solid blocks -------------------
                 const float pr = 0.35f, stepH = 0.55f; // player radius, step height
@@ -2807,7 +2877,8 @@ int main(int argc, char** argv) {
                 const float groundEye = groundY + eyeHeight;
 
                 // Gravity + jump.
-                const bool space = input.isKeyDown(GLFW_KEY_SPACE);
+                const bool space = input.isKeyDown(GLFW_KEY_SPACE) ||
+                                   input.gamepadButton(GLFW_GAMEPAD_BUTTON_A);
                 if (space && !prevSpace && grounded) fpsVelY = 9.0f;
                 prevSpace = space;
                 fpsVelY -= 25.0f * dt;
@@ -2851,6 +2922,27 @@ int main(int argc, char** argv) {
                     if (input.isKeyDown(GLFW_KEY_D)) camera.processKeyboard(Camera::Direction::Right, dt);
                     if (input.isKeyDown(GLFW_KEY_E)) camera.processKeyboard(Camera::Direction::Up, dt);
                     if (input.isKeyDown(GLFW_KEY_Q)) camera.processKeyboard(Camera::Direction::Down, dt);
+                }
+                // Gamepad free-fly (no right-mouse needed): left stick moves in the
+                // ground plane (analog via dt scaling), bumpers raise/lower, right
+                // stick looks around.
+                if (input.hasGamepad() && !gui.wantsKeyboard()) {
+                    const float fy = -input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y);
+                    const float fx =  input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X);
+                    if (fy != 0.0f) camera.processKeyboard(
+                        fy > 0.0f ? Camera::Direction::Forward : Camera::Direction::Backward,
+                        dt * std::fabs(fy));
+                    if (fx != 0.0f) camera.processKeyboard(
+                        fx > 0.0f ? Camera::Direction::Right : Camera::Direction::Left,
+                        dt * std::fabs(fx));
+                    if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER))
+                        camera.processKeyboard(Camera::Direction::Up, dt);
+                    if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER))
+                        camera.processKeyboard(Camera::Direction::Down, dt);
+                    const float look = 1200.0f * dt;
+                    camera.processMouse(
+                         input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_X) * look,
+                        -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
                 }
             }
 
@@ -2976,7 +3068,10 @@ int main(int argc, char** argv) {
             glm::vec3 sunTint(1.0f); float sunStrength = 1.0f;
             for (const Entity& e : entities)
                 if (const auto* sc = e.components.get<SunComponent>()) {
-                    sunTint = sc->color; sunStrength = sc->intensity; break;
+                    // A deactivated Sun kills the directional light (ambient stays).
+                    if (!e.active) { sunStrength = 0.0f; }
+                    else { sunTint = sc->color; sunStrength = sc->intensity; }
+                    break;
                 }
             // HDR radiance: the sun is much brighter than 1 so tonemapping
             // produces highlights and contrast instead of a flat look.
@@ -3012,6 +3107,17 @@ int main(int argc, char** argv) {
             // --- Physics: step the world, sync dynamic bodies back to entities -
             if (playMode && physics) {
                 physics->step(dt);
+                // Keep the terrain collider centred on the action: once the focus
+                // (camera = player head / chase cam) drifts a quarter-span from the
+                // field centre, rebuild it around the focus so far driving/walking
+                // never runs off the finite heightfield and falls through.
+                {
+                    const glm::vec2 fxz(camera.position().x, camera.position().z);
+                    const float recenterAt = (kThfN * 0.5f) * kThfSp * 0.5f;
+                    if (glm::length(fxz - terrainCollCenter) > recenterAt)
+                        refitTerrainCollision(fxz);
+                }
+                skids.update(*physics); // lay tyre marks where wheels slip (post-step)
                 for (Entity& e : entities) {
                     const auto* pc = e.components.get<PhysicsComponent>();
                     if (!pc || !pc->dynamic) continue; // only dynamic bodies move
@@ -3077,7 +3183,7 @@ int main(int argc, char** argv) {
                 // Scripts and behaviours just write the entity's world transform;
                 // children follow via resolveHierarchy (below), no propagation.
                 for (Entity& e : entities)
-                    if (e.type != EntityType::Sun)
+                    if (e.type != EntityType::Sun && e.activeInHierarchy)
                         if (auto* sc = e.components.get<ScriptComponent>();
                             sc && !sc->file.empty())
                             scripts.update(e, scriptPath(sc->file), dt,
@@ -3087,9 +3193,10 @@ int main(int argc, char** argv) {
                 // Writes LOCAL rotation; the scene-graph derives world (so a
                 // spinning child of a spinning parent orbits AND spins).
                 for (Entity& e : entities)
-                    for (const auto& c : e.components.items)
-                        if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
-                            e.localRotation += sp->axis * sp->speed * dt;
+                    if (e.activeInHierarchy)
+                        for (const auto& c : e.components.items)
+                            if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
+                                e.localRotation += sp->axis * sp->speed * dt;
 
                 // Player-proximity behaviours (Collectible, Trigger). A mid-body
                 // reference point keeps low objects reachable.
@@ -3097,6 +3204,7 @@ int main(int argc, char** argv) {
                     glm::vec3 playerC = camera.position();
                     playerC.y -= eyeHeight * 0.5f;
                     for (Entity& e : entities) {
+                        if (!e.activeInHierarchy) continue;  // deactivated: inert
                         // Collectible: on reach, award points, play sound, remove
                         // (destroy is deferred to the queue processed below).
                         if (const auto* col = e.components.get<CollectibleComponent>()) {
@@ -4485,6 +4593,7 @@ int main(int argc, char** argv) {
                         ImDrawList* odl = ImGui::GetWindowDrawList();
                         for (const Entity& e : entities) {
                             if (e.type != EntityType::Empty) continue;
+                            if (!e.activeInHierarchy) continue;   // hidden group node
                             const glm::vec4 cc = vp * glm::vec4(e.center, 1.0f);
                             if (cc.w <= 1e-4f) continue;
                             const glm::vec3 n = glm::vec3(cc) / cc.w;
@@ -4515,6 +4624,7 @@ int main(int argc, char** argv) {
                         // Every AABB the ray passes through, nearest first.
                         std::vector<std::pair<float, int>> hits;
                         for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
+                            if (!entities[i].activeInHierarchy) continue; // not shown, not pickable
                             const float t = rayAABB(ro, rd, entities[i].center - entities[i].half,
                                                             entities[i].center + entities[i].half);
                             if (t >= 0.0f) hits.emplace_back(t, entities[i].id);
@@ -5032,7 +5142,13 @@ int main(int argc, char** argv) {
                     };
                     const bool renaming = (entities[i].id == renameId);
 
-                    ImGui::PushStyleColor(ImGuiCol_Text, typeColor(entities[i].type));
+                    // Dim the label when the object is effectively off (itself or an
+                    // ancestor deactivated), so a hidden subtree reads at a glance.
+                    // The Active toggle itself lives in the Inspector.
+                    ImU32 col = typeColor(entities[i].type);
+                    if (!entities[i].activeInHierarchy)
+                        col = (col & 0x00FFFFFF) | 0x66000000; // ~40% alpha
+                    ImGui::PushStyleColor(ImGuiCol_Text, col);
                     // While renaming, draw the row with a blank label and overlay an
                     // edit field, keeping the tree's arrow + indentation intact.
                     const bool open = ImGui::TreeNodeEx("##n", flags, "%s",
@@ -6224,6 +6340,17 @@ int main(int argc, char** argv) {
                 ImGui::Checkbox("Start Play in vehicle mode", &startInVehicleMode);
                 ImGui::Checkbox("Show crosshair", &showCrosshair);
 
+                ImGui::SeparatorText("Skid marks");
+                ImGui::Checkbox("Enable skid marks", &skids.enabled);
+                ImGui::BeginDisabled(!skids.enabled);
+                ImGui::SliderFloat("Slip threshold", &skids.slipThresh, 0.1f, 1.5f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How much a wheel must slip (lock/spin/drift)\n"
+                                      "before it leaves a mark (lower = more marks).");
+                ImGui::SliderFloat("Mark width", &skids.markHalfW, 0.05f, 0.6f, "%.2f m");
+                ImGui::SliderFloat("Darkness", &skids.opacity, 0.1f, 1.0f, "%.2f");
+                ImGui::EndDisabled();
+
                 // Scene vehicles: hook a model into the vehicle system with one
                 // click. The auto-setup edit goes through the undo history.
                 auto makeDrivable = [&](int rootId) -> std::string {
@@ -6260,6 +6387,7 @@ int main(int argc, char** argv) {
             // a texture are skipped, so uLayerCount is the bound count.
             terrainMat.set("uDetailScale", look.detailScale)
                       .set("uDetailStrength", look.detailStrength)
+                      .set("uTerrainSpec", look.gloss)
                       .set("uTexScale", texScale)
                       .set("uNormalStrength", normalStrength)
                       .set("uWaterLevel", waterLevel)
@@ -6315,6 +6443,9 @@ int main(int argc, char** argv) {
                 renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false,
                                 false, 1.0f, /*forceTransparent=*/roadFades);
             }
+
+            // Tyre skid marks accumulated while driving (alpha-blended, on ground).
+            skids.render(renderer);
 
             // --- Physics car: draw the chassis + wheels from Jolt transforms.
             //     (Only the primitive test car -- a driven scene model renders
@@ -6387,6 +6518,7 @@ int main(int argc, char** argv) {
             {
                 std::vector<Vertex> skinScratch;
                 for (Entity& e : entities) {
+                    if (!e.activeInHierarchy) continue;   // deactivated: don't skin
                     auto* ac = e.components.get<AnimationComponent>();
                     const auto* mc = e.components.get<ModelComponent>();
                     if (!ac || !mc) continue;
@@ -6474,6 +6606,7 @@ int main(int argc, char** argv) {
             std::vector<Material> lightMats;
             lightMats.reserve(entities.size());
             for (const Entity& b : entities) {
+                if (!b.activeInHierarchy) continue;         // deactivated: hidden
                 if (b.type == EntityType::Sun) continue;   // directional, no geometry
                 if (b.type == EntityType::Empty) continue;  // grouping node, no geometry
                 // Player-start markers are authoring aids -- hidden while playing.
@@ -6533,6 +6666,7 @@ int main(int argc, char** argv) {
             // decoupled from EntityType, so a box can glow too.
             std::vector<PointLight> pointLights;
             for (const Entity& b : entities) {
+                if (!b.activeInHierarchy) continue;          // deactivated: no light
                 const auto* lc = b.components.get<LightComponent>();
                 if (!lc) continue;
                 if (static_cast<int>(pointLights.size()) >= Renderer::kMaxPointLights) break;

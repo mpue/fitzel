@@ -150,6 +150,7 @@ uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
 uniform float uDetailStrength; // how strongly it perturbs the normal
+uniform float uTerrainSpec;    // terrain sun-specular strength (0 = matte)
 
 int selectCascade() {
     for (int i = 0; i < uCascadeCount; ++i) {
@@ -379,8 +380,9 @@ void main() {
     vec3 H = normalize(L + V);
 
     float diff      = max(dot(N, L), 0.0);
-    // Terrain: subtle. Textured surfaces (roads): rough/matte, faint broad sheen.
-    float specPower = (uColorMode == 1) ? 0.15 : 0.03;
+    // Terrain: sun-glint strength is art-directed via uTerrainSpec (0 = fully
+    // matte). Textured surfaces (roads): rough/matte, faint broad sheen.
+    float specPower = (uColorMode == 1) ? uTerrainSpec : 0.03;
     float specExp   = (uColorMode == 1) ? 48.0 : 14.0;
     float spec      = pow(max(dot(N, H), 0.0), specExp) * specPower;
 

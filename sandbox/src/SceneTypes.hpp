@@ -48,6 +48,14 @@ struct Entity {
     std::string name;
     int         id     = 0;   // stable unique id (survives deletion/reordering)
     int         parent = -1;  // parent's id, or -1 for a root object
+    // Deactivated objects (Unity's GameObject.SetActive) don't render, emit light,
+    // simulate physics, or run scripts/behaviours. `active` is the per-object toggle
+    // (serialized, edited in the Hierarchy/Inspector); `activeInHierarchy` is the
+    // derived value -- active AND every ancestor active -- filled by resolveHierarchy
+    // each frame and read by every consumer, so deactivating a parent hides its
+    // whole subtree.
+    bool        active           = true;
+    bool        activeInHierarchy = true;  // derived (not serialized)
     ComponentList components; // optional attached capabilities (deep-copied)
 
     // Scene-graph transform: localCenter/localRotation are the SOURCE OF TRUTH

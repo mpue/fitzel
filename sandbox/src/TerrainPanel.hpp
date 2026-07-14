@@ -49,6 +49,7 @@ struct TerrainLook {
     float slopeSharpness = 0.14f;
     float detailScale    = 0.35f; // micro-detail frequency
     float detailStrength = 1.5f;  // normal-perturbation strength
+    float gloss          = 0.05f; // sun-specular strength (0 = matte)
     std::vector<TerrainLayer> layers; // texture layers (empty -> flat base colour)
 };
 

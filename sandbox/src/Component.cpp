@@ -400,7 +400,7 @@ const std::vector<Property>& VehicleComponent::properties() {
         addFloat("Suspension Hz", "suspFreq",   &VehicleComponent::suspensionFreq, true, 0.5f, 5.0f,   "%.2f Hz");
         addFloat("Suspension damp","suspDamp",  &VehicleComponent::suspensionDamp, true, 0.0f, 1.0f,   "%.2f");
         addFloat("Anti-roll",     "antiRoll",   &VehicleComponent::antiRoll,       true, 0.0f, 5000.0f,"%.0f");
-        addFloat("Grip",          "grip",       &VehicleComponent::grip,           true, 0.3f, 3.0f,   "%.2f");
+        addFloat("Grip",          "grip",       &VehicleComponent::grip,           true, 0.3f, 5.0f,   "%.2f");
         addFloat("Upright assist","upright",    &VehicleComponent::uprightAssist,  true, 0.0f, 30.0f,  "%.1f");
         Property drv;
         drv.label = "Drive"; drv.key = "drive"; drv.kind = PropKind::EnumInt;

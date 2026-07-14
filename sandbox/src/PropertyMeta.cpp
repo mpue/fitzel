@@ -34,6 +34,13 @@ const std::vector<Property>& entityProperties() {
         name.typeMask = ALLTYPES; name.field = at(&Entity::name);
         p.push_back(std::move(name));
 
+        // Active toggle: deactivated objects are hidden and stop simulating. Drives
+        // save/load and the Inspector checkbox; the Hierarchy has its own per-row box.
+        Property active;
+        active.label = "Active"; active.key = "active"; active.kind = PropKind::Bool;
+        active.typeMask = ALLTYPES; active.field = at(&Entity::active);
+        p.push_back(std::move(active));
+
         // Position/Rotation edit the LOCAL transform (relative to the parent);
         // world is derived by the scene-graph resolve. Serialized under the same
         // keys, so a saved scene stores local transforms.

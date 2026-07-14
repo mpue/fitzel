@@ -46,7 +46,7 @@ public:
     struct VehicleTuning {
         float comLower       = 1.0f;    // 0..1 of chassisHalf.y to drop the COM
         float suspensionFreq = 2.0f;    // suspension spring stiffness (Hz)
-        float suspensionDamp = 0.7f;    // suspension spring damping (0..1)
+        float suspensionDamp = 0.85f;   // suspension spring damping (0..1)
         float antiRoll       = 1000.0f; // anti-roll bar stiffness (0 = none)
         int   drive          = 0;       // 0 = RWD, 1 = FWD, 2 = AWD
         float grip           = 1.5f;    // tyre friction scale (1 = Jolt default)
@@ -71,6 +71,14 @@ public:
     void setVehicleInput(float forward, float right, float brake, float handBrake);
     // World transform of wheel `i` (0 FL, 1 FR, 2 RL, 3 RR). False if no vehicle.
     bool getWheelTransform(int wheel, glm::vec3& pos, glm::quat& rot) const;
+    // Ground-contact + slip state of wheel `i`, valid only right after step().
+    // `onGround` is false when the wheel is airborne (pos/normal/lateral then
+    // undefined). `longSlip` is the longitudinal slip ratio (0 = rolling, ~1 =
+    // locked/spinning); `latSlip` is the lateral slip angle in radians. Used to
+    // lay tyre skid marks. Returns false if there is no vehicle / bad index.
+    bool getWheelContact(int wheel, glm::vec3& pos, glm::vec3& normal,
+                         glm::vec3& lateral, float& longSlip, float& latSlip,
+                         bool& onGround) const;
     bool hasVehicle() const;
 
     // Convex-hull collider from a point cloud (>= 4 points) given in the body's

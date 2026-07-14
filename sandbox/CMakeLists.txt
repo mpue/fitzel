@@ -12,6 +12,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Component.cpp
     src/VegetationSystem.cpp
     src/RoadSystem.cpp
+    src/SkidSystem.cpp
     src/CarAudio.cpp)
 
 # Editor-only sources: panels, tools and dialogs reachable only from the editor

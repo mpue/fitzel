@@ -193,6 +193,10 @@ void drawPanel(const PanelState& s) {
         ImGui::SeparatorText("Surface detail");
         ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 1.0f);
         ImGui::SliderFloat("Detail bump",     &s.look.detailStrength, 0.0f, 4.0f);
+        ImGui::SliderFloat("Gloss",           &s.look.gloss, 0.0f, 0.4f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Strength of the sun glint on the terrain\n"
+                              "(0 = fully matte).");
     }
     ImGui::End();
 }

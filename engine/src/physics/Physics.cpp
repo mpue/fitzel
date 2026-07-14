@@ -238,7 +238,7 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
         w->mRadius              = wheelRadius;
         w->mWidth               = wheelWidth;
         w->mSuspensionMinLength = 0.3f;
-        w->mSuspensionMaxLength = 0.5f;
+        w->mSuspensionMaxLength = 0.6f;
         // A stiffer, well-damped suspension resists body roll and settles the
         // weight transfer instead of letting it pitch the car over.
         w->mSuspensionSpring.mFrequency = glm::max(tuning.suspensionFreq, 0.1f);
@@ -250,13 +250,13 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
         w->mLongitudinalFriction.Clear();
         w->mLongitudinalFriction.Reserve(3);
         w->mLongitudinalFriction.AddPoint(0.0f, 0.0f);
-        w->mLongitudinalFriction.AddPoint(0.06f, 1.2f * g);
-        w->mLongitudinalFriction.AddPoint(0.2f,  1.0f * g);
+        w->mLongitudinalFriction.AddPoint(0.06f, 1.6f * g);
+        w->mLongitudinalFriction.AddPoint(0.2f,  1.4f * g);
         w->mLateralFriction.Clear();
         w->mLateralFriction.Reserve(3);
         w->mLateralFriction.AddPoint(0.0f,  0.0f);
-        w->mLateralFriction.AddPoint(3.0f,  1.2f * g);
-        w->mLateralFriction.AddPoint(20.0f, 1.0f * g);
+        w->mLateralFriction.AddPoint(3.0f,  1.4f * g);
+        w->mLateralFriction.AddPoint(20.0f, 1.2f * g);
         w->mMaxSteerAngle       = wp[i].front ? JPH::DegreesToRadians(maxSteerDeg) : 0.0f;
         w->mMaxHandBrakeTorque  = wp[i].front ? 0.0f : 4000.0f; // handbrake locks rear
         vc.mWheels.push_back(w);
@@ -323,6 +323,25 @@ bool PhysicsWorld::getWheelTransform(int wheel, glm::vec3& pos, glm::quat& rot) 
         static_cast<JPH::uint>(wheel), JPH::Vec3::sAxisX(), JPH::Vec3::sAxisY());
     pos = toGlm(JPH::Vec3(wt.GetTranslation()));
     rot = toGlm(wt.GetQuaternion());
+    return true;
+}
+
+bool PhysicsWorld::getWheelContact(int wheel, glm::vec3& pos, glm::vec3& normal,
+                                   glm::vec3& lateral, float& longSlip,
+                                   float& latSlip, bool& onGround) const {
+    if (!m_impl->vehicle || wheel < 0 || wheel >= 4) return false;
+    JPH::VehicleConstraint* con =
+        static_cast<JPH::VehicleConstraint*>(m_impl->vehicle.GetPtr());
+    const auto* w = static_cast<const JPH::WheelWV*>(
+        con->GetWheel(static_cast<JPH::uint>(wheel)));
+    onGround = w->HasContact();
+    longSlip = w->mLongitudinalSlip;
+    latSlip  = w->mLateralSlip;
+    if (onGround) {
+        pos     = toGlm(JPH::Vec3(w->GetContactPosition()));
+        normal  = toGlm(w->GetContactNormal());
+        lateral = toGlm(w->GetContactLateral());
+    }
     return true;
 }
 
