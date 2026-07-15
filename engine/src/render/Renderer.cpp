@@ -283,6 +283,19 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             s->setVec3("uPointColor[" + idx + "]", m_pointLights[i].color);
             s->setFloat("uPointRange[" + idx + "]", m_pointLights[i].range);
         }
+
+        // Spot lights (cone lights, e.g. headlights). Unshadowed.
+        const int sc = std::min(static_cast<int>(m_spotLights.size()), kMaxSpotLights);
+        s->setInt("uSpotCount", sc);
+        for (int i = 0; i < sc; ++i) {
+            const std::string idx = std::to_string(i);
+            s->setVec3("uSpotPos[" + idx + "]", m_spotLights[i].position);
+            s->setVec3("uSpotDir[" + idx + "]", m_spotLights[i].direction);
+            s->setVec3("uSpotColor[" + idx + "]", m_spotLights[i].color);
+            s->setFloat("uSpotRange[" + idx + "]", m_spotLights[i].range);
+            s->setFloat("uSpotCosInner[" + idx + "]", m_spotLights[i].cosInner);
+            s->setFloat("uSpotCosOuter[" + idx + "]", m_spotLights[i].cosOuter);
+        }
         // Point-shadow cubemaps. Always give ALL four cube samplers their own
         // units (12..15) -- even the unused ones -- so none is left aliasing
         // unit 0, where uTexture (a sampler2D) lives. A samplerCube and a

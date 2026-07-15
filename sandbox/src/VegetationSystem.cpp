@@ -330,7 +330,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     return regenerated;
 }
 
-void VegetationSystem::drawGrass(const VegDrawContext& c) {
+void VegetationSystem::drawGrass(const FrameContext& c) {
     const bool drawProc    = grassEnabled && grassCount > 0;
     const bool drawPainted = m_paintedGrass.count() > 0;
     if (!drawProc && !drawPainted) return;
@@ -755,7 +755,7 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     glEnable(GL_CULL_FACE);
 }
 
-void VegetationSystem::drawTrees(const VegDrawContext& c) {
+void VegetationSystem::drawTrees(const FrameContext& c) {
     if (!treeEnabled || treeCount == 0) return;
     glDisable(GL_CULL_FACE);
     m_tree.bind();
@@ -799,7 +799,7 @@ void VegetationSystem::drawTrees(const VegDrawContext& c) {
     glEnable(GL_CULL_FACE);
 }
 
-void VegetationSystem::drawTreeBillboards(const VegDrawContext& c,
+void VegetationSystem::drawTreeBillboards(const FrameContext& c,
                                           const glm::vec3& camRight) {
     if (!treeEnabled || treeCount == 0) return;
     glDisable(GL_CULL_FACE);
@@ -1200,7 +1200,7 @@ void VegetationSystem::eraseFlower(glm::vec2 c, float radius) {
     }
 }
 
-void VegetationSystem::drawFlowers(const VegDrawContext& c) {
+void VegetationSystem::drawFlowers(const FrameContext& c) {
     if (!flowerEnabled || flowerCount <= 0) return;
     glDisable(GL_CULL_FACE);
     m_flower.bind();

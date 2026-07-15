@@ -6,10 +6,13 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <nlohmann/json_fwd.hpp>
 
 #include <fitzel/graphics/Material.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Texture.hpp>
+
+#include "RoadBridge.hpp"
 
 namespace fitzel {
 class Shader;
@@ -27,6 +30,10 @@ struct TerrainEditField;
 // collider on that graded profile, so the finished road is cleanly drivable. The
 // control-point editor (viewport handles + panel) stays in main and drives
 // roadPts directly.
+//
+// A gap the road should fly over rather than be banked across is marked by the
+// user: `bridges` names pairs of control points to carry on a deck, and Build
+// leaves the terrain between them alone (see RoadBridge.hpp).
 class RoadSystem {
 public:
     RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
@@ -56,6 +63,17 @@ public:
     // texture dirs, see refreshTextures).
     void setSurface(const std::string& file);
 
+    // --- Scene persistence ---------------------------------------------------
+    // The road's whole scene state: control points, build params, surface and
+    // bridges. Not the meshes or the graded corridor -- those are re-derived on
+    // load (the corridor rides along in the scene's terrain edits), exactly as
+    // Build derives them, so there is one code path that decides what a road looks
+    // like rather than two that can disagree.
+    //
+    // Runtime, not editor: the player loads scenes too.
+    void save(nlohmann::json& j) const;
+    void load(const nlohmann::json& j);
+
     // Rebuild the selectable-surface list from the built-in content texture dir
     // plus the open project folder (`projectDir`, scanned recursively; pass "" for
     // none). Call it whenever the project changes so project-local road textures
@@ -67,6 +85,11 @@ public:
     fitzel::Material&   material()   { return m_mat; }
     int                 verts() const { return m_verts; }
     bool                built() const { return m_verts > 0; }
+    // The bridge decks, as one concrete mesh (drawn separately from the asphalt
+    // ribbon). Their collision is already merged into collVerts/collIndices.
+    const fitzel::Mesh& bridgeMesh()     const { return m_bridgeMesh; }
+    fitzel::Material&   bridgeMaterial()       { return m_bridgeMat; }
+    bool                hasBridges()     const { return m_bridgeVerts > 0; }
     const std::vector<glm::vec3>&     collVerts()   const { return m_collVerts; }
     const std::vector<std::uint32_t>& collIndices() const { return m_collIndices; }
     const std::vector<glm::vec2>&     centerline()  const { return m_centerline; }
@@ -85,12 +108,41 @@ public:
     std::vector<std::string> texFiles;         // selectable diffuse textures (display names)
     int                      texSel = 0;
 
+    // A stretch of road the user has asked to be carried on a bridge, named by the
+    // two control points at its ends (indices into roadPts, either order). Points
+    // move and vanish under the editor, so these are validated on every build --
+    // and main fixes them up when a point is deleted.
+    struct BridgeSpec {
+        int a, b;
+    };
+    std::vector<BridgeSpec> bridges;
+    roadbridge::Params      bridgeStyle; // deck look, shared by all of them
+
 private:
+    // The sampled centreline plus everything derived from the *base* (procedural)
+    // terrain under it. Measuring against the base rather than the current ground
+    // is what makes a rebuild idempotent: the corridor a previous Build graded in
+    // is ignored, so the road resolves to the same profile -- and the same bridge
+    // spans -- however many times it is built.
+    struct Layout {
+        std::vector<glm::vec2>        center;
+        std::vector<float>            prof;   // smoothed road surface height
+        std::vector<float>            ground; // bare terrain under each sample
+        std::vector<float>            gradeW; // 1 = grade ground to road, 0 = bridged
+        std::vector<roadbridge::Span> spans;  // sample runs carried by a deck
+    };
+    Layout layout() const;
+
     // Densely sample the Catmull-Rom centreline through roadPts (world XZ).
     std::vector<glm::vec2> sampleCenterlineXZ() const;
     // Loft the ribbon mesh + collider + veg centreline from the sampled centre and
     // its per-sample surface heights (already lifted onto the graded profile).
     void loft(const std::vector<glm::vec2>& center, const std::vector<float>& height);
+    // Build the deck mesh for `layout`'s spans and merge it into the collider.
+    // Must run after loft(), which owns (and clears) the collider arrays.
+    void buildBridges(const Layout& layout);
+    // Drop every mesh, collider and centreline (a road of fewer than 2 points).
+    void clearGeometry();
 
     fitzel::AssetDatabase&   m_assetDb;
     fitzel::TerrainStreamer& m_streamer;
@@ -101,7 +153,11 @@ private:
     fitzel::Material         m_mat;
     fitzel::Mesh             m_mesh;
     int                      m_verts = 0;
-    std::vector<glm::vec3>       m_collVerts;   // road geometry for physics
+    std::shared_ptr<fitzel::Texture> m_bridgeTex;
+    fitzel::Material         m_bridgeMat;
+    fitzel::Mesh             m_bridgeMesh;
+    int                      m_bridgeVerts = 0;
+    std::vector<glm::vec3>       m_collVerts;   // road + bridge geometry for physics
     std::vector<std::uint32_t>   m_collIndices;
     std::vector<glm::vec2>       m_centerline;  // sampled centre (for veg masking)
 };

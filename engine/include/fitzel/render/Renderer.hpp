@@ -34,6 +34,19 @@ struct PointLight {
     float     shadowBias  = 0.003f; // normalized depth bias for the shadow cube
 };
 
+// A world-space spot light: a cone shining along `direction`. `color` is HDR
+// radiance (already scaled by intensity). Fed to lit-shader surfaces; unshadowed
+// (headlights and the like don't need it). cosInner/cosOuter are the cosines of
+// the inner (full-bright) and outer (fade-to-zero) cone half-angles.
+struct SpotLight {
+    glm::vec3 position{0.0f};
+    glm::vec3 direction{0.0f, 0.0f, -1.0f}; // normalized cone axis
+    glm::vec3 color{1.0f};
+    float     range    = 20.0f;
+    float     cosInner = 0.95f;
+    float     cosOuter = 0.86f;
+};
+
 // Atmospheric fog: exponential height fog + aerial perspective. `color` is the
 // distance haze (match it to the sky horizon); `sunColor` tints the in-scatter
 // when looking toward the sun.
@@ -75,6 +88,7 @@ public:
     void setViewport(int width, int height);
 
     static constexpr int kMaxPointLights = 16;
+    static constexpr int kMaxSpotLights  = 8;
 
     void begin(const Camera& camera, float aspect, const DirectionalLight& light);
     void setFog(const Fog& fog) { m_fog = fog; }
@@ -87,6 +101,8 @@ public:
     }
     // Point lights for this frame (applied to lit-shader surfaces in every pass).
     void setPointLights(const std::vector<PointLight>& lights) { m_pointLights = lights; }
+    // Spot lights for this frame (applied to lit-shader surfaces in every pass).
+    void setSpotLights(const std::vector<SpotLight>& lights) { m_spotLights = lights; }
     // Render omnidirectional shadow cubemaps for the shadow-casting point lights
     // (up to kMaxShadowedPoints). Call after submit() and before renderScene().
     void preparePointShadows();
@@ -165,6 +181,7 @@ private:
     float            m_aspect = 1.0f;
     DirectionalLight m_light;
     std::vector<PointLight> m_pointLights;
+    std::vector<SpotLight>  m_spotLights;
     Fog              m_fog;
     const EnvironmentIBL* m_ibl = nullptr;
     bool             m_iblEnabled  = false;

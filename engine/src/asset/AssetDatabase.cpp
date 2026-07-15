@@ -40,7 +40,13 @@ const char* sourceKindName(AssetSourceKind k) {
 
 // Load a model file, routing by extension: .dae -> Collada (assimp), else glTF.
 ModelData loadModelFile(const fs::path& p) {
-    return lowerExt(p) == "dae" ? loadCollada(p.string()) : loadGltf(p.string());
+    const std::string ext = lowerExt(p);
+    if (ext == "dae") return loadCollada(p.string());
+    // FBX is where rigged characters arrive, so it goes through the assimp loader
+    // that extracts a skeleton (and falls back to static output when there is no
+    // animation in the file).
+    if (ext == "fbx") return loadSkinnedModel(p.string());
+    return loadGltf(p.string());
 }
 
 // Canonicalise a path for use as a stable map key / prefix comparison. Tolerates

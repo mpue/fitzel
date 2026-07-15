@@ -12,6 +12,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Component.cpp
     src/VegetationSystem.cpp
     src/RoadSystem.cpp
+    src/RoadBridge.cpp
+    src/RainRenderer.cpp
+    src/SpraySystem.cpp
     src/SkidSystem.cpp
     src/CarAudio.cpp)
 
@@ -20,6 +23,8 @@ set(SANDBOX_RUNTIME_SOURCES
 # by both -- the runtime render uses its TerrainLook/TerrainLayer structs -- but
 # TerrainPanel.cpp, the panel widget, is editor-only.)
 set(SANDBOX_EDITOR_SOURCES
+    src/AssetDrop.cpp
+    src/RoadPanel.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp
     src/PaintPanel.cpp

@@ -4,8 +4,11 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <sstream>
 #include <system_error>
 #include <unordered_set>
+
+#include <nlohmann/json.hpp>
 
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/graphics/Shader.hpp>
@@ -31,6 +34,16 @@ bool isRoadAlbedo(const std::string& filename) {
     return true;
 }
 
+// Low-pass a longitudinal profile in place, ends held (anchored to the terrain).
+void smooth(std::vector<float>& prof, int passes) {
+    std::vector<float> tmp = prof;
+    for (int p = 0; p < passes; ++p) {
+        for (std::size_t i = 1; i + 1 < prof.size(); ++i)
+            tmp[i] = 0.5f * prof[i] + 0.25f * (prof[i - 1] + prof[i + 1]);
+        std::swap(prof, tmp);
+    }
+}
+
 // Squared distance from point p to segment [a,b], plus the projection param t.
 float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
     const glm::vec2 ab = b - a;
@@ -43,7 +56,8 @@ float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
 
 RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                        fitzel::TerrainStreamer& streamer, const std::string& texDir)
-    : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit) {
+    : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit),
+      m_bridgeMat(lit) {
     m_mat.set("uColorMode", 2);
     // Populate the picker from the built-in content textures (no project yet).
     refreshTextures(std::string());
@@ -53,6 +67,14 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
     if (m_tex) m_mat.setTexture("uTexture", *m_tex, 0);
     for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
         if (texFiles[i].find("asphalt") != std::string::npos) texSel = i;
+
+    // Bridges are cast concrete, and not user-selectable: a deck is structure, not
+    // surface. uRoadFade is pinned off here on purpose -- the road turns the shared
+    // lit program's edge fade on, and a material that never writes a uniform
+    // inherits whatever the last one left in it.
+    m_bridgeMat.set("uColorMode", 2).set("uRoadFade", 0.0f);
+    m_bridgeTex = m_assetDb.loadTexture(m_texDir + "/cracked_concrete_02_diff_4k.jpg");
+    if (m_bridgeTex) m_bridgeMat.setTexture("uTexture", *m_bridgeTex, 0);
 }
 
 void RoadSystem::refreshTextures(const std::string& projectDir) {
@@ -111,6 +133,87 @@ void RoadSystem::setSurface(const std::string& file) {
     if (auto t = m_assetDb.loadTexture(path)) {
         m_tex = t;
         m_mat.setTexture("uTexture", *m_tex, 0);
+    }
+}
+
+void RoadSystem::save(nlohmann::json& j) const {
+    // Control points as a compact "x z x z ..." blob rather than an array of pairs:
+    // a road is hundreds of points and this keeps the scene file readable.
+    std::ostringstream rs;
+    rs.precision(7);
+    for (const glm::vec2& p : roadPts) rs << p.x << ' ' << p.y << ' ';
+
+    nlohmann::json bridges_ = nlohmann::json::array();
+    for (const BridgeSpec& b : bridges) bridges_.push_back({b.a, b.b});
+
+    j = {
+        {"points",    rs.str()},
+        {"closed",    closed},
+        {"enabled",   enabled},
+        {"width",     width},
+        {"texTile",   texTile},
+        {"fadeWidth", fadeWidth},
+        {"grade",     grade},
+        {"shoulder",  shoulder},
+        // The surface goes by name, not index: the texture list is rebuilt from
+        // disk each run, so an index would point somewhere else next time.
+        {"surface",   (texSel >= 0 && texSel < static_cast<int>(texFiles.size()))
+                          ? texFiles[texSel] : std::string()},
+        {"bridges",   bridges_},
+        {"bridgeStyle", {
+            {"deckThick",   bridgeStyle.deckThick},
+            {"overhang",    bridgeStyle.overhang},
+            {"railHeight",  bridgeStyle.railHeight},
+            {"railWidth",   bridgeStyle.railWidth},
+            {"pierSpacing", bridgeStyle.pierSpacing},
+            {"pierWidth",   bridgeStyle.pierWidth},
+            {"abutment",    bridgeStyle.abutment},
+        }},
+    };
+}
+
+void RoadSystem::load(const nlohmann::json& j) {
+    // Every field defaults to what a fresh road has, so a scene saved before a
+    // param existed loads as the road it was built as.
+    roadPts.clear();
+    if (j.contains("points") && j["points"].is_string()) {
+        std::istringstream rs(j["points"].get<std::string>());
+        glm::vec2 p;
+        while (rs >> p.x >> p.y) roadPts.push_back(p);
+    }
+    closed    = j.value("closed",    false);
+    enabled   = j.value("enabled",   true);
+    width     = j.value("width",     5.0f);
+    texTile   = j.value("texTile",   8.0f);
+    fadeWidth = j.value("fadeWidth", 0.0f);
+    grade     = j.value("grade",     0.55f);
+    shoulder  = j.value("shoulder",  3.0f);
+
+    const std::string surf = j.value("surface", std::string());
+    if (!surf.empty()) {
+        setSurface(surf);
+        for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
+            if (texFiles[i] == surf) texSel = i;
+    }
+
+    // Bridges are absent from scenes saved before they existed -- those roads
+    // simply have none, which is exactly how they were built.
+    bridges.clear();
+    if (j.contains("bridges") && j["bridges"].is_array())
+        for (const auto& b : j["bridges"])
+            if (b.is_array() && b.size() == 2)
+                bridges.push_back({b[0].get<int>(), b[1].get<int>()});
+
+    const roadbridge::Params bd;
+    bridgeStyle = bd;
+    if (const auto st = j.find("bridgeStyle"); st != j.end()) {
+        bridgeStyle.deckThick   = st->value("deckThick",   bd.deckThick);
+        bridgeStyle.overhang    = st->value("overhang",    bd.overhang);
+        bridgeStyle.railHeight  = st->value("railHeight",  bd.railHeight);
+        bridgeStyle.railWidth   = st->value("railWidth",   bd.railWidth);
+        bridgeStyle.pierSpacing = st->value("pierSpacing", bd.pierSpacing);
+        bridgeStyle.pierWidth   = st->value("pierWidth",   bd.pierWidth);
+        bridgeStyle.abutment    = st->value("abutment",    bd.abutment);
     }
 }
 
@@ -184,20 +287,98 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     m_collIndices = md.indices;
 }
 
+void RoadSystem::buildBridges(const Layout& lo) {
+    fitzel::MeshData md;
+    roadbridge::build(lo.center, lo.prof, lo.ground, lo.spans, width, bridgeStyle, md);
+    m_bridgeVerts = static_cast<int>(md.vertices.size());
+    if (md.indices.empty()) { m_bridgeMesh = fitzel::Mesh(); return; }
+    m_bridgeMesh = fitzel::Mesh::create(md);
+
+    // Bridges collide as part of the one static road mesh: the deck because it is
+    // the only ground there is up here, the parapets because they are what keep a
+    // car from driving off the side.
+    const auto base = static_cast<std::uint32_t>(m_collVerts.size());
+    for (const fitzel::Vertex& vtx : md.vertices) m_collVerts.push_back(vtx.position);
+    m_collIndices.reserve(m_collIndices.size() + md.indices.size());
+    for (std::uint32_t idx : md.indices) m_collIndices.push_back(base + idx);
+}
+
+RoadSystem::Layout RoadSystem::layout() const {
+    Layout lo;
+    lo.center = sampleCenterlineXZ();
+    if (lo.center.size() < 2) return lo;
+
+    const fitzel::TerrainSettings& s = m_streamer.settings();
+
+    // Longitudinal profile: start from the *base* (procedural) terrain height under
+    // each sample, then low-pass it so the road grades smoothly instead of
+    // following every bump. Anchor the ends to the ground so the road meets the
+    // terrain where it begins/ends. Working from the base makes rebuilds idempotent
+    // (independent of any corridor already baked in), and gives the piers ground to
+    // stand on that doesn't move when the road is rebuilt.
+    lo.ground.resize(lo.center.size());
+    for (std::size_t i = 0; i < lo.center.size(); ++i)
+        lo.ground[i] = terrainBaseHeight(s, lo.center[i].x, lo.center[i].y);
+
+    lo.prof = lo.ground;
+    smooth(lo.prof, 3 + static_cast<int>(grade * 30.0f));
+
+    // Each bridge the user asked for, as a run of samples. Control point i is
+    // sample i*kSpanSub (every span contributes kSpanSub samples and starts on its
+    // own point). Specs naming points that have since been deleted are skipped
+    // rather than clamped: silently bridging somewhere else is worse than nothing.
+    // A bridge always runs the low-to-high way round, so on a closed loop one drawn
+    // across the seam takes the long way instead of the short one.
+    std::vector<roadbridge::Span> cores;
+    const int pts  = static_cast<int>(roadPts.size());
+    const int last = static_cast<int>(lo.center.size()) - 1;
+    for (const BridgeSpec& spec : bridges) {
+        const int p0 = std::min(spec.a, spec.b), p1 = std::max(spec.a, spec.b);
+        if (p0 < 0 || p1 >= pts || p0 == p1) continue;
+        const int sa = p0 * kSpanSub, sb = p1 * kSpanSub;
+        if (sa >= last || sb > last) continue;
+        cores.push_back({sa, sb});
+    }
+
+    // Fly the road along each bridge and work out where the terrain must stop being
+    // pulled up to it.
+    lo.spans = roadbridge::plan(lo.center, lo.prof, cores, bridgeStyle, lo.gradeW);
+    // The chords meet the road at an angle; round those two kinks off so a bridge
+    // entrance isn't a bump. A straight chord is a fixed point of this filter, so
+    // only the tangents move.
+    if (!lo.spans.empty()) smooth(lo.prof, 4);
+    return lo;
+}
+
+void RoadSystem::clearGeometry() {
+    m_mesh = fitzel::Mesh(); m_verts = 0;
+    m_bridgeMesh = fitzel::Mesh(); m_bridgeVerts = 0;
+    m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
+}
+
 void RoadSystem::rebuildMesh() {
     needsBuild = false;
-    const std::vector<glm::vec2> center = sampleCenterlineXZ();
-    if (center.size() < 2) {
-        m_mesh = fitzel::Mesh(); m_verts = 0;
-        m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
-        return;
-    }
-    // Drape on the current terrain (which already holds the graded corridor after
-    // a build/scene-load), lifted a touch so the ribbon reads above the ground.
-    std::vector<float> h(center.size());
-    for (std::size_t i = 0; i < center.size(); ++i)
-        h[i] = m_streamer.heightAt(center[i].x, center[i].y) + 0.06f;
-    loft(center, h);
+    const Layout lo = layout();
+    if (lo.center.size() < 2) { clearGeometry(); return; }
+
+    // Off a deck, drape on the current terrain (which already holds the graded
+    // corridor after a build/scene-load) so the road follows ground that has been
+    // sculpted or re-generated since. On a deck, the road stays on its profile:
+    // the terrain under a span is untouched and still ramping across the abutment,
+    // so draping there would sink the road into the gap it is supposed to cross.
+    // The two agree at a span's ends, where the grading has brought the ground all
+    // the way up to the road -- so the seam is invisible.
+    std::vector<char> onDeck(lo.center.size(), 0);
+    for (const roadbridge::Span& sp : lo.spans)
+        for (int i = sp.begin; i <= sp.end; ++i) onDeck[i] = 1;
+
+    std::vector<float> h(lo.center.size());
+    for (std::size_t i = 0; i < lo.center.size(); ++i)
+        h[i] = (onDeck[i] ? lo.prof[i]
+                          : m_streamer.heightAt(lo.center[i].x, lo.center[i].y))
+               + 0.06f; // lifted a touch so the ribbon reads above the ground
+    loft(lo.center, h);
+    buildBridges(lo);
 }
 
 bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
@@ -205,44 +386,29 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     needsBuild = false;
     vegDirty   = true; // vegetation must re-evaluate against the new road
 
-    const std::vector<glm::vec2> center = sampleCenterlineXZ();
-    if (center.size() < 2) {
-        m_mesh = fitzel::Mesh(); m_verts = 0;
-        m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
-        return false;
-    }
+    // 1) The road's profile over the bare terrain, and the gaps it has to span.
+    const Layout L = layout();
+    if (L.center.size() < 2) { clearGeometry(); return false; }
 
     const fitzel::TerrainSettings& s = m_streamer.settings();
 
-    // 1) Longitudinal profile: start from the *base* (procedural) terrain height
-    //    under each sample, then low-pass it so the road grades smoothly instead of
-    //    following every bump. Anchor the ends to the ground so the road meets the
-    //    terrain where it begins/ends. Working from the base makes rebuilds
-    //    idempotent (independent of any corridor already baked in).
-    std::vector<float> prof(center.size());
-    for (std::size_t i = 0; i < center.size(); ++i)
-        prof[i] = terrainBaseHeight(s, center[i].x, center[i].y);
-    const int passes = 3 + static_cast<int>(grade * 30.0f);
-    std::vector<float> tmp = prof;
-    for (int p = 0; p < passes; ++p) {
-        for (std::size_t i = 1; i + 1 < prof.size(); ++i)
-            tmp[i] = 0.5f * prof[i] + 0.25f * (prof[i - 1] + prof[i + 1]);
-        std::swap(prof, tmp); // ends stay fixed (anchored to the terrain)
-    }
-
-    // 2) Loft the ribbon on the graded profile (lifted a hair above the surface).
-    std::vector<float> surf(prof.size());
-    for (std::size_t i = 0; i < prof.size(); ++i) surf[i] = prof[i] + 0.06f;
-    loft(center, surf);
+    // 2) Loft the ribbon on the graded profile (lifted a hair above the surface),
+    //    then hang the decks under wherever it crosses a gap.
+    std::vector<float> surf(L.prof.size());
+    for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
+    loft(L.center, surf);
+    buildBridges(L);
 
     // 3) Grade a corridor into the terrain edit field: cells within half-width get
     //    the road height; a `shoulder` band eases back to the natural ground. All
     //    deltas are stored relative to the base terrain, so the corridor is fully
     //    owned/overwritten here (repeatable, and it flattens whatever was under it).
+    //    Under a bridge the grading is weighted out entirely -- the ground keeps its
+    //    natural shape and the deck does the crossing.
     const float half   = width * 0.5f;
     const float reach  = half + shoulder;
-    glm::vec2 lo(center[0]), hi(center[0]);
-    for (const glm::vec2& c : center) {
+    glm::vec2 lo(L.center[0]), hi(L.center[0]);
+    for (const glm::vec2& c : L.center) {
         lo = glm::min(lo, c); hi = glm::max(hi, c);
     }
     lo -= glm::vec2(reach); hi += glm::vec2(reach);
@@ -255,14 +421,16 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     for (int iz = iz0; iz <= iz1; ++iz) {
         for (int ix = ix0; ix <= ix1; ++ix) {
             const glm::vec2 w(ix * cell, iz * cell);
-            // Nearest point on the centreline + the road height there.
-            float bestD2 = reach * reach + 1.0f, roadH = 0.0f;
-            for (std::size_t k = 0; k + 1 < center.size(); ++k) {
+            // Nearest point on the centreline + the road height and grading weight
+            // there.
+            float bestD2 = reach * reach + 1.0f, roadH = 0.0f, gradeW = 1.0f;
+            for (std::size_t k = 0; k + 1 < L.center.size(); ++k) {
                 float t;
-                const float d2 = distToSeg(w, center[k], center[k + 1], t);
+                const float d2 = distToSeg(w, L.center[k], L.center[k + 1], t);
                 if (d2 < bestD2) {
                     bestD2 = d2;
-                    roadH  = glm::mix(prof[k], prof[k + 1], t);
+                    roadH  = glm::mix(L.prof[k], L.prof[k + 1], t);
+                    gradeW = glm::mix(L.gradeW[k], L.gradeW[k + 1], t);
                 }
             }
             const float d = std::sqrt(bestD2);
@@ -273,7 +441,15 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
                 const float e = glm::clamp((d - half) / shoulder, 0.0f, 1.0f);
                 target = glm::mix(roadH, base, e * e * (3.0f - 2.0f * e));
             }
-            edit.deltas[fitzel::TerrainEditField::cellKey(ix, iz)] = target - base;
+            // Ease the whole corridor back to the bare ground across a bridge's
+            // abutments, and let it go completely under the span itself.
+            target = glm::mix(base, target, gradeW);
+            const std::int64_t key = fitzel::TerrainEditField::cellKey(ix, iz);
+            // Drop the cell rather than storing a zero, so a stretch that used to be
+            // an embankment and is now bridged gives its ground back (and the map
+            // doesn't fill up with no-ops under every span).
+            if (std::fabs(target - base) < 1e-4f) edit.deltas.erase(key);
+            else                                  edit.deltas[key] = target - base;
         }
     }
 

@@ -122,10 +122,13 @@ public:
     bool getTransform(PhysicsBodyId id, glm::vec3& pos, glm::quat& rot) const;
     // World-space linear velocity (m/s) of a body. False if the id is unknown.
     bool getLinearVelocity(PhysicsBodyId id, glm::vec3& out) const;
+    // World-space angular velocity (rad/s, axis*speed) of a body. False if unknown.
+    bool getAngularVelocity(PhysicsBodyId id, glm::vec3& out) const;
 
     // Runtime edits to a dynamic body (used by Lua scripts during Play). All are
     // no-ops if the id is unknown or the body is static/removed.
     void setLinearVelocity(PhysicsBodyId id, glm::vec3 v);
+    void setAngularVelocity(PhysicsBodyId id, glm::vec3 v);
     void applyImpulse(PhysicsBodyId id, glm::vec3 impulse);
 
     // Remove and destroy a body (e.g. an entity deleted mid-play). Safe on an

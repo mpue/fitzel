@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <functional>
 #include <memory>
 #include <string>
@@ -345,7 +346,7 @@ public:
     }
 };
 
-// --- Built-in component: Fahrzel (makes this model a drivable vehicle) --------
+// --- Built-in component: Vehicle (makes this model drivable) ------------------
 // Attach to a model's root entity to hook it into the vehicle system: in Play,
 // V spawns the Jolt physics car from this geometry at the entity's transform
 // and streams the chassis/wheel transforms back into the entity (and its wheel
@@ -380,6 +381,14 @@ public:
     int       drive          = 0;             // 0 = RWD, 1 = FWD, 2 = AWD
     float     uprightAssist  = 6.0f;          // keep-upright roll torque (0 = pure sim)
 
+    // Boat mode (auto-engages when the vehicle floats deep enough in water): how
+    // high it rides, how hard the motor pushes, and how much spray it throws.
+    float     boatFloat   = 0.45f;            // resting submersion 0..1 (lower = higher)
+    float     boatThrust  = 15.0f;            // motor acceleration (m/s^2)
+    float     sprayAmount = 1.0f;             // spray emission scale (0 = off)
+    float     sprayHeight = 1.0f;             // spray kick-up strength
+    float     spraySize   = 1.0f;             // spray droplet size scale
+
     // Follow (chase) camera while driving: how the view trails the vehicle.
     float camDistance   = 7.0f;               // m behind the vehicle
     float camHeight     = 3.2f;               // m above the vehicle
@@ -393,7 +402,7 @@ public:
         return std::make_unique<VehicleComponent>(*this);
     }
     const char* typeId() const override { return "vehicle"; }
-    const char* displayName() const override { return "Fahrzel"; }
+    const char* displayName() const override { return "Vehicle"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override; // props + the wheel entity ids
@@ -575,7 +584,7 @@ public:
         return std::make_unique<AnimationComponent>(*this);
     }
     const char* typeId() const override { return "animation"; }
-    const char* displayName() const override { return "Zappel"; }
+    const char* displayName() const override { return "Animation"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;
@@ -599,7 +608,7 @@ public:
         return std::make_unique<AnimationTriggerComponent>(*this);
     }
     const char* typeId() const override { return "animation_trigger"; }
-    const char* displayName() const override { return "Zappel Trigger"; }
+    const char* displayName() const override { return "Animation Trigger"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
     void save(nlohmann::json& j) const override;
@@ -628,10 +637,17 @@ public:
 // --- Built-in component: Light (a point light; attach to any entity to glow) --
 class LightComponent : public ComponentBase {
 public:
+    // type 0 = point (omni), 1 = spot (cone along the entity's forward). A spot
+    // shines down the entity's local +Z (the engine's forward), so aim it with the
+    // entity's rotation -- parent it to a car with no local rotation and it becomes
+    // a headlight pointing where the car drives, moving with it via the hierarchy.
+    int       type        = 0;
     glm::vec3 color{1.0f, 0.95f, 0.8f};
     float     intensity   = 8.0f;
     float     range       = 12.0f;
-    bool      castShadows = false;
+    float     spotAngle   = 32.0f;   // spot: outer cone half-angle (degrees)
+    float     spotBlend   = 0.2f;    // spot: 0 hard edge .. 1 fully soft
+    bool      castShadows = false;   // point only (spots are unshadowed)
     float     shadowBias  = 0.003f;
 
     std::unique_ptr<ComponentBase> clone() const override {
@@ -641,8 +657,21 @@ public:
     const char* displayName() const override { return "Light"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
-    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
-        g.sphere(c, range, {color.r, color.g, color.b, 0.5f}); // reach of the light
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        if (type == 1) {
+            // Spot: draw the cone axis + a rim circle at the reach, so it can be aimed.
+            const glm::vec3 dir = rot * glm::vec3(0.0f, 0.0f, 1.0f);
+            const glm::vec3 tip = c + dir * range;
+            const float     rad = range * std::tan(glm::radians(spotAngle));
+            const glm::vec4 col{color.r, color.g, color.b, 0.6f};
+            const glm::vec3 side = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+            g.line(c, tip, col);
+            g.circle(tip, rad, dir, col);
+            g.line(c, tip + side * rad, col);
+            g.line(c, tip - side * rad, col);
+        } else {
+            g.sphere(c, range, {color.r, color.g, color.b, 0.5f}); // reach of the light
+        }
     }
 };
 
@@ -657,7 +686,7 @@ public:
         return std::make_unique<MaterialComponent>(*this);
     }
     const char* typeId() const override { return "material"; }
-    const char* displayName() const override { return "Glotzel"; }
+    const char* displayName() const override { return "Material"; }
     const std::vector<Property>& props() const override {
         static const std::vector<Property> none; return none;
     }
@@ -701,7 +730,7 @@ public:
         return std::make_unique<PhysicsComponent>(*this);
     }
     const char* typeId() const override { return "physics"; }
-    const char* displayName() const override { return "Phitzel"; }
+    const char* displayName() const override { return "Physics"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
 };

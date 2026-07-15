@@ -407,6 +407,12 @@ const std::vector<Property>& VehicleComponent::properties() {
         drv.enumLabels = {"RWD", "FWD", "AWD"};
         drv.field = [](void* o) -> void* { return &static_cast<VehicleComponent*>(o)->drive; };
         p.push_back(std::move(drv));
+        // Boat mode (grouped under a "Boat" header -- see vehicleui::inspector).
+        addFloat("Boat float",   "boatFloat",   &VehicleComponent::boatFloat,   true, 0.15f, 0.90f, "%.2f");
+        addFloat("Boat thrust",  "boatThrust",  &VehicleComponent::boatThrust,  true, 2.0f,  40.0f, "%.0f");
+        addFloat("Spray amount", "sprayAmount", &VehicleComponent::sprayAmount, true, 0.0f,  3.0f,  "%.2f");
+        addFloat("Spray height", "sprayHeight", &VehicleComponent::sprayHeight, true, 0.0f,  3.0f,  "%.2f");
+        addFloat("Spray size",   "spraySize",   &VehicleComponent::spraySize,   true, 0.2f,  5.0f,  "%.2f");
         // Follow-camera tuning (kept last so the inspector can group them under
         // a "Follow camera" header -- see vehicleui::inspector).
         addFloat("Cam distance",   "camDistance",   &VehicleComponent::camDistance,   true, 1.0f, 100.0f, "%.1f m");
@@ -534,6 +540,14 @@ const std::vector<Property>& ScriptComponent::properties() {
 const std::vector<Property>& LightComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
+        Property type;
+        // Key must NOT be "type": that collides with the component's serialization
+        // type id (cj["type"] = "light"), which corrupts the save. See the loader's
+        // legacy-recovery in ProjectIO.cpp for files written before this fix.
+        type.label = "Type"; type.key = "lightType"; type.kind = PropKind::EnumInt;
+        type.enumLabels = {"Point", "Spot"};
+        type.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->type; };
+        p.push_back(std::move(type));
         Property col;
         col.label = "Colour"; col.key = "color"; col.kind = PropKind::Color;
         col.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->color; };
@@ -548,6 +562,16 @@ const std::vector<Property>& LightComponent::properties() {
         range.slider = true; range.min = 0.5f; range.max = 60.0f; range.fmt = "%.1f m";
         range.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->range; };
         p.push_back(std::move(range));
+        Property spotAngle;
+        spotAngle.label = "Spot angle"; spotAngle.key = "spotAngle"; spotAngle.kind = PropKind::Float;
+        spotAngle.slider = true; spotAngle.min = 5.0f; spotAngle.max = 80.0f; spotAngle.fmt = "%.0f deg";
+        spotAngle.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->spotAngle; };
+        p.push_back(std::move(spotAngle));
+        Property spotBlend;
+        spotBlend.label = "Spot blend"; spotBlend.key = "spotBlend"; spotBlend.kind = PropKind::Float;
+        spotBlend.slider = true; spotBlend.min = 0.0f; spotBlend.max = 1.0f; spotBlend.fmt = "%.2f";
+        spotBlend.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->spotBlend; };
+        p.push_back(std::move(spotBlend));
         Property shadows;
         shadows.label = "Cast shadows"; shadows.key = "castShadows"; shadows.kind = PropKind::Bool;
         shadows.field = [](void* o) -> void* { return &static_cast<LightComponent*>(o)->castShadows; };
@@ -630,7 +654,7 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpawnerComponent>()); }});
         components::registerType({"pusher", "Pusher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
-        components::registerType({"vehicle", "Fahrzel",
+        components::registerType({"vehicle", "Vehicle",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<VehicleComponent>()); }});
         components::registerType({"door", "Door",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<DoorComponent>()); }});
@@ -642,20 +666,20 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraComponent>()); }});
         components::registerType({"camera_switcher", "Camera Switcher",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CameraSwitcherComponent>()); }});
-        components::registerType({"animation", "Zappel",
+        components::registerType({"animation", "Animation",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationComponent>()); }});
-        components::registerType({"animation_trigger", "Zappel Trigger",
+        components::registerType({"animation_trigger", "Animation Trigger",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationTriggerComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<LightComponent>()); }});
-        components::registerType({"material", "Glotzel",
+        components::registerType({"material", "Material",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MaterialComponent>()); }});
         components::registerType({"model", "Model",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ModelComponent>()); },
             /*addable=*/false});
-        components::registerType({"physics", "Phitzel",
+        components::registerType({"physics", "Physics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
         components::registerType({"player_start", "Player Start",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PlayerStartComponent>()); }});

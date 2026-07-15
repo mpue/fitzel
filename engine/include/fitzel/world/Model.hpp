@@ -104,6 +104,18 @@ ModelData loadGltf(const std::string& path);
 // `flipV` mirrors the V texture coordinate (FBX/DAE usually need it; see below).
 ModelData loadCollada(const std::string& path, bool flipV = true);
 
+// Load a rigged model via assimp (FBX and friends): as loadCollada, but also
+// extracts the skeleton, per-vertex skin bindings and animation clips, so a
+// character feeds the same skinning path as loadGltf -- sampleSkeleton and
+// skinPrimitive don't care which format the rig came from.
+//
+// Unlike loadGltf (where the spec says a skinned mesh's node transform is ignored),
+// vertices are baked through their node transform here and the palette deforms them
+// from that world-space bind pose. A file with bones but no clips can only ever
+// stand in bind pose, so it falls back to loadCollada's static output rather than
+// paying for a skinning pass to do nothing. Empty ModelData on failure.
+ModelData loadSkinnedModel(const std::string& path, bool flipV = true);
+
 // One mesh-bearing node of a model imported with its structure preserved: the
 // node's meshes (world transform baked, then recentred on their combined AABB so
 // each sits at the origin) plus `center`, where that origin belongs in model

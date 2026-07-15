@@ -457,11 +457,27 @@ bool PhysicsWorld::getLinearVelocity(PhysicsBodyId id, glm::vec3& out) const {
     return true;
 }
 
+bool PhysicsWorld::getAngularVelocity(PhysicsBodyId id, glm::vec3& out) const {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return false;
+    out = toGlm(bi.GetAngularVelocity(bid));
+    return true;
+}
+
 void PhysicsWorld::setLinearVelocity(PhysicsBodyId id, glm::vec3 v) {
     JPH::BodyID bid(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.SetLinearVelocity(bid, toJolt(v));
+    bi.ActivateBody(bid);
+}
+
+void PhysicsWorld::setAngularVelocity(PhysicsBodyId id, glm::vec3 v) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.SetAngularVelocity(bid, toJolt(v));
     bi.ActivateBody(bid);
 }
 

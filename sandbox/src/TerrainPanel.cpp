@@ -53,7 +53,7 @@ void drawPanel(const PanelState& s) {
     // default -- toggle off for surgical tweaks without a rebuild per drag.
     static bool autoPreview = true;
 
-    if (ImGui::Begin("Buddel", &s.show)) {
+    if (ImGui::Begin("Terrain", &s.show)) {
         // Push new generator params into the streamer and rebuild the world.
         auto regenerate = [&] {
             s.streamer.settings() = s.uiSettings;

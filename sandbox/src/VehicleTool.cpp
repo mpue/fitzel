@@ -149,11 +149,15 @@ std::string autoSetup(Document& doc, int rootId) {
 }
 
 void inspector(VehicleComponent& vc, Entity& root, Document& doc) {
-    bool hndHeader = false, camHeader = false;
+    bool hndHeader = false, camHeader = false, boatHeader = false;
     for (const Property& pr : vc.props()) {
         if (!hndHeader && pr.key == "comLower") { // handling group starts here
             ImGui::SeparatorText("Handling");
             hndHeader = true;
+        }
+        if (!boatHeader && pr.key == "boatFloat") { // boat group
+            ImGui::SeparatorText("Boat");
+            boatHeader = true;
         }
         if (!camHeader && pr.key.rfind("cam", 0) == 0) { // cam props sort last
             ImGui::SeparatorText("Follow camera");

@@ -290,10 +290,24 @@ bool loadScene(Context& ctx, const std::string& path) {
             // database), which comp->load can't do on its own.
             if (e.contains("components") && e["components"].is_array()) {
                 for (const auto& cj : e["components"]) {
-                    const std::string ct = cj.value("type", std::string{});
+                    // The component id lives in "type" (a string). Older files have a
+                    // corrupted light component whose "type" is an INTEGER: the light's
+                    // point/spot enum was written over the id by a key clash (now fixed
+                    // by renaming that property to "lightType"). Recover such a
+                    // component as a light and restore its enum below.
+                    std::string ct;
+                    bool legacyLight = false;
+                    if (cj.contains("type")) {
+                        const auto& tj = cj.at("type");
+                        if (tj.is_string()) ct = tj.get<std::string>();
+                        else if (tj.is_number_integer()) { ct = "light"; legacyLight = true; }
+                    }
                     auto comp = components::create(ct);
                     if (!comp) continue;
                     comp->load(cj);
+                    if (legacyLight)
+                        if (auto* lcp = dynamic_cast<LightComponent*>(comp.get()))
+                            lcp->type = cj.at("type").get<int>(); // restore point/spot
                     if (auto* mc = dynamic_cast<ModelComponent*>(comp.get())) {
                         std::string mp;
                         if (cj.contains("model"))

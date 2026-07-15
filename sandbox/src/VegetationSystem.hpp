@@ -15,19 +15,9 @@
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/world/Terrain.hpp>
 
-namespace fitzel { class Camera; }
+#include "FrameRender.hpp" // FrameContext -- the per-frame lighting/fog the draws take
 
-// Per-frame lighting/fog the vegetation shaders need so grass/flowers match the
-// terrain shading. Filled by the render loop and passed to the draw methods.
-struct VegDrawContext {
-    glm::mat4 viewProj{1.0f};
-    glm::vec3 camPos{0.0f};
-    double    time    = 0.0;
-    float     weather = 0.0f;
-    glm::vec3 lightDir{0.0f}, lightColor{0.0f}, ambient{0.0f};
-    glm::vec3 fogColor{0.0f}, fogSunColor{0.0f};
-    float     fogDensity = 0.0f, fogHeightFalloff = 0.0f, fogHeight = 0.0f;
-};
+namespace fitzel { class Camera; }
 
 // Owns the scene's vegetation/wildlife and its GPU resources. Migrated out of
 // main.cpp one subsystem at a time; currently grass, birds and fireflies. Draw
@@ -59,7 +49,7 @@ public:
     // caller can regrow flowers to match.
     bool updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>& road,
                      float roadClear, float waterLevel, float snowLevel);
-    void drawGrass(const VegDrawContext& ctx);
+    void drawGrass(const FrameContext& ctx);
     glm::vec2 grassCenter() const { return m_grassCenter; }
 
     // --- Trees ---------------------------------------------------------------
@@ -74,8 +64,8 @@ public:
     void eraseTree(glm::vec2 c, float radius);
     void clearPaintedTrees() { paintedTrees.clear(); rebuildTreeBuffers(); }
     void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather);
-    void drawTrees(const VegDrawContext& ctx);
-    void drawTreeBillboards(const VegDrawContext& ctx, const glm::vec3& camRight);
+    void drawTrees(const FrameContext& ctx);
+    void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
     const std::vector<float>& treeInstances() const { return m_treeInst; }
 
@@ -137,7 +127,7 @@ public:
                      float waterLevel, float snowLevel);
     void eraseFlower(glm::vec2 c, float radius);
     void clearPaintedFlowers() { paintedFlowers.clear(); rebuildFlowerBuffer(); }
-    void drawFlowers(const VegDrawContext& ctx);
+    void drawFlowers(const FrameContext& ctx);
 
     // --- Birds + fireflies ---------------------------------------------------
     void drawBirds(const glm::mat4& viewProj, double time, const glm::vec3& camPos);

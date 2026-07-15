@@ -50,6 +50,15 @@ uniform vec3  uPointPos[MAX_POINT_LIGHTS];
 uniform vec3  uPointColor[MAX_POINT_LIGHTS];
 uniform float uPointRange[MAX_POINT_LIGHTS];
 
+#define MAX_SPOT_LIGHTS 8
+uniform int   uSpotCount;
+uniform vec3  uSpotPos[MAX_SPOT_LIGHTS];
+uniform vec3  uSpotDir[MAX_SPOT_LIGHTS];      // normalized cone axis
+uniform vec3  uSpotColor[MAX_SPOT_LIGHTS];
+uniform float uSpotRange[MAX_SPOT_LIGHTS];
+uniform float uSpotCosInner[MAX_SPOT_LIGHTS]; // cos(inner half-angle): full bright
+uniform float uSpotCosOuter[MAX_SPOT_LIGHTS]; // cos(outer half-angle): fades to zero
+
 // Omnidirectional shadows for the first uShadowCount point lights.
 uniform int   uShadowCount;
 uniform samplerCube uShadowCube0;
@@ -146,6 +155,7 @@ uniform int       uLayerHasNorm[MAX_TERRAIN_LAYERS]; // 1 = layer i has a normal
 uniform float     uTexScale;   // world units -> texture tiling (fallback)
 uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal-map relief
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
+uniform float     uWetness;        // rain wetness 0..1 (sky-facing gets dark+glossy)
 
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
@@ -375,6 +385,11 @@ void main() {
         N = applyNormalMap(N, vWorldPos, vUV, uNormalMap);
     }
 
+    // Rain wetness: sky-exposed (up-facing) surfaces darken and turn glossy while
+    // it rains. Gated by the up-facing normal so walls/undersides stay dry.
+    float rainWet = uWetness * clamp(N.y * 1.3, 0.0, 1.0);
+    albedo *= mix(1.0, 0.6, rainWet);
+
     vec3 L = normalize(uLightDir);
     vec3 V = normalize(uViewPos - vWorldPos);
     vec3 H = normalize(L + V);
@@ -384,6 +399,9 @@ void main() {
     // matte). Textured surfaces (roads): rough/matte, faint broad sheen.
     float specPower = (uColorMode == 1) ? uTerrainSpec : 0.03;
     float specExp   = (uColorMode == 1) ? 48.0 : 14.0;
+    // Wet surfaces gain a stronger, tighter specular highlight (the sheen).
+    specPower = mix(specPower, max(specPower, 0.9), rainWet);
+    specExp   = mix(specExp, 160.0, rainWet);
     float spec      = pow(max(dot(N, H), 0.0), specExp) * specPower;
 
     int   layer   = selectCascade();
@@ -408,6 +426,14 @@ void main() {
     vec3 color = ambient
                + (1.0 - shadow) * uLightColor * (albedo * diff + spec);
 
+    // Wet grazing sheen: brighten at glancing angles with the ambient/sky tint --
+    // a cheap, probe-free "mirror" that sells the wet-road look.
+    if (rainWet > 0.0) {
+        float NoVw = max(dot(N, V), 0.0);
+        float fres = pow(1.0 - NoVw, 4.0);
+        color += ambient * (fres * rainWet * 2.0);
+    }
+
     // Point lights: diffuse + a little specular, with smooth range falloff.
     for (int i = 0; i < uPointCount; ++i) {
         vec3  d   = uPointPos[i] - vWorldPos;
@@ -426,6 +452,24 @@ void main() {
             sh = pointShadow(i, -d, far, bias); // -d = light -> fragment
         }
         color += uPointColor[i] * (albedo * dp + sp) * att * (1.0 - sh);
+    }
+
+    // Spot lights: point-light falloff gated by a cone around the spot axis. The
+    // cone ramps from full bright inside uSpotCosInner to zero past uSpotCosOuter.
+    for (int i = 0; i < uSpotCount; ++i) {
+        vec3  d   = uSpotPos[i] - vWorldPos;
+        float dst = length(d);
+        vec3  Lp  = d / max(dst, 1e-4);            // fragment -> light
+        float att = clamp(1.0 - dst / max(uSpotRange[i], 1e-3), 0.0, 1.0);
+        att *= att;
+        // Angle between the cone axis and the light->fragment direction.
+        float cosA = dot(-Lp, normalize(uSpotDir[i]));
+        float cone = clamp((cosA - uSpotCosOuter[i]) /
+                           max(uSpotCosInner[i] - uSpotCosOuter[i], 1e-3), 0.0, 1.0);
+        cone *= cone; // smooth the cone edge
+        float dp  = max(dot(N, Lp), 0.0);
+        float sp  = pow(max(dot(N, normalize(Lp + V)), 0.0), 48.0) * 0.25;
+        color += uSpotColor[i] * (albedo * dp + sp) * att * cone;
     }
 
     // Environment reflection: sample the dynamic scene probe along the reflection

@@ -52,10 +52,15 @@
 #include "ProjectIO.hpp"
 #include "PaintPanel.hpp"
 #include "SculptPanel.hpp"
+#include "AssetDrop.hpp"
+#include "FrameRender.hpp"
+#include "RainRenderer.hpp"
+#include "SpraySystem.hpp"
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
+#include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "ScatterTool.hpp"
 #include "VehicleTool.hpp"
@@ -208,6 +213,25 @@ const char* kTemplateDocumented =
     "    -- dt = seconds since last frame, t = seconds since Play started\n"
     "end\n";
 
+#ifndef FITZEL_PLAYER
+// Files the OS file manager has dropped on the window, waiting for the frame to
+// pick them up. GLFW delivers them from inside pollEvents(), before any ImGui
+// window is current, so the panel that wants them can't be asked at that moment --
+// they're parked here instead and the Assets panel takes them if they landed on it.
+//
+// File-scope rather than hung off the window user pointer: Input already owns that
+// pointer for its scroll callback (see Input.cpp), and overwriting it would kill
+// the mouse wheel everywhere. GLFW only ever calls this on the main thread, from
+// inside pollEvents/waitEventsTimeout, so no lock is needed.
+struct FileDrop {
+    std::vector<std::string> paths;
+    // Where the cursor was when the drop happened: GLFW's callback carries no
+    // coordinates, and by the time the frame runs the pointer has moved on.
+    float x = 0.0f, y = 0.0f;
+};
+FileDrop g_fileDrop;
+#endif
+
 } // namespace
 #endif // !FITZEL_PLAYER
 
@@ -253,6 +277,19 @@ int main(int argc, char** argv) {
 
         Input  input(window);                  // before Gui (callback chaining)
         Gui    gui(window);
+#ifndef FITZEL_PLAYER
+        // Accept files dragged in from the OS file manager. Nothing else claims
+        // this callback -- ImGui's GLFW backend installs eight, and drop isn't one
+        // of them -- so there's no previous handler to chain to.
+        glfwSetDropCallback(window.nativeHandle(),
+                            [](GLFWwindow* w, int count, const char** paths) {
+            double mx = 0.0, my = 0.0;
+            glfwGetCursorPos(w, &mx, &my);
+            g_fileDrop.x = static_cast<float>(mx);
+            g_fileDrop.y = static_cast<float>(my);
+            for (int i = 0; i < count; ++i) g_fileDrop.paths.emplace_back(paths[i]);
+        });
+#endif
         Camera camera({0.0f, 10.0f, 30.0f}, -90.0f, -5.0f);
         camera.moveSpeed = 20.0f;
 
@@ -497,44 +534,18 @@ int main(int argc, char** argv) {
         // Weather: 0 = clear .. 1 = storm. Drives clouds, light, fog, waves, rain.
         float weather     = 0.0f;
         bool  autoWeather = false;
+        // Ground wetness 0..1: builds while it rains, dries slowly after, so roads
+        // and terrain stay shiny for a while once the rain passes.
+        float roadWetness = 0.0f;
 
-        // Rain: falling line streaks in a box that follows the camera.
-        Shader rain = Shader::fromFiles("assets/shaders/rain.vert",
-                                        "assets/shaders/rain.frag");
-        if (!rain.isValid()) { std::fprintf(stderr, "Failed to load rain shader\n"); return 1; }
-        const int   rainDrops   = 14000;
-        const float rainBoxHalf = 55.0f;
-        const float rainBoxH    = 95.0f;
-        GLuint rainVAO = 0, rainVBO = 0;
-        {
-            std::mt19937 rr(99u);
-            std::uniform_real_distribution<float> u(0.0f, 1.0f);
-            std::vector<float> data;
-            data.reserve(static_cast<std::size_t>(rainDrops) * 2 * 5);
-            for (int i = 0; i < rainDrops; ++i) {
-                const float bx = (u(rr) - 0.5f) * 2.0f * rainBoxHalf;
-                const float bz = (u(rr) - 0.5f) * 2.0f * rainBoxHalf;
-                const float ys = u(rr) * rainBoxH;
-                const float sp = glm::mix(30.0f, 55.0f, u(rr));
-                data.insert(data.end(), {bx, ys, bz, sp, 0.0f});
-                data.insert(data.end(), {bx, ys, bz, sp, 1.0f});
-            }
-            glGenVertexArrays(1, &rainVAO);
-            glBindVertexArray(rainVAO);
-            glGenBuffers(1, &rainVBO);
-            glBindBuffer(GL_ARRAY_BUFFER, rainVBO);
-            glBufferData(GL_ARRAY_BUFFER,
-                         static_cast<GLsizeiptr>(data.size() * sizeof(float)),
-                         data.data(), GL_STATIC_DRAW);
-            const GLsizei stride = 5 * sizeof(float);
-            glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
-            glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 1, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
-            glEnableVertexAttribArray(2);
-            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
-            glBindVertexArray(0);
-        }
+        // Rain streaks + boat spray own their own shaders and GL buffers now.
+        RainRenderer rain;
+        if (!rain.init()) return 1;
+        SpraySystem  spray;
+        spray.init(); // a missing spray shader costs droplets, not the session
+        float sprayAccum = 0.0f;             // droplet emitter carry
+        float foamAccum  = 0.0f;             // surface-foam emitter carry
+        std::mt19937 sprayRng(1337u);
 
         // --- Vegetation: grass + ambient wildlife (birds/fireflies) ----------
         // Grass/birds/fireflies live in VegetationSystem now; main keeps the
@@ -609,7 +620,24 @@ int main(int argc, char** argv) {
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
+        int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
         bool roadDragging = false;    // dragging the selected handle
+        // Erase a control point, keeping the bridges that name points by index
+        // honest: any bridge ending on it goes with it, and later points shift down.
+        auto removeRoadPoint = [&](int k) {
+            if (k < 0 || k >= static_cast<int>(road.roadPts.size())) return;
+            road.roadPts.erase(road.roadPts.begin() + k);
+            std::vector<RoadSystem::BridgeSpec> keep;
+            for (RoadSystem::BridgeSpec b : road.bridges) {
+                if (b.a == k || b.b == k) continue;
+                if (b.a > k) --b.a;
+                if (b.b > k) --b.b;
+                keep.push_back(b);
+            }
+            road.bridges.swap(keep);
+            roadSel = roadSel2 = -1;
+            road.needsBuild = true;
+        };
         // Raycast the terrain under a viewport NDC point; true + world hit on success.
         auto roadPickTerrain = [&](glm::vec2 ndc, const glm::mat4& vp, glm::vec3& out) {
             const glm::mat4 inv = glm::inverse(vp);
@@ -680,6 +708,9 @@ int main(int argc, char** argv) {
         float engineSpeedMps = 0.0f;
         float engineThrottle = 0.0f;
         float engineWheelR   = 0.42f;
+        bool  carInWater     = false;  // chassis was submerged last frame (splash edge)
+        float carWaterSub    = 0.0f;   // 0..1 chassis submersion this frame (audio/FX)
+        bool  boatMode       = false;  // vehicle floats deep enough -> motorboat controls
         glm::vec3 camChase(0.0f);  // smoothed chase-camera position
         const float wheelR = 0.42f, bodyW = 1.8f, bodyH = 0.7f, bodyL = 4.0f;
         const float cabW = 1.5f, cabH = 0.6f, cabL = 1.8f;
@@ -748,6 +779,7 @@ int main(int argc, char** argv) {
         float assetThumbSize = 76.0f;
         char  assetFilter[64] = "";
         bool  assetTexturesOnly = false;
+        std::string assetDropStatus; // outcome of the last drop from Explorer
 
         struct ThumbWork {
             std::mutex              mutex;
@@ -869,7 +901,7 @@ int main(int argc, char** argv) {
         bool        unityFlipV = true;   // mirror V on import (FBX UV convention)
         std::string unityStatus;         // last import result, shown in the panel
 
-        // The "Mitzel" -- fitzel's audio mixer. Master (masterVolume/muted below)
+        // The audio mixer. Master (masterVolume/muted below)
         // scales everything via the device; Ambient scales the looping weather/
         // zone voices; SFX scales the one-shot bus. Each channel: level + mute.
         struct MixChannel { float level = 1.0f; bool mute = false;
@@ -1123,18 +1155,16 @@ int main(int argc, char** argv) {
 #endif // !FITZEL_PLAYER
         // Decide whether a model imports as a hierarchy (one entity per node,
         // separately selectable) or as a single flat Model entity.
-        //   - FBX has no flat (cgltf) loader, so it always takes the structured
-        //     (assimp) path -- its single- and multi-node cases both work there.
-        //   - Animated (skinned) glTF must stay on the flat cgltf path so CPU
+        //   - An animated (skinned) model must stay on the flat path so CPU
         //     skinning still runs; the structured path bakes node transforms and
-        //     drops the skeleton, so it's never used for animated models.
-        //   - Other formats (glTF/GLB/DAE) split only when they actually have
-        //     more than one mesh node; a single-part model stays one clean entity.
+        //     drops the skeleton, so it's never used for animated models. That is
+        //     what routes a rigged character -- FBX or glTF -- to a single entity.
+        //   - Everything else splits only when it actually has more than one mesh
+        //     node; a single-part model stays one clean entity.
         auto isStructuredModel = [&](const std::string& p) {
             std::string e = std::filesystem::path(p).extension().string();
             for (char& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            if (e == ".fbx") return true;
-            if (e != ".glb" && e != ".gltf" && e != ".dae") return false;
+            if (e != ".fbx" && e != ".glb" && e != ".gltf" && e != ".dae") return false;
             if (auto md = assetDb.loadModelData(p); md && md->animated()) return false;
             return models.nodes(p).size() > 1;
         };
@@ -1399,6 +1429,60 @@ int main(int argc, char** argv) {
             }
             entitySel = document.indexOf(emptyId);
         };
+        // Attach car lights to a vehicle entity: two forward spot headlights at the
+        // nose and two red point taillights (no shadows) at the tail, all parented so
+        // they move/steer with the car. One undoable step. No-op without a Vehicle.
+        auto addVehicleLights = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            Entity& veh = entities[idx];
+            const auto* vc = veh.components.get<VehicleComponent>();
+            if (!vc) return;
+            const int vehId = veh.id;
+            // Body extents: the larger of the model AABB and the chassis box.
+            // frontSign maps the model's nose (native -Z when forward==1) to local Z.
+            const glm::vec3 h = glm::max(veh.half, vc->chassisHalf);
+            const float frontSign = (vc->forward == 1) ? -1.0f : 1.0f;
+            const float zx  = h.z * 0.96f * frontSign; // nose Z (tail is -zx)
+            const float xo  = h.x * 0.6f;              // left/right inset
+            const float yo  = h.y * 0.1f;              // just above centre
+            const float yaw = (vc->forward == 1) ? 180.0f : 0.0f; // spot faces the nose
+            const glm::mat4 pw = worldOf(veh);
+            std::vector<Entity> batch;
+            auto makeLight = [&](const char* name, glm::vec3 lpos, glm::vec3 lrot,
+                                 bool spot, glm::vec3 col, float inten, float rng) {
+                Entity nb;
+                nb.type   = EntityType::Light;
+                nb.half   = glm::vec3(0.12f);
+                nb.id     = entityCounter++;
+                nb.parent = vehId;
+                nb.name   = name;
+                nb.localCenter   = lpos;
+                nb.localRotation = lrot;
+                auto lc = std::make_unique<LightComponent>();
+                lc->type = spot ? 1 : 0;
+                lc->color = col; lc->intensity = inten; lc->range = rng;
+                lc->castShadows = false;
+                if (spot) { lc->spotAngle = 30.0f; lc->spotBlend = 0.25f; }
+                nb.components.items.push_back(std::move(lc));
+                // Seed the world transform (resolveHierarchy refreshes it each frame).
+                const glm::mat4 w =
+                    pw * composeModel(nb.localCenter, nb.localRotation, glm::vec3(1.0f));
+                float t[3], r[3], s[3];
+                ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(w), t, r, s);
+                nb.center   = {t[0], t[1], t[2]};
+                nb.rotation = {r[0], r[1], r[2]};
+                batch.push_back(std::move(nb));
+            };
+            const glm::vec3 warm(1.0f, 0.96f, 0.85f);
+            const glm::vec3 red (1.0f, 0.05f, 0.02f);
+            makeLight("Headlight L", { xo, yo,  zx}, {0.0f, yaw, 0.0f}, true,  warm, 12.0f, 28.0f);
+            makeLight("Headlight R", {-xo, yo,  zx}, {0.0f, yaw, 0.0f}, true,  warm, 12.0f, 28.0f);
+            makeLight("Taillight L", { xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
+            makeLight("Taillight R", {-xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(batch), "Add headlights"),
+                         document);
+            entitySel = document.indexOf(vehId);
+        };
 
 
         // --- Flowers (owned by VegetationSystem) -----------------------------
@@ -1422,9 +1506,17 @@ int main(int argc, char** argv) {
         Sound windSnd    = Sound::fromFile(audio, soundDir + "/wind.wav", true);
         Sound breezeSnd  = Sound::fromFile(audio, soundDir + "/breeze.wav", true);
         Sound thunderSnd = Sound::fromFile(audio, soundDir + "/thunder.wav", false);
+        // Water: a one-shot splash when the car plunges in, and a loop that stays
+        // audible (volume follows submersion) while it wades through.
+        Sound splashSnd  = Sound::fromFile(audio, soundDir + "/splash.wav", false);
+        Sound waterSnd   = Sound::fromFile(audio, soundDir + "/water.wav", true);
+        // Storm bed: a heavy loop that fades in as the weather peaks.
+        Sound stormSnd   = Sound::fromFile(audio, soundDir + "/storm.wav", true);
         rainSnd.setVolume(0.0f);   rainSnd.play();   // loops; volume follows weather
         windSnd.setVolume(0.0f);   windSnd.play();
         breezeSnd.setVolume(0.0f); breezeSnd.play();
+        waterSnd.setVolume(0.0f);  waterSnd.play();  // loops; volume follows submersion
+        stormSnd.setVolume(0.0f);  stormSnd.play();  // loops; volume follows the storm
         // Engine sound: RPM-layered loops + an automatic gearbox. Voiced only
         // while a vehicle is being driven (see the audio mix block below).
         CarAudio carAudio;
@@ -1694,25 +1786,9 @@ int main(int argc, char** argv) {
             }
             j["modelMaterialOverrides"] = std::move(ov);
 
-            // Road: control points (compact "x z x z ..." blob) plus its build
-            // params and chosen surface. The graded terrain corridor itself rides
-            // along in "terrainEdits" above; on load we just re-loft the mesh.
-            std::ostringstream rs;
-            rs.precision(7);
-            for (const glm::vec2& p : road.roadPts) rs << p.x << ' ' << p.y << ' ';
-            j["road"] = {
-                {"points",  rs.str()},
-                {"closed",  road.closed},
-                {"enabled", road.enabled},
-                {"width",   road.width},
-                {"texTile", road.texTile},
-                {"fadeWidth",road.fadeWidth},
-                {"grade",   road.grade},
-                {"shoulder",road.shoulder},
-                {"surface", (road.texSel >= 0 &&
-                             road.texSel < static_cast<int>(road.texFiles.size()))
-                                ? road.texFiles[road.texSel] : std::string()},
-            };
+            // The road owns its own scene state (the graded terrain corridor rides
+            // along in "terrainEdits" above; the mesh is re-lofted on load).
+            road.save(j["road"]);
         };
         readSettingsFn = [&](const nlohmann::json& j){
             for (const Setting& s : tunables) s.read(j);
@@ -1804,30 +1880,11 @@ int main(int argc, char** argv) {
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
 
-            // Road: restore control points + build params (empty for scenes saved
-            // before roads were persisted; the old road.txt Save/Load still works).
+            // Road: empty for scenes saved before roads were persisted (the old
+            // road.txt Save/Load in the panel still works for those).
             if (j.contains("road") && j["road"].is_object()) {
-                const auto& r = j["road"];
-                road.roadPts.clear();
-                if (r.contains("points") && r["points"].is_string()) {
-                    std::istringstream rs(r["points"].get<std::string>());
-                    glm::vec2 p;
-                    while (rs >> p.x >> p.y) road.roadPts.push_back(p);
-                }
-                road.closed   = r.value("closed",  false);
-                road.enabled  = r.value("enabled", true);
-                road.width    = r.value("width",   5.0f);
-                road.texTile  = r.value("texTile", 8.0f);
-                road.fadeWidth= r.value("fadeWidth", 0.0f);
-                road.grade    = r.value("grade",   0.55f);
-                road.shoulder = r.value("shoulder",3.0f);
-                const std::string surf = r.value("surface", std::string());
-                if (!surf.empty()) {
-                    road.setSurface(surf);
-                    for (int i = 0; i < static_cast<int>(road.texFiles.size()); ++i)
-                        if (road.texFiles[i] == surf) road.texSel = i;
-                }
-                roadSel = -1;
+                road.load(j["road"]);
+                roadSel = roadSel2 = -1;
             }
             // The graded corridor is already baked into the restored terrain
             // edits above, so just re-loft the committed mesh on that ground.
@@ -2113,6 +2170,7 @@ int main(int argc, char** argv) {
         // test car behaves exactly as before.
         auto enterVehicleMode = [&] {
             fpsMode = false;
+            boatMode = false; // every drive session starts on wheels
             input.setCursorLocked(false);
             const int sceneVeh = findNearestVehicle();
             if (playMode && physics) {
@@ -2534,7 +2592,7 @@ int main(int argc, char** argv) {
             prevF = fDown;
 
             // V toggles the drive-a-vehicle mode. A scene vehicle (a model with
-            // a Fahrzel component, nearest to the camera) takes precedence: in
+            // a Vehicle component, nearest to the camera) takes precedence: in
             // Play it spawns the Jolt car from the component at the model, in
             // the editor the arcade sim test-drives the model itself. With no
             // scene vehicle, the primitive test car behaves as before.
@@ -2615,6 +2673,7 @@ int main(int argc, char** argv) {
             }
 
             engineDriving = false; // re-armed by whichever drive block runs below
+            carWaterSub   = 0.0f;  // re-armed by the buoyancy block when submerged
 
             if (vehicleMode && playMode && physics && physics->hasVehicle()) {
                 // Physics car: WASD -> engine/steer/brake; chase camera from the
@@ -2645,18 +2704,161 @@ int main(int argc, char** argv) {
                 auto*   svc = sv ? sv->components.get<VehicleComponent>() : nullptr;
                 const float steerSpd = svc ? svc->steerSpeed : 7.0f;
                 physSteer += (steerIn - physSteer) * std::min(1.0f, dt * steerSpd);
-                physics->setVehicleInput(fwdIn, physSteer, brake, handBrake);
-                // Feed the engine sound from the chassis' horizontal speed.
+
+                // Chassis state up front: the water/boat decision needs it before we
+                // choose which control scheme (wheels vs boat) to feed the sim.
+                glm::vec3 cp(0.0f); glm::quat cq(1.0f, 0.0f, 0.0f, 0.0f);
+                physics->getTransform(physCarId, cp, cq);
                 glm::vec3 vel(0.0f);
                 physics->getLinearVelocity(physCarId, vel);
+                const float halfH = svc ? glm::max(svc->chassisHalf.y, 0.1f) : 0.5f;
+                const float mass  = svc ? glm::max(svc->mass, 1.0f)         : 1200.0f;
+                const float depth = waterLevel - (cp.y - halfH);
+                const float sub   = (depth > 0.0f)
+                                  ? glm::clamp(depth / (2.0f * halfH), 0.0f, 1.0f) : 0.0f;
+                // Resting submersion (the boat's float line, inspector-tunable). The
+                // boat-mode thresholds ride relative to it so a high-floating boat
+                // still engages. Hysteresis keeps the shoreline from flip-flopping.
+                const float kFloat = svc ? glm::clamp(svc->boatFloat, 0.12f, 0.92f) : 0.45f;
+                if      (sub > kFloat * 0.85f) boatMode = true;
+                else if (sub < kFloat * 0.5f)  boatMode = false;
+
+                const glm::vec3 fwd   = cq * glm::vec3(0.0f, 0.0f, 1.0f);
+                const glm::vec3 right = cq * glm::vec3(1.0f, 0.0f, 0.0f);
+
+                if (boatMode) {
+                    // Motorboat: the wheels idle in the water. W/S is thrust along the
+                    // flat heading, A/D yaw the hull, and a keel drag resists sideways
+                    // slip so the boat tracks where its nose points.
+                    physics->setVehicleInput(0.0f, 0.0f, 0.0f, 0.0f);
+                    glm::vec3 fwdFlat(fwd.x, 0.0f, fwd.z);
+                    if (glm::length(fwdFlat) > 1e-3f)   fwdFlat   = glm::normalize(fwdFlat);
+                    glm::vec3 rightFlat(right.x, 0.0f, right.z);
+                    if (glm::length(rightFlat) > 1e-3f) rightFlat = glm::normalize(rightFlat);
+                    const float boatThrust = svc ? svc->boatThrust : 15.0f; // m/s^2
+                    physics->applyImpulse(physCarId,
+                        fwdFlat * (fwdIn * boatThrust * mass * dt));
+                    // Yaw steering: turn better with some way on (a boat needs water
+                    // flowing past the hull); reverse thrust steers the stern around.
+                    const float fwdSpeed = glm::dot(vel, fwdFlat);
+                    const float turnAuth = glm::clamp(0.4f + std::abs(fwdSpeed) * 0.12f,
+                                                      0.4f, 1.2f);
+                    glm::vec3 av(0.0f);
+                    physics->getAngularVelocity(physCarId, av);
+                    const float yawTarget = steerIn * 1.6f * turnAuth
+                                          * (fwdSpeed < -0.2f ? -1.0f : 1.0f);
+                    av.y = glm::mix(av.y, yawTarget, std::min(1.0f, dt * 4.0f));
+                    // Keep the hull level on the water: steer pitch/roll back to flat
+                    // (up x worldUp is the tilt axis) so it doesn't nose-dive or rear
+                    // up under thrust. Yaw (av.y) is left to the steering above.
+                    const glm::vec3 up   = cq * glm::vec3(0.0f, 1.0f, 0.0f);
+                    const glm::vec3 tilt = glm::cross(up, glm::vec3(0.0f, 1.0f, 0.0f));
+                    av.x = glm::mix(av.x, tilt.x * 4.0f, std::min(1.0f, dt * 3.0f));
+                    av.z = glm::mix(av.z, tilt.z * 4.0f, std::min(1.0f, dt * 3.0f));
+                    physics->setAngularVelocity(physCarId, av);
+                    // Keel: strongly damp sideways drift, lightly damp forward glide.
+                    const float latV = glm::dot(vel, rightFlat);
+                    physics->applyImpulse(physCarId, rightFlat * (-latV * 3.0f * mass * dt));
+                    physics->applyImpulse(physCarId, fwdFlat  * (-fwdSpeed * 0.5f * mass * dt));
+                    engineThrottle = std::abs(fwdIn);
+                } else {
+                    physics->setVehicleInput(fwdIn, physSteer, brake, handBrake);
+                    engineThrottle = std::abs(fwdIn);
+                }
+
+                // Feed the engine sound from the chassis' horizontal speed.
                 engineDriving  = true;
                 engineSpeedMps = glm::length(glm::vec2(vel.x, vel.z));
-                engineThrottle = std::abs(fwdIn);
                 engineWheelR   = svc ? svc->wheelRadius : 0.42f;
-                glm::vec3 cp; glm::quat cq;
-                if (physics->getTransform(physCarId, cp, cq)) {
-                    // Follow-cam tuning from the driven vehicle's component
-                    // (built-in default car has none -> the fallback values).
+
+                // --- Water: buoyancy + splash/ambience ---------------------------
+                // Vertical buoyancy floats the chassis toward the surface; the boat
+                // path supplies its own keel/forward drag, so only the wading (car)
+                // path gets the generic horizontal drag here.
+                if (depth > 0.0f) {
+                    // Stable float line: buoyant accel equals gravity at sub==kFloat
+                    // (the inspector-tunable rest submersion computed above), so the
+                    // chassis settles there instead of being shoved to the surface.
+                    float up = 9.81f * (sub / kFloat) - 3.2f * vel.y;
+                    up = glm::max(up, 0.0f);
+                    physics->applyImpulse(physCarId, glm::vec3(0.0f, up * mass * dt, 0.0f));
+                    if (!boatMode) {
+                        const glm::vec3 hv(vel.x, 0.0f, vel.z);
+                        physics->applyImpulse(physCarId, -hv * (1.3f * mass * dt));
+                    }
+                    carWaterSub = sub;
+                    // Foam: a flat surface layer clinging to the waterline (a gentle
+                    // ring even at rest, a trailing wake when moving) plus airborne
+                    // droplets that only fly when the hull is actually moving.
+                    if (spray.ready()) {
+                        const float hspeed = glm::length(glm::vec2(vel.x, vel.z));
+                        const bool  moving = hspeed > 1.0f;
+                        glm::vec3 vdir = (hspeed > 0.2f)
+                            ? glm::normalize(glm::vec3(vel.x, 0.0f, vel.z))
+                            : glm::normalize(glm::vec3(fwd.x, 0.0f, fwd.z) + glm::vec3(1e-4f));
+                        const glm::vec3 sideV(-vdir.z, 0.0f, vdir.x);
+                        const glm::vec3 hx = svc ? svc->chassisHalf : glm::vec3(0.9f, 0.35f, 2.0f);
+                        const float sAmt = svc ? glm::max(svc->sprayAmount, 0.0f) : 1.0f;
+                        const float sHgt = svc ? glm::max(svc->sprayHeight, 0.0f) : 1.0f;
+                        spray.sizeScale  = svc ? glm::max(svc->spraySize, 0.05f) : 1.0f;
+                        std::uniform_real_distribution<float> u(0.0f, 1.0f);
+                        auto rnd = [&]{ return u(sprayRng); };
+
+                        // --- Surface foam: hugs the water around the hull, drifts and
+                        // spreads. Particles/sec: a gentle ring at rest, more with speed.
+                        foamAccum += (28.0f + hspeed * 22.0f) * sub * sAmt * dt;
+                        while (foamAccum >= 1.0f &&
+                               spray.count() < SprayPool::kMax) {
+                            foamAccum -= 1.0f;
+                            SprayP p; p.flat = 1.0f;
+                            const float ang = rnd() * 6.2831853f;
+                            const float rad = glm::mix(0.5f, 1.15f, rnd());
+                            // Ring around the hull footprint, biased to the stern wake.
+                            glm::vec3 off = sideV * (std::cos(ang) * hx.x * rad)
+                                          + vdir  * (std::sin(ang) * hx.z * rad
+                                                     - hspeed * 0.06f);
+                            p.pos = cp + off; p.pos.y = waterLevel + 0.03f;
+                            p.vel = sideV * ((rnd() - 0.5f) * 1.2f)
+                                  - vdir * (moving ? hspeed * 0.15f : 0.0f);
+                            p.vel.y = 0.0f;
+                            p.life = p.life0 = glm::mix(0.9f, 1.9f, rnd());
+                            p.size = glm::mix(3.0f, 6.0f, rnd());
+                            spray.add(p);
+                        }
+
+                        // --- Airborne droplets: only when moving, plus an entry burst.
+                        if (moving)
+                            sprayAccum += (hspeed - 1.0f) * sub * 45.0f * sAmt * dt;
+                        int burst = (!carInWater) ? static_cast<int>(30 * sAmt) : 0;
+                        while ((burst-- > 0 || sprayAccum >= 1.0f) &&
+                               spray.count() < SprayPool::kMax) {
+                            if (burst < 0) sprayAccum -= 1.0f;
+                            SprayP p;
+                            const float sway = (rnd() - 0.5f) * 2.0f;
+                            p.pos = cp + vdir * (hx.z * 0.5f) + sideV * (sway * hx.x);
+                            p.pos.y = waterLevel + 0.05f;
+                            p.vel = glm::vec3(0.0f, glm::mix(2.0f, 4.5f, rnd()) * sHgt, 0.0f)
+                                  + sideV * (sway * 3.0f)
+                                  + vdir * (hspeed * 0.25f + rnd());
+                            p.life = p.life0 = glm::mix(0.35f, 0.8f, rnd());
+                            p.size = glm::mix(0.55f, 1.2f, rnd());
+                            spray.add(p);
+                        }
+                    }
+                    // Splash once on entry, scaled a touch by impact speed.
+                    if (!carInWater) {
+                        splashSnd.setVolume(glm::clamp(
+                            0.5f + std::abs(vel.y) * 0.15f, 0.5f, 1.0f) * mixSfx.gain());
+                        splashSnd.play();
+                        carInWater = true;
+                    }
+                } else {
+                    carInWater = false;
+                }
+
+                // Follow-cam tuning from the driven vehicle's component (built-in
+                // default car has none -> the fallback values).
+                {
                     Entity* dv = (driveVehicleId >= 0) ? document.find(driveVehicleId)
                                                        : nullptr;
                     auto*   dvc = dv ? dv->components.get<VehicleComponent>() : nullptr;
@@ -2665,16 +2867,14 @@ int main(int argc, char** argv) {
                     const float camSide  = dvc ? dvc->camSide       : 0.0f;
                     const float camLook  = dvc ? dvc->camLookHeight : 1.2f;
                     const float camStiff = dvc ? dvc->camStiffness  : 4.0f;
-                    const glm::vec3 fwd = cq * glm::vec3(0.0f, 0.0f, 1.0f);
-                    const glm::vec3 right = cq * glm::vec3(1.0f, 0.0f, 0.0f);
                     const glm::vec3 target = cp + glm::vec3(0.0f, camLook, 0.0f);
                     const glm::vec3 wanted = cp - fwd * camDist + right * camSide +
                                              glm::vec3(0.0f, camH, 0.0f);
                     camChase += (wanted - camChase) * std::min(1.0f, dt * camStiff);
                     camera.setPosition(camChase);
-                    const glm::vec3 d = glm::normalize(target - camChase);
-                    camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
-                    camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+                    const glm::vec3 dcam = glm::normalize(target - camChase);
+                    camera.setYaw(glm::degrees(std::atan2(dcam.z, dcam.x)));
+                    camera.setPitch(glm::degrees(std::asin(glm::clamp(dcam.y, -1.0f, 1.0f))));
                 }
             } else if (vehicleMode) {
                 // Arcade car: throttle + steering, drag, bicycle-model heading.
@@ -3010,8 +3210,19 @@ int main(int argc, char** argv) {
             const float effWaveH     = glm::mix(waveHeight, 2.4f, weather);
             const float effWaveC     = glm::mix(waveChoppy, 0.95f, weather);
             const float effFog       = fogDensity + weather * 0.011f;
-            const float rainIntensity = glm::smoothstep(0.45f, 0.85f, weather);
+            // Same curve the streaks fall on -- shared so the sound and the road's
+            // wet sheen can't start before there is anything coming down.
+            const float rainIntensity = rainIntensityFor(weather);
             const float lightDim     = glm::mix(1.0f, 0.30f, weather);
+
+            // Wetness eases toward the rain intensity: quick to soak (~2s), slow to
+            // dry (~20s), so surfaces glisten for a while after the rain stops.
+            {
+                const float wetTau = (rainIntensity > roadWetness) ? 2.0f : 20.0f;
+                roadWetness += (rainIntensity - roadWetness) *
+                               (1.0f - std::exp(-dt / wetTau));
+                roadWetness = glm::clamp(roadWetness, 0.0f, 1.0f);
+            }
 
             // Lightning: brief flashes once the storm is strong.
             float flash = 0.0f;
@@ -3026,7 +3237,7 @@ int main(int argc, char** argv) {
             // Weather audio: cross-fade the looping layers, fire thunder on a
             // fresh lightning flash. Only audible while playing -- the editor
             // stays silent.
-            // Mitzel routing: Master to the device, SFX to the one-shot bus,
+            // Mixer routing: Master to the device, SFX to the one-shot bus,
             // Ambient scales the looping weather layers.
             audio.setMasterVolume(muted ? 0.0f : masterVolume);
             audio.setSfxVolume(mixSfx.gain());
@@ -3034,6 +3245,10 @@ int main(int argc, char** argv) {
             rainSnd.setVolume(playMode ? rainIntensity * amb : 0.0f);
             windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, weather) * 0.9f * amb : 0.0f);
             breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f * amb : 0.0f);
+            // Water ambience: louder the deeper the car is submerged (SFX bus).
+            waterSnd.setVolume(playMode ? glm::clamp(carWaterSub, 0.0f, 1.0f) * mixSfx.gain() : 0.0f);
+            // Storm bed: fades in as the weather peaks (ambient bus).
+            stormSnd.setVolume(playMode ? glm::smoothstep(0.5f, 0.95f, weather) * amb : 0.0f);
             const bool flashOn = flash > 0.25f;
             if (playMode && flashOn && !prevFlashOn) {
                 thunderSnd.setVolume(glm::clamp(weather, 0.3f, 1.0f) * amb);
@@ -3601,12 +3816,12 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginMenu("View")) {
                     ImGui::MenuItem("Stats",           nullptr, &showStats);
                     ImGui::MenuItem("Camera",          nullptr, &showCamera);
-                    ImGui::MenuItem("Mitzel (mixer)",  nullptr, &showMixer);
+                    ImGui::MenuItem("Mixer",           nullptr, &showMixer);
                     ImGui::MenuItem("Weather & audio", nullptr, &showWeather);
                     ImGui::MenuItem("Sky & atmosphere",nullptr, &showSky);
                     ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
                     ImGui::MenuItem("Water",           nullptr, &showWater);
-                    ImGui::MenuItem("Buddel (terrain)", nullptr, &showTerrain);
+                    ImGui::MenuItem("Terrain",         nullptr, &showTerrain);
                     ImGui::MenuItem("Terrain sculpt",  nullptr, &showSculpt);
                     ImGui::MenuItem("Terrain paint",   nullptr, &showPaint);
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
@@ -3616,11 +3831,11 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
                     ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
                     ImGui::Separator();
-                    ImGui::MenuItem("Glotzel (materials)", nullptr, &showMaterials);
+                    ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
                     ImGui::MenuItem("Import Unity asset", nullptr, &showUnityImport);
                     ImGui::MenuItem("Assets",          nullptr, &showAssets);
-                    ImGui::MenuItem("Schnipsel (scripts)", nullptr, &showScriptEditor);
+                    ImGui::MenuItem("Scripts",         nullptr, &showScriptEditor);
                     ImGui::MenuItem("Environment",     nullptr, &showEnv);
                     ImGui::Separator();
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
@@ -3635,7 +3850,7 @@ int main(int argc, char** argv) {
                     ImGui::PopStyleColor();
                 } else {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 1.0f, 0.55f, 1.0f));
-                    if (ImGui::MenuItem("|>  Datzel")) startPlay();
+                    if (ImGui::MenuItem("|>  Play")) startPlay();
                     ImGui::PopStyleColor();
                 }
                 ImGui::EndMainMenuBar();
@@ -3977,12 +4192,18 @@ int main(int argc, char** argv) {
                             const float d = std::hypot(sp.x - mp.x, sp.y - mp.y);
                             if (d < bestD) { bestD = d; best = i; }
                         }
-                        if (best >= 0) { roadSel = best; roadDragging = true; }
-                        else {
+                        if (best >= 0) {
+                            // Shift-click marks the far end of a bridge instead of
+                            // re-selecting; plain click picks (and starts a drag).
+                            if (ImGui::GetIO().KeyShift && roadSel >= 0 && best != roadSel)
+                                roadSel2 = best;
+                            else { roadSel = best; roadSel2 = -1; roadDragging = true; }
+                        } else {
                             glm::vec3 h;
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
                                 road.roadPts.push_back({h.x, h.z});
                                 roadSel = static_cast<int>(road.roadPts.size()) - 1;
+                                roadSel2 = -1;
                                 road.needsBuild = true;
                             }
                         }
@@ -3999,11 +4220,8 @@ int main(int argc, char** argv) {
                     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) roadDragging = false;
                     // Delete the selected point.
                     if (roadSel >= 0 && roadSel < static_cast<int>(road.roadPts.size()) &&
-                        ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        road.roadPts.erase(road.roadPts.begin() + roadSel);
-                        roadSel = -1;
-                        road.needsBuild = true;
-                    }
+                        ImGui::IsKeyPressed(ImGuiKey_Delete))
+                        removeRoadPoint(roadSel);
 
                     // Live preview: the smoothed spline as it will be built -- the
                     // curved centreline plus its left/right edges at the road width.
@@ -4706,9 +4924,10 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
-            // The Mitzel: fitzel's audio mixer, as a strip of vertical faders.
-            if (showMixer) { if (ImGui::Begin("Mitzel", &showMixer)) {
-                ImGui::TextDisabled("the mitzel \xE2\x80\x94 fitzel's mixer");
+            // The audio mixer, as a strip of vertical faders.
+            if (showMixer) { if (ImGui::Begin("Mixer", &showMixer)) {
+                ImGui::TextDisabled("Master scales the device; Ambient the weather "
+                                    "loops, SFX the one-shots");
                 ImGui::Separator();
                 auto fader = [&](const char* name, float* level, bool* mute) {
                     ImGui::PushID(name);
@@ -4737,7 +4956,8 @@ int main(int argc, char** argv) {
             if (showWeather) { if (ImGui::Begin("Weather & audio", &showWeather)) {
                 ImGui::Checkbox("Auto weather", &autoWeather);
                 ImGui::SliderFloat("Storm", &weather, 0.0f, 1.0f);
-                ImGui::Text("Rain %.0f%%   Lightning %s", rainIntensity * 100.0f,
+                ImGui::Text("Rain %.0f%%   Wet %.0f%%   Lightning %s",
+                            rainIntensity * 100.0f, roadWetness * 100.0f,
                             weather > 0.5f ? "armed" : "off");
                 ImGui::Separator();
                 ImGui::Checkbox("Mute", &muted);
@@ -4943,118 +5163,12 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
-            if (showRoads) { if (ImGui::Begin("Roads", &showRoads)) {
-                ImGui::Checkbox("Show roads", &road.enabled);
-                if (ImGui::Checkbox("Edit mode", &roadEditMode) && roadEditMode)
-                    grassPaintMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = scatterMode = false; // don't fight over LMB
-                if (roadEditMode) {
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "Click ground = add | drag handle = move | Del = delete");
-                } else {
-                    ImGui::TextDisabled("Enable edit mode to place and drag handles");
-                }
-                ImGui::Text("Points: %d", static_cast<int>(road.roadPts.size()));
-                ImGui::SameLine();
-                if (roadSel >= 0) ImGui::Text("| selected #%d", roadSel);
-                else              ImGui::TextDisabled("| none selected");
-
-                // --- Build: commit the previewed spline into the terrain --------
-                // Editing only updates the preview; Build grades the road into the
-                // ground (flush + smooth) and lofts the drivable mesh + collider.
-                ImGui::Separator();
-                if (road.needsBuild)
-                    ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.30f, 1.0f),
-                                       "Preview \xE2\x80\x93 not built yet");
-                else if (road.verts() > 0)
-                    ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
-                                       "Built \xE2\x80\x93 embedded in terrain");
-                else
-                    ImGui::TextDisabled("No road built");
-                ImGui::BeginDisabled(road.roadPts.size() < 2);
-                if (ImGui::Button(road.needsBuild ? "Build road into terrain"
-                                                  : "Rebuild road",
-                                  ImVec2(-1.0f, 0.0f)))
-                    buildRoad();
-                ImGui::EndDisabled();
-                ImGui::Separator();
-
-                bool rc = false;
-                rc |= ImGui::Checkbox("Closed loop", &road.closed);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Join the last control point back to the first\n"
-                                      "(needs at least 3 points).");
-                rc |= ImGui::SliderFloat("Width", &road.width, 1.0f, 20.0f, "%.1f m");
-                rc |= ImGui::SliderFloat("Smoothing", &road.grade, 0.0f, 1.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How much the road grade is flattened along its\n"
-                                      "length (higher = smoother/steadier slope).");
-                rc |= ImGui::SliderFloat("Shoulder", &road.shoulder, 0.0f, 12.0f, "%.1f m");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Width of the terrain blend beyond the road edge\n"
-                                      "that eases back into the natural ground.");
-                rc |= ImGui::SliderFloat("Texture tile", &road.texTile, 2.0f, 24.0f, "%.1f m");
-                if (rc) road.needsBuild = true;
-
-                // Edge fade is a pure shader effect (alpha taper at the ribbon
-                // edges) -- it needs no rebuild, so it's kept out of `rc`.
-                ImGui::SliderFloat("Edge fade", &road.fadeWidth, 0.0f,
-                                   road.width * 0.5f, "%.1f m");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Fade the road to transparent over this many metres\n"
-                                      "at each edge, blending it into the terrain (0 = off).");
-
-                // Surface texture picker (any diffuse texture in textures/).
-                if (!road.texFiles.empty() &&
-                    ImGui::BeginCombo("Surface", road.texFiles[road.texSel].c_str())) {
-                    for (int i = 0; i < static_cast<int>(road.texFiles.size()); ++i) {
-                        const bool sel = (i == road.texSel);
-                        if (ImGui::Selectable(road.texFiles[i].c_str(), sel)) {
-                            road.setSurface(road.texFiles[i]);
-                            road.texSel = i;
-                        }
-                        if (sel) ImGui::SetItemDefaultFocus();
-                    }
-                    ImGui::EndCombo();
-                }
-
-                ImGui::BeginDisabled(roadSel < 0 || roadSel >= static_cast<int>(road.roadPts.size()));
-                if (ImGui::Button("Delete selected")) {
-                    road.roadPts.erase(road.roadPts.begin() + roadSel);
-                    roadSel = -1;
-                    road.needsBuild = true;
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::BeginDisabled(road.roadPts.empty());
-                if (ImGui::Button("Undo point")) {
-                    road.roadPts.pop_back();
-                    if (roadSel >= static_cast<int>(road.roadPts.size())) roadSel = -1;
-                    road.needsBuild = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Clear")) { road.roadPts.clear(); roadSel = -1; road.needsBuild = true; }
-                ImGui::EndDisabled();
-
-                ImGui::Separator();
-                if (ImGui::Button("Save")) {
-                    std::ofstream f("road.txt");
-                    for (const glm::vec2& p : road.roadPts) f << p.x << ' ' << p.y << '\n';
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Load")) {
-                    std::ifstream f("road.txt");
-                    if (f) {
-                        road.roadPts.clear();
-                        glm::vec2 p;
-                        while (f >> p.x >> p.y) road.roadPts.push_back(p);
-                        roadSel = -1;
-                        road.needsBuild = true;
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(road.txt)");
-            }
-            ImGui::End(); }
+            // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
+            // hands it the state it may touch (see roadui::PanelState).
+            roadui::drawPanel({showRoads, road, roadEditMode, roadSel, roadSel2,
+                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
+                         paintMode = scatterMode = false; }, // don't fight over LMB
+                buildRoad, removeRoadPoint});
 
             if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
                 ImGui::Checkbox("Show cursor", &cursorVisible);
@@ -5108,6 +5222,7 @@ int main(int argc, char** argv) {
                 // Deferred context-menu creation requests (applied after the tree
                 // is drawn, so entities isn't mutated mid-iteration).
                 int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
+                int vehicleLightsReq = -1;
                 EntityType primChildType = EntityType::Box;
                 auto typeColor = [](EntityType t) -> ImU32 {
                     switch (t) {
@@ -5204,6 +5319,10 @@ int main(int argc, char** argv) {
                                                     cc->activeOnStart))
                                     setMainCamera(entities[i].id);
                             }
+                            if (entities[i].components.get<VehicleComponent>()) {
+                                ImGui::Separator();
+                                if (ImGui::MenuItem("Add headlights")) vehicleLightsReq = i;
+                            }
                             ImGui::Separator();
                             ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
                             if (ImGui::MenuItem("Delete")) delReq = i;
@@ -5250,6 +5369,7 @@ int main(int argc, char** argv) {
                 else if (emptyParentReq >= 0) addEmptyParent(emptyParentReq);
                 else if (emptyChildReq >= 0)  addEmptyChild(emptyChildReq);
                 else if (primChildReq >= 0)   addPrimitiveChild(primChildReq, primChildType);
+                else if (vehicleLightsReq >= 0) addVehicleLights(vehicleLightsReq);
                 // Apply a requested reparent (rejecting cycles).
                 if (reparentSrc >= 0 && reparentTo != -2) {
                     int si = -1;
@@ -5537,7 +5657,7 @@ int main(int argc, char** argv) {
                 }
                 ImGui::SeparatorText("New block defaults");
                 ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
-                if (ImGui::Button("Glotzel...")) showMaterials = true;
+                if (ImGui::Button("Materials...")) showMaterials = true;
                 ImGui::SameLine();
                 if (ImGui::Button("Models...")) showModels = true;
                 ImGui::TextDisabled("Walk into blocks in FPS mode (F).");
@@ -5547,7 +5667,7 @@ int main(int argc, char** argv) {
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.
             if (showMaterials) {
-                if (ImGui::Begin("Glotzel", &showMaterials)) {
+                if (ImGui::Begin("Materials", &showMaterials)) {
                     if (ImGui::Button("New")) {
                         matSel = static_cast<int>(materials.size());
                         document.addMaterial("Material " + std::to_string(materials.size()),
@@ -5975,6 +6095,32 @@ int main(int argc, char** argv) {
                     ImGui::Checkbox("Textures only", &assetTexturesOnly);
                     ImGui::TextDisabled("Drag a tile onto a material slot / the "
                                         "viewport; double-click a model to place it.");
+                    ImGui::TextDisabled("Drop files here from Explorer to copy them "
+                                        "into the project.");
+
+                    // Take an OS file drop that landed on this window. The hit test
+                    // uses the cursor position captured in the drop callback, not
+                    // the live one: the pointer may have moved on since, and a file
+                    // dropped on Assets belongs in Assets either way.
+                    if (!g_fileDrop.paths.empty()) {
+                        const ImVec2 wp = ImGui::GetWindowPos();
+                        const ImVec2 ws = ImGui::GetWindowSize();
+                        if (g_fileDrop.x >= wp.x && g_fileDrop.x < wp.x + ws.x &&
+                            g_fileDrop.y >= wp.y && g_fileDrop.y < wp.y + ws.y) {
+                            const std::string proj =
+                                currentProject.empty()
+                                    ? std::string()
+                                    : std::filesystem::path(currentProject)
+                                          .parent_path().generic_string();
+                            assetDropStatus =
+                                assetdrop::importInto(proj, g_fileDrop.paths, assetDb)
+                                    .message;
+                            g_fileDrop.paths.clear();
+                        }
+                    }
+                    if (!assetDropStatus.empty())
+                        ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "%s",
+                                           assetDropStatus.c_str());
                     ImGui::Separator();
 
                     // (Thumbnails finished off-thread are uploaded once per frame by
@@ -6097,7 +6243,7 @@ int main(int argc, char** argv) {
             // uses the edited code. Assign a script to an entity in the Inspector.
             if (showScriptEditor) {
                 bool openNewScript = false;
-                if (ImGui::Begin("Schnipsel", &showScriptEditor,
+                if (ImGui::Begin("Scripts", &showScriptEditor,
                                  ImGuiWindowFlags_MenuBar)) {
                     bool doSave = false;
                     if (ImGui::BeginMenuBar()) {
@@ -6391,6 +6537,7 @@ int main(int argc, char** argv) {
                       .set("uTexScale", texScale)
                       .set("uNormalStrength", normalStrength)
                       .set("uWaterLevel", waterLevel)
+                      .set("uWetness", roadWetness)
                       .set("uAlbedo", glm::vec3(0.5f)); // neutral grey where no layer covers
             {
                 int bound = 0;
@@ -6433,6 +6580,7 @@ int main(int argc, char** argv) {
             // editing shows a live preview instead (drawn in the viewport overlay).
             if (road.enabled && road.verts() > 0) {
                 road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
+                road.material().set("uWetness", roadWetness);   // rain-wet sheen
                 // Edge fade: pass the fade band + the UV-to-metres mapping, and route
                 // the road through the transparent (alpha-blended) queue when it's on.
                 const bool roadFades = road.fadeWidth > 0.0f;
@@ -6444,8 +6592,23 @@ int main(int argc, char** argv) {
                                 false, 1.0f, /*forceTransparent=*/roadFades);
             }
 
+            // Bridge decks, built by the same Build as the road they carry. Unlike
+            // the ribbon these cast shadows: there is ground under them to fall on.
+            if (road.enabled && road.hasBridges()) {
+                road.bridgeMaterial().set("uWaterLevel", waterLevel);
+                road.bridgeMaterial().set("uWetness", roadWetness);
+                renderer.submit(road.bridgeMesh(), road.bridgeMaterial(),
+                                glm::mat4(1.0f));
+            }
+
             // Tyre skid marks accumulated while driving (alpha-blended, on ground).
             skids.render(renderer);
+
+            // Rain wets the (primitive) test car too. Set every frame so the shared
+            // lit program never inherits another material's wetness.
+            carBodyMat.set("uWetness", roadWetness);
+            carCabinMat.set("uWetness", roadWetness);
+            carWheelMat.set("uWetness", roadWetness);
 
             // --- Physics car: draw the chassis + wheels from Jolt transforms.
             //     (Only the primitive test car -- a driven scene model renders
@@ -6577,6 +6740,7 @@ int main(int argc, char** argv) {
             for (const MaterialDef& md : materials) {
                 Material& m = gpuMats.emplace_back(lit);
                 m.set("uWaterLevel", -1.0e4f)
+                 .set("uWetness", roadWetness)
                  .set("uReflectivity", md.reflectivity)
                  .set("uRoughness", md.roughness)
                  .set("uGlass", md.glass ? 1 : 0);
@@ -6611,6 +6775,10 @@ int main(int argc, char** argv) {
                 if (b.type == EntityType::Empty) continue;  // grouping node, no geometry
                 // Player-start markers are authoring aids -- hidden while playing.
                 if (playMode && b.components.get<PlayerStartComponent>()) continue;
+                // Light markers (the glowing cube) are authoring aids too: hide them
+                // while playing so headlights etc. don't show a box -- the light
+                // itself still shines (collected further below).
+                if (playMode && b.type == EntityType::Light) continue;
                 if (b.type == EntityType::Model) {
                     // Imported model: draw every primitive with its baked material.
                     // Centre the model's AABB at b.center (so it matches the pick
@@ -6648,6 +6816,7 @@ int main(int argc, char** argv) {
                     const glm::vec3 lcol = lc ? lc->color : glm::vec3(1.0f);
                     Material& mat = lightMats.emplace_back(lit);
                     mat.set("uColorMode", 0).set("uWaterLevel", -1.0e4f)
+                       .set("uWetness", 0.0f) // markers glow, never wet
                        .set("uAlbedo", lcol * 1.5f).set("uReflectivity", 0.0f);
                     renderer.submit(mesh, mat, m, /*castsPointShadow=*/false);
                 } else {
@@ -6662,23 +6831,44 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // Any entity carrying a LightComponent becomes a real point light --
-            // decoupled from EntityType, so a box can glow too.
+            // Any entity carrying a LightComponent becomes a real light -- decoupled
+            // from EntityType, so a box can glow too. Point lights radiate omni;
+            // spot lights (type 1) shine a cone down the entity's forward (+Z), so
+            // parenting one to a car turns it into a headlight.
             std::vector<PointLight> pointLights;
+            std::vector<SpotLight>  spotLights;
             for (const Entity& b : entities) {
                 if (!b.activeInHierarchy) continue;          // deactivated: no light
                 const auto* lc = b.components.get<LightComponent>();
                 if (!lc) continue;
-                if (static_cast<int>(pointLights.size()) >= Renderer::kMaxPointLights) break;
-                PointLight pl;
-                pl.position    = b.center;
-                pl.color       = lc->color * lc->intensity;  // HDR radiance
-                pl.range       = lc->range;
-                pl.castShadows = lc->castShadows;
-                pl.shadowBias  = lc->shadowBias;
-                pointLights.push_back(pl);
+                if (lc->type == 1) {                          // spot
+                    if (static_cast<int>(spotLights.size()) >= Renderer::kMaxSpotLights)
+                        continue;
+                    SpotLight sl;
+                    sl.position  = b.center;
+                    sl.direction = glm::normalize(glm::quat(glm::radians(b.rotation)) *
+                                                  glm::vec3(0.0f, 0.0f, 1.0f));
+                    sl.color     = lc->color * lc->intensity; // HDR radiance
+                    sl.range     = lc->range;
+                    const float outer = glm::radians(glm::clamp(lc->spotAngle, 1.0f, 89.0f));
+                    const float inner = outer * (1.0f - glm::clamp(lc->spotBlend, 0.0f, 1.0f));
+                    sl.cosOuter  = std::cos(outer);
+                    sl.cosInner  = std::cos(inner);
+                    spotLights.push_back(sl);
+                } else {                                      // point
+                    if (static_cast<int>(pointLights.size()) >= Renderer::kMaxPointLights)
+                        continue;
+                    PointLight pl;
+                    pl.position    = b.center;
+                    pl.color       = lc->color * lc->intensity; // HDR radiance
+                    pl.range       = lc->range;
+                    pl.castShadows = lc->castShadows;
+                    pl.shadowBias  = lc->shadowBias;
+                    pointLights.push_back(pl);
+                }
             }
             renderer.setPointLights(pointLights);
+            renderer.setSpotLights(spotLights);
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
 
             // --- Multi-pass render with sky and planar water ------------
@@ -6795,20 +6985,8 @@ int main(int argc, char** argv) {
                                  glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
             glCullFace(GL_BACK);
             {   // trees mirror in the water (reflected view/eye)
-                VegDrawContext rctx;
-                rctx.viewProj         = proj * reflView;
-                rctx.camPos           = reflEye;
-                rctx.time             = now;
-                rctx.weather          = weather;
-                rctx.lightDir         = light.direction;
-                rctx.lightColor       = light.color;
-                rctx.ambient          = light.ambient;
-                rctx.fogColor         = fog.color;
-                rctx.fogSunColor      = fog.sunColor;
-                rctx.fogDensity       = fog.density;
-                rctx.fogHeightFalloff = fog.heightFalloff;
-                rctx.fogHeight        = fog.height;
-                veg.drawTrees(rctx);
+                veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, weather,
+                                               light, fog));
             }
 
             // 2) Refraction: scene only, clipping above water (deep-water clear).
@@ -6834,19 +7012,8 @@ int main(int argc, char** argv) {
 
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
-            VegDrawContext gctx;
-            gctx.viewProj         = mainVP;
-            gctx.camPos           = camPos;
-            gctx.time             = now;
-            gctx.weather          = weather;
-            gctx.lightDir         = light.direction;
-            gctx.lightColor       = light.color;
-            gctx.ambient          = light.ambient;
-            gctx.fogColor         = fog.color;
-            gctx.fogSunColor      = fog.sunColor;
-            gctx.fogDensity       = fog.density;
-            gctx.fogHeightFalloff = fog.heightFalloff;
-            gctx.fogHeight        = fog.height;
+            const FrameContext gctx =
+                makeFrameContext(mainVP, camPos, now, weather, light, fog);
             veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
 
             // Flowers into the HDR buffer, lit + fogged like grass.
@@ -6899,31 +7066,10 @@ int main(int argc, char** argv) {
             refractRT.bindDepthTexture(2);
             waterMesh.draw();
 
-            // --- Rain streaks (storm), into the HDR buffer --------------
-            if (rainIntensity > 0.001f) {
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                glDepthMask(GL_FALSE);
-                rain.bind();
-                rain.setMat4("uViewProj", mainVP);
-                rain.setVec3("uBoxCenter", camPos);
-                rain.setFloat("uBoxHeight", rainBoxH);
-                rain.setFloat("uBoxHalf", rainBoxHalf);
-                rain.setFloat("uStreak", glm::mix(1.2f, 3.0f, weather));
-                rain.setFloat("uTime", static_cast<float>(now));
-                rain.setVec3("uWind",
-                             glm::normalize(glm::vec3(0.6f, 0.0f, 0.3f)) *
-                                 glm::mix(0.05f, 0.6f, weather));
-                rain.setVec3("uRainColor",
-                             glm::clamp(light.ambient * 2.5f + light.color * 0.12f,
-                                        glm::vec3(0.0f), glm::vec3(2.0f)));
-                rain.setFloat("uIntensity", rainIntensity);
-                glBindVertexArray(rainVAO);
-                glDrawArrays(GL_LINES, 0, rainDrops * 2);
-                glBindVertexArray(0);
-                glDepthMask(GL_TRUE);
-                glDisable(GL_BLEND);
-            }
+            // --- Rain streaks (storm) + boat foam, into the HDR buffer --------
+            rain.draw(gctx);
+            spray.update(dt, waterLevel); // age the pool, then draw what survived
+            spray.draw(gctx);
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
@@ -7045,6 +7191,21 @@ int main(int argc, char** argv) {
                 }
                 const ImVec2 c(vmin.x + vsize.x * 0.5f, vmin.y + vsize.y * 0.5f);
 
+                // Water wash: a blue-green tint over the view when the car is in the
+                // water, deepening to a full underwater tint if the chase camera
+                // itself dips below the surface. Sells the plunge optically.
+                {
+                    float waterFx = carWaterSub * 0.4f;
+                    const float camDepth = waterLevel - camera.position().y;
+                    if (camDepth > 0.0f)
+                        waterFx = glm::max(waterFx, glm::clamp(camDepth * 0.6f, 0.0f, 0.72f));
+                    if (waterFx > 0.003f) {
+                        const int a = static_cast<int>(waterFx * 255.0f);
+                        dl->AddRectFilled(vmin, ImVec2(vmin.x + vsize.x, vmin.y + vsize.y),
+                                          IM_COL32(18, 74, 92, a));
+                    }
+                }
+
                 // Crosshair, sized to the view. Hidden when disabled, and always
                 // hidden while driving (you aim on foot, not from the car).
                 if (showCrosshair && !vehicleMode) {
@@ -7070,6 +7231,13 @@ int main(int argc, char** argv) {
                 if (!host.hud.empty())
                     shadowText(vmin.x + pad, vmin.y + pad + fs * 1.2f,
                                IM_COL32(235, 235, 240, 235), host.hud.c_str());
+                // Boat-mode banner while afloat: centred near the top of the view.
+                if (vehicleMode && boatMode) {
+                    const char* bm = "~ BOAT MODE ~";
+                    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, bm);
+                    shadowText(c.x - sz.x * 0.5f, vmin.y + pad,
+                               IM_COL32(130, 210, 255, 255), bm);
+                }
             }
 
             // --- Idle throttle: decide whether the NEXT frame runs full-rate ---
@@ -7099,12 +7267,17 @@ int main(int argc, char** argv) {
             if (interacting) lastActive = now;
             activeFrame = (now - lastActive) < kIdleGrace;
 
+#ifndef FITZEL_PLAYER
+            // Whatever the Assets panel didn't claim was dropped somewhere else (or
+            // while it was closed). Drop it on the floor rather than let it queue up
+            // and ride along with the next drop, which would import the wrong files
+            // at the wrong moment.
+            g_fileDrop.paths.clear();
+#endif
             gui.endFrame();
             window.swapBuffers();
         }
 
-        glDeleteBuffers(1, &rainVBO);
-        glDeleteVertexArrays(1, &rainVAO);
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());
         return 1;

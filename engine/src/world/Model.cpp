@@ -31,6 +31,7 @@
 #endif
 
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -646,9 +647,13 @@ std::string findUnityTexture(const std::string& baseDir, const std::string& matN
 // Convert one assimp mesh into a de-indexed ModelPrimitive, baking `world` into
 // the positions/normals (matching loadGltf's static output). `modelStem` is the
 // source file's name (no ext), used as a fallback key for Unity texture matching.
+// `srcSkin`, when given, is the mesh's per-vertex binding (indexed like
+// mesh->mVertices); it is de-indexed alongside the vertices. `world` is baked in
+// either way -- see loadSkinnedModel for why a skinned mesh wants that too.
 ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
                                  const glm::mat4& world, const std::string& baseDir,
-                                 const std::string& modelStem, bool flipV) {
+                                 const std::string& modelStem, bool flipV,
+                                 const std::vector<VertexSkin>* srcSkin = nullptr) {
     const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(world)));
     ModelPrimitive mp;
     if (mesh->mMaterialIndex < scene->mNumMaterials) {
@@ -693,11 +698,13 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
     const bool hasN  = mesh->HasNormals();
     const bool hasUV = mesh->HasTextureCoords(0);
     mp.vertices.reserve(static_cast<std::size_t>(mesh->mNumFaces) * 3 * 8);
+    if (srcSkin) mp.skin.reserve(static_cast<std::size_t>(mesh->mNumFaces) * 3);
     for (unsigned f = 0; f < mesh->mNumFaces; ++f) {
         const aiFace& face = mesh->mFaces[f];
         if (face.mNumIndices != 3) continue; // triangulated on import
         for (int k = 0; k < 3; ++k) {
             const unsigned idx = face.mIndices[k];
+            if (srcSkin && idx < srcSkin->size()) mp.skin.push_back((*srcSkin)[idx]);
             const aiVector3D& P = mesh->mVertices[idx];
             const glm::vec3 wp = glm::vec3(world * glm::vec4(P.x, P.y, P.z, 1.0f));
             glm::vec3 wn(0.0f, 1.0f, 0.0f);
@@ -737,6 +744,179 @@ void collectColladaNode(const aiScene* scene, const aiNode* node,
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
         collectColladaNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV, out, lo, hi);
+}
+
+// --- Rig extraction (assimp -> SkeletonJoint / VertexSkin / AnimationClip) ---
+
+// The skeleton plus the node->joint lookup used to resolve bones and animation
+// channels back to it.
+struct Rig {
+    std::vector<SkeletonJoint>             joints;
+    std::unordered_map<const aiNode*, int> index;
+};
+
+// Build the skeleton from every node that is a bone of some mesh, plus every
+// ancestor up to the scene root. The ancestors matter twice over: they complete
+// the transform chain (assimp's bone offset matrix is the inverse of the *whole*
+// chain's bind transform, so a missing link silently misplaces the joint), and an
+// exporter often animates an in-between node -- a hip pivot, an armature, the
+// root's own unit-scale transform -- that is not itself a bone.
+Rig buildRig(const aiScene* scene) {
+    Rig rig;
+    std::unordered_set<const aiNode*> needed;
+    for (unsigned m = 0; m < scene->mNumMeshes; ++m) {
+        const aiMesh* mesh = scene->mMeshes[m];
+        for (unsigned b = 0; b < mesh->mNumBones; ++b) {
+            const aiNode* n = scene->mRootNode->FindNode(mesh->mBones[b]->mName);
+            // Walk to the root; stop at the first node already marked, since
+            // everything above it was marked by whoever put it there.
+            for (; n; n = n->mParent)
+                if (!needed.insert(n).second) break;
+        }
+    }
+    if (needed.empty()) return rig;
+
+    // Pre-order, so a joint's parent always has the lower index. Only marked nodes
+    // are visited, and a marked node's parent is marked by construction.
+    std::function<void(const aiNode*, int)> walk = [&](const aiNode* n, int parent) {
+        if (!needed.count(n)) return;
+        const int me = static_cast<int>(rig.joints.size());
+        rig.index[n] = me;
+        rig.joints.emplace_back();
+        SkeletonJoint& sj = rig.joints[me];
+        sj.parent = parent;
+        // The node's own transform is the pose the joint sits in when no channel
+        // drives it -- exactly what restT/R/S mean to sampleSkeleton.
+        glm::vec3 skew; glm::vec4 persp;
+        glm::decompose(aiToGlm(n->mTransformation), sj.restS, sj.restR, sj.restT,
+                       skew, persp);
+        for (unsigned c = 0; c < n->mNumChildren; ++c) walk(n->mChildren[c], me);
+    };
+    walk(scene->mRootNode, -1);
+
+    // inverseBind comes from the bones themselves. A pure in-between node skins
+    // nothing, so its identity default is never sampled -- it only passes its
+    // transform down the chain.
+    for (unsigned m = 0; m < scene->mNumMeshes; ++m) {
+        const aiMesh* mesh = scene->mMeshes[m];
+        for (unsigned b = 0; b < mesh->mNumBones; ++b) {
+            const aiBone* bone = mesh->mBones[b];
+            const auto it = rig.index.find(scene->mRootNode->FindNode(bone->mName));
+            if (it != rig.index.end())
+                rig.joints[it->second].inverseBind = aiToGlm(bone->mOffsetMatrix);
+        }
+    }
+    return rig;
+}
+
+// One mesh's per-vertex bindings, keyed like mesh->mVertices.
+std::vector<VertexSkin> buildMeshSkin(const aiScene* scene, const aiMesh* mesh,
+                                      const Rig& rig) {
+    std::vector<VertexSkin> vs(mesh->mNumVertices);
+    std::vector<int> used(mesh->mNumVertices, 0);
+    for (unsigned b = 0; b < mesh->mNumBones; ++b) {
+        const aiBone* bone = mesh->mBones[b];
+        const auto it = rig.index.find(scene->mRootNode->FindNode(bone->mName));
+        if (it == rig.index.end()) continue;
+        for (unsigned w = 0; w < bone->mNumWeights; ++w) {
+            const aiVertexWeight& vw = bone->mWeights[w];
+            if (vw.mVertexId >= mesh->mNumVertices || vw.mWeight <= 0.0f) continue;
+            VertexSkin& s = vs[vw.mVertexId];
+            int& n = used[vw.mVertexId];
+            if (n < 4) {
+                s.joints[n] = it->second; s.weights[n] = vw.mWeight; ++n;
+            } else {
+                // Past four influences keep the strongest: dropping the largest
+                // weight instead would visibly tear the mesh.
+                int weakest = 0;
+                for (int k = 1; k < 4; ++k)
+                    if (s.weights[k] < s.weights[weakest]) weakest = k;
+                if (vw.mWeight > s.weights[weakest]) {
+                    s.joints[weakest]  = it->second;
+                    s.weights[weakest] = vw.mWeight;
+                }
+            }
+        }
+    }
+    // Renormalise: dropping the fifth-and-beyond influences leaves the sum short,
+    // which would shrink those vertices toward the origin.
+    for (VertexSkin& s : vs) {
+        const float sum = s.weights[0] + s.weights[1] + s.weights[2] + s.weights[3];
+        if (sum > 1e-6f)
+            for (float& w : s.weights) w /= sum;
+    }
+    return vs;
+}
+
+// Every animation in the scene, with the channels resolved onto rig joints.
+void collectAnimations(const aiScene* scene, const Rig& rig, ModelData& out) {
+    for (unsigned a = 0; a < scene->mNumAnimations; ++a) {
+        const aiAnimation* an = scene->mAnimations[a];
+        // assimp keys are in ticks. mTicksPerSecond is 0 when the file omits it;
+        // 25 is assimp's own documented fallback.
+        const double tps = an->mTicksPerSecond > 1e-6 ? an->mTicksPerSecond : 25.0;
+        AnimationClip clip;
+        clip.name = an->mName.length ? an->mName.C_Str()
+                                     : ("clip " + std::to_string(a));
+        clip.duration = static_cast<float>(an->mDuration / tps);
+        clip.tracks.resize(rig.joints.size());
+        for (unsigned c = 0; c < an->mNumChannels; ++c) {
+            const aiNodeAnim* ch = an->mChannels[c];
+            const aiNode* n = scene->mRootNode->FindNode(ch->mNodeName);
+            const auto it = n ? rig.index.find(n) : rig.index.end();
+            if (it == rig.index.end()) continue; // a channel on something we don't skin
+            JointTrack& tr = clip.tracks[it->second];
+
+            tr.tTimes.resize(ch->mNumPositionKeys);
+            tr.tVals.resize(ch->mNumPositionKeys);
+            for (unsigned k = 0; k < ch->mNumPositionKeys; ++k) {
+                tr.tTimes[k] = static_cast<float>(ch->mPositionKeys[k].mTime / tps);
+                const aiVector3D& v = ch->mPositionKeys[k].mValue;
+                tr.tVals[k] = glm::vec3(v.x, v.y, v.z);
+            }
+            tr.rTimes.resize(ch->mNumRotationKeys);
+            tr.rVals.resize(ch->mNumRotationKeys);
+            for (unsigned k = 0; k < ch->mNumRotationKeys; ++k) {
+                tr.rTimes[k] = static_cast<float>(ch->mRotationKeys[k].mTime / tps);
+                const aiQuaternion& q = ch->mRotationKeys[k].mValue;
+                tr.rVals[k] = glm::quat(q.w, q.x, q.y, q.z);
+            }
+            tr.sTimes.resize(ch->mNumScalingKeys);
+            tr.sVals.resize(ch->mNumScalingKeys);
+            for (unsigned k = 0; k < ch->mNumScalingKeys; ++k) {
+                tr.sTimes[k] = static_cast<float>(ch->mScalingKeys[k].mTime / tps);
+                const aiVector3D& v = ch->mScalingKeys[k].mValue;
+                tr.sVals[k] = glm::vec3(v.x, v.y, v.z);
+            }
+        }
+        if (clip.duration > 0.0f) out.animations.push_back(std::move(clip));
+    }
+}
+
+// Flat walk for a rigged model: like collectColladaNode, but skinned meshes also
+// carry their per-vertex bindings out.
+void collectSkinnedNode(const aiScene* scene, const aiNode* node,
+                        const glm::mat4& parent, const std::string& baseDir,
+                        const std::string& modelStem, bool flipV, const Rig& rig,
+                        ModelData& out, float& lo, float& hi) {
+    const glm::mat4 world = parent * aiToGlm(node->mTransformation);
+    for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
+        const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
+        if (!mesh || mesh->mNumFaces == 0) continue;
+        const bool skinned = mesh->mNumBones > 0 && !rig.joints.empty();
+        std::vector<VertexSkin> vs;
+        if (skinned) vs = buildMeshSkin(scene, mesh, rig);
+        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem,
+                                              flipV, skinned ? &vs : nullptr);
+        for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
+            lo = glm::min(lo, mp.vertices[i + 1]);
+            hi = glm::max(hi, mp.vertices[i + 1]);
+        }
+        if (mp.vertexCount() > 0) out.primitives.push_back(std::move(mp));
+    }
+    for (unsigned c = 0; c < node->mNumChildren; ++c)
+        collectSkinnedNode(scene, node->mChildren[c], world, baseDir, modelStem,
+                           flipV, rig, out, lo, hi);
 }
 
 // Structure-preserving walk: one ModelNode per mesh-bearing node, its meshes
@@ -802,6 +982,63 @@ ModelData loadCollada(const std::string& path, bool flipV) {
     float hi = std::numeric_limits<float>::lowest();
     collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
                        flipV, out, lo, hi);
+    if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
+    return out;
+}
+
+ModelData loadSkinnedModel(const std::string& path, bool flipV) {
+    ModelData out;
+    Assimp::Importer imp;
+    // Collapse FBX pivots. Left on (assimp's default), every node is split into a
+    // "<name>_$AssimpFbx$_PreRotation / _Rotation / _Translation / ..." chain, with
+    // the exporter's axis conversion sitting on one synthetic node while the clip's
+    // channels address another. The two then fight: measured on a Reallusion
+    // character, its T-pose stack stood up but the walk -- whose extra channel
+    // drives the node right under the pre-rotation -- laid it on its back. Off,
+    // each joint is one node whose transform and animation already agree.
+    imp.SetPropertyBool(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, false);
+    const aiScene* scene = imp.ReadFile(
+        path, aiProcess_Triangulate | aiProcess_GenSmoothNormals |
+              aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality |
+              aiProcess_LimitBoneWeights); // skinPrimitive blends four at most
+    if (!scene || !scene->mRootNode ||
+        (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE)) {
+        std::fprintf(stderr, "[Fitzel] failed to load model '%s': %s\n",
+                     path.c_str(), imp.GetErrorString());
+        return out;
+    }
+
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
+    const std::string stem = std::filesystem::path(path).stem().string();
+
+    // Skinning here runs in world space: the vertices are baked through their
+    // node's bind transform (as the static path does), and the palette then moves
+    // them relative to that bind pose. That is what assimp's bone offset matrix
+    // wants -- measured on a Reallusion FBX it is inverse(bone's world bind
+    // transform) alone, and does *not* fold in the mesh node's transform the way
+    // the docs' "mesh space to bone space" reading suggests. Leave the vertices in
+    // mesh space and the palette resolves to identity at rest, which drops the
+    // exporter's axis conversion on the floor: the character renders lying down.
+    const Rig rig = buildRig(scene);
+    if (!rig.joints.empty()) {
+        out.skeleton = rig.joints;
+        collectAnimations(scene, rig, out);
+    }
+    // Bones but no clips: the model can only ever stand in its bind pose, and
+    // skinning it every frame to do that is waste. Fall through to the static path,
+    // which bakes the node transforms in and renders it exactly as before.
+    const bool skinned = !out.skeleton.empty() && !out.animations.empty();
+    if (!skinned) { out.skeleton.clear(); out.animations.clear(); }
+
+    float lo = std::numeric_limits<float>::max();
+    float hi = std::numeric_limits<float>::lowest();
+    if (skinned)
+        collectSkinnedNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
+                           flipV, rig, out, lo, hi);
+    else
+        collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
+                           flipV, out, lo, hi);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
     return out;
 }

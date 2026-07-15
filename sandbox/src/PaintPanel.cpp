@@ -35,7 +35,7 @@ void drawPanel(const PanelState& s) {
         }
         if (slot == 0)
             ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
-                "Add a textured layer in the Buddel panel first.");
+                "Add a textured layer in the Terrain panel first.");
         else if (s.layer >= slot)
             s.layer = 0; // a layer was removed -> fall back to the first slot
 
