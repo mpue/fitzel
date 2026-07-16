@@ -156,6 +156,8 @@ uniform float     uTexScale;   // world units -> texture tiling (fallback)
 uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal-map relief
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 uniform float     uWetness;        // rain wetness 0..1 (sky-facing gets dark+glossy)
+uniform float     uRainRings;      // drop-impact rings 0..1 (0 = off; the road sets it)
+uniform float     uTime;           // seconds, for the rings' clock
 
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
@@ -340,6 +342,51 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 
 // Perturb the geometry normal `N` by a tangent-space normal map, building the
 // TBN basis from screen-space derivatives (no per-vertex tangents needed).
+// --- Rain rings ---------------------------------------------------------------
+// Drops landing on wet ground, faked outright: no particles, no geometry, no extra
+// draw call. World space is cut into cells, each cell drips once per cycle staggered
+// by its own hash, and a ring spreads from a random spot inside it.
+//
+// The wave's radial slope goes straight into the normal instead of building a height
+// field and differencing it -- the derivative of a sine is another sine, so one cheap
+// term per drop replaces three samples. Nothing is stored between frames: a drop's
+// whole life is a function of the clock and its cell -- hash21 above is the whole
+// state.
+// `amount` is the drop rate times the user's strength dial, so it runs past 1.
+vec3 rainRings(vec3 N, vec2 wp, float amount, float time) {
+    if (amount <= 0.002) return N;      // dry: not a single hash
+    const float kCell  = 0.5;           // metres between drops
+    const float kFreq  = 34.0;          // ring wavelength
+    const float kRate  = 1.9;           // drops per second per cell
+    // Tilt at full strength. ~0.4 of lateral push on a unit normal is about 11
+    // degrees -- enough to catch the sun. (The first cut used 0.05, i.e. 1.5
+    // degrees, which is invisible on anything but a mirror.)
+    const float kTilt  = 0.4;
+    vec2 cell = floor(wp / kCell);
+    vec2 tilt = vec2(0.0);
+    // 3x3 neighbourhood: a ring reaches half a cell, so a drop can never expand in
+    // from further out than its neighbours -- no popping at the cell borders.
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2  c   = cell + vec2(x, y);
+            float age = fract(time * kRate + hash21(c)); // its own schedule
+            vec2  at  = (c + vec2(hash21(c + 7.1), hash21(c + 3.7))) * kCell;
+            vec2  d   = wp - at;
+            float r   = length(d);
+            float f   = age * kCell * 0.5;               // the expanding front
+            if (r > f) continue;                          // ahead of it: still flat
+            // A decaying ripple behind the front, dying with the drop. The decay is
+            // gentle enough that the ring still reads at its outer edge -- at -7 it
+            // had lost 83% of its amplitude by the time it got there, so only the
+            // very centre of each drop was doing any work.
+            float w = cos((r - f) * kFreq) * exp(-4.0 * r) * (1.0 - age);
+            tilt += (d / max(r, 1e-4)) * w;
+        }
+    }
+    N.xz += tilt * amount * kTilt; // gated to up-facing ground by the caller
+    return normalize(N);
+}
+
 vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap) {
     vec3 nt = texture(nmap, uv).xyz * 2.0 - 1.0; // tangent-space normal
     vec3 dp1 = dFdx(worldPos), dp2 = dFdy(worldPos);
@@ -384,6 +431,13 @@ void main() {
     } else if (uHasNormalMap == 1) {
         N = applyNormalMap(N, vWorldPos, vUV, uNormalMap);
     }
+
+    // Drops striking the surface. Before the wetness below, so the rings catch the
+    // wet sheen too -- that glinting is most of what sells them; the geometry never
+    // moves. Gated on the up-facing normal like the wetness itself.
+    if (uRainRings > 0.002)
+        N = rainRings(N, vWorldPos.xz, uRainRings * clamp(N.y * 1.3, 0.0, 1.0),
+                      uTime);
 
     // Rain wetness: sky-exposed (up-facing) surfaces darken and turn glossy while
     // it rains. Gated by the up-facing normal so walls/undersides stay dry.

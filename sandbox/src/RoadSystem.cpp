@@ -44,6 +44,23 @@ void smooth(std::vector<float>& prof, int passes) {
     }
 }
 
+// The tokens texture packs use to mark a normal map. "_gl" alone isn't enough --
+// the OpenGL-vs-DirectX suffix rides along on other maps too.
+const char* const kNormalTokens[] = {"_nor", "_normal", "_nrm", "normalgl"};
+
+// A normal map, and one we can actually decode: EXR normal maps sit next to the
+// PNGs in the content pack, but the texture loader wants an LDR image here.
+bool isRoadNormal(const std::string& filename) {
+    const std::string ext = std::filesystem::path(filename).extension().string();
+    if (ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".tga") return false;
+    std::string low = filename;
+    std::transform(low.begin(), low.end(), low.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char* tok : kNormalTokens)
+        if (low.find(tok) != std::string::npos) return true;
+    return false;
+}
+
 // Squared distance from point p to segment [a,b], plus the projection param t.
 float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
     const glm::vec2 ab = b - a;
@@ -67,6 +84,16 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
     if (m_tex) m_mat.setTexture("uTexture", *m_tex, 0);
     for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
         if (texFiles[i].find("asphalt") != std::string::npos) texSel = i;
+    // ...and its grain, if the pack ships one. Asphalt is nearly flat shading
+    // without it: a ribbon lit only by its geometry normal reads as painted-on.
+    if (texSel >= 0 && texSel < static_cast<int>(texFiles.size())) {
+        const std::string n = normalFor(texFiles[texSel]);
+        if (!n.empty()) {
+            setNormal(n);
+            for (int i = 0; i < static_cast<int>(normFiles.size()); ++i)
+                if (normFiles[i] == n) normSel = i;
+        }
+    }
 
     // Bridges are cast concrete, and not user-selectable: a deck is structure, not
     // surface. uRoadFade is pinned off here on purpose -- the road turns the shared
@@ -78,17 +105,30 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
 }
 
 void RoadSystem::refreshTextures(const std::string& projectDir) {
-    // Remember the current selection so a project switch doesn't reset it.
+    // Remember the current selections so a project switch doesn't reset them.
     const std::string prevSel =
         (texSel >= 0 && texSel < static_cast<int>(texFiles.size()))
             ? texFiles[texSel] : std::string();
+    const std::string prevNorm =
+        (normSel >= 0 && normSel < static_cast<int>(normFiles.size()))
+            ? normFiles[normSel] : std::string();
 
     texFiles.clear();
     m_texPaths.clear();
-    std::unordered_set<std::string> seen; // dedupe by display name
+    normFiles.clear();
+    m_normPaths.clear();
+    std::unordered_set<std::string> seen;     // dedupe by display name
+    std::unordered_set<std::string> seenNorm;
 
     auto add = [&](const std::filesystem::path& p) {
         const std::string name = p.filename().string();
+        // A file is one or the other: isRoadAlbedo already rejects "_nor".
+        if (isRoadNormal(name)) {
+            if (!seenNorm.insert(name).second) return;
+            normFiles.push_back(name);
+            m_normPaths.push_back(p.generic_string());
+            return;
+        }
         if (!isRoadAlbedo(name) || !seen.insert(name).second) return;
         texFiles.push_back(name);
         m_texPaths.push_back(p.generic_string());
@@ -105,21 +145,69 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
              std::filesystem::recursive_directory_iterator(projectDir, ec))
             if (!e.is_directory()) add(e.path());
 
-    // Sort display names and keep the parallel path list aligned.
-    std::vector<int> order(texFiles.size());
-    for (int i = 0; i < static_cast<int>(order.size()); ++i) order[i] = i;
-    std::sort(order.begin(), order.end(),
-              [&](int a, int b) { return texFiles[a] < texFiles[b]; });
-    std::vector<std::string> sf, sp;
-    sf.reserve(order.size()); sp.reserve(order.size());
-    for (int i : order) { sf.push_back(texFiles[i]); sp.push_back(m_texPaths[i]); }
-    texFiles.swap(sf);
-    m_texPaths.swap(sp);
+    // Sort display names and keep the parallel path lists aligned.
+    auto sortPair = [](std::vector<std::string>& names, std::vector<std::string>& paths) {
+        std::vector<int> order(names.size());
+        for (int i = 0; i < static_cast<int>(order.size()); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return names[a] < names[b]; });
+        std::vector<std::string> sn, sp;
+        sn.reserve(order.size()); sp.reserve(order.size());
+        for (int i : order) { sn.push_back(names[i]); sp.push_back(paths[i]); }
+        names.swap(sn);
+        paths.swap(sp);
+    };
+    sortPair(texFiles, m_texPaths);
+    sortPair(normFiles, m_normPaths);
 
-    // Restore the selection by name (else clamp into range).
+    // Restore the selections by name (else fall back: first surface, no normal).
     texSel = 0;
     for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
         if (texFiles[i] == prevSel) { texSel = i; break; }
+    normSel = -1;
+    for (int i = 0; i < static_cast<int>(normFiles.size()); ++i)
+        if (normFiles[i] == prevNorm) { normSel = i; break; }
+}
+
+std::string RoadSystem::normalFor(const std::string& file) const {
+    // Swap the colour token for each normal token and see what the pack has:
+    // asphalt_02_diff_4k.jpg -> asphalt_02_nor_gl_4k.png. Packs are consistent
+    // about this, and it saves picking the obvious partner by hand every time.
+    const std::string stem = std::filesystem::path(file).stem().string();
+    for (const char* colour : {"_diff", "_diffuse", "_albedo", "_basecolor", "_col"}) {
+        const std::size_t at = stem.find(colour);
+        if (at == std::string::npos) continue;
+        const std::string head = stem.substr(0, at);
+        const std::string tail = stem.substr(at + std::strlen(colour));
+        for (int i = 0; i < static_cast<int>(normFiles.size()); ++i) {
+            const std::string ns = std::filesystem::path(normFiles[i]).stem().string();
+            // Same pack (head) and same resolution/variant suffix (tail): the "4k"
+            // in asphalt_02_nor_gl_4k has to match, or a 1k normal lands on a 4k
+            // colour and the grain comes out the wrong size.
+            if (ns.rfind(head, 0) == 0 && ns.size() >= tail.size() &&
+                ns.compare(ns.size() - tail.size(), tail.size(), tail) == 0)
+                return normFiles[i];
+        }
+    }
+    return std::string();
+}
+
+void RoadSystem::setNormal(const std::string& file) {
+    if (file.empty()) {
+        m_normTex.reset();
+        m_mat.set("uHasNormalMap", 0);
+        normSel = -1;
+        return;
+    }
+    std::string path;
+    for (std::size_t i = 0; i < normFiles.size(); ++i)
+        if (normFiles[i] == file) { path = m_normPaths[i]; break; }
+    if (path.empty()) path = m_texDir + "/" + file;
+    if (auto t = m_assetDb.loadTexture(path)) {
+        m_normTex = t;
+        m_mat.setTexture("uNormalMap", *m_normTex, 1); // unit 1: uTexture holds 0
+        m_mat.set("uHasNormalMap", 1);
+    }
 }
 
 void RoadSystem::setSurface(const std::string& file) {
@@ -153,12 +241,15 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"width",     width},
         {"texTile",   texTile},
         {"fadeWidth", fadeWidth},
+        {"rainRings", rainRings},
         {"grade",     grade},
         {"shoulder",  shoulder},
         // The surface goes by name, not index: the texture list is rebuilt from
         // disk each run, so an index would point somewhere else next time.
         {"surface",   (texSel >= 0 && texSel < static_cast<int>(texFiles.size()))
                           ? texFiles[texSel] : std::string()},
+        {"normal",    (normSel >= 0 && normSel < static_cast<int>(normFiles.size()))
+                          ? normFiles[normSel] : std::string()},
         {"bridges",   bridges_},
         {"bridgeStyle", {
             {"deckThick",   bridgeStyle.deckThick},
@@ -186,6 +277,7 @@ void RoadSystem::load(const nlohmann::json& j) {
     width     = j.value("width",     5.0f);
     texTile   = j.value("texTile",   8.0f);
     fadeWidth = j.value("fadeWidth", 0.0f);
+    rainRings = j.value("rainRings", 1.0f);
     grade     = j.value("grade",     0.55f);
     shoulder  = j.value("shoulder",  3.0f);
 
@@ -194,6 +286,23 @@ void RoadSystem::load(const nlohmann::json& j) {
         setSurface(surf);
         for (int i = 0; i < static_cast<int>(texFiles.size()); ++i)
             if (texFiles[i] == surf) texSel = i;
+    }
+
+    // Normal map. Absent in scenes saved before it existed -- those get the one
+    // that matches their surface, which is what they would have picked anyway.
+    // An explicit "" means the user cleared it, and that is honoured.
+    if (const auto n = j.find("normal"); n != j.end()) {
+        const std::string nf = n->get<std::string>();
+        setNormal(nf);
+        for (int i = 0; i < static_cast<int>(normFiles.size()); ++i)
+            if (normFiles[i] == nf) normSel = i;
+    } else if (!surf.empty()) {
+        const std::string nf = normalFor(surf);
+        if (!nf.empty()) {
+            setNormal(nf);
+            for (int i = 0; i < static_cast<int>(normFiles.size()); ++i)
+                if (normFiles[i] == nf) normSel = i;
+        }
     }
 
     // Bridges are absent from scenes saved before they existed -- those roads

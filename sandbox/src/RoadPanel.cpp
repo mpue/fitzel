@@ -154,7 +154,16 @@ void drawPanel(const PanelState& s) {
             ImGui::SetTooltip("Fade the road to transparent over this many metres\n"
                               "at each edge, blending it into the terrain (0 = off).");
 
-        // Surface texture picker (any diffuse texture in textures/).
+        // Also a pure shader effect -- no rebuild, so out of `rc` like the fade.
+        ImGui::SliderFloat("Rain rings", &s.road.rainRings, 0.0f, 3.0f, "%.2fx");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How hard rain drops dent the wet road (0 = off).\n"
+                              "Only shows while it is actually raining AND the\n"
+                              "surface is wet -- turn the storm up to judge it.");
+
+        // Surface texture picker (any diffuse texture in textures/). Picking one
+        // brings its matching normal map along, so the common case needs no second
+        // trip to the combo below -- but the combo is there to override or clear it.
         if (!s.road.texFiles.empty() &&
             ImGui::BeginCombo("Surface", s.road.texFiles[s.road.texSel].c_str())) {
             for (int i = 0; i < static_cast<int>(s.road.texFiles.size()); ++i) {
@@ -162,11 +171,42 @@ void drawPanel(const PanelState& s) {
                 if (ImGui::Selectable(s.road.texFiles[i].c_str(), sel)) {
                     s.road.setSurface(s.road.texFiles[i]);
                     s.road.texSel = i;
+                    const std::string n = s.road.normalFor(s.road.texFiles[i]);
+                    s.road.setNormal(n); // "" clears it: a pack without one stays flat
+                    s.road.normSel = -1;
+                    for (int k = 0; k < static_cast<int>(s.road.normFiles.size()); ++k)
+                        if (s.road.normFiles[k] == n) s.road.normSel = k;
                 }
                 if (sel) ImGui::SetItemDefaultFocus();
             }
             ImGui::EndCombo();
         }
+
+        // Normal map: the asphalt's grain. Without one the ribbon is lit by its
+        // geometry normal alone and reads as painted on, especially under a low sun.
+        const char* curN = (s.road.normSel >= 0 &&
+                            s.road.normSel < static_cast<int>(s.road.normFiles.size()))
+                               ? s.road.normFiles[s.road.normSel].c_str()
+                               : "(none)";
+        if (ImGui::BeginCombo("Normal", curN)) {
+            if (ImGui::Selectable("(none)", s.road.normSel < 0)) {
+                s.road.setNormal(std::string());
+                s.road.normSel = -1;
+            }
+            for (int i = 0; i < static_cast<int>(s.road.normFiles.size()); ++i) {
+                const bool sel = (i == s.road.normSel);
+                if (ImGui::Selectable(s.road.normFiles[i].c_str(), sel)) {
+                    s.road.setNormal(s.road.normFiles[i]);
+                    s.road.normSel = i;
+                }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Follows the surface by name when you pick one\n"
+                              "(asphalt_02_diff_4k -> asphalt_02_nor_gl_4k).\n"
+                              "Strength is the global \"Normal strength\" in Terrain.");
 
         ImGui::BeginDisabled(s.sel < 0 || s.sel >= static_cast<int>(s.road.roadPts.size()));
         if (ImGui::Button("Delete selected")) s.removePoint(s.sel);

@@ -62,6 +62,10 @@ public:
     // Swap the surface texture (by file name; resolved against the scanned
     // texture dirs, see refreshTextures).
     void setSurface(const std::string& file);
+    // Swap the surface's normal map, which is what gives the asphalt its grain
+    // under a low sun. Pass "" for none. The mesh needs no tangents: the lit shader
+    // builds a frame from screen-space derivatives (see applyNormalMap).
+    void setNormal(const std::string& file);
 
     // --- Scene persistence ---------------------------------------------------
     // The road's whole scene state: control points, build params, surface and
@@ -74,11 +78,18 @@ public:
     void save(nlohmann::json& j) const;
     void load(const nlohmann::json& j);
 
-    // Rebuild the selectable-surface list from the built-in content texture dir
-    // plus the open project folder (`projectDir`, scanned recursively; pass "" for
-    // none). Call it whenever the project changes so project-local road textures
-    // appear in the picker. The current selection is preserved by file name.
+    // Rebuild the selectable surface + normal-map lists from the built-in content
+    // texture dir plus the open project folder (`projectDir`, scanned recursively;
+    // pass "" for none). Call it whenever the project changes so project-local road
+    // textures appear in the pickers. Both selections are preserved by file name.
     void refreshTextures(const std::string& projectDir);
+
+    // The normal map that goes with `file` by naming convention -- the same stem
+    // with the colour token swapped for a normal one (asphalt_02_diff_4k.jpg ->
+    // asphalt_02_nor_gl_4k.png). "" when the pack ships none. Used to follow the
+    // surface picker, so choosing asphalt brings asphalt's grain with it instead of
+    // making you find the matching file yourself.
+    std::string normalFor(const std::string& file) const;
 
     // --- Accessors for the renderer / physics / vegetation -------------------
     const fitzel::Mesh& mesh() const { return m_mesh; }
@@ -101,12 +112,15 @@ public:
     float                    width     = 5.0f;
     float                    texTile   = 8.0f; // world metres per texture tile
     float                    fadeWidth = 0.0f; // metres of edge alpha-fade (0 = off)
+    float                    rainRings = 1.0f; // drop-impact ring strength (0 = off)
     float                    grade     = 0.55f; // 0..1 longitudinal smoothing (flatter road)
     float                    shoulder  = 3.0f; // metres of terrain blend beyond the edge
     bool                     needsBuild = false; // roadPts/width/grade changed since Build
     bool                     vegDirty  = false; // road changed -> re-clear plants
     std::vector<std::string> texFiles;         // selectable diffuse textures (display names)
     int                      texSel = 0;
+    std::vector<std::string> normFiles;        // selectable normal maps (display names)
+    int                      normSel = -1;     // -1 = none (flat, lit by geometry alone)
 
     // A stretch of road the user has asked to be carried on a bridge, named by the
     // two control points at its ends (indices into roadPts, either order). Points
@@ -147,9 +161,11 @@ private:
     fitzel::AssetDatabase&   m_assetDb;
     fitzel::TerrainStreamer& m_streamer;
     std::string              m_texDir;
-    std::vector<std::string> m_texPaths; // full paths, parallel to texFiles
+    std::vector<std::string> m_texPaths;  // full paths, parallel to texFiles
+    std::vector<std::string> m_normPaths; // full paths, parallel to normFiles
 
-    std::shared_ptr<fitzel::Texture> m_tex; // kept alive while the material binds it
+    std::shared_ptr<fitzel::Texture> m_tex;     // kept alive while the material binds it
+    std::shared_ptr<fitzel::Texture> m_normTex;
     fitzel::Material         m_mat;
     fitzel::Mesh             m_mesh;
     int                      m_verts = 0;

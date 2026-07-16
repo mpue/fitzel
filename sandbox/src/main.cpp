@@ -3214,6 +3214,12 @@ int main(int argc, char** argv) {
             // wet sheen can't start before there is anything coming down.
             const float rainIntensity = rainIntensityFor(weather);
             const float lightDim     = glm::mix(1.0f, 0.30f, weather);
+            // Drop impacts on the carriageway. Tied to the rain, not to `roadWetness`:
+            // the road stays wet for ~20s after a shower and nothing should still be
+            // landing on it then. Needs a wet surface too -- rings on dry tarmac read
+            // as dents. Scaled by the road's own dial (see the Roads panel).
+            const float ringAmount =
+                rainIntensity * glm::min(roadWetness * 2.0f, 1.0f) * road.rainRings;
 
             // Wetness eases toward the rain intensity: quick to soak (~2s), slow to
             // dry (~20s), so surfaces glisten for a while after the rain stops.
@@ -6581,6 +6587,12 @@ int main(int argc, char** argv) {
             if (road.enabled && road.verts() > 0) {
                 road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
                 road.material().set("uWetness", roadWetness);   // rain-wet sheen
+                // Drop impacts: rings while it is actually coming down, not while the
+                // tarmac is merely still wet -- so they stop with the rain, not with
+                // the puddles. Every other material gets 0 from the Renderer's
+                // baseline, so the effect can't leak off the road.
+                road.material().set("uRainRings", ringAmount);
+                road.material().set("uTime", static_cast<float>(now));
                 // Edge fade: pass the fade band + the UV-to-metres mapping, and route
                 // the road through the transparent (alpha-blended) queue when it's on.
                 const bool roadFades = road.fadeWidth > 0.0f;
@@ -6597,6 +6609,9 @@ int main(int argc, char** argv) {
             if (road.enabled && road.hasBridges()) {
                 road.bridgeMaterial().set("uWaterLevel", waterLevel);
                 road.bridgeMaterial().set("uWetness", roadWetness);
+                // A deck is carriageway too: rain hits it like the rest of the road.
+                road.bridgeMaterial().set("uRainRings", ringAmount);
+                road.bridgeMaterial().set("uTime", static_cast<float>(now));
                 renderer.submit(road.bridgeMesh(), road.bridgeMaterial(),
                                 glm::mat4(1.0f));
             }
