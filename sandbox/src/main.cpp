@@ -958,6 +958,9 @@ int main(int argc, char** argv) {
             entities.push_back(std::move(sun));
         }
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
+        // Gizmo reference frame: WORLD = global axes, LOCAL = the object's own axes.
+        // Toggle from the toolbar or with X. (ImGuizmo forces SCALE to local anyway.)
+        ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
         // Add an entity of the given type, sitting on the terrain at a world point.
         auto addEntity = [&](glm::vec3 groundPos, EntityType type) {
             Entity nb;
@@ -1560,6 +1563,7 @@ int main(int argc, char** argv) {
         bool        prevEsc  = false;
         bool        prevSpace = false;
         bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
+        bool        prevXkey = false; // X: toggle gizmo local/world space
         bool        camFocusing = false;      // F: smoothly gliding to a focus point
         glm::vec3   camFocusTarget{0.0f};
 
@@ -2647,11 +2651,15 @@ int main(int argc, char** argv) {
                 const bool qd = input.isKeyDown(GLFW_KEY_Q);
                 const bool wd = input.isKeyDown(GLFW_KEY_W);
                 const bool ed = input.isKeyDown(GLFW_KEY_E);
+                const bool xd = input.isKeyDown(GLFW_KEY_X);
                 if (qd && !prevQkey) { gizmoOp = ImGuizmo::TRANSLATE; entityEditMode = true; }
                 if (wd && !prevWkey) { gizmoOp = ImGuizmo::ROTATE;    entityEditMode = true; }
                 if (ed && !prevEkey) { gizmoOp = ImGuizmo::SCALE;     entityEditMode = true; }
-                prevQkey = qd; prevWkey = wd; prevEkey = ed;
-            } else { prevQkey = prevWkey = prevEkey = false; }
+                if (xd && !prevXkey) // toggle the gizmo's reference frame
+                    gizmoMode = (gizmoMode == ImGuizmo::WORLD) ? ImGuizmo::LOCAL
+                                                              : ImGuizmo::WORLD;
+                prevQkey = qd; prevWkey = wd; prevEkey = ed; prevXkey = xd;
+            } else { prevQkey = prevWkey = prevEkey = prevXkey = false; }
 
             // Undo / redo: Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z. Suppressed while a
             // text field has focus (so typing a name doesn't undo the scene).
@@ -3977,6 +3985,42 @@ int main(int argc, char** argv) {
                     modeBtn(ImGuizmo::TRANSLATE, "Move (Q)");
                     modeBtn(ImGuizmo::ROTATE, "Rotate (W)");
                     modeBtn(ImGuizmo::SCALE, "Scale (E)");
+
+                    // Gap, then the gizmo reference-frame toggle (local vs world).
+                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
+                    ImGui::SameLine();
+                    {
+                        const bool isLocal = (gizmoMode == ImGuizmo::LOCAL);
+                        ImGui::PushID("gizmoSpace");
+                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        const bool clicked = ImGui::Button("##sp", bs);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Gizmo space: %s  (X to toggle)",
+                                              isLocal ? "Local" : "World");
+                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
+                        const float r = 8.0f;
+                        const ImU32 col = IM_COL32(255, 205, 70, 255);
+                        if (isLocal) {
+                            // Object box with its own tilted axis = local frame.
+                            dl->AddRect({c.x - r * 0.7f, c.y - r * 0.55f},
+                                        {c.x + r * 0.35f, c.y + r * 0.7f}, col, 0.0f, 0, 1.6f);
+                            dl->AddLine({c.x + r * 0.35f, c.y - r * 0.55f},
+                                        {c.x + r, c.y - r}, col, 1.6f);
+                        } else {
+                            // Globe with meridian/equator = world (global) frame.
+                            dl->AddCircle(c, r, col, 0, 1.6f);
+                            dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.2f);
+                            dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.2f);
+                            dl->AddBezierQuadratic({c.x, c.y - r}, {c.x - r * 0.9f, c.y},
+                                                   {c.x, c.y + r}, col, 1.1f);
+                            dl->AddBezierQuadratic({c.x, c.y - r}, {c.x + r * 0.9f, c.y},
+                                                   {c.x, c.y + r}, col, 1.1f);
+                        }
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                        if (clicked)
+                            gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+                    }
                 }
                 ImGui::End();
                 ImGui::PopStyleVar();
@@ -4712,7 +4756,7 @@ int main(int argc, char** argv) {
                             float model[16];
                             ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                                 gizmoOp, ImGuizmo::WORLD, model);
+                                                 gizmoOp, gizmoMode, model);
                             const bool gizmoUsing = ImGuizmo::IsUsing();
                             if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtree
                                 gizmoActive = true;
