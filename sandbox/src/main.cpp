@@ -638,6 +638,46 @@ int main(int argc, char** argv) {
             roadSel = roadSel2 = -1;
             road.needsBuild = true;
         };
+        // Insert a control point at index `at`, mirroring removeRoadPoint's bookkeeping:
+        // any bridge endpoint at or after `at` shifts up by one so it keeps naming the
+        // same point. Selects the new point.
+        auto insertRoadPoint = [&](int at, glm::vec2 p) {
+            at = glm::clamp(at, 0, static_cast<int>(road.roadPts.size()));
+            road.roadPts.insert(road.roadPts.begin() + at, p);
+            for (RoadSystem::BridgeSpec& b : road.bridges) {
+                if (b.a >= at) ++b.a;
+                if (b.b >= at) ++b.b;
+            }
+            roadSel   = at;
+            roadSel2  = -1;
+            road.needsBuild = true;
+        };
+        // Best index to insert a new waypoint at world XZ `P`: between the two control
+        // points whose segment lies nearest, so clicking on an existing road adds a
+        // point in the middle instead of always at the tail. A click that projects
+        // past an open end extends the road there instead of splitting the end segment.
+        auto roadInsertIndex = [&](glm::vec2 P) -> int {
+            const int n = static_cast<int>(road.roadPts.size());
+            if (n < 2) return n; // 0 or 1 points: nothing to insert between -> append
+            float bestD = 1e30f, bestT = 0.0f;
+            int   bestSeg = 0;
+            const int segs = road.closed ? n : n - 1; // closed loops wrap last->first
+            for (int i = 0; i < segs; ++i) {
+                const glm::vec2 a = road.roadPts[i];
+                const glm::vec2 b = road.roadPts[(i + 1) % n];
+                const glm::vec2 ab = b - a;
+                const float len2 = glm::dot(ab, ab);
+                const float t = len2 > 1e-6f
+                    ? glm::clamp(glm::dot(P - a, ab) / len2, 0.0f, 1.0f) : 0.0f;
+                const float d = glm::distance(P, a + ab * t);
+                if (d < bestD) { bestD = d; bestSeg = i; bestT = t; }
+            }
+            if (!road.closed) {
+                if (bestSeg == 0     && bestT <= 0.0f) return 0; // before the start
+                if (bestSeg == n - 2 && bestT >= 1.0f) return n; // past the end
+            }
+            return bestSeg + 1;
+        };
         // Raycast the terrain under a viewport NDC point; true + world hit on success.
         auto roadPickTerrain = [&](glm::vec2 ndc, const glm::mat4& vp, glm::vec3& out) {
             const glm::mat4 inv = glm::inverse(vp);
@@ -1793,9 +1833,28 @@ int main(int argc, char** argv) {
             // The road owns its own scene state (the graded terrain corridor rides
             // along in "terrainEdits" above; the mesh is re-lofted on load).
             road.save(j["road"]);
+
+            // Editor fly-camera pose, so reopening a project returns to the exact
+            // view it was saved from (position + look direction).
+            const glm::vec3 camP = camera.position();
+            j["editorCamera"] = {
+                {"x", camP.x}, {"y", camP.y}, {"z", camP.z},
+                {"yaw", camera.yaw()}, {"pitch", camera.pitch()},
+            };
         };
         readSettingsFn = [&](const nlohmann::json& j){
             for (const Setting& s : tunables) s.read(j);
+            // Restore the editor fly-camera pose. Absent in scenes saved before this
+            // existed -> fall back to the current pose so the view just stays put.
+            if (j.contains("editorCamera") && j["editorCamera"].is_object()) {
+                const auto& c = j["editorCamera"];
+                const glm::vec3 cur = camera.position();
+                camera.setPosition({c.value("x", cur.x),
+                                    c.value("y", cur.y),
+                                    c.value("z", cur.z)});
+                camera.setYaw(c.value("yaw", camera.yaw()));
+                camera.setPitch(c.value("pitch", camera.pitch()));
+            }
             look.layers.clear();
             if (j.contains("terrainLayers") && j["terrainLayers"].is_array())
                 for (const auto& lj : j["terrainLayers"]) {
@@ -4251,10 +4310,11 @@ int main(int argc, char** argv) {
                         } else {
                             glm::vec3 h;
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
-                                road.roadPts.push_back({h.x, h.z});
-                                roadSel = static_cast<int>(road.roadPts.size()) - 1;
-                                roadSel2 = -1;
-                                road.needsBuild = true;
+                                // Insert at the nearest segment so a click on an
+                                // existing road drops a waypoint in the middle; a
+                                // click past an open end still extends the road.
+                                insertRoadPoint(roadInsertIndex({h.x, h.z}),
+                                                glm::vec2(h.x, h.z));
                             }
                         }
                     }
