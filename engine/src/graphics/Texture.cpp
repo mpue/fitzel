@@ -14,16 +14,6 @@ namespace fitzel {
 
 namespace {
 
-GLenum formatForChannels(int channels) {
-    switch (channels) {
-        case 1:  return GL_RED;
-        case 2:  return GL_RG;
-        case 3:  return GL_RGB;
-        case 4:  return GL_RGBA;
-        default: return GL_RGB;
-    }
-}
-
 bool endsWithExr(const std::string& p) {
     if (p.size() < 4) return false;
     std::string ext = p.substr(p.size() - 4);
@@ -58,42 +48,64 @@ Texture& Texture::operator=(Texture&& other) noexcept {
 
 Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
                             int channels) {
-    // Grey+alpha sources (2-channel PNGs, e.g. the *_disp displacement maps):
-    // expand to RGBA on the CPU. These used to fall through to GL_RGB, telling
-    // the driver to read width*height*3 bytes from a width*height*2 buffer --
-    // an out-of-bounds read that crashed inside the driver whenever the
-    // allocation ended near a page boundary (the frequent Assets-browser
-    // crash: its 128px thumbnails hit that layout almost every time).
-    if (channels == 2 && pixels && width > 0 && height > 0) {
-        const std::size_t n = static_cast<std::size_t>(width) * height;
-        std::vector<unsigned char> rgba(n * 4);
-        for (std::size_t i = 0; i < n; ++i) {
-            const unsigned char l = pixels[i * 2 + 0];
-            rgba[i * 4 + 0] = l;
-            rgba[i * 4 + 1] = l;
-            rgba[i * 4 + 2] = l;
-            rgba[i * 4 + 3] = pixels[i * 2 + 1];
-        }
-        return fromPixels(rgba.data(), width, height, 4);
-    }
     Texture tex;
     tex.m_width  = width;
     tex.m_height = height;
+    if (!pixels || width <= 0 || height <= 0) return tex;
+
+    // Expand ANY source (1/2/3/4 channels) to a tightly-packed RGBA buffer on the
+    // CPU, then upload that -- and every mip level -- as GL_RGBA8. This threads
+    // between two independent bugs in this NVIDIA driver's texture path, both of
+    // which the engine hits constantly:
+    //   * glTexImage2D with GL_RED/GL_RG/GL_RGB runs a JIT conversion loop that
+    //     over-reads the tightly-packed source a few bytes past its end -- an AV
+    //     inside driver JIT code (RIP ...FEEE) whenever the buffer ends near a
+    //     page boundary. Uploading pre-expanded RGBA makes the driver take a
+    //     straight copy with no conversion, so that loop never runs.
+    //   * glGenerateMipmap corrupts the levels it builds (terrain/road smears into
+    //     diagonal streaks where the coarse mips are sampled) and crashes outright
+    //     (nvoglv64+0xb9e360) on the small-texture bursts a thumbnail picker fires.
+    //     Box-filtering the mips ourselves avoids that call entirely.
+    // RGBA rows are inherently 4-aligned, so no GL_UNPACK_ALIGNMENT juggling.
+    const std::size_t n = static_cast<std::size_t>(width) * height;
+    std::vector<unsigned char> rgba(n * 4);
+    for (std::size_t i = 0; i < n; ++i) {
+        unsigned char r, g, b, a = 255;
+        switch (channels) {
+            case 1:  r = g = b = pixels[i]; break;
+            case 2:  r = g = b = pixels[i * 2]; a = pixels[i * 2 + 1]; break;
+            case 3:  r = pixels[i * 3]; g = pixels[i * 3 + 1]; b = pixels[i * 3 + 2]; break;
+            default: r = pixels[i * 4]; g = pixels[i * 4 + 1]; b = pixels[i * 4 + 2];
+                     a = pixels[i * 4 + 3]; break;
+        }
+        rgba[i * 4 + 0] = r; rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
+    }
 
     glGenTextures(1, &tex.m_id);
     glBindTexture(GL_TEXTURE_2D, tex.m_id);
+    // Never trust ambient pixel-store state: reset it explicitly before uploading.
+    // Dear ImGui's OpenGL3 backend sets GL_UNPACK_ROW_LENGTH to a texture width and
+    // (before its 2026-07-15 fix, #8802/#9473) left it set, corrupting the next
+    // caller's upload -- our tightly-packed buffer would then be read with a wrong
+    // row stride, over-reading past its end and crashing inside the driver (the
+    // ...FEEE AV). Forcing ROW_LENGTH=0 (= use `width`) and ALIGNMENT immunises us
+    // against any dependency's leaked state, regardless of which imgui tip we fetch.
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, rgba.data());
 
-    // Tightly-packed rows (handles widths that aren't multiples of 4).
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-    const GLenum format = formatForChannels(channels);
-    glTexImage2D(GL_TEXTURE_2D, 0, static_cast<GLint>(format), width, height, 0,
-                 format, GL_UNSIGNED_BYTE, pixels);
-    glGenerateMipmap(GL_TEXTURE_2D);
-
+    // NOTE: mipmaps are intentionally OFF here. This machine's NVIDIA driver has a
+    // broken texture path (see Texture.cpp history): glGenerateMipmap both corrupts
+    // levels and crashes (nvoglv64+0xb9e360), and even feeding it our own mip levels
+    // via repeated glTexImage2D trips the same freed-struct AV. Base-level-only with
+    // GL_LINEAR is the one configuration proven not to crash. It aliases a little at
+    // grazing angles; the real fix is driver-side (disable Threaded Optimization or
+    // roll the driver back), after which the mip path below can be restored.
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     glBindTexture(GL_TEXTURE_2D, 0);
