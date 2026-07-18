@@ -427,6 +427,11 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     // Procedural blades bake absolute height (scale 1); painted blades store a
     // relative height and take the live "Blade height" slider.
     if (drawProc) {
+        // Fade the field out over the outermost ~1.5 tiles so streamed tiles grow
+        // in from the horizon rather than popping in at full height.
+        const float ringEnd = m_grassTiles.radius() * m_grassTiles.tileSize();
+        m_grass.setFloat("uFadeEnd", ringEnd);
+        m_grass.setFloat("uFadeStart", glm::max(0.0f, ringEnd - m_grassTiles.tileSize() * 1.5f));
         m_grass.setFloat("uHeightScale", 1.0f);
         glBindVertexArray(m_grassBaseVAO);
         m_grassTiles.draw([](std::uint32_t vbo, int count, glm::vec2, float) {
@@ -436,6 +441,8 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
         glBindVertexArray(0);
     }
     if (drawPainted) {
+        m_grass.setFloat("uFadeStart", 1e9f); // painted layer: no distance fade
+        m_grass.setFloat("uFadeEnd", 1e9f);
         m_grass.setFloat("uHeightScale", grassHeight);
         m_paintedGrass.draw(GL_TRIANGLE_STRIP, 7);
     }
@@ -693,6 +700,15 @@ void VegetationSystem::rebuildTreeBuffers() {
     }
 }
 
+// Stable per-cell seed from a lattice cell's integer coords. Same cell -> same
+// seed -> same tree, so regrowing the forest never reshuffles what's on screen.
+static std::uint32_t treeCellHash(int gx, int gz) {
+    std::uint32_t h = static_cast<std::uint32_t>(gx) * 73856093u ^
+                      static_cast<std::uint32_t>(gz) * 19349663u;
+    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+    return h ? h : 1u;
+}
+
 void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road,
                                   float roadWidth, float waterLevel, float snowLevel) {
     for (TreeSpecies& sp : m_species) sp.inst.clear();
@@ -710,11 +726,24 @@ void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& ro
     // Skip the whole procedural scatter when the generated source is off -- the
     // procedural prefix stays empty and only the painted trees remain.
     if (treeProcedural && !active.empty() && totalDensity > 0.0f) {
-        for (float z = -m_treeRadius; z <= m_treeRadius; z += spacing) {
-            for (float x = -m_treeRadius; x <= m_treeRadius; x += spacing) {
-                if (x * x + z * z > m_treeRadius * m_treeRadius) continue;
-                const float wx = cc.x + x, wz = cc.y + z;
-                const float roadClear = roadWidth * 0.5f + 3.0f; // keep trees clear
+        // World-aligned lattice: sample points sit at fixed world coords
+        // (gx*spacing) and every random decision in a cell is seeded from its
+        // integer coords -- so a cell always drops the SAME tree, regardless of
+        // when or from where the forest regrows. Drifting the camera then only
+        // adds/removes rim cells; the trees already on screen never move. (The old
+        // code sampled a cc-relative grid with a running RNG, so every 25 m the
+        // whole forest jumped to new positions.)
+        const int gx0 = static_cast<int>(std::floor((cc.x - m_treeRadius) / spacing));
+        const int gx1 = static_cast<int>(std::ceil ((cc.x + m_treeRadius) / spacing));
+        const int gz0 = static_cast<int>(std::floor((cc.y - m_treeRadius) / spacing));
+        const int gz1 = static_cast<int>(std::ceil ((cc.y + m_treeRadius) / spacing));
+        const float roadClear = roadWidth * 0.5f + 3.0f; // keep trees clear
+        const float R2 = m_treeRadius * m_treeRadius;
+        for (int gz = gz0; gz <= gz1; ++gz) {
+            for (int gx = gx0; gx <= gx1; ++gx) {
+                const float wx = gx * spacing, wz = gz * spacing;
+                const float dx = wx - cc.x, dz = wz - cc.y;
+                if (dx * dx + dz * dz > R2) continue;
                 if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
                 const float h = m_streamer.heightAt(wx, wz);
                 if (h < waterLevel + 0.8f || h > snowLevel - 2.0f) continue;
@@ -732,19 +761,20 @@ void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& ro
                 const float prob = glm::clamp(forest, 0.0f, 1.0f)
                                  * glm::smoothstep(0.35f, 0.75f, moist)
                                  * 0.6f * totalDensity;
-                if (u(m_trng) > prob) continue;
+                std::mt19937 crng(treeCellHash(gx, gz)); // stable per-cell randomness
+                if (u(crng) > prob) continue;
                 // Pick a species weighted by its density.
-                float r = u(m_trng) * totalDensity;
+                float r = u(crng) * totalDensity;
                 int pick = active.back();
                 for (int idx : active) { r -= m_species[idx].density;
                                          if (r <= 0.0f) { pick = idx; break; } }
                 TreeSpecies& sp = m_species[pick];
-                const float tx = wx + (u(m_trng) - 0.5f) * spacing;
-                const float tz = wz + (u(m_trng) - 0.5f) * spacing;
+                const float tx = wx + (u(crng) - 0.5f) * spacing;
+                const float tz = wz + (u(crng) - 0.5f) * spacing;
                 sp.inst.insert(sp.inst.end(), {
                     tx, m_streamer.heightAt(tx, tz) - 0.3f, tz,
-                    u(m_trng) * 6.2831f,
-                    glm::mix(sp.size * 0.75f, sp.size * 1.3f, u(m_trng))});
+                    u(crng) * 6.2831f,
+                    glm::mix(sp.size * 0.75f, sp.size * 1.3f, u(crng))});
             }
         }
     }

@@ -12,6 +12,9 @@ uniform float uTime;
 uniform vec2  uWindDir;
 uniform float uWindStrength;
 uniform float uHeightScale; // global blade-height multiplier (1 = as baked)
+uniform vec3  uViewPos;     // camera world position (for the distance fade)
+uniform float uFadeStart;   // blades start shrinking past this distance (m)
+uniform float uFadeEnd;     // ...and are fully gone by here (the streamed ring edge)
 
 out float vH;
 out vec3  vWorldPos;
@@ -52,11 +55,17 @@ void main() {
     float r2 = fract(sin(iPhase * 44.53 + iRot *  7.13 + 2.7) * 24634.6345);
     float r3 = fract(sin(iPos.x * 12.9898 + iPos.z * 78.233) * 43758.5453);
 
+    // Distance fade: shrink blades to nothing as they approach the streamed ring
+    // edge, so the field grows in from the horizon instead of tiles popping in at
+    // full height. Folded into the height scale so bend/gain track it too.
+    float fdist = length(iPos.xz - uViewPos.xz);
+    float hs    = uHeightScale * (1.0 - smoothstep(uFadeStart, uFadeEnd, fdist));
+
     float h01 = aBlade.y;
     // Blade width varies per plant: some fine, some broad-leaved.
     float widthVar = mix(0.70, 1.65, r2);
     float w   = 0.016 * widthVar * (1.0 - 0.4 * h01); // thin blade, tapering to the tip
-    vec3  local = vec3(aBlade.x * 2.0 * w, h01 * iHeight * uHeightScale, 0.0);
+    vec3  local = vec3(aBlade.x * 2.0 * w, h01 * iHeight * hs, 0.0);
 
     float c = cos(iRot), s = sin(iRot);
     local = vec3(local.x * c, local.y, local.x * s); // yaw the blade
@@ -84,7 +93,7 @@ void main() {
     // Shorter blades move less: scale the sway by the blade's true world height
     // (0.35 ~= the default height) so low turf barely stirs while tall stalks
     // whip. Without this every blade bent the same absolute amount.
-    float bladeH   = iHeight * uHeightScale;
+    float bladeH   = iHeight * hs;
     float bendGain = clamp(bladeH / 0.35, 0.20, 1.70);
     float bend  = uWindStrength * gust * stiff * (0.30 + 0.70 * sway)
                 * h01 * h01 * bendGain;
