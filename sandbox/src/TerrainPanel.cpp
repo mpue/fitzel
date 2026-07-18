@@ -24,16 +24,23 @@ struct GenPreset {
     float heightScale, ridgeScale, continentAmp, biomeFreq, terrace,
           warpStrength, frequency, valleyDepth, peakSharpness, reliefGain;
     int   octaves;
+    // Island shaping: 0 radius keeps the field infinite; shape 0 = solid island,
+    // 1 = atoll. The centre is set to the camera when the preset is applied.
+    float islandRadius, islandShape;
 };
 
 constexpr GenPreset kPresets[] = {
-    // name              hgt  ridge cont   biome   terr  warp  freq   valley peak relief oct
-    {"Sanfte Hügel", 10.f,  6.f, 1.0f, 0.0018f, 0.0f, 10.f, 0.014f,  0.f, 0.8f, 1.0f, 5},
-    {"Alpen",             16.f, 40.f, 1.6f, 0.0014f, 0.1f, 16.f, 0.013f,  8.f, 1.9f, 1.5f, 7},
-    {"Canyon",            12.f, 10.f, 1.2f, 0.0016f, 0.7f, 12.f, 0.012f, 22.f, 1.0f, 1.2f, 6},
-    {"Mesa / Plateau",    12.f, 14.f, 1.3f, 0.0016f, 0.9f, 10.f, 0.011f,  6.f, 1.1f, 1.1f, 6},
-    {"Archipel",          14.f, 10.f, 2.6f, 0.0012f, 0.0f, 18.f, 0.015f,  4.f, 1.2f, 1.3f, 6},
-    {"Fjorde",            16.f, 28.f, 2.2f, 0.0013f, 0.1f, 16.f, 0.013f, 26.f, 1.6f, 1.6f, 7},
+    // name              hgt  ridge cont   biome   terr  warp  freq   valley peak relief oct isl  shp
+    {"Sanfte Hügel", 10.f,  6.f, 1.0f, 0.0018f, 0.0f, 10.f, 0.014f,  0.f, 0.8f, 1.0f, 5,   0.f, 0.f},
+    {"Alpen",             16.f, 40.f, 1.6f, 0.0014f, 0.1f, 16.f, 0.013f,  8.f, 1.9f, 1.5f, 7,   0.f, 0.f},
+    {"Canyon",            12.f, 10.f, 1.2f, 0.0016f, 0.7f, 12.f, 0.012f, 22.f, 1.0f, 1.2f, 6,   0.f, 0.f},
+    {"Mesa / Plateau",    12.f, 14.f, 1.3f, 0.0016f, 0.9f, 10.f, 0.011f,  6.f, 1.1f, 1.1f, 6,   0.f, 0.f},
+    {"Archipel",          14.f, 10.f, 2.6f, 0.0012f, 0.0f, 18.f, 0.015f,  4.f, 1.2f, 1.3f, 6,   0.f, 0.f},
+    {"Fjorde",            16.f, 28.f, 2.2f, 0.0013f, 0.1f, 16.f, 0.013f, 26.f, 1.6f, 1.6f, 7,   0.f, 0.f},
+    // Bounded landmasses (radial mask). Continents kept low so the mask, not the
+    // biome noise, sets the macro shape; the coast falls off to open sea.
+    {"Insel",             13.f, 18.f, 0.6f, 0.0016f, 0.0f, 14.f, 0.015f,  4.f, 1.3f, 1.2f, 6, 260.f, 0.f},
+    {"Atoll",              8.f,  5.f, 0.4f, 0.0019f, 0.0f, 10.f, 0.021f,  0.f, 1.0f, 1.0f, 5, 300.f, 1.f},
 };
 
 void applyPreset(fitzel::TerrainSettings& u, const GenPreset& p) {
@@ -43,6 +50,7 @@ void applyPreset(fitzel::TerrainSettings& u, const GenPreset& p) {
     u.frequency    = p.frequency;    u.valleyDepth   = p.valleyDepth;
     u.peakSharpness= p.peakSharpness;u.reliefGain    = p.reliefGain;
     u.octaves      = p.octaves;
+    u.islandRadius = p.islandRadius; u.islandShape   = p.islandShape;
 }
 
 } // namespace
@@ -70,6 +78,13 @@ void drawPanel(const PanelState& s) {
             if (i % 3) ImGui::SameLine();
             if (ImGui::Button(kPresets[i].name, ImVec2(112, 0))) {
                 applyPreset(s.uiSettings, kPresets[i]);
+                // Centre a bounded island on the camera so it forms around where the
+                // user is looking, not off at the world origin.
+                if (kPresets[i].islandRadius > 0.0f) {
+                    const glm::vec3 cp = s.camera.position();
+                    s.uiSettings.islandCenterX = cp.x;
+                    s.uiSettings.islandCenterZ = cp.z;
+                }
                 regenerate();
             }
         }

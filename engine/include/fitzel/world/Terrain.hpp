@@ -45,6 +45,16 @@ struct TerrainSettings {
     float valleyDepth   = 0.0f;   // carve meandering valleys/canyons (world units)
     float peakSharpness = 1.0f;   // >1 pinches sharp alpine crests, <1 rounds peaks
     float reliefGain    = 1.0f;   // master vertical exaggeration of the whole relief
+
+    // Island mask: turns the infinite field into a bounded landmass. islandRadius
+    // 0 (the default) disables it entirely, so existing worlds are unchanged. When
+    // > 0, a radial mask around (islandCenterX, islandCenterZ) sinks the terrain
+    // below the sea beyond the island. islandShape: 0 = solid island, 1 = atoll
+    // (a broken reef ring around a shallow lagoon).
+    float islandRadius  = 0.0f;   // world units to the coast (0 = infinite field)
+    float islandCenterX = 0.0f;
+    float islandCenterZ = 0.0f;
+    float islandShape   = 0.0f;   // 0 island, 1 atoll (float for uniform serialization)
 };
 
 // --- Editable deformation layer -------------------------------------------

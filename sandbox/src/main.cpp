@@ -1763,6 +1763,10 @@ int main(int argc, char** argv) {
         addF("terrSeed", uiSettings.seed);
         addF("terrValley", uiSettings.valleyDepth);   addF("terrPeak", uiSettings.peakSharpness);
         addF("terrRelief", uiSettings.reliefGain);
+        addF("terrIslandRadius", uiSettings.islandRadius);
+        addF("terrIslandCenterX", uiSettings.islandCenterX);
+        addF("terrIslandCenterZ", uiSettings.islandCenterZ);
+        addF("terrIslandShape", uiSettings.islandShape);
         addF("texScale", texScale);            addF("normalStrength", normalStrength);
         addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);

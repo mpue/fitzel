@@ -78,6 +78,33 @@ float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
     //    "epic" vertical range without having to re-tune every other knob.
     h *= s.reliefGain;
 
+    // 8) Island mask: turn the infinite field into a bounded landmass ringed by
+    //    water. No-op at islandRadius 0 (the default), so ordinary worlds are
+    //    untouched. `t` runs 0 at the island centre to 1 at the nominal coast.
+    if (s.islandRadius > 0.001f) {
+        const float dx = worldX - s.islandCenterX;
+        const float dz = worldZ - s.islandCenterZ;
+        const float t  = std::sqrt(dx * dx + dz * dz) / s.islandRadius;
+        if (s.islandShape < 0.5f) {
+            // Solid island: keep the full interior relief, then ramp the coast down
+            // into a deep shelf so the shore falls away into open water.
+            const float land  = glm::smoothstep(1.0f, 0.55f, t); // 1 inland .. 0 offshore
+            const float shelf = -30.0f;                          // sea-floor depth
+            h = h * land + 4.0f * land + shelf * (1.0f - land);  // +4 lifts land clear of the sea
+        } else {
+            // Atoll: a low reef ring (~0.72 of the radius) around a shallow lagoon,
+            // open ocean beyond. Riding the ring on the interior noise breaks it
+            // into separate motus/islets instead of a solid circular wall.
+            const float ringPos = 0.72f, ringW = 0.15f;
+            const float d        = (t - ringPos) / ringW;
+            const float ring     = std::exp(-0.5f * d * d);       // gaussian bump 0..1
+            const float floorMix = glm::smoothstep(ringPos, 1.2f, t);
+            const float seafloor = glm::mix(-5.0f, -32.0f, floorMix); // lagoon -> ocean
+            const float reef     = ring * (7.0f + 0.35f * h);
+            h = seafloor + reef;
+        }
+    }
+
     return h;
 }
 
