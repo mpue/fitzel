@@ -178,6 +178,35 @@ public:
     }
 };
 
+// --- Built-in component: SceneTrigger (loads another scene on entry) ----------
+// Data-authored level transition, no scripting: while playing, when the player
+// enters within `radius` it loads the scene named `scene` (a .fitzel in the same
+// project folder). If the game was playing it keeps playing the new scene, so it
+// reads as a seamless level change. `once` guards a re-fire while still inside
+// (moot once the scene swaps, kept for parity). insideLast/fired are transient
+// runtime flags, reset for free when Play stops (the scene restores from backup).
+// Attach to an invisible marker at a doorway, portal, level exit, etc.
+class SceneTriggerComponent : public ComponentBase {
+public:
+    float       radius = 2.0f;  // activation distance from the player (metres)
+    std::string scene;          // target scene: the stem of a .fitzel in the project
+    bool        once   = true;  // fire only once per Play session
+
+    bool insideLast = false;    // runtime: player inside last frame (edge detect)
+    bool fired      = false;    // runtime: has fired (for `once`)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SceneTriggerComponent>(*this);
+    }
+    const char* typeId() const override { return "scene_trigger"; }
+    const char* displayName() const override { return "Scene Trigger"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        g.sphere(c, radius, {0.95f, 0.6f, 0.2f, 0.9f}); // orange scene-load zone
+    }
+};
+
 // --- Built-in component: Mover (moves the entity back and forth in Play) -------
 // Data-authored motion, no scripting: while playing the entity oscillates
 // smoothly from its start position to start + `offset` and back, one full cycle

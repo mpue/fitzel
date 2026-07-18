@@ -1668,6 +1668,7 @@ int main(int argc, char** argv) {
                 uiSettings.continentAmp = 0.0f;
                 uiSettings.warpStrength = 0.0f;
                 uiSettings.terrace      = 0.0f;
+                uiSettings.islandRadius = 0.0f; // no island mask on the flat sandbox
                 veg.grassEnabled = veg.treeEnabled = veg.flowerEnabled = false;
                 veg.birdsEnabled = veg.fireflyEnabled = false;
                 waterLevel = -1000.0f;
@@ -1890,6 +1891,15 @@ int main(int argc, char** argv) {
             };
         };
         readSettingsFn = [&](const nlohmann::json& j){
+            // Reset fields added after some scenes were saved: addF's read keeps the
+            // *current* value when a key is absent, so without this the last-applied
+            // island would bleed into every islandless (older) scene on load. Zero
+            // the island mask first, so only scenes that actually stored it load as
+            // islands.
+            uiSettings.islandRadius  = 0.0f;
+            uiSettings.islandCenterX = 0.0f;
+            uiSettings.islandCenterZ = 0.0f;
+            uiSettings.islandShape   = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // Restore the editor fly-camera pose. Absent in scenes saved before this
             // existed -> fall back to the current pose so the view just stays put.
@@ -2313,6 +2323,7 @@ int main(int argc, char** argv) {
         std::vector<Entity>              pendingSpawns;
         std::unordered_map<int, glm::vec3> pendingSpawnVel; // spawn id -> velocity
         std::vector<int>                 pendingDestroy;
+        std::string                      pendingSceneLoad; // scene a SceneTrigger asked to load (deferred)
         std::unordered_map<int, unsigned char> keyPrev, mousePrev; // edge state
         std::vector<int>                 keyQ, mouseQ;              // queried this frame
         host.keyDown      = [&](int kc){ return input.isKeyDown(kc); };
@@ -3628,6 +3639,18 @@ int main(int argc, char** argv) {
                             }
                             tr->insideLast = inside;
                         }
+                        // SceneTrigger: on entry (edge), request a load of another
+                        // scene. Deferred to after the play tick (pendingSceneLoad),
+                        // so the entity list is never swapped mid-iteration.
+                        if (auto* stc = e.components.get<SceneTriggerComponent>()) {
+                            const bool inside = glm::distance(playerC, e.center) <= stc->radius;
+                            if (inside && !stc->insideLast &&
+                                !(stc->once && stc->fired) && !stc->scene.empty()) {
+                                stc->fired = true;
+                                pendingSceneLoad = stc->scene;
+                            }
+                            stc->insideLast = inside;
+                        }
                         // TriggerSound: a looping ambient zone (volume fades with
                         // distance) or a one-shot on entry. The looping voice lives
                         // in zoneSounds, created lazily and stopped when out of range.
@@ -3900,6 +3923,28 @@ int main(int argc, char** argv) {
                 } else {
                     activeCam = -1;                 // target vanished -> player view
                     camera.setFov(playCamFov);      // restore the player FOV
+                }
+            }
+
+            // Deferred scene load a SceneTrigger asked for this frame. Done here,
+            // outside the play tick, so the entity list is swapped between frames --
+            // never mid-iteration. The name resolves to a .fitzel in the current
+            // project folder; if the game was playing we re-enter Play in the new
+            // scene, so walking through the trigger reads as a seamless level change.
+            if (!pendingSceneLoad.empty()) {
+                const std::filesystem::path folder =
+                    std::filesystem::path(currentProject).parent_path();
+                const std::filesystem::path target = folder / (pendingSceneLoad + ".fitzel");
+                const std::string want = pendingSceneLoad;
+                pendingSceneLoad.clear();
+                std::error_code ec;
+                if (std::filesystem::exists(target, ec)) {
+                    const bool wasPlaying = playMode;
+                    if (playMode) stopPlay();
+                    if (loadSceneFile(target.generic_string()) && wasPlaying)
+                        startPlay();
+                } else {
+                    host.hud = "Scene not found: " + want;
                 }
             }
 
@@ -5866,6 +5911,24 @@ int main(int argc, char** argv) {
                                 for (const Property& pr : tr->props())
                                     if (pr.key != "sound") drawProperty(pr, tr);
                                 soundPickerCombo("Sound", tr->sound);
+                            } else if (auto* stc = dynamic_cast<SceneTriggerComponent*>(c)) {
+                                // Radius/once from metadata; Scene is a picker over the
+                                // project's other scenes (chosen, not typed).
+                                for (const Property& pr : stc->props())
+                                    if (pr.key != "scene") drawProperty(pr, stc);
+                                const std::string folder =
+                                    std::filesystem::path(currentProject).parent_path().string();
+                                const std::string label = stc->scene.empty() ? "(none)" : stc->scene;
+                                if (ImGui::BeginCombo("Scene", label.c_str())) {
+                                    if (ImGui::Selectable("(none)", stc->scene.empty()))
+                                        stc->scene.clear();
+                                    for (const auto& [n, path] : listScenesIn(folder)) {
+                                        (void)path;
+                                        if (ImGui::Selectable(n.c_str(), stc->scene == n))
+                                            stc->scene = n;
+                                    }
+                                    ImGui::EndCombo();
+                                }
                             } else if (auto* ts = dynamic_cast<TriggerSoundComponent*>(c)) {
                                 // Radius/volume/loop/once from metadata; Sound picker.
                                 for (const Property& pr : ts->props()) drawProperty(pr, ts);

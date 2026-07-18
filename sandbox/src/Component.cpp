@@ -129,6 +129,29 @@ const std::vector<Property>& TriggerComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& SceneTriggerComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property radius;
+        radius.label = "Radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<SceneTriggerComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        // Serialized like the other Text fields; the inspector draws it as a scene
+        // picker rather than a raw text box (see main's component inspector).
+        Property scene;
+        scene.label = "Scene"; scene.key = "scene"; scene.kind = PropKind::Text;
+        scene.field = [](void* o) -> void* { return &static_cast<SceneTriggerComponent*>(o)->scene; };
+        p.push_back(std::move(scene));
+        Property once;
+        once.label = "Fire once"; once.key = "once"; once.kind = PropKind::Bool;
+        once.field = [](void* o) -> void* { return &static_cast<SceneTriggerComponent*>(o)->once; };
+        p.push_back(std::move(once));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& MoverComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -644,6 +667,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
         components::registerType({"trigger", "Trigger",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerComponent>()); }});
+        components::registerType({"scene_trigger", "Scene Trigger",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SceneTriggerComponent>()); }});
         components::registerType({"trigger_sound", "Trigger Sound",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerSoundComponent>()); }});
         components::registerType({"audio_source", "Audio Source",
