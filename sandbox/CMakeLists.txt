@@ -11,6 +11,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/PropertyMeta.cpp
     src/Component.cpp
     src/VegetationSystem.cpp
+    src/TiledScatter.cpp
     src/RoadSystem.cpp
     src/RoadBridge.cpp
     src/RainRenderer.cpp

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <random>
 #include <vector>
@@ -49,8 +50,25 @@ bool VegetationSystem::init() {
     // --- Grass: GPU-instanced blades placed on suitable terrain ---
     m_grass = Shader::fromFiles("assets/shaders/grass.vert", "assets/shaders/grass.frag");
     if (!m_grass.isValid()) { std::fprintf(stderr, "Failed to load grass shader\n"); return false; }
-    m_grassField   = makeBladeField();
     m_paintedGrass = makeBladeField();
+    // Base VAO for the streamed procedural field: just the blade strip (attrib 0).
+    // Each tile's instance VBO is bound into attribs 1..5 at draw time.
+    glGenVertexArrays(1, &m_grassBaseVAO);
+    glGenBuffers(1, &m_grassBaseVBO);
+    glBindVertexArray(m_grassBaseVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, m_grassBaseVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(kBlade), kBlade, GL_STATIC_DRAW);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+    glBindVertexArray(0);
+    // Tile the field ~48 m each way (radius 4 * 12 m tiles) -- a touch wider than
+    // the old 46 m disc, but now streamed on a worker pool so the camera never
+    // triggers a field-wide regen. The real generator is wired on the first
+    // updateGrass; this call just starts the pool with a stable config.
+    TiledScatter::Config gc;
+    gc.tileSize = 12.0f; gc.radius = 4; gc.floatsPerInstance = 7;
+    gc.maxUploadsPerFrame = 2; gc.workerThreads = 0; // auto pool size
+    m_grassTiles.configure(gc, {});
 
     // --- Birds: a small flock of flapping billboards circling overhead ---
     m_bird = Shader::fromFiles("assets/shaders/bird.vert", "assets/shaders/bird.frag");
@@ -176,19 +194,44 @@ void VegetationSystem::panelBirdsFireflies() {
 
 // --- Grass ------------------------------------------------------------------
 
-std::vector<float> VegetationSystem::computeGrass(
-    TerrainSettings s, glm::vec2 c, float waterLvl, float snowLvl, float gHeight,
-    float gDensity, float R, std::uint32_t seed, std::vector<glm::vec2> road,
-    float roadClear, float chaos) {
-    std::vector<float> out;
+// Cheap stable hash of a road centerline, so the grass field only re-places when
+// the road actually moved (not every frame the polyline is passed in).
+static std::uint32_t roadHashOf(const std::vector<glm::vec2>& r) {
+    std::uint32_t h = 2166136261u ^ static_cast<std::uint32_t>(r.size());
+    auto mix = [&](float f) {
+        std::uint32_t b;
+        std::memcpy(&b, &f, sizeof(b));
+        h = (h ^ b) * 16777619u;
+    };
+    if (!r.empty()) {
+        mix(r.front().x); mix(r.front().y);
+        mix(r.back().x);  mix(r.back().y);
+        const glm::vec2 m = r[r.size() / 2];
+        mix(m.x); mix(m.y);
+    }
+    return h;
+}
+
+// Deterministic per-tile grass placement. Runs on a TiledScatter worker thread,
+// so it only touches its by-value inputs. Same filters + multi-scale meadow
+// patchiness as the old whole-field pass, but seeded from the tile coords (so a
+// tile looks identical each time it streams in) and without the field-centre
+// falloff -- the streaming ring bounds reach, and a camera-distance thin belongs
+// in the shader, not baked into a cached tile.
+static void grassTileGen(std::int32_t tx, std::int32_t tz, glm::vec2 origin,
+                         float size, const TerrainSettings& s, float waterLvl,
+                         float snowLvl, float gHeight, float gDensity, float chaos,
+                         const std::vector<glm::vec2>& road, float roadClear,
+                         std::vector<float>& out) {
+    std::uint32_t seed = static_cast<std::uint32_t>(tx) * 73856093u
+                       ^ static_cast<std::uint32_t>(tz) * 19349663u ^ 0x9E3779B9u;
     std::mt19937 rng(seed);
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
     const float spacing = 0.6f; // sampling grid (one ground query per cell)
     const int   per = std::max(1, static_cast<int>(120.0f * gDensity));
-    for (float z = -R; z <= R; z += spacing) {
-        for (float x = -R; x <= R; x += spacing) {
-            if (x * x + z * z > R * R) continue;
-            const float wx = c.x + x, wz = c.y + z;
+    for (float lz = 0.0f; lz < size; lz += spacing) {
+        for (float lx = 0.0f; lx < size; lx += spacing) {
+            const float wx = origin.x + lx, wz = origin.y + lz;
             if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
             const float h = terrainHeight(s, wx, wz);
             if (h < waterLvl + 0.5f || h > snowLvl - 1.5f) continue;
@@ -204,10 +247,8 @@ std::vector<float> VegetationSystem::computeGrass(
                 0.0f, 1.0f);
             if (lush < 0.22f) continue;
             // Meadow patchiness at several scales. `chaos` scales how much each
-            // irregularity kicks in: at 0 the field is a near-uniform lawn (even
-            // height, smooth density); at 1 it's a wild meadow; higher piles on
-            // taller outliers and more gaps. Each varying factor is lerped from
-            // 1.0 (neutral) toward its noisy value by `chaos`.
+            // irregularity kicks in: 0 = near-uniform lawn, 1 = wild meadow,
+            // higher piles on taller outliers and more gaps.
             const float patch  = valNoise2(wx * 0.05f, wz * 0.05f);
             const float patch2 = valNoise2(wx * 0.17f + 60.0f, wz * 0.17f + 60.0f);
             const float bare   = valNoise2(wx * 0.13f + 19.0f, wz * 0.13f + 7.0f);
@@ -216,18 +257,12 @@ std::vector<float> VegetationSystem::computeGrass(
             if (bare < 0.26f || bare2 < 0.12f * chaos) continue;
             const float densJit = 1.0f + (glm::mix(0.55f, 1.20f, patch2) - 1.0f) * chaos;
             const float dens    = glm::mix(0.25f, 1.25f, patch) * densJit;
-            const float dist  = std::sqrt(x * x + z * z);
-            const float rim   = 1.0f - glm::smoothstep(R * 0.82f, R, dist);
-            // Distance LOD: thin out far cells hard -- big win.
-            const float lod   = glm::mix(1.0f, 0.22f,
-                                         glm::smoothstep(0.28f, 1.0f, dist / R));
             // Per-cell count jitter breaks the even grid density (chaos-scaled).
             const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * chaos;
             const int   count = static_cast<int>(per * dens
-                                * glm::mix(0.35f, 1.0f, lush) * rim * lod * cellJit);
+                                * glm::mix(0.35f, 1.0f, lush) * cellJit);
             // Height clumps have their OWN frequency (independent of density), so
-            // tall tufts and low turf don't line up with thick/thin -- the main
-            // cue that turns an even lawn into a wild meadow.
+            // tall tufts and low turf don't line up with thick/thin.
             const float tuft = valNoise2(wx * 0.11f + 40.0f, wz * 0.11f + 40.0f);
             const float jitPos = spacing * (2.2f + 0.4f * chaos);
             for (int b = 0; b < count; ++b) {
@@ -247,7 +282,6 @@ std::vector<float> VegetationSystem::computeGrass(
             }
         }
     }
-    return out;
 }
 
 void VegetationSystem::stampGrass(glm::vec2 c, float radius, std::mt19937& rng,
@@ -305,24 +339,47 @@ void VegetationSystem::eraseGrass(glm::vec2 c, float radius) {
 bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>& road,
                                    float roadClear, float waterLevel, float snowLevel) {
     bool regenerated = false;
-    if (grassEnabled && !m_grassPending &&
-        (grassDirty || glm::length(camXZ - m_grassCenter) > 10.0f)) {
-        m_grassPending = true;
-        grassDirty     = false;
-        m_grassPendingCenter = camXZ;
-        m_grassFuture = std::async(std::launch::async, &VegetationSystem::computeGrass,
-                                   m_streamer.settings(), camXZ, waterLevel, snowLevel,
-                                   grassHeight, grassDensity, grassRadius, m_grassSeed++,
-                                   road, roadClear, grassChaos);
+
+    // (Re)wire the tile generator whenever an input that changes placement moves
+    // (sliders, water/snow line, terrain regen via grassDirty, or the road). Each
+    // rebuild captures fresh copies so the workers never read live state, then
+    // invalidates the resident tiles so the field re-streams with the new look.
+    const std::uint32_t rh = roadHashOf(road);
+    if (grassDirty || grassDensity != m_gDensity || grassChaos != m_gChaos ||
+        grassHeight != m_gHeight || grassRadius != m_gRadius ||
+        waterLevel != m_gWater || snowLevel != m_gSnow ||
+        roadClear != m_gRoadClear || rh != m_gRoadHash) {
+        const TerrainSettings s = m_streamer.settings();
+        const float water = waterLevel, snow = snowLevel, gh = grassHeight;
+        const float gd = grassDensity, gc = grassChaos, rc = roadClear;
+        std::vector<glm::vec2> roadCopy = road;
+        // The "Grass range" slider (m) maps to a tile radius over the 12 m grid.
+        const int tileR = std::clamp(
+            static_cast<int>(std::lround(grassRadius / 12.0f)), 1, 12);
+        m_grassTiles.configure(
+            {12.0f, tileR, 7, 2, 0},
+            [=](std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size,
+                std::vector<float>& out) {
+                grassTileGen(tx, tz, origin, size, s, water, snow, gh, gd, gc,
+                             roadCopy, rc, out);
+            });
+        m_grassTiles.invalidate();
+        m_gDensity = gd; m_gChaos = gc; m_gHeight = gh; m_gRadius = grassRadius;
+        m_gWater = water; m_gSnow = snow; m_gRoadClear = rc; m_gRoadHash = rh;
+        grassDirty = false;
     }
-    if (m_grassPending && m_grassFuture.valid() &&
-        m_grassFuture.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        m_grassField.upload(m_grassFuture.get());
-        grassCount     = m_grassField.count();
-        m_grassCenter  = m_grassPendingCenter;
-        m_grassPending = false;
-        regenerated    = true;
+
+    if (grassEnabled) m_grassTiles.update(camXZ);
+    grassCount = m_grassTiles.instanceCount();
+
+    // The old whole-field pass reported a regen (and its centre) so the caller
+    // could regrow flowers to match. Streaming has no single regen event, so fire
+    // the same signal on the same ~10 m camera drift the field used to rebuild on.
+    if (glm::length(camXZ - m_grassCenter) > 10.0f) {
+        m_grassCenter = camXZ;
+        regenerated   = true;
     }
+
     if (paintedDirty) { // painted blades changed -> push to the GPU
         m_paintedGrass.upload(paintedBlades);
         paintedDirty = false;
@@ -330,8 +387,25 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     return regenerated;
 }
 
+// Point the currently-bound VAO's per-instance attributes (iPos3, iRot, iHeight,
+// iPhase, iLush) at one streamed grass tile's instance buffer. Mirrors the blade
+// instance layout makeBladeField() sets up, but rebound per tile at draw time.
+static void bindGrassInstanceAttribs(std::uint32_t instVBO) {
+    glBindBuffer(GL_ARRAY_BUFFER, instVBO);
+    const GLsizei is = 7 * sizeof(float);
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, is, (void*)0);
+    glVertexAttribDivisor(1, 1);
+    for (int loc = 2; loc <= 5; ++loc) {
+        glEnableVertexAttribArray(loc);
+        glVertexAttribPointer(loc, 1, GL_FLOAT, GL_FALSE, is,
+                              (void*)((3 + (loc - 2)) * sizeof(float)));
+        glVertexAttribDivisor(loc, 1);
+    }
+}
+
 void VegetationSystem::drawGrass(const FrameContext& c) {
-    const bool drawProc    = grassEnabled && grassCount > 0;
+    const bool drawProc    = grassEnabled && m_grassTiles.instanceCount() > 0;
     const bool drawPainted = m_paintedGrass.count() > 0;
     if (!drawProc && !drawPainted) return;
     glDisable(GL_CULL_FACE);
@@ -354,7 +428,12 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     // relative height and take the live "Blade height" slider.
     if (drawProc) {
         m_grass.setFloat("uHeightScale", 1.0f);
-        m_grassField.draw(GL_TRIANGLE_STRIP, 7);
+        glBindVertexArray(m_grassBaseVAO);
+        m_grassTiles.draw([](std::uint32_t vbo, int count, glm::vec2, float) {
+            bindGrassInstanceAttribs(vbo);
+            glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 7, count);
+        });
+        glBindVertexArray(0);
     }
     if (drawPainted) {
         m_grass.setFloat("uHeightScale", grassHeight);
@@ -366,6 +445,8 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
 // --- Trees ------------------------------------------------------------------
 
 VegetationSystem::~VegetationSystem() {
+    if (m_grassBaseVBO) glDeleteBuffers(1, &m_grassBaseVBO);
+    if (m_grassBaseVAO) glDeleteVertexArrays(1, &m_grassBaseVAO);
     for (TreeSpecies& sp : m_species) {
         for (TreeLOD& lod : sp.lods) {
             if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
@@ -774,6 +855,9 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     m_tree.setFloat("uFogDensity", c.fogDensity);
     m_tree.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_tree.setFloat("uFogHeight", c.fogHeight);
+    m_tree.setFloat("uBrightness", treeBrightness);
+    m_tree.setFloat("uContrast", treeContrast);
+    m_tree.setFloat("uHue", glm::radians(treeHue));
     m_tree.setInt("uTex", 0);
     for (const TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.count == 0) continue;
@@ -816,6 +900,9 @@ void VegetationSystem::drawTreeBillboards(const FrameContext& c,
     m_billboard.setFloat("uFogDensity", c.fogDensity);
     m_billboard.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_billboard.setFloat("uFogHeight", c.fogHeight);
+    m_billboard.setFloat("uBrightness", treeBrightness);
+    m_billboard.setFloat("uContrast", treeContrast);
+    m_billboard.setFloat("uHue", glm::radians(treeHue));
     m_billboard.setInt("uTex", 0);
     for (const TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.count == 0 || !sp.bbEnabled || !sp.bbTex.isValid()) continue;
@@ -846,6 +933,18 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     if (ImGui::Checkbox("Painted##src", &treePainted))
         rebuildTreeBuffers();         // just add/drop the painted instances
     ImGui::EndDisabled();
+
+    // === Colour correction (applies to every species' mesh + billboard) =====
+    if (ImGui::CollapsingHeader("Color correction")) {
+        ImGui::Indent();
+        ImGui::SliderFloat("Brightness", &treeBrightness, 0.0f, 2.0f);
+        ImGui::SliderFloat("Contrast",   &treeContrast,   0.0f, 2.0f);
+        ImGui::SliderFloat("Hue",        &treeHue,     -180.0f, 180.0f, "%.0f deg");
+        if (ImGui::SmallButton("Reset##treecc")) {
+            treeBrightness = 1.0f; treeContrast = 1.0f; treeHue = 0.0f;
+        }
+        ImGui::Unindent();
+    }
 
     static int sel = 0;
     sel = glm::clamp(sel, 0, std::max(0, static_cast<int>(m_species.size()) - 1));
@@ -1006,6 +1105,9 @@ void VegetationSystem::serializeTrees(nlohmann::json& j) const {
     j["treeEnabled"]    = treeEnabled;
     j["treeProcedural"] = treeProcedural;
     j["treePainted"]    = treePainted;
+    j["treeBrightness"] = treeBrightness;
+    j["treeContrast"]   = treeContrast;
+    j["treeHue"]        = treeHue;
 }
 
 void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
@@ -1023,6 +1125,9 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
     treeEnabled    = j.value("treeEnabled", true);
     treeProcedural = j.value("treeProcedural", true);
     treePainted    = j.value("treePainted", true);
+    treeBrightness = j.value("treeBrightness", 1.0f);
+    treeContrast   = j.value("treeContrast", 1.0f);
+    treeHue        = j.value("treeHue", 0.0f);
     for (const auto& sj : j["trees"]) {
         const int s = addSpecies();           // mints instVBO/bbVAO + a default LOD
         TreeSpecies& sp = m_species[s];
@@ -1085,14 +1190,19 @@ void VegetationSystem::rebuildFlowerBuffer() {
     flowerCount = m_flowerField.count();
 }
 
-void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& road,
-                                    float roadWidth, float waterLevel, float snowLevel) {
-    std::vector<float>& out = m_flowerInst;
-    out.clear();
+// Procedural bloom placement over a disc around `c`. Pure + thread-safe (reads
+// only its by-value inputs incl. a snapshot of the tree positions), so it runs
+// on a worker off the render thread. Returns the procedural flower floats.
+static std::vector<float> computeFlowers(
+    fitzel::TerrainSettings s, glm::vec2 c, std::vector<glm::vec2> road,
+    float roadWidth, float waterLevel, float snowLevel, float R, float flowerDensity,
+    std::vector<float> treeInst) {
+    std::vector<float> out;
     std::mt19937 rng(4242u);
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
-    const float R = grassRadius, spacing = 0.9f;
+    const float spacing = 0.9f;
     const float clear = roadWidth * 0.5f + 1.5f;
+    const int treeCount = static_cast<int>(treeInst.size() / 5);
     // Natural meadow palette, weighted toward buttercup yellow and white.
     const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
                                   {0.94f, 0.55f, 0.12f},  // warm orange
@@ -1104,14 +1214,14 @@ void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& r
             if (x * x + z * z > R * R) continue;
             const float wx = c.x + x, wz = c.y + z;
             if (roadDistanceSq(road, wx, wz) < clear * clear) continue;
-            const float h = m_streamer.heightAt(wx, wz);
+            const float h = terrainHeight(s, wx, wz);
             if (h < waterLevel + 0.6f || h > snowLevel - 2.0f) continue;
             const float e = 1.0f;
             const glm::vec3 n = glm::normalize(glm::vec3(
-                m_streamer.heightAt(wx - e, wz) - m_streamer.heightAt(wx + e, wz), 2.0f * e,
-                m_streamer.heightAt(wx, wz - e) - m_streamer.heightAt(wx, wz + e)));
+                terrainHeight(s, wx - e, wz) - terrainHeight(s, wx + e, wz), 2.0f * e,
+                terrainHeight(s, wx, wz - e) - terrainHeight(s, wx, wz + e)));
             if (n.y < 0.9f) continue;
-            const float moist = terrainMoisture(m_streamer.settings(), wx, wz);
+            const float moist = terrainMoisture(s, wx, wz);
             if (moist < 0.3f) continue; // flowers want greener ground
 
             // Clumps where a mid-frequency noise peaks; a small background chance
@@ -1122,8 +1232,8 @@ void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& r
             // Flowers gather in the shade around tree trunks.
             float treeP = 0.0f;
             for (int t = 0; t < treeCount; ++t) {
-                const float dx = wx - m_treeInst[t * 5 + 0];
-                const float dz = wz - m_treeInst[t * 5 + 2];
+                const float dx = wx - treeInst[t * 5 + 0];
+                const float dz = wz - treeInst[t * 5 + 2];
                 const float dd = dx * dx + dz * dz;
                 if (dd < 30.0f) treeP = std::max(treeP, glm::smoothstep(30.0f, 3.0f, dd));
             }
@@ -1141,13 +1251,31 @@ void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& r
             // Meadow flowers are small; squared roll keeps most of them tiny.
             const float sr = u(rng);
             const float scale = glm::mix(0.30f, 0.60f, sr * sr);
-            out.insert(out.end(), {fx, m_streamer.heightAt(fx, fz) - 0.02f, fz,
+            out.insert(out.end(), {fx, terrainHeight(s, fx, fz) - 0.02f, fz,
                                    u(rng) * 6.2831f, scale,
                                    col.r, col.g, col.b});
         }
     }
-    m_proceduralFlowerFloats = out.size();
-    rebuildFlowerBuffer();  // append the painted flowers and upload
+    return out;
+}
+
+void VegetationSystem::regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& road,
+                                    float roadWidth, float waterLevel, float snowLevel) {
+    if (m_flowerPending) return; // one regen at a time; the next drift retriggers
+    m_flowerPending = true;
+    m_flowerFuture = std::async(std::launch::async, &computeFlowers,
+                                m_streamer.settings(), c, road, roadWidth, waterLevel,
+                                snowLevel, grassRadius, flowerDensity, m_treeInst);
+}
+
+void VegetationSystem::updateFlowers() {
+    if (!m_flowerPending || !m_flowerFuture.valid() ||
+        m_flowerFuture.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return;
+    m_flowerInst = m_flowerFuture.get();
+    m_proceduralFlowerFloats = m_flowerInst.size();
+    m_flowerPending = false;
+    rebuildFlowerBuffer(); // append the painted flowers and upload
 }
 
 void VegetationSystem::stampFlower(glm::vec2 c, float radius, std::mt19937& rng,

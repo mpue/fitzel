@@ -54,18 +54,14 @@ Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
     if (!pixels || width <= 0 || height <= 0) return tex;
 
     // Expand ANY source (1/2/3/4 channels) to a tightly-packed RGBA buffer on the
-    // CPU, then upload that -- and every mip level -- as GL_RGBA8. This threads
-    // between two independent bugs in this NVIDIA driver's texture path, both of
-    // which the engine hits constantly:
-    //   * glTexImage2D with GL_RED/GL_RG/GL_RGB runs a JIT conversion loop that
-    //     over-reads the tightly-packed source a few bytes past its end -- an AV
-    //     inside driver JIT code (RIP ...FEEE) whenever the buffer ends near a
-    //     page boundary. Uploading pre-expanded RGBA makes the driver take a
-    //     straight copy with no conversion, so that loop never runs.
-    //   * glGenerateMipmap corrupts the levels it builds (terrain/road smears into
-    //     diagonal streaks where the coarse mips are sampled) and crashes outright
-    //     (nvoglv64+0xb9e360) on the small-texture bursts a thumbnail picker fires.
-    //     Box-filtering the mips ourselves avoids that call entirely.
+    // CPU and upload that as GL_RGBA8. This dodges an NVIDIA driver bug the engine
+    // hits constantly: glTexImage2D with GL_RED/GL_RG/GL_RGB runs a JIT conversion
+    // loop that over-reads the tightly-packed source a few bytes past its end -- an
+    // AV inside driver JIT code (RIP ...FEEE) whenever the buffer ends near a page
+    // boundary. Uploading pre-expanded RGBA makes the driver take a straight copy
+    // with no conversion, so that loop never runs. (The other symptom once blamed
+    // on this path -- corrupt/crashing mipmaps -- was really leaked pixel-store
+    // state; see the glGenerateMipmap note below.)
     // RGBA rows are inherently 4-aligned, so no GL_UNPACK_ALIGNMENT juggling.
     const std::size_t n = static_cast<std::size_t>(width) * height;
     std::vector<unsigned char> rgba(n * 4);
@@ -96,16 +92,16 @@ Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, rgba.data());
 
-    // NOTE: mipmaps are intentionally OFF here. This machine's NVIDIA driver has a
-    // broken texture path (see Texture.cpp history): glGenerateMipmap both corrupts
-    // levels and crashes (nvoglv64+0xb9e360), and even feeding it our own mip levels
-    // via repeated glTexImage2D trips the same freed-struct AV. Base-level-only with
-    // GL_LINEAR is the one configuration proven not to crash. It aliases a little at
-    // grazing angles; the real fix is driver-side (disable Threaded Optimization or
-    // roll the driver back), after which the mip path below can be restored.
+    // Mipmaps. The "glGenerateMipmap corrupts/crashes" symptom was never the mip
+    // path itself -- it was leaked pixel-store state (imgui's GL_UNPACK_ROW_LENGTH,
+    // pre-2026-07-15) making the driver over-read our upload. With ROW_LENGTH/
+    // ALIGNMENT forced above and the base level uploaded as straight RGBA8, the
+    // generator has clean input and behaves. Mips kill the grazing-angle aliasing
+    // (terrain/road) and cut texture-cache thrashing at distance.
+    glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
     glBindTexture(GL_TEXTURE_2D, 0);

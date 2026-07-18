@@ -497,4 +497,73 @@ void newProject(Context& ctx) {
     ctx.assetDb.refresh();
 }
 
+std::vector<std::pair<std::string, std::string>>
+listScenesIn(const std::string& folder) {
+    std::vector<std::pair<std::string, std::string>> out;
+    if (folder.empty()) return out;
+    std::error_code ec;
+    for (const auto& de : std::filesystem::directory_iterator(folder, ec))
+        if (de.path().extension() == ".fitzel")
+            out.push_back({de.path().stem().string(), de.path().generic_string()});
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+bool loadSceneFile(Context& ctx, const std::string& scenePath) {
+    std::error_code ec;
+    if (scenePath.empty() || !std::filesystem::exists(scenePath, ec)) return false;
+    if (!loadScene(ctx, scenePath)) return false;
+    ctx.currentProject = scenePath;
+    return true;
+}
+
+std::string newSceneInProject(Context& ctx, const std::string& folder,
+                              const std::string& name) {
+    if (folder.empty() || name.empty()) return {};
+    const std::string path = folder + "/" + safeName(name) + ".fitzel";
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec)) return {}; // never clobber an existing scene
+    // Fresh scene: clear entities + runtime models, keep the project's materials
+    // and mounted assets (scenes share them). One Sun, like a brand-new project.
+    // The current world settings (terrain, environment, road) are captured into the
+    // new file by saveScene, so a new scene starts from the world you're looking at.
+    ctx.entities.clear();
+    ctx.clearModels();
+    ctx.entityCounter = 0;
+    Entity sun;
+    sun.type = EntityType::Sun; sun.name = "Sun"; sun.id = ctx.entityCounter++;
+    sun.components.items.push_back(std::make_unique<SunComponent>());
+    ctx.entities.push_back(std::move(sun));
+    ctx.entitySel = -1;
+    saveScene(ctx, path);
+    ctx.currentProject = path;
+    return path;
+}
+
+std::string renameScene(Context& ctx, const std::string& scenePath,
+                        const std::string& newName) {
+    if (scenePath.empty() || newName.empty()) return {};
+    namespace fs = std::filesystem;
+    const fs::path src(scenePath);
+    const fs::path dst = src.parent_path() / (safeName(newName) + ".fitzel");
+    std::error_code ec;
+    if (dst == src) return src.generic_string();      // no-op rename
+    if (fs::exists(dst, ec)) return {};               // target name already taken
+    fs::rename(src, dst, ec);
+    if (ec) return {};
+    // Carry a .meta sidecar along if one exists (scenes have none today; be safe).
+    if (fs::exists(src.string() + ".meta", ec))
+        fs::rename(src.string() + ".meta", dst.string() + ".meta", ec);
+    const std::string dstStr = dst.generic_string();
+    if (ctx.currentProject == scenePath) ctx.currentProject = dstStr;
+    return dstStr;
+}
+
+bool deleteSceneFile(const std::string& scenePath) {
+    if (scenePath.empty()) return false;
+    std::error_code ec;
+    std::filesystem::remove(scenePath + ".meta", ec); // ignore if absent
+    return std::filesystem::remove(scenePath, ec);
+}
+
 } // namespace projectio

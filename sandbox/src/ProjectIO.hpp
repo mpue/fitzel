@@ -83,4 +83,33 @@ void exportGame(Context& ctx, const std::string& outDir);
 bool openProjectFolder(Context& ctx, const std::string& folder);
 void newProject(Context& ctx);
 
+// --- Scenes within a project --------------------------------------------------
+// A project folder may hold several .fitzel scenes (levels). They share the
+// project's materials and its mounted asset database; only the entity list +
+// scene settings differ per scene. currentProject always points at the active
+// scene file.
+
+// Every scene in `folder` as (display name, full path), sorted by name.
+std::vector<std::pair<std::string, std::string>> listScenesIn(const std::string& folder);
+
+// Switch to another scene file inside the already-open project. Materials and the
+// mounted asset db are left as-is (scenes share them). Sets currentProject.
+// Returns false if the file can't be read.
+bool loadSceneFile(Context& ctx, const std::string& scenePath);
+
+// Create a fresh, empty scene named `name` in `folder`, write it, make it current.
+// Keeps the project's materials + mounts. Returns the new scene path, or "" if the
+// inputs are empty or a scene of that name already exists.
+std::string newSceneInProject(Context& ctx, const std::string& folder,
+                              const std::string& name);
+
+// Rename a scene file to `newName` (same folder, .fitzel). Updates currentProject
+// if it was the active scene. Returns the new path, or "" on failure / name clash.
+std::string renameScene(Context& ctx, const std::string& scenePath,
+                        const std::string& newName);
+
+// Delete a scene file from disk (does not touch the in-memory scene). True on
+// success. Callers switch to another scene themselves when the active one is gone.
+bool deleteSceneFile(const std::string& scenePath);
+
 } // namespace projectio

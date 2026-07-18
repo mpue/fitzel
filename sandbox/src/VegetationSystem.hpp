@@ -15,7 +15,8 @@
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/world/Terrain.hpp>
 
-#include "FrameRender.hpp" // FrameContext -- the per-frame lighting/fog the draws take
+#include "FrameRender.hpp"  // FrameContext -- the per-frame lighting/fog the draws take
+#include "TiledScatter.hpp" // per-tile streamed instance buffers (grass field)
 
 namespace fitzel { class Camera; }
 
@@ -121,8 +122,13 @@ public:
     // --- Flowers -------------------------------------------------------------
     // Procedural blooms regrow with the grass pass (clustering in moist ground
     // and around tree trunks); paint/erase place hand-flowers (world space).
+    // Kick off a procedural bloom regen (async: the disc pass is heavy, so it
+    // runs on a worker and updateFlowers() uploads the result). Debounced -- a
+    // call while one is already in flight is ignored.
     void regenFlowers(glm::vec2 c, const std::vector<glm::vec2>& road, float roadWidth,
                       float waterLevel, float snowLevel);
+    // Per-frame pump: finish a pending async regen and push it to the GPU.
+    void updateFlowers();
     void stampFlower(glm::vec2 c, float radius, std::mt19937& rng,
                      float waterLevel, float snowLevel);
     void eraseFlower(glm::vec2 c, float radius);
@@ -148,6 +154,11 @@ public:
     bool  paintedDirty = false;        // GPU re-upload of painted blades pending
 
     bool      treeEnabled = true;
+    // Global colour correction for the tree material (mesh + billboard albedo).
+    // Identity defaults, so a scene without saved values looks unchanged.
+    float     treeBrightness = 1.0f; // multiplier (0..2)
+    float     treeContrast   = 1.0f; // around mid-grey (0..2)
+    float     treeHue        = 0.0f; // degrees (-180..180)
     // Independent tree sources: the procedural forest and the hand-painted trees.
     // Either may run alone (only painted / only generated) or both together.
     bool      treeProcedural = true;   // generate the procedural forest
@@ -171,11 +182,6 @@ public:
     bool  fireflyEnabled = true;
 
 private:
-    static std::vector<float> computeGrass(
-        fitzel::TerrainSettings s, glm::vec2 c, float waterLvl, float snowLvl,
-        float gHeight, float gDensity, float R, std::uint32_t seed,
-        std::vector<glm::vec2> road, float roadClear, float chaos);
-
     void regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road, float roadWidth,
                     float waterLevel, float snowLevel);
     void rebuildTreeBuffers();  // re-upload every species (procedural prefix + painted)
@@ -188,14 +194,20 @@ private:
     fitzel::TerrainStreamer& m_streamer;
     fitzel::Camera&          m_camera;
 
-    // Grass.
+    // Grass. The procedural field streams as per-tile instance buffers
+    // (m_grassTiles); the hand-painted layer stays one instanced mesh. The blade
+    // strip lives in m_grassBaseVAO; each tile's instance VBO is bound into it at
+    // draw time (attribs 1..5), the way the tree pass binds its species buffers.
     fitzel::Shader        m_grass;
-    fitzel::InstancedMesh m_grassField, m_paintedGrass;
-    glm::vec2                       m_grassCenter{1e9f}; // forces the first regen
-    std::future<std::vector<float>> m_grassFuture;
-    bool          m_grassPending = false;
-    glm::vec2     m_grassPendingCenter{0.0f};
-    std::uint32_t m_grassSeed = 1234u;
+    fitzel::InstancedMesh m_paintedGrass;
+    TiledScatter          m_grassTiles;
+    std::uint32_t m_grassBaseVAO = 0, m_grassBaseVBO = 0;
+    glm::vec2     m_grassCenter{1e9f}; // last flower-regrow center (camera follow)
+    // Cached generator inputs; a change re-places the whole field (invalidate).
+    float         m_gWater = 1e9f, m_gSnow = 1e9f, m_gRoadClear = -1.0f;
+    float         m_gDensity = -1.0f, m_gChaos = -1.0f, m_gHeight = -1.0f;
+    float         m_gRadius = -1.0f;
+    std::uint32_t m_gRoadHash = 0;
 
     // Trees. Shaders are shared across all species (bound once, uniforms per draw).
     fitzel::Shader           m_tree, m_treeDepth, m_billboard;
@@ -215,6 +227,8 @@ private:
     int                   m_flowerVerts = 0;
     std::vector<float>    m_flowerInst;
     std::size_t           m_proceduralFlowerFloats = 0;
+    std::future<std::vector<float>> m_flowerFuture; // async procedural regen
+    bool                            m_flowerPending = false;
 
     // Birds.
     fitzel::Shader        m_bird;

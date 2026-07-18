@@ -965,6 +965,11 @@ int main(int argc, char** argv) {
         bool wizardIsNew = true;    // true = New Project (reset scene), false = Save As
         char wizName[64]      = "";
         char wizLocation[512] = "";
+        // Scene manager dialogs (a project may hold several .fitzel scenes).
+        bool sceneNewOpen    = false;   // request to open the New Scene modal
+        bool sceneRenameOpen = false;
+        bool sceneDeleteOpen = false;
+        char sceneNameBuf[64] = "";
         // Scene look/settings serialization hooks. The tunable registry that
         // backs these is built later (once all the tunables exist), so saveScene/
         // loadScene call through these std::functions instead of the registry.
@@ -1245,6 +1250,14 @@ int main(int argc, char** argv) {
         // project's textures must already be in the list at that point).
         auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
         auto newProject           = [&](){ projectio::newProject(pio); history.clear(); road.refreshTextures(std::string()); };
+        // Scenes within the open project. Switching/creating replaces the document,
+        // so the undo history is cleared at the boundary (like opening a project).
+        auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
+        auto saveSceneFile        = [&](const std::string& p){ projectio::saveScene(pio, p); };
+        auto loadSceneFile        = [&](const std::string& p){ const bool ok = projectio::loadSceneFile(pio, p); history.clear(); return ok; };
+        auto newSceneInProject    = [&](const std::string& f, const std::string& n){ auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
+        auto renameScene          = [&](const std::string& p, const std::string& n){ return projectio::renameScene(pio, p, n); };
+        auto deleteSceneFile      = [&](const std::string& p){ return projectio::deleteSceneFile(p); };
 
         // World transform (translate*rotate, ImGuizmo Euler convention) of an
         // entity's cached world center/rotation. Scale is not part of the
@@ -1659,6 +1672,23 @@ int main(int argc, char** argv) {
             road.rebuildMesh(); // re-drape the committed road on the new terrain
         };
         applyScene(scene); // start in the selected scene (Empty by default)
+
+        // Reset the world to the editor's default (used by New Scene): flat "Empty"
+        // terrain, no texture layers, no road, no hand-painted vegetation -- so a new
+        // scene starts blank instead of inheriting the terrain you were just editing.
+        auto resetWorldForNewScene = [&]() {
+            look.layers.clear();
+            road.roadPts.clear();
+            road.bridges.clear();
+            road.needsBuild = false;
+            roadSel = roadSel2 = -1;
+            veg.paintedBlades.clear();
+            veg.paintedTrees.clear();
+            veg.paintedFlowers.clear();
+            veg.paintedDirty = true;
+            veg.grassDirty   = true;
+            applyScene(1); // flat default terrain + rebuild + re-drape the (now empty) road
+        };
 
         // --- Scene settings registry --------------------------------------
         // Every tunable is bound by name to a getter/setter and serialised as
@@ -2590,21 +2620,39 @@ int main(int argc, char** argv) {
         double lastTime = window.time();
         double nextAssetPoll = 0.0; // next wall-clock time to scan for asset edits
 
-        // Idle throttle: while the editor sits with no input (and isn't playing),
-        // cap redraws to ~15 FPS by sleeping on events instead of spinning at the
-        // monitor rate. Any input wakes it instantly; a short grace after the last
-        // activity keeps interactions and their easing smooth. Play/player mode
-        // and active input always run full speed. `activeFrame` decides the NEXT
-        // iteration's wait, so it's recomputed near the end of each frame.
+        // Frame pacing. Two caps keep the laptop cool without feeling sluggish:
+        //   * Idle  (~15 FPS): while the editor sits with no input, sleep on events
+        //     instead of spinning at the monitor rate. Any input wakes it instantly.
+        //   * Active (~60 FPS): while editing/interacting, cap with a hard sleep.
+        //     A continuous drag floods GLFW with events, so waitEventsTimeout would
+        //     return immediately and we'd spin at full refresh -- sleep instead.
+        // Only play/player mode runs uncapped (games want the monitor's full rate).
+        // A short grace after the last input keeps easing/hover smooth. `activeFrame`
+        // decides the NEXT iteration's pacing, so it's recomputed each frame's end.
         bool         activeFrame = true;
         double       lastActive  = window.time();
+        double       frameStart  = window.time();
         const double kIdleGrace  = 0.4;        // s of full-rate after last input
-        const double kIdleFrame  = 1.0 / 15.0; // idle cap period
+        const double kIdleFrame  = 1.0 / 10.0; // idle cap period
+        const double kActiveFrame = 1.0 / 25.0; // active (editing) cap period
 
         while (window.isOpen()) {
-            const bool idleWait = !activeFrame && !playMode && !playerMode;
-            if (idleWait) window.waitEventsTimeout(kIdleFrame);
-            else          window.pollEvents();
+            const bool uncapped = playMode || playerMode;
+            if (uncapped) {
+                window.pollEvents();
+            } else if (activeFrame) {
+                // Editing: enforce the active cap with a real sleep (events would
+                // cut a waitEventsTimeout short mid-drag), then drain the queue.
+                const double budget = kActiveFrame - (window.time() - frameStart);
+                if (budget > 0.0)
+                    std::this_thread::sleep_for(
+                        std::chrono::duration<double>(budget));
+                window.pollEvents();
+            } else {
+                // Idle: block until an event or the idle period elapses.
+                window.waitEventsTimeout(kIdleFrame);
+            }
+            frameStart = window.time();
             input.update();
 
             const double now = window.time();
@@ -3257,6 +3305,7 @@ int main(int argc, char** argv) {
                                     waterLevel, look.snowLevel) && veg.flowerEnabled)
                     veg.regenFlowers(veg.grassCenter(), road.centerline(), road.width,
                                      waterLevel, look.snowLevel);
+                veg.updateFlowers(); // finish + upload a pending async flower regen
                 veg.updateTrees(camXZ, road.centerline(), road.width, waterLevel, look.snowLevel);
             }
 
@@ -3857,6 +3906,40 @@ int main(int argc, char** argv) {
                     if (ImGui::MenuItem("Exit")) window.requestClose();
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("Scene")) {
+                    if (currentProject.empty()) {
+                        ImGui::TextDisabled("Open or create a project first.");
+                    } else {
+                        const std::string projFolder =
+                            std::filesystem::path(currentProject).parent_path().generic_string();
+                        if (ImGui::MenuItem("New Scene...")) {
+                            sceneNameBuf[0] = '\0';
+                            sceneNewOpen = true;
+                        }
+                        if (ImGui::MenuItem("Save Scene"))
+                            saveSceneFile(currentProject);
+                        if (ImGui::MenuItem("Rename Scene...")) {
+                            std::snprintf(sceneNameBuf, sizeof(sceneNameBuf), "%s",
+                                std::filesystem::path(currentProject).stem().string().c_str());
+                            sceneRenameOpen = true;
+                        }
+                        const auto scenes = listScenesIn(projFolder);
+                        ImGui::BeginDisabled(scenes.size() < 2); // keep at least one scene
+                        if (ImGui::MenuItem("Delete Scene..."))
+                            sceneDeleteOpen = true;
+                        ImGui::EndDisabled();
+                        ImGui::SeparatorText("Switch to");
+                        for (const auto& [n, path] : scenes) {
+                            const bool active = (path == currentProject);
+                            if (ImGui::MenuItem((n + "##sc" + path).c_str(), nullptr, active) &&
+                                !active) {
+                                saveSceneFile(currentProject); // don't lose current edits
+                                loadSceneFile(path);
+                            }
+                        }
+                    }
+                    ImGui::EndMenu();
+                }
                 if (ImGui::BeginMenu("Edit")) {
                     const std::string undoLbl = history.canUndo()
                         ? std::string("Undo ") + history.undoName() : "Undo";
@@ -4141,6 +4224,102 @@ int main(int argc, char** argv) {
                     ImGui::CloseCurrentPopup();
                 }
                 ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+                    ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+
+            // --- Scene manager dialogs (New / Rename / Delete) ---------------
+            if (sceneNewOpen)    { ImGui::OpenPopup("New Scene");    sceneNewOpen = false; }
+            if (sceneRenameOpen) { ImGui::OpenPopup("Rename Scene"); sceneRenameOpen = false; }
+            if (sceneDeleteOpen) { ImGui::OpenPopup("Delete Scene"); sceneDeleteOpen = false; }
+            const std::string sceneFolder = currentProject.empty() ? std::string()
+                : std::filesystem::path(currentProject).parent_path().generic_string();
+            // 0 = ok, 1 = empty, 2 = a scene with that name already exists. `self`
+            // allows the current scene's own file to match (used by Rename).
+            auto sceneNameState = [&](bool allowSelf) -> int {
+                if (sceneNameBuf[0] == '\0') return 1;
+                const std::string target =
+                    sceneFolder + "/" + safeName(sceneNameBuf) + ".fitzel";
+                std::error_code ec;
+                if (std::filesystem::exists(target, ec) &&
+                    !(allowSelf && target == currentProject)) return 2;
+                return 0;
+            };
+            const ImVec4 sceneWarn(1.0f, 0.55f, 0.3f, 1.0f);
+
+            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("New Scene", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextUnformatted("New scene in this project");
+                ImGui::TextDisabled("Shares the project's materials; starts from the "
+                                    "current world with no objects.");
+                ImGui::Separator();
+                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                ImGui::SetNextItemWidth(300.0f);
+                ImGui::InputText("Name##newscene", sceneNameBuf, sizeof(sceneNameBuf));
+                const int st = sceneNameState(false);
+                if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
+                else if (st == 2) ImGui::TextColored(sceneWarn,
+                                      "A scene with that name already exists.");
+                ImGui::Spacing();
+                ImGui::BeginDisabled(st != 0);
+                if (ImGui::Button("Create", ImVec2(120.0f, 0.0f))) {
+                    saveSceneFile(currentProject);          // keep the scene we leave
+                    resetWorldForNewScene();                // blank terrain/road/vegetation
+                    newSceneInProject(sceneFolder, sceneNameBuf);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+                    ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+
+            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
+            if (ImGui::BeginPopupModal("Rename Scene", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::TextUnformatted("Rename the current scene");
+                ImGui::Separator();
+                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+                ImGui::SetNextItemWidth(300.0f);
+                ImGui::InputText("Name##renscene", sceneNameBuf, sizeof(sceneNameBuf));
+                const int st = sceneNameState(true); // its own file may match
+                if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
+                else if (st == 2) ImGui::TextColored(sceneWarn,
+                                      "A scene with that name already exists.");
+                ImGui::Spacing();
+                ImGui::BeginDisabled(st != 0);
+                if (ImGui::Button("Rename", ImVec2(120.0f, 0.0f))) {
+                    renameScene(currentProject, sceneNameBuf);
+                    ImGui::CloseCurrentPopup();
+                }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
+                    ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
+
+            if (ImGui::BeginPopupModal("Delete Scene", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize)) {
+                ImGui::Text("Delete scene \"%s\"?",
+                    std::filesystem::path(currentProject).stem().string().c_str());
+                ImGui::TextDisabled("This permanently removes the .fitzel file from disk.");
+                ImGui::Spacing();
+                if (ImGui::Button("Delete", ImVec2(120.0f, 0.0f))) {
+                    const std::string gone = currentProject;
+                    std::string next; // switch to another scene before removing this one
+                    for (const auto& [n, p] : listScenesIn(sceneFolder))
+                        if (p != gone) { next = p; break; }
+                    if (!next.empty()) {
+                        loadSceneFile(next);
+                        deleteSceneFile(gone);
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
                 ImGui::SameLine();
                 if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
                     ImGui::CloseCurrentPopup();

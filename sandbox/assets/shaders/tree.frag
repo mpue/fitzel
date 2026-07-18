@@ -18,6 +18,26 @@ uniform float uFogDensity;
 uniform float uFogHeightFalloff;
 uniform float uFogHeight;
 
+// Material colour correction (applied to the sampled albedo, sRGB space).
+uniform float uBrightness; // 1 = unchanged (multiplier)
+uniform float uContrast;   // 1 = unchanged (pivots around mid-grey)
+uniform float uHue;        // 0 = unchanged (radians, rotates about the grey axis)
+
+// Rodrigues rotation of an RGB colour about the achromatic (1,1,1) axis: a cheap
+// hue shift that leaves greys untouched.
+vec3 hueShift(vec3 col, float a) {
+    const vec3 k = vec3(0.57735026919); // normalize(vec3(1))
+    float c = cos(a), s = sin(a);
+    return col * c + cross(k, col) * s + k * dot(k, col) * (1.0 - c);
+}
+
+vec3 correct(vec3 c) {
+    c = hueShift(c, uHue);
+    c = (c - 0.5) * uContrast + 0.5;
+    c *= uBrightness;
+    return clamp(c, 0.0, 1.0);
+}
+
 vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
     vec3  toFrag = worldPos - eye;
     float dist   = length(toFrag);
@@ -36,7 +56,7 @@ void main() {
     vec4 tex = texture(uTex, vUv);
     if (uAlphaCutout == 1 && tex.a < 0.5) discard;
 
-    vec3 albedo = pow(tex.rgb, vec3(2.2));
+    vec3 albedo = pow(correct(tex.rgb), vec3(2.2));
     vec3 N = normalize(vNormal);
     vec3 L = normalize(uLightDir);
     float ndl = dot(N, L);
