@@ -1634,6 +1634,19 @@ int main(int argc, char** argv) {
         bool        grounded = false;
         const float eyeHeight = 1.8f;
 
+        // Walk head-bob: the eye is offset by a small springy bob synced to the
+        // distance actually walked (not the frame rate), so the first-person view
+        // reads as footsteps instead of a rigid floating camera. State persists
+        // across frames; the offset eases in when moving on the ground and out when
+        // idle or airborne. Applied as a pure eye offset on top of the movement
+        // result -- prevBobOffset is subtracted back off before the next move step
+        // so it never feeds into collision/ground logic and drifts.
+        float       bobPhase   = 0.0f;   // radians, advanced by metres walked
+        float       bobAmt     = 0.0f;   // 0..1 smoothed gate (eases bob in/out)
+        float       bobClock   = 0.0f;   // seconds, for the idle breathing term
+        glm::vec3   bobOffset{0.0f};     // last applied eye offset (world space)
+        glm::vec2   walkPrevXZ{0.0f};    // previous eye XZ, for the real ground speed
+
         // Camera path recorder/player (record/play/scrub + save, in CameraPath).
         CameraPathRecorder camPathRec;
 
@@ -3100,6 +3113,51 @@ int main(int argc, char** argv) {
                         -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
                 }
 
+                // Head-bob: turn the eye's real ground speed into a springy footstep
+                // motion. Returns the movement result with the eye offset folded in;
+                // both walk paths (physics + simple) apply it at their setPosition.
+                bobClock += dt;
+                auto applyHeadBob = [&](glm::vec3 basePos, bool onGround) -> glm::vec3 {
+                    // Real horizontal speed from how far the eye actually moved this
+                    // frame -- so walking into a wall stops the bob, not only letting
+                    // go of the key.
+                    const glm::vec2 xz(basePos.x, basePos.z);
+                    const float dist  = glm::length(xz - walkPrevXZ);
+                    const float speed = (dt > 1e-5f) ? dist / dt : 0.0f;
+                    walkPrevXZ = xz;
+                    // Gate the bob on only while moving on the ground, and ease it in/
+                    // out so starting, stopping and jumping never snap.
+                    const float nominal = glm::max(0.5f, camera.moveSpeed);
+                    const float target  = (onGround && speed > 0.15f)
+                                        ? glm::clamp(speed / nominal, 0.0f, 1.15f) : 0.0f;
+                    const float rate = (target > bobAmt) ? 9.0f : 6.0f;
+                    bobAmt += (target - bobAmt) * glm::clamp(rate * dt, 0.0f, 1.0f);
+                    // Advance the stride phase by distance walked, so cadence tracks
+                    // speed and is framerate-independent (~0.48 strides per metre --
+                    // an unhurried walk, not a jog).
+                    bobPhase += dist * 0.48f * 6.2831853f;
+                    const float p = bobPhase;
+                    // Break the metronome so it doesn't read as a pure sine: two slow
+                    // incommensurate terms wander the intensity/cadence, and a 1x-per
+                    // -stride term makes alternating footfalls uneven (a real gait is
+                    // never perfectly symmetric left/right).
+                    const float wob  = 1.0f + 0.20f * std::sin(p * 0.53f + 0.7f)
+                                            + 0.13f * std::sin(p * 0.31f + 2.1f);
+                    const float asym = 0.16f * std::sin(p); // uneven left/right dip
+                    // Two vertical dips per stride (one per footfall) + the asymmetry,
+                    // one lateral sway; amplitudes in metres, scaled by the gate.
+                    const float vy = (std::sin(p * 2.0f) + asym) * 0.052f * wob * bobAmt;
+                    const float hx = std::cos(p) * 0.046f
+                                   * (1.0f + 0.16f * std::sin(p * 0.47f + 0.3f)) * bobAmt;
+                    // A whisper of vertical breathing when essentially still, so a
+                    // standing player isn't a dead-locked tripod.
+                    const float breathe = std::sin(bobClock * 1.4f) * 0.006f * (1.0f - bobAmt);
+                    glm::vec3 rt = camera.right(); rt.y = 0.0f;
+                    if (glm::length(rt) > 1e-4f) rt = glm::normalize(rt);
+                    bobOffset = glm::vec3(0.0f, vy + breathe, 0.0f) + rt * hx;
+                    return basePos + bobOffset;
+                };
+
                 if (playMode && physics && physics->hasCharacter()) {
                     // Physics character controller: collides with the terrain
                     // heightfield and every rigid body in the world.
@@ -3125,7 +3183,8 @@ int main(int argc, char** argv) {
                     const glm::vec3 foot = physics->moveCharacter(
                         mv * camera.moveSpeed, jump, dt, onGround);
                     grounded = onGround;
-                    camera.setPosition(glm::vec3(foot.x, foot.y + eyeHeight, foot.z));
+                    camera.setPosition(applyHeadBob(
+                        glm::vec3(foot.x, foot.y + eyeHeight, foot.z), onGround));
                 } else {
                 glm::vec3 fwd = camera.front(); fwd.y = 0.0f;
                 glm::vec3 rgt = camera.right(); rgt.y = 0.0f;
@@ -3144,7 +3203,10 @@ int main(int argc, char** argv) {
 
                 // --- Move + collide against solid blocks -------------------
                 const float pr = 0.35f, stepH = 0.55f; // player radius, step height
-                glm::vec3 pos = camera.position();
+                // Strip last frame's bob back off so movement/collision runs on the
+                // true eye position, not the bobbed one (else the bob would feed
+                // back and drift).
+                glm::vec3 pos = camera.position() - bobOffset;
                 const float feetY = pos.y - eyeHeight;
                 const float mvx = move.x * camera.moveSpeed * dt;
                 const float mvz = move.z * camera.moveSpeed * dt;
@@ -3201,7 +3263,7 @@ int main(int argc, char** argv) {
 
                 if (pos.y <= groundEye) { pos.y = groundEye; fpsVelY = 0.0f; grounded = true; }
                 else                    { grounded = false; }
-                camera.setPosition(pos);
+                camera.setPosition(applyHeadBob(pos, grounded));
                 }
             } else {
                 // Look only when dragging over the viewport panel (or already
