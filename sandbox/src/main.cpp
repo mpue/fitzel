@@ -6983,7 +6983,11 @@ int main(int argc, char** argv) {
 
             // --- Submit the opaque scene once ---------------------------
             // Render at the docked viewport panel's size, not the whole window.
-            const int   fbW = viewW, fbH = viewH;
+            // Clamp to >= 1: an exclusive-fullscreen window that gets minimized
+            // (e.g. a screenshot/overlay tool grabbing focus) reports a 0x0
+            // framebuffer, which would recreate the render targets at 0x0 --
+            // an incomplete FBO -- and make `aspect` NaN.
+            const int   fbW = std::max(1, viewW), fbH = std::max(1, viewH);
             const float aspect = static_cast<float>(fbW) / static_cast<float>(fbH);
             const glm::mat4 proj = camera.projectionMatrix(aspect);
 
