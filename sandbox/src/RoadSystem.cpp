@@ -64,6 +64,28 @@ bool isRoadAlbedo(const std::string& filename) {
     return true;
 }
 
+// Baseline clearance kept between the graded ground and the asphalt, on top of
+// the measured sub-cell bulge (see baseBulge).
+constexpr float kRoadClear = 0.02f;
+
+// How far the base terrain bulges above its own linear interpolation on a `cell`
+// grid, at the four edge midpoints around `p`. This is exactly the part of the
+// ground the edit field cannot flatten away: the terrain mesh samples the deltas
+// bilinearly but evaluates the base noise exactly, at vertices finer than the
+// grid. Never negative -- a dip below the interpolation is harmless.
+float baseBulge(const fitzel::TerrainSettings& s, glm::vec2 p, float cell) {
+    const float h0 = terrainBaseHeight(s, p.x, p.y);
+    float bulge = 0.0f;
+    const glm::vec2 dirs[4] = {{cell, 0.0f}, {-cell, 0.0f},
+                               {0.0f, cell}, {0.0f, -cell}};
+    for (const glm::vec2& d : dirs) {
+        const float hn = terrainBaseHeight(s, p.x + d.x, p.y + d.y);
+        const float hm = terrainBaseHeight(s, p.x + d.x * 0.5f, p.y + d.y * 0.5f);
+        bulge = std::max(bulge, hm - 0.5f * (h0 + hn));
+    }
+    return bulge;
+}
+
 // Low-pass a longitudinal profile in place, ends held (anchored to the terrain).
 void smooth(std::vector<float>& prof, int passes) {
     std::vector<float> tmp = prof;
@@ -608,13 +630,25 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
             if (d > reach) continue; // outside the corridor -> leave the ground be
             const float base = terrainBaseHeight(s, w.x, w.y);
             float target = roadH;
+            float flat   = 1.0f; // 1 = flattened onto the road, 0 = natural ground
             if (d > half) {
                 const float e = glm::clamp((d - half) / shoulder, 0.0f, 1.0f);
-                target = glm::mix(roadH, base, e * e * (3.0f - 2.0f * e));
+                const float k = e * e * (3.0f - 2.0f * e);
+                target = glm::mix(roadH, base, k);
+                flat   = 1.0f - k;
             }
             // Ease the whole corridor back to the bare ground across a bridge's
             // abutments, and let it go completely under the span itself.
             target = glm::mix(base, target, gradeW);
+            flat  *= gradeW;
+            // The terrain mesh adds the *exact* base noise to a bilinear sample of
+            // this delta field, and its vertices are finer than our cell grid. So
+            // whatever the base bulges between our nodes survives the flattening
+            // and pokes up through the asphalt. Sink the node by that bulge,
+            // measured as the base's linear-interpolation error at the four edge
+            // midpoints: both nodes of an edge measure the same error there, so
+            // their average always covers it.
+            if (flat > 0.0f) target -= flat * (kRoadClear + baseBulge(s, w, cell));
             const std::int64_t key = fitzel::TerrainEditField::cellKey(ix, iz);
             // Drop the cell rather than storing a zero, so a stretch that used to be
             // an embankment and is now bridged gives its ground back (and the map
