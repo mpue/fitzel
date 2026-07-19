@@ -1,5 +1,7 @@
 #include "TerrainPanel.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <string>
@@ -150,6 +152,36 @@ void drawPanel(const PanelState& s) {
             ImGui::SameLine();
             return ImGui::Selectable(rel.c_str(), selected);
         };
+        // Case-insensitive substring test used by the picker search box.
+        auto icontains = [](const std::string& hay, const char* needle) {
+            if (!needle || !*needle) return true;
+            const std::string n(needle);
+            auto it = std::search(hay.begin(), hay.end(), n.begin(), n.end(),
+                [](char a, char b) {
+                    return std::tolower(static_cast<unsigned char>(a)) ==
+                           std::tolower(static_cast<unsigned char>(b));
+                });
+            return it != hay.end();
+        };
+        // The body of a texture combo: a search box plus the matching thumbnail
+        // rows. Returns the {id, rel} the user picked this frame (invalid id if
+        // none). A single shared filter buffer is fine — only one combo popup is
+        // ever open at a time, and it's cleared each time a popup appears.
+        auto pickerList = [&](AssetId selectedId) -> std::pair<AssetId, std::string> {
+            static char filter[64] = "";
+            if (ImGui::IsWindowAppearing()) {
+                filter[0] = '\0';
+                ImGui::SetKeyboardFocusHere();
+            }
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::InputTextWithHint("##texfilter", "Search...", filter, sizeof(filter));
+            ImGui::Separator();
+            std::pair<AssetId, std::string> picked{AssetId{}, {}};
+            for (const auto& [id, rel] : texAssets)
+                if (icontains(rel, filter) && pickerRow(id, rel, id == selectedId))
+                    picked = {id, rel};
+            return picked;
+        };
 
         int removeIdx = -1;
         for (int i = 0; i < static_cast<int>(s.look.layers.size()); ++i) {
@@ -162,12 +194,12 @@ void drawPanel(const PanelState& s) {
                     ? (L.name.empty() ? L.texId.toString() : L.name) : "(none)";
                 swatch(L.tex, L.texId);
                 if (ImGui::BeginCombo("Texture", cur.c_str())) {
-                    for (const auto& [id, rel] : texAssets)
-                        if (pickerRow(id, rel, id == L.texId)) {
-                            L.texId = id;
-                            L.tex   = s.assetDb.loadTexture(id);
-                            L.name  = std::filesystem::path(rel).stem().string();
-                        }
+                    auto [id, rel] = pickerList(L.texId);
+                    if (id.valid()) {
+                        L.texId = id;
+                        L.tex   = s.assetDb.loadTexture(id);
+                        L.name  = std::filesystem::path(rel).stem().string();
+                    }
                     ImGui::EndCombo();
                 }
                 // Optional normal map: adds tangent-space surface relief for this
@@ -179,11 +211,12 @@ void drawPanel(const PanelState& s) {
                         L.normId = AssetId{};
                         L.norm.reset();
                     }
-                    for (const auto& [id, rel] : texAssets)
-                        if (pickerRow(id, rel, id == L.normId)) {
-                            L.normId = id;
-                            L.norm   = s.assetDb.loadTexture(id);
-                        }
+                    auto [id, rel] = pickerList(L.normId);
+                    (void)rel;
+                    if (id.valid()) {
+                        L.normId = id;
+                        L.norm   = s.assetDb.loadTexture(id);
+                    }
                     ImGui::EndCombo();
                 }
                 ImGui::DragFloatRange2("Height", &L.heightStart, &L.heightEnd,
