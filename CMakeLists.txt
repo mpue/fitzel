@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Fitzel
-    VERSION 0.1.0
+    VERSION 0.2.0
     DESCRIPTION "Portable OpenGL base for a graphics engine"
     LANGUAGES C CXX)
 
@@ -24,6 +24,29 @@ endif()
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(FITZEL_BUILD_SANDBOX "Build the sandbox example application" ON)
+
+# --- Version header ---------------------------------------------------------
+# x.y.z come from project() above; the fourth number is the commit count, filled
+# in by a build-time step so it tracks new commits without re-running CMake.
+# Everything that wants it includes <fitzel/Version.hpp>.
+set(FITZEL_VERSION_DIR ${CMAKE_BINARY_DIR}/generated/fitzel)
+add_custom_target(fitzel_version ALL
+    COMMAND ${CMAKE_COMMAND}
+            -DFITZEL_VERSION=${PROJECT_VERSION}
+            -DSRC_DIR=${CMAKE_SOURCE_DIR}
+            -DIN_FILE=${CMAKE_SOURCE_DIR}/cmake/Version.hpp.in
+            -DOUT_FILE=${FITZEL_VERSION_DIR}/Version.hpp
+            -P ${CMAKE_SOURCE_DIR}/cmake/VersionGen.cmake
+    BYPRODUCTS ${FITZEL_VERSION_DIR}/Version.hpp
+    COMMENT "Stamping version")
+# Generate it once at configure time too, so the header exists for tooling
+# (compile_commands.json consumers) before the first build.
+execute_process(COMMAND ${CMAKE_COMMAND}
+    -DFITZEL_VERSION=${PROJECT_VERSION}
+    -DSRC_DIR=${CMAKE_SOURCE_DIR}
+    -DIN_FILE=${CMAKE_SOURCE_DIR}/cmake/Version.hpp.in
+    -DOUT_FILE=${FITZEL_VERSION_DIR}/Version.hpp
+    -P ${CMAKE_SOURCE_DIR}/cmake/VersionGen.cmake)
 
 # --- Third-party dependencies ----------------------------------------------
 include(cmake/Dependencies.cmake)

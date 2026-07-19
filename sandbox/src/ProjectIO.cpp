@@ -10,6 +10,7 @@
 
 #include <glm/glm.hpp>
 
+#include <fitzel/Version.hpp>
 #include <fitzel/asset/AssetDatabase.hpp>
 
 #include "PropertyMeta.hpp"
@@ -128,7 +129,8 @@ listProjectsIn(const std::string& root) {
 
 void saveScene(const Context& ctx, const std::string& path) {
     nlohmann::json j;
-    j["version"] = 3;
+    j["version"] = 3;         // scene *format* version, bumped on layout changes
+    j["app"]     = fitzel::kVersionFull; // the build that wrote it (diagnostics)
     nlohmann::json ents = nlohmann::json::array();
     for (const Entity& b : ctx.entities) {
         nlohmann::json e;

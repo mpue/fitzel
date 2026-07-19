@@ -1,0 +1,25 @@
+#pragma once
+
+// Generated at build time by cmake/VersionGen.cmake -- do not edit, and do not
+// commit: it lives in the build tree. See that script for where the numbers and
+// the git metadata come from.
+
+namespace fitzel {
+
+constexpr int kVersionMajor = @FITZEL_VER_MAJOR@;
+constexpr int kVersionMinor = @FITZEL_VER_MINOR@;
+constexpr int kVersionPatch = @FITZEL_VER_PATCH@;
+// Commits on the current branch: automatic, monotonic, and the same for every
+// build of a given commit. 0 when built without git (e.g. from a source zip).
+constexpr int kVersionBuild = @FITZEL_VER_BUILD@;
+
+// "0.2.0.151"
+constexpr const char* kVersion = "@FITZEL_VERSION@";
+// "0.2.0.151 (8a15b67, dirty)" -- what to show a user reporting a problem: the
+// four numbers alone can't tell two builds of the same commit apart.
+constexpr const char* kVersionFull = "@FITZEL_VERSION_FULL@";
+
+constexpr const char* kGitHash  = "@FITZEL_GIT_HASH@"; // "" without git
+constexpr bool        kGitDirty = @FITZEL_GIT_DIRTY@;  // uncommitted changes
+
+} // namespace fitzel

@@ -27,11 +27,15 @@ add_library(fitzel STATIC
     src/physics/Physics.cpp
 )
 
-# Public headers live under include/, exposed as <fitzel/...>.
+# Public headers live under include/, exposed as <fitzel/...>. The generated
+# build tree dir carries <fitzel/Version.hpp> (stamped from git by the root
+# CMakeLists), so anything linking fitzel can ask for the version.
 target_include_directories(fitzel
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<BUILD_INTERFACE:${CMAKE_BINARY_DIR}/generated>
 )
+add_dependencies(fitzel fitzel_version)
 
 find_package(Threads REQUIRED)
 

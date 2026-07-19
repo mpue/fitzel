@@ -37,6 +37,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fitzel/Fitzel.hpp>
+#include <fitzel/Version.hpp>   // generated: x.y.z.<commits> + git hash
 #include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/physics/Physics.hpp>
 
@@ -270,7 +271,7 @@ int main(int argc, char** argv) {
         Window window(WindowConfig{
             .width     = 1280,
             .height    = 720,
-            .title     = "Fitzel",
+            .title     = std::string("Fitzel ") + fitzel::kVersion,
             .vsync     = true,
             .maximized = true,
         });
@@ -357,6 +358,12 @@ int main(int argc, char** argv) {
             }
             ImGui::TextUnformatted(label);
             ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
+            // Version under the bar, right-aligned and dimmed: useful on a bug
+            // report screenshot, quiet enough to ignore otherwise.
+            const float vw = ImGui::CalcTextSize(fitzel::kVersionFull).x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
+                                 ImGui::GetContentRegionAvail().x - vw);
+            ImGui::TextDisabled("%s", fitzel::kVersionFull);
             ImGui::End();
             gui.endFrame();
             window.swapBuffers();
@@ -940,6 +947,7 @@ int main(int argc, char** argv) {
         };
 #endif // !FITZEL_PLAYER
         bool showScriptEditor = false;
+        bool showAbout       = false;
         bool showStats       = false;
         bool showCamera      = false;
         bool showWeather     = false;
@@ -4139,6 +4147,10 @@ int main(int argc, char** argv) {
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("Help")) {
+                    if (ImGui::MenuItem("About Fitzel...")) showAbout = true;
+                    ImGui::EndMenu();
+                }
                 // Play / Stop: run the scene as a game (first-person), Stop (or
                 // Esc) restores the edited scene and camera exactly.
                 ImGui::Separator();
@@ -5308,6 +5320,29 @@ int main(int argc, char** argv) {
             }
             ImGui::End();
             ImGui::PopStyleVar();
+
+            if (showAbout) {
+                ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
+                if (ImGui::Begin("About Fitzel", &showAbout,
+                                 ImGuiWindowFlags_NoDocking |
+                                 ImGuiWindowFlags_NoSavedSettings)) {
+                    ImGui::Text("Fitzel %d.%d.%d",
+                                fitzel::kVersionMajor, fitzel::kVersionMinor,
+                                fitzel::kVersionPatch);
+                    ImGui::TextDisabled("3D vegetation & road engine");
+                    ImGui::Separator();
+                    // The four-part version alone can't tell two builds of one
+                    // commit apart, so show what identifies this binary exactly.
+                    ImGui::Text("Build %d", fitzel::kVersionBuild);
+                    if (fitzel::kGitHash[0])
+                        ImGui::Text("Commit %s%s", fitzel::kGitHash,
+                                    fitzel::kGitDirty ? " (uncommitted changes)" : "");
+                    ImGui::Spacing();
+                    if (ImGui::Button("Copy version"))
+                        ImGui::SetClipboardText(fitzel::kVersionFull);
+                }
+                ImGui::End();
+            }
 
             if (showStats) { if (ImGui::Begin("Stats", &showStats)) {
                 const char* sceneNames[] = {"Nature", "Empty (build)"};
