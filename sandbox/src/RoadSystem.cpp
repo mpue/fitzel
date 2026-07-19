@@ -17,8 +17,38 @@
 #include "CameraPath.hpp" // catmull()
 
 namespace {
-// Number of subdivisions per control-point span when sampling the spline.
-constexpr int kSpanSub = 14;
+// Spline sampling: aim for a sample every kSampleStep metres so a long sweeping
+// span gets as many samples as it needs to read as a curve instead of a chain of
+// facets, while a short one stays cheap. Clamped at both ends.
+constexpr float kSampleStep = 2.0f;
+constexpr int   kMinSub     = 6;
+constexpr int   kMaxSub     = 128;
+
+// Centripetal Catmull-Rom (alpha = 0.5) through b and c. The uniform variant
+// (CameraPath's catmull()) assumes evenly spaced control points; where road
+// points are not -- a tight corner right after a long straight is the usual case
+// -- it overshoots and can loop back on itself. Knot spacing by sqrt(distance)
+// removes that: the curve stays inside the control polygon and corners come out
+// round rather than bulged. Falls back to the uniform form on coincident points.
+glm::vec2 catmullCentripetal(const glm::vec2& p0, const glm::vec2& p1,
+                             const glm::vec2& p2, const glm::vec2& p3, float t) {
+    auto next = [](float ti, const glm::vec2& a, const glm::vec2& b) {
+        return ti + std::sqrt(glm::length(b - a));
+    };
+    const float t0 = 0.0f;
+    const float t1 = next(t0, p0, p1);
+    const float t2 = next(t1, p1, p2);
+    const float t3 = next(t2, p2, p3);
+    if (t1 - t0 < 1e-5f || t2 - t1 < 1e-5f || t3 - t2 < 1e-5f)
+        return catmull(p0, p1, p2, p3, t);
+    const float tt = t1 + t * (t2 - t1);
+    const glm::vec2 a1 = ((t1 - tt) * p0 + (tt - t0) * p1) / (t1 - t0);
+    const glm::vec2 a2 = ((t2 - tt) * p1 + (tt - t1) * p2) / (t2 - t1);
+    const glm::vec2 a3 = ((t3 - tt) * p2 + (tt - t2) * p3) / (t3 - t2);
+    const glm::vec2 b1 = ((t2 - tt) * a1 + (tt - t0) * a2) / (t2 - t0);
+    const glm::vec2 b2 = ((t3 - tt) * a2 + (tt - t1) * a3) / (t3 - t1);
+    return ((t2 - tt) * b1 + (tt - t1) * b2) / (t2 - t1);
+}
 
 // A road surface must be a colour/albedo map. We can't require "diff" in the
 // name (the content folder's PNGs are all support maps and its albedos are .jpg,
@@ -326,8 +356,10 @@ void RoadSystem::load(const nlohmann::json& j) {
     }
 }
 
-std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ() const {
+std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ(
+        std::vector<int>* ptSample) const {
     std::vector<glm::vec2> center;
+    if (ptSample) ptSample->clear();
     const int n = static_cast<int>(roadPts.size());
     if (n < 2) return center;
     // A closed loop needs >= 3 points to be more than a back-and-forth. When
@@ -335,8 +367,14 @@ std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ() const {
     // continuous across the seam; the extra segment n-1 -> 0 closes the ring.
     const bool loop = closed && n >= 3;
     auto pt = [&](int i) -> glm::vec2 {
-        return loop ? roadPts[((i % n) + n) % n]
-                    : roadPts[std::clamp(i, 0, n - 1)];
+        if (loop) return roadPts[((i % n) + n) % n];
+        // Open ends: mirror a phantom point through the endpoint instead of
+        // repeating it. A repeated point has zero knot spacing (degenerate for
+        // the centripetal form) and flattens the first/last span's tangent;
+        // mirroring lets the road leave its end point along the curve it is on.
+        if (i < 0)      return 2.0f * roadPts[0] - roadPts[1];
+        if (i > n - 1)  return 2.0f * roadPts[n - 1] - roadPts[n - 2];
+        return roadPts[i];
     };
     const int segs = loop ? n : n - 1;
     for (int i = 0; i < segs; ++i) {
@@ -344,14 +382,25 @@ std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ() const {
         const glm::vec2 p1 = pt(i);
         const glm::vec2 p2 = pt(i + 1);
         const glm::vec2 p3 = pt(i + 2);
+        // Sample count from this span's own length, so curvature is resolved the
+        // same everywhere regardless of how far apart the user set the points.
+        const int sub = std::clamp(
+            static_cast<int>(std::lround(glm::length(p2 - p1) / kSampleStep)),
+            kMinSub, kMaxSub);
+        // Control point i is the span's first sample -- recorded for the bridge
+        // specs, which name their ends by control-point index.
+        if (ptSample) ptSample->push_back(static_cast<int>(center.size()));
         // Each span drops its final sample (it repeats the next span's first);
         // only the very last segment keeps it, to terminate the open line or to
         // land back on the start point and close the loop.
-        const int last = (i == segs - 1) ? kSpanSub : kSpanSub - 1;
+        const int last = (i == segs - 1) ? sub : sub - 1;
         for (int s = 0; s <= last; ++s)
-            center.push_back(catmull(p0, p1, p2, p3,
-                                     static_cast<float>(s) / kSpanSub));
+            center.push_back(catmullCentripetal(p0, p1, p2, p3,
+                                                static_cast<float>(s) / sub));
     }
+    // The line's final sample closes out the last control point (the loop's
+    // start point, or the open line's end point).
+    if (ptSample) ptSample->push_back(static_cast<int>(center.size()) - 1);
     return center;
 }
 
@@ -414,10 +463,22 @@ void RoadSystem::buildBridges(const Layout& lo) {
 
 RoadSystem::Layout RoadSystem::layout() const {
     Layout lo;
-    lo.center = sampleCenterlineXZ();
+    std::vector<int> ptSample;
+    lo.center = sampleCenterlineXZ(&ptSample);
     if (lo.center.size() < 2) return lo;
 
     const fitzel::TerrainSettings& s = m_streamer.settings();
+
+    // Smoothing below counts filter passes, but samples are ~kSampleStep metres
+    // apart, so express the passes as the world-space distance they should blur
+    // over: a [1/4,1/2,1/4] pass has variance spacing^2/2, so P passes reach
+    // sigma = spacing*sqrt(P/2). Keeps the grade slider metric rather than tied
+    // to the sample density.
+    auto passesFor = [](float sigmaMetres) {
+        const float p = 2.0f * (sigmaMetres / kSampleStep) *
+                                (sigmaMetres / kSampleStep);
+        return std::clamp(static_cast<int>(std::lround(p)), 1, 600);
+    };
 
     // Longitudinal profile: start from the *base* (procedural) terrain height under
     // each sample, then low-pass it so the road grades smoothly instead of
@@ -430,21 +491,22 @@ RoadSystem::Layout RoadSystem::layout() const {
         lo.ground[i] = terrainBaseHeight(s, lo.center[i].x, lo.center[i].y);
 
     lo.prof = lo.ground;
-    smooth(lo.prof, 3 + static_cast<int>(grade * 30.0f));
+    smooth(lo.prof, passesFor(3.0f + grade * 15.0f));
 
-    // Each bridge the user asked for, as a run of samples. Control point i is
-    // sample i*kSpanSub (every span contributes kSpanSub samples and starts on its
-    // own point). Specs naming points that have since been deleted are skipped
-    // rather than clamped: silently bridging somewhere else is worse than nothing.
-    // A bridge always runs the low-to-high way round, so on a closed loop one drawn
-    // across the seam takes the long way instead of the short one.
+    // Each bridge the user asked for, as a run of samples, looked up through the
+    // control point -> sample map. Specs naming points that have since been
+    // deleted are skipped rather than clamped: silently bridging somewhere else
+    // is worse than nothing. A bridge always runs the low-to-high way round, so
+    // on a closed loop one drawn across the seam takes the long way instead of
+    // the short one.
     std::vector<roadbridge::Span> cores;
-    const int pts  = static_cast<int>(roadPts.size());
+    const int pts  = std::min(static_cast<int>(roadPts.size()),
+                              static_cast<int>(ptSample.size()));
     const int last = static_cast<int>(lo.center.size()) - 1;
     for (const BridgeSpec& spec : bridges) {
         const int p0 = std::min(spec.a, spec.b), p1 = std::max(spec.a, spec.b);
         if (p0 < 0 || p1 >= pts || p0 == p1) continue;
-        const int sa = p0 * kSpanSub, sb = p1 * kSpanSub;
+        const int sa = ptSample[p0], sb = ptSample[p1];
         if (sa >= last || sb > last) continue;
         cores.push_back({sa, sb});
     }
@@ -455,7 +517,7 @@ RoadSystem::Layout RoadSystem::layout() const {
     // The chords meet the road at an angle; round those two kinks off so a bridge
     // entrance isn't a bump. A straight chord is a fixed point of this filter, so
     // only the tangents move.
-    if (!lo.spans.empty()) smooth(lo.prof, 4);
+    if (!lo.spans.empty()) smooth(lo.prof, passesFor(5.0f));
     return lo;
 }
 

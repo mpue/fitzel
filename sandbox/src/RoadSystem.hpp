@@ -148,7 +148,11 @@ private:
     Layout layout() const;
 
     // Densely sample the Catmull-Rom centreline through roadPts (world XZ).
-    std::vector<glm::vec2> sampleCenterlineXZ() const;
+    // Sample density follows span length, so control point i is *not* at a fixed
+    // sample stride: pass `ptSample` to get the sample index of each point (one
+    // entry per control point, plus the closing one).
+    std::vector<glm::vec2> sampleCenterlineXZ(
+        std::vector<int>* ptSample = nullptr) const;
     // Loft the ribbon mesh + collider + veg centreline from the sampled centre and
     // its per-sample surface heights (already lifted onto the graded profile).
     void loft(const std::vector<glm::vec2>& center, const std::vector<float>& height);
