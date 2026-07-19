@@ -5273,9 +5273,15 @@ int main(int argc, char** argv) {
                     }
 
                     // Click to select/place, but not while grabbing the gizmo or
-                    // painting grass (the brush owns the left button then).
-                    if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && !grassPaintMode &&
-                        !sculptMode && !paintMode && !scatterMode &&
+                    // running a viewport tool -- the active tool owns the left
+                    // button then. One predicate rather than a negation list at
+                    // the `if`: a tool missing from that list silently gets both
+                    // actions on one click (road points used to drop a primitive
+                    // under every waypoint placed in entity edit mode).
+                    const bool toolOwnsClick =
+                        grassPaintMode || treePaintMode || flowerPaintMode ||
+                        roadEditMode || sculptMode || paintMode || scatterMode;
+                    if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && !toolOwnsClick &&
                         viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         const glm::mat4 inv = glm::inverse(vp);
                         glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
