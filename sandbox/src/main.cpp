@@ -303,28 +303,58 @@ int main(int argc, char** argv) {
         const std::string modelDir = localContent ? contentRoot + "/models"
                                                    : std::string(FITZEL_MODEL_DIR);
 
-        // Startup loading screen: render one frame with a progress bar. Called
-        // between the (synchronous, GL-bound) asset loads so the window shows what
-        // it is doing instead of staying black while everything loads.
+        // Splash art behind the startup progress bar. Not flipped, so it draws
+        // upright through the ImGui draw list's default UVs. An invalid texture
+        // (file missing) just falls back to the plain dark loading screen.
+        Texture splash = Texture::fromFile("assets/splash.png",
+                                           /*flipVertically=*/false);
+
+        // Startup loading screen: render one frame with the splash and a progress
+        // bar. Called between the (synchronous, GL-bound) asset loads so the
+        // window shows what it is doing instead of staying black while everything
+        // loads.
         auto showProgress = [&](float frac, const char* label) {
             window.pollEvents();
             int w = 0, h = 0;
             window.framebufferSize(w, h);
             glViewport(0, 0, w, h);
-            glClearColor(0.08f, 0.09f, 0.11f, 1.0f);
+            glClearColor(0.04f, 0.05f, 0.06f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             gui.beginFrame();
             const ImGuiViewport* vp = ImGui::GetMainViewport();
+            // Drawn at its native pixel size, centred -- upscaling a 1024px image
+            // to a maximized window only makes it blurry. Only shrink (aspect
+            // preserved) if the window is smaller than the art.
+            float barBottom = vp->Pos.y + vp->Size.y - 32.0f;
+            if (splash.isValid()) {
+                const float s = std::min({1.0f,
+                                          vp->Size.x / float(splash.width()),
+                                          vp->Size.y / float(splash.height())});
+                const ImVec2 sz(splash.width() * s, splash.height() * s);
+                const ImVec2 p0(vp->Pos.x + (vp->Size.x - sz.x) * 0.5f,
+                                vp->Pos.y + (vp->Size.y - sz.y) * 0.5f);
+                ImGui::GetBackgroundDrawList()->AddImage(
+                    (ImTextureID)(intptr_t)splash.id(), p0,
+                    ImVec2(p0.x + sz.x, p0.y + sz.y));
+                // Bar sits just under the art, unless that would push it off the
+                // bottom edge (window barely taller than the image).
+                barBottom = std::min(barBottom, p0.y + sz.y + 44.0f);
+            }
+            // Progress strip under/over the art.
             ImGui::SetNextWindowPos(
-                ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f,
-                       vp->WorkPos.y + vp->WorkSize.y * 0.5f),
-                ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(480.0f, 0.0f));
-            ImGui::Begin("##loading", nullptr,
-                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse);
-            ImGui::Text("Fitzel");
-            ImGui::Spacing();
+                ImVec2(vp->Pos.x + vp->Size.x * 0.5f, barBottom),
+                ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+            ImGui::SetNextWindowSize(
+                ImVec2(std::min(560.0f, vp->Size.x * 0.6f), 0.0f));
+            ImGuiWindowFlags flags =
+                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse;
+            if (splash.isValid()) flags |= ImGuiWindowFlags_NoBackground;
+            ImGui::Begin("##loading", nullptr, flags);
+            if (!splash.isValid()) {
+                ImGui::Text("Fitzel");
+                ImGui::Spacing();
+            }
             ImGui::TextUnformatted(label);
             ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
             ImGui::End();
@@ -2623,6 +2653,7 @@ int main(int argc, char** argv) {
         showProgress(0.95f, "Generating world...");
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
+        splash = Texture{}; // loading done -- give the splash's VRAM back
 
         // Player build: load the game project, hide the editor, go fullscreen and
         // start playing immediately. Esc quits (handled in the input loop).

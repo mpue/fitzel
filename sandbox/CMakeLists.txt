@@ -63,6 +63,12 @@ foreach(tgt sandbox player)
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 ${CMAKE_CURRENT_SOURCE_DIR}/scripts
                 $<TARGET_FILE_DIR:${tgt}>/scripts
+        # Startup splash art. Kept in the repo's images/ folder (it's branding,
+        # not a sandbox asset) but copied into assets/, which "Export Game"
+        # ships wholesale -- so the exported player gets the same splash.
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_SOURCE_DIR}/images/splash.png
+                $<TARGET_FILE_DIR:${tgt}>/assets/splash.png
         COMMENT "Copying ${tgt} assets")
 endforeach()
 
