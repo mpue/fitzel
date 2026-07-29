@@ -748,6 +748,30 @@ public:
     void load(const nlohmann::json& j) override; // scale (path/import via ProjectIO)
 };
 
+// --- Built-in component: Prefab link (marks an entity as a prefab instance) ---
+// Attached to every entity produced by instantiating a .fprefab, so an instance
+// remembers which prefab asset it came from. `source` is that prefab's GUID;
+// `localId` is this entity's id *within* the prefab (0 = the instance root),
+// which future work will use to diff per-instance overrides and re-apply prefab
+// edits. Engine-managed (created by instantiation), so not in the Add menu.
+class PrefabComponent : public ComponentBase {
+public:
+    fitzel::AssetId source;    // GUID of the .fprefab this instance came from
+    int             localId = 0; // this entity's id inside the prefab (0 = root)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<PrefabComponent>(*this);
+    }
+    const char* typeId() const override { return "prefab"; }
+    const char* displayName() const override { return "Prefab Instance"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> none; return none;
+    }
+    bool isRoot() const { return localId == 0; }
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Physics (gives an entity a rigid-body collider) ------
 // Presence = has a collider in Play. dynamic falls & collides; otherwise static.
 class PhysicsComponent : public ComponentBase {

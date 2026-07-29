@@ -1,4 +1,5 @@
 #include "TerrainPanel.hpp"
+#include "UiStyle.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -74,7 +75,7 @@ void drawPanel(const PanelState& s) {
             s.roadDirty  = true;            // re-drape roads on the new heights
         };
 
-        ImGui::SeparatorText("Presets");
+        ui::sectionText("Presets");
         ImGui::TextDisabled("One click = a whole landscape. Fine-tune below.");
         for (int i = 0; i < IM_ARRAYSIZE(kPresets); ++i) {
             if (i % 3) ImGui::SameLine();
@@ -91,7 +92,7 @@ void drawPanel(const PanelState& s) {
             }
         }
 
-        ImGui::SeparatorText("Generator");
+        ui::sectionText("Generator");
         // `released` fires once when a slider is let go after editing -- that's the
         // cue to rebuild (rebuilding every frame mid-drag would thrash the streamer).
         bool released = false;
@@ -121,7 +122,7 @@ void drawPanel(const PanelState& s) {
             regenerate();
         }
 
-        ImGui::SeparatorText("Texture layers");
+        ui::sectionText("Texture layers");
         ImGui::TextDisabled("A layer paints where BOTH the height and the slope "
                             "fall in its band; overlapping bands cross-fade.");
 
@@ -238,7 +239,7 @@ void drawPanel(const PanelState& s) {
         ImGui::TextDisabled("%d / %d",
                             static_cast<int>(s.look.layers.size()), kMaxTerrainLayers);
 
-        ImGui::SeparatorText("Surface detail");
+        ui::sectionText("Surface detail");
         ImGui::SliderFloat("Normal strength", &s.normalStrength, 0.0f, 1.0f);
         ImGui::SliderFloat("Detail bump",     &s.look.detailStrength, 0.0f, 4.0f);
         ImGui::SliderFloat("Gloss",           &s.look.gloss, 0.0f, 0.4f, "%.3f");

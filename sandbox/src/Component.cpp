@@ -34,6 +34,16 @@ void MaterialComponent::load(const nlohmann::json& j) {
         material = fitzel::AssetId::fromString(j["material"].get<std::string>());
 }
 
+void PrefabComponent::save(nlohmann::json& j) const {
+    if (source.valid()) j["source"] = source.toString();
+    j["localId"] = localId;
+}
+void PrefabComponent::load(const nlohmann::json& j) {
+    if (j.contains("source") && j["source"].is_string())
+        source = fitzel::AssetId::fromString(j["source"].get<std::string>());
+    localId = j.value("localId", 0);
+}
+
 void ModelComponent::save(nlohmann::json& j) const {
     j["scale"]     = scale;
     j["modelFile"] = std::filesystem::path(modelPath).filename().string();
@@ -703,6 +713,9 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MaterialComponent>()); }});
         components::registerType({"model", "Model",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ModelComponent>()); },
+            /*addable=*/false});
+        components::registerType({"prefab", "Prefab Instance",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<PrefabComponent>()); },
             /*addable=*/false});
         components::registerType({"physics", "Physics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});

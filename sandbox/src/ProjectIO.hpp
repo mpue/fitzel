@@ -41,6 +41,10 @@ struct Context {
     std::vector<std::string>& recentProjects;    // folders, newest first
     std::string               prefsPath;         // editor.json path
     std::string&              exportStatus;      // last export result message
+    // UI comfort settings (View > Interface). Kept in the prefs rather than the
+    // scene: they describe this machine's editor, not the project.
+    float&                    uiFontSize;        // points, before display scale
+    std::string&              uiFontFamily;      // typeface name ("" = default)
 
     // Engine context.
     fitzel::AssetDatabase&    assetDb;
@@ -69,6 +73,17 @@ std::string safeName(const std::string& s); // filesystem-safe token from a name
 std::string matsDirIn(const std::string& folder);
 std::string sceneFileIn(const std::string& folder);
 std::vector<std::pair<std::string, std::string>> listProjectsIn(const std::string& root);
+
+// One entity <-> JSON: the single source of truth for entity serialization,
+// shared by scene files and prefab (.fprefab) files, so the two never drift.
+// writeEntityJson emits the table-driven fields + id/parent + components; a
+// ModelComponent's source asset GUID is resolved via `modelGuidOf`, which maps a
+// runtime modelId to its GUID string ("" if unknown -- only the caller with the
+// loaded-model table can do this). readEntityJson rebuilds the entity, recreating
+// each component from the registry and re-importing a model through `ctx`.
+nlohmann::json writeEntityJson(const Entity& e,
+                               const std::function<std::string(int)>& modelGuidOf);
+Entity readEntityJson(Context& ctx, const nlohmann::json& e);
 
 // Serialization.
 void saveScene(const Context& ctx, const std::string& path);

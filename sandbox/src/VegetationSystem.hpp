@@ -34,6 +34,12 @@ public:
     // Load the tree model + build its instanced/billboard GL buffers. Separate so
     // the caller can supply the content directories. Returns false on shader fail.
     bool initTrees(const std::string& modelDir, const std::string& texDir);
+    // Rebuild the selectable tree-mesh + billboard lists from the built-in content
+    // dirs plus the open project folder (`projectDir`, scanned recursively; pass ""
+    // for none), and reload the species' meshes/billboards from the new lists. Call
+    // it whenever the project changes so models dropped into a project show up in
+    // the tree editor. Assets are referenced by file name, so selections survive.
+    void refreshTreeAssets(const std::string& projectDir);
     // Load the flower shader + instanced mesh. Returns false on shader fail.
     bool initFlowers();
 
@@ -189,7 +195,12 @@ private:
     // Load a .glb into `lod` (fills prims + creates its VAO/VBO bound to the
     // species' instance buffer). Returns false if the model failed to load.
     bool loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod);
-    void scanTreeAssets(); // populate m_modelFiles / m_texFiles from the content dirs
+    void scanTreeAssets(); // populate m_modelFiles / m_texFiles from the search dirs
+    // Absolute path of a model/billboard picked by file name. Falls back to the
+    // built-in content dir when the name isn't in the scanned list (e.g. a scene
+    // that names an asset the current project doesn't ship).
+    std::string modelPath(const std::string& file) const;
+    std::string texPath(const std::string& file) const;
 
     fitzel::TerrainStreamer& m_streamer;
     fitzel::Camera&          m_camera;
@@ -212,9 +223,12 @@ private:
     // Trees. Shaders are shared across all species (bound once, uniforms per draw).
     fitzel::Shader           m_tree, m_treeDepth, m_billboard;
     std::vector<TreeSpecies> m_species;
-    std::vector<std::string> m_modelFiles;  // *.glb in the model dir (panel dropdown)
-    std::vector<std::string> m_texFiles;    // *.png in the texture dir (billboard dropdown)
+    std::vector<std::string> m_modelFiles;  // *.glb display names (panel dropdown)
+    std::vector<std::string> m_texFiles;    // *.png display names (billboard dropdown)
+    std::vector<std::string> m_modelPaths;  // absolute path per m_modelFiles entry
+    std::vector<std::string> m_texPaths;    // absolute path per m_texFiles entry
     std::string              m_modelDir, m_texDir;
+    std::string              m_projectDir;  // open project, scanned too ("" = none)
     const float              m_treeRadius = 120.0f;
     std::mt19937             m_trng{555u};
     // Combined positions of every species (5 floats/tree) -- feeds flower

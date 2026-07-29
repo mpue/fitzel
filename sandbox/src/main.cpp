@@ -45,12 +45,15 @@
 #include "Document.hpp"
 #include "Command.hpp"
 #include "PropertyMeta.hpp"
+#include "RoadCommand.hpp"
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
+#include "ScriptBridge.hpp"
 #include "ProjectIO.hpp"
+#include "PrefabSystem.hpp"
 #include "PaintPanel.hpp"
 #include "SculptPanel.hpp"
 #include "AssetDrop.hpp"
@@ -66,6 +69,7 @@
 #include "ScatterTool.hpp"
 #include "VehicleTool.hpp"
 #include "CarAudio.hpp"
+#include "UiStyle.hpp"
 
 using namespace fitzel;
 
@@ -659,11 +663,12 @@ int main(int argc, char** argv) {
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
         bool roadDragging = false;    // dragging the selected handle
+        bool roadDragHeight = false;  // ...vertically (Ctrl held on grab) vs across the ground
         // Erase a control point, keeping the bridges that name points by index
         // honest: any bridge ending on it goes with it, and later points shift down.
         auto removeRoadPoint = [&](int k) {
             if (k < 0 || k >= static_cast<int>(road.roadPts.size())) return;
-            road.roadPts.erase(road.roadPts.begin() + k);
+            road.erasePoint(k);
             std::vector<RoadSystem::BridgeSpec> keep;
             for (RoadSystem::BridgeSpec b : road.bridges) {
                 if (b.a == k || b.b == k) continue;
@@ -680,7 +685,16 @@ int main(int argc, char** argv) {
         // same point. Selects the new point.
         auto insertRoadPoint = [&](int at, glm::vec2 p) {
             at = glm::clamp(at, 0, static_cast<int>(road.roadPts.size()));
-            road.roadPts.insert(road.roadPts.begin() + at, p);
+            // A point dropped between two others inherits their height, so
+            // inserting into a raised stretch doesn't punch a hole in it.
+            float lift = 0.0f;
+            const int n = static_cast<int>(road.roadPts.size());
+            if (n > 0) {
+                const int a = std::clamp(at - 1, 0, n - 1);
+                const int b = std::clamp(at,     0, n - 1);
+                lift = 0.5f * (road.liftOf(a) + road.liftOf(b));
+            }
+            road.insertPoint(at, p, lift);
             for (RoadSystem::BridgeSpec& b : road.bridges) {
                 if (b.a >= at) ++b.a;
                 if (b.b >= at) ++b.b;
@@ -739,6 +753,9 @@ int main(int argc, char** argv) {
             if (road.build(sculptWork, mn, mx)) {
                 publishSculpt();
                 streamer.editsChanged(mn, mx);
+                // Now that the corridor is graded into the live terrain, drape the
+                // side objects (rails/curbs/posts) on it.
+                road.rebuildSideObjects();
             }
         };
 
@@ -810,8 +827,62 @@ int main(int argc, char** argv) {
         // unchanged. Every content edit goes through `history` (undo/redo).
         Document     document;
         CommandStack history;
+
+        // --- Undo for road shape edits ---------------------------------------
+        // The road is not in the Document (its mesh, collider and graded corridor
+        // hang off RoadSystem), but its edits belong on the same timeline as
+        // everything else. An interaction -- a drag, a button, a slider -- opens
+        // with the shape it found and closes by pushing the difference, so a drag
+        // across fifty frames is one undo step and not fifty.
+        RoadSystem::Shape roadUndoBefore;
+        bool              roadUndoOpen = false;
+        auto beginRoadEdit = [&]() {
+            if (roadUndoOpen) return; // already inside an interaction
+            roadUndoBefore = road.shape();
+            roadUndoOpen   = true;
+        };
+        auto commitRoadEdit = [&](const char* label) {
+            if (!roadUndoOpen) return;
+            roadUndoOpen = false;
+            auto cmd = std::make_unique<RoadShapeCmd>(road, roadUndoBefore,
+                                                      road.shape(), label);
+            if (!cmd->trivial()) history.push(std::move(cmd), document);
+        };
+        // The point edits above predate the history (they are declared before it,
+        // next to the road); these are what the editor actually calls.
+        auto addRoadPoint = [&](int at, glm::vec2 p) {
+            beginRoadEdit();
+            insertRoadPoint(at, p);
+            commitRoadEdit("Add point");
+        };
+        auto deleteRoadPoint = [&](int k) {
+            beginRoadEdit();
+            removeRoadPoint(k);
+            commitRoadEdit("Delete point");
+        };
+        // Undoing an "Add point" can leave the selection naming a point that no
+        // longer exists. Nothing dereferences it unchecked, but a phantom
+        // selection lights up the panel's height field for a point you can't see.
+        auto clampRoadSel = [&]() {
+            const int n = static_cast<int>(road.roadPts.size());
+            if (roadSel  >= n) roadSel  = -1;
+            if (roadSel2 >= n) roadSel2 = -1;
+        };
+
         std::vector<Entity>& entities = document.entities();
         int       entitySel      = -1;
+        // Multi-selection. `entitySel` stays the ACTIVE object (drives the
+        // Inspector and every existing single-object path); `multiSel` holds the
+        // full set of selected entity IDs when more than one is picked, and is
+        // empty for a plain single selection. Invariant (kept by normalizeSelection
+        // each frame): if non-empty it contains the active object's id and only
+        // ids that still exist -- so any code path that just sets `entitySel`
+        // collapses the multi-set automatically. IDs (not indices) so they survive
+        // reordering/undo.
+        std::vector<int> multiSel;
+        // Box-select (Ctrl + left-drag in the viewport): in-progress rectangle.
+        bool      boxSelecting  = false;
+        ImVec2    boxStart{0.0f, 0.0f};
         // Round-robin picking: the entity ids the last click's ray passed through
         // (nearest first) and which one is currently selected, so repeated clicks
         // at the same spot cycle to the next overlapping entity (a parent group's
@@ -841,6 +912,8 @@ int main(int argc, char** argv) {
         // layout is just Hierarchy | Scene | Inspector; everything else is hidden.
         bool showMaterials   = false;
         bool showModels      = false;
+        bool showPrefabs     = false;
+        char prefabNameBuf[64] = ""; // name field in the Prefabs panel
         bool showAssets      = false;
         // Asset browser: lazily-built, cached preview thumbnails (small textures,
         // kept alive here so they stay resident), plus its view options. Decoding
@@ -998,6 +1071,12 @@ int main(int argc, char** argv) {
         std::string       prefLocation = defaultProjectsRoot; // wizard default dir
         std::vector<std::string> recentProjects;              // folders, newest first
         const std::string prefsPath = "editor.json";
+        // UI comfort settings, also in editor.json. prefsDirty is written out at
+        // the end of the frame, so dragging the size slider isn't one file write
+        // per pixel.
+        float       uiFontSize   = gui.fontSize();
+        std::string uiFontFamily;
+        bool        prefsDirty   = false;
         // New Project / Save As wizard state.
         bool wizardOpen  = false;   // request to (re)open the modal this frame
         bool wizardIsNew = true;    // true = New Project (reset scene), false = Save As
@@ -1264,7 +1343,7 @@ int main(int argc, char** argv) {
         projectio::Context pio{
             entities, materials, matSel, entityCounter, entitySel,
             currentProject, projNameBuf, sizeof(projNameBuf), prefLocation,
-            recentProjects, prefsPath, exportStatus,
+            recentProjects, prefsPath, exportStatus, uiFontSize, uiFontFamily,
             assetDb, contentRoot, modelDir,
             [&]{ seedDefaultMaterials(); },
             [&](const std::string& p){ return models.import(p, assetDb, materials); },
@@ -1274,6 +1353,12 @@ int main(int argc, char** argv) {
             writeSettingsFn, readSettingsFn,
         };
         projectio::loadPrefs(pio);
+        // Apply the saved UI text settings (the typeface by name, so a prefs file
+        // naming a font this machine doesn't have just keeps the default).
+        gui.setFontSize(uiFontSize);
+        for (int i = 0; i < gui.fontFamilyCount(); ++i)
+            if (uiFontFamily == gui.fontFamilyName(i)) { gui.setFontFamily(i); break; }
+        ui::setBoldFont(gui.boldFont());
 
         auto safeName             = [&](const std::string& s){ return projectio::safeName(s); };
         auto loadProjectMaterials = [&](const std::string& d){ projectio::loadProjectMaterials(pio, d); };
@@ -1283,11 +1368,11 @@ int main(int argc, char** argv) {
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
         // Loading/creating a project replaces the document, so the undo history
         // must not survive the boundary.
-        // Rescan road-surface textures to include the project being opened before
-        // the scene loads (loadScene restores the saved surface by name, so the
-        // project's textures must already be in the list at that point).
-        auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
-        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); road.refreshTextures(std::string()); };
+        // Rescan road-surface textures and tree assets to include the project being
+        // opened before the scene loads (loadScene restores the saved surface/trees
+        // by name, so the project's files must already be in the lists by then).
+        auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); veg.refreshTreeAssets(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
+        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); road.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
         // Scenes within the open project. Switching/creating replaces the document,
         // so the undo history is cleared at the boundary (like opening a project).
         auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
@@ -1416,6 +1501,51 @@ int main(int argc, char** argv) {
             history.push(std::make_unique<AddEntityCmd>(nb), document);
             entitySel = document.indexOf(nb.id);
         };
+#ifndef FITZEL_PLAYER
+        // --- Prefabs (reusable object templates; see PrefabSystem.hpp) ----------
+        // The open project's prefabs/ folder ("" when no project is open -- prefabs
+        // are per-project assets, like materials).
+        auto prefabDir = [&]() -> std::string {
+            if (currentProject.empty()) return std::string();
+            return prefab::prefabsDirIn(
+                std::filesystem::path(currentProject).parent_path().generic_string());
+        };
+        // Save the selected entity's subtree as a new .fprefab in the project. The
+        // outcome (name saved, or why not) goes to the status line.
+        auto createPrefabFromSelection = [&](const std::string& name) -> bool {
+            if (entitySel < 0 || entitySel >= static_cast<int>(entities.size()))
+                return false;
+            const std::string dir = prefabDir();
+            if (dir.empty()) {
+                exportStatus = "Open a project first to save prefabs.";
+                return false;
+            }
+            auto p = prefab::fromSubtree(entities, entities[entitySel].id, name);
+            if (!p) { exportStatus = "Can't make a prefab from this object."; return false; }
+            if (!prefab::save(pio, *p, dir)) {
+                exportStatus = "Failed to write prefab.";
+                return false;
+            }
+            exportStatus = "Saved prefab: " + p->name;
+            return true;
+        };
+        // Load a .fprefab and drop an instance into the scene, on the ground in
+        // front of the camera, as one undoable step. Selects the new root.
+        auto instantiatePrefabFile = [&](const std::string& path) {
+            auto p = prefab::load(pio, path);
+            if (!p || p->entities.empty()) {
+                exportStatus = "Failed to load prefab.";
+                return;
+            }
+            const glm::vec3 f = camera.position() + camera.front() * 8.0f;
+            const glm::vec3 g(f.x, streamer.heightAt(f.x, f.z), f.z);
+            std::vector<Entity> spawn = prefab::instantiate(*p, entityCounter, g, 0.0f);
+            const int rootId = spawn.empty() ? -1 : spawn.front().id;
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(spawn), "Prefab"),
+                         document);
+            if (rootId >= 0) entitySel = document.indexOf(rootId);
+        };
+#endif // !FITZEL_PLAYER
         // Ids of an entity and all its descendants (for a parented gizmo drag).
         auto collectSubtreeIds = [&](int rootId) {
             std::vector<int> ids{rootId};
@@ -1436,6 +1566,119 @@ int main(int argc, char** argv) {
             for (int id : ids) if (const Entity* e = document.find(id)) out.push_back(*e);
             return out;
         };
+
+#ifndef FITZEL_PLAYER
+        // --- Multi-selection helpers (see the multiSel declaration) -------------
+        // The effective selection as entity IDs: the multi-set if any, else just
+        // the active object (empty if nothing is selected).
+        auto selectedIds = [&]() -> std::vector<int> {
+            if (!multiSel.empty()) return multiSel;
+            if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
+                return { entities[entitySel].id };
+            return {};
+        };
+        auto isSelectedId = [&](int id) {
+            if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
+                entities[entitySel].id == id)
+                return true;
+            return std::find(multiSel.begin(), multiSel.end(), id) != multiSel.end();
+        };
+        // Reconcile the multi-set with the active object each frame: drop ids that
+        // no longer exist, and collapse to single if a single-select code path
+        // moved `entitySel` outside the set. Keeps the invariant without having to
+        // touch the ~40 sites that assign entitySel directly.
+        auto normalizeSelection = [&]() {
+            multiSel.erase(std::remove_if(multiSel.begin(), multiSel.end(),
+                [&](int id){ return document.indexOf(id) < 0; }), multiSel.end());
+            const int activeId =
+                (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
+                    ? entities[entitySel].id : -1;
+            if (activeId < 0) { multiSel.clear(); return; }
+            if (!multiSel.empty() &&
+                std::find(multiSel.begin(), multiSel.end(), activeId) == multiSel.end())
+                multiSel.clear();
+            if (multiSel.size() == 1) multiSel.clear(); // one item == plain single
+        };
+        // Plain click: select exactly `id` (clears any multi-set).
+        auto selectSingle = [&](int id) {
+            entitySel = document.indexOf(id);
+            multiSel.clear();
+        };
+        // Ctrl+click: toggle `id` in/out of the selection; the clicked object
+        // becomes active. Removing the active picks another survivor.
+        auto selectToggle = [&](int id) {
+            if (id < 0) return;
+            if (multiSel.empty() && entitySel >= 0 &&
+                entitySel < static_cast<int>(entities.size()))
+                multiSel = { entities[entitySel].id }; // seed from current active
+            auto it = std::find(multiSel.begin(), multiSel.end(), id);
+            if (it != multiSel.end()) {
+                multiSel.erase(it);
+                entitySel = multiSel.empty() ? -1
+                                             : document.indexOf(multiSel.back());
+            } else {
+                multiSel.push_back(id);
+                entitySel = document.indexOf(id);
+            }
+            if (multiSel.size() == 1) multiSel.clear();
+        };
+        // Add a batch of ids to the selection (box-select), keeping the current
+        // ones; the last one becomes active.
+        auto selectAddMany = [&](const std::vector<int>& ids) {
+            if (ids.empty()) return;
+            if (multiSel.empty() && entitySel >= 0 &&
+                entitySel < static_cast<int>(entities.size()))
+                multiSel = { entities[entitySel].id };
+            for (int id : ids)
+                if (std::find(multiSel.begin(), multiSel.end(), id) == multiSel.end())
+                    multiSel.push_back(id);
+            if (!multiSel.empty()) entitySel = document.indexOf(multiSel.back());
+            if (multiSel.size() == 1) multiSel.clear();
+        };
+        // Delete every selected object's subtree as one undoable step (falls back
+        // to the single-object delete when only one is selected).
+        auto deleteSelection = [&]() {
+            const std::vector<int> sel = selectedIds();
+            if (sel.size() <= 1) { deleteEntity(entitySel); return; }
+            std::vector<int> ids;
+            for (int rootId : sel) {
+                const Entity* e = document.find(rootId);
+                if (!e || e->type == EntityType::Sun) continue;
+                for (int id : collectSubtreeIds(rootId))
+                    if (std::find(ids.begin(), ids.end(), id) == ids.end())
+                        ids.push_back(id);
+            }
+            if (ids.empty()) return;
+            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
+            entitySel = -1; multiSel.clear();
+        };
+        // Duplicate every selected object (offset copy, unparented -- mirrors the
+        // single Duplicate) as one undoable step; the copies become the selection.
+        auto duplicateSelection = [&]() {
+            const std::vector<int> sel = selectedIds();
+            if (sel.size() <= 1) { duplicateEntity(entitySel); return; }
+            std::vector<Entity> copies;
+            std::vector<int>    newIds;
+            for (int id : sel) {
+                const Entity* src = document.find(id);
+                if (!src || src->type == EntityType::Sun) continue;
+                Entity nb = *src;
+                nb.localCenter.x += nb.half.x * 2.2f;
+                nb.center.x     += nb.half.x * 2.2f;
+                nb.id     = entityCounter++;
+                nb.parent = -1;
+                nb.name  += " copy";
+                newIds.push_back(nb.id);
+                copies.push_back(std::move(nb));
+            }
+            if (copies.empty()) return;
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(copies), "Duplicate"),
+                         document);
+            multiSel  = newIds;
+            entitySel = newIds.empty() ? -1 : document.indexOf(newIds.back());
+            if (multiSel.size() == 1) multiSel.clear();
+        };
+#endif // !FITZEL_PLAYER
 
         // Spawn a new entity of `type` as a child of `parentId` (-1 = root),
         // placed at world position/rotation (wPos/wRot). Mirrors addEntity's
@@ -1663,6 +1906,11 @@ int main(int argc, char** argv) {
         bool                gizmoActive = false;
         std::vector<int>    gizmoIds;
         std::vector<Entity> gizmoBefore;
+        // Multi-select gizmo drag: the selected roots being moved together and the
+        // active object's world transform last frame, so each other root gets the
+        // same incremental delta applied (individual-origins style).
+        std::vector<int>    gizmoRoots;
+        glm::vec3           gizmoPrevT{0.0f}, gizmoPrevR{0.0f}, gizmoPrevS{1.0f};
         // Inspector edit transaction: snapshot the selected entity's subtree while
         // a field is being touched, commit one ModifyEntities step when released.
         int                 inspEditId = -1;
@@ -1730,7 +1978,7 @@ int main(int argc, char** argv) {
         // scene starts blank instead of inheriting the terrain you were just editing.
         auto resetWorldForNewScene = [&]() {
             look.layers.clear();
-            road.roadPts.clear();
+            road.clearPoints();
             road.bridges.clear();
             road.needsBuild = false;
             roadSel = roadSel2 = -1;
@@ -2243,6 +2491,12 @@ int main(int argc, char** argv) {
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
         std::map<int, PhysicsBodyId>  physicsBody;  // entity id -> body handle
+        // Knockable road side objects (posts/bollards): each a dynamic body created
+        // at Play start, rendered from its live physics transform so a car bowls it
+        // over. Rebuilt every Play; the derived static instances take over in the
+        // editor. Holds what rendering needs: the body + which model at what scale.
+        struct SidePost { PhysicsBodyId body; int modelId; float scale; };
+        std::vector<SidePost> sidePosts;
 
         // --- Scene-vehicle drive helpers (see VehicleTool for the setup UI) ---
         // The nearest entity carrying a VehicleComponent, or -1.
@@ -2354,6 +2608,14 @@ int main(int argc, char** argv) {
             camChase = camera.position();
         };
 
+        // Play-mode camera state. Declared ahead of the script bridge because
+        // game.setCamera reaches `activeCam`.
+        glm::vec3 playCamPos{0.0f};
+        float     playCamYaw = 0.0f, playCamPitch = 0.0f, playMoveSpeed = 20.0f;
+        float     playCamFov = 60.0f;
+        bool      playPrevEdit = false;
+        int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
+
         // --- Lua `game` API bridge -------------------------------------------
         // Scripts mutate the entity list only through deferred queues (the tick
         // loop iterates entities), applied once per frame after scripts run.
@@ -2377,6 +2639,38 @@ int main(int argc, char** argv) {
             e.half     = glm::max(s.half, glm::vec3(0.02f));
             e.localRotation = e.rotation = s.rot;
             e.name     = s.name.empty() ? "spawned" : s.name;
+            e.parent   = s.parent;
+            // Asset-driven spawn: `model` imports (or reuses) a Model asset and
+            // makes this a Model entity sized from the model's own AABB.
+            if (!s.model.empty()) {
+                const int mid = host.loadModel ? host.loadModel(s.model) : -1;
+                const LoadedModel* lm = mid >= 0 ? models.byId(mid) : nullptr;
+                if (!lm) {
+                    std::fprintf(stderr, "[Fitzel] game.spawn: no model '%s'\n",
+                                 s.model.c_str());
+                    return 0;
+                }
+                const float sc = glm::max(s.scale, 0.001f);
+                e.type = EntityType::Model;
+                auto mc       = std::make_unique<ModelComponent>();
+                mc->modelId   = mid;
+                mc->modelPath = lm->path;
+                mc->scale     = sc;
+                e.components.items.push_back(std::move(mc));
+                e.half = glm::max(modelHalf(*lm, sc), glm::vec3(0.02f));
+                if (e.name == "spawned") e.name = lm->name;
+            }
+            if (!s.material.empty() && host.setEntityMaterial) {
+                // Resolve now (the entity is not in the document yet): find the
+                // GUID, attach the component by hand.
+                const std::string mid = host.findMaterial ? host.findMaterial(s.material)
+                                                          : std::string();
+                if (!mid.empty()) {
+                    auto mc = std::make_unique<MaterialComponent>();
+                    mc->material = AssetId::fromString(mid);
+                    e.components.items.push_back(std::move(mc));
+                }
+            }
             if (s.physics != 0) {
                 auto pc = std::make_unique<PhysicsComponent>();
                 pc->dynamic = (s.physics == 2);
@@ -2465,13 +2759,78 @@ int main(int argc, char** argv) {
         };
         host.playAudio = [&](int id){ startAudioSource(id); };
         host.stopAudio = [&](int id){ stopAudioSource(id); };
+        host.getVelocity = [&](int id, glm::vec3& out) -> bool {
+            auto it = physicsBody.find(id);
+            return physics && it != physicsBody.end() &&
+                   physics->getLinearVelocity(it->second, out);
+        };
+        host.setAngularVelocity = [&](int id, glm::vec3 w){
+            auto it = physicsBody.find(id);
+            if (physics && it != physicsBody.end())
+                physics->setAngularVelocity(it->second, w);
+        };
+        // Camera control from a script. Position/direction drive the player view
+        // (a Camera entity, if one is active, overwrites it again at frame end --
+        // game.setCamera(-1) hands control back to the script).
+        host.setCamPos = [&](glm::vec3 p){ camera.setPosition(p); };
+        host.setCamDir = [&](glm::vec3 d){
+            if (glm::length(d) < 1e-5f) return;
+            d = glm::normalize(d);
+            camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
+            camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+        };
+        host.setCamFov = [&](float f){ camera.setFov(glm::clamp(f, 10.0f, 140.0f)); };
+        host.setActiveCamera = [&](int id){ activeCam = id; };
+        // The data-driven half of the API (assets, models, materials, entity
+        // queries, world helpers) lives in ScriptBridge; it only needs the few
+        // hooks below that depend on main's own state.
+        scriptbridge::install(host, [&]{
+            scriptbridge::Deps d;
+            d.doc     = &document;
+            d.models  = &models;
+            d.assetDb = &assetDb;
+            d.setWorldRot = [&](int id, glm::vec3 r){
+                if (Entity* e = document.find(id)) {
+                    const glm::mat4 pw = parentWorldMat(*e);
+                    setWorld(*e, e->center, r, e->parent >= 0 ? &pw : nullptr);
+                }
+            };
+            d.reparent = [&](int id, int parent){
+                Entity* e = document.find(id);
+                if (!e || id == parent) return;
+                // Refuse a cycle: the new parent must not be a descendant of `e`.
+                for (int p = parent; p >= 0;) {
+                    if (p == id) return;
+                    const Entity* pe = document.find(p);
+                    p = pe ? pe->parent : -1;
+                }
+                e->parent = (parent >= 0 && document.find(parent)) ? parent : -1;
+                const glm::mat4 pw = parentWorldMat(*e);
+                rebaseLocal(*e, e->parent >= 0 ? &pw : nullptr);
+            };
+            d.terrainHeight = [&](float x, float z){ return streamer.heightAt(x, z); };
+            d.loadScene     = [&](const std::string& n){ pendingSceneLoad = n; };
+            d.log = [](const std::string& line){
+                std::fprintf(stderr, "[Lua] %s\n", line.c_str());
+            };
+            return d;
+        }());
         scripts.setHost(&host);
 
-        glm::vec3 playCamPos{0.0f};
-        float     playCamYaw = 0.0f, playCamPitch = 0.0f, playMoveSpeed = 20.0f;
-        float     playCamFov = 60.0f;
-        bool      playPrevEdit = false;
-        int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
+        // Road side objects reference a model by name/path/GUID; resolve (and
+        // import) each once, then cache the library id. Failures aren't cached, so
+        // a model imported later resolves on a subsequent frame. Reuses the same
+        // asset resolution the Lua API uses (host.loadModel).
+        std::unordered_map<std::string, int> sideModelCache;
+        auto resolveSideModel = [&](const std::string& ref) -> LoadedModel* {
+            if (ref.empty()) return nullptr;
+            if (auto it = sideModelCache.find(ref); it != sideModelCache.end())
+                return models.byId(it->second);
+            const int mid = host.loadModel ? host.loadModel(ref) : -1;
+            if (mid < 0) return nullptr;
+            sideModelCache[ref] = mid;
+            return models.byId(mid);
+        };
 
         // Terrain physics collider: a static heightfield around the action. It is
         // finite, so it follows the player/vehicle -- when the focus drifts more
@@ -2546,6 +2905,36 @@ int main(int argc, char** argv) {
                                  static_cast<int>(road.collVerts().size()),
                                  road.collIndices().data(),
                                  static_cast<int>(road.collIndices().size()));
+            // Side objects collide as a box each, sized to the model's AABB. Rails
+            // and curbs are static (mass 0) -- they stop a car driving off the edge.
+            // Knockable lines (posts, bollards) are DYNAMIC, so the car bowls them
+            // over; those are tracked in sidePosts and rendered from their live
+            // transform below. The fresh physics world discards all of them when
+            // Play stops, like the road mesh.
+            sidePosts.clear();
+            if (road.enabled)
+                for (const RoadSystem::SideBatch& batch : road.sideBatches()) {
+                    LoadedModel* lm = resolveSideModel(batch.model);
+                    if (!lm) continue;
+                    for (const roadside::Instance& in : batch.instances) {
+                        const glm::vec3 half =
+                            glm::max(lm->size() * 0.5f * in.scale, glm::vec3(0.02f));
+                        glm::vec3 c =
+                            in.pos + glm::vec3(0.0f, half.y, 0.0f); // base on the ground
+                        const glm::quat q = glm::angleAxis(in.yaw, glm::vec3(0, 1, 0));
+                        if (batch.knockable) {
+                            // Start a hair clear of the ground so the body settles
+                            // onto it instead of being ejected out of a penetration
+                            // (the physics heightfield is coarser than the terrain).
+                            c.y += 0.03f;
+                            const PhysicsBodyId id = physics->addBox(
+                                half, c, q, glm::max(batch.mass, 0.1f));
+                            if (id) sidePosts.push_back({id, lm->id, in.scale});
+                        } else {
+                            physics->addBox(half, c, q, 0.0f); // static
+                        }
+                    }
+                }
             skids.clear(); // no skid marks carry over from a previous Play session
             physicsBody.clear();
             for (Entity& e : entities) {
@@ -2811,6 +3200,9 @@ int main(int argc, char** argv) {
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
                 // Plain editor: Esc steps back to selection (drop the transform
                 // tool), then a second Esc clears the selection. Never quits.
+                // A road point selection is the innermost thing to let go of, so
+                // it clears first -- the bridge pair with it.
+                else if (roadEditMode && roadSel >= 0) { roadSel = roadSel2 = -1; }
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (entitySel >= 0) { entitySel = -1; }
             }
@@ -2846,8 +3238,8 @@ int main(int argc, char** argv) {
                 const bool y = input.isKeyDown(GLFW_KEY_Y);
                 const bool wantUndo = ctrl && z && !shift;
                 const bool wantRedo = ctrl && ((z && shift) || y);
-                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; }
-                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; }
+                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; clampRoadSel(); }
+                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; clampRoadSel(); }
                 prevUndo = wantUndo;
                 prevRedo = wantRedo;
             } else {
@@ -3633,6 +4025,8 @@ int main(int argc, char** argv) {
             if (playMode) {
                 host.camPos = camera.position();
                 host.camDir = camera.front();
+                host.screen = glm::vec2(static_cast<float>(viewW),
+                                        static_cast<float>(viewH));
                 // Scripts and behaviours just write the entity's world transform;
                 // children follow via resolveHierarchy (below), no propagation.
                 for (Entity& e : entities)
@@ -4035,7 +4429,7 @@ int main(int argc, char** argv) {
                                     "No project (.fitzel) in %s\n", picked.c_str());
                         }
                         if (!recentProjects.empty()) {
-                            ImGui::SeparatorText("Recent");
+                            ui::sectionText("Recent");
                             for (const std::string& folder : recentProjects) {
                                 const std::string lbl =
                                     std::filesystem::path(folder).filename().string() +
@@ -4044,7 +4438,7 @@ int main(int argc, char** argv) {
                                     openProjectFolder(folder);
                             }
                         }
-                        ImGui::SeparatorText("In default location");
+                        ui::sectionText("In default location");
                         const auto projs = listProjectsIn(prefLocation);
                         if (projs.empty()) ImGui::TextDisabled("(none)");
                         for (const auto& [n, folder] : projs)
@@ -4078,7 +4472,7 @@ int main(int argc, char** argv) {
                         if (ImGui::MenuItem("Delete Scene..."))
                             sceneDeleteOpen = true;
                         ImGui::EndDisabled();
-                        ImGui::SeparatorText("Switch to");
+                        ui::sectionText("Switch to");
                         for (const auto& [n, path] : scenes) {
                             const bool active = (path == currentProject);
                             if (ImGui::MenuItem((n + "##sc" + path).c_str(), nullptr, active) &&
@@ -4096,19 +4490,30 @@ int main(int argc, char** argv) {
                     const std::string redoLbl = history.canRedo()
                         ? std::string("Redo ") + history.redoName() : "Redo";
                     if (ImGui::MenuItem(undoLbl.c_str(), "Ctrl+Z", false, history.canUndo())) {
-                        history.undo(document); entitySel = -1;
+                        history.undo(document); entitySel = -1; clampRoadSel();
                     }
                     if (ImGui::MenuItem(redoLbl.c_str(), "Ctrl+Y", false, history.canRedo())) {
-                        history.redo(document); entitySel = -1;
+                        history.redo(document); entitySel = -1; clampRoadSel();
                     }
                     ImGui::Separator();
                     const bool hasSel = entitySel >= 0 &&
                         entitySel < static_cast<int>(entities.size()) &&
                         entities[entitySel].type != EntityType::Sun;
-                    if (ImGui::MenuItem("Duplicate", nullptr, false, hasSel))
-                        duplicateEntity(entitySel);
-                    if (ImGui::MenuItem("Delete", nullptr, false, hasSel))
-                        deleteEntity(entitySel);
+                    const int selCount = static_cast<int>(selectedIds().size());
+                    const char* dupLbl = selCount > 1 ? "Duplicate selection" : "Duplicate";
+                    const char* delLbl = selCount > 1 ? "Delete selection"    : "Delete";
+                    if (ImGui::MenuItem(dupLbl, nullptr, false, hasSel))
+                        duplicateSelection();
+                    if (ImGui::MenuItem(delLbl, nullptr, false, hasSel))
+                        deleteSelection();
+                    if (ImGui::MenuItem("Save as Prefab...", nullptr, false, hasSel)) {
+                        // Seed the name field from the selection and open the panel;
+                        // the panel's "Create" button does the actual save.
+                        const std::string nm = entities[entitySel].name;
+                        std::snprintf(prefabNameBuf, sizeof(prefabNameBuf), "%s",
+                                      nm.c_str());
+                        showPrefabs = true;
+                    }
                     ImGui::Separator();
                     if (ImGui::MenuItem("Clear objects")) {
                         entities.erase(std::remove_if(entities.begin(), entities.end(),
@@ -4139,11 +4544,39 @@ int main(int argc, char** argv) {
                     ImGui::Separator();
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
+                    ImGui::MenuItem("Prefabs",         nullptr, &showPrefabs);
                     ImGui::MenuItem("Import Unity asset", nullptr, &showUnityImport);
                     ImGui::MenuItem("Assets",          nullptr, &showAssets);
                     ImGui::MenuItem("Scripts",         nullptr, &showScriptEditor);
                     ImGui::MenuItem("Environment",     nullptr, &showEnv);
                     ImGui::Separator();
+                    // Text size/typeface are a comfort setting, not a scene one:
+                    // they live in the editor prefs and apply immediately.
+                    if (ImGui::BeginMenu("Interface")) {
+                        float px = gui.fontSize();
+                        ImGui::SetNextItemWidth(180.0f);
+                        if (ImGui::SliderFloat("Text size", &px, 14.0f, 28.0f, "%.0f pt")) {
+                            gui.setFontSize(px);
+                            prefsDirty = true;
+                        }
+                        if (gui.fontFamilyCount() > 1) {
+                            ImGui::SetNextItemWidth(180.0f);
+                            if (ImGui::BeginCombo("Typeface",
+                                                  gui.fontFamilyName(gui.fontFamily()))) {
+                                for (int i = 0; i < gui.fontFamilyCount(); ++i)
+                                    if (ImGui::Selectable(gui.fontFamilyName(i),
+                                                          i == gui.fontFamily())) {
+                                        gui.setFontFamily(i);
+                                        ui::setBoldFont(gui.boldFont());
+                                        prefsDirty = true;
+                                    }
+                                ImGui::EndCombo();
+                            }
+                        }
+                        ui::hint("Verdana and Tahoma have the largest x-height "
+                                 "-- easiest to read at small sizes.");
+                        ImGui::EndMenu();
+                    }
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
                     ImGui::EndMenu();
                 }
@@ -4316,6 +4749,44 @@ int main(int argc, char** argv) {
                         ImGui::SameLine();
                         if (clicked)
                             gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+                    }
+
+                    // Gap, then the road editor: a toggle, not a one-shot action
+                    // like the buttons before it, so it stays lit while it owns
+                    // the left mouse button in the viewport.
+                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
+                    ImGui::SameLine();
+                    {
+                        ImGui::PushID("roadTool");
+                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        const bool clicked = ImGui::Button("##road", bs);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Road editor%s\n"
+                                              "Click ground = add point, drag = move,\n"
+                                              "Ctrl+drag = raise/lower, Del = delete.",
+                                              roadEditMode ? " (on)" : "");
+                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
+                        const float r = 8.0f;
+                        const ImU32 col = roadEditMode ? IM_COL32(255, 205, 70, 255)
+                                                       : IM_COL32(215, 215, 220, 255);
+                        // Two edges converging into the distance + a dashed centre
+                        // line: a road, readable at 26 px without an icon font.
+                        dl->AddLine({c.x - r, c.y + r}, {c.x - r * 0.35f, c.y - r}, col, 1.8f);
+                        dl->AddLine({c.x + r, c.y + r}, {c.x + r * 0.35f, c.y - r}, col, 1.8f);
+                        dl->AddLine({c.x, c.y + r * 0.9f}, {c.x, c.y + r * 0.2f}, col, 1.4f);
+                        dl->AddLine({c.x, c.y - r * 0.2f}, {c.x, c.y - r * 0.8f}, col, 1.4f);
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                        if (clicked) {
+                            roadEditMode = !roadEditMode;
+                            if (roadEditMode) {
+                                // Same hand-off the panel's Edit mode checkbox
+                                // does: one tool owns the left button at a time.
+                                grassPaintMode = sculptMode = treePaintMode =
+                                    flowerPaintMode = paintMode = scatterMode = false;
+                                showRoads = true; // the tunables belong with the tool
+                            }
+                        }
                     }
                 }
                 ImGui::End();
@@ -4529,6 +5000,9 @@ int main(int argc, char** argv) {
                 viewportMouseNdc = glm::vec2(
                     (rsz.x > 0.0f ? (mp.x - rmin.x) / rsz.x : 0.5f) * 2.0f - 1.0f,
                     1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
+                // Keep the multi-selection consistent with the active object before
+                // any panel/viewport consumes it this frame.
+                normalizeSelection();
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
@@ -4609,9 +5083,12 @@ int main(int argc, char** argv) {
                     const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
                     const ImVec2 org = rmin; // image top-left in screen space
+                    // Handles sit on the road, not on the ground: a lifted point
+                    // has to be grabbable where its road actually runs.
                     auto handleWorld = [&](int i) {
                         return glm::vec3(road.roadPts[i].x,
-                                         streamer.heightAt(road.roadPts[i].x, road.roadPts[i].y) + 0.10f,
+                                         streamer.heightAt(road.roadPts[i].x, road.roadPts[i].y)
+                                             + 0.10f + road.liftOf(i),
                                          road.roadPts[i].y);
                     };
                     auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
@@ -4624,47 +5101,122 @@ int main(int argc, char** argv) {
                         return true;
                     };
 
-                    // Pick / add on click.
-                    if (viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        int  best = -1;
+                    // Handle under the cursor, or -1. Computed every frame (not
+                    // only on click) so the drawing below can show what a click
+                    // would grab -- and so picking and highlighting can never
+                    // disagree about which point that is.
+                    int roadHover = -1;
+                    if (viewportHovered && !roadDragging) {
                         float bestD = 12.0f; // pixel grab radius
                         for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
                             ImVec2 sp;
                             if (!toScreen(handleWorld(i), sp)) continue;
                             const float d = std::hypot(sp.x - mp.x, sp.y - mp.y);
-                            if (d < bestD) { bestD = d; best = i; }
+                            if (d < bestD) { bestD = d; roadHover = i; }
                         }
+                    }
+
+                    // Pick / add on click.
+                    if (viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        const int best = roadHover;
                         if (best >= 0) {
                             // Shift-click marks the far end of a bridge instead of
-                            // re-selecting; plain click picks (and starts a drag).
+                            // re-selecting; plain click picks (and starts a drag);
+                            // Ctrl+drag raises/lowers the point instead of moving
+                            // it across the ground.
                             if (ImGui::GetIO().KeyShift && roadSel >= 0 && best != roadSel)
                                 roadSel2 = best;
-                            else { roadSel = best; roadSel2 = -1; roadDragging = true; }
+                            else {
+                                roadSel = best; roadSel2 = -1; roadDragging = true;
+                                roadDragHeight = ImGui::GetIO().KeyCtrl;
+                                // Opened here, pushed on mouse release: the whole
+                                // drag is one undo step.
+                                beginRoadEdit();
+                            }
                         } else {
                             glm::vec3 h;
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
                                 // Insert at the nearest segment so a click on an
                                 // existing road drops a waypoint in the middle; a
                                 // click past an open end still extends the road.
-                                insertRoadPoint(roadInsertIndex({h.x, h.z}),
-                                                glm::vec2(h.x, h.z));
+                                addRoadPoint(roadInsertIndex({h.x, h.z}),
+                                             glm::vec2(h.x, h.z));
                             }
                         }
                     }
-                    // Drag the selected handle across the terrain.
+                    // Drag the selected handle: across the terrain, or (Ctrl)
+                    // straight up and down.
                     if (roadDragging && ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
                         roadSel >= 0 && roadSel < static_cast<int>(road.roadPts.size())) {
-                        glm::vec3 h;
-                        if (roadPickTerrain(viewportMouseNdc, vp, h)) {
-                            road.roadPts[roadSel] = glm::vec2(h.x, h.z);
-                            road.needsBuild = true;
+                        if (roadDragHeight) {
+                            // Metres per pixel at the handle's own depth, so the
+                            // point tracks the cursor instead of drifting away
+                            // from it as you zoom in or out.
+                            const glm::vec3 hw = handleWorld(roadSel);
+                            const float dist = glm::length(hw - camera.position());
+                            const float mpp =
+                                2.0f * dist *
+                                std::tan(glm::radians(camera.fov() * 0.5f)) /
+                                std::max(1.0f, static_cast<float>(viewH));
+                            const float dy = ImGui::GetIO().MouseDelta.y;
+                            if (dy != 0.0f)
+                                road.setLift(roadSel,
+                                             road.liftOf(roadSel) - dy * mpp);
+                        } else {
+                            glm::vec3 h;
+                            if (roadPickTerrain(viewportMouseNdc, vp, h)) {
+                                road.roadPts[roadSel] = glm::vec2(h.x, h.z);
+                                road.needsBuild = true;
+                            }
                         }
                     }
-                    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) roadDragging = false;
+                    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) && roadDragging) {
+                        roadDragging = false;
+                        commitRoadEdit(roadDragHeight ? "Raise point" : "Move point");
+                    }
                     // Delete the selected point.
                     if (roadSel >= 0 && roadSel < static_cast<int>(road.roadPts.size()) &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete))
-                        removeRoadPoint(roadSel);
+                        deleteRoadPoint(roadSel);
+
+                    // Keyboard nudge for the selected point: the arrows move it
+                    // across the ground, PageUp/Down raise and lower it. Camera
+                    // relative, because "left" means what you see, not where the
+                    // world's X axis happens to point. Held keys repeat, and the
+                    // whole burst is bracketed into one undo step (released ->
+                    // committed below).
+                    if (roadSel >= 0 && roadSel < static_cast<int>(road.roadPts.size()) &&
+                        !ImGui::GetIO().WantTextInput && !roadDragging) {
+                        const float step = (ImGui::GetIO().KeyShift ? 2.5f : 0.25f);
+                        glm::vec3 f = camera.front();
+                        f.y = 0.0f;
+                        if (glm::length(f) < 1e-4f) f = glm::vec3(0, 0, -1);
+                        f = glm::normalize(f);
+                        const glm::vec3 r(-f.z, 0.0f, f.x); // right-hand perp in XZ
+                        glm::vec2 d(0.0f);
+                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,    true)) d += glm::vec2(f.x, f.z);
+                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow,  true)) d -= glm::vec2(f.x, f.z);
+                        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) d += glm::vec2(r.x, r.z);
+                        if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) d -= glm::vec2(r.x, r.z);
+                        float dh = 0.0f;
+                        if (ImGui::IsKeyPressed(ImGuiKey_PageUp,   true)) dh += step;
+                        if (ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) dh -= step;
+                        if (d != glm::vec2(0.0f) || dh != 0.0f) {
+                            beginRoadEdit();
+                            if (d != glm::vec2(0.0f)) {
+                                road.roadPts[roadSel] += d * step;
+                                road.needsBuild = true;
+                            }
+                            if (dh != 0.0f)
+                                road.setLift(roadSel, road.liftOf(roadSel) + dh);
+                        }
+                        // Burst over (no nudge key still down) -> close the step.
+                        const bool held =
+                            ImGui::IsKeyDown(ImGuiKey_UpArrow)   || ImGui::IsKeyDown(ImGuiKey_DownArrow) ||
+                            ImGui::IsKeyDown(ImGuiKey_LeftArrow) || ImGui::IsKeyDown(ImGuiKey_RightArrow) ||
+                            ImGui::IsKeyDown(ImGuiKey_PageUp)    || ImGui::IsKeyDown(ImGuiKey_PageDown);
+                        if (!held && roadUndoOpen) commitRoadEdit("Nudge point");
+                    }
 
                     // Live preview: the smoothed spline as it will be built -- the
                     // curved centreline plus its left/right edges at the road width.
@@ -4688,14 +5240,93 @@ int main(int argc, char** argv) {
                     drawPolyline(pv.left,  edgeCol, 2.0f);
                     drawPolyline(pv.right, edgeCol, 2.0f);
                     drawPolyline(pv.center, midCol, 1.5f);
-                    for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
+
+                    // Which stretch of centreline belongs to which pair of control
+                    // points, so a bridge can be shown where it actually runs
+                    // instead of only as "#3 -> #7" in the panel. The candidate
+                    // pair (selected + shift-clicked) is drawn the same way before
+                    // it exists, which is what makes picking the two ends
+                    // something you can see rather than count out.
+                    auto drawSpan = [&](int pa, int pb, ImU32 col, float th) {
+                        const int n = static_cast<int>(pv.ptSample.size());
+                        const int a = std::min(pa, pb), b = std::max(pa, pb);
+                        if (a < 0 || b >= n) return;
+                        ImVec2 prev; bool have = false;
+                        for (int i = pv.ptSample[a];
+                             i <= pv.ptSample[b] && i < static_cast<int>(pv.center.size()); ++i) {
+                            ImVec2 sp;
+                            if (!toScreen(pv.center[i], sp)) { have = false; continue; }
+                            if (have) dl->AddLine(prev, sp, col, th);
+                            prev = sp; have = true;
+                        }
+                    };
+                    for (const RoadSystem::BridgeSpec& b : road.bridges)
+                        drawSpan(b.a, b.b, IM_COL32(255, 140, 60, 220), 4.0f);
+                    if (roadSel >= 0 && roadSel2 >= 0 && roadSel != roadSel2)
+                        drawSpan(roadSel, roadSel2, IM_COL32(255, 255, 255, 200), 3.0f);
+
+                    // Handles. A point the terrain hides is drawn faint rather
+                    // than dropped: it still has to be findable behind a ridge,
+                    // just not compete with the ones you can actually see.
+                    auto occluded = [&](const glm::vec3& wp) {
+                        const glm::vec3 eye = camera.position();
+                        const glm::vec3 d   = wp - eye;
+                        for (int s = 1; s < 24; ++s) { // skip the endpoints
+                            const glm::vec3 p = eye + d * (static_cast<float>(s) / 24.0f);
+                            if (streamer.heightAt(p.x, p.z) > p.y + 0.25f) return true;
+                        }
+                        return false;
+                    };
+                    const int ptCount = static_cast<int>(road.roadPts.size());
+                    for (int i = 0; i < ptCount; ++i) {
                         ImVec2 sp;
-                        if (!toScreen(handleWorld(i), sp)) continue;
-                        const bool s = (i == roadSel);
-                        dl->AddCircleFilled(sp, s ? 7.0f : 5.0f,
-                                            s ? IM_COL32(255, 210, 60, 255)
-                                              : IM_COL32(90, 180, 255, 235));
-                        dl->AddCircle(sp, s ? 7.0f : 5.0f, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+                        const glm::vec3 hw = handleWorld(i);
+                        if (!toScreen(hw, sp)) continue;
+                        const bool sel   = (i == roadSel);
+                        const bool mate  = (i == roadSel2);
+                        const bool hover = (i == roadHover);
+                        const float rad  = sel ? 7.0f : (hover ? 6.5f : 5.0f);
+                        ImU32 col = sel   ? IM_COL32(255, 210,  60, 255)
+                                  : mate  ? IM_COL32(255, 140,  60, 245)
+                                  : hover ? IM_COL32(210, 235, 255, 255)
+                                          : IM_COL32( 90, 180, 255, 235);
+                        if (occluded(hw) && !sel && !hover)
+                            col = (col & 0x00FFFFFF) | 0x50000000; // keep hue, drop alpha
+                        // A raised or sunken point gets a stalk down to the ground
+                        // it left: without it a lifted handle just looks like a
+                        // point somewhere else on the terrain.
+                        if (road.liftOf(i) != 0.0f) {
+                            ImVec2 gp;
+                            const glm::vec3 g(hw.x, hw.y - road.liftOf(i), hw.z);
+                            if (toScreen(g, gp)) {
+                                dl->AddLine(gp, sp, IM_COL32(255, 210, 60, 140), 1.5f);
+                                dl->AddCircle(gp, 2.5f, IM_COL32(255, 210, 60, 160), 0, 1.5f);
+                            }
+                        }
+                        dl->AddCircleFilled(sp, rad, col);
+                        dl->AddCircle(sp, rad, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+                        // Index labels: all of them while the road is short enough
+                        // to read, otherwise only the ones a bridge or the cursor
+                        // is about to involve -- a hundred numbers along a long
+                        // road is noise, not information.
+                        if (ptCount <= 30 || sel || mate || hover) {
+                            char lbl[16];
+                            std::snprintf(lbl, sizeof(lbl), "%d", i);
+                            const ImVec2 at(sp.x + rad + 2.0f, sp.y - rad - 2.0f);
+                            dl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
+                                        IM_COL32(0, 0, 0, 200), lbl);
+                            dl->AddText(at, IM_COL32(235, 240, 250, 235), lbl);
+                        }
+                        // The selected point also states its height, so a stretch
+                        // can be set to a round number without hunting in the panel.
+                        if (sel && road.liftOf(i) != 0.0f) {
+                            char hb[32];
+                            std::snprintf(hb, sizeof(hb), "%+.2f m", road.liftOf(i));
+                            const ImVec2 at(sp.x + rad + 2.0f, sp.y + 2.0f);
+                            dl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
+                                        IM_COL32(0, 0, 0, 200), hb);
+                            dl->AddText(at, IM_COL32(255, 225, 140, 245), hb);
+                        }
                     }
                 }
 
@@ -5151,48 +5782,89 @@ int main(int argc, char** argv) {
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
                                                  gizmoOp, gizmoMode, model);
                             const bool gizmoUsing = ImGuizmo::IsUsing();
-                            if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtree
+                            if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtrees
                                 gizmoActive = true;
-                                gizmoIds    = collectSubtreeIds(selId);
+                                gizmoRoots  = selectedIds();
+                                gizmoIds.clear();
+                                for (int rid : gizmoRoots)
+                                    for (int id : collectSubtreeIds(rid))
+                                        if (std::find(gizmoIds.begin(), gizmoIds.end(), id)
+                                                == gizmoIds.end())
+                                            gizmoIds.push_back(id);
                                 gizmoBefore = snapshotEntities(gizmoIds);
+                                gizmoPrevT = glm::vec3(t[0], t[1], t[2]);
+                                gizmoPrevR = glm::vec3(r[0], r[1], r[2]);
+                                gizmoPrevS = glm::vec3(s[0], s[1], s[2]);
                             }
                             if (gizmoUsing) {
                                 ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
-                                b.half = glm::max(glm::vec3(s[0], s[1], s[2]) * 0.5f, glm::vec3(0.05f));
+                                const glm::vec3 newT(t[0], t[1], t[2]);
+                                const glm::vec3 newR(r[0], r[1], r[2]);
+                                const glm::vec3 newS(s[0], s[1], s[2]);
+                                b.half = glm::max(newS * 0.5f, glm::vec3(0.05f));
                                 // World-space edit -> local (children then follow via
                                 // resolveHierarchy).
                                 const glm::mat4 pw = parentWorldMat(b);
-                                setWorld(b, glm::vec3(t[0], t[1], t[2]),
-                                         glm::vec3(r[0], r[1], r[2]),
-                                         b.parent >= 0 ? &pw : nullptr);
+                                setWorld(b, newT, newR, b.parent >= 0 ? &pw : nullptr);
+                                // Multi-select: apply the active object's incremental
+                                // delta to every other selected root (each scales /
+                                // rotates about its own centre; children follow via
+                                // resolveHierarchy).
+                                if (gizmoRoots.size() > 1) {
+                                    const glm::vec3 dT = newT - gizmoPrevT;
+                                    const glm::vec3 dR = newR - gizmoPrevR;
+                                    const glm::vec3 ratio =
+                                        newS / glm::max(gizmoPrevS, glm::vec3(1e-4f));
+                                    for (int rid : gizmoRoots) {
+                                        if (rid == selId) continue;
+                                        Entity* re = document.find(rid);
+                                        if (!re || re->type == EntityType::Sun) continue;
+                                        re->half = glm::max(re->half * ratio, glm::vec3(0.05f));
+                                        const glm::mat4 rpw = parentWorldMat(*re);
+                                        setWorld(*re, re->center + dT, re->rotation + dR,
+                                                 re->parent >= 0 ? &rpw : nullptr);
+                                    }
+                                }
+                                gizmoPrevT = newT; gizmoPrevR = newR; gizmoPrevS = newS;
                             }
                         }
 
-                        // Orange oriented wireframe around the selected object.
-                        const glm::mat4 boxX =
-                            composeModel(b.center, b.rotation, glm::vec3(1.0f));
-                        ImVec2 sp[8]; bool ok[8];
-                        for (int c = 0; c < 8; ++c) {
-                            const glm::vec3 lh((c & 1) ? b.half.x : -b.half.x,
-                                               (c & 2) ? b.half.y : -b.half.y,
-                                               (c & 4) ? b.half.z : -b.half.z);
-                            const glm::vec4 cc = vp * (boxX * glm::vec4(lh, 1.0f));
-                            ok[c] = cc.w > 1e-4f;
-                            if (ok[c]) {
-                                const glm::vec3 n = glm::vec3(cc) / cc.w;
-                                ok[c] = n.z <= 1.0f;
-                                sp[c] = ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                               rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            }
-                        }
-                        static const int kBoxEdges[12][2] = {
-                            {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
-                            {0,4},{1,5},{2,6},{3,7}};
+                        // Oriented wireframe highlight. One projector, reused for the
+                        // active object (bright) and any other selected objects (dim),
+                        // so a multi-selection shows every picked box.
                         ImDrawList* dl = ImGui::GetWindowDrawList();
-                        for (const auto& e : kBoxEdges)
-                            if (ok[e[0]] && ok[e[1]])
-                                dl->AddLine(sp[e[0]], sp[e[1]],
-                                            IM_COL32(255, 140, 0, 230), 1.6f);
+                        auto wireBox = [&](const Entity& e, ImU32 col, float thick) {
+                            const glm::mat4 boxX =
+                                composeModel(e.center, e.rotation, glm::vec3(1.0f));
+                            ImVec2 sp[8]; bool ok[8];
+                            for (int c = 0; c < 8; ++c) {
+                                const glm::vec3 lh((c & 1) ? e.half.x : -e.half.x,
+                                                   (c & 2) ? e.half.y : -e.half.y,
+                                                   (c & 4) ? e.half.z : -e.half.z);
+                                const glm::vec4 cc = vp * (boxX * glm::vec4(lh, 1.0f));
+                                ok[c] = cc.w > 1e-4f;
+                                if (ok[c]) {
+                                    const glm::vec3 n = glm::vec3(cc) / cc.w;
+                                    ok[c] = n.z <= 1.0f;
+                                    sp[c] = ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
+                                                   rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                                }
+                            }
+                            static const int kBoxEdges[12][2] = {
+                                {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
+                                {0,4},{1,5},{2,6},{3,7}};
+                            for (const auto& ed : kBoxEdges)
+                                if (ok[ed[0]] && ok[ed[1]])
+                                    dl->AddLine(sp[ed[0]], sp[ed[1]], col, thick);
+                        };
+                        // Other selected objects first (dim) so the active box (bright)
+                        // draws on top.
+                        for (int sid : multiSel) {
+                            if (sid == selId) continue;
+                            if (const Entity* se = document.find(sid))
+                                wireBox(*se, IM_COL32(255, 170, 40, 150), 1.4f);
+                        }
+                        wireBox(b, IM_COL32(255, 140, 0, 230), 1.8f);
 
                         // Component gizmos: each component of the selected entity
                         // draws its own world-space overlay (a radius, a path).
@@ -5281,14 +5953,18 @@ int main(int argc, char** argv) {
                     const bool toolOwnsClick =
                         grassPaintMode || treePaintMode || flowerPaintMode ||
                         roadEditMode || sculptMode || paintMode || scatterMode;
-                    if (!ImGuizmo::IsOver() && !ImGuizmo::IsUsing() && !toolOwnsClick &&
-                        viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    const ImGuiIO& io = ImGui::GetIO();
+                    const bool selMod  = io.KeyCtrl; // Ctrl = modify-selection gesture
+                    const bool canPick = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
+                                         !toolOwnsClick && viewportHovered;
+                    // The entity ids the mouse ray passes through, nearest first
+                    // (shared by plain click and Ctrl+click).
+                    auto rayPickIds = [&]() -> std::vector<int> {
                         const glm::mat4 inv = glm::inverse(vp);
                         glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
                         glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
                         const glm::vec3 ro = glm::vec3(pn);
                         const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                        // Every AABB the ray passes through, nearest first.
                         std::vector<std::pair<float, int>> hits;
                         for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
                             if (!entities[i].activeInHierarchy) continue; // not shown, not pickable
@@ -5297,27 +5973,71 @@ int main(int argc, char** argv) {
                             if (t >= 0.0f) hits.emplace_back(t, entities[i].id);
                         }
                         std::sort(hits.begin(), hits.end());
-                        if (!hits.empty()) {
-                            std::vector<int> ids;
-                            ids.reserve(hits.size());
-                            for (const auto& h : hits) ids.push_back(h.second);
+                        std::vector<int> ids; ids.reserve(hits.size());
+                        for (const auto& h : hits) ids.push_back(h.second);
+                        return ids;
+                    };
+
+                    // Ctrl+left: start a selection gesture (a click toggles one; a
+                    // drag draws an additive box).
+                    if (canPick && selMod && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        boxSelecting = true;
+                        boxStart = io.MousePos;
+                    }
+                    if (boxSelecting) {
+                        const ImVec2 cur = io.MousePos;
+                        const ImVec2 a(std::min(boxStart.x, cur.x), std::min(boxStart.y, cur.y));
+                        const ImVec2 b2(std::max(boxStart.x, cur.x), std::max(boxStart.y, cur.y));
+                        ImDrawList* bdl = ImGui::GetWindowDrawList();
+                        bdl->AddRectFilled(a, b2, IM_COL32(255, 160, 0, 40));
+                        bdl->AddRect(a, b2, IM_COL32(255, 160, 0, 180));
+                        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                            boxSelecting = false;
+                            const float dragPx = std::max(std::abs(cur.x - boxStart.x),
+                                                          std::abs(cur.y - boxStart.y));
+                            if (dragPx < 4.0f) { // no drag -> toggle the object clicked
+                                const std::vector<int> ids = rayPickIds();
+                                if (!ids.empty()) selectToggle(ids[0]);
+                            } else {             // box -> add every centre inside the rect
+                                std::vector<int> inBox;
+                                for (const Entity& e : entities) {
+                                    if (!e.activeInHierarchy || e.type == EntityType::Sun) continue;
+                                    const glm::vec4 cc = vp * glm::vec4(e.center, 1.0f);
+                                    if (cc.w <= 1e-4f) continue;
+                                    const glm::vec3 n = glm::vec3(cc) / cc.w;
+                                    if (n.z > 1.0f) continue;
+                                    const ImVec2 sc(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
+                                                    rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                                    if (sc.x >= a.x && sc.x <= b2.x &&
+                                        sc.y >= a.y && sc.y <= b2.y)
+                                        inBox.push_back(e.id);
+                                }
+                                selectAddMany(inBox);
+                            }
+                        }
+                    }
+                    // Plain left-click (no Ctrl): select/place exactly as before.
+                    else if (canPick && !selMod &&
+                             ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        const std::vector<int> ids = rayPickIds();
+                        if (!ids.empty()) {
                             // Same overlapping stack as last click -> advance to the
                             // next candidate; a new stack -> start at the nearest.
                             if (ids == pickStack)
                                 pickIdx = (pickIdx + 1) % static_cast<int>(ids.size());
                             else { pickStack = ids; pickIdx = 0; }
-                            entitySel = document.indexOf(ids[pickIdx]);
+                            selectSingle(ids[pickIdx]);
                         } else if (entityEditMode) {
                             glm::vec3 h; // Edit mode: empty ground -> drop a new block
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) addEntity(h, entityNewType);
                         } else {
-                            entitySel = -1; // Selection mode: empty click clears it
+                            entitySel = -1; multiSel.clear(); // empty click clears it
                             pickStack.clear(); pickIdx = -1;
                         }
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        deleteEntity(entitySel);
+                        deleteSelection();
                     }
                 }
             } else {
@@ -5456,11 +6176,11 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("SSAO",       &ssaoStrength, 0.0f, 1.0f);
                 ImGui::SliderFloat("SSAO radius",&ssaoRadius, 0.2f, 4.0f);
                 ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
-                ImGui::SeparatorText("Depth of field");
+                ui::sectionText("Depth of field");
                 ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
                 ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
                 ImGui::SliderFloat("Focus far",  &dofFar, 20.0f, 400.0f, "%.0f m");
-                ImGui::SeparatorText("Anti-aliasing");
+                ui::sectionText("Anti-aliasing");
                 ImGui::Checkbox("FXAA", &fxaaEnabled);
             }
             ImGui::End(); }
@@ -5542,7 +6262,7 @@ int main(int argc, char** argv) {
             }
 
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
-                ImGui::SeparatorText("Grass");
+                ui::sectionText("Grass");
                 ImGui::Checkbox("Grass", &veg.grassEnabled);
                 bool regrow = false;
                 regrow |= ImGui::SliderFloat("Density", &veg.grassDensity, 0.1f, 3.0f);
@@ -5556,7 +6276,7 @@ int main(int argc, char** argv) {
                 ImGui::ColorEdit3("Tint", &veg.grassTint.x);
                 ImGui::Text("Blades: %d", veg.grassCount);
 
-                ImGui::SeparatorText("Paint grass (3D brush)");
+                ui::sectionText("Paint grass (3D brush)");
                 if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
                     roadEditMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = scatterMode = false; // brush owns the left button
                 if (grassPaintMode) {
@@ -5599,7 +6319,7 @@ int main(int argc, char** argv) {
                         flowerPaintMode = paintMode = scatterMode = false; // own the LMB
                 });
 
-                ImGui::SeparatorText("Flowers");
+                ui::sectionText("Flowers");
                 ImGui::Checkbox("Flowers", &veg.flowerEnabled);
                 if (ImGui::SliderFloat("Flower density", &veg.flowerDensity, 0.0f, 2.0f))
                     veg.grassDirty = true; // flowers regenerate with the grass pass
@@ -5607,7 +6327,7 @@ int main(int argc, char** argv) {
                 if (ImGui::SmallButton("Regrow")) veg.grassDirty = true;
                 ImGui::Text("Flowers: %d", veg.flowerCount);
 
-                ImGui::SeparatorText("Paint flowers (3D brush)");
+                ui::sectionText("Paint flowers (3D brush)");
                 if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
                     grassPaintMode = roadEditMode = sculptMode = treePaintMode = paintMode = scatterMode = false;
                 if (flowerPaintMode)
@@ -5637,10 +6357,10 @@ int main(int argc, char** argv) {
 
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
-            roadui::drawPanel({showRoads, road, roadEditMode, roadSel, roadSel2,
+            roadui::drawPanel({showRoads, road, roadEditMode, roadSel, roadSel2, assetDb,
                 [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
                          paintMode = scatterMode = false; }, // don't fight over LMB
-                buildRoad, removeRoadPoint});
+                buildRoad, deleteRoadPoint, beginRoadEdit, commitRoadEdit});
 
             if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
                 ImGui::Checkbox("Show cursor", &cursorVisible);
@@ -5652,7 +6372,7 @@ int main(int argc, char** argv) {
 
                 const bool haveSel = cursorHaveSel();
 
-                ImGui::SeparatorText("Snap cursor");
+                ui::sectionText("Snap cursor");
                 if (ImGui::Button("To world origin")) snapCursorToOrigin();
                 ImGui::SameLine();
                 if (ImGui::Button("To grid"))         snapCursorToGrid();
@@ -5662,14 +6382,14 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("To selection"))    snapCursorToSelection();
                 ImGui::EndDisabled();
 
-                ImGui::SeparatorText("Snap selection");
+                ui::sectionText("Snap selection");
                 ImGui::BeginDisabled(!haveSel);
                 if (ImGui::Button("Selection to cursor")) snapSelectionToCursor();
                 ImGui::SameLine();
                 if (ImGui::Button("Selection to grid"))   snapSelectionToGrid();
                 ImGui::EndDisabled();
 
-                ImGui::SeparatorText("Create");
+                ui::sectionText("Create");
                 if (ImGui::Button("Add object at cursor"))
                     addEntity(cursor3D, entityNewType);
                 ImGui::SameLine();
@@ -5684,7 +6404,7 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("Delete")) deleteEntity(entitySel);
                 ImGui::EndDisabled();
 
-                ImGui::SeparatorText("Scene");
+                ui::sectionText("Scene");
                 // A proper tree control: roots first, children nested; the tree
                 // fills the panel and scrolls. Single click selects, arrow/double-
                 // click expands; drag a node onto another to reparent (onto empty
@@ -5716,7 +6436,7 @@ int main(int argc, char** argv) {
                                              | ImGuiTreeNodeFlags_OpenOnDoubleClick
                                              | ImGuiTreeNodeFlags_SpanFullWidth
                                              | ImGuiTreeNodeFlags_DefaultOpen;
-                    if (i == entitySel)  flags |= ImGuiTreeNodeFlags_Selected;
+                    if (isSelectedId(entities[i].id)) flags |= ImGuiTreeNodeFlags_Selected;
                     if (!hasChildren)   flags |= ImGuiTreeNodeFlags_Leaf;
                     const char* nm = entities[i].name.empty() ? "(unnamed)"
                                                               : entities[i].name.c_str();
@@ -5758,8 +6478,13 @@ int main(int argc, char** argv) {
                             renameId = -1;
                         }
                     } else {
-                        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) entitySel = i;
-                        // F2 on the selected node (or a double-click on its label)
+                        // Ctrl+click toggles this row in/out of the selection; a plain
+                        // click selects just it.
+                        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
+                            if (ImGui::GetIO().KeyCtrl) selectToggle(entities[i].id);
+                            else                        selectSingle(entities[i].id);
+                        }
+                        // F2 on the active node (or a double-click on its label)
                         // starts an inline rename, Unity-style.
                         if (i == entitySel && ImGui::IsWindowFocused() &&
                             ImGui::IsKeyPressed(ImGuiKey_F2))
@@ -5768,9 +6493,17 @@ int main(int argc, char** argv) {
                             ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
                             beginRename();
                         if (ImGui::BeginPopupContextItem()) {
-                            entitySel = i;
+                            // Right-clicking an unselected row selects just it; if it's
+                            // already part of a multi-selection, keep the whole set so
+                            // Duplicate/Delete act on all of it.
+                            if (!isSelectedId(entities[i].id)) selectSingle(entities[i].id);
                             if (ImGui::MenuItem("Rename", "F2")) beginRename();
                             if (ImGui::MenuItem("Duplicate")) dupReq = i;
+                            if (ImGui::MenuItem("Save as Prefab...")) {
+                                std::snprintf(prefabNameBuf, sizeof(prefabNameBuf),
+                                              "%s", entities[i].name.c_str());
+                                showPrefabs = true;
+                            }
                             ImGui::Separator();
                             if (ImGui::MenuItem("Create Empty Parent")) emptyParentReq = i;
                             if (ImGui::MenuItem("Create Empty Child"))  emptyChildReq = i;
@@ -5836,8 +6569,20 @@ int main(int argc, char** argv) {
                     ImGui::EndDragDropTarget();
                 }
                 ImGui::EndChild();
-                if (dupReq >= 0)             duplicateEntity(dupReq);
-                else if (delReq >= 0)        deleteEntity(delReq);
+                // Duplicate/Delete act on the whole selection when the acted-on row
+                // is part of a multi-selection, otherwise on just that row.
+                auto reqIsMultiSelected = [&](int idx) {
+                    return idx >= 0 && idx < static_cast<int>(entities.size()) &&
+                           isSelectedId(entities[idx].id) && selectedIds().size() > 1;
+                };
+                if (dupReq >= 0) {
+                    if (reqIsMultiSelected(dupReq)) duplicateSelection();
+                    else                            duplicateEntity(dupReq);
+                }
+                else if (delReq >= 0) {
+                    if (reqIsMultiSelected(delReq)) deleteSelection();
+                    else                            deleteEntity(delReq);
+                }
                 else if (emptyParentReq >= 0) addEmptyParent(emptyParentReq);
                 else if (emptyChildReq >= 0)  addEmptyChild(emptyChildReq);
                 else if (primChildReq >= 0)   addPrimitiveChild(primChildReq, primChildType);
@@ -5871,7 +6616,7 @@ int main(int argc, char** argv) {
                     // setMainCamera(): that pushes its own multi-camera undo step, so
                     // the per-entity edit wrapper must not also log this frame.
                     bool                   mainCamJustSet = false;
-                    ImGui::SeparatorText(entityTypeName(b.type));
+                    ui::sectionText(entityTypeName(b.type));
 
                     // Auto-generated fields: the property table (PropertyMeta.hpp)
                     // declares each field once -> the right widget, range and
@@ -5916,7 +6661,7 @@ int main(int argc, char** argv) {
                     // (Re-fetch: Delete##insp above may have cleared the selection.)
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
                         Entity& be = entities[entitySel];
-                        ImGui::SeparatorText("Components");
+                        ui::sectionText("Components");
                         for (std::size_t ci = 0; ci < be.components.items.size(); ++ci) {
                             ComponentBase* c = be.components.items[ci].get();
                             ImGui::PushID(static_cast<int>(ci));
@@ -6145,7 +6890,7 @@ int main(int argc, char** argv) {
                 } else {
                     ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
                 }
-                ImGui::SeparatorText("New block defaults");
+                ui::sectionText("New block defaults");
                 ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
                 if (ImGui::Button("Materials...")) showMaterials = true;
                 ImGui::SameLine();
@@ -6362,6 +7107,49 @@ int main(int argc, char** argv) {
                     ImGui::EndDisabled();
                     ImGui::TextDisabled("%d model(s) loaded.",
                                         static_cast<int>(models.size()));
+                }
+                ImGui::End();
+            }
+
+            // Prefabs: reusable object templates saved in the project's prefabs/
+            // folder. Make one from the current selection, or click a saved prefab
+            // to drop an instance into the scene (on the ground in front of the
+            // camera). See PrefabSystem.hpp.
+            if (showPrefabs) {
+                ImGui::SetNextWindowSize(ImVec2(300.0f, 380.0f), ImGuiCond_FirstUseEver);
+                if (ImGui::Begin("Prefabs", &showPrefabs)) {
+                    const std::string dir = prefabDir();
+                    if (dir.empty()) {
+                        ImGui::TextWrapped(
+                            "Open or create a project first -- prefabs are saved in "
+                            "the project's prefabs/ folder.");
+                    } else {
+                        const bool hasSel =
+                            entitySel >= 0 &&
+                            entitySel < static_cast<int>(entities.size()) &&
+                            entities[entitySel].type != EntityType::Sun;
+                        ImGui::TextDisabled("New prefab from the selected object:");
+                        ImGui::SetNextItemWidth(-1.0f);
+                        ImGui::InputText("##prefabName", prefabNameBuf,
+                                         sizeof(prefabNameBuf));
+                        ImGui::BeginDisabled(!hasSel || prefabNameBuf[0] == '\0');
+                        if (ImGui::Button("Create from selection", ImVec2(-1.0f, 0.0f)))
+                            createPrefabFromSelection(prefabNameBuf);
+                        ImGui::EndDisabled();
+                        if (!hasSel)
+                            ImGui::TextDisabled("(select an object in the scene first)");
+
+                        ImGui::Separator();
+                        ImGui::TextDisabled("Click a prefab to add it to the scene:");
+                        ImGui::BeginChild("##prefabList", ImVec2(0.0f, 0.0f), true);
+                        const auto items = prefab::list(dir);
+                        for (const auto& it : items)
+                            if (ImGui::Selectable((it.first + "##" + it.second).c_str()))
+                                instantiatePrefabFile(it.second);
+                        if (items.empty())
+                            ImGui::TextDisabled("(no prefabs yet)");
+                        ImGui::EndChild();
+                    }
                 }
                 ImGui::End();
             }
@@ -6635,7 +7423,7 @@ int main(int argc, char** argv) {
                                                ? "Engine" : "Project";
                         const std::string hdr =
                             srcs[si].name + " (" + kind + ")###src" + std::to_string(si);
-                        if (!ImGui::CollapsingHeader(hdr.c_str(),
+                        if (!ui::header(hdr.c_str(),
                                                      ImGuiTreeNodeFlags_DefaultOpen))
                             continue;
                         ImGui::PushID(si);
@@ -6972,11 +7760,11 @@ int main(int argc, char** argv) {
                     ImGui::TextDisabled("Press V or tick above to drive");
 
                 // Per-scene Play options (saved with the scene / exported game).
-                ImGui::SeparatorText("Play start");
+                ui::sectionText("Play start");
                 ImGui::Checkbox("Start Play in vehicle mode", &startInVehicleMode);
                 ImGui::Checkbox("Show crosshair", &showCrosshair);
 
-                ImGui::SeparatorText("Skid marks");
+                ui::sectionText("Skid marks");
                 ImGui::Checkbox("Enable skid marks", &skids.enabled);
                 ImGui::BeginDisabled(!skids.enabled);
                 ImGui::SliderFloat("Slip threshold", &skids.slipThresh, 0.1f, 1.5f, "%.2f");
@@ -7006,7 +7794,7 @@ int main(int argc, char** argv) {
                 const int pick = vehicleui::panelSection(document, selId, makeDrivable);
                 if (pick >= 0) entitySel = document.indexOf(pick);
 
-                ImGui::SeparatorText("Test car");
+                ui::sectionText("Test car");
                 ImGui::Checkbox("Show vehicle", &showVehicle);
                 if (ImGui::Button("Place at camera")) placeCar();
                 if (carPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(carSpeed) * 3.6f);
@@ -7333,6 +8121,59 @@ int main(int argc, char** argv) {
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
             }
+
+            // --- Road side objects (guard rails, curbs, posts) -----------------
+            // Derived from the road's side lines and drawn as instanced models: one
+            // model resolved per batch, then its baked meshes submitted at every
+            // placement transform. Their materials ride in gpuMats already (the
+            // model import registered them into the library like any other model).
+            auto drawSideModel = [&](LoadedModel* lm, const glm::mat4& mm) {
+                for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
+                    const int mi = document.materialIndex(lm->primMaterialId[i]);
+                    // A model resolved (imported) this very frame appended its
+                    // materials AFTER gpuMats was built -> its index is out of range
+                    // for one frame. Skip; next frame gpuMats has it.
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) continue;
+                    renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
+                                    materials[mi].reflectivity > 0.0f,
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
+                }
+            };
+            if (road.enabled)
+                for (const RoadSystem::SideBatch& batch : road.sideBatches()) {
+                    // Knockable instances are dynamic bodies in Play -- drawn from
+                    // their live physics transform below, not their static seat.
+                    if (playMode && batch.knockable) continue;
+                    LoadedModel* lm = resolveSideModel(batch.model);
+                    if (!lm) continue;
+                    const glm::vec3 halfSz = glm::max(lm->size(), glm::vec3(1e-4f));
+                    for (const roadside::Instance& in : batch.instances) {
+                        // Rest the model's base on the placement point: centre its
+                        // AABB half a (scaled) height above the ground it stands on.
+                        const glm::vec3 c =
+                            in.pos + glm::vec3(0.0f, halfSz.y * 0.5f * in.scale, 0.0f);
+                        const glm::mat4 mm =
+                            composeModel(c, glm::vec3(0.0f, glm::degrees(in.yaw), 0.0f),
+                                         glm::vec3(in.scale)) *
+                            glm::translate(glm::mat4(1.0f), -lm->center());
+                        drawSideModel(lm, mm);
+                    }
+                }
+            // Knockable posts follow their rigid body: read the box's world
+            // transform (its centre == the model's AABB centre, as placed) and draw
+            // the model there, so a clipped post tumbles and flies off.
+            if (playMode && physics)
+                for (const SidePost& p : sidePosts) {
+                    LoadedModel* lm = models.byId(p.modelId);
+                    glm::vec3 pos; glm::quat rot;
+                    if (!lm || !physics->getTransform(p.body, pos, rot)) continue;
+                    const glm::mat4 mm =
+                        glm::translate(glm::mat4(1.0f), pos) * glm::mat4_cast(rot) *
+                        glm::scale(glm::mat4(1.0f), glm::vec3(p.scale)) *
+                        glm::translate(glm::mat4(1.0f), -lm->center());
+                    drawSideModel(lm, mm);
+                }
 
             // Any entity carrying a LightComponent becomes a real light -- decoupled
             // from EntityType, so a box can glow too. Point lights radiate omni;
@@ -7741,6 +8582,15 @@ int main(int argc, char** argv) {
                     shadowText(c.x - sz.x * 0.5f, vmin.y + pad,
                                IM_COL32(130, 210, 255, 255), bm);
                 }
+            }
+
+            // UI comfort settings changed this frame: write them once, after the
+            // widget is released, rather than on every slider tick.
+            if (prefsDirty && !ImGui::IsAnyItemActive()) {
+                uiFontSize   = gui.fontSize();
+                uiFontFamily = gui.fontFamilyName(gui.fontFamily());
+                projectio::savePrefs(pio);
+                prefsDirty = false;
             }
 
             // --- Idle throttle: decide whether the NEXT frame runs full-rate ---

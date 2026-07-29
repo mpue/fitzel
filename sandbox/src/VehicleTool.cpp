@@ -14,6 +14,7 @@
 #include "Document.hpp"
 #include "PropertyMeta.hpp"
 #include "SceneTypes.hpp"
+#include "UiStyle.hpp"
 
 namespace vehicleui {
 
@@ -152,21 +153,21 @@ void inspector(VehicleComponent& vc, Entity& root, Document& doc) {
     bool hndHeader = false, camHeader = false, boatHeader = false;
     for (const Property& pr : vc.props()) {
         if (!hndHeader && pr.key == "comLower") { // handling group starts here
-            ImGui::SeparatorText("Handling");
+            ui::sectionText("Handling");
             hndHeader = true;
         }
         if (!boatHeader && pr.key == "boatFloat") { // boat group
-            ImGui::SeparatorText("Boat");
+            ui::sectionText("Boat");
             boatHeader = true;
         }
         if (!camHeader && pr.key.rfind("cam", 0) == 0) { // cam props sort last
-            ImGui::SeparatorText("Follow camera");
+            ui::sectionText("Follow camera");
             camHeader = true;
         }
         drawProperty(pr, &vc);
     }
 
-    ImGui::SeparatorText("Wheels");
+    ui::sectionText("Wheels");
     static const char* labels[4] = {"Front left", "Front right",
                                     "Rear left", "Rear right"};
     for (int i = 0; i < 4; ++i) {
@@ -196,7 +197,7 @@ int panelSection(Document& doc, int selectedId,
     static std::string lastMsg; // report of the last Make-drivable run
     int pick = -1;
 
-    ImGui::SeparatorText("Scene vehicles");
+    ui::sectionText("Scene vehicles");
     int n = 0;
     for (const Entity& e : doc.entities()) {
         if (!e.components.get<VehicleComponent>()) continue;

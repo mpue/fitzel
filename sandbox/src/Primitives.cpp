@@ -10,31 +10,37 @@ using namespace fitzel;
 // A small flower: a green stem (crossed quads, tint 0), a ring of cupped petals
 // tinted per-instance (tint 1) and a yellow centre disc (tint 2). Petals tilt up
 // and outward so the bloom reads as a flower from across the meadow, not a disc.
+//
+// The petal ring is built at the MAXIMUM count; every petal vertex carries its
+// petal index so flower.vert can drop the surplus petals and re-space the rest
+// for a per-bloom count (and tilt them open or closed). Stem/centre carry -1.
+// kFlowerStemTop must stay in sync with the shader's own copy.
 std::vector<float> makeFlowerMesh() {
     std::vector<float> v;
-    auto push = [&](glm::vec3 p, glm::vec3 n, float t) {
-        v.insert(v.end(), {p.x, p.y, p.z, n.x, n.y, n.z, t});
+    auto push = [&](glm::vec3 p, glm::vec3 n, float t, float petal) {
+        v.insert(v.end(), {p.x, p.y, p.z, n.x, n.y, n.z, t, petal});
     };
-    auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, float t) {
+    auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, float t, float petal) {
         const glm::vec3 n = glm::normalize(glm::cross(b - a, c - a));
-        push(a, n, t); push(b, n, t); push(c, n, t);
+        push(a, n, t, petal); push(b, n, t, petal); push(c, n, t, petal);
     };
     auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n, float t) {
-        push(a, n, t); push(b, n, t); push(c, n, t);
-        push(a, n, t); push(c, n, t); push(d, n, t);
+        push(a, n, t, -1.0f); push(b, n, t, -1.0f); push(c, n, t, -1.0f);
+        push(a, n, t, -1.0f); push(c, n, t, -1.0f); push(d, n, t, -1.0f);
     };
-    const float sh = 0.50f, hw = 0.028f; // shorter, thicker stem (was a hairline)
+    const float sh = kFlowerStemTop, hw = 0.028f; // shorter, thicker stem
     quad({-hw, 0, 0}, {hw, 0, 0}, {hw, sh, 0}, {-hw, sh, 0}, {0, 0, 1}, 0.0f);
     quad({0, 0, -hw}, {0, 0, hw}, {0, sh, hw}, {0, sh, -hw}, {1, 0, 0}, 0.0f);
 
     // Petals: rounded lobes, nearly flat and wide (buttercup/daisy look) so the
-    // open bloom reads as a soft colour speck rather than a cupped star.
-    const int   P = 6, ARC = 5;
+    // open bloom reads as a soft colour speck rather than a cupped star. Spaced
+    // for kFlowerMaxPetals; the shader re-slots them when a bloom shows fewer.
+    const int   ARC = 5;
     const float rb = 0.04f, rt = 0.30f, lift = 0.05f;
     const float PI = 3.14159265f;
-    for (int i = 0; i < P; ++i) {
-        const float am = static_cast<float>(i) / P * 6.2831853f;
-        const float d  = (PI / P) * 1.2f; // wide, overlapping petals -> full bloom
+    for (int i = 0; i < kFlowerMaxPetals; ++i) {
+        const float am = static_cast<float>(i) / kFlowerMaxPetals * 6.2831853f;
+        const float d  = (PI / 6.0f) * 1.25f; // wide lobes -> full bloom
         const glm::vec3 baseC(std::cos(am) * rb, sh, std::sin(am) * rb);
         glm::vec3 prev(0.0f);
         for (int k = 0; k <= ARC; ++k) {
@@ -44,7 +50,7 @@ std::vector<float> makeFlowerMesh() {
             const float r = rb + (rt - rb) * shape;
             const float y = sh + lift * shape;
             const glm::vec3 p(std::cos(a) * r, y, std::sin(a) * r);
-            if (k > 0) tri(baseC, prev, p, 1.0f);
+            if (k > 0) tri(baseC, prev, p, 1.0f, static_cast<float>(i));
             prev = p;
         }
     }
@@ -57,7 +63,7 @@ std::vector<float> makeFlowerMesh() {
         const float a1 = static_cast<float>(i + 1) / C * 6.2831853f;
         const glm::vec3 p0(std::cos(a0) * rc, sh + 0.008f, std::sin(a0) * rc);
         const glm::vec3 p1(std::cos(a1) * rc, sh + 0.008f, std::sin(a1) * rc);
-        tri(cc, p0, p1, 2.0f);
+        tri(cc, p0, p1, 2.0f, -1.0f);
     }
     return v;
 }

@@ -1,8 +1,14 @@
 #pragma once
 
+#include <vector>
+
 struct ImFont;
 
 namespace fitzel {
+
+// The UI text size the editor starts at, in points before the display's content
+// scale. Users can change it at runtime (Gui::setFontSize).
+inline constexpr float kDefaultFontSize = 20.0f;
 
 class Window;
 
@@ -41,9 +47,42 @@ public:
     // should null-check before ImGui::PushFont. Not the default font.
     ImFont* monoFont() const { return m_mono; }
 
+    // The semibold cut of the current UI font, for section headings (see
+    // ui::header in the editor). Falls back to the regular cut when the family
+    // ships none, so this is null only if no system font was found at all.
+    // Re-read it after setFontFamily(): the pointer changes with the family.
+    ImFont* boldFont() const { return m_bold; }
+
+    // --- User-adjustable UI text ---------------------------------------------
+    // Which typefaces this machine actually had (Segoe UI, Verdana, ... -- see
+    // kFamilies in Gui.cpp), in the editor's preferred order. Empty only when no
+    // system font was found, in which case the built-in bitmap font is used and
+    // setFontFamily() does nothing.
+    int         fontFamilyCount() const { return static_cast<int>(m_families.size()); }
+    const char* fontFamilyName(int index) const;
+    int         fontFamily() const { return m_family; }
+    void        setFontFamily(int index);
+
+    // UI text size in points, before the display's content scale. Applies from
+    // the next frame; glyphs are re-rasterized at the new size, so it stays
+    // crisp rather than being a scaled-up bitmap. Clamped to [10, 32].
+    float fontSize() const { return m_fontSize; }
+    void  setFontSize(float px);
+
 private:
+    struct FontFamily {
+        const char* name;
+        ImFont*     regular;
+        ImFont*     bold;
+    };
+
     bool m_active = false;
     ImFont* m_mono = nullptr;
+    ImFont* m_bold = nullptr;
+    std::vector<FontFamily> m_families;
+    int   m_family   = 0;
+    float m_fontSize = kDefaultFontSize;
+    float m_dpiScale = 1.0f;
 };
 
 } // namespace fitzel

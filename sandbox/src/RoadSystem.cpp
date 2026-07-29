@@ -276,18 +276,75 @@ void RoadSystem::setSurface(const std::string& file) {
     }
 }
 
+void RoadSystem::insertPoint(int at, glm::vec2 p, float lift) {
+    at = std::clamp(at, 0, static_cast<int>(roadPts.size()));
+    ptLift.resize(roadPts.size(), 0.0f); // heal a short array before indexing it
+    roadPts.insert(roadPts.begin() + at, p);
+    ptLift.insert(ptLift.begin() + at, lift);
+    needsBuild = true;
+}
+
+void RoadSystem::erasePoint(int at) {
+    if (at < 0 || at >= static_cast<int>(roadPts.size())) return;
+    ptLift.resize(roadPts.size(), 0.0f);
+    roadPts.erase(roadPts.begin() + at);
+    ptLift.erase(ptLift.begin() + at);
+    needsBuild = true;
+}
+
+void RoadSystem::clearPoints() {
+    roadPts.clear();
+    ptLift.clear();
+    needsBuild = true;
+}
+
+float RoadSystem::liftOf(int i) const {
+    return (i >= 0 && i < static_cast<int>(ptLift.size())) ? ptLift[i] : 0.0f;
+}
+
+void RoadSystem::setLift(int i, float lift) {
+    if (i < 0 || i >= static_cast<int>(roadPts.size())) return;
+    ptLift.resize(roadPts.size(), 0.0f);
+    ptLift[i] = lift;
+    needsBuild = true;
+}
+
 void RoadSystem::save(nlohmann::json& j) const {
     // Control points as a compact "x z x z ..." blob rather than an array of pairs:
     // a road is hundreds of points and this keeps the scene file readable.
     std::ostringstream rs;
     rs.precision(7);
     for (const glm::vec2& p : roadPts) rs << p.x << ' ' << p.y << ' ';
+    // Heights ride in their own blob rather than as a third number per point, so
+    // a scene written here still loads in a build that predates them.
+    std::ostringstream ls;
+    ls.precision(4);
+    for (std::size_t i = 0; i < roadPts.size(); ++i) ls << liftOf(static_cast<int>(i)) << ' ';
 
     nlohmann::json bridges_ = nlohmann::json::array();
     for (const BridgeSpec& b : bridges) bridges_.push_back({b.a, b.b});
 
+    nlohmann::json side_ = nlohmann::json::array();
+    for (const roadside::Line& l : sideLines)
+        side_.push_back({
+            {"enabled",  l.enabled},
+            {"kind",     static_cast<int>(l.kind)},
+            {"model",    l.model},
+            {"side",     l.side},
+            {"offset",   l.offset},
+            {"spacing",  l.spacing},
+            {"lift",     l.lift},
+            {"sink",     l.sink},
+            {"yaw",      l.yaw},
+            {"scale",    l.scale},
+            {"faceRoad", l.faceRoad},
+            {"knockable",l.knockable},
+            {"mass",     l.mass},
+        });
+
     j = {
         {"points",    rs.str()},
+        {"lifts",     ls.str()},
         {"closed",    closed},
         {"enabled",   enabled},
         {"width",     width},
@@ -312,6 +369,7 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"pierWidth",   bridgeStyle.pierWidth},
             {"abutment",    bridgeStyle.abutment},
         }},
+        {"sideObjects", side_},
     };
 }
 
@@ -319,11 +377,20 @@ void RoadSystem::load(const nlohmann::json& j) {
     // Every field defaults to what a fresh road has, so a scene saved before a
     // param existed loads as the road it was built as.
     roadPts.clear();
+    ptLift.clear();
     if (j.contains("points") && j["points"].is_string()) {
         std::istringstream rs(j["points"].get<std::string>());
         glm::vec2 p;
         while (rs >> p.x >> p.y) roadPts.push_back(p);
     }
+    if (j.contains("lifts") && j["lifts"].is_string()) {
+        std::istringstream ls(j["lifts"].get<std::string>());
+        float h;
+        while (ls >> h) ptLift.push_back(h);
+    }
+    // A scene from before heights (or a truncated/overlong blob) is filled out
+    // to match the points, so nothing downstream has to bounds-check the pair.
+    ptLift.resize(roadPts.size(), 0.0f);
     closed    = j.value("closed",    false);
     enabled   = j.value("enabled",   true);
     width     = j.value("width",     5.0f);
@@ -376,6 +443,29 @@ void RoadSystem::load(const nlohmann::json& j) {
         bridgeStyle.pierWidth   = st->value("pierWidth",   bd.pierWidth);
         bridgeStyle.abutment    = st->value("abutment",    bd.abutment);
     }
+
+    // Side objects. Absent in scenes saved before they existed -> none, which is
+    // how those roads looked. Each field defaults to its Kind's preset, so a blob
+    // written by an older/leaner build still loads as a sensible line.
+    sideLines.clear();
+    if (const auto so = j.find("sideObjects"); so != j.end() && so->is_array())
+        for (const auto& e : *so) {
+            roadside::Line l =
+                roadside::preset(static_cast<roadside::Kind>(e.value("kind", 0)));
+            l.enabled  = e.value("enabled",  l.enabled);
+            l.model    = e.value("model",    std::string());
+            l.side     = e.value("side",     l.side);
+            l.offset   = e.value("offset",   l.offset);
+            l.spacing  = e.value("spacing",  l.spacing);
+            l.lift     = e.value("lift",     l.lift);
+            l.sink     = e.value("sink",     l.sink);
+            l.yaw       = e.value("yaw",       l.yaw);
+            l.scale     = e.value("scale",     l.scale);
+            l.faceRoad  = e.value("faceRoad",  l.faceRoad);
+            l.knockable = e.value("knockable", l.knockable);
+            l.mass      = e.value("mass",      l.mass);
+            sideLines.push_back(std::move(l));
+        }
 }
 
 std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ(
@@ -483,6 +573,32 @@ void RoadSystem::buildBridges(const Layout& lo) {
     for (std::uint32_t idx : md.indices) m_collIndices.push_back(base + idx);
 }
 
+std::vector<float> RoadSystem::liftRamp(const std::vector<int>& ptSample,
+                                        std::size_t samples) const {
+    if (samples == 0 || std::none_of(ptLift.begin(), ptLift.end(),
+                                     [](float v) { return v != 0.0f; }))
+        return {}; // no heights set: the caller skips the whole addition
+    const int n = static_cast<int>(roadPts.size());
+    std::vector<float> off(samples, 0.0f);
+    // Linear between control points -- predictable, and unlike a spline it cannot
+    // overshoot and dip a raised stretch back into the ground it is meant to
+    // clear.
+    for (std::size_t k = 0; k + 1 < ptSample.size(); ++k) {
+        const int a = ptSample[k], b = ptSample[k + 1];
+        if (b <= a) continue;
+        const float la = liftOf(static_cast<int>(k));
+        // The closing entry wraps to point 0 on a loop and repeats the last point
+        // on an open road; the modulo covers both.
+        const float lb = liftOf(n > 0 ? static_cast<int>(k + 1) % n : 0);
+        for (int i = a; i <= b && i < static_cast<int>(off.size()); ++i)
+            off[i] = glm::mix(la, lb, static_cast<float>(i - a) / (b - a));
+    }
+    // Round off the kink each control point leaves in the ramp. Ends are held, so
+    // a road that starts or ends lifted keeps that height exactly.
+    smooth(off, 5);
+    return off;
+}
+
 RoadSystem::Layout RoadSystem::layout() const {
     Layout lo;
     std::vector<int> ptSample;
@@ -514,6 +630,12 @@ RoadSystem::Layout RoadSystem::layout() const {
 
     lo.prof = lo.ground;
     smooth(lo.prof, passesFor(3.0f + grade * 15.0f));
+
+    // Per-point height offsets, added *after* the smoothing -- smoothing them
+    // together with the ground would flatten the very edit the user just made.
+    const std::vector<float> off = liftRamp(ptSample, lo.center.size());
+    if (!off.empty())
+        for (std::size_t i = 0; i < lo.prof.size(); ++i) lo.prof[i] += off[i];
 
     // Each bridge the user asked for, as a run of samples, looked up through the
     // control point -> sample map. Specs naming points that have since been
@@ -547,6 +669,22 @@ void RoadSystem::clearGeometry() {
     m_mesh = fitzel::Mesh(); m_verts = 0;
     m_bridgeMesh = fitzel::Mesh(); m_bridgeVerts = 0;
     m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
+    m_sideBatches.clear();
+}
+
+void RoadSystem::rebuildSideObjects() {
+    m_sideBatches.clear();
+    if (m_centerline.size() < 2) return; // side objects follow a committed road
+    // Drape on the current terrain (which holds the graded corridor), so a post
+    // stands on the ground the road actually sits on.
+    auto ground = [this](float x, float z) { return m_streamer.heightAt(x, z); };
+    const float half = width * 0.5f;
+    for (const roadside::Line& line : sideLines) {
+        auto inst = roadside::generate(line, m_centerline, half, ground);
+        if (inst.empty()) continue;
+        m_sideBatches.push_back({line.model, line.scale, line.knockable,
+                                 line.mass, std::move(inst)});
+    }
 }
 
 void RoadSystem::rebuildMesh() {
@@ -572,6 +710,7 @@ void RoadSystem::rebuildMesh() {
                + 0.06f; // lifted a touch so the ribbon reads above the ground
     loft(lo.center, h);
     buildBridges(lo);
+    rebuildSideObjects();
 }
 
 bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
@@ -591,6 +730,9 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
     loft(L.center, surf);
     buildBridges(L);
+    // Side objects are generated by the caller AFTER it republishes the graded
+    // terrain (rebuildSideObjects), so posts drape on the corridor this build
+    // just cut -- not on the pre-grade ground. loft() has set m_centerline for it.
 
     // 3) Grade a corridor into the terrain edit field: cells within half-width get
     //    the road height; a `shoulder` band eases back to the natural ground. All
@@ -665,8 +807,14 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
 
 RoadSystem::Preview RoadSystem::previewGeometry() const {
     Preview pv;
-    const std::vector<glm::vec2> center = sampleCenterlineXZ();
+    std::vector<int> ptSample;
+    const std::vector<glm::vec2> center = sampleCenterlineXZ(&ptSample);
     if (center.size() < 2) return pv;
+    // Draped on the *current* ground (cheap, and after a build that ground is
+    // the graded corridor) plus the height offsets, so raising a point shows up
+    // in the preview immediately instead of only after Build.
+    const std::vector<float> off = liftRamp(ptSample, center.size());
+    pv.ptSample = ptSample;
     const float half = width * 0.5f;
     pv.center.reserve(center.size());
     pv.left.reserve(center.size());
@@ -681,9 +829,10 @@ RoadSystem::Preview RoadSystem::previewGeometry() const {
         const glm::vec2 c = center[i];
         const glm::vec2 l = c - side * half;
         const glm::vec2 r = c + side * half;
-        pv.center.push_back({c.x, m_streamer.heightAt(c.x, c.y) + 0.10f, c.y});
-        pv.left.push_back  ({l.x, m_streamer.heightAt(l.x, l.y) + 0.10f, l.y});
-        pv.right.push_back ({r.x, m_streamer.heightAt(r.x, r.y) + 0.10f, r.y});
+        const float lift = off.empty() ? 0.0f : off[i];
+        pv.center.push_back({c.x, m_streamer.heightAt(c.x, c.y) + 0.10f + lift, c.y});
+        pv.left.push_back  ({l.x, m_streamer.heightAt(l.x, l.y) + 0.10f + lift, l.y});
+        pv.right.push_back ({r.x, m_streamer.heightAt(r.x, r.y) + 0.10f + lift, r.y});
     }
     return pv;
 }

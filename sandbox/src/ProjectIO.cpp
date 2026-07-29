@@ -73,6 +73,8 @@ void savePrefs(const Context& ctx) {
     nlohmann::json j;
     j["lastLocation"] = ctx.prefLocation;
     j["recent"]       = ctx.recentProjects;
+    j["uiFontSize"]   = ctx.uiFontSize;
+    j["uiFontFamily"] = ctx.uiFontFamily;
     std::ofstream f(ctx.prefsPath);
     if (f) f << j.dump(2) << '\n';
 }
@@ -84,6 +86,8 @@ void loadPrefs(Context& ctx) {
     try { f >> j; } catch (const nlohmann::json::exception&) { return; }
     ctx.prefLocation   = j.value("lastLocation", ctx.prefLocation);
     ctx.recentProjects = j.value("recent", std::vector<std::string>{});
+    ctx.uiFontSize     = j.value("uiFontSize", ctx.uiFontSize);
+    ctx.uiFontFamily   = j.value("uiFontFamily", std::string{});
 }
 
 void rememberProject(Context& ctx, const std::string& folder) {
@@ -127,38 +131,102 @@ listProjectsIn(const std::string& root) {
     return out;
 }
 
+nlohmann::json writeEntityJson(const Entity& b,
+                               const std::function<std::string(int)>& modelGuidOf) {
+    nlohmann::json e;
+    e["type"] = static_cast<int>(b.type);
+    // Simple fields (transform, colour, physics, light params, name) come straight
+    // from the property table -- one declaration drives save + UI.
+    writeEntityProps(e, b);
+    // Bespoke references the table can't own (id/parent, material/model in comps).
+    e["id"]     = b.id;
+    e["parent"] = b.parent;
+    // Attached components: type id + their own serialization. A model component
+    // also needs its source asset GUID, which only the loaded-model table resolves.
+    if (!b.components.items.empty()) {
+        nlohmann::json comps = nlohmann::json::array();
+        for (const auto& c : b.components.items) {
+            nlohmann::json cj;
+            cj["type"] = c->typeId();
+            c->save(cj);
+            if (const auto* mc = dynamic_cast<const ModelComponent*>(c.get())) {
+                const std::string guid = modelGuidOf ? modelGuidOf(mc->modelId)
+                                                     : std::string();
+                if (!guid.empty()) cj["model"] = guid;
+            }
+            comps.push_back(std::move(cj));
+        }
+        e["components"] = std::move(comps);
+    }
+    return e;
+}
+
+Entity readEntityJson(Context& ctx, const nlohmann::json& e) {
+    Entity b;
+    b.type = static_cast<EntityType>(e.value("type", 0));
+    // Table-covered fields (transform, colour, physics, light, name).
+    readEntityProps(e, b);
+    // Bespoke references.
+    b.id     = e.value("id", 0);
+    b.parent = e.value("parent", -1);
+    // Attached components (type registry -> instance, then its fields). A model
+    // component resolves its source file + imports (needs the asset database),
+    // which comp->load can't do on its own.
+    if (e.contains("components") && e["components"].is_array()) {
+        for (const auto& cj : e["components"]) {
+            // The component id lives in "type" (a string). Older files have a
+            // corrupted light component whose "type" is an INTEGER: the light's
+            // point/spot enum was written over the id by a key clash (now fixed by
+            // renaming that property to "lightType"). Recover such a component as a
+            // light and restore its enum below.
+            std::string ct;
+            bool legacyLight = false;
+            if (cj.contains("type")) {
+                const auto& tj = cj.at("type");
+                if (tj.is_string()) ct = tj.get<std::string>();
+                else if (tj.is_number_integer()) { ct = "light"; legacyLight = true; }
+            }
+            auto comp = components::create(ct);
+            if (!comp) continue;
+            comp->load(cj);
+            if (legacyLight)
+                if (auto* lcp = dynamic_cast<LightComponent*>(comp.get()))
+                    lcp->type = cj.at("type").get<int>(); // restore point/spot
+            if (auto* mc = dynamic_cast<ModelComponent*>(comp.get())) {
+                std::string mp;
+                if (cj.contains("model"))
+                    mp = ctx.assetDb.pathForId(
+                             AssetId::fromString(cj["model"].get<std::string>()))
+                             .string();
+                if (mp.empty() && cj.contains("modelFile"))
+                    mp = ctx.modelDir + "/" + cj["modelFile"].get<std::string>();
+                if (!mp.empty()) {
+                    mc->modelPath = mp;
+                    // Structure-preserving import: a group root (node < 0 with no
+                    // "model" ref) has no mesh; a child resolves its own node.
+                    if (mc->nodeIndex >= 0)
+                        mc->modelId = ctx.importModelNode(mp, mc->nodeIndex);
+                    else if (cj.contains("model"))
+                        mc->modelId = ctx.importModel(mp);
+                }
+            }
+            b.components.items.push_back(std::move(comp));
+        }
+    }
+    return b;
+}
+
 void saveScene(const Context& ctx, const std::string& path) {
     nlohmann::json j;
     j["version"] = 3;         // scene *format* version, bumped on layout changes
     j["app"]     = fitzel::kVersionFull; // the build that wrote it (diagnostics)
     nlohmann::json ents = nlohmann::json::array();
-    for (const Entity& b : ctx.entities) {
-        nlohmann::json e;
-        e["type"] = static_cast<int>(b.type);
-        // Simple fields (transform, colour, physics, light params, name) come
-        // straight from the property table -- one declaration drives save + UI.
-        writeEntityProps(e, b);
-        // Bespoke references the table can't own (material/model in components).
-        e["id"]     = b.id;
-        e["parent"] = b.parent;
-        // Attached components: type id + their own serialization. A model
-        // component also needs its asset GUID, which only the database resolves.
-        if (!b.components.items.empty()) {
-            nlohmann::json comps = nlohmann::json::array();
-            for (const auto& c : b.components.items) {
-                nlohmann::json cj;
-                cj["type"] = c->typeId();
-                c->save(cj);
-                if (const auto* mc = dynamic_cast<const ModelComponent*>(c.get()))
-                    if (LoadedModel* lm = ctx.loadedModelById(mc->modelId);
-                        lm && lm->assetId.valid())
-                        cj["model"] = lm->assetId.toString();
-                comps.push_back(std::move(cj));
-            }
-            e["components"] = std::move(comps);
-        }
-        ents.push_back(std::move(e));
-    }
+    const auto modelGuidOf = [&ctx](int modelId) -> std::string {
+        LoadedModel* lm = ctx.loadedModelById(modelId);
+        return (lm && lm->assetId.valid()) ? lm->assetId.toString() : std::string();
+    };
+    for (const Entity& b : ctx.entities)
+        ents.push_back(writeEntityJson(b, modelGuidOf));
     j["entities"] = std::move(ents);
     if (ctx.writeSettings) {
         nlohmann::json s = nlohmann::json::object();
@@ -280,58 +348,7 @@ bool loadScene(Context& ctx, const std::string& path) {
             ctx.matSel = 0;
         }
         for (const auto& e : j.value("entities", nlohmann::json::array())) {
-            Entity b;
-            b.type = static_cast<EntityType>(e.value("type", 0));
-            // Table-covered fields (transform, colour, physics, light, name).
-            readEntityProps(e, b);
-            // Bespoke references.
-            b.id     = e.value("id", 0);
-            b.parent = e.value("parent", -1);
-            // Attached components (type registry -> instance, then its fields). A
-            // model component resolves its source file + imports (needs the asset
-            // database), which comp->load can't do on its own.
-            if (e.contains("components") && e["components"].is_array()) {
-                for (const auto& cj : e["components"]) {
-                    // The component id lives in "type" (a string). Older files have a
-                    // corrupted light component whose "type" is an INTEGER: the light's
-                    // point/spot enum was written over the id by a key clash (now fixed
-                    // by renaming that property to "lightType"). Recover such a
-                    // component as a light and restore its enum below.
-                    std::string ct;
-                    bool legacyLight = false;
-                    if (cj.contains("type")) {
-                        const auto& tj = cj.at("type");
-                        if (tj.is_string()) ct = tj.get<std::string>();
-                        else if (tj.is_number_integer()) { ct = "light"; legacyLight = true; }
-                    }
-                    auto comp = components::create(ct);
-                    if (!comp) continue;
-                    comp->load(cj);
-                    if (legacyLight)
-                        if (auto* lcp = dynamic_cast<LightComponent*>(comp.get()))
-                            lcp->type = cj.at("type").get<int>(); // restore point/spot
-                    if (auto* mc = dynamic_cast<ModelComponent*>(comp.get())) {
-                        std::string mp;
-                        if (cj.contains("model"))
-                            mp = ctx.assetDb.pathForId(
-                                     AssetId::fromString(cj["model"].get<std::string>()))
-                                     .string();
-                        if (mp.empty() && cj.contains("modelFile"))
-                            mp = ctx.modelDir + "/" + cj["modelFile"].get<std::string>();
-                        if (!mp.empty()) {
-                            mc->modelPath = mp;
-                            // Structure-preserving import: a group root (node < 0
-                            // with no "model" ref) has no mesh; a child resolves its
-                            // own node.
-                            if (mc->nodeIndex >= 0)
-                                mc->modelId = ctx.importModelNode(mp, mc->nodeIndex);
-                            else if (cj.contains("model"))
-                                mc->modelId = ctx.importModel(mp);
-                        }
-                    }
-                    b.components.items.push_back(std::move(comp));
-                }
-            }
+            Entity b = readEntityJson(ctx, e);
             maxId = std::max(maxId, b.id);
             ctx.entities.push_back(std::move(b));
         }

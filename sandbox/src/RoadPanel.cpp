@@ -1,13 +1,21 @@
 #include "RoadPanel.hpp"
 
+#include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/asset/AssetTypes.hpp>
+
 #include "RoadBridge.hpp"
+#include "RoadSide.hpp"
 #include "RoadSystem.hpp"
+#include "UiStyle.hpp"
 
 namespace roadui {
 namespace {
@@ -17,7 +25,7 @@ namespace {
 // alone. Returns true when something changed that the road must be rebuilt for.
 bool bridgeSection(const PanelState& s) {
     bool rc = false;
-    if (!ImGui::CollapsingHeader("Bridges", ImGuiTreeNodeFlags_DefaultOpen)) return rc;
+    if (!ui::header("Bridges", ImGuiTreeNodeFlags_DefaultOpen)) return rc;
 
     const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
     // Already bridged? Then offer to take it away again instead.
@@ -29,7 +37,9 @@ bool bridgeSection(const PanelState& s) {
 
     ImGui::BeginDisabled(!pair || existing >= 0);
     if (ImGui::Button("Create bridge", ImVec2(-1.0f, 0.0f))) {
+        s.beginEdit();
         s.road.bridges.push_back({s.sel, s.sel2});
+        s.endEdit("Create bridge");
         rc = true;
     }
     ImGui::EndDisabled();
@@ -44,7 +54,9 @@ bool bridgeSection(const PanelState& s) {
                     s.road.bridges[i].b);
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) {
+            s.beginEdit();
             s.road.bridges.erase(s.road.bridges.begin() + i);
+            s.endEdit("Remove bridge");
             rc = true;
             ImGui::PopID();
             break; // the list just shifted under us
@@ -58,23 +70,186 @@ bool bridgeSection(const PanelState& s) {
     return rc;
 }
 
+// Side objects: a list of placement rules (guard rails, curbs, posts) repeated
+// along the road from a model asset. Each rule is derived, not authored -- so the
+// panel edits a handful of numbers, not hundreds of objects. Edits go on the same
+// undo timeline as the rest of the road (the shape snapshot now carries them), and
+// a live change re-derives the instances at once (rebuildSideObjects is cheap).
+void sideSection(const PanelState& s) {
+    if (!ui::header("Side objects", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    // Add a rule pre-seeded for its kind. Empty model = it places nothing until
+    // one is picked, so adding then choosing reads naturally.
+    auto add = [&](roadside::Kind k) {
+        s.beginEdit();
+        s.road.sideLines.push_back(roadside::preset(k));
+        s.endEdit("Add side object");
+    };
+    if (ImGui::Button("+ Guard rail")) add(roadside::Kind::GuardRail);
+    ImGui::SameLine();
+    if (ImGui::Button("+ Curb")) add(roadside::Kind::Curb);
+    ImGui::SameLine();
+    if (ImGui::Button("+ Post")) add(roadside::Kind::Post);
+
+    if (s.road.sideLines.empty()) {
+        ImGui::TextDisabled("None. Add a rail, curb or posts.");
+        return;
+    }
+    if (s.road.verts() == 0)
+        ImGui::TextDisabled("Build the road to see them placed.");
+
+    bool changed = false; // re-derive instances this frame (live preview)
+
+    for (int i = 0; i < static_cast<int>(s.road.sideLines.size()); ++i) {
+        roadside::Line& L = s.road.sideLines[i];
+        ImGui::PushID(i);
+        ImGui::Separator();
+
+        // Enable + kind label + delete on one line.
+        if (ImGui::Checkbox("##en", &L.enabled)) {
+            L.enabled = !L.enabled;               // snapshot the pre-toggle state
+            s.beginEdit();
+            L.enabled = !L.enabled;
+            s.endEdit("Toggle side object");
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(roadside::kindName(L.kind));
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.0f);
+        if (ImGui::SmallButton("X")) {
+            s.beginEdit();
+            s.road.sideLines.erase(s.road.sideLines.begin() + i);
+            s.endEdit("Remove side object");
+            ImGui::PopID();
+            changed = true;
+            break; // the list shifted under us
+        }
+
+        // Model picker: every Model asset the database knows (engine + project),
+        // whether or not it has been imported yet -- the build imports it on
+        // demand. Stores the asset's relative path, which resolves back portably.
+        const std::string preview = L.model.empty() ? "(pick a model)" : L.model;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##model", preview.c_str())) {
+            int shown = 0;
+            for (const fitzel::AssetId& id : s.assetDb.allAssets()) {
+                const auto* e = s.assetDb.entry(id);
+                if (!e || e->type != fitzel::AssetType::Model) continue;
+                ++shown;
+                const std::string ref   = e->relPath;
+                const std::string label = e->absPath.filename().string();
+                const bool sel = (ref == L.model);
+                if (ImGui::Selectable((label + "##" + id.toString()).c_str(), sel)) {
+                    const std::string old = L.model;
+                    L.model = old;                 // snapshot pre-change
+                    s.beginEdit();
+                    L.model = ref;
+                    s.endEdit("Side object model");
+                    changed = true;
+                }
+                if (ImGui::IsItemHovered() && e->relPath != label)
+                    ImGui::SetTooltip("%s", e->relPath.c_str());
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            if (shown == 0)
+                ImGui::TextDisabled("No model assets found (drop a .glb in Assets)");
+            ImGui::EndCombo();
+        }
+
+        // Side. Combo gives no before-value, so snapshot around it by hand.
+        {
+            const int old = L.side;
+            const char* items = "Left\0Right\0Both\0Alternate\0";
+            if (ImGui::Combo("Side", &L.side, items)) {
+                const int nw = L.side;
+                L.side = old; s.beginEdit(); L.side = nw; s.endEdit("Side object side");
+                changed = true;
+            }
+        }
+
+        // Metric knobs. DragFloat so a value is typeable (Parkinson-friendly) --
+        // click to type, drag to sweep. Bracket the whole drag for undo.
+        auto drag = [&](const char* label, float* v, float speed, float lo, float hi,
+                        const char* fmt, const char* undoLabel) {
+            if (ImGui::DragFloat(label, v, speed, lo, hi, fmt)) changed = true;
+            if (ImGui::IsItemActivated())            s.beginEdit();
+            if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit(undoLabel);
+        };
+        drag("Offset",  &L.offset,  0.02f, 0.0f, 20.0f, "%.2f m", "Side offset");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Distance beyond the road edge (added to the half-width).");
+        drag("Spacing", &L.spacing, 0.05f, 0.25f, 60.0f, "%.2f m", "Side spacing");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Metres between copies. For a continuous rail/curb,\n"
+                              "match this to the model's length.");
+        drag("Scale",   &L.scale,   0.01f, 0.05f, 20.0f, "%.2f x", "Side scale");
+        drag("Lift",    &L.lift,    0.02f, -5.0f, 10.0f, "%+.2f m", "Side lift");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Raise the model above the ground it stands on\n"
+                              "(a guard-rail beam rides up on its posts).");
+
+        // Face-toward-road only matters for a one-sided profile on Both/Alternate.
+        if (ImGui::Checkbox("Face the road", &L.faceRoad)) {
+            L.faceRoad = !L.faceRoad;
+            s.beginEdit(); L.faceRoad = !L.faceRoad; s.endEdit("Side facing");
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Flip the far side 180 so a one-sided model (rail\n"
+                              "beam, curb face) keeps its front toward the road.");
+
+        // Knockable: a dynamic body in Play, so the car sends it flying. Off = a
+        // solid barrier (rails/curbs). Its mass tunes how easily it shifts.
+        if (ImGui::Checkbox("Knockable", &L.knockable)) {
+            L.knockable = !L.knockable;
+            s.beginEdit(); L.knockable = !L.knockable; s.endEdit("Side knockable");
+            changed = true; // the batch caches knockable/mass; refresh it
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("In Play this object is a loose, dynamic body -- a\n"
+                              "vehicle bowls it over and it flies off (posts,\n"
+                              "bollards). Off = a fixed barrier that stops a car.");
+        if (L.knockable) {
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(110.0f);
+            if (ImGui::DragFloat("Mass", &L.mass, 0.1f, 0.1f, 500.0f, "%.1f kg"))
+                changed = true;
+            if (ImGui::IsItemActivated())            s.beginEdit();
+            if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Side mass");
+        }
+        ImGui::PopID();
+    }
+
+    if (changed) s.road.rebuildSideObjects();
+}
+
 // The road.txt scratch save/load. Predates scenes carrying roads and is kept as a
 // quick way to move a spline between scenes by hand.
 void scratchFileSection(const PanelState& s) {
     ImGui::Separator();
     if (ImGui::Button("Save")) {
         std::ofstream f("road.txt");
-        for (const glm::vec2& p : s.road.roadPts) f << p.x << ' ' << p.y << '\n';
+        // "x z height" per line -- an older two-column road.txt still loads, its
+        // points just come back sitting on the terrain.
+        for (int i = 0; i < static_cast<int>(s.road.roadPts.size()); ++i)
+            f << s.road.roadPts[i].x << ' ' << s.road.roadPts[i].y << ' '
+              << s.road.liftOf(i) << '\n';
     }
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::ifstream f("road.txt");
         if (f) {
-            s.road.roadPts.clear();
-            glm::vec2 p;
-            while (f >> p.x >> p.y) s.road.roadPts.push_back(p);
+            s.road.clearPoints();
+            std::string line;
+            while (std::getline(f, line)) {
+                std::istringstream ls(line);
+                glm::vec2 p;
+                float h = 0.0f;
+                if (!(ls >> p.x >> p.y)) continue;
+                ls >> h; // absent in the old format -> stays 0
+                s.road.insertPoint(static_cast<int>(s.road.roadPts.size()), p, h);
+            }
             s.sel = -1;
-            s.road.needsBuild = true;
         }
     }
     ImGui::SameLine();
@@ -92,7 +267,11 @@ void drawPanel(const PanelState& s) {
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                "Click ground = add | drag handle = move | Del = delete");
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                               "Ctrl+drag a handle = raise/lower it");
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                "Shift+click a second handle = pick a bridge");
+            ImGui::TextDisabled("Arrows nudge (Shift = coarse), PgUp/PgDn height,");
+            ImGui::TextDisabled("Esc deselects, Ctrl+Z undoes.");
         } else {
             ImGui::TextDisabled("Enable edit mode to place and drag handles");
         }
@@ -102,6 +281,35 @@ void drawPanel(const PanelState& s) {
             ImGui::Text("| selected #%d \xE2\x86\x92 #%d", s.sel, s.sel2);
         else if (s.sel >= 0) ImGui::Text("| selected #%d", s.sel);
         else                 ImGui::TextDisabled("| none selected");
+
+        // --- Selected point: its height above the graded ground ---------------
+        // Editing it here rather than only by Ctrl+drag is what makes a level
+        // crossing or a fixed embankment height reproducible.
+        if (s.sel >= 0 && s.sel < static_cast<int>(s.road.roadPts.size())) {
+            float lift = s.road.liftOf(s.sel);
+            ImGui::SetNextItemWidth(-90.0f);
+            if (ImGui::DragFloat("Height##pt", &lift, 0.05f, -50.0f, 50.0f, "%+.2f m"))
+                s.road.setLift(s.sel, lift);
+            // Bracket the whole drag: activation is the frame the grab starts,
+            // before any value change, so the snapshot is the pre-edit height.
+            if (ImGui::IsItemActivated())            s.beginEdit();
+            if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Point height");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Height of point #%d above the ground it would\n"
+                                  "otherwise follow. The terrain is graded along:\n"
+                                  "up builds an embankment, down cuts a trench.\n"
+                                  "Use a bridge to span instead of filling.", s.sel);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(lift == 0.0f);
+            if (ImGui::SmallButton("Ground")) {
+                s.beginEdit();
+                s.road.setLift(s.sel, 0.0f);
+                s.endEdit("Point to ground");
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Put the point back on the terrain (height 0).");
+        }
 
         // --- Build: commit the previewed spline into the terrain --------------
         // Editing only updates the preview; Build grades the road into the ground
@@ -126,7 +334,14 @@ void drawPanel(const PanelState& s) {
         // `rc`, and `rc` is what marks it dirty -- so a tunable can't quietly take
         // effect on some frames and not others.
         bool rc = false;
-        rc |= ImGui::Checkbox("Closed loop", &s.road.closed);
+        if (ImGui::Checkbox("Closed loop", &s.road.closed)) {
+            // Toggled already; bracket around the value it had before.
+            s.road.closed = !s.road.closed;
+            s.beginEdit();
+            s.road.closed = !s.road.closed;
+            s.endEdit("Closed loop");
+            rc = true;
+        }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Join the last control point back to the first\n"
                               "(needs at least 3 points).");
@@ -145,6 +360,11 @@ void drawPanel(const PanelState& s) {
         rc |= bridgeSection(s);
 
         if (rc) s.road.needsBuild = true;
+
+        // Side objects manage their own (cheap) re-derive and undo, independent of
+        // the terrain-grading rebuild `rc` tracks -- so they stay out of it.
+        ImGui::Separator();
+        sideSection(s);
 
         // Edge fade is a pure shader effect (alpha taper at the ribbon edges) -- it
         // needs no rebuild, so it's deliberately kept out of `rc`.
@@ -213,14 +433,15 @@ void drawPanel(const PanelState& s) {
         ImGui::EndDisabled();
         ImGui::SameLine();
         ImGui::BeginDisabled(s.road.roadPts.empty());
-        if (ImGui::Button("Undo point"))
-            s.removePoint(static_cast<int>(s.road.roadPts.size()) - 1);
-        ImGui::SameLine();
+        // No "Undo point" button here: it only ever dropped the *last* point,
+        // which is not what you did when you just moved or raised one. Road edits
+        // are on the editor's real undo stack now (Ctrl+Z / Edit menu).
         if (ImGui::Button("Clear")) {
-            s.road.roadPts.clear();
+            s.beginEdit();
+            s.road.clearPoints();
             s.road.bridges.clear();
             s.sel = s.sel2 = -1;
-            s.road.needsBuild = true;
+            s.endEdit("Clear road");
         }
         ImGui::EndDisabled();
 

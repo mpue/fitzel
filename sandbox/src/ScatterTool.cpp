@@ -19,6 +19,7 @@
 #include "Document.hpp"
 #include "ModelLibrary.hpp"
 #include "SceneTypes.hpp"
+#include "UiStyle.hpp"
 
 namespace scatterui {
 
@@ -281,7 +282,7 @@ void drawPanel(const PanelState& s) {
             ImGui::TextDisabled("Enable to scatter objects onto the terrain");
         ImGui::Checkbox("Erase", &s.brushErase);
 
-        ImGui::SeparatorText("Objects to scatter");
+        ui::sectionText("Objects to scatter");
         // Sync the palette with the model library: keep known entries'
         // settings, pick up new imports, drop deleted models.
         {
@@ -319,13 +320,13 @@ void drawPanel(const PanelState& s) {
             ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f),
                 "Tick at least one model to scatter.");
 
-        ImGui::SeparatorText("Brush");
+        ui::sectionText("Brush");
         ImGui::SliderFloat("Radius", &s.cfg.radius, 1.0f, 40.0f, "%.1f m");
         ImGui::SliderInt("Objects per stamp", &s.cfg.perStamp, 1, 40);
         ImGui::SliderFloat("Min spacing", &s.cfg.minSpacing, 0.0f, 15.0f, "%.1f m");
         ImGui::SliderFloat("Clumping", &s.cfg.clumping, 0.0f, 1.0f);
 
-        ImGui::SeparatorText("Randomize");
+        ui::sectionText("Randomize");
         ImGui::DragFloatRange2("Scale", &s.cfg.scaleMin, &s.cfg.scaleMax,
                                0.01f, 0.05f, 10.0f, "min %.2f", "max %.2f");
         ImGui::Checkbox("Random yaw", &s.cfg.randomYaw);
@@ -333,7 +334,7 @@ void drawPanel(const PanelState& s) {
         ImGui::SliderFloat("Align to slope", &s.cfg.alignSlope, 0.0f, 1.0f);
         ImGui::SliderFloat("Sink into ground", &s.cfg.sink, 0.0f, 2.0f, "%.2f m");
 
-        ImGui::SeparatorText("Placement filters");
+        ui::sectionText("Placement filters");
         ImGui::SliderFloat("Max slope", &s.cfg.maxSlope, 0.0f, 90.0f, "%.0f deg");
         ImGui::DragFloatRange2("Height band", &s.cfg.heightMin, &s.cfg.heightMax,
                                0.5f, -1000.0f, 1000.0f, "%.0f m", "%.0f m");
@@ -341,7 +342,7 @@ void drawPanel(const PanelState& s) {
         ImGui::SameLine();
         ImGui::Checkbox("Static collider", &s.cfg.addCollider);
 
-        ImGui::SeparatorText("Along the road");
+        ui::sectionText("Along the road");
         ImGui::SliderFloat("Step", &s.cfg.roadStep, 1.0f, 40.0f, "%.1f m");
         ImGui::SliderFloat("Edge offset", &s.cfg.roadOffset, 0.0f, 20.0f, "%.1f m");
         const char* sides[] = {"Left", "Right", "Both", "Alternate"};

@@ -7,6 +7,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SandboxMath.cpp
     src/CameraPath.cpp
     src/ScriptSystem.cpp
+    src/ScriptBridge.cpp
     src/ProjectIO.cpp
     src/PropertyMeta.cpp
     src/Component.cpp
@@ -14,10 +15,12 @@ set(SANDBOX_RUNTIME_SOURCES
     src/TiledScatter.cpp
     src/RoadSystem.cpp
     src/RoadBridge.cpp
+    src/RoadSide.cpp
     src/RainRenderer.cpp
     src/SpraySystem.cpp
     src/SkidSystem.cpp
-    src/CarAudio.cpp)
+    src/CarAudio.cpp
+    src/UiStyle.cpp)
 
 # Editor-only sources: panels, tools and dialogs reachable only from the editor
 # UI. Compiled into `sandbox` but not `player`. (TerrainPanel.hpp stays included
@@ -31,7 +34,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/PaintPanel.cpp
     src/FolderDialog.cpp
     src/ScatterTool.cpp
-    src/VehicleTool.cpp)
+    src/VehicleTool.cpp
+    src/PrefabSystem.cpp)
 
 # The editor: full sandbox with all panels/tools.
 add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})

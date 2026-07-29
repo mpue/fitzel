@@ -6,8 +6,14 @@
 
 // Procedural primitive geometry builders used by the sandbox.
 
+// Flower geometry constants shared with assets/shaders/flower.vert (which keeps
+// its own copies -- change both together): the petal ring is built at the max
+// count and the shader hides/re-spaces petals per bloom around the stem top.
+constexpr int   kFlowerMaxPetals = 8;
+constexpr float kFlowerStemTop   = 0.50f;
+
 // A small flower (stem + petals + centre disc) as interleaved floats:
-// pos3, normal3, tint1 (0 stem, 1 petal, 2 centre).
+// pos3, normal3, tint1 (0 stem, 1 petal, 2 centre), petal1 (petal index, -1 else).
 std::vector<float> makeFlowerMesh();
 
 // A capped cylinder with its axle along local X (for vehicle wheels).

@@ -14,6 +14,29 @@ namespace fitzel {
 
 namespace {
 
+// Anisotropic filtering level to use, or 0 where the driver has no such thing.
+// Trilinear alone picks one mip from the *largest* UV derivative, so a surface
+// seen at a grazing angle (road, terrain) either blurs across its short axis or
+// undersamples along its long one -- the latter is what beats against the pixel
+// grid as moire, and it comes and goes as the camera turns. Aniso takes several
+// samples along the long axis instead and may keep the sharp mip.
+// Queried once: the value is per-context and never changes, and this runs on the
+// render thread with a context already bound (every caller is mid-upload).
+float maxAnisotropy() {
+    static const float level = [] {
+        if (!GLAD_GL_ARB_texture_filter_anisotropic &&
+            !GLAD_GL_EXT_texture_filter_anisotropic) {
+            return 0.0f;
+        }
+        GLfloat cap = 0.0f;
+        glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY, &cap);
+        // 16x is where the quality curve flattens; going higher just costs
+        // bandwidth. Clamp to whatever the driver actually offers.
+        return std::min(cap, 16.0f);
+    }();
+    return level;
+}
+
 bool endsWithExr(const std::string& p) {
     if (p.size() < 4) return false;
     std::string ext = p.substr(p.size() - 4);
@@ -103,6 +126,9 @@ Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    if (const float aniso = maxAnisotropy(); aniso > 1.0f) {
+        glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY, aniso);
+    }
 
     glBindTexture(GL_TEXTURE_2D, 0);
     return tex;

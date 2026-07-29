@@ -9,6 +9,7 @@
 #include <cstring>
 #include <filesystem>
 #include <random>
+#include <unordered_set>
 #include <vector>
 
 #include <glad/gl.h>
@@ -21,6 +22,7 @@
 
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
+#include "UiStyle.hpp"
 
 using fitzel::InstancedMesh;
 using fitzel::Shader;
@@ -181,12 +183,12 @@ void VegetationSystem::drawFireflies(const glm::mat4& viewProj, double time,
 }
 
 void VegetationSystem::panelBirdsFireflies() {
-    ImGui::SeparatorText("Birds");
+    ui::sectionText("Birds");
     ImGui::Checkbox("Birds", &birdsEnabled);
     ImGui::SliderInt("Flock size", &m_birdCount, 0, 60);
     ImGui::SliderFloat("Bird size", &m_birdSize, 0.8f, 5.0f);
 
-    ImGui::SeparatorText("Fireflies (night)");
+    ui::sectionText("Fireflies (night)");
     ImGui::Checkbox("Fireflies", &fireflyEnabled);
     ImGui::SliderInt("Count", &m_fireflyCount, 0, 256);
     ImGui::SliderFloat("Firefly size", &m_fireflySize, 0.03f, 0.25f, "%.2f");
@@ -484,24 +486,84 @@ static void bindTreeInstanceAttribs(std::uint32_t instVBO) {
 void VegetationSystem::scanTreeAssets() {
     m_modelFiles.clear();
     m_texFiles.clear();
+    m_modelPaths.clear();
+    m_texPaths.clear();
+    std::unordered_set<std::string> seenModel, seenTex; // dedupe by display name
+
+    auto ext = [](const std::filesystem::path& p) {
+        std::string e = p.extension().string();
+        std::transform(e.begin(), e.end(), e.begin(),
+                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
+        return e;
+    };
+    auto addModel = [&](const std::filesystem::path& p) {
+        const std::string e = ext(p);
+        if (e != ".glb" && e != ".gltf") return;
+        const std::string name = p.filename().string();
+        if (!seenModel.insert(name).second) return;
+        m_modelFiles.push_back(name);
+        m_modelPaths.push_back(p.generic_string());
+    };
+    auto addTex = [&](const std::filesystem::path& p) {
+        if (ext(p) != ".png") return;
+        const std::string name = p.filename().string();
+        if (!seenTex.insert(name).second) return;
+        m_texFiles.push_back(name);
+        m_texPaths.push_back(p.generic_string());
+    };
+
+    // Built-in content dirs (flat scan, as before).
     std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(m_modelDir, ec)) {
-        if (!e.is_regular_file()) continue;
-        std::string ext = e.path().extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-        if (ext == ".glb" || ext == ".gltf")
-            m_modelFiles.push_back(e.path().filename().string());
+    for (const auto& e : std::filesystem::directory_iterator(m_modelDir, ec))
+        if (e.is_regular_file()) addModel(e.path());
+    for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec))
+        if (e.is_regular_file()) addTex(e.path());
+    // Project-local assets (recursive), so a model dropped into the open project
+    // is selectable as a species. Names already in content are kept (not shadowed).
+    if (!m_projectDir.empty() && std::filesystem::is_directory(m_projectDir, ec))
+        for (const auto& e :
+             std::filesystem::recursive_directory_iterator(m_projectDir, ec))
+            if (!e.is_directory()) { addModel(e.path()); addTex(e.path()); }
+
+    // Sort display names, keeping the parallel path lists aligned.
+    auto sortPair = [](std::vector<std::string>& names, std::vector<std::string>& paths) {
+        std::vector<int> order(names.size());
+        for (int i = 0; i < static_cast<int>(order.size()); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return names[a] < names[b]; });
+        std::vector<std::string> sn, sp;
+        sn.reserve(order.size()); sp.reserve(order.size());
+        for (int i : order) { sn.push_back(names[i]); sp.push_back(paths[i]); }
+        names.swap(sn);
+        paths.swap(sp);
+    };
+    sortPair(m_modelFiles, m_modelPaths);
+    sortPair(m_texFiles, m_texPaths);
+}
+
+std::string VegetationSystem::modelPath(const std::string& file) const {
+    for (int i = 0; i < static_cast<int>(m_modelFiles.size()); ++i)
+        if (m_modelFiles[i] == file) return m_modelPaths[i];
+    return m_modelDir + "/" + file;
+}
+
+std::string VegetationSystem::texPath(const std::string& file) const {
+    for (int i = 0; i < static_cast<int>(m_texFiles.size()); ++i)
+        if (m_texFiles[i] == file) return m_texPaths[i];
+    return m_texDir + "/" + file;
+}
+
+void VegetationSystem::refreshTreeAssets(const std::string& projectDir) {
+    m_projectDir = projectDir;
+    scanTreeAssets();
+    // Re-resolve what each species already references: a name that used to fall
+    // back to content may now live in the project (or the other way round).
+    for (int s = 0; s < static_cast<int>(m_species.size()); ++s) {
+        TreeSpecies& sp = m_species[s];
+        for (TreeLOD& lod : sp.lods)
+            if (!lod.model.empty()) loadTreeMesh(modelPath(lod.model), sp, lod);
+        if (!sp.billboard.empty()) setBillboard(s, sp.billboard);
     }
-    for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec)) {
-        if (!e.is_regular_file()) continue;
-        std::string ext = e.path().extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-        if (ext == ".png") m_texFiles.push_back(e.path().filename().string());
-    }
-    std::sort(m_modelFiles.begin(), m_modelFiles.end());
-    std::sort(m_texFiles.begin(), m_texFiles.end());
 }
 
 bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod) {
@@ -572,7 +634,7 @@ int VegetationSystem::addSpecies() {
     lod.dist = 45.0f;
     if (!m_modelFiles.empty()) {
         lod.model = m_modelFiles.front();
-        loadTreeMesh(m_modelDir + "/" + lod.model, sp, lod);
+        loadTreeMesh(modelPath(lod.model), sp, lod);
     }
     sp.lods.push_back(std::move(lod));
     // Default billboard: the classic tree impostor if present, else the first PNG.
@@ -582,7 +644,7 @@ int VegetationSystem::addSpecies() {
     if (bb.empty() && !m_texFiles.empty()) bb = m_texFiles.front();
     if (!bb.empty()) {
         sp.billboard = bb;
-        sp.bbTex = Texture::fromFile(m_texDir + "/" + bb);
+        sp.bbTex = Texture::fromFile(texPath(bb));
         if (sp.bbTex.height() > 0)
             sp.bbAspect = static_cast<float>(sp.bbTex.width()) / sp.bbTex.height();
     }
@@ -624,7 +686,7 @@ void VegetationSystem::addLOD(int s) {
     lod.dist = sp.lods.empty() ? 45.0f : sp.lods.back().dist + 25.0f;
     lod.model = sp.lods.empty() ? (m_modelFiles.empty() ? std::string{} : m_modelFiles.front())
                                 : sp.lods.back().model;
-    if (!lod.model.empty()) loadTreeMesh(m_modelDir + "/" + lod.model, sp, lod);
+    if (!lod.model.empty()) loadTreeMesh(modelPath(lod.model), sp, lod);
     sp.lods.push_back(std::move(lod));
 }
 
@@ -643,14 +705,14 @@ void VegetationSystem::setLODModel(int s, int lod, const std::string& file) {
     TreeSpecies& sp = m_species[s];
     if (lod < 0 || lod >= static_cast<int>(sp.lods.size())) return;
     sp.lods[lod].model = file;
-    loadTreeMesh(m_modelDir + "/" + file, sp, sp.lods[lod]);
+    loadTreeMesh(modelPath(file), sp, sp.lods[lod]);
 }
 
 void VegetationSystem::setBillboard(int s, const std::string& file) {
     if (s < 0 || s >= static_cast<int>(m_species.size())) return;
     TreeSpecies& sp = m_species[s];
     sp.billboard = file;
-    sp.bbTex = Texture::fromFile(m_texDir + "/" + file);
+    sp.bbTex = Texture::fromFile(texPath(file));
     if (sp.bbTex.height() > 0)
         sp.bbAspect = static_cast<float>(sp.bbTex.width()) / sp.bbTex.height();
 }
@@ -965,7 +1027,7 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     ImGui::EndDisabled();
 
     // === Colour correction (applies to every species' mesh + billboard) =====
-    if (ImGui::CollapsingHeader("Color correction")) {
+    if (ui::header("Color correction")) {
         ImGui::Indent();
         ImGui::SliderFloat("Brightness", &treeBrightness, 0.0f, 2.0f);
         ImGui::SliderFloat("Contrast",   &treeContrast,   0.0f, 2.0f);
@@ -980,7 +1042,7 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     sel = glm::clamp(sel, 0, std::max(0, static_cast<int>(m_species.size()) - 1));
 
     // === Species overview (foldable) =======================================
-    if (ImGui::CollapsingHeader("Species", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ui::header("Species", ImGuiTreeNodeFlags_DefaultOpen)) {
         const float rowH = ImGui::GetTextLineHeightWithSpacing();
         const int   rows = glm::clamp(static_cast<int>(m_species.size()), 1, 6);
         if (ImGui::BeginListBox("##species", ImVec2(-FLT_MIN, rows * rowH + 6.0f))) {
@@ -1010,6 +1072,12 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
             sel = glm::clamp(sel, 0, std::max(0, static_cast<int>(m_species.size()) - 1));
         }
         ImGui::EndDisabled();
+        ImGui::SameLine();
+        // Assets are scanned on project switch; this picks up files dropped into
+        // the project folder while it is open, without reopening it.
+        if (ImGui::Button("Rescan assets")) refreshTreeAssets(m_projectDir);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Re-read models/billboards from content + the open project");
     }
 
     // === Selected-species editor (foldable) ================================
@@ -1018,7 +1086,7 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
         // "###edit" keeps a stable id so the fold state survives renames/selection.
         char hdr[96];
         std::snprintf(hdr, sizeof hdr, "Edit: %s###editSpecies", sp.name.c_str());
-        if (ImGui::CollapsingHeader(hdr, ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ui::header(hdr, ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::PushID("editSpecies");
             ImGui::Indent();
 
@@ -1088,7 +1156,7 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     }
 
     // === Paint trees (foldable, closed by default) =========================
-    if (ImGui::CollapsingHeader("Paint trees (3D brush)")) {
+    if (ui::header("Paint trees (3D brush)")) {
         ImGui::Indent();
         if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode) onGrabLMB();
         if (treePaintMode)
@@ -1175,7 +1243,7 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
                 TreeLOD lod;
                 lod.model = lj.value("model", std::string{});
                 lod.dist  = lj.value("dist", 45.0f);
-                if (!lod.model.empty()) loadTreeMesh(m_modelDir + "/" + lod.model, sp, lod);
+                if (!lod.model.empty()) loadTreeMesh(modelPath(lod.model), sp, lod);
                 sp.lods.push_back(std::move(lod));
             }
         }
@@ -1186,7 +1254,7 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
         const std::string bb = sj.value("billboard", std::string{});
         if (!bb.empty()) {
             sp.billboard = bb;
-            sp.bbTex = Texture::fromFile(m_texDir + "/" + bb); // keep the saved aspect
+            sp.bbTex = Texture::fromFile(texPath(bb)); // keep the saved aspect
         }
     }
     if (m_species.empty()) addSpecies(); // never leave the scene with zero species
@@ -1200,12 +1268,13 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
 bool VegetationSystem::initFlowers() {
     m_flower = Shader::fromFiles("assets/shaders/flower.vert", "assets/shaders/flower.frag");
     if (!m_flower.isValid()) { std::fprintf(stderr, "Failed to load flower shader\n"); return false; }
-    // base: pos3, normal3, tint ; instance: iPos3, iYaw, iScale, iColor3.
+    // base: pos3, normal3, tint, petalIndex ; instance: iPos3, iYaw, iScale, iColor3.
     const std::vector<float> mesh = makeFlowerMesh();
-    m_flowerVerts = static_cast<int>(mesh.size() / 7);
+    m_flowerVerts = static_cast<int>(mesh.size() / 8);
     m_flowerField = InstancedMesh::create(
-        mesh.data(), mesh.size(), 7 * sizeof(float),
-        {{0, 3, 0}, {1, 3, 3 * sizeof(float)}, {2, 1, 6 * sizeof(float)}},
+        mesh.data(), mesh.size(), 8 * sizeof(float),
+        {{0, 3, 0}, {1, 3, 3 * sizeof(float)}, {2, 1, 6 * sizeof(float)},
+         {7, 1, 7 * sizeof(float)}},
         8 * sizeof(float),
         {{3, 3, 0}, {4, 1, 3 * sizeof(float)}, {5, 1, 4 * sizeof(float)},
          {6, 3, 5 * sizeof(float)}});
@@ -1220,29 +1289,52 @@ void VegetationSystem::rebuildFlowerBuffer() {
     flowerCount = m_flowerField.count();
 }
 
+// Weighted palette pick plus a small per-bloom colour jitter, so no two flowers
+// come out exactly the same shade. Shared by the procedural pass and the brush.
+static glm::vec3 flowerColor(std::mt19937& rng) {
+    // Natural meadow palette, weighted toward buttercup yellow and white.
+    static const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
+                                         {0.94f, 0.55f, 0.12f},  // warm orange
+                                         {0.95f, 0.95f, 0.88f},  // daisy white
+                                         {0.86f, 0.46f, 0.55f},  // soft pink
+                                         {0.60f, 0.55f, 0.82f}}; // pale lavender
+    std::uniform_real_distribution<float> u(0.0f, 1.0f);
+    const float cr = u(rng);
+    const int   ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
+                   : cr < 0.92f ? 3 : 4;
+    glm::vec3 col = palette[ci] * glm::mix(0.86f, 1.10f, u(rng)); // brightness
+    col.r *= glm::mix(0.93f, 1.07f, u(rng));                      // slight hue drift
+    col.b *= glm::mix(0.90f, 1.10f, u(rng));
+    return glm::clamp(col, glm::vec3(0.0f), glm::vec3(1.0f));
+}
+
 // Procedural bloom placement over a disc around `c`. Pure + thread-safe (reads
 // only its by-value inputs incl. a snapshot of the tree positions), so it runs
 // on a worker off the render thread. Returns the procedural flower floats.
+//
+// Like the forest, the samples sit on a WORLD-aligned lattice and every random
+// decision in a cell is seeded from its integer coords -- so a cell always grows
+// the same bloom at the same spot no matter where the pass was centred. (The old
+// pass swept a c-relative grid with one running RNG, so every camera-follow
+// regen re-placed the whole field and the flowers appeared to jump around.)
 static std::vector<float> computeFlowers(
     fitzel::TerrainSettings s, glm::vec2 c, std::vector<glm::vec2> road,
     float roadWidth, float waterLevel, float snowLevel, float R, float flowerDensity,
     std::vector<float> treeInst) {
     std::vector<float> out;
-    std::mt19937 rng(4242u);
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
     const float spacing = 0.9f;
     const float clear = roadWidth * 0.5f + 1.5f;
     const int treeCount = static_cast<int>(treeInst.size() / 5);
-    // Natural meadow palette, weighted toward buttercup yellow and white.
-    const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f},  // buttercup yellow
-                                  {0.94f, 0.55f, 0.12f},  // warm orange
-                                  {0.95f, 0.95f, 0.88f},  // daisy white
-                                  {0.86f, 0.46f, 0.55f},  // soft pink
-                                  {0.60f, 0.55f, 0.82f}}; // pale lavender
-    for (float z = -R; z <= R; z += spacing) {
-        for (float x = -R; x <= R; x += spacing) {
-            if (x * x + z * z > R * R) continue;
-            const float wx = c.x + x, wz = c.y + z;
+    const int gx0 = static_cast<int>(std::floor((c.x - R) / spacing));
+    const int gx1 = static_cast<int>(std::ceil ((c.x + R) / spacing));
+    const int gz0 = static_cast<int>(std::floor((c.y - R) / spacing));
+    const int gz1 = static_cast<int>(std::ceil ((c.y + R) / spacing));
+    for (int gz = gz0; gz <= gz1; ++gz) {
+        for (int gx = gx0; gx <= gx1; ++gx) {
+            const float wx = gx * spacing, wz = gz * spacing;
+            const float dx = wx - c.x, dz = wz - c.y;
+            if (dx * dx + dz * dz > R * R) continue;
             if (roadDistanceSq(road, wx, wz) < clear * clear) continue;
             const float h = terrainHeight(s, wx, wz);
             if (h < waterLevel + 0.6f || h > snowLevel - 2.0f) continue;
@@ -1262,27 +1354,24 @@ static std::vector<float> computeFlowers(
             // Flowers gather in the shade around tree trunks.
             float treeP = 0.0f;
             for (int t = 0; t < treeCount; ++t) {
-                const float dx = wx - treeInst[t * 5 + 0];
-                const float dz = wz - treeInst[t * 5 + 2];
-                const float dd = dx * dx + dz * dz;
+                const float tdx = wx - treeInst[t * 5 + 0];
+                const float tdz = wz - treeInst[t * 5 + 2];
+                const float dd = tdx * tdx + tdz * tdz;
                 if (dd < 30.0f) treeP = std::max(treeP, glm::smoothstep(30.0f, 3.0f, dd));
             }
 
             const float prob = (0.02f + groupP * 0.9f + treeP * 0.75f)
                              * glm::smoothstep(0.3f, 0.7f, moist) * flowerDensity;
-            if (u(rng) > prob) continue;
-            const float fx = wx + (u(rng) - 0.5f) * spacing;
-            const float fz = wz + (u(rng) - 0.5f) * spacing;
-            // Weighted pick: mostly yellow/orange/white, few pink/lavender.
-            const float cr = u(rng);
-            const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
-                         : cr < 0.92f ? 3 : 4;
-            const glm::vec3 col = palette[ci];
+            std::mt19937 crng(treeCellHash(gx, gz) ^ 0x510E5Bu); // stable per cell
+            if (u(crng) > prob) continue;
+            const float fx = wx + (u(crng) - 0.5f) * spacing;
+            const float fz = wz + (u(crng) - 0.5f) * spacing;
+            const glm::vec3 col = flowerColor(crng);
             // Meadow flowers are small; squared roll keeps most of them tiny.
-            const float sr = u(rng);
+            const float sr = u(crng);
             const float scale = glm::mix(0.30f, 0.60f, sr * sr);
             out.insert(out.end(), {fx, terrainHeight(s, fx, fz) - 0.02f, fz,
-                                   u(rng) * 6.2831f, scale,
+                                   u(crng) * 6.2831f, scale,
                                    col.r, col.g, col.b});
         }
     }
@@ -1313,9 +1402,6 @@ void VegetationSystem::stampFlower(glm::vec2 c, float radius, std::mt19937& rng,
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
     const float area  = 3.14159265f * radius * radius;
     const int   tries = std::max(2, static_cast<int>(area * 0.7f * flowerBrushDensity));
-    const glm::vec3 palette[5] = {{0.96f, 0.78f, 0.12f}, {0.94f, 0.55f, 0.12f},
-                                  {0.95f, 0.95f, 0.88f}, {0.86f, 0.46f, 0.55f},
-                                  {0.60f, 0.55f, 0.82f}};
     for (int i = 0; i < tries; ++i) {
         const float ang = u(rng) * 6.2831853f;
         const float rad = std::sqrt(u(rng)) * radius;
@@ -1329,10 +1415,7 @@ void VegetationSystem::stampFlower(glm::vec2 c, float radius, std::mt19937& rng,
             2.0f * e,
             m_streamer.heightAt(wx, wz - e) - m_streamer.heightAt(wx, wz + e)));
         if (n.y < 0.90f) continue; // flowers want fairly flat ground
-        const float cr = u(rng);
-        const int ci = cr < 0.42f ? 0 : cr < 0.60f ? 1 : cr < 0.82f ? 2
-                     : cr < 0.92f ? 3 : 4;
-        const glm::vec3 col = palette[ci];
+        const glm::vec3 col = flowerColor(rng);
         const float sr = u(rng);
         const float scale = glm::mix(0.30f, 0.60f, sr * sr);
         paintedFlowers.insert(paintedFlowers.end(), {

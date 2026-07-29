@@ -1,4 +1,5 @@
 #include "PaintPanel.hpp"
+#include "UiStyle.hpp"
 
 #include <string>
 
@@ -18,7 +19,7 @@ void drawPanel(const PanelState& s) {
         else
             ImGui::TextDisabled("Enable to paint textures onto the ground");
 
-        ImGui::SeparatorText("Layer to paint");
+        ui::sectionText("Layer to paint");
         ImGui::TextDisabled("The first four textured layers are paintable.");
         // Present the paintable layers in the same order the renderer binds them
         // (textured layers only), so the chosen slot matches the shader.
@@ -39,7 +40,7 @@ void drawPanel(const PanelState& s) {
         else if (s.layer >= slot)
             s.layer = 0; // a layer was removed -> fall back to the first slot
 
-        ImGui::SeparatorText("Brush");
+        ui::sectionText("Brush");
         ImGui::SliderFloat("Radius", &s.radius, 1.0f, 40.0f, "%.1f m");
         ImGui::SliderFloat("Strength", &s.strength, 0.05f, 1.0f);
         ImGui::Checkbox("Erase (revert to auto)", &s.erase);

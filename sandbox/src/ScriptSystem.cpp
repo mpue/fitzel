@@ -1,6 +1,9 @@
 #include "ScriptSystem.hpp"
 
 #include <cstdio>
+#include <optional>
+#include <string>
+#include <vector>
 
 extern "C" {
 #include <lua.h>
@@ -13,6 +16,37 @@ namespace {
 void setNum(lua_State* L, const char* k, float v) {
     lua_pushnumber(L, v);
     lua_setfield(L, -2, k);
+}
+void setInt(lua_State* L, const char* k, int v) {
+    lua_pushinteger(L, v);
+    lua_setfield(L, -2, k);
+}
+void setBool(lua_State* L, const char* k, bool v) {
+    lua_pushboolean(L, v);
+    lua_setfield(L, -2, k);
+}
+void setStr(lua_State* L, const char* k, const std::string& v) {
+    lua_pushlstring(L, v.c_str(), v.size());
+    lua_setfield(L, -2, k);
+}
+// Push {x, y, z} under key `k` (also as [1..3], so both t.k.x and t.k[1] work).
+void setVec(lua_State* L, const char* k, const glm::vec3& v) {
+    lua_createtable(L, 3, 3);
+    const float c[3] = {v.x, v.y, v.z};
+    const char* n[3] = {"x", "y", "z"};
+    for (int i = 0; i < 3; ++i) {
+        lua_pushnumber(L, c[i]); lua_seti(L, -2, i + 1);
+        lua_pushnumber(L, c[i]); lua_setfield(L, -2, n[i]);
+    }
+    lua_setfield(L, -2, k);
+}
+// Push a list of integers as a 1-based array.
+void pushIntArray(lua_State* L, const std::vector<int>& v) {
+    lua_createtable(L, static_cast<int>(v.size()), 0);
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        lua_pushinteger(L, v[i]);
+        lua_seti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
 }
 float getNum(lua_State* L, const char* k, float fallback) {
     lua_getfield(L, -1, k);
@@ -40,6 +74,120 @@ float field(lua_State* L, int t, const char* key, float fallback) {
                                         : fallback;
     lua_pop(L, 1);
     return v;
+}
+std::string fieldStr(lua_State* L, int t, const char* key) {
+    lua_getfield(L, t, key);
+    std::string s;
+    if (lua_isstring(L, -1)) s = lua_tostring(L, -1);
+    lua_pop(L, 1);
+    return s;
+}
+
+// --- Optional table fields (for the "edit" tables: only what's present is
+// applied, so a script can tweak one value without restating the rest) --------
+std::optional<float> optNum(lua_State* L, int t, const char* key) {
+    lua_getfield(L, t, key);
+    std::optional<float> v;
+    if (lua_isnumber(L, -1)) v = static_cast<float>(lua_tonumber(L, -1));
+    lua_pop(L, 1);
+    return v;
+}
+std::optional<int> optInt(lua_State* L, int t, const char* key) {
+    const auto v = optNum(L, t, key);
+    return v ? std::optional<int>(static_cast<int>(*v)) : std::nullopt;
+}
+std::optional<bool> optBool(lua_State* L, int t, const char* key) {
+    lua_getfield(L, t, key);
+    std::optional<bool> v;
+    if (lua_isboolean(L, -1)) v = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    return v;
+}
+std::optional<std::string> optStr(lua_State* L, int t, const char* key) {
+    lua_getfield(L, t, key);
+    std::optional<std::string> v;
+    if (lua_isstring(L, -1)) v = std::string(lua_tostring(L, -1));
+    lua_pop(L, 1);
+    return v;
+}
+// A colour/vector field, written either as {x, y, z} / {r, g, b} (array or named)
+// or as a single number (a grey level / uniform vector).
+std::optional<glm::vec3> optVec(lua_State* L, int t, const char* key) {
+    lua_getfield(L, t, key);
+    std::optional<glm::vec3> v;
+    if (lua_isnumber(L, -1)) {
+        v = glm::vec3(static_cast<float>(lua_tonumber(L, -1)));
+    } else if (lua_istable(L, -1)) {
+        const int tt = lua_gettop(L);
+        glm::vec3 c{0.0f};
+        const char* named[3] = {"x", "y", "z"};
+        const char* rgb[3]   = {"r", "g", "b"};
+        for (int i = 0; i < 3; ++i) {
+            lua_geti(L, tt, i + 1);
+            if (lua_isnumber(L, -1)) {
+                c[i] = static_cast<float>(lua_tonumber(L, -1));
+            } else {
+                lua_pop(L, 1);
+                lua_getfield(L, tt, named[i]);
+                if (!lua_isnumber(L, -1)) {
+                    lua_pop(L, 1);
+                    lua_getfield(L, tt, rgb[i]);
+                }
+                if (lua_isnumber(L, -1)) c[i] = static_cast<float>(lua_tonumber(L, -1));
+            }
+            lua_pop(L, 1);
+        }
+        v = c;
+    }
+    lua_pop(L, 1);
+    return v;
+}
+
+// Read a material edit table (see game.createMaterial / game.setMaterialProps).
+ScriptMaterialEdit readMaterialEdit(lua_State* L, int t) {
+    ScriptMaterialEdit ed;
+    ed.name             = optStr(L, t, "name");
+    ed.albedo           = optVec(L, t, "color");
+    if (!ed.albedo)     ed.albedo = optVec(L, t, "albedo");
+    if (!ed.albedo) { // flat r/g/b, like game.spawn
+        const auto r = optNum(L, t, "r"), g = optNum(L, t, "g"), b = optNum(L, t, "b");
+        if (r || g || b)
+            ed.albedo = glm::vec3(r.value_or(0.8f), g.value_or(0.8f), b.value_or(0.8f));
+    }
+    ed.reflectivity     = optNum(L, t, "reflectivity");
+    ed.roughness        = optNum(L, t, "roughness");
+    ed.opacity          = optNum(L, t, "opacity");
+    ed.glass            = optBool(L, t, "glass");
+    ed.alphaMode        = optInt(L, t, "alphaMode");
+    ed.alphaCutoff      = optNum(L, t, "cutoff");
+    if (!ed.alphaCutoff) ed.alphaCutoff = optNum(L, t, "alphaCutoff");
+    ed.emission         = optVec(L, t, "emission");
+    ed.emissionStrength = optNum(L, t, "emissionStrength");
+    ed.texture          = optStr(L, t, "texture");
+    ed.normalMap        = optStr(L, t, "normalMap");
+    ed.emissionMap      = optStr(L, t, "emissionMap");
+    return ed;
+}
+
+void pushAssetInfo(lua_State* L, const ScriptAssetInfo& a) {
+    lua_createtable(L, 0, 5);
+    setStr(L, "id", a.id);      setStr(L, "name", a.name);
+    setStr(L, "path", a.path);  setStr(L, "type", a.type);
+    setStr(L, "source", a.source);
+}
+void pushMaterialInfo(lua_State* L, const ScriptMaterialInfo& m) {
+    lua_createtable(L, 0, 15);
+    setStr(L, "id", m.id);                setStr(L, "name", m.name);
+    setVec(L, "color", m.albedo);
+    setNum(L, "reflectivity", m.reflectivity);
+    setNum(L, "roughness", m.roughness);  setNum(L, "opacity", m.opacity);
+    setBool(L, "glass", m.glass);         setInt(L, "alphaMode", m.alphaMode);
+    setNum(L, "cutoff", m.alphaCutoff);
+    setVec(L, "emission", m.emission);
+    setNum(L, "emissionStrength", m.emissionStrength);
+    setStr(L, "texture", m.texture);      setStr(L, "normalMap", m.normalMap);
+    setStr(L, "emissionMap", m.emissionMap);
+    setBool(L, "fromModel", m.fromModel);
 }
 
 int l_keyDown(lua_State* L) {
@@ -91,8 +239,12 @@ int l_spawn(lua_State* L) {
     s.vel     = {field(L, 1, "vx", 0.0f), field(L, 1, "vy", 0.0f), field(L, 1, "vz", 0.0f)};
     s.mass    = field(L, 1, "mass", 1.0f);
     s.physics = static_cast<int>(field(L, 1, "physics", 2.0f));
-    lua_getfield(L, 1, "name");   if (lua_isstring(L, -1)) s.name   = lua_tostring(L, -1); lua_pop(L, 1);
-    lua_getfield(L, 1, "script"); if (lua_isstring(L, -1)) s.script = lua_tostring(L, -1); lua_pop(L, 1);
+    s.scale   = field(L, 1, "scale", 1.0f);
+    s.parent  = static_cast<int>(field(L, 1, "parent", -1.0f));
+    s.name     = fieldStr(L, 1, "name");
+    s.script   = fieldStr(L, 1, "script");
+    s.model    = fieldStr(L, 1, "model");
+    s.material = fieldStr(L, 1, "material");
     const int id = (h && h->spawn) ? h->spawn(s) : 0;
     lua_pushinteger(L, id);
     return 1;
@@ -177,6 +329,400 @@ int l_setHud(lua_State* L) {
     return 0;
 }
 
+// --- Assets ------------------------------------------------------------------
+
+int l_assets(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* type = luaL_optstring(L, 1, "");
+    std::vector<ScriptAssetInfo> list;
+    if (h && h->assetList) list = h->assetList(type);
+    lua_createtable(L, static_cast<int>(list.size()), 0);
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        pushAssetInfo(L, list[i]);
+        lua_seti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+int l_findAsset(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    const char* type = luaL_optstring(L, 2, "");
+    const std::string id = (h && h->findAsset) ? h->findAsset(name, type) : std::string();
+    if (id.empty()) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, id.c_str(), id.size());
+    return 1;
+}
+int l_assetInfo(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* id = luaL_checkstring(L, 1);
+    ScriptAssetInfo a;
+    if (!h || !h->assetInfo || !h->assetInfo(id, a)) { lua_pushnil(L); return 1; }
+    pushAssetInfo(L, a);
+    return 1;
+}
+int l_assetPath(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* id = luaL_checkstring(L, 1);
+    const std::string p = (h && h->assetPath) ? h->assetPath(id) : std::string();
+    if (p.empty()) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, p.c_str(), p.size());
+    return 1;
+}
+int l_refreshAssets(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->refreshAssets) h->refreshAssets();
+    return 0;
+}
+
+// --- Models ------------------------------------------------------------------
+
+int l_loadModel(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* asset = luaL_checkstring(L, 1);
+    const int id = (h && h->loadModel) ? h->loadModel(asset) : -1;
+    if (id < 0) { lua_pushnil(L); return 1; }
+    lua_pushinteger(L, id);
+    return 1;
+}
+int l_modelInfo(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptModelInfo m;
+    if (!h || !h->modelInfo || !h->modelInfo(id, m)) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 7);
+    setStr(L, "name", m.name);   setStr(L, "path", m.path);
+    setVec(L, "min", m.boundsMin);
+    setVec(L, "max", m.boundsMax);
+    setVec(L, "size", m.boundsMax - m.boundsMin);
+    setInt(L, "meshes", m.meshes);
+    setBool(L, "animated", m.animated);
+    return 1;
+}
+
+// --- Materials ---------------------------------------------------------------
+
+int l_materials(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    std::vector<ScriptMaterialInfo> list;
+    if (h && h->materialList) list = h->materialList();
+    lua_createtable(L, static_cast<int>(list.size()), 0);
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        pushMaterialInfo(L, list[i]);
+        lua_seti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+int l_findMaterial(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    const std::string id = (h && h->findMaterial) ? h->findMaterial(name) : std::string();
+    if (id.empty()) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, id.c_str(), id.size());
+    return 1;
+}
+int l_materialInfo(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* id = luaL_checkstring(L, 1);
+    ScriptMaterialInfo m;
+    if (!h || !h->materialInfo || !h->materialInfo(id, m)) { lua_pushnil(L); return 1; }
+    pushMaterialInfo(L, m);
+    return 1;
+}
+int l_createMaterial(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    luaL_checktype(L, 1, LUA_TTABLE);
+    const ScriptMaterialEdit ed = readMaterialEdit(L, 1);
+    const std::string id = (h && h->createMaterial) ? h->createMaterial(ed) : std::string();
+    if (id.empty()) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, id.c_str(), id.size());
+    return 1;
+}
+int l_setMaterialProps(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* id = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    const ScriptMaterialEdit ed = readMaterialEdit(L, 2);
+    lua_pushboolean(L, h && h->setMaterialProps && h->setMaterialProps(id, ed));
+    return 1;
+}
+int l_setMaterial(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int   e  = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* id = luaL_checkstring(L, 2);
+    lua_pushboolean(L, h && h->setEntityMaterial && h->setEntityMaterial(e, id));
+    return 1;
+}
+int l_getMaterial(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int e = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string id = (h && h->entityMaterial) ? h->entityMaterial(e) : std::string();
+    if (id.empty()) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, id.c_str(), id.size());
+    return 1;
+}
+int l_setColor(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int e = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 c{static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3)),
+                      static_cast<float>(luaL_checknumber(L, 4))};
+    lua_pushboolean(L, h && h->setEntityColor && h->setEntityColor(e, c));
+    return 1;
+}
+
+// --- Entities: query, transform, hierarchy -----------------------------------
+
+int l_entities(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    pushIntArray(L, (h && h->allEntities) ? h->allEntities() : std::vector<int>{});
+    return 1;
+}
+int l_find(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    const int id = (h && h->findEntity) ? h->findEntity(name) : -1;
+    if (id < 0) { lua_pushnil(L); return 1; }
+    lua_pushinteger(L, id);
+    return 1;
+}
+int l_findAll(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    pushIntArray(L, (h && h->findEntities) ? h->findEntities(name) : std::vector<int>{});
+    return 1;
+}
+int l_entityInfo(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptEntityInfo e;
+    if (!h || !h->entityInfo || !h->entityInfo(id, e)) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 11);
+    setInt(L, "id", e.id);          setInt(L, "type", e.type);
+    setInt(L, "parent", e.parent);  setStr(L, "name", e.name);
+    setStr(L, "script", e.script);  setStr(L, "material", e.material);
+    setStr(L, "model", e.model);
+    setBool(L, "active", e.active);
+    setBool(L, "activeInHierarchy", e.activeInHierarchy);
+    setBool(L, "physics", e.hasPhysics);
+    setBool(L, "dynamic", e.dynamic);
+    return 1;
+}
+int l_getRot(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    glm::vec3 r;
+    if (h && h->getRot && h->getRot(id, r)) {
+        lua_pushnumber(L, r.x); lua_pushnumber(L, r.y); lua_pushnumber(L, r.z);
+        return 3;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+int l_setRot(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 r{static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3)),
+                      static_cast<float>(luaL_checknumber(L, 4))};
+    if (h && h->setRot) h->setRot(id, r);
+    return 0;
+}
+int l_getScale(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    glm::vec3 s;
+    if (h && h->getScale && h->getScale(id, s)) {
+        lua_pushnumber(L, s.x); lua_pushnumber(L, s.y); lua_pushnumber(L, s.z);
+        return 3;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+int l_setScale(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const float sx = static_cast<float>(luaL_checknumber(L, 2));
+    // One number scales uniformly: game.setScale(id, 0.5).
+    const glm::vec3 s{sx, static_cast<float>(luaL_optnumber(L, 3, sx)),
+                          static_cast<float>(luaL_optnumber(L, 4, sx))};
+    if (h && h->setScale) h->setScale(id, s);
+    return 0;
+}
+int l_getName(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptEntityInfo e;
+    if (!h || !h->entityInfo || !h->entityInfo(id, e)) { lua_pushnil(L); return 1; }
+    lua_pushlstring(L, e.name.c_str(), e.name.size());
+    return 1;
+}
+int l_setName(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (h && h->setName) h->setName(id, luaL_checkstring(L, 2));
+    return 0;
+}
+int l_setActive(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const bool on = lua_isnone(L, 2) ? true : lua_toboolean(L, 2) != 0;
+    if (h && h->setActive) h->setActive(id, on);
+    return 0;
+}
+int l_isActive(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptEntityInfo e;
+    if (!h || !h->entityInfo || !h->entityInfo(id, e)) { lua_pushnil(L); return 1; }
+    lua_pushboolean(L, e.activeInHierarchy);
+    return 1;
+}
+int l_setParent(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const int p  = static_cast<int>(luaL_optinteger(L, 2, -1));
+    if (h && h->setParent) h->setParent(id, p);
+    return 0;
+}
+int l_getParent(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptEntityInfo e;
+    if (!h || !h->entityInfo || !h->entityInfo(id, e) || e.parent < 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, e.parent);
+    return 1;
+}
+int l_children(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    pushIntArray(L, (h && h->children) ? h->children(id) : std::vector<int>{});
+    return 1;
+}
+
+// --- Physics reads / extra writes --------------------------------------------
+
+int l_getVelocity(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    glm::vec3 v;
+    if (h && h->getVelocity && h->getVelocity(id, v)) {
+        lua_pushnumber(L, v.x); lua_pushnumber(L, v.y); lua_pushnumber(L, v.z);
+        return 3;
+    }
+    lua_pushnil(L);
+    return 1;
+}
+int l_setAngularVelocity(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 w{static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3)),
+                      static_cast<float>(luaL_checknumber(L, 4))};
+    if (h && h->setAngularVelocity) h->setAngularVelocity(id, w);
+    return 0;
+}
+
+// --- Lights ------------------------------------------------------------------
+
+int l_setLight(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    luaL_checktype(L, 2, LUA_TTABLE);
+    ScriptLightEdit ed;
+    ed.color     = optVec(L, 2, "color");
+    ed.intensity = optNum(L, 2, "intensity");
+    ed.range     = optNum(L, 2, "range");
+    ed.type      = optInt(L, 2, "type");
+    ed.spotAngle = optNum(L, 2, "spotAngle");
+    ed.spotBlend = optNum(L, 2, "spotBlend");
+    lua_pushboolean(L, h && h->setLight && h->setLight(id, ed));
+    return 1;
+}
+
+// --- World / camera / misc ----------------------------------------------------
+
+int l_terrainHeight(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float x = static_cast<float>(luaL_checknumber(L, 1));
+    const float z = static_cast<float>(luaL_checknumber(L, 2));
+    lua_pushnumber(L, (h && h->terrainHeight) ? h->terrainHeight(x, z) : 0.0f);
+    return 1;
+}
+int l_raycast(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 o{static_cast<float>(luaL_checknumber(L, 1)),
+                      static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3))};
+    const glm::vec3 d{static_cast<float>(luaL_checknumber(L, 4)),
+                      static_cast<float>(luaL_checknumber(L, 5)),
+                      static_cast<float>(luaL_checknumber(L, 6))};
+    const float maxDist = static_cast<float>(luaL_optnumber(L, 7, 1000.0));
+    glm::vec3 hit{0.0f};
+    float     dist = 0.0f;
+    const int id = (h && h->raycast) ? h->raycast(o, d, maxDist, hit, dist) : -1;
+    if (id < 0) { lua_pushnil(L); return 1; }
+    lua_pushinteger(L, id);
+    lua_pushnumber(L, hit.x); lua_pushnumber(L, hit.y); lua_pushnumber(L, hit.z);
+    lua_pushnumber(L, dist);
+    return 5;
+}
+int l_log(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    std::string line;
+    const int n = lua_gettop(L);
+    for (int i = 1; i <= n; ++i) {
+        if (i > 1) line += '\t';
+        if (const char* s = luaL_tolstring(L, i, nullptr)) line += s;
+        lua_pop(L, 1); // luaL_tolstring pushes the converted string
+    }
+    if (h && h->log) h->log(line);
+    else             std::fprintf(stderr, "[Lua] %s\n", line.c_str());
+    return 0;
+}
+int l_loadScene(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    if (h && h->loadScene) h->loadScene(name);
+    return 0;
+}
+int l_setCameraPos(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 p{static_cast<float>(luaL_checknumber(L, 1)),
+                      static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3))};
+    if (h && h->setCamPos) h->setCamPos(p);
+    return 0;
+}
+int l_setCameraDir(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 d{static_cast<float>(luaL_checknumber(L, 1)),
+                      static_cast<float>(luaL_checknumber(L, 2)),
+                      static_cast<float>(luaL_checknumber(L, 3))};
+    if (h && h->setCamDir) h->setCamDir(d);
+    return 0;
+}
+int l_setCameraFov(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float f = static_cast<float>(luaL_checknumber(L, 1));
+    if (h && h->setCamFov) h->setCamFov(f);
+    return 0;
+}
+int l_setCamera(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_optinteger(L, 1, -1));
+    if (h && h->setActiveCamera) h->setActiveCamera(id);
+    return 0;
+}
+int l_screenSize(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    lua_pushnumber(L, h ? h->screen.x : 0.0f);
+    lua_pushnumber(L, h ? h->screen.y : 0.0f);
+    return 2;
+}
+
 } // namespace
 
 ScriptSystem::ScriptSystem() { reset(); }
@@ -214,6 +760,40 @@ void ScriptSystem::installApi() {
     fn("playAudio", l_playAudio);     fn("stopAudio", l_stopAudio);
     fn("addScore", l_addScore);       fn("getScore", l_getScore);
     fn("setHud", l_setHud);
+    // Assets
+    fn("assets", l_assets);           fn("findAsset", l_findAsset);
+    fn("assetInfo", l_assetInfo);     fn("assetPath", l_assetPath);
+    fn("refreshAssets", l_refreshAssets);
+    // Models
+    fn("loadModel", l_loadModel);     fn("modelInfo", l_modelInfo);
+    // Materials
+    fn("materials", l_materials);     fn("findMaterial", l_findMaterial);
+    fn("materialInfo", l_materialInfo);
+    fn("createMaterial", l_createMaterial);
+    fn("setMaterialProps", l_setMaterialProps);
+    fn("setMaterial", l_setMaterial); fn("getMaterial", l_getMaterial);
+    fn("setColor", l_setColor);
+    // Entities
+    fn("entities", l_entities);       fn("find", l_find);
+    fn("findAll", l_findAll);         fn("entityInfo", l_entityInfo);
+    fn("getRot", l_getRot);           fn("setRot", l_setRot);
+    fn("getScale", l_getScale);       fn("setScale", l_setScale);
+    fn("getName", l_getName);         fn("setName", l_setName);
+    fn("setActive", l_setActive);     fn("isActive", l_isActive);
+    fn("setParent", l_setParent);     fn("getParent", l_getParent);
+    fn("children", l_children);
+    // Physics
+    fn("getVelocity", l_getVelocity);
+    fn("setAngularVelocity", l_setAngularVelocity);
+    // Lights
+    fn("setLight", l_setLight);
+    // World / camera / misc
+    fn("terrainHeight", l_terrainHeight);
+    fn("raycast", l_raycast);         fn("log", l_log);
+    fn("loadScene", l_loadScene);
+    fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
+    fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);
+    fn("screenSize", l_screenSize);
 
     auto k = [&](const char* name, int v) {
         lua_pushinteger(L, v);
@@ -221,12 +801,26 @@ void ScriptSystem::installApi() {
     };
     // Entity types (match EntityType in SceneTypes.hpp).
     k("BOX", 0); k("RAMP", 1); k("CYLINDER", 2); k("SPHERE", 3);
+    k("LIGHT", 4); k("SUN", 5); k("MODEL", 6); k("EMPTY", 7);
+    // Physics modes (game.spawn's `physics`).
+    k("PHYSICS_NONE", 0); k("PHYSICS_STATIC", 1); k("PHYSICS_DYNAMIC", 2);
+    // Material alpha modes (see game.createMaterial).
+    k("ALPHA_OPAQUE", 0); k("ALPHA_CUTOUT", 1); k("ALPHA_BLEND", 2);
+    // Light types (game.setLight).
+    k("LIGHT_POINT", 0); k("LIGHT_SPOT", 1);
     // Mouse buttons.
     k("MOUSE_LEFT", 0); k("MOUSE_RIGHT", 1); k("MOUSE_MIDDLE", 2);
     // Common GLFW key codes (stable values, so no GLFW header needed here).
     k("KEY_SPACE", 32); k("KEY_ENTER", 257); k("KEY_ESCAPE", 256);
-    k("KEY_LSHIFT", 340); k("KEY_LCTRL", 341);
+    k("KEY_LSHIFT", 340); k("KEY_LCTRL", 341); k("KEY_LALT", 342);
+    k("KEY_RSHIFT", 344); k("KEY_RCTRL", 345); k("KEY_RALT", 346);
+    k("KEY_TAB", 258); k("KEY_BACKSPACE", 259); k("KEY_DELETE", 261);
     k("KEY_LEFT", 263); k("KEY_RIGHT", 262); k("KEY_UP", 265); k("KEY_DOWN", 264);
+    for (int f = 1; f <= 12; ++f) { // KEY_F1 .. KEY_F12 (GLFW: F1 == 290)
+        char name[8];
+        std::snprintf(name, sizeof(name), "KEY_F%d", f);
+        k(name, 289 + f);
+    }
     for (int c = 'A'; c <= 'Z'; ++c) { // KEY_A .. KEY_Z (GLFW uses ASCII uppercase)
         char name[6] = {'K', 'E', 'Y', '_', static_cast<char>(c), '\0'};
         k(name, c);
@@ -265,6 +859,10 @@ void ScriptSystem::pushEntityTable(const Entity& e) {
     setNum(L, "sx", e.half.x);    setNum(L, "sy", e.half.y);    setNum(L, "sz", e.half.z);
     lua_pushstring(L, e.name.c_str()); lua_setfield(L, -2, "name");
     lua_pushinteger(L, e.id);          lua_setfield(L, -2, "id");
+    // Read-only context, so a script can branch on what it is attached to.
+    setInt(L, "type", static_cast<int>(e.type));
+    setInt(L, "parent", e.parent);
+    setBool(L, "active", e.active);
 }
 
 void ScriptSystem::readEntityTable(Entity& e) {

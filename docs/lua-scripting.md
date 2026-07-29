@@ -52,6 +52,9 @@ Szenegraph); für ein Wurzelobjekt ist lokal == Welt.
 | `e.sx`, `e.sy`, `e.sz` | Halb-Ausdehnung (half extents) | **ja** |
 | `e.name` | Name des Objekts | nein (nur lesen) |
 | `e.id` | numerische Entity-ID | nein (nur lesen) |
+| `e.type` | Entity-Typ (`game.BOX` …) | nein (nur lesen) |
+| `e.parent` | ID des Eltern-Objekts (`-1` = Wurzel) | nein (nur lesen) |
+| `e.active` | eigener Aktiv-Schalter | nein (nur lesen — setzen via `game.setActive`) |
 
 **Wichtig:** Nach `update`/`start` werden **nur die numerischen Transform-Felder**
 (`x/y/z`, `rx/ry/rz`, `sx/sy/sz`) zurück ins Objekt kopiert. `name`/`id` sind
@@ -111,10 +114,12 @@ Entity-Liste). `game.destroy` ist ebenfalls deferred.
 
 ### 3.4 Physik (auf dynamischen Bodies, per ID)
 
-| Aufruf | Beschreibung |
-|--------|--------------|
-| `game.setVelocity(id, vx, vy, vz)` | Lineare Geschwindigkeit setzen |
-| `game.applyImpulse(id, jx, jy, jz)` | Impuls anwenden |
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.setVelocity(id, vx, vy, vz)` | – | Lineare Geschwindigkeit setzen |
+| `game.getVelocity(id)` | `vx, vy, vz` oder `nil` | Aktuelle lineare Geschwindigkeit |
+| `game.applyImpulse(id, jx, jy, jz)` | – | Impuls anwenden |
+| `game.setAngularVelocity(id, wx, wy, wz)` | – | Drehgeschwindigkeit (rad/s) setzen |
 
 No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 
@@ -137,17 +142,186 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 Score/HUD liegen im **Host** (nicht in der isolierten Skript-Umgebung), sind also
 über alle Skripte hinweg geteilt.
 
-### 3.7 Konstanten
+### 3.7 Objekte finden, abfragen, umbauen
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.find(name)` | `id` oder `nil` | Erstes Objekt mit diesem Namen (exakt, sonst case-insensitiv) |
+| `game.findAll(name)` | Array von IDs | Alle Objekte mit diesem Namen |
+| `game.entities()` | Array von IDs | Alle Objekte der Szene |
+| `game.entityInfo(id)` | Tabelle oder `nil` | Steckbrief (§3.7.1) |
+| `game.getName(id)` / `game.setName(id, s)` | string / – | Anzeigename |
+| `game.getRot(id)` | `rx, ry, rz` oder `nil` | **Welt**-Rotation in Grad |
+| `game.setRot(id, rx, ry, rz)` | – | Welt-Rotation setzen (wird in den lokalen Transform zurückgerechnet) |
+| `game.getScale(id)` | `sx, sy, sz` oder `nil` | Halb-Ausdehnung |
+| `game.setScale(id, s)` / `(id, sx, sy, sz)` | – | Ein Wert = uniform |
+| `game.setActive(id, bool)` | – | Objekt (samt Kindern) ein-/ausschalten |
+| `game.isActive(id)` | bool oder `nil` | Effektiv sichtbar (Objekt **und** alle Eltern aktiv) |
+| `game.setParent(id, parentId)` | – | Umhängen, **Welt-Transform bleibt stehen**; `-1` = an die Wurzel |
+| `game.getParent(id)` | `id` oder `nil` | Eltern-ID |
+| `game.children(id)` | Array von IDs | Direkte Kinder |
+
+`setParent` verweigert Zyklen (ein Objekt kann nicht unter sein eigenes Kind).
+
+#### 3.7.1 `game.entityInfo(id)`
+
+| Feld | Typ | Bedeutung |
+|------|-----|-----------|
+| `id`, `parent` | int | IDs (`parent` = `-1` bei Wurzelobjekten) |
+| `type` | int | Entity-Typ (`game.BOX` … `game.EMPTY`) |
+| `name` | string | Anzeigename |
+| `script` | string | Lua-Datei der Script-Komponente (`""` = keine) |
+| `material` | string | GUID des zugewiesenen Materials (`""` = keins) |
+| `model` | string | Quelldatei der Model-Komponente (`""` = keine) |
+| `active` | bool | eigener Schalter |
+| `activeInHierarchy` | bool | inklusive aller Eltern |
+| `physics`, `dynamic` | bool | hat Physik-Komponente / ist dynamisch |
+
+### 3.8 Assets
+
+Alles, was die Asset-Datenbank kennt (Texturen, Modelle, Sounds, Materialdateien) —
+Engine-Assets **und** Projekt-Assets — ist per GUID adressierbar. Überall, wo ein
+Asset erwartet wird, akzeptiert die API vier Schreibweisen: die 32-stellige **GUID**,
+den **Dateinamen** (`"brick.png"`), den **relativen Pfad** (`"textures/brick.png"`)
+oder den **Namensstamm** (`"brick"`). Exakte Dateinamen gewinnen vor Pfaden, Pfade
+vor Stämmen.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.assets([typ])` | Array von Tabellen | Alle Assets, optional gefiltert: `"Texture"`, `"Model"`, `"Sound"`, `"Material"` |
+| `game.findAsset(name [,typ])` | GUID oder `nil` | Referenz auflösen |
+| `game.assetInfo(ref)` | Tabelle oder `nil` | Einzelnes Asset |
+| `game.assetPath(ref)` | string oder `nil` | Absoluter Pfad auf der Platte |
+| `game.refreshAssets()` | – | Datenbank neu von der Platte einlesen (neue Dateien auftauchen lassen) |
+
+Jede Asset-Tabelle hat: `id` (GUID), `name` (Dateiname), `path` (Pfad relativ zur
+Quelle), `type` (`"Texture"`/`"Model"`/`"Sound"`/`"Material"`), `source`
+(`"Engine"` oder `"Project"`).
+
+```lua
+for _, a in ipairs(game.assets("Texture")) do
+    game.log(a.name, a.id, a.source)
+end
+```
+
+### 3.9 Modelle
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.loadModel(ref)` | `modelId` oder `nil` | Model-Asset in die Model-Library importieren (bereits geladene werden wiederverwendet) |
+| `game.modelInfo(modelId)` | Tabelle oder `nil` | `name`, `path`, `min`, `max`, `size` (je `{x,y,z}`), `meshes`, `animated` |
+
+Zum **Platzieren** braucht es `loadModel` gar nicht — `game.spawn{model = …}` (§4)
+importiert selbst und setzt die Größe aus der Bounding-Box des Modells.
+
+```lua
+local id = game.spawn{ model = "tree.glb", x = 10, y = game.terrainHeight(10, 4), z = 4,
+                       scale = 1.5, physics = game.PHYSICS_STATIC }
+```
+
+### 3.10 Materialien
+
+Materialien liegen in der Material-Bibliothek des Projekts und werden per GUID
+referenziert; mehrere Objekte können sich eines teilen (eine Änderung wirkt dann
+auf alle). Wo ein Material erwartet wird, geht auch sein **Name**.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.materials()` | Array von Tabellen | Die ganze Bibliothek |
+| `game.findMaterial(name)` | GUID oder `nil` | Material per Name suchen |
+| `game.materialInfo(ref)` | Tabelle oder `nil` | Einzelnes Material |
+| `game.createMaterial{…}` | GUID | Neues Material anlegen (Felder §3.10.1) |
+| `game.setMaterialProps(ref, {…})` | bool | Vorhandenes Material ändern — **live**, alle Nutzer sehen es sofort |
+| `game.setMaterial(entityId, ref)` | bool | Material einem Objekt zuweisen |
+| `game.getMaterial(entityId)` | GUID oder `nil` | Zugewiesenes Material |
+| `game.setColor(entityId, r, g, b)` | bool | Objekt einfärben: legt dem Objekt **sein eigenes** Material an (beim zweiten Aufruf wiederverwendet), färbt also nie andere mit ein |
+
+#### 3.10.1 Material-Tabelle
+
+Bei `createMaterial`/`setMaterialProps` werden **nur die angegebenen Felder**
+geschrieben — man kann also einen einzelnen Wert ändern, ohne den Rest zu kennen.
+
+| Feld | Typ | Bedeutung |
+|------|-----|-----------|
+| `name` | string | Anzeigename |
+| `color` (oder `albedo`, oder `r`/`g`/`b`) | `{r,g,b}` oder Zahl | Grundfarbe (ohne Textur) |
+| `reflectivity` | 0..1 | matt … Spiegel |
+| `roughness` | 0..1 | Unschärfe der Spiegelung |
+| `opacity` | 0..1 | Deckkraft |
+| `glass` | bool | Fresnel-Alpha (klare Mitte, spiegelnder Rand) |
+| `alphaMode` | int | `game.ALPHA_OPAQUE` / `ALPHA_CUTOUT` / `ALPHA_BLEND` |
+| `cutoff` | 0..1 | Schwelle für `ALPHA_CUTOUT` |
+| `emission` | `{r,g,b}` | Eigenleuchten |
+| `emissionStrength` | Zahl | Skaliert das Leuchten (>1.5 blüht sichtbar) |
+| `texture` | Asset-Ref | Basisfarben-Textur (`""` löscht den Slot) |
+| `normalMap` | Asset-Ref | Normal-Map |
+| `emissionMap` | Asset-Ref | Emissions-Map |
+
+`materialInfo`/`materials` liefern dieselben Felder zurück (Farben als
+`{x=,y=,z=}`-Tabellen, Maps als GUID-Strings) plus `id` und `fromModel`.
+
+```lua
+local m = game.createMaterial{ name = "Lava", texture = "lava.png",
+                               emission = {1.0, 0.35, 0.05}, emissionStrength = 2.0 }
+game.setMaterial(game.find("Boden"), m)
+-- später, im update: pulsieren lassen
+game.setMaterialProps(m, { emissionStrength = 1.5 + math.sin(t * 3) })
+```
+
+### 3.11 Licht
+
+`game.setLight(id, {…})` ändert die Light-Komponente eines Objekts (nur die
+angegebenen Felder), Rückgabe `true` wenn das Objekt eine hat.
+
+| Feld | Typ | Bedeutung |
+|------|-----|-----------|
+| `color` | `{r,g,b}` | Lichtfarbe |
+| `intensity` | Zahl | Helligkeit |
+| `range` | Zahl | Reichweite in Metern |
+| `type` | int | `game.LIGHT_POINT` (0) / `game.LIGHT_SPOT` (1) |
+| `spotAngle`, `spotBlend` | Zahl | Kegel-Halbwinkel (Grad) / Kantenweichheit 0..1 |
+
+```lua
+game.setLight(e.id, { intensity = 6 + math.random() * 4 })  -- Flackern
+```
+
+### 3.12 Welt, Kamera, Debug
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.terrainHeight(x, z)` | Zahl | Geländehöhe an einer Weltposition |
+| `game.raycast(ox,oy,oz, dx,dy,dz [,maxDist])` | `id, hx, hy, hz, dist` oder `nil` | Strahl gegen die Pick-Boxen der Objekte (achsen-parallel, Rotation wird ignoriert); `maxDist` default 1000 |
+| `game.setCameraPos(x, y, z)` | – | Spielerkamera setzen |
+| `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
+| `game.setCameraFov(grad)` | – | Öffnungswinkel |
+| `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
+| `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |
+| `game.loadScene(name)` | – | Andere Szene des Projekts laden (am Frame-Ende, Play läuft weiter) |
+| `game.log(...)` | – | Zeile auf die Konsole (stderr), beliebig viele Argumente wie `print` |
+
+**Achtung Kamera:** solange eine Camera-Komponente aktiv ist (`game.setCamera(id)`
+oder *Active on start*), überschreibt sie am Frame-Ende `setCameraPos`/`Dir`/`Fov`.
+Mit `game.setCamera(-1)` gibt man dem Skript die Kontrolle zurück.
+
+### 3.13 Konstanten
 
 **Entity-Typen** (für `game.spawn`s `type`):
-`game.BOX` (0), `game.RAMP` (1), `game.CYLINDER` (2), `game.SPHERE` (3)
+`game.BOX` (0), `game.RAMP` (1), `game.CYLINDER` (2), `game.SPHERE` (3),
+`game.LIGHT` (4), `game.SUN` (5), `game.MODEL` (6), `game.EMPTY` (7)
+
+**Physik-Modi:** `game.PHYSICS_NONE` (0), `game.PHYSICS_STATIC` (1), `game.PHYSICS_DYNAMIC` (2)
+
+**Alpha-Modi:** `game.ALPHA_OPAQUE` (0), `game.ALPHA_CUTOUT` (1), `game.ALPHA_BLEND` (2)
+
+**Licht-Typen:** `game.LIGHT_POINT` (0), `game.LIGHT_SPOT` (1)
 
 **Maustasten:** `game.MOUSE_LEFT` (0), `game.MOUSE_RIGHT` (1), `game.MOUSE_MIDDLE` (2)
 
 **Tasten (GLFW-Codes):**
-`KEY_SPACE`, `KEY_ENTER`, `KEY_ESCAPE`, `KEY_LSHIFT`, `KEY_LCTRL`,
+`KEY_SPACE`, `KEY_ENTER`, `KEY_ESCAPE`, `KEY_TAB`, `KEY_BACKSPACE`, `KEY_DELETE`,
+`KEY_LSHIFT`, `KEY_LCTRL`, `KEY_LALT`, `KEY_RSHIFT`, `KEY_RCTRL`, `KEY_RALT`,
 `KEY_LEFT`, `KEY_RIGHT`, `KEY_UP`, `KEY_DOWN`,
-`KEY_A` … `KEY_Z`, `KEY_0` … `KEY_9`
+`KEY_A` … `KEY_Z`, `KEY_0` … `KEY_9`, `KEY_F1` … `KEY_F12`
 
 ---
 
@@ -168,6 +342,10 @@ Score/HUD liegen im **Host** (nicht in der isolierten Skript-Umgebung), sind als
 | `physics` | `2` | `0` = keine, `1` = statisch, `2` = dynamisch |
 | `name` | – | Anzeigename |
 | `script` | – | Lua-Datei unter `scripts/` (z. B. `"bullet.lua"`) |
+| `model` | – | Model-Asset (Name/Pfad/GUID) — macht daraus ein **Model**-Objekt, Größe aus der Bounding-Box |
+| `scale` | `1.0` | Skalierung des Modells (nur mit `model`) |
+| `material` | – | Material aus der Bibliothek (Name oder GUID) |
+| `parent` | `-1` | Eltern-Objekt; dann sind `x/y/z` und `rx/ry/rz` **lokal** zum Parent |
 
 ```lua
 local id = game.spawn{
@@ -179,7 +357,17 @@ local id = game.spawn{
     vx = dx * 34, vy = dy * 34, vz = dz * 34,
     script = "bullet.lua",
 }
+
+-- Ein Baum aus dem Asset-Bestand, statisch, auf Geländehöhe:
+local tree = game.spawn{
+    model = "tree.glb", scale = 1.4,
+    x = 12, y = game.terrainHeight(12, -5), z = -5,
+    physics = game.PHYSICS_STATIC,
+}
 ```
+
+Ein `spawn` mit `model` gibt `0` zurück, wenn das Asset nicht gefunden wurde (die
+Konsole nennt den Namen).
 
 ---
 
@@ -206,6 +394,14 @@ function update(e, dt, t)
 end
 ```
 
+### `assets.lua` — Asset-Tour
+Skript auf ein beliebiges Objekt legen, Play drücken: `M` pflanzt das erste
+Model-Asset vor die Kamera, `T` baut ein Material aus dem ersten Textur-Asset und
+hängt es dran, `C` färbt das Objekt unterm Fadenkreuz (Raycast), `L` listet alle
+Assets auf die Konsole. Zeigt `game.assets`, `game.spawn{model=…}`,
+`game.createMaterial`, `game.setMaterial`, `game.setColor`, `game.raycast`,
+`game.terrainHeight` und `game.log`.
+
 ### `shooter.lua` + `bullet.lua` + `can.lua` — „Dosen schiessen"
 Ein kleines Mini-Game: Skript auf ein beliebiges Objekt legen, Play drücken.
 Linksklick schiesst eine Kugel in Blickrichtung, `R` stellt die Dosenreihe neu auf,
@@ -226,7 +422,18 @@ skript-übergreifende Kommunikation. Siehe die Dateien direkt.
 - **Fehler = Skript still deaktiviert** bis zum nächsten Play. Konsole/Editor-UI
   zeigt die letzte Fehlermeldung.
 - **Nur numerische Transform-Felder werden zurückgeschrieben** (`x/y/z`, `rx/ry/rz`,
-  `sx/sy/sz`). `e.name`/`e.id` schreiben wirkt nicht.
+  `sx/sy/sz`). `e.name`/`e.id`/`e.type`/`e.parent`/`e.active` schreiben wirkt nicht.
+- **Material- und Asset-Änderungen im Play-Modus sind flüchtig.** Play macht vorher
+  eine Kopie von Szene *und* Materialbibliothek und stellt sie beim Stoppen wieder
+  her — per Skript angelegte Materialien (auch die von `game.setColor`) verschwinden
+  also wieder und landen nie in der gespeicherten Projektdatei.
+- **`game.loadModel` / `spawn{model=…}` lädt beim ersten Mal von der Platte** (GPU-Upload).
+  Das kostet einen Frame-Hänger — besser in `start()` vorladen als mitten im Spiel.
+- **`game.raycast` trifft Pick-Boxen, keine Dreiecke:** achsen-parallele Kästen um
+  `center ± half`, Rotation wird ignoriert. Für Sichtlinien und „worauf zeige ich"
+  reicht das, für exakte Treffer auf schrägen Modellen nicht.
+- **`game.log` schreibt nach stderr** (Konsolenfenster des Editors), es gibt kein
+  Log-Panel in der UI.
 
 ---
 
