@@ -249,6 +249,17 @@ int l_spawn(lua_State* L) {
     lua_pushinteger(L, id);
     return 1;
 }
+int l_spawnPrefab(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    const glm::vec3 pos{static_cast<float>(luaL_optnumber(L, 2, 0.0)),
+                        static_cast<float>(luaL_optnumber(L, 3, 0.0)),
+                        static_cast<float>(luaL_optnumber(L, 4, 0.0))};
+    const float yaw = static_cast<float>(luaL_optnumber(L, 5, 0.0));
+    const int id = (h && h->spawnPrefab) ? h->spawnPrefab(name, pos, yaw) : 0;
+    lua_pushinteger(L, id);
+    return 1;
+}
 int l_destroy(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
@@ -754,6 +765,7 @@ void ScriptSystem::installApi() {
     fn("mouseDown", l_mouseDown);     fn("mousePressed", l_mousePressed);
     fn("cameraPos", l_cameraPos);     fn("cameraDir", l_cameraDir);
     fn("spawn", l_spawn);             fn("destroy", l_destroy);
+    fn("spawnPrefab", l_spawnPrefab);
     fn("getPos", l_getPos);           fn("setPos", l_setPos);
     fn("setVelocity", l_setVelocity); fn("applyImpulse", l_applyImpulse);
     fn("playSound", l_playSound);

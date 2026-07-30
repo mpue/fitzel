@@ -104,13 +104,37 @@ local dx, dy, dz = game.cameraDir()
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|
 | `game.spawn{ … }` | `id` (int) | Neues Objekt erzeugen (Parameter-Tabelle, §4) |
+| `game.spawnPrefab(name, x, y, z [, yaw])` | `id` (int) | Prefab-Instanz erzeugen; gibt die **Wurzel-ID** zurück |
 | `game.destroy(id)` | – | Objekt entfernen |
 | `game.getPos(id)` | `x, y, z` oder `nil` | Weltposition; `nil` bei unbekannter ID |
 | `game.setPos(id, x, y, z)` | – | Objekt an Position setzen |
 
 **Deferral:** `game.spawn` gibt die neue ID **sofort** zurück, das Objekt erscheint
 aber erst am **Ende des Frames** (die Tick-Schleife iteriert gerade die
-Entity-Liste). `game.destroy` ist ebenfalls deferred.
+Entity-Liste). `game.spawnPrefab` und `game.destroy` sind ebenfalls deferred.
+
+**Prefabs:** `game.spawnPrefab` instanziiert ein im Editor gespeichertes Prefab
+(`<Projekt>/prefabs/*.fprefab`) per **Name** (Groß-/Kleinschreibung egal) an der
+Weltposition `x, y, z`, optional um `yaw` Grad um die Hochachse gedreht. Der ganze
+Subtree (Wurzel + Kinder samt Components) wird erzeugt; jede Instanz-Entity trägt
+eine `PrefabComponent`. Rückgabe ist die **ID der Instanz-Wurzel** (0, wenn kein
+Prefab dieses Namens existiert oder kein Projekt offen ist). Das Prefab wird beim
+ersten Aufruf von der Platte geladen (Modelle importiert) und danach **im Speicher
+gecacht** — wiederholtes Spawnen ist billig. Funktioniert im Editor-Play **und** im
+exportierten Spiel (der `prefabs/`-Ordner wird beim Export mitkopiert).
+
+```lua
+-- Fass-Stapel jede Sekunde vor dem Spieler fallen lassen
+local t = 0
+function update(dt)
+    t = t + dt
+    if t >= 1.0 then
+        t = 0
+        local x, y, z = game.cameraPos()
+        game.spawnPrefab("Barrel Stack", x, game.terrainHeight(x, z), z, 90)
+    end
+end
+```
 
 ### 3.4 Physik (auf dynamischen Bodies, per ID)
 
@@ -401,6 +425,18 @@ hängt es dran, `C` färbt das Objekt unterm Fadenkreuz (Raycast), `L` listet al
 Assets auf die Konsole. Zeigt `game.assets`, `game.spawn{model=…}`,
 `game.createMaterial`, `game.setMaterial`, `game.setColor`, `game.raycast`,
 `game.terrainHeight` und `game.log`.
+
+### `scroller.lua` — Top-down Vertical-Scroller-Kamera
+Skript auf ein **beliebiges** einzelnes Objekt legen (ein Empty reicht), Play
+drücken: die Ansicht springt auf einen hohen, steilen Top-down-Winkel und scrollt
+mit konstanter Geschwindigkeit nach vorn (+Z) — wie Raiden / 1942. Treibt die
+freie Kamera jeden Frame über `game.setCameraPos`/`setCameraDir`/`setCameraFov`
+(Scripts ticken **nach** der Spielerbewegung, gewinnen also). Wichtig: **keine**
+Camera-Entity „active on start" markieren, sonst übernimmt die die Ansicht.
+Tunables oben im Skript: `SPEED`, `HEIGHT`, `TILT` (kleiner = steiler; `> 0`
+halten, exakt senkrecht gimbal-lockt eine Yaw/Pitch-Kamera), `FOV`. Kombiniert
+mit `game.spawnPrefab` (§3.3) lassen sich Gegner/Hindernisse vorausscrollend
+einsetzen.
 
 ### `shooter.lua` + `bullet.lua` + `can.lua` — „Dosen schiessen"
 Ein kleines Mini-Game: Skript auf ein beliebiges Objekt legen, Play drücken.

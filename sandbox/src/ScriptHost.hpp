@@ -150,6 +150,10 @@ struct ScriptHost {
     // spawn returns the new id immediately (creation deferred to the end of the
     // frame). getPos fills outPos and returns false for unknown ids.
     std::function<int(const ScriptSpawn&)>          spawn;
+    // Instantiate a prefab by name at a world position (yaw in degrees). Returns
+    // the new root entity's id, or 0 if no prefab of that name exists. Deferred
+    // like spawn -- the whole subtree appears next frame. See game.spawnPrefab.
+    std::function<int(const std::string& name, glm::vec3 pos, float yawDeg)> spawnPrefab;
     std::function<void(int)>                        destroy;
     std::function<bool(int, glm::vec3&)>            getPos;
     std::function<void(int, glm::vec3)>            setPos;

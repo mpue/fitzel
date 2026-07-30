@@ -1067,6 +1067,12 @@ int main(int argc, char** argv) {
         const std::string defaultProjectsRoot =
             std::filesystem::absolute("projects").generic_string();
         std::string       currentProject;
+        // Prefabs the running scripts have instantiated (game.spawnPrefab), cached
+        // by lowercased name so repeat spawns don't re-read the file or re-import
+        // its models. Cleared when the project changes (a different project has its
+        // own prefabs/). Lives here (not editor-only) because scripts run in the
+        // player too.
+        std::unordered_map<std::string, prefab::Prefab> prefabCache;
         char              projNameBuf[64] = "";
         std::string       prefLocation = defaultProjectsRoot; // wizard default dir
         std::vector<std::string> recentProjects;              // folders, newest first
@@ -1349,7 +1355,9 @@ int main(int argc, char** argv) {
             [&](const std::string& p){ return models.import(p, assetDb, materials); },
             [&](const std::string& p, int n){ return models.importNode(p, n, true, assetDb, materials); },
             [&](int id){ return models.byId(id); },
-            [&]{ models.clear(); },
+            // Clearing the model library invalidates every cached prefab's resolved
+            // modelIds, so drop the prefab cache on the same beat (every loadScene).
+            [&]{ models.clear(); prefabCache.clear(); },
             writeSettingsFn, readSettingsFn,
         };
         projectio::loadPrefs(pio);
@@ -1371,13 +1379,13 @@ int main(int argc, char** argv) {
         // Rescan road-surface textures and tree assets to include the project being
         // opened before the scene loads (loadScene restores the saved surface/trees
         // by name, so the project's files must already be in the lists by then).
-        auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); veg.refreshTreeAssets(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); return ok; };
-        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); road.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
+        auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); veg.refreshTreeAssets(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); prefabCache.clear(); return ok; };
+        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); prefabCache.clear(); road.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
         // Scenes within the open project. Switching/creating replaces the document,
         // so the undo history is cleared at the boundary (like opening a project).
         auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
         auto saveSceneFile        = [&](const std::string& p){ projectio::saveScene(pio, p); };
-        auto loadSceneFile        = [&](const std::string& p){ const bool ok = projectio::loadSceneFile(pio, p); history.clear(); return ok; };
+        auto loadSceneFile        = [&](const std::string& p){ const bool ok = projectio::loadSceneFile(pio, p); history.clear(); prefabCache.clear(); return ok; };
         auto newSceneInProject    = [&](const std::string& f, const std::string& n){ auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
         auto renameScene          = [&](const std::string& p, const std::string& n){ return projectio::renameScene(pio, p, n); };
         auto deleteSceneFile      = [&](const std::string& p){ return projectio::deleteSceneFile(p); };
@@ -2688,6 +2696,48 @@ int main(int argc, char** argv) {
             return e.id;
         };
         host.destroy = [&](int id){ pendingDestroy.push_back(id); };
+        // Instantiate a prefab by name at a world position (yaw degrees). Mirrors
+        // game.spawn: the whole subtree is queued into pendingSpawns and appears
+        // next frame; returns the new root entity's id (0 on failure). The prefab
+        // is loaded (and its models imported) once, then cached by name.
+        host.spawnPrefab = [&](const std::string& name, glm::vec3 pos,
+                               float yaw) -> int {
+            if (currentProject.empty() || name.empty()) return 0;
+            std::string key = name;
+            for (char& c : key)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            auto it = prefabCache.find(key);
+            if (it == prefabCache.end()) {
+                // Resolve the name to a .fprefab in the project's prefabs/ folder.
+                const std::string dir = prefab::prefabsDirIn(
+                    std::filesystem::path(currentProject).parent_path().generic_string());
+                std::string path;
+                for (const auto& np : prefab::list(dir)) {
+                    std::string ln = np.first;
+                    for (char& c : ln)
+                        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (ln == key) { path = np.second; break; }
+                }
+                if (path.empty()) {
+                    std::fprintf(stderr,
+                        "[Fitzel] game.spawnPrefab: no prefab named '%s'\n", name.c_str());
+                    return 0;
+                }
+                auto loaded = prefab::load(pio, path);
+                if (!loaded || loaded->entities.empty()) {
+                    std::fprintf(stderr,
+                        "[Fitzel] game.spawnPrefab: failed to load '%s'\n", name.c_str());
+                    return 0;
+                }
+                it = prefabCache.emplace(std::move(key), std::move(*loaded)).first;
+            }
+            std::vector<Entity> inst =
+                prefab::instantiate(it->second, entityCounter, pos, yaw);
+            if (inst.empty()) return 0;
+            const int rootId = inst.front().id; // instantiate emits the root first
+            for (Entity& e : inst) pendingSpawns.push_back(std::move(e));
+            return rootId;
+        };
         host.getPos  = [&](int id, glm::vec3& out) -> bool {
             for (const Entity& e : entities)
                 if (e.id == id) { out = e.center; return true; }

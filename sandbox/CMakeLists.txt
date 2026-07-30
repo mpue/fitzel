@@ -11,6 +11,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ProjectIO.cpp
     src/PropertyMeta.cpp
     src/Component.cpp
+    src/PrefabSystem.cpp
     src/VegetationSystem.cpp
     src/TiledScatter.cpp
     src/RoadSystem.cpp
@@ -34,8 +35,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/PaintPanel.cpp
     src/FolderDialog.cpp
     src/ScatterTool.cpp
-    src/VehicleTool.cpp
-    src/PrefabSystem.cpp)
+    src/VehicleTool.cpp)
 
 # The editor: full sandbox with all panels/tools.
 add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})
