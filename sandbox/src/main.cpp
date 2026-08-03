@@ -65,6 +65,7 @@
 #include "GameSettingsPanel.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
+#include "RaceSim.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "ScatterTool.hpp"
@@ -552,9 +553,14 @@ int main(int argc, char** argv) {
         // Chase-cam speed blur: the world point the camera follows (the driven
         // car/glider) is the streak focus, and its speed drives the streak length,
         // so the craft stays sharp while the surroundings smear past it.
-        glm::vec3 blurAnchorWorld(0.0f);
-        bool      blurAnchorValid = false;
-        float     blurSpeed01     = 0.0f; // craft speed 0..~1.4 -> radial streak length
+        // The arcade racing sim (car / glider / opponents) owns its state in one
+        // struct; below, each field is aliased as a reference so the rest of the
+        // loop reads/writes them by their old names, while racesim::update*
+        // mutate `race`. See RaceSim.hpp.
+        racesim::RaceState race;
+        glm::vec3& blurAnchorWorld = race.blurAnchorWorld;
+        bool&      blurAnchorValid = race.blurAnchorValid;
+        float&     blurSpeed01     = race.blurSpeed01; // craft speed 0..~1.4 -> streak len
         bool fxaaEnabled = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
@@ -813,61 +819,68 @@ int main(int argc, char** argv) {
         int                 driveVehicleId    = -1;
         bool                editorDriveActive = false;
         std::vector<Entity> driveBackup;
-        glm::vec3 carPos(0.0f);
-        float carYaw     = 0.0f;   // heading (radians)
-        float carSpeed   = 0.0f;   // m/s (negative = reverse)
-        float wheelSpin  = 0.0f;   // rolling angle (radians)
-        float steerAngle = 0.0f;   // front-wheel steer (radians, arcade sim)
+        // Arcade car pose (state lives in `race`; aliased so the loop keeps the
+        // old names). physSteer stays a plain local -- it's the Jolt car's input.
+        glm::vec3& carPos     = race.carPos;
+        float&     carYaw     = race.carYaw;      // heading (radians)
+        float&     carSpeed   = race.carSpeed;    // m/s (negative = reverse)
+        float&     wheelSpin  = race.wheelSpin;   // rolling angle (radians)
+        float&     steerAngle = race.steerAngle;  // front-wheel steer (radians, arcade)
         float physSteer  = 0.0f;   // smoothed steer input -1..1 (Jolt car)
         // Engine-sound feed, refreshed each frame by whichever drive block runs
         // (physics or arcade); consumed in the audio mix block.
-        bool  engineDriving  = false;
-        float engineSpeedMps = 0.0f;
-        float engineThrottle = 0.0f;
-        float engineWheelR   = 0.42f;
+        bool&  engineDriving  = race.engineDriving;
+        float& engineSpeedMps = race.engineSpeedMps;
+        float& engineThrottle = race.engineThrottle;
+        float& engineWheelR   = race.engineWheelR;
         // Glider jet-sound feed (same idea, separate voice): set by the glider
         // flight tick, consumed next to the car engine in the audio mix block.
-        bool  gliderAudioActive = false;
-        float gliderSpeedMps    = 0.0f;
-        float gliderThrottle    = 0.0f;
-        float gliderTopSpeed    = 60.0f;
+        bool&  gliderAudioActive = race.gliderAudioActive;
+        float& gliderSpeedMps    = race.gliderSpeedMps;
+        float& gliderThrottle    = race.gliderThrottle;
+        float& gliderTopSpeed    = race.gliderTopSpeed;
         bool  carInWater     = false;  // chassis was submerged last frame (splash edge)
         float carWaterSub    = 0.0f;   // 0..1 chassis submersion this frame (audio/FX)
         bool  boatMode       = false;  // vehicle floats deep enough -> motorboat controls
-        glm::vec3 camChase(0.0f);  // smoothed chase-camera position
-        float     simAccum = 0.0f; // fixed-timestep accumulator (arcade car/glider)
+        glm::vec3& camChase  = race.camChase;   // smoothed chase-camera position
+        float&     simAccum  = race.simAccum;   // fixed-timestep accumulator
         // --- Glider (Wipeout-style hover racer) drive state -------------------
-        // Arcade in BOTH editor and Play (no Jolt body), so this mirrors the car's
-        // arcade state. gliderMode is the master flag; driveGliderId is the entity
-        // being flown; gliderBackup restores its transform when flight ends (an
-        // editor test-flight must not edit the scene, exactly like the car).
+        // Arcade in BOTH editor and Play (no Jolt body). gliderMode is the master
+        // flag; driveGliderId is the entity being flown; gliderBackup restores its
+        // transform when flight ends (an editor test-flight must not edit scene).
         bool  gliderMode       = false;
         bool  prevG            = false;
         int   driveGliderId    = -1;
         bool  gliderDriveActive = false;
         std::vector<Entity> gliderBackup;
-        glm::vec3 gliderPos(0.0f);   // body-centre world position
-        float     gliderYaw   = 0.0f; // heading (radians)
-        glm::vec3 gliderVel(0.0f);   // world-space velocity (m/s)
-        float     gliderBank  = 0.0f; // smoothed roll (deg)
-        float     gliderPitch = 0.0f; // smoothed pitch (deg)
-        float     gliderOverspeed = 0.0f; // speed cap above maxSpeed from a boost pad
-        float     gliderBoostHold = 1.5f; // linger time of the last pad's boost (s)
-        bool      gliderBoosting  = false; // on/just-left a boost pad (HUD flash)
-        bool      gliderWasOnPad  = false; // last frame's pad contact (for the entry punch)
+        glm::vec3& gliderPos   = race.gliderPos;   // body-centre world position
+        float&     gliderYaw   = race.gliderYaw;   // heading (radians)
+        glm::vec3& gliderVel   = race.gliderVel;   // world-space velocity (m/s)
+        float&     gliderBank  = race.gliderBank;  // smoothed roll (deg)
+        float&     gliderPitch = race.gliderPitch; // smoothed pitch (deg)
+        float&     gliderOverspeed = race.gliderOverspeed; // cap above maxSpeed (pad)
+        float&     gliderBoostHold = race.gliderBoostHold; // linger of last pad boost (s)
+        bool&      gliderBoosting  = race.gliderBoosting;  // on/just-left a pad (HUD)
+        bool&      gliderWasOnPad  = race.gliderWasOnPad;  // last frame's pad contact
         // Race / lap timing, driven by a Start/Finish line the glider crosses.
-        bool  raceActive = false, raceFinished = false, raceHasLine = false;
-        float raceClock = 0.0f, lapClock = 0.0f, lastLap = 0.0f, bestLap = 0.0f;
-        int   raceLap = 0, raceLaps = 0;   // completed laps / target
-        bool  finishWasOver = false;       // edge-detect the line crossing
-        float finishArm = 0.0f;            // re-arm guard so one pass counts once (s)
-        std::unordered_set<int> cpPassed;  // checkpoint entity ids passed this lap
-        int   cpTotal = 0;                 // checkpoints in the scene (for the HUD)
-        float raceMissedFlash = 0.0f;      // HUD flash after finishing a lap short
+        bool&  raceActive   = race.raceActive;
+        bool&  raceFinished = race.raceFinished;
+        bool&  raceHasLine  = race.raceHasLine;
+        float& raceClock = race.raceClock;
+        float& lapClock  = race.lapClock;
+        float& lastLap   = race.lastLap;
+        float& bestLap   = race.bestLap;
+        int&   raceLap  = race.raceLap;   // completed laps
+        int&   raceLaps = race.raceLaps;  // target laps
+        bool&  finishWasOver = race.finishWasOver; // edge-detect the line crossing
+        float& finishArm = race.finishArm;         // re-arm guard so one pass counts once
+        std::unordered_set<int>& cpPassed = race.cpPassed; // checkpoints passed this lap
+        int&   cpTotal = race.cpTotal;             // checkpoints in the scene (for the HUD)
+        float& raceMissedFlash = race.raceMissedFlash; // HUD flash after a short lap
         // Ready/Set/Go start: while > 0 the player craft AND opponents are frozen,
         // so nobody moves before GO. goFlash shows "GO!" briefly once it hits 0.
-        float raceCountdown = 0.0f;
-        float goFlash       = 0.0f;
+        float& raceCountdown = race.raceCountdown;
+        float& goFlash       = race.goFlash;
         const float wheelR = 0.42f, bodyW = 1.8f, bodyH = 0.7f, bodyL = 4.0f;
         const float cabW = 1.5f, cabH = 0.6f, cabL = 1.8f;
         const float halfTrack = 0.85f, halfBase = 1.35f;
@@ -3607,6 +3620,16 @@ int main(int argc, char** argv) {
             blurSpeed01     = 0.0f;    // ...along with the craft's speed for the blur
             carWaterSub   = 0.0f;  // re-armed by the buoyancy block when submerged
 
+            // Bundle the loop state the arcade racing sim reads, once per frame
+            // (used by the car/glider dispatch here and the opponents update far
+            // below). Member order must match racesim::RaceEnv.
+            racesim::RaceEnv raceEnv{
+                input, camera, document, entities, streamer, road,
+                driveVehicleId, driveGliderId, driveBackup,
+                dt, kSimH, simAlpha, simSteps,
+                setWorld, parentWorldMat, gliderGround, playBoostPunch,
+            };
+
             if (vehicleMode && playMode && physics && physics->hasVehicle()) {
                 // Physics car: WASD -> engine/steer/brake; chase camera from the
                 // chassis. The vehicle updates during the physics step below.
@@ -3811,424 +3834,14 @@ int main(int argc, char** argv) {
                     camera.setPitch(glm::degrees(std::asin(glm::clamp(dcam.y, -1.0f, 1.0f))));
                 }
             } else if (vehicleMode) {
-                // Arcade car: throttle + steering, drag, bicycle-model heading.
-                // When a scene vehicle is being test-driven, its component
-                // supplies the geometry and the sim glues the model along.
-                // Integrated on the fixed kSimH clock; the drawn pose is the
-                // interpolation of the pre-/post-step state (see simAlpha), so
-                // the follow stays smooth under jittery frame times.
-                Entity* dv  = (driveVehicleId >= 0) ? document.find(driveVehicleId)
-                                                    : nullptr;
-                auto*   dvc = dv ? dv->components.get<VehicleComponent>() : nullptr;
-                const float wb = dvc ? glm::max(dvc->frontZ - dvc->rearZ, 0.5f) : 2.7f;
-                const float wr = dvc ? glm::max(dvc->wheelRadius, 0.05f) : wheelR;
-
-                // Controls sampled once per frame, applied to every substep.
-                const bool kW = input.isKeyDown(GLFW_KEY_W);
-                const bool kS = input.isKeyDown(GLFW_KEY_S);
-                const bool kA = input.isKeyDown(GLFW_KEY_A);
-                const bool kD = input.isKeyDown(GLFW_KEY_D);
-                bool  kBrake   = input.isKeyDown(GLFW_KEY_SPACE);
-                float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
-                float steerIn  = (kA ? 1.0f : 0.0f) - (kD ? 1.0f : 0.0f);
-                // Gamepad: RT accelerate / LT reverse; left stick steers (note this
-                // model's steerIn is left-positive, so subtract the stick); B brakes.
-                if (input.hasGamepad()) {
-                    throttle = glm::clamp(throttle
-                        + input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
-                        - input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER), -1.0f, 1.0f);
-                    steerIn = glm::clamp(
-                        steerIn - input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X), -1.0f, 1.0f);
-                    if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) kBrake = true;
-                }
-
-                const float maxSteer = glm::radians(dvc ? dvc->maxSteerDeg : 32.0f);
-                const float steerSpd = dvc ? dvc->steerSpeed   : 7.0f;
-                const float camDist  = dvc ? dvc->camDistance  : 7.0f;
-                const float camH     = dvc ? dvc->camHeight    : 3.2f;
-                const float camSide  = dvc ? dvc->camSide      : 0.0f;
-                const float camLook  = dvc ? dvc->camLookHeight: 1.2f;
-                const float camStiff = dvc ? dvc->camStiffness : 4.0f;
-
-                // *0 hold the pose just BEFORE the final substep (== the current
-                // pose when no substep runs), so the render interpolates across the
-                // last step by simAlpha -- the standard fixed-timestep interpolation.
-                // Snapshotting once before the loop would blend across the whole
-                // (often 2-step) frame and snap the craft backward.
-                glm::vec3 carPos0    = carPos;
-                float     carYaw0    = carYaw;
-                float     steerAng0  = steerAngle;
-                float     wheelSpin0 = wheelSpin;
-                glm::vec3 camChase0  = camChase;
-                for (int s = 0; s < simSteps; ++s) {
-                    carPos0 = carPos; carYaw0 = carYaw; steerAng0 = steerAngle;
-                    wheelSpin0 = wheelSpin; camChase0 = camChase;
-                    steerAngle += (steerIn * maxSteer - steerAngle) * std::min(1.0f, kSimH * steerSpd);
-                    carSpeed += throttle * 14.0f * kSimH;                 // accelerate
-                    if (kBrake) carSpeed -= glm::sign(carSpeed) * 26.0f * kSimH;
-                    carSpeed *= (1.0f - 0.6f * kSimH);                    // drag
-                    if (throttle == 0.0f && !kBrake) carSpeed *= (1.0f - 1.2f * kSimH);
-                    carSpeed = glm::clamp(carSpeed, -8.0f, 26.0f);
-                    if (std::abs(carSpeed) < 0.02f) carSpeed = 0.0f;
-                    carYaw += (carSpeed / wb) * std::tan(steerAngle) * kSimH;
-                    const glm::vec3 fwdS(std::sin(carYaw), 0.0f, std::cos(carYaw));
-                    carPos   += fwdS * carSpeed * kSimH;
-                    carPos.y  = streamer.heightAt(carPos.x, carPos.z);
-                    wheelSpin += (carSpeed / wr) * kSimH;
-                    // Chase camera eased in the same fixed step so its follow is
-                    // as smooth as the craft it interpolates alongside.
-                    const glm::vec3 rightS  = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwdS));
-                    const glm::vec3 wantedS = carPos - fwdS * camDist + rightS * camSide +
-                                              glm::vec3(0.0f, camH, 0.0f);
-                    camChase += (wantedS - camChase) * std::min(1.0f, kSimH * camStiff);
-                }
-
-                // Render pose: blend pre-/post-step state. All of these are
-                // continuous accumulators (no angle wrap within a frame), so a
-                // plain lerp is exact.
-                const glm::vec3 rPos   = glm::mix(carPos0,    carPos,    simAlpha);
-                const float     rYaw   = glm::mix(carYaw0,    carYaw,    simAlpha);
-                const float     rSteer = glm::mix(steerAng0,  steerAngle,simAlpha);
-                const float     rSpin  = glm::mix(wheelSpin0, wheelSpin, simAlpha);
-                const glm::vec3 rCam   = glm::mix(camChase0,  camChase,  simAlpha);
-
-                // Feed the engine sound from the arcade sim's speed/throttle.
-                engineDriving  = true;
-                engineSpeedMps = std::abs(carSpeed);
-                engineThrottle = std::abs(throttle);
-                engineWheelR   = wr;
-
-                // Glue the driven model onto the interpolated pose: the root
-                // follows the heading at its rest ride height, wheel children
-                // spin/steer (restored from the snapshot when drive mode ends).
-                if (dv && dvc) {
-                    const float restY  = wr - dvc->wheelY; // ground -> body centre
-                    const float yawDeg = glm::degrees(rYaw) -
-                                         (dvc->forward == 1 ? 180.0f : 0.0f);
-                    const glm::mat4 pw = parentWorldMat(*dv);
-                    setWorld(*dv, rPos + glm::vec3(0.0f, restY, 0.0f),
-                             glm::vec3(0.0f, yawDeg, 0.0f),
-                             dv->parent >= 0 ? &pw : nullptr);
-                    const float spinSign = (dvc->forward == 1) ? -1.0f : 1.0f;
-                    auto restOf = [&](int id) -> const Entity* {
-                        for (const Entity& b : driveBackup)
-                            if (b.id == id) return &b;
-                        return nullptr;
-                    };
-                    for (int i = 0; i < 4; ++i) {
-                        Entity*       w    = document.find(dvc->wheelId[i]);
-                        const Entity* rest = restOf(dvc->wheelId[i]);
-                        if (!w || !rest) continue;
-                        glm::vec3 rot = rest->localRotation;
-                        rot.x += glm::degrees(rSpin) * spinSign;
-                        if (i < 2) rot.y += glm::degrees(rSteer); // fronts steer
-                        w->localRotation = rot;
-                    }
-                }
-
-                // Chase camera: aim from the interpolated cam position at the
-                // craft (behind and above, looking ahead).
-                blurAnchorWorld = rPos; blurAnchorValid = true; // keep the car sharp
-                blurSpeed01 = glm::clamp(std::abs(carSpeed) / 28.0f, 0.0f, 1.2f);
-                camera.setPosition(rCam);
-                const glm::vec3 d = glm::normalize(
-                    (rPos + glm::vec3(0.0f, camLook, 0.0f)) - rCam);
-                camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
-                camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+                // Arcade car: fixed-step bicycle-model sim + interpolated chase
+                // camera. (racesim::updateArcadeCar in RaceSim.cpp.)
+                racesim::updateArcadeCar(race, raceEnv);
             } else if (gliderMode && driveGliderId >= 0) {
-                // Wipeout-style hover racer: an arcade flight sim (no Jolt). The
-                // craft thrusts along its heading, floats a ride height above the
-                // ground under it, kills sideways drift by `grip`, banks into
-                // turns, and a chase camera trails it -- same controls/feel as the
-                // car (W/S thrust, A/D steer, Space air-brake). Runs identically in
-                // the editor and in Play; the driven model is glued to the sim and
-                // restored from the snapshot when flight ends.
-                Entity* dg = document.find(driveGliderId);
-                auto*   gc = dg ? dg->components.get<GliderComponent>() : nullptr;
-                if (dg && gc) {
-                    const bool kW = input.isKeyDown(GLFW_KEY_W);
-                    const bool kS = input.isKeyDown(GLFW_KEY_S);
-                    const bool kA = input.isKeyDown(GLFW_KEY_A);
-                    const bool kD = input.isKeyDown(GLFW_KEY_D);
-                    bool  kBrake  = input.isKeyDown(GLFW_KEY_SPACE);
-                    float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
-                    float steerIn  = (kD ? 1.0f : 0.0f) - (kA ? 1.0f : 0.0f); // right +
-                    // Gamepad: RT accelerate / LT reverse, left stick steers, B brakes.
-                    if (input.hasGamepad()) {
-                        throttle = glm::clamp(throttle
-                            + input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
-                            - input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER), -1.0f, 1.0f);
-                        steerIn = glm::clamp(
-                            steerIn + input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X), -1.0f, 1.0f);
-                        if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) kBrake = true;
-                    }
-                    if (gc->invertSteer) steerIn = -steerIn; // flip left/right
-
-                    // Race over: the craft flies itself away. Take the controls off
-                    // the player and hold a steady forward cruise (no steering, no
-                    // brake) so it keeps gliding on past the finish instead of
-                    // coasting to a stop -- a little victory fly-out.
-                    if (raceFinished) {
-                        throttle = 1.0f;
-                        steerIn  = 0.0f;
-                        kBrake   = false;
-                    }
-
-                    // Ready/Set/Go: hold the craft still until GO, then start the
-                    // race clock (so the timer and the opponents begin exactly at
-                    // GO -- no one jumps the start). The countdown ticks once per
-                    // frame; sub-ms precision here is irrelevant.
-                    const bool frozen = raceCountdown > 0.0f;
-                    if (frozen) {
-                        raceCountdown = glm::max(0.0f, raceCountdown - dt);
-                        throttle = 0.0f; steerIn = 0.0f; kBrake = false;
-                        gliderVel = glm::vec3(0.0f);
-                        if (raceCountdown <= 0.0f) {
-                            goFlash = 1.3f;               // "GO!" flash
-                            // The race starts now; the finish line then only
-                            // completes laps. Ignore the immediate first crossing
-                            // as the craft drives off the start line.
-                            raceActive = true; raceFinished = false;
-                            raceClock = lapClock = 0.0f; raceLap = 0;
-                            lastLap = bestLap = 0.0f; cpPassed.clear();
-                            raceLaps = 0;
-                            for (const Entity& fe : entities)
-                                if (const auto* fl = fe.components.get<FinishLineComponent>())
-                                    { raceLaps = static_cast<int>(std::lround(fl->laps)); break; }
-                            finishWasOver = true; finishArm = 1.0f;
-                        }
-                    } else if (goFlash > 0.0f) {
-                        goFlash = glm::max(0.0f, goFlash - dt);
-                    }
-
-                    // Advance simSteps fixed ticks. Integration and every step-bound
-                    // event (heading, velocity, boost pads, gate/checkpoint/lap
-                    // logic, hover, attitude, chase-cam easing) run on the fixed
-                    // clock; fixed steps also stop a fast craft tunnelling a gate.
-                    // The *0 snapshots hold the pose just BEFORE the final substep
-                    // (== current pose if no step runs) so the render interpolates
-                    // across the last step by simAlpha -- snapshotting once before
-                    // the loop would blend the whole (often 2-step) frame and snap
-                    // the craft backward.
-                    glm::vec3 gliderPos0   = gliderPos;
-                    float     gliderYaw0   = gliderYaw;
-                    float     gliderBank0  = gliderBank;
-                    float     gliderPitch0 = gliderPitch;
-                    glm::vec3 camChase0    = camChase;
-                    for (int s = 0; s < simSteps; ++s) {
-                        gliderPos0 = gliderPos; gliderYaw0 = gliderYaw;
-                        gliderBank0 = gliderBank; gliderPitch0 = gliderPitch;
-                        camChase0 = camChase;
-                        // Heading: steer right increases yaw (fwd rotates +Z -> +X).
-                        gliderYaw += glm::radians(gc->turnRate) * steerIn * kSimH;
-                        const glm::vec3 fwd(std::sin(gliderYaw), 0.0f, std::cos(gliderYaw));
-                        const glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
-
-                        // Horizontal velocity: thrust along heading, brake, kill
-                        // drift, drag, then clamp to the top speed.
-                        glm::vec3 velH(gliderVel.x, 0.0f, gliderVel.z);
-                        const float accel = (throttle >= 0.0f) ? throttle * gc->thrust
-                                                               : throttle * gc->thrust * 0.6f;
-                        velH += fwd * accel * kSimH;
-                        if (kBrake) {
-                            const float sp = glm::length(velH);
-                            if (sp > 1e-4f) velH -= glm::normalize(velH) * glm::min(sp, gc->brakeForce * kSimH);
-                        }
-                        const float lat = glm::dot(velH, right);          // sideways slip
-                        velH -= right * lat * glm::clamp(gc->grip * kSimH, 0.0f, 1.0f);
-                        velH *= glm::max(0.0f, 1.0f - gc->drag * kSimH);
-
-                        // Boost pads: the instant the craft's footprint touches an
-                        // active BoostPad, its forward speed snaps up to that pad's
-                        // boostSpeed (a punchy kick that doesn't depend on how long
-                        // it sits on the strip -- a thin strip works), with an extra
-                        // push while it stays on. The raised speed cap
-                        // (gliderOverspeed) then bleeds off over the pad's `hold`
-                        // seconds after leaving.
-                        gliderOverspeed -= gliderOverspeed *
-                            glm::min(1.0f, kSimH / glm::max(gliderBoostHold, 0.1f));
-                        if (gliderOverspeed < 0.05f) gliderOverspeed = 0.0f;
-                        bool onBoostPad = false;
-                        const BoostPadComponent* hitPad = nullptr; // the pad just mounted
-                        for (const Entity& pe : entities) {
-                            if (!pe.activeInHierarchy) continue;
-                            const auto* bp = pe.components.get<BoostPadComponent>();
-                            if (!bp) continue;
-                            if (gliderPos.x < pe.center.x - pe.half.x ||
-                                gliderPos.x > pe.center.x + pe.half.x) continue;
-                            if (gliderPos.z < pe.center.z - pe.half.z ||
-                                gliderPos.z > pe.center.z + pe.half.z) continue;
-                            // Generous vertical window: the craft hovers rideHeight
-                            // above the pad, and may still be rising onto it.
-                            const float padTop = pe.center.y + pe.half.y;
-                            if (gliderPos.y < padTop - 2.0f ||
-                                gliderPos.y > padTop + gc->rideHeight + 5.0f) continue;
-                            glm::vec3 dir = fwd; // default: along the craft's heading
-                            if (bp->usePadDir) {
-                                glm::vec3 pd = glm::quat(glm::radians(pe.rotation)) *
-                                               glm::vec3(0.0f, 0.0f, 1.0f);
-                                pd.y = 0.0f;
-                                if (glm::length(pd) > 1e-4f) dir = glm::normalize(pd);
-                            }
-                            if (bp->reverse) dir = -dir; // flip the boost direction
-                            // Instant kick: bring the forward speed up to boostSpeed
-                            // (never slows a craft already going faster), plus a
-                            // small sustained shove while still on the strip.
-                            const float along = glm::dot(velH, dir);
-                            if (along < bp->boostSpeed) velH += dir * (bp->boostSpeed - along);
-                            velH += dir * bp->accel * kSimH;
-                            gliderBoostHold = glm::max(bp->hold, 0.1f);
-                            gliderOverspeed = glm::max(gliderOverspeed,
-                                                       bp->boostSpeed - gc->maxSpeed);
-                            onBoostPad = true;
-                            hitPad     = bp;
-                        }
-                        gliderBoosting = onBoostPad || gliderOverspeed > 1.0f; // HUD
-                        // Deep punch the instant the craft mounts a pad (rising
-                        // edge), so the boost is *felt*, not just seen. Retriggers
-                        // only on a fresh entry, not every tick it sits on the strip.
-                        if (onBoostPad && !gliderWasOnPad && hitPad) playBoostPunch(*hitPad);
-                        gliderWasOnPad = onBoostPad;
-
-                        // Gate trigger shared by checkpoints and the finish line. The
-                        // gate has its OWN size (w x h x d) and orientation (the
-                        // entity rotation plus a `yaw` offset), independent of the
-                        // visual object -- so a checkpoint plane authored/rotated
-                        // 90 deg is lined up by setting Yaw, and the trigger is sized
-                        // to the track by Width/Depth. Horizontal test is in the
-                        // gate's turned frame; vertical is world up.
-                        auto overGate = [&](const Entity& fe, float w, float h, float d, float yawOff) {
-                            const glm::quat q = glm::quat(glm::radians(fe.rotation)) *
-                                                glm::angleAxis(glm::radians(yawOff), glm::vec3(0, 1, 0));
-                            const glm::vec3 l = glm::conjugate(q) * (gliderPos - fe.center);
-                            if (std::abs(l.x) > w * 0.5f || std::abs(l.z) > d * 0.5f) return false;
-                            const float dy = gliderPos.y - fe.center.y;
-                            return dy > -2.0f && dy < h + gc->rideHeight + 2.0f;
-                        };
-
-                        // Checkpoints: every one must be flown through before a lap
-                        // counts. Passing one records it for the current lap (order
-                        // doesn't matter). cpTotal drives the HUD.
-                        cpTotal = 0;
-                        for (const Entity& ce : entities) {
-                            if (!ce.activeInHierarchy) continue;
-                            const auto* cp = ce.components.get<CheckpointComponent>();
-                            if (!cp) continue;
-                            ++cpTotal;
-                            if (raceActive && overGate(ce, cp->width, cp->height, cp->depth, cp->yaw))
-                                cpPassed.insert(ce.id);
-                        }
-
-                        // Start/Finish line: first crossing starts the clock; each
-                        // later crossing completes a lap -- but only if all
-                        // checkpoints were passed this lap. A re-arm guard stops one
-                        // pass counting twice.
-                        if (finishArm > 0.0f) finishArm = glm::max(0.0f, finishArm - kSimH);
-                        if (raceMissedFlash > 0.0f) raceMissedFlash = glm::max(0.0f, raceMissedFlash - kSimH);
-                        raceHasLine = false;
-                        bool overFinish = false; int lineLaps = 0;
-                        for (const Entity& fe : entities) {
-                            if (!fe.activeInHierarchy) continue;
-                            const auto* fl = fe.components.get<FinishLineComponent>();
-                            if (!fl) continue;
-                            raceHasLine = true;
-                            lineLaps = static_cast<int>(std::lround(fl->laps));
-                            if (overGate(fe, fl->width, fl->height, fl->depth, fl->yaw))
-                                overFinish = true;
-                        }
-                        if (raceActive && !raceFinished) { raceClock += kSimH; lapClock += kSimH; }
-                        if (raceCountdown <= 0.0f && overFinish && !finishWasOver &&
-                            finishArm <= 0.0f && !raceFinished) {
-                            finishArm = 2.0f; // no legit re-cross within 2 s
-                            if (!raceActive) {
-                                raceActive = true; raceClock = lapClock = 0.0f;
-                                raceLap = 0; raceLaps = lineLaps;
-                                lastLap = bestLap = 0.0f; cpPassed.clear();
-                            } else if (static_cast<int>(cpPassed.size()) >= cpTotal) {
-                                lastLap = lapClock;
-                                if (bestLap <= 0.0f || lastLap < bestLap) bestLap = lastLap;
-                                lapClock = 0.0f;
-                                ++raceLap;
-                                cpPassed.clear(); // fresh set for the next lap
-                                if (raceLaps > 0 && raceLap >= raceLaps) raceFinished = true;
-                            } else {
-                                raceMissedFlash = 2.5f; // crossed the line a checkpoint short
-                            }
-                        }
-                        finishWasOver = overFinish;
-
-                        const float effMax = gc->maxSpeed + glm::max(0.0f, gliderOverspeed);
-                        const float hs = glm::length(velH);
-                        if (hs > effMax) velH *= effMax / hs;
-                        gliderVel.x = velH.x; gliderVel.z = velH.z;
-                        gliderPos.x += gliderVel.x * kSimH;
-                        gliderPos.z += gliderVel.z * kSimH;
-
-                        // Hover: a spring-damper holds the body centre a ride height
-                        // above the ground under it; gravity takes over when launched
-                        // well above the band (flying off a ledge), and it never
-                        // sinks through the surface.
-                        const float ground = gliderGround(gliderPos.x, gliderPos.z,
-                                                           gliderPos.y + gc->rideHeight);
-                        const float restY = ground + gc->rideHeight;
-                        const float gap   = restY - gliderPos.y; // >0: below rest
-                        gliderVel.y += (gap * gc->hoverStiffness - gliderVel.y * gc->hoverDamp) * kSimH;
-                        if (gap < -0.5f) gliderVel.y -= gc->gravity * kSimH; // airborne above band
-                        gliderPos.y += gliderVel.y * kSimH;
-                        const float floorY = ground + gc->rideHeight * 0.3f;
-                        if (gliderPos.y < floorY) { gliderPos.y = floorY; if (gliderVel.y < 0) gliderVel.y = 0; }
-
-                        // Attitude (visual): bank into the turn, tip the nose with
-                        // climb/descent, both eased toward their target.
-                        const float targetBank  = -steerIn * gc->bankAngle;
-                        const float targetPitch = glm::clamp(-gliderVel.y * gc->pitchFollow * 2.0f,
-                                                             -25.0f, 25.0f);
-                        const float k = std::min(1.0f, kSimH * gc->levelRate);
-                        gliderBank  += (targetBank  - gliderBank)  * k;
-                        gliderPitch += (targetPitch - gliderPitch) * k;
-
-                        // Chase camera eased on the fixed clock (same knobs as car).
-                        const glm::vec3 wantedC = gliderPos - fwd * gc->camDistance +
-                                                  right * gc->camSide + glm::vec3(0.0f, gc->camHeight, 0.0f);
-                        camChase += (wantedC - camChase) * std::min(1.0f, kSimH * gc->camStiffness);
-                    }
-
-                    // Render pose: blend pre-/post-step state (continuous values ->
-                    // plain lerp, no angle wrap within a frame).
-                    const glm::vec3 rPos   = glm::mix(gliderPos0,   gliderPos,   simAlpha);
-                    const float     rYaw   = glm::mix(gliderYaw0,   gliderYaw,   simAlpha);
-                    const float     rBank  = glm::mix(gliderBank0,  gliderBank,  simAlpha);
-                    const float     rPitch = glm::mix(gliderPitch0, gliderPitch, simAlpha);
-                    const glm::vec3 rCam   = glm::mix(camChase0,    camChase,    simAlpha);
-
-                    // Feed the jet-thruster sound: airspeed + throttle load.
-                    const float airspeed = glm::length(glm::vec2(gliderVel.x, gliderVel.z));
-                    gliderAudioActive = true;
-                    gliderSpeedMps    = airspeed;
-                    gliderThrottle    = std::abs(throttle);
-                    gliderTopSpeed    = gc->maxSpeed;
-
-                    // Glue the model onto the interpolated pose (children ride along
-                    // via the graph).
-                    const float yawDeg = glm::degrees(rYaw) -
-                                         (gc->forward == 1 ? 180.0f : 0.0f);
-                    const glm::mat4 pw = parentWorldMat(*dg);
-                    setWorld(*dg, rPos, glm::vec3(rPitch, yawDeg, rBank),
-                             dg->parent >= 0 ? &pw : nullptr);
-
-                    // The craft is what the camera follows: anchor the radial speed
-                    // blur to it (stays sharp) and drive its length by airspeed.
-                    blurAnchorWorld = rPos; blurAnchorValid = true;
-                    blurSpeed01 = glm::clamp(airspeed / glm::max(gc->maxSpeed, 1.0f),
-                                             0.0f, 1.4f);
-
-                    // Chase camera aims from the interpolated cam position at the craft.
-                    camera.setPosition(rCam);
-                    const glm::vec3 dc = glm::normalize(
-                        (rPos + glm::vec3(0.0f, gc->camLookHeight, 0.0f)) - rCam);
-                    camera.setYaw(glm::degrees(std::atan2(dc.z, dc.x)));
-                    camera.setPitch(glm::degrees(std::asin(glm::clamp(dc.y, -1.0f, 1.0f))));
-                }
+                // Wipeout-style hover racer: fixed-step flight sim, boost pads,
+                // gate/checkpoint/lap logic, hover spring, interpolated chase cam.
+                // (racesim::updateGlider in RaceSim.cpp.)
+                racesim::updateGlider(race, raceEnv);
             } else if (fpsMode) {
                 // Mouse look is always active; movement is on the ground plane.
                 const glm::vec2 d = input.mouseDelta();
@@ -4902,85 +4515,9 @@ int main(int argc, char** argv) {
                         e.localCenter = mv->home + mv->offset * s;
                     }
 
-                // Opponents: AI racers that travel along the built road centreline
-                // (world XZ polyline + terrain height), facing along the road and
-                // banking into corners. Kinematic; a closed track loops, an open
-                // road stops at the end. Snaps onto the road on the first tick, so
-                // the marker can be placed anywhere.
-                if (road.built()) {
-                    const std::vector<glm::vec2>& cl = road.centerline();
-                    if (cl.size() >= 2) {
-                        const std::size_t n = cl.size();
-                        const std::size_t segs = road.closed ? n : n - 1;
-                        float total = 0.0f;
-                        for (std::size_t i = 0; i < segs; ++i)
-                            total += glm::length(cl[(i + 1) % n] - cl[i]);
-                        // Position + tangent at arc-length `s` (wrapped/clamped).
-                        auto sampleAt = [&](float s, glm::vec2& pos, glm::vec2& dir) {
-                            if (total < 1e-3f) { pos = cl[0]; dir = glm::vec2(0.0f, 1.0f); return; }
-                            if (road.closed) { s = std::fmod(s, total); if (s < 0.0f) s += total; }
-                            else s = glm::clamp(s, 0.0f, total);
-                            float acc = 0.0f;
-                            for (std::size_t i = 0; i < segs; ++i) {
-                                const glm::vec2 a = cl[i], b = cl[(i + 1) % n];
-                                const float seg = glm::length(b - a);
-                                if (seg < 1e-5f) continue;
-                                if (acc + seg >= s || i == segs - 1) {
-                                    pos = a + (b - a) * glm::clamp((s - acc) / seg, 0.0f, 1.0f);
-                                    dir = (b - a) / seg;
-                                    return;
-                                }
-                                acc += seg;
-                            }
-                        };
-                        for (Entity& e : entities) {
-                            auto* op = e.components.get<OpponentComponent>();
-                            if (!op) continue;
-                            // Held at the start line until GO (no jumping the start).
-                            const bool frozen = raceCountdown > 0.0f;
-                            if (!op->started) {
-                                // Seed travel distance from WHERE THE MARKER WAS
-                                // PLACED: project its XZ onto the centreline so it
-                                // starts there, not at spline point 0. `startDistance`
-                                // is then a forward offset (stagger a starting grid).
-                                const glm::vec2 q(e.center.x, e.center.z);
-                                float bestD = 1e30f, bestS = 0.0f, walk = 0.0f;
-                                for (std::size_t i = 0; i < segs; ++i) {
-                                    const glm::vec2 a = cl[i], b = cl[(i + 1) % n];
-                                    const glm::vec2 ab = b - a;
-                                    const float L2 = glm::dot(ab, ab);
-                                    const float t = L2 > 1e-8f
-                                        ? glm::clamp(glm::dot(q - a, ab) / L2, 0.0f, 1.0f) : 0.0f;
-                                    const float d = glm::length(q - (a + ab * t));
-                                    if (d < bestD) { bestD = d; bestS = walk + glm::length(ab) * t; }
-                                    walk += glm::length(ab);
-                                }
-                                op->dist = bestS + op->startDistance;
-                                op->started = true;
-                            }
-                            if (!frozen) op->dist += op->speed * dt; // wait for GO
-                            if (!op->loop) op->dist = glm::min(op->dist, total);
-                            glm::vec2 pos = cl[0], dir(0.0f, 1.0f);
-                            sampleAt(op->dist, pos, dir);
-                            const glm::vec2 perp(dir.y, -dir.x);          // right of travel
-                            const glm::vec2 p = pos + perp * op->laneOffset;
-                            const glm::vec3 wpos(p.x, streamer.heightAt(p.x, p.y) + op->rideHeight, p.y);
-                            const float yaw0 = std::atan2(dir.x, dir.y);
-                            const float yawDeg = glm::degrees(yaw0) - (op->forward == 1 ? 180.0f : 0.0f);
-                            // Bank into the corner: heading change a little ahead.
-                            glm::vec2 pa = pos, da = dir; sampleAt(op->dist + 5.0f, pa, da);
-                            float dYaw = glm::degrees(std::atan2(da.x, da.y) - yaw0);
-                            while (dYaw > 180.0f) dYaw -= 360.0f;
-                            while (dYaw < -180.0f) dYaw += 360.0f;
-                            const float targetBank =
-                                glm::clamp(-dYaw * 0.6f, -op->bankAngle, op->bankAngle);
-                            op->bankCur += (targetBank - op->bankCur) * glm::min(1.0f, dt * 5.0f);
-                            const glm::mat4 pw = parentWorldMat(e);
-                            setWorld(e, wpos, glm::vec3(0.0f, yawDeg, op->bankCur),
-                                     e.parent >= 0 ? &pw : nullptr);
-                        }
-                    }
-                }
+                // Opponents: AI racers lapping the road centreline, slowing for
+                // corners and banking into them. (racesim::updateOpponents.)
+                racesim::updateOpponents(race, raceEnv);
 
                 // Door: ease toward open/closed (open set by a DoorOpener), swing
                 // or slide from the captured closed pose. A kinematic collider

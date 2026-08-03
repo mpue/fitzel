@@ -546,17 +546,24 @@ public:
 // state, reset when Play stops (scene restored from backup).
 class OpponentComponent : public ComponentBase {
 public:
-    float speed        = 40.0f; // travel speed along the road (m/s)
+    float speed        = 40.0f; // top speed on straights (m/s); slows for corners
     float laneOffset   = 0.0f;  // sideways offset from the centreline (m, + = right)
     float rideHeight   = 1.6f;  // height held above the ground (m)
     float startDistance = 0.0f; // forward offset from the placed spot along the road (m)
     bool  loop         = true;  // restart at the road start (closed track) vs stop at the end
     float bankAngle    = 18.0f; // max visual roll into a corner (deg)
     int   forward      = 0;     // model nose: 0 = +Z, 1 = -Z (matches Vehicle/Glider)
+    // Cornering: corner speed = sqrt(grip / curvature), so a tighter bend is
+    // taken slower; the racer brakes into it (up to `brake`) and gets back on
+    // the throttle (up to `accel`) on the way out.
+    float grip         = 14.0f; // lateral grip -> how fast corners can be taken (m/s^2)
+    float accel        = 10.0f; // acceleration out of corners / off the line (m/s^2)
+    float brake        = 22.0f; // braking into corners (m/s^2)
 
     float dist    = 0.0f;  // runtime: distance travelled along the road (m)
     float bankCur = 0.0f;  // runtime: smoothed bank
-    bool  started = false; // runtime: dist seeded from startDistance
+    float curSpeed = 0.0f; // runtime: current speed (eased toward the corner target)
+    bool  started = false; // runtime: dist + curSpeed seeded
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<OpponentComponent>(*this);

@@ -17,6 +17,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/TiledScatter.cpp
     src/RoadSystem.cpp
     src/RoadBridge.cpp
+    src/RaceSim.cpp
     src/RoadSide.cpp
     src/RainRenderer.cpp
     src/SpraySystem.cpp

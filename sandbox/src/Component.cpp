@@ -644,6 +644,9 @@ const std::vector<Property>& OpponentComponent::properties() {
             p.push_back(std::move(f));
         };
         addFloat("Speed",         "speed",        &OpponentComponent::speed,        2.0f, 200.0f, "%.0f m/s");
+        addFloat("Grip",          "grip",         &OpponentComponent::grip,         2.0f, 60.0f,  "%.0f m/s2");
+        addFloat("Accel",         "accel",        &OpponentComponent::accel,        1.0f, 60.0f,  "%.0f m/s2");
+        addFloat("Brake",         "brake",        &OpponentComponent::brake,        1.0f, 80.0f,  "%.0f m/s2");
         addFloat("Lane offset",   "laneOffset",   &OpponentComponent::laneOffset,  -20.0f, 20.0f, "%.1f m");
         addFloat("Ride height",   "rideHeight",   &OpponentComponent::rideHeight,   0.0f, 12.0f,  "%.2f m");
         addFloat("Start distance","startDistance",&OpponentComponent::startDistance,0.0f, 2000.0f,"%.0f m");
