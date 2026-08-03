@@ -14,6 +14,7 @@
 #include <fitzel/asset/AssetId.hpp>
 
 #include "Property.hpp"
+#include "ScriptParam.hpp"
 
 // A world-space debug-drawing sink for component gizmos. The viewport supplies a
 // concrete implementation (projecting each shape onto the ImGui draw list);
@@ -438,6 +439,208 @@ public:
     void load(const nlohmann::json& j) override;
 };
 
+// --- Built-in component: Glider (a Wipeout-style anti-grav hover racer) -------
+// Attach to any model/box to make it a flyable hovercraft. Driven exactly like a
+// Vehicle -- press G in the viewport (editor test-flight or in Play) to take the
+// nearest glider; W/S thrust, A/D steer, Space air-brake, Esc exits. The motion
+// is a bespoke ARCADE hover sim (no Jolt): the craft floats a `rideHeight` above
+// whatever ground is under it (terrain OR the top of a placed block/ramp, so a
+// track can be built from blocks), thrusts along its heading, banks into turns
+// and keeps a chase camera behind it. Fully tunable below; all runtime flight
+// state lives in main (like the car's), so this component is pure tuning data and
+// serializes through the default props() path -- no wheels, no save() override.
+class GliderComponent : public ComponentBase {
+public:
+    // Flight
+    float thrust     = 26.0f; // forward acceleration on W (m/s^2)
+    float maxSpeed   = 60.0f; // horizontal top speed (m/s)
+    float brakeForce = 34.0f; // deceleration on Space (m/s^2)
+    float turnRate   = 95.0f; // yaw rate at full steer (deg/s)
+    bool  invertSteer = false;// swap A/D (left stick) so the craft steers the other way
+    float grip       = 3.0f;  // how fast sideways drift is killed (1/s; higher = less slide)
+    float drag       = 0.4f;  // linear damping (1/s)
+    // Hover
+    float rideHeight     = 1.6f; // body-centre height held above the ground (m)
+    float hoverStiffness = 6.0f; // spring pulling back to rideHeight (1/s)
+    float hoverDamp      = 3.0f; // vertical-velocity damping (1/s)
+    float gravity        = 22.0f;// downward pull when launched above the ride band (m/s^2)
+    // Attitude (visual only -- the craft leans, motion stays flat)
+    float bankAngle   = 22.0f;   // roll into a full-lock turn (deg)
+    float pitchFollow = 0.6f;    // nose tips with climb/descent (0..1)
+    float levelRate   = 5.0f;    // how fast bank/pitch settle (1/s)
+    int   forward     = 0;       // model nose: 0 = +Z, 1 = -Z (matches Vehicle)
+    // Follow camera (same knobs as VehicleComponent, so the feel is identical)
+    float camDistance   = 9.0f;
+    float camHeight     = 3.6f;
+    float camSide       = 0.0f;
+    float camLookHeight = 1.4f;
+    float camStiffness  = 5.0f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<GliderComponent>(*this);
+    }
+    const char* typeId() const override { return "glider"; }
+    const char* displayName() const override { return "Glider"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        // The hover cushion: a ring at the ride height under the craft.
+        g.circle(c - glm::vec3(0.0f, rideHeight, 0.0f), 1.0f,
+                 glm::vec3(0.0f, 1.0f, 0.0f), {0.4f, 0.85f, 1.0f, 0.85f});
+    }
+};
+
+// --- Built-in component: Boost Pad (a Wipeout-style speed strip) --------------
+// Attach to a flat object placed on the track: while playing, when a GLIDER
+// flies over the object's footprint it gets shoved forward and its speed cap is
+// lifted to `boostSpeed` (which may exceed the craft's own max), then the extra
+// speed decays back over `hold` seconds. `accel` is the forward push while on
+// the pad; `usePadDir` boosts along the pad's own forward (+Z) instead of the
+// craft's heading (aim the pad down the track for a directional boost). The
+// gizmo draws chevrons in the boost direction. Only affects gliders (the arcade
+// hover sim); the trigger area is the entity's own box, so a wide thin box reads
+// as a boost strip.
+class BoostPadComponent : public ComponentBase {
+public:
+    float boostSpeed = 95.0f;  // speed cap while boosting (m/s; may exceed glider max)
+    float accel      = 70.0f;  // forward push while over the pad (m/s^2)
+    float hold       = 1.5f;   // seconds the extra speed lingers after leaving
+    bool  usePadDir  = false;  // push along the pad's +Z instead of the craft's heading
+    bool  reverse    = false;  // flip the boost direction (+Z <-> -Z / forward <-> back)
+    // Punch SFX played once the instant a craft mounts the pad, so the boost lands
+    // as a felt "kick". A Sound asset filename (chosen in the Inspector; empty =
+    // silent), with its own gain and a pitch that defaults low for a deep thump.
+    std::string sound;
+    float       soundGain  = 1.0f;  // punch volume (0..2)
+    float       soundPitch = 0.7f;  // punch pitch (lower = deeper)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<BoostPadComponent>(*this);
+    }
+    const char* typeId() const override { return "boost_pad"; }
+    const char* displayName() const override { return "Boost Pad"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        const glm::vec3 fwd  = rot * glm::vec3(0.0f, 0.0f, reverse ? -1.0f : 1.0f);
+        const glm::vec3 side = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+        const glm::vec4 col{0.3f, 0.9f, 1.0f, 0.95f}; // cyan boost chevrons
+        for (int i = 0; i < 3; ++i) {
+            const glm::vec3 base = c + fwd * (static_cast<float>(i) * 0.8f - 0.8f);
+            const glm::vec3 tip  = base + fwd * 0.9f;
+            g.line(base + side * 0.7f, tip, col);
+            g.line(base - side * 0.7f, tip, col);
+        }
+    }
+};
+
+// --- Built-in component: Opponent (an AI racer that follows the road spline) --
+// Attach to any craft/model to turn it into a rival: while playing it travels
+// along the built road's centreline at `speed`, hovering `rideHeight` above the
+// ground and facing along the road, so it laps a closed track (or runs to the
+// end of an open one). `laneOffset` shifts it sideways off the centre (place
+// several opponents at different offsets + `startDistance` for a starting grid).
+// It banks into corners for flair. Purely kinematic (no physics) and driven in
+// the play loop from the RoadSystem, exactly like the other data-authored
+// behaviours -- no scripting. `dist`/`bankCur`/`started` are transient runtime
+// state, reset when Play stops (scene restored from backup).
+class OpponentComponent : public ComponentBase {
+public:
+    float speed        = 40.0f; // travel speed along the road (m/s)
+    float laneOffset   = 0.0f;  // sideways offset from the centreline (m, + = right)
+    float rideHeight   = 1.6f;  // height held above the ground (m)
+    float startDistance = 0.0f; // forward offset from the placed spot along the road (m)
+    bool  loop         = true;  // restart at the road start (closed track) vs stop at the end
+    float bankAngle    = 18.0f; // max visual roll into a corner (deg)
+    int   forward      = 0;     // model nose: 0 = +Z, 1 = -Z (matches Vehicle/Glider)
+
+    float dist    = 0.0f;  // runtime: distance travelled along the road (m)
+    float bankCur = 0.0f;  // runtime: smoothed bank
+    bool  started = false; // runtime: dist seeded from startDistance
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<OpponentComponent>(*this);
+    }
+    const char* typeId() const override { return "opponent"; }
+    const char* displayName() const override { return "Opponent"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// Draw a wireframe gate box (span `w`, height `h`, thickness `d`) standing on the
+// ground at `c`, oriented by the entity rotation `rot` plus a `yaw` offset. Shared
+// by the Checkpoint and Start/Finish gizmos so their trigger box is drawn exactly.
+inline void drawGateGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot,
+                          float w, float h, float d, float yaw, const glm::vec4& col) {
+    const glm::quat q = rot * glm::angleAxis(glm::radians(yaw), glm::vec3(0, 1, 0));
+    const glm::vec3 X = q * glm::vec3(w * 0.5f, 0.0f, 0.0f);
+    const glm::vec3 Z = q * glm::vec3(0.0f, 0.0f, d * 0.5f);
+    const glm::vec3 Y(0.0f, h, 0.0f);
+    const glm::vec3 b0 = c - X - Z, b1 = c + X - Z, b2 = c + X + Z, b3 = c - X + Z;
+    const glm::vec3 t0 = b0 + Y, t1 = b1 + Y, t2 = b2 + Y, t3 = b3 + Y;
+    g.line(b0, b1, col); g.line(b1, b2, col); g.line(b2, b3, col); g.line(b3, b0, col);
+    g.line(t0, t1, col); g.line(t1, t2, col); g.line(t2, t3, col); g.line(t3, t0, col);
+    g.line(b0, t0, col); g.line(b1, t1, col); g.line(b2, t2, col); g.line(b3, t3, col);
+}
+
+// --- Built-in component: Start/Finish line (lap timing for the racer) ---------
+// Attach to a flat object spanning the track: while playing, when the flown
+// GLIDER crosses its footprint it marks a lap. The first crossing after Play
+// starts the clock (the start), each later crossing completes a lap and records
+// the lap time; after `laps` laps the race is finished (0 = endless practice).
+// A short re-arm guard stops a single pass counting twice. Drives the on-screen
+// lap/time HUD. The gizmo draws a start/finish gate.
+class FinishLineComponent : public ComponentBase {
+public:
+    float laps = 3.0f; // race length in laps (whole number; 0 = endless practice)
+    // The trigger gate -- its own size and orientation, independent of the
+    // (possibly rotated) visual object it is attached to. width spans the track,
+    // depth is the thickness along travel, height the vertical reach; yaw turns
+    // the gate to line it up with the road (e.g. +90 for a plane authored sideways).
+    float width  = 12.0f;
+    float height = 6.0f;
+    float depth  = 3.0f;
+    float yaw    = 0.0f;   // degrees, added to the entity's rotation
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<FinishLineComponent>(*this);
+    }
+    const char* typeId() const override { return "finish_line"; }
+    const char* displayName() const override { return "Start/Finish"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        drawGateGizmo(g, c, rot, width, height, depth, yaw, {1.0f, 1.0f, 1.0f, 0.95f});
+    }
+};
+
+// --- Built-in component: Checkpoint (must be passed for a lap to count) --------
+// Attach to gates along the track: while playing, a lap only counts at the
+// Start/Finish line once the glider has passed EVERY checkpoint since the lap
+// began -- so the whole circuit has to be flown, no shortcutting. Order doesn't
+// matter (all must be touched). A pure marker (the entity's box is the pass
+// zone); the gizmo draws a ringed gate.
+class CheckpointComponent : public ComponentBase {
+public:
+    // The trigger gate -- its own size and orientation, independent of the
+    // (possibly rotated) visual object. See FinishLineComponent for the fields.
+    float width  = 12.0f;
+    float height = 6.0f;
+    float depth  = 3.0f;
+    float yaw    = 0.0f;   // degrees, added to the entity's rotation
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<CheckpointComponent>(*this);
+    }
+    const char* typeId() const override { return "checkpoint"; }
+    const char* displayName() const override { return "Checkpoint"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        drawGateGizmo(g, c, rot, width, height, depth, yaw, {0.5f, 0.9f, 1.0f, 0.9f});
+    }
+};
+
 // --- Built-in component: Pusher (a directional force field in Play) -----------
 // Data-authored, no scripting: while playing it pushes every dynamic body within
 // `radius` along `direction`. `continuous` = a steady force each frame (wind,
@@ -485,6 +688,11 @@ public:
     float       volume = 1.0f;   // 0..1
     bool        loop   = false;  // loop while inside (zone) vs one-shot on entry
     bool        once   = true;   // one-shot mode: fire only once per Play
+    // Fire-and-forget: on every entry, play the sample to completion (never cut
+    // off by leaving the zone, replays on each pass). For fast fly-throughs where
+    // the craft is only in range for a frame -- the sound still plays fully.
+    // Overrides `loop`/`once` when set.
+    bool        oneShot = false;
     std::string sound;           // file under the project's sounds/ ("" = none)
 
     bool insideLast = false;     // runtime: player inside last frame (one-shot edge)
@@ -653,6 +861,10 @@ public:
 class ScriptComponent : public ComponentBase {
 public:
     std::string file; // .lua under the project's scripts/ ("" = none)
+    // Per-instance overrides for the script's module-level globals (see
+    // ScriptParam). One entry per exposed global; the inspector edits them and
+    // ScriptSystem injects them into the script's environment at Play start.
+    std::vector<ScriptParam> params;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<ScriptComponent>(*this);
@@ -661,6 +873,8 @@ public:
     const char* displayName() const override { return "Script"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override; // file + params
+    void load(const nlohmann::json& j) override;
 };
 
 // --- Built-in component: Light (a point light; attach to any entity to glow) --

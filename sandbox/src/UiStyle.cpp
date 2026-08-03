@@ -31,6 +31,14 @@ void sectionText(const char* label) {
     ImGui::SeparatorText(label);
 }
 
+void title(const char* fmt, ...) {
+    BoldScope bold;
+    va_list args;
+    va_start(args, fmt);
+    ImGui::TextV(fmt, args);
+    va_end(args);
+}
+
 void hint(const char* fmt, ...) {
     // 0.92x of the current size: enough to read as secondary, not so small that
     // it turns into noise at 100% display scaling.

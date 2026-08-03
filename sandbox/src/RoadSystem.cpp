@@ -692,22 +692,20 @@ void RoadSystem::rebuildMesh() {
     const Layout lo = layout();
     if (lo.center.size() < 2) { clearGeometry(); return; }
 
-    // Off a deck, drape on the current terrain (which already holds the graded
-    // corridor after a build/scene-load) so the road follows ground that has been
-    // sculpted or re-generated since. On a deck, the road stays on its profile:
-    // the terrain under a span is untouched and still ramping across the abutment,
-    // so draping there would sink the road into the gap it is supposed to cross.
-    // The two agree at a span's ends, where the grading has brought the ground all
-    // the way up to the road -- so the seam is invisible.
-    std::vector<char> onDeck(lo.center.size(), 0);
-    for (const roadbridge::Span& sp : lo.spans)
-        for (int i = sp.begin; i <= sp.end; ++i) onDeck[i] = 1;
-
+    // Loft the ribbon on the road's own profile (+ a hair), exactly as build()
+    // does -- deliberately NOT on the sampled terrain height. build() grades the
+    // corridor to sit a clearance (kRoadClear + the sub-cell bulge) BELOW this
+    // profile so the ground can't poke through the asphalt; draping the ribbon
+    // back down onto that sunk terrain (as this once did) drops it by that
+    // clearance and lets the bulges show through again. That was the bug where a
+    // road came up clean on Build but had the terrain poking through after a
+    // reload -- a reload re-lofts the mesh through this path, not build(). The
+    // profile already tracks terrain regen (layout() recomputes it from the base
+    // each call), so following it here still adapts to a changed landscape, and it
+    // stays level across a bridge span where the terrain drops into the gap.
     std::vector<float> h(lo.center.size());
     for (std::size_t i = 0; i < lo.center.size(); ++i)
-        h[i] = (onDeck[i] ? lo.prof[i]
-                          : m_streamer.heightAt(lo.center[i].x, lo.center[i].y))
-               + 0.06f; // lifted a touch so the ribbon reads above the ground
+        h[i] = lo.prof[i] + 0.06f; // lifted a touch so the ribbon reads above the ground
     loft(lo.center, h);
     buildBridges(lo);
     rebuildSideObjects();

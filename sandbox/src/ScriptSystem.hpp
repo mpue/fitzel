@@ -4,8 +4,11 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <vector>
+
 #include "SceneTypes.hpp"
 #include "ScriptHost.hpp"
+#include "ScriptParam.hpp"
 
 struct lua_State;
 
@@ -45,9 +48,20 @@ public:
     // Most recent script error ("" if none) -- shown in the editor UI.
     const std::string& lastError() const { return m_lastError; }
 
+    // Editor introspection: load `path` in a throwaway sandbox, run its chunk,
+    // and return one ScriptParam (with its default value) for every module-level
+    // global of a supported type -- the fields the inspector then exposes. Runs
+    // the module body once; `game.*` is stubbed to a harmless no-op so a script
+    // that touches the API at load time won't fault. On a load/parse error the
+    // list is empty and `err` (if given) holds the message. Does not touch the
+    // play VM or any entity state.
+    std::vector<ScriptParam> scanParams(const std::string& path,
+                                        std::string* err = nullptr);
+
 private:
     void installApi();                                      // build global `game`
     bool loadFor(const Entity& e, const std::string& path); // chunk -> env, start()
+    void applyParams(int envRef, const Entity& e);          // overrides -> env globals
     bool callFunction(Entity& e, const char* fn, float dt, float time);
     void pushEntityTable(const Entity& e);
     void readEntityTable(Entity& e); // reads the table at the stack top

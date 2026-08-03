@@ -91,6 +91,42 @@ void writeProjectMaterials(const Context& ctx, const std::string& matsDir);
 void loadProjectMaterials(Context& ctx, const std::string& matsDir);
 bool loadScene(Context& ctx, const std::string& path);
 
+// --- Incremental (non-blocking) scene loading --------------------------------
+// A big scene freezes the editor while every model is parsed and uploaded. This
+// loader slices that work across frames: begin*, then call stepLoad() once per
+// frame until `done`, so the render loop keeps drawing (and can show `progress`).
+// All GPU work still runs on the calling thread -- only the *timing* is spread
+// out, so there are no GL or asset-cache data races.
+struct SceneLoad {
+    bool  active   = false;  // a load is in flight (begin* succeeded, not yet done)
+    bool  done     = false;  // set the frame the load finishes (check `ok`)
+    bool  ok       = false;  // final result, valid once `done`
+    float progress = 0.0f;   // 0..1 for a progress bar
+    std::string label;       // human-readable current step
+
+    // Internals -- do not touch from the caller.
+    std::string    scenePath, projectFolder;
+    bool           fullOpen = false;    // whole-project open vs in-project scene switch
+    nlohmann::json j;                   // parsed scene (JSON path)
+    std::size_t    entIdx = 0, entTotal = 0;
+    int            maxId = -1;
+};
+
+// Start opening a whole project asynchronously: mounts its assets + loads its
+// materials now (quick), then streams the scene's entities over the following
+// frames. Returns false (and leaves load.done=true, ok=false) when the folder
+// has no readable scene. On success load.active is true -- call stepLoad() each
+// frame until load.done.
+bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder);
+// Start switching to another scene inside the already-open project (materials and
+// mounts are left untouched, as the synchronous loadSceneFile does).
+bool beginLoadScene(Context& ctx, SceneLoad& load, const std::string& scenePath);
+// Advance a running load: builds entities for up to ~budgetMs (always at least
+// one, so it can't stall), updating progress/label. When the last entity is in it
+// applies scene settings, enforces the Sun invariant, sets currentProject (and,
+// for a full open, the project name + recent list) and sets done/ok.
+void stepLoad(Context& ctx, SceneLoad& load, double budgetMs = 8.0);
+
 // Project operations.
 void saveProjectTo(Context& ctx, const std::string& folder);
 void saveCurrent(Context& ctx);

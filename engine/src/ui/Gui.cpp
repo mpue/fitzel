@@ -6,6 +6,7 @@
 #include <utility>
 
 #include <imgui.h>
+#include <imgui_internal.h> // window list + per-window rect/rounding for drop shadows
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 #include <GLFW/glfw3.h>
@@ -345,8 +346,93 @@ unsigned int Gui::dockspace() {
     return dockId;
 }
 
+namespace {
+// --- Window drop shadows -----------------------------------------------------
+// Mainline ImGui has no window shadow. We fake one per window and splice it into
+// the render stream *just behind that window*, so panels lift off the scene and
+// menus/popups cast onto whatever they float over. A single shared background
+// list can't do this: a menu draws on top of everything, so its shadow would then
+// hide behind the very panels it overlaps. Hence one scratch draw list per window,
+// inserted right before the window's own list in ImDrawData (see injectWindowShadows).
+
+// Scratch draw lists reused each frame (grown on demand; kept for the app's life).
+ImVector<ImDrawList*> g_shadowPool;
+int                   g_shadowUsed = 0;
+
+ImDrawList* acquireShadowList() {
+    ImGuiIO& io = ImGui::GetIO();
+    if (g_shadowUsed >= g_shadowPool.Size)
+        g_shadowPool.push_back(IM_NEW(ImDrawList)(ImGui::GetDrawListSharedData()));
+    ImDrawList* dl = g_shadowPool[g_shadowUsed++];
+    dl->_ResetForNewFrame();
+    dl->PushTexture(io.Fonts->TexRef);      // bind the atlas (white pixel for fills)
+    dl->PushClipRectFullScreen();
+    return dl;
+}
+
+// Soft shadow for `w`: a stack of expanding rounded rects, darkest against the
+// window edge and fading outward, nudged down a touch as if lit from above.
+void paintShadow(ImDrawList* dl, const ImGuiWindow* w) {
+    const ImVec2 mn = w->Pos;
+    const ImVec2 mx(w->Pos.x + w->Size.x, w->Pos.y + w->Size.y);
+    const ImVec2 off(0.0f, 4.0f); // drop direction
+    const float  spread = 16.0f;  // penumbra reach (px)
+    const int    layers = 8;
+    const float  rnd = w->WindowRounding;
+    for (int i = layers; i >= 1; --i) {
+        const float t    = static_cast<float>(i) / static_cast<float>(layers);
+        const float grow = spread * t;                       // outer layers larger
+        const int   a    = static_cast<int>(20.0f * (1.0f - t) + 3.0f); // + fainter
+        dl->AddRectFilled(ImVec2(mn.x - grow + off.x, mn.y - grow + off.y),
+                          ImVec2(mx.x + grow + off.x, mx.y + grow + off.y),
+                          IM_COL32(0, 0, 0, a), rnd + grow);
+    }
+}
+
+// Windows worth a shadow: real, visible, top-level ones with a body of their own.
+// Skip child regions, the transparent dock backdrop, and dock-node hosts (the
+// windows docked inside them are shadowed individually).
+bool castsShadow(const ImGuiWindow* w) {
+    if (!w->WasActive || w->Hidden) return false;
+    if (w->Flags & (ImGuiWindowFlags_ChildWindow | ImGuiWindowFlags_NoBackground |
+                    ImGuiWindowFlags_DockNodeHost))
+        return false;
+    return w->Size.x >= 8.0f && w->Size.y >= 8.0f;
+}
+
+// Rebuild the frame's draw-list array, inserting a shadow list in front of each
+// shadow-casting window's own list. Runs after Render(), before the backend reads
+// the data. Window order in ImDrawData is back-to-front, so a shadow sits above
+// the windows below its owner and below the owner itself -- exactly a drop shadow.
+void injectWindowShadows(ImDrawData* dd) {
+    if (!dd || dd->CmdLists.Size == 0) return;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+
+    g_shadowUsed = 0;
+    static ImVector<ImDrawList*> out; // kept static so its storage outlives the copy
+    out.resize(0);
+    dd->TotalVtxCount = 0;
+    dd->TotalIdxCount = 0;
+
+    for (ImDrawList* dl : dd->CmdLists) {
+        const ImGuiWindow* win = nullptr;
+        for (ImGuiWindow* w : g.Windows)
+            if (w->DrawList == dl) { win = w; break; }
+        if (win && castsShadow(win)) {
+            ImDrawList* sh = acquireShadowList();
+            paintShadow(sh, win);
+            sh->_PopUnusedDrawCmd();
+            ImGui::AddDrawListToDrawDataEx(dd, &out, sh);
+        }
+        ImGui::AddDrawListToDrawDataEx(dd, &out, dl);
+    }
+    dd->CmdLists = out; // copy the reordered pointers back into the frame's data
+}
+} // namespace
+
 void Gui::endFrame() {
     ImGui::Render();
+    injectWindowShadows(ImGui::GetDrawData());
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 

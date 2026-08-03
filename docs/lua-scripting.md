@@ -404,17 +404,73 @@ Konsole nennt den Namen).
 
 Danach **Play** drücken. `start` läuft einmal, `update` jeden Frame.
 
+### 5.1 Skript-Parameter (globale Variablen im Inspector)
+
+Jede **globale Variable auf Modulebene** (also eine, die *ohne* `local`
+angelegt wird) erscheint automatisch als **editierbares Feld im Inspector** unter
+der Script-Komponente. Der Wert im Skript ist nur der **Default**; der im
+Inspector eingestellte Wert **überschreibt** ihn beim Start von Play und wird
+**mit der Szene gespeichert** (pro Objekt-Instanz — zwei Objekte mit demselben
+Skript haben also eigene Werte).
+
+```lua
+-- Alles ohne `local` = ein Inspector-Feld:
+speed   = 45.0          -- Zahl   -> Drag-Feld
+bobbing = true          -- bool   -> Checkbox
+label   = "Hallo"       -- string -> Textfeld
+tint    = {1.0, 0.5, 0} -- 3 Zahlen -> Farb-/Vektor-Picker
+
+local baseY = nil       -- `local` -> NICHT im Inspector (privater Zustand)
+
+function start(e) baseY = e.y end
+function update(e, dt, t)
+    e.ry = e.ry + speed * dt            -- nutzt den Inspector-Wert
+    if bobbing and baseY then
+        e.y = baseY + math.sin(t * 2) * 0.4
+    end
+end
+```
+
+**Typ-Ableitung** (aus dem Default-Wert):
+
+| Lua-Wert | Inspector-Widget |
+|----------|------------------|
+| Zahl | Drag-Feld |
+| `true` / `false` | Checkbox |
+| String | Textfeld |
+| Tabelle `{x, y, z}` / `{r, g, b}` | Vektor bzw. **Farbe** (Farbe, wenn `r/g/b`-Schlüssel oder der Name nach Farbe klingt: `color`, `colour`, `tint`, `rgb`) |
+
+**Fallstricke:**
+
+- Nur `number` / `bool` / `string` / 3-Zahlen-Tabellen werden exponiert. Funktionen
+  (`start`, `update`, Helfer), verschachtelte Tabellen usw. werden ignoriert.
+- Namen, die mit `_` beginnen, sind **privat** und erscheinen nicht.
+- Der Modul-Rumpf wird zum Einlesen der Defaults **einmal ausgeführt** (in einer
+  Sandbox, `game.*` ist dabei ein No-op). Teure Arbeit gehört in `start()`, nicht
+  auf Modulebene.
+- Die Vektor-/Farb-Werte kommen im Skript als Tabelle an, lesbar als `t.x/t.y/t.z`,
+  `t.r/t.g/t.b` **oder** `t[1]/t[2]/t[3]`.
+- Ein Feld umbenennen/entfernen im Skript entfernt es (nach dem nächsten Blick in
+  den Inspector) auch aus dem Objekt; „Reset to defaults" setzt alle Felder auf die
+  Skript-Defaults zurück.
+
 ---
 
 ## 6. Komplettbeispiele (im Repo unter `sandbox/scripts/`)
 
 ### `spin.lua` — Objekt drehen & wippen
+Zeigt zugleich **Skript-Parameter** (§5.1): `spinSpeed`, `bobHeight`, `bob` sind
+globale Variablen und damit im Inspector einstellbar.
 ```lua
+spinSpeed = 45.0   -- Grad/Sekunde (Inspector-Feld)
+bobHeight = 0.4    -- Wipp-Amplitude in Metern
+bob       = true   -- Wippen an/aus (Checkbox)
+
 local baseY = nil
 function start(e)  baseY = e.y  end
 function update(e, dt, t)
-    e.ry = e.ry + 45.0 * dt
-    if baseY then e.y = baseY + math.sin(t * 2.0) * 0.4 end
+    e.ry = e.ry + spinSpeed * dt
+    if bob and baseY then e.y = baseY + math.sin(t * 2.0) * bobHeight end
 end
 ```
 

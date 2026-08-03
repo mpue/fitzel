@@ -1,0 +1,499 @@
+#include "UiOverlay.hpp"
+
+#include <algorithm>
+#include <cfloat>
+#include <cstdint>
+#include <cstdio>
+
+#include <imgui.h>
+#include <nlohmann/json.hpp>
+
+#include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/asset/AssetTypes.hpp>
+#include <fitzel/graphics/Texture.hpp>
+
+using fitzel::AssetId;
+using fitzel::AssetDatabase;
+
+// ---------------------------------------------------------------------------
+// Layout + drawing helpers (file-local). Offsets/sizes come in as pixels at
+// kRefHeight; every call scales by (viewport height / kRefHeight) first.
+// ---------------------------------------------------------------------------
+namespace {
+
+int colOf(UiAnchor a) { return static_cast<int>(a) % 3; } // 0 left, 1 centre, 2 right
+int rowOf(UiAnchor a) { return static_cast<int>(a) / 3; } // 0 top,  1 middle, 2 bottom
+
+ImU32 col32(const glm::vec4& c) {
+    auto b = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+    return IM_COL32(b(c.r), b(c.g), b(c.b), b(c.a));
+}
+
+// Screen-space top-left of an element's box. `box` is the already-scaled pixel
+// size; `off` is the already-scaled pixel offset. The anchor picks which
+// corner/edge the offset is measured inward from, so a layout reads the same at
+// any resolution and from any corner.
+ImVec2 topLeft(UiAnchor a, const ImVec2& vmin, const ImVec2& vsize,
+               const ImVec2& off, const ImVec2& box) {
+    const int c = colOf(a), r = rowOf(a);
+    float x = 0.0f, y = 0.0f;
+    if (c == 0)      x = vmin.x + off.x;                              // left:  inward +x
+    else if (c == 1) x = vmin.x + vsize.x * 0.5f + off.x - box.x * 0.5f; // centre
+    else             x = vmin.x + vsize.x - off.x - box.x;           // right: inward -x
+    if (r == 0)      y = vmin.y + off.y;                              // top:   inward +y
+    else if (r == 1) y = vmin.y + vsize.y * 0.5f + off.y - box.y * 0.5f; // middle
+    else             y = vmin.y + vsize.y - off.y - box.y;           // bottom: inward -y
+    return ImVec2(x, y);
+}
+
+// Base HUD text size for fontScale == 1: readable, scaled to the view, matching
+// the existing Play HUD's feel.
+float baseFontPx(const ImVec2& vsize) {
+    return std::clamp(vsize.y * 0.03f, 16.0f, 40.0f);
+}
+
+// Text with a soft drop shadow, like the Play HUD's shadowText.
+void shadowText(ImDrawList* dl, ImFont* font, float px, const ImVec2& p,
+                ImU32 col, const char* s) {
+    dl->AddText(font, px, ImVec2(p.x + 2.0f, p.y + 2.0f), IM_COL32(0, 0, 0, 170), s);
+    dl->AddText(font, px, p, col, s);
+}
+
+// Draw one element's visuals and return its screen rect (p0=top-left, p1=bottom-
+// right). `tex` is the already-resolved image texture (kept alive by the caller;
+// null = none). `hovered` lifts a button's background so a click reads pressable.
+void drawVisual(ImDrawList* dl, const UiElement& e, const ImVec2& vmin,
+                const ImVec2& vsize, const fitzel::Texture* tex, bool hovered,
+                ImVec2& outP0, ImVec2& outP1) {
+    const float scale = vsize.y / UiOverlay::kRefHeight;
+    ImFont* font = ImGui::GetFont();
+
+    if (e.type == UiElementType::Text) {
+        const float px = std::max(6.0f, baseFontPx(vsize) * e.fontScale);
+        const ImVec2 ts = font->CalcTextSizeA(px, FLT_MAX, 0.0f, e.text.c_str());
+        const ImVec2 p0 = topLeft(e.anchor, vmin, vsize, ImVec2(e.offset.x * scale,
+                                  e.offset.y * scale), ts);
+        shadowText(dl, font, px, p0, col32(e.color), e.text.c_str());
+        outP0 = p0; outP1 = ImVec2(p0.x + ts.x, p0.y + ts.y);
+        return;
+    }
+
+    // Button / Image share a boxed layout.
+    const ImVec2 box(std::max(4.0f, e.size.x * scale), std::max(4.0f, e.size.y * scale));
+    const ImVec2 p0 = topLeft(e.anchor, vmin, vsize, ImVec2(e.offset.x * scale,
+                              e.offset.y * scale), box);
+    const ImVec2 p1(p0.x + box.x, p0.y + box.y);
+    outP0 = p0; outP1 = p1;
+
+    if (e.type == UiElementType::Image) {
+        // GL textures are bottom-up, so flip V (uv0.y=1, uv1.y=0) -- same as the
+        // scene viewport image -- or the picture shows upside down.
+        if (tex && tex->isValid())
+            dl->AddImage((ImTextureID)(std::intptr_t)tex->id(), p0, p1,
+                         ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+        // No placeholder in the runtime path -- an unset image simply draws
+        // nothing; the authoring pass outlines it instead (see drawAuthoring).
+        return;
+    }
+
+    // Button: background (image or colour), then a centred label.
+    const float rounding = std::min(box.y * 0.25f, 10.0f);
+    if (tex && tex->isValid()) {
+        dl->AddImageRounded((ImTextureID)(std::intptr_t)tex->id(), p0, p1,
+            ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), IM_COL32_WHITE, rounding); // flip V (GL bottom-up)
+        if (hovered)
+            dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 40), rounding);
+    } else {
+        glm::vec4 bg = e.bgColor;
+        if (hovered) bg = glm::vec4(glm::min(glm::vec3(bg) + 0.12f, glm::vec3(1.0f)), bg.a);
+        dl->AddRectFilled(p0, p1, col32(bg), rounding);
+        dl->AddRect(p0, p1, IM_COL32(255, 255, 255, hovered ? 120 : 60), rounding, 0, 1.5f);
+    }
+    if (!e.text.empty()) {
+        const float px = std::max(6.0f, baseFontPx(vsize) * e.fontScale);
+        const ImVec2 ts = font->CalcTextSizeA(px, FLT_MAX, 0.0f, e.text.c_str());
+        const ImVec2 tp(p0.x + (box.x - ts.x) * 0.5f, p0.y + (box.y - ts.y) * 0.5f);
+        shadowText(dl, font, px, tp, col32(e.color), e.text.c_str());
+    }
+}
+
+void fireAction(const UiElement& e, const UiActionSink& sink) {
+    switch (e.action) {
+        case UiActionKind::None: break;
+        case UiActionKind::LoadScene:
+            if (sink.loadScene && !e.actionStr.empty()) sink.loadScene(e.actionStr);
+            break;
+        case UiActionKind::ShowMessage:
+            if (sink.showMessage) sink.showMessage(e.actionStr);
+            break;
+        case UiActionKind::AddScore:
+            if (sink.addScore) sink.addScore(e.actionNum);
+            break;
+        case UiActionKind::PlaySound:
+            if (sink.playSound && !e.actionStr.empty()) sink.playSound(e.actionStr);
+            break;
+        case UiActionKind::Quit:
+            if (sink.quit) sink.quit();
+            break;
+    }
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// UiElement equality (undo trivial-check compares whole lists).
+// ---------------------------------------------------------------------------
+bool UiElement::operator==(const UiElement& o) const {
+    return type == o.type && name == o.name && visible == o.visible &&
+           anchor == o.anchor && offset == o.offset && size == o.size &&
+           text == o.text && fontScale == o.fontScale && color == o.color &&
+           bgColor == o.bgColor && image == o.image && action == o.action &&
+           actionStr == o.actionStr && actionNum == o.actionNum;
+}
+
+// ---------------------------------------------------------------------------
+// Serialization (scene "settings" object, under "uiOverlay").
+// ---------------------------------------------------------------------------
+namespace {
+const char* elementTypeName(UiElementType t) {
+    switch (t) {
+        case UiElementType::Text:   return "text";
+        case UiElementType::Button: return "button";
+        case UiElementType::Image:  return "image";
+    }
+    return "text";
+}
+UiElementType elementType(const std::string& s) {
+    if (s == "button") return UiElementType::Button;
+    if (s == "image")  return UiElementType::Image;
+    return UiElementType::Text;
+}
+const char* actionName(UiActionKind a) {
+    switch (a) {
+        case UiActionKind::None:        return "none";
+        case UiActionKind::LoadScene:   return "loadScene";
+        case UiActionKind::ShowMessage: return "showMessage";
+        case UiActionKind::AddScore:    return "addScore";
+        case UiActionKind::PlaySound:   return "playSound";
+        case UiActionKind::Quit:        return "quit";
+    }
+    return "none";
+}
+UiActionKind actionKind(const std::string& s) {
+    if (s == "loadScene")   return UiActionKind::LoadScene;
+    if (s == "showMessage") return UiActionKind::ShowMessage;
+    if (s == "addScore")    return UiActionKind::AddScore;
+    if (s == "playSound")   return UiActionKind::PlaySound;
+    if (s == "quit")        return UiActionKind::Quit;
+    return UiActionKind::None;
+}
+} // namespace
+
+void UiOverlay::save(nlohmann::json& settings) const {
+    if (m_elements.empty()) return; // keep clean scenes free of an empty key
+    nlohmann::json arr = nlohmann::json::array();
+    for (const UiElement& e : m_elements) {
+        nlohmann::json j = {
+            {"type", elementTypeName(e.type)},
+            {"name", e.name},
+            {"visible", e.visible},
+            {"anchor", static_cast<int>(e.anchor)},
+            {"offset", {e.offset.x, e.offset.y}},
+            {"size", {e.size.x, e.size.y}},
+            {"text", e.text},
+            {"fontScale", e.fontScale},
+            {"color", {e.color.r, e.color.g, e.color.b, e.color.a}},
+            {"bgColor", {e.bgColor.r, e.bgColor.g, e.bgColor.b, e.bgColor.a}},
+            {"action", actionName(e.action)},
+            {"actionStr", e.actionStr},
+            {"actionNum", e.actionNum},
+        };
+        if (e.image.valid()) j["image"] = e.image.toString();
+        arr.push_back(std::move(j));
+    }
+    settings["uiOverlay"] = std::move(arr);
+}
+
+void UiOverlay::load(const nlohmann::json& settings) {
+    m_elements.clear();
+    m_texCache.clear(); // drop the previous scene's texture handles
+    if (!settings.contains("uiOverlay") || !settings["uiOverlay"].is_array()) return;
+    for (const nlohmann::json& j : settings["uiOverlay"]) {
+        UiElement e;
+        e.type    = elementType(j.value("type", std::string("text")));
+        e.name    = j.value("name", std::string("Element"));
+        e.visible = j.value("visible", true);
+        e.anchor  = static_cast<UiAnchor>(std::clamp(j.value("anchor", 0), 0, 8));
+        if (j.contains("offset") && j["offset"].is_array() && j["offset"].size() == 2)
+            e.offset = glm::vec2(j["offset"][0].get<float>(), j["offset"][1].get<float>());
+        if (j.contains("size") && j["size"].is_array() && j["size"].size() == 2)
+            e.size = glm::vec2(j["size"][0].get<float>(), j["size"][1].get<float>());
+        e.text      = j.value("text", std::string());
+        e.fontScale = j.value("fontScale", 1.0f);
+        if (j.contains("color") && j["color"].is_array() && j["color"].size() == 4)
+            e.color = glm::vec4(j["color"][0].get<float>(), j["color"][1].get<float>(),
+                                j["color"][2].get<float>(), j["color"][3].get<float>());
+        if (j.contains("bgColor") && j["bgColor"].is_array() && j["bgColor"].size() == 4)
+            e.bgColor = glm::vec4(j["bgColor"][0].get<float>(), j["bgColor"][1].get<float>(),
+                                  j["bgColor"][2].get<float>(), j["bgColor"][3].get<float>());
+        if (j.contains("image") && j["image"].is_string())
+            e.image = AssetId::fromString(j["image"].get<std::string>());
+        e.action    = actionKind(j.value("action", std::string("none")));
+        e.actionStr = j.value("actionStr", std::string());
+        e.actionNum = j.value("actionNum", 10.0f);
+        m_elements.push_back(std::move(e));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Runtime + authoring rendering.
+// ---------------------------------------------------------------------------
+fitzel::Texture* UiOverlay::resolve(AssetDatabase& assets, const AssetId& id) {
+    if (!id.valid()) return nullptr;
+    auto it = m_texCache.find(id);
+    if (it == m_texCache.end())
+        it = m_texCache.emplace(id, assets.loadTexture(id)).first;
+    const std::shared_ptr<fitzel::Texture>& t = it->second;
+    return (t && t->isValid()) ? t.get() : nullptr;
+}
+
+void UiOverlay::drawRuntime(ImDrawList* dl, const glm::vec2& vmin, const glm::vec2& vsize,
+                            AssetDatabase& assets, const UiActionSink& sink) {
+    const ImVec2 vm(vmin.x, vmin.y), vs(vsize.x, vsize.y);
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    for (const UiElement& e : m_elements) {
+        if (!e.visible) continue;
+        const fitzel::Texture* tex = resolve(assets, e.image);
+        bool hovered = false;
+        ImVec2 p0, p1;
+        if (e.type == UiElementType::Button) {
+            // Pre-place to hit-test before drawing, so the hover highlight shows.
+            drawVisual(dl, e, vm, vs, tex, false, p0, p1); // rect only; redraw below
+            hovered = mouse.x >= p0.x && mouse.x <= p1.x &&
+                      mouse.y >= p0.y && mouse.y <= p1.y;
+            if (hovered) { ImVec2 q0, q1; drawVisual(dl, e, vm, vs, tex, true, q0, q1); }
+            if (hovered && clicked) fireAction(e, sink);
+        } else {
+            drawVisual(dl, e, vm, vs, tex, false, p0, p1);
+        }
+    }
+}
+
+void UiOverlay::drawAuthoring(ImDrawList* dl, const glm::vec2& vmin, const glm::vec2& vsize,
+                              AssetDatabase& assets, int selected) {
+    const ImVec2 vm(vmin.x, vmin.y), vs(vsize.x, vsize.y);
+    for (int i = 0; i < static_cast<int>(m_elements.size()); ++i) {
+        const UiElement& e = m_elements[i];
+        ImVec2 p0, p1;
+        if (e.visible) {
+            drawVisual(dl, e, vm, vs, resolve(assets, e.image), false, p0, p1);
+        } else {
+            // Still show hidden elements faintly while authoring so they can be
+            // found and re-enabled.
+            const float scale = vs.y / kRefHeight;
+            const ImVec2 box(std::max(4.0f, e.size.x * scale), std::max(4.0f, e.size.y * scale));
+            p0 = topLeft(e.anchor, vm, vs, ImVec2(e.offset.x * scale, e.offset.y * scale), box);
+            p1 = ImVec2(p0.x + box.x, p0.y + box.y);
+        }
+        if (e.type == UiElementType::Image && !(e.image.valid())) {
+            // An image with no asset: outline the box so it can be placed/sized.
+            dl->AddRect(p0, p1, IM_COL32(255, 120, 255, 160), 0, 0, 1.5f);
+            dl->AddLine(p0, p1, IM_COL32(255, 120, 255, 120), 1.0f);
+        }
+        if (i == selected) {
+            const ImU32 sel = IM_COL32(120, 200, 255, 230);
+            dl->AddRect(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p1.x + 3, p1.y + 3), sel, 0, 0, 2.0f);
+            // Corner ticks for a clearer selection read.
+            const float t = 8.0f;
+            dl->AddLine(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p0.x - 3 + t, p0.y - 3), sel, 2.0f);
+            dl->AddLine(ImVec2(p0.x - 3, p0.y - 3), ImVec2(p0.x - 3, p0.y - 3 + t), sel, 2.0f);
+        }
+    }
+}
+
+#ifndef FITZEL_PLAYER
+// ---------------------------------------------------------------------------
+// Editor panel.
+// ---------------------------------------------------------------------------
+namespace {
+const char* kAnchorLabels[9] = {
+    "Top-Left", "Top-Center", "Top-Right",
+    "Mid-Left", "Center",     "Mid-Right",
+    "Bottom-Left", "Bottom-Center", "Bottom-Right",
+};
+const char* kTypeLabels[3]   = {"Text", "Button", "Image"};
+const char* kActionLabels[6] = {"None", "Load scene", "Show message",
+                                "Add score", "Play sound", "Quit"};
+
+// A combo that assigns one of `items` (or "(none)") to a string field.
+void stringCombo(const char* label, std::string& field,
+                 const std::vector<std::string>& items) {
+    const std::string cur = field.empty() ? "(none)" : field;
+    if (ImGui::BeginCombo(label, cur.c_str())) {
+        if (ImGui::Selectable("(none)", field.empty())) field.clear();
+        for (const std::string& s : items)
+            if (ImGui::Selectable(s.c_str(), field == s)) field = s;
+        ImGui::EndCombo();
+    }
+    if (!field.empty() && std::find(items.begin(), items.end(), field) == items.end())
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "Missing: %s", field.c_str());
+}
+} // namespace
+
+void UiOverlay::drawEditorPanel(bool* open, int& sel, AssetDatabase& assets,
+                                const std::vector<std::string>& scenes,
+                                const std::vector<std::string>& sounds) {
+    if (!ImGui::Begin("UI Overlay", open)) { ImGui::End(); return; }
+
+    ImGui::TextDisabled("Screen-space 2D drawn over the scene while playing.");
+
+    // --- Add elements ------------------------------------------------------
+    auto addElement = [&](UiElementType t, const char* defName) {
+        UiElement e;
+        e.type = t;
+        e.name = defName;
+        if (t == UiElementType::Button) { e.text = "Button"; e.action = UiActionKind::None; }
+        else if (t == UiElementType::Image) { e.text.clear(); }
+        m_elements.push_back(std::move(e));
+        sel = static_cast<int>(m_elements.size()) - 1;
+    };
+    if (ImGui::Button("+ Text"))   addElement(UiElementType::Text, "Text");
+    ImGui::SameLine();
+    if (ImGui::Button("+ Button")) addElement(UiElementType::Button, "Button");
+    ImGui::SameLine();
+    if (ImGui::Button("+ Image"))  addElement(UiElementType::Image, "Image");
+
+    ImGui::Separator();
+
+    // --- Element list ------------------------------------------------------
+    const int n = static_cast<int>(m_elements.size());
+    if (sel >= n) sel = n - 1;
+    ImGui::BeginChild("uiList", ImVec2(0, 160), true);
+    for (int i = 0; i < n; ++i) {
+        UiElement& e = m_elements[i];
+        ImGui::PushID(i);
+        bool vis = e.visible;
+        if (ImGui::Checkbox("##vis", &vis)) e.visible = vis;
+        ImGui::SameLine();
+        char lbl[160];
+        std::snprintf(lbl, sizeof(lbl), "%s  [%s]",
+                      e.name.c_str(), kTypeLabels[static_cast<int>(e.type)]);
+        if (ImGui::Selectable(lbl, sel == i)) sel = i;
+        ImGui::PopID();
+    }
+    ImGui::EndChild();
+
+    // Reorder / duplicate / delete for the selection.
+    ImGui::BeginDisabled(sel < 0 || sel >= n);
+    if (ImGui::Button("Up") && sel > 0) { std::swap(m_elements[sel], m_elements[sel - 1]); --sel; }
+    ImGui::SameLine();
+    if (ImGui::Button("Down") && sel >= 0 && sel < n - 1) { std::swap(m_elements[sel], m_elements[sel + 1]); ++sel; }
+    ImGui::SameLine();
+    if (ImGui::Button("Duplicate") && sel >= 0) {
+        UiElement dup = m_elements[sel];
+        dup.name += " copy";
+        dup.offset += glm::vec2(20.0f, 20.0f);
+        m_elements.insert(m_elements.begin() + sel + 1, dup);
+        ++sel;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Delete") && sel >= 0) {
+        m_elements.erase(m_elements.begin() + sel);
+        if (sel >= static_cast<int>(m_elements.size())) sel = static_cast<int>(m_elements.size()) - 1;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+
+    // --- Property editor ---------------------------------------------------
+    if (sel < 0 || sel >= static_cast<int>(m_elements.size())) {
+        ImGui::TextDisabled("Select or add an element.");
+        ImGui::End();
+        return;
+    }
+    UiElement& e = m_elements[sel];
+
+    char nameBuf[128];
+    std::snprintf(nameBuf, sizeof(nameBuf), "%s", e.name.c_str());
+    if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) e.name = nameBuf;
+
+    int ti = static_cast<int>(e.type);
+    if (ImGui::Combo("Type", &ti, kTypeLabels, 3)) e.type = static_cast<UiElementType>(ti);
+
+    ImGui::Checkbox("Visible", &e.visible);
+
+    int ai = static_cast<int>(e.anchor);
+    if (ImGui::Combo("Anchor", &ai, kAnchorLabels, 9)) e.anchor = static_cast<UiAnchor>(ai);
+    ImGui::DragFloat2("Offset (px)", &e.offset.x, 1.0f, -10000.0f, 10000.0f, "%.0f");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Pixels inward from the anchor, at a 1080-tall view.\n"
+                          "Scales with the actual view height.");
+
+    if (e.type != UiElementType::Text) {
+        ImGui::DragFloat2("Size (px)", &e.size.x, 1.0f, 4.0f, 10000.0f, "%.0f");
+    }
+
+    // Text label (Text + Button).
+    if (e.type == UiElementType::Text || e.type == UiElementType::Button) {
+        char txt[512];
+        std::snprintf(txt, sizeof(txt), "%s", e.text.c_str());
+        if (ImGui::InputText("Text", txt, sizeof(txt))) e.text = txt;
+        ImGui::SliderFloat("Font scale", &e.fontScale, 0.25f, 5.0f, "%.2f x");
+        ImGui::ColorEdit4("Text colour", &e.color.x);
+    }
+
+    // Image slot (Image + Button icon). Drop a Texture from the Assets browser.
+    if (e.type == UiElementType::Image || e.type == UiElementType::Button) {
+        std::string slot = "(none)";
+        if (e.image.valid()) {
+            const AssetDatabase::Entry* te = assets.entry(e.image);
+            slot = te ? te->relPath : e.image.toString();
+        }
+        ImGui::Text("Image:");
+        ImGui::SameLine();
+        ImGui::Button((slot + "##uiimg").c_str(), ImVec2(-60.0f, 0.0f));
+        if (ImGui::BeginDragDropTarget()) {
+            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("ASSET_GUID")) {
+                const AssetId gid = AssetId::fromString(std::string(
+                    static_cast<const char*>(pl->Data), pl->DataSize));
+                if (assets.typeForId(gid) == fitzel::AssetType::Texture) e.image = gid;
+            }
+            ImGui::EndDragDropTarget();
+        }
+        if (e.image.valid()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Clear##uiimg")) e.image = {};
+        }
+        ImGui::TextDisabled("Drag a texture here from the Assets panel.");
+    }
+
+    // Button-only: background + click action.
+    if (e.type == UiElementType::Button) {
+        ImGui::ColorEdit4("Background", &e.bgColor.x);
+        ImGui::TextDisabled("(background shows only when no image is set)");
+        ImGui::Separator();
+        int aci = static_cast<int>(e.action);
+        if (ImGui::Combo("On click", &aci, kActionLabels, 6))
+            e.action = static_cast<UiActionKind>(aci);
+        switch (e.action) {
+            case UiActionKind::LoadScene:   stringCombo("Scene", e.actionStr, scenes); break;
+            case UiActionKind::PlaySound:   stringCombo("Sound", e.actionStr, sounds); break;
+            case UiActionKind::ShowMessage: {
+                char msg[256];
+                std::snprintf(msg, sizeof(msg), "%s", e.actionStr.c_str());
+                if (ImGui::InputText("Message", msg, sizeof(msg))) e.actionStr = msg;
+                break;
+            }
+            case UiActionKind::AddScore:
+                ImGui::DragFloat("Points", &e.actionNum, 1.0f, -100000.0f, 100000.0f, "%.0f");
+                break;
+            case UiActionKind::None:
+            case UiActionKind::Quit:
+                break;
+        }
+    }
+
+    ImGui::End();
+}
+#endif // FITZEL_PLAYER

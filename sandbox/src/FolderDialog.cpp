@@ -86,6 +86,62 @@ bool pickFolder(std::string& out, const std::string& initialDir) {
     return ok;
 }
 
+bool pickFile(std::string& out, const std::string& initialDir,
+              const std::string& filterName, const std::string& filterSpec) {
+    const HRESULT hrInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool weInitialised = (hrInit == S_OK || hrInit == S_FALSE);
+
+    bool ok = false;
+    IFileOpenDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr,
+                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        DWORD opts = 0;
+        dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST);
+
+        // Optional single-type filter (plus an "All files" catch-all).
+        std::wstring fname = toWide(filterName), fspec = toWide(filterSpec);
+        if (!fspec.empty()) {
+            COMDLG_FILTERSPEC specs[2] = {
+                {fname.empty() ? L"Files" : fname.c_str(), fspec.c_str()},
+                {L"All files", L"*.*"},
+            };
+            dlg->SetFileTypes(2, specs);
+        }
+
+        if (!initialDir.empty()) {
+            std::error_code ec;
+            if (std::filesystem::exists(initialDir, ec)) {
+                IShellItem* startItem = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(
+                        toWide(initialDir).c_str(), nullptr,
+                        IID_PPV_ARGS(&startItem)))) {
+                    dlg->SetFolder(startItem);
+                    startItem->Release();
+                }
+            }
+        }
+
+        if (SUCCEEDED(dlg->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    out = std::filesystem::path(fromWide(path)).generic_string();
+                    ok = !out.empty();
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+
+    if (weInitialised) CoUninitialize();
+    return ok;
+}
+
 } // namespace ed
 
 #elif defined(__APPLE__)
@@ -152,12 +208,46 @@ bool pickFolder(std::string& out, const std::string& initialDir) {
     return !out.empty();
 }
 
+bool pickFile(std::string& out, const std::string& initialDir,
+              const std::string& /*filterName*/, const std::string& /*filterSpec*/) {
+    std::string script = "choose file with prompt \"Select file\"";
+    std::error_code ec;
+    if (!initialDir.empty() && std::filesystem::exists(initialDir, ec)) {
+        std::string esc;
+        for (char c : initialDir) {
+            if (c == '\\' || c == '"') esc += '\\';
+            esc += c;
+        }
+        script += " default location (POSIX file \"" + esc + "\")";
+    }
+    script = "POSIX path of (" + script + ")";
+
+    const std::string cmd = "osascript -e " + shellQuote(script) + " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+
+    std::string result;
+    std::array<char, 512> buf;
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe))
+        result += buf.data();
+    const int rc = pclose(pipe);
+
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+        result.pop_back();
+
+    if (rc != 0 || result.empty()) return false;
+    out = std::filesystem::path(result).generic_string();
+    return !out.empty();
+}
+
 } // namespace ed
 
 #else // other platforms: no native dialog (caller falls back to a text field).
 
 namespace ed {
 bool pickFolder(std::string&, const std::string&) { return false; }
+bool pickFile(std::string&, const std::string&, const std::string&,
+              const std::string&) { return false; }
 } // namespace ed
 
 #endif

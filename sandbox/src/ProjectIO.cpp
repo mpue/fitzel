@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +14,7 @@
 #include <fitzel/Version.hpp>
 #include <fitzel/asset/AssetDatabase.hpp>
 
+#include "GameSettings.hpp"
 #include "PropertyMeta.hpp"
 
 using fitzel::AssetId;
@@ -79,6 +81,27 @@ void savePrefs(const Context& ctx) {
     if (f) f << j.dump(2) << '\n';
 }
 
+// One canonical spelling for a project folder, so the same path written with
+// mixed separators / a trailing slash / a "." segment compares equal.
+static std::string normProjectPath(const std::string& folder) {
+    return std::filesystem::path(folder).lexically_normal().generic_string();
+}
+
+// Collapse a recent-projects list to one entry per folder, newest kept, order
+// preserved -- normalising as it goes. Cleans up duplicates written by older
+// builds (whose dedup only dropped the folder being re-added, leaving stale
+// pairs) so the Open Recent menu can't render two items with the same ImGui id.
+static void dedupRecent(std::vector<std::string>& recent) {
+    std::vector<std::string> out;
+    out.reserve(recent.size());
+    for (const std::string& e : recent) {
+        std::string n = normProjectPath(e);
+        if (std::find(out.begin(), out.end(), n) == out.end())
+            out.push_back(std::move(n));
+    }
+    recent.swap(out);
+}
+
 void loadPrefs(Context& ctx) {
     std::ifstream f(ctx.prefsPath);
     if (!f) return;
@@ -86,17 +109,19 @@ void loadPrefs(Context& ctx) {
     try { f >> j; } catch (const nlohmann::json::exception&) { return; }
     ctx.prefLocation   = j.value("lastLocation", ctx.prefLocation);
     ctx.recentProjects = j.value("recent", std::vector<std::string>{});
+    dedupRecent(ctx.recentProjects); // drop duplicates left by older builds
     ctx.uiFontSize     = j.value("uiFontSize", ctx.uiFontSize);
     ctx.uiFontFamily   = j.value("uiFontFamily", std::string{});
 }
 
 void rememberProject(Context& ctx, const std::string& folder) {
+    const std::string norm = normProjectPath(folder);
     ctx.prefLocation =
-        std::filesystem::path(folder).parent_path().generic_string();
-    ctx.recentProjects.erase(
-        std::remove(ctx.recentProjects.begin(), ctx.recentProjects.end(), folder),
-        ctx.recentProjects.end());
-    ctx.recentProjects.insert(ctx.recentProjects.begin(), folder);
+        std::filesystem::path(norm).parent_path().generic_string();
+    // Front-load this project, then fully dedup: keeps the freshly-opened entry
+    // (now first) and strips every other copy, current or stale.
+    ctx.recentProjects.insert(ctx.recentProjects.begin(), norm);
+    dedupRecent(ctx.recentProjects);
     if (ctx.recentProjects.size() > 8) ctx.recentProjects.resize(8);
     savePrefs(ctx);
 }
@@ -290,124 +315,101 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
     ctx.matSel = 0;
 }
 
-bool loadScene(Context& ctx, const std::string& path) {
-    std::ifstream f(path);
-    if (!f) return false;
-    std::stringstream buf; buf << f.rdbuf();
-    const std::string content = buf.str();
-    const std::size_t firstCh = content.find_first_not_of(" \t\r\n");
-    const bool isJson =
-        firstCh != std::string::npos && content[firstCh] == '{';
-
-    ctx.entities.clear();
-    ctx.clearModels(); // models re-import fresh below
-    int maxId = -1;
-    std::map<int, AssetId> legacyMat; // legacy int material id -> synthesized GUID
-
-    if (isJson) {
-        nlohmann::json j;
-        try { j = nlohmann::json::parse(content); }
-        catch (const nlohmann::json::exception& ex) {
-            std::fprintf(stderr, "Scene parse error: %s\n", ex.what());
-            return false;
+// Inline "materials" array (legacy v2 scenes embedded their materials rather than
+// shipping .fmat files). Rebuilds ctx.materials; no-op when the block is absent.
+static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
+    if (!j.contains("materials") || !j["materials"].is_array() ||
+        j["materials"].empty())
+        return;
+    ctx.materials.clear();
+    for (const auto& m : j["materials"]) {
+        MaterialDef md;
+        md.assetId      = AssetId::generate();
+        md.name         = m.value("name", std::string{});
+        md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
+        md.reflectivity = m.value("reflectivity", md.reflectivity);
+        md.roughness    = m.value("roughness", md.roughness);
+        md.opacity      = m.value("opacity", md.opacity);
+        md.glass        = m.value("glass", md.glass);
+        md.alphaMode    = static_cast<AlphaMode>(
+                              m.value("alphaMode", static_cast<int>(md.alphaMode)));
+        md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
+        md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
+        md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
+        if (m.contains("emissionMap")) {
+            md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
+            if (md.emissionTexId.valid())
+                md.emissionTex = ctx.assetDb.loadTexture(md.emissionTexId);
         }
-        if (j.contains("materials") && j["materials"].is_array() &&
-            !j["materials"].empty()) {
-            ctx.materials.clear();
-            for (const auto& m : j["materials"]) {
-                MaterialDef md;
-                md.assetId      = AssetId::generate();
-                md.name         = m.value("name", std::string{});
-                md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
-                md.reflectivity = m.value("reflectivity", md.reflectivity);
-                md.roughness    = m.value("roughness", md.roughness);
-                md.opacity      = m.value("opacity", md.opacity);
-                md.glass        = m.value("glass", md.glass);
-                md.alphaMode    = static_cast<AlphaMode>(
-                                      m.value("alphaMode", static_cast<int>(md.alphaMode)));
-                md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
-                md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
-                md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
-                if (m.contains("emissionMap")) {
-                    md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
-                    if (md.emissionTexId.valid())
-                        md.emissionTex = ctx.assetDb.loadTexture(md.emissionTexId);
-                }
-                if (m.contains("texture")) {
-                    md.texId = AssetId::fromString(m["texture"].get<std::string>());
-                    if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
-                }
-                if (m.contains("normalMap")) {
-                    md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
-                    if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
-                }
-                legacyMat[m.value("id", 0)] = md.assetId;
-                ctx.materials.push_back(std::move(md));
-            }
-            if (ctx.materials.empty()) ctx.seedDefaultMaterials();
-            ctx.matSel = 0;
+        if (m.contains("texture")) {
+            md.texId = AssetId::fromString(m["texture"].get<std::string>());
+            if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
         }
-        for (const auto& e : j.value("entities", nlohmann::json::array())) {
-            Entity b = readEntityJson(ctx, e);
-            maxId = std::max(maxId, b.id);
-            ctx.entities.push_back(std::move(b));
+        if (m.contains("normalMap")) {
+            md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
+            if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
         }
-        if (ctx.readSettings && j.contains("settings"))
-            ctx.readSettings(j["settings"]);
-    } else {
-        // Legacy space-separated text: inline "M" materials + int ids.
-        ctx.materials.clear();
-        std::istringstream in(content);
-        std::string line;
-        while (std::getline(in, line)) {
-            if (line.empty()) continue;
-            std::istringstream ss(line);
-            std::string tok;
-            ss >> tok;
-            if (tok == "M") {
-                MaterialDef md;
-                int oldId = 0;
-                ss >> oldId >> md.albedo.x >> md.albedo.y >> md.albedo.z
-                   >> md.reflectivity >> md.roughness;
-                std::getline(ss, md.name);
-                if (!md.name.empty() && md.name[0] == ' ') md.name.erase(0, 1);
-                md.assetId = AssetId::generate();
-                legacyMat[oldId] = md.assetId;
-                ctx.materials.push_back(std::move(md));
-                continue;
-            }
-            Entity b;
-            int cast = 0, oldMat = 0;
-            std::string modelTok, scriptTok;
-            float dump = 0.0f; // fields dropped in the component migration
-            b.type = static_cast<EntityType>(std::stoi(tok));
-            ss >> b.localCenter.x >> b.localCenter.y >> b.localCenter.z
-               >> b.half.x >> b.half.y >> b.half.z
-               >> dump >> dump >> dump      // color (now LightComponent/material)
-               >> dump >> dump >> dump      // intensity / range / shadowBias
-               >> cast >> oldMat >> dump    // castShadows / material / scale
-               >> b.localRotation.x >> b.localRotation.y >> b.localRotation.z >> modelTok
-               >> scriptTok
-               >> b.id >> b.parent;
-            (void)cast; (void)scriptTok; (void)oldMat; // no longer stored here
-            std::getline(ss, b.name);
-            if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
-            if (b.type == EntityType::Model && modelTok != "-") {
-                auto mc = std::make_unique<ModelComponent>();
-                mc->modelPath = ctx.modelDir + "/" + modelTok;
-                mc->modelId   = ctx.importModel(mc->modelPath);
-                b.components.items.push_back(std::move(mc));
-            }
-            maxId = std::max(maxId, b.id);
-            ctx.entities.push_back(b);
-        }
-        if (ctx.materials.empty()) ctx.seedDefaultMaterials();
-        ctx.matSel = 0;
+        ctx.materials.push_back(std::move(md));
     }
+    if (ctx.materials.empty()) ctx.seedDefaultMaterials();
+    ctx.matSel = 0;
+}
 
+// The old space-separated text format: inline "M" materials + int ids. Small and
+// legacy-only, so it's parsed in one shot rather than streamed.
+static void loadLegacyTextScene(Context& ctx, const std::string& content, int& maxId) {
+    ctx.materials.clear();
+    std::istringstream in(content);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        std::istringstream ss(line);
+        std::string tok;
+        ss >> tok;
+        if (tok == "M") {
+            MaterialDef md;
+            int oldId = 0;
+            ss >> oldId >> md.albedo.x >> md.albedo.y >> md.albedo.z
+               >> md.reflectivity >> md.roughness;
+            std::getline(ss, md.name);
+            if (!md.name.empty() && md.name[0] == ' ') md.name.erase(0, 1);
+            md.assetId = AssetId::generate();
+            ctx.materials.push_back(std::move(md));
+            continue;
+        }
+        Entity b;
+        int cast = 0, oldMat = 0;
+        std::string modelTok, scriptTok;
+        float dump = 0.0f; // fields dropped in the component migration
+        b.type = static_cast<EntityType>(std::stoi(tok));
+        ss >> b.localCenter.x >> b.localCenter.y >> b.localCenter.z
+           >> b.half.x >> b.half.y >> b.half.z
+           >> dump >> dump >> dump      // color (now LightComponent/material)
+           >> dump >> dump >> dump      // intensity / range / shadowBias
+           >> cast >> oldMat >> dump    // castShadows / material / scale
+           >> b.localRotation.x >> b.localRotation.y >> b.localRotation.z >> modelTok
+           >> scriptTok
+           >> b.id >> b.parent;
+        (void)cast; (void)scriptTok; (void)oldMat; // no longer stored here
+        std::getline(ss, b.name);
+        if (!b.name.empty() && b.name[0] == ' ') b.name.erase(0, 1);
+        if (b.type == EntityType::Model && modelTok != "-") {
+            auto mc = std::make_unique<ModelComponent>();
+            mc->modelPath = ctx.modelDir + "/" + modelTok;
+            mc->modelId   = ctx.importModel(mc->modelPath);
+            b.components.items.push_back(std::move(mc));
+        }
+        maxId = std::max(maxId, b.id);
+        ctx.entities.push_back(std::move(b));
+    }
+    if (ctx.materials.empty()) ctx.seedDefaultMaterials();
+    ctx.matSel = 0;
+}
+
+// Post-pass shared by every load: entity id counter + the "exactly one Sun with a
+// SunComponent" invariant (the Sun is engine-managed and can't be re-added via UI).
+static void finalizeSceneLoad(Context& ctx, int maxId) {
     ctx.entityCounter = maxId + 1;
-    // Invariant: exactly one Sun, and it always carries its SunComponent (which
-    // is engine-managed, so it can't be re-added through the UI).
     Entity* sunE = nullptr;
     for (Entity& e : ctx.entities)
         if (e.type == EntityType::Sun) { sunE = &e; break; }
@@ -420,7 +422,111 @@ bool loadScene(Context& ctx, const std::string& path) {
         sunE->components.items.push_back(std::make_unique<SunComponent>());
     }
     ctx.entitySel = -1;
+}
+
+// Shared entry point for both the synchronous loadScene and the incremental
+// loader: reads + parses the file, resets the scene, and (for JSON) leaves the
+// entity array in `load.j` ready to be streamed by stepLoad. Legacy text is small
+// enough that it's fully parsed here. Returns false on a read/parse failure (with
+// load.done=true, ok=false).
+static bool startSceneLoad(Context& ctx, SceneLoad& load, const std::string& path) {
+    load = SceneLoad{};
+    load.scenePath = path;
+    std::ifstream f(path);
+    if (!f) { load.done = true; return false; }
+    std::stringstream buf; buf << f.rdbuf();
+    const std::string content = buf.str();
+    const std::size_t firstCh = content.find_first_not_of(" \t\r\n");
+    const bool isJson = firstCh != std::string::npos && content[firstCh] == '{';
+
+    ctx.entities.clear();
+    ctx.clearModels(); // models re-import fresh below
+
+    if (!isJson) { // legacy text: parse it all now, then just finalize in stepLoad
+        loadLegacyTextScene(ctx, content, load.maxId);
+        load.entTotal = load.entIdx = ctx.entities.size();
+        load.active = true;
+        return true;
+    }
+    try { load.j = nlohmann::json::parse(content); }
+    catch (const nlohmann::json::exception& ex) {
+        std::fprintf(stderr, "Scene parse error: %s\n", ex.what());
+        load.done = true;
+        return false;
+    }
+    loadInlineMaterials(ctx, load.j);
+    if (load.j.contains("entities") && load.j["entities"].is_array())
+        load.entTotal = load.j["entities"].size();
+    load.active   = true;
+    load.progress = load.entTotal ? 0.02f : 1.0f;
+    load.label    = "Loading objects...";
     return true;
+}
+
+void stepLoad(Context& ctx, SceneLoad& load, double budgetMs) {
+    if (!load.active || load.done) return;
+    if (load.j.contains("entities") && load.j["entities"].is_array()) {
+        const auto& ents = load.j["entities"];
+        const auto t0 = std::chrono::steady_clock::now();
+        while (load.entIdx < load.entTotal) {
+            Entity b = readEntityJson(ctx, ents[load.entIdx]);
+            load.maxId = std::max(load.maxId, b.id);
+            ctx.entities.push_back(std::move(b));
+            ++load.entIdx;
+            load.progress = 0.02f + 0.93f *
+                static_cast<float>(load.entIdx) / static_cast<float>(load.entTotal);
+            load.label = "Loading objects " + std::to_string(load.entIdx) + " / " +
+                         std::to_string(load.entTotal);
+            const double ms = std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - t0).count();
+            if (ms >= budgetMs) return; // out of time -- resume next frame
+        }
+        if (ctx.readSettings && load.j.contains("settings"))
+            ctx.readSettings(load.j["settings"]);
+    }
+    // All entities in: finalize + project bookkeeping.
+    finalizeSceneLoad(ctx, load.maxId);
+    ctx.currentProject = load.scenePath;
+    if (load.fullOpen) {
+        std::snprintf(ctx.projNameBuf, ctx.projNameBufSize, "%s",
+                      std::filesystem::path(load.projectFolder).filename().string().c_str());
+        rememberProject(ctx, load.projectFolder);
+    }
+    load.j       = nlohmann::json{}; // release the parsed scene
+    load.progress = 1.0f;
+    load.ok      = true;
+    load.done    = true;
+    load.active  = false;
+}
+
+bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder) {
+    const std::string scene = sceneFileIn(folder);
+    std::error_code ec;
+    if (!std::filesystem::exists(scene, ec)) { load = SceneLoad{}; load.done = true; return false; }
+    ctx.assetDb.mountProject(folder);
+    ctx.assetDb.refresh();
+    loadProjectMaterials(ctx, matsDirIn(folder));
+    if (!startSceneLoad(ctx, load, scene)) return false;
+    load.fullOpen      = true;
+    load.projectFolder = folder;
+    return true;
+}
+
+bool beginLoadScene(Context& ctx, SceneLoad& load, const std::string& scenePath) {
+    std::error_code ec;
+    if (scenePath.empty() || !std::filesystem::exists(scenePath, ec)) {
+        load = SceneLoad{}; load.done = true; return false;
+    }
+    return startSceneLoad(ctx, load, scenePath);
+}
+
+bool loadScene(Context& ctx, const std::string& path) {
+    // Synchronous path (player boot, scene triggers): drain the incremental loader
+    // in one call with an unlimited per-step budget.
+    SceneLoad load;
+    if (!startSceneLoad(ctx, load, path)) return false;
+    while (!load.done) stepLoad(ctx, load, 1e30);
+    return load.ok;
 }
 
 void saveProjectTo(Context& ctx, const std::string& folder) {
@@ -428,7 +534,17 @@ void saveProjectTo(Context& ctx, const std::string& folder) {
     std::error_code ec;
     std::filesystem::create_directories(folder, ec);
     writeProjectMaterials(ctx, matsDirIn(folder));
-    const std::string scene = sceneFileIn(folder);
+    // Save into the currently-open scene when it lives in this folder, so a
+    // multi-scene project keeps each scene in its own file. Writing to the
+    // folder's *default* scene here (as this once did) meant "Save Project" while
+    // a second scene was open clobbered the main scene with it -- data loss.
+    // Only a fresh save into a different folder (Save As / new project) falls
+    // back to the default scene file.
+    std::string scene = sceneFileIn(folder);
+    if (!ctx.currentProject.empty() &&
+        std::filesystem::path(ctx.currentProject).parent_path().lexically_normal() ==
+            std::filesystem::path(folder).lexically_normal())
+        scene = ctx.currentProject;
     saveScene(ctx, scene);
     ctx.assetDb.mountProject(folder);
     ctx.assetDb.refresh();
@@ -451,11 +567,17 @@ void exportGame(Context& ctx, const std::string& outDir) {
         return;
     }
     std::error_code ec;
-    const fs::path exeDir = fs::current_path();
-    const fs::path out    = fs::path(outDir);
+    const fs::path exeDir  = fs::current_path();
+    const fs::path out     = fs::path(outDir);
+    const fs::path projDir = fs::path(ctx.currentProject).parent_path();
     fs::create_directories(out, ec);
+    // Per-project game settings drive the export: exe name, splash, start scene
+    // and which scenes to bundle. Empty fields fall back to today's behaviour.
+    const game::Settings gs = game::load(projDir.generic_string());
     const std::string game =
-        ctx.projNameBuf[0] ? std::string(ctx.projNameBuf) : std::string("game");
+        !gs.exeName.empty()  ? gs.exeName
+        : ctx.projNameBuf[0] ? std::string(ctx.projNameBuf)
+                             : std::string("game");
     const auto rec = fs::copy_options::recursive |
                      fs::copy_options::overwrite_existing;
     // Ship the editor-free player, not the editor itself. It lives next to the
@@ -473,10 +595,44 @@ void exportGame(Context& ctx, const std::string& outDir) {
                   fs::copy_options::overwrite_existing, ec);
     fs::copy(exeDir / "assets", out / "assets", rec, ec);
     fs::copy(ctx.contentRoot,   out / "content", rec, ec);
-    fs::copy(fs::path(ctx.currentProject).parent_path(), out / "project", rec, ec);
+    fs::copy(projDir, out / "project", rec, ec);
+
+    // The boot scene: the configured start scene, else the project's default
+    // (<project>.fitzel). Always bundled, whatever the export-scene selection is.
+    const std::string bootScene =
+        !gs.startScene.empty() ? gs.startScene : projDir.filename().string();
+
+    // Optional scene filter: with an explicit export list, drop every other
+    // .fitzel from the copied project (materials/models/scripts stay shared). An
+    // empty list means "all scenes", so nothing is removed.
+    if (!gs.exportScenes.empty()) {
+        std::error_code e2;
+        for (const auto& de : fs::directory_iterator(out / "project", e2)) {
+            if (de.path().extension() != ".fitzel") continue;
+            const std::string stem = de.path().stem().string();
+            const bool keep = stem == bootScene ||
+                std::find(gs.exportScenes.begin(), gs.exportScenes.end(), stem) !=
+                    gs.exportScenes.end();
+            if (!keep) {
+                fs::remove(de.path(), e2);
+                fs::remove(de.path().string() + ".meta", e2); // ignore if absent
+            }
+        }
+    }
+
+    // A custom splash overrides the engine default the player loads from
+    // assets/splash.png.
+    if (!gs.splash.empty()) {
+        const fs::path src = projDir / gs.splash;
+        if (fs::exists(src, ec))
+            fs::copy_file(src, out / "assets" / "splash.png",
+                          fs::copy_options::overwrite_existing, ec);
+    }
+
     nlohmann::json gj;
     gj["project"]    = "project";
     gj["fullscreen"] = true;
+    gj["startScene"] = gs.startScene; // "" => player uses the default scene
     std::ofstream(out / "game.json") << gj.dump(2);
     ctx.exportStatus = ec ? ("Export finished with warnings: " + ec.message())
                           : ("Exported to " + out.generic_string());

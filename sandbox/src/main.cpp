@@ -62,13 +62,18 @@
 #include "SpraySystem.hpp"
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
+#include "GameSettingsPanel.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "ScatterTool.hpp"
 #include "VehicleTool.hpp"
+#include "GliderTool.hpp"
 #include "CarAudio.hpp"
+#include "GliderAudio.hpp"
+#include "UiOverlay.hpp"
+#include "UiOverlayCommand.hpp"
 #include "UiStyle.hpp"
 
 using namespace fitzel;
@@ -256,6 +261,7 @@ int main(int argc, char** argv) {
         // Exported/player build: a game.json next to the exe boots straight into
         // the game with the editor hidden. `--play <projectFolder>` does the same.
         std::string bootProject;
+        std::string bootScene;              // start scene stem ("" = default scene)
         bool        bootFullscreen = true;
         {
             std::error_code ec;
@@ -264,6 +270,7 @@ int main(int argc, char** argv) {
                 try {
                     nlohmann::json gj; gin >> gj;
                     bootProject    = gj.value("project", std::string{});
+                    bootScene      = gj.value("startScene", std::string{});
                     bootFullscreen = gj.value("fullscreen", true);
                 } catch (...) {}
             }
@@ -533,6 +540,21 @@ int main(int argc, char** argv) {
                                         "assets/shaders/fxaa.frag");
         if (!fxaa.isValid()) { std::fprintf(stderr, "Failed to load fxaa shader\n"); return 1; }
         RenderTarget postRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
+        // Camera motion blur: a full-screen pass between composite and FXAA. A
+        // radial speed blur streaking outward from the followed craft (mbRT holds
+        // its output); see the pass below.
+        Shader motionBlur = Shader::fromFiles("assets/shaders/sky.vert",
+                                              "assets/shaders/motionblur.frag");
+        if (!motionBlur.isValid()) {
+            std::fprintf(stderr, "Failed to load motion blur shader\n"); return 1;
+        }
+        RenderTarget mbRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
+        // Chase-cam speed blur: the world point the camera follows (the driven
+        // car/glider) is the streak focus, and its speed drives the streak length,
+        // so the craft stays sharp while the surroundings smear past it.
+        glm::vec3 blurAnchorWorld(0.0f);
+        bool      blurAnchorValid = false;
+        float     blurSpeed01     = 0.0f; // craft speed 0..~1.4 -> radial streak length
         bool fxaaEnabled = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
@@ -783,6 +805,7 @@ int main(int argc, char** argv) {
         // Play-start options (per-scene, serialized): drop straight into the car
         // when Play begins, and whether the aiming crosshair is drawn in Play.
         bool  startInVehicleMode = false;
+        bool  startInGliderMode  = false; // ...or straight into the glider
         bool  showCrosshair      = true;
         // Scene vehicle (a model with a VehicleComponent) being driven: its
         // entity id, and -- for the editor test-drive -- the transform snapshot
@@ -802,10 +825,49 @@ int main(int argc, char** argv) {
         float engineSpeedMps = 0.0f;
         float engineThrottle = 0.0f;
         float engineWheelR   = 0.42f;
+        // Glider jet-sound feed (same idea, separate voice): set by the glider
+        // flight tick, consumed next to the car engine in the audio mix block.
+        bool  gliderAudioActive = false;
+        float gliderSpeedMps    = 0.0f;
+        float gliderThrottle    = 0.0f;
+        float gliderTopSpeed    = 60.0f;
         bool  carInWater     = false;  // chassis was submerged last frame (splash edge)
         float carWaterSub    = 0.0f;   // 0..1 chassis submersion this frame (audio/FX)
         bool  boatMode       = false;  // vehicle floats deep enough -> motorboat controls
         glm::vec3 camChase(0.0f);  // smoothed chase-camera position
+        float     simAccum = 0.0f; // fixed-timestep accumulator (arcade car/glider)
+        // --- Glider (Wipeout-style hover racer) drive state -------------------
+        // Arcade in BOTH editor and Play (no Jolt body), so this mirrors the car's
+        // arcade state. gliderMode is the master flag; driveGliderId is the entity
+        // being flown; gliderBackup restores its transform when flight ends (an
+        // editor test-flight must not edit the scene, exactly like the car).
+        bool  gliderMode       = false;
+        bool  prevG            = false;
+        int   driveGliderId    = -1;
+        bool  gliderDriveActive = false;
+        std::vector<Entity> gliderBackup;
+        glm::vec3 gliderPos(0.0f);   // body-centre world position
+        float     gliderYaw   = 0.0f; // heading (radians)
+        glm::vec3 gliderVel(0.0f);   // world-space velocity (m/s)
+        float     gliderBank  = 0.0f; // smoothed roll (deg)
+        float     gliderPitch = 0.0f; // smoothed pitch (deg)
+        float     gliderOverspeed = 0.0f; // speed cap above maxSpeed from a boost pad
+        float     gliderBoostHold = 1.5f; // linger time of the last pad's boost (s)
+        bool      gliderBoosting  = false; // on/just-left a boost pad (HUD flash)
+        bool      gliderWasOnPad  = false; // last frame's pad contact (for the entry punch)
+        // Race / lap timing, driven by a Start/Finish line the glider crosses.
+        bool  raceActive = false, raceFinished = false, raceHasLine = false;
+        float raceClock = 0.0f, lapClock = 0.0f, lastLap = 0.0f, bestLap = 0.0f;
+        int   raceLap = 0, raceLaps = 0;   // completed laps / target
+        bool  finishWasOver = false;       // edge-detect the line crossing
+        float finishArm = 0.0f;            // re-arm guard so one pass counts once (s)
+        std::unordered_set<int> cpPassed;  // checkpoint entity ids passed this lap
+        int   cpTotal = 0;                 // checkpoints in the scene (for the HUD)
+        float raceMissedFlash = 0.0f;      // HUD flash after finishing a lap short
+        // Ready/Set/Go start: while > 0 the player craft AND opponents are frozen,
+        // so nobody moves before GO. goFlash shows "GO!" briefly once it hits 0.
+        float raceCountdown = 0.0f;
+        float goFlash       = 0.0f;
         const float wheelR = 0.42f, bodyW = 1.8f, bodyH = 0.7f, bodyL = 4.0f;
         const float cabW = 1.5f, cabH = 0.6f, cabL = 1.8f;
         const float halfTrack = 0.85f, halfBase = 1.35f;
@@ -868,6 +930,16 @@ int main(int argc, char** argv) {
             if (roadSel  >= n) roadSel  = -1;
             if (roadSel2 >= n) roadSel2 = -1;
         };
+
+        // --- Scene UI overlay (2D screen-space HUD authored per scene) --------
+        // Text/button/image elements drawn over the view while playing. Not in the
+        // Document (like the road), so it carries its own selection + undo state:
+        // an interaction opens with the list it found and commits the difference,
+        // so a slider dragged across many frames is one undo step.
+        UiOverlay              uiOverlay;
+        int                    uiSel = -1;
+        std::vector<UiElement> uiEditBefore;
+        bool                   uiEditOpen = false;
 
         std::vector<Entity>& entities = document.entities();
         int       entitySel      = -1;
@@ -1034,8 +1106,10 @@ int main(int argc, char** argv) {
         bool showScatter     = false;
         bool showCamPath     = false;
         bool showRoads       = false;
+        bool showUiOverlay   = false; // scene 2D UI overlay editor
         bool showCursor      = false; // 3D cursor panel
         bool showVehiclePanel = false;
+        bool showGliderPanel  = false;
         bool showEnv         = false;
         bool showMixer       = false;
         bool showUnityImport = false;
@@ -1093,6 +1167,10 @@ int main(int argc, char** argv) {
         bool sceneRenameOpen = false;
         bool sceneDeleteOpen = false;
         char sceneNameBuf[64] = "";
+        // Game Settings dialog (per-project: exe name, splash, start + export
+        // scenes). Loaded from the project's game.json when the dialog is opened.
+        bool          gameSettingsOpen = false;
+        game::Settings gameSettings;
         // Scene look/settings serialization hooks. The tunable registry that
         // backs these is built later (once all the tunables exist), so saveScene/
         // loadScene call through these std::functions instead of the registry.
@@ -1381,6 +1459,21 @@ int main(int argc, char** argv) {
         // by name, so the project's files must already be in the lists by then).
         auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); veg.refreshTreeAssets(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); prefabCache.clear(); return ok; };
         auto newProject           = [&](){ projectio::newProject(pio); history.clear(); prefabCache.clear(); road.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
+
+        // Non-blocking editor loads: kick off an incremental scene load, then step
+        // it each frame (below) so the UI keeps drawing with a progress bar. Player
+        // boot + scene triggers still use the synchronous openProjectFolder/
+        // loadSceneFile above -- they need the scene complete before continuing.
+        projectio::SceneLoad sceneLoad;
+        auto openProjectAsync = [&](const std::string& f){
+            road.refreshTextures(f); veg.refreshTreeAssets(f);
+            history.clear(); prefabCache.clear();
+            return projectio::beginOpenProject(pio, sceneLoad, f);
+        };
+        auto loadSceneAsync = [&](const std::string& p){
+            history.clear(); prefabCache.clear();
+            return projectio::beginLoadScene(pio, sceneLoad, p);
+        };
         // Scenes within the open project. Switching/creating replaces the document,
         // so the undo history is cleared at the boundary (like opening a project).
         auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
@@ -1866,6 +1959,8 @@ int main(int argc, char** argv) {
         // while a vehicle is being driven (see the audio mix block below).
         CarAudio carAudio;
         carAudio.load(audio, soundDir);
+        GliderAudio gliderAudio;
+        gliderAudio.load(audio, soundDir);
         float masterVolume = 0.8f;
         bool  muted        = false;
         bool  prevFlashOn  = false;
@@ -1878,6 +1973,12 @@ int main(int argc, char** argv) {
         float dofMax   = 5.0f;      // max blur radius (pixels)
         float dofNear  = 25.0f;     // sharp up to here (metres)
         float dofFar   = 140.0f;    // fully blurred beyond here
+
+        // Camera motion blur: streaks the scene along per-pixel screen velocity
+        // (this frame's camera transform vs last frame's, by depth reprojection).
+        // Purely camera motion -- fast turns/flight smear, a static view stays
+        // sharp. 0 disables it (like dofMax).
+        float motionBlurStrength = 0.6f; // 0 off .. ~2 heavy (exposure fraction)
 
         // Tonemapping exposure + HSV colour grade.
         float exposure   = 1.0f;
@@ -2027,6 +2128,7 @@ int main(int argc, char** argv) {
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
         addB("startInVehicleMode", startInVehicleMode);
+        addB("startInGliderMode", startInGliderMode);
         addB("showCrosshair", showCrosshair);
         addB("skidMarks", skids.enabled);      addF("skidSlip", skids.slipThresh);
         addF("skidWidth", skids.markHalfW);    addF("skidDark", skids.opacity);
@@ -2041,7 +2143,7 @@ int main(int argc, char** argv) {
         addF("ssaoRadius", ssaoRadius);        addF("cascadeSplit", renderer.shadows().splitLambda);
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
-        addF("contrast", contrast);
+        addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -2176,6 +2278,9 @@ int main(int argc, char** argv) {
             // along in "terrainEdits" above; the mesh is re-lofted on load).
             road.save(j["road"]);
 
+            // Scene 2D UI overlay (adds its own "uiOverlay" array to the settings).
+            uiOverlay.save(j);
+
             // Editor fly-camera pose, so reopening a project returns to the exact
             // view it was saved from (position + look direction).
             const glm::vec3 camP = camera.position();
@@ -2300,6 +2405,10 @@ int main(int argc, char** argv) {
                 road.load(j["road"]);
                 roadSel = roadSel2 = -1;
             }
+            // Scene 2D UI overlay: clears itself first, so scenes without the key
+            // (older ones, or a fresh scene) load with an empty overlay.
+            uiOverlay.load(j);
+            uiSel = uiOverlay.empty() ? -1 : 0;
             // The graded corridor is already baked into the restored terrain
             // edits above, so just re-loft the committed mesh on that ground.
             road.rebuildMesh();
@@ -2403,6 +2512,31 @@ int main(int argc, char** argv) {
             editorPath = path;
             editorDirty = false;
             showScriptEditor = true;
+        };
+        // Exported script parameters (module-level globals), cached per file and
+        // re-scanned when the .lua changes on disk -- so editing a script and
+        // returning to the Inspector shows the current set. `ok`/`err` report a
+        // parse/run failure (the fields are then unknown, not empty-by-choice).
+        struct ScriptParamScan {
+            std::filesystem::file_time_type mtime{};
+            std::vector<ScriptParam>        defs;
+            bool                            ok = false;
+            std::string                     err;
+        };
+        std::unordered_map<std::string, ScriptParamScan> scriptParamCache;
+        auto scanScriptParams = [&](const std::string& file) -> const ScriptParamScan& {
+            const std::string path = scriptPath(file);
+            std::error_code ec;
+            const auto mtime = std::filesystem::last_write_time(path, ec);
+            auto it = scriptParamCache.find(path);
+            if (it == scriptParamCache.end() || ec || it->second.mtime != mtime) {
+                ScriptParamScan s;
+                s.mtime = ec ? std::filesystem::file_time_type{} : mtime;
+                s.defs  = scripts.scanParams(path, &s.err);
+                s.ok    = s.err.empty();
+                it = scriptParamCache.insert_or_assign(path, std::move(s)).first;
+            }
+            return it->second;
         };
         // Write the editor buffer back and reload the VM so Play picks it up.
         auto saveEditor = [&](){
@@ -2616,6 +2750,91 @@ int main(int argc, char** argv) {
             camChase = camera.position();
         };
 
+        // --- Glider drive (arcade hover, editor + Play) -----------------------
+        // Ground under (x,z): the terrain height, or the top of any solid block/
+        // ramp/model whose axis-aligned footprint covers (x,z) and sits at/below
+        // `yMax` -- so the craft floats over a track built from placed geometry
+        // (rotation is ignored, like game.raycast). The flown craft (and its
+        // children) are excluded so it never hovers on top of itself.
+        auto gliderGround = [&](float x, float z, float yMax) -> float {
+            float h = streamer.heightAt(x, z);
+            for (const Entity& e : entities) {
+                if (!e.activeInHierarchy) continue;
+                if (e.id == driveGliderId || e.parent == driveGliderId) continue;
+                if (e.type != EntityType::Box && e.type != EntityType::Ramp &&
+                    e.type != EntityType::Cylinder && e.type != EntityType::Sphere &&
+                    e.type != EntityType::Model)
+                    continue;
+                if (x < e.center.x - e.half.x || x > e.center.x + e.half.x) continue;
+                if (z < e.center.z - e.half.z || z > e.center.z + e.half.z) continue;
+                const float top = e.center.y + e.half.y;
+                if (top <= yMax && top > h) h = top;
+            }
+            return h;
+        };
+        auto findNearestGlider = [&]() -> int {
+            int best = -1; float bestD = 1e30f;
+            const glm::vec3 cp = camera.position();
+            for (const Entity& e : entities) {
+                if (!e.components.get<GliderComponent>()) continue;
+                const float d = glm::length(e.center - cp);
+                if (d < bestD) { bestD = d; best = e.id; }
+            }
+            return best;
+        };
+        // Start flying `id`: snapshot its transform (restored on exit) and seed the
+        // flight state at its current pose, lifted to the hover rest height.
+        auto beginGliderDrive = [&](int id) {
+            Entity* e = document.find(id);
+            auto* gc = e ? e->components.get<GliderComponent>() : nullptr;
+            if (!gc) return;
+            gliderBackup.clear();
+            gliderBackup.push_back(*e);
+            driveGliderId     = id;
+            gliderDriveActive = true;
+            gliderPos = e->center;
+            gliderPos.y = gliderGround(e->center.x, e->center.z, e->center.y + 1000.0f)
+                          + gc->rideHeight;
+            gliderYaw = glm::radians(e->rotation.y) +
+                        (gc->forward == 1 ? glm::pi<float>() : 0.0f);
+            gliderVel = glm::vec3(0.0f);
+            gliderBank = gliderPitch = 0.0f;
+            gliderOverspeed = 0.0f;
+            gliderWasOnPad  = false; // a pad under the start line still punches
+        };
+        auto endGliderDrive = [&] {
+            if (!gliderDriveActive) return;
+            for (const Entity& b : gliderBackup)
+                if (Entity* e = document.find(b.id)) {
+                    e->center = b.center;         e->rotation = b.rotation;
+                    e->localCenter = b.localCenter; e->localRotation = b.localRotation;
+                }
+            gliderBackup.clear();
+            gliderDriveActive = false;
+            driveGliderId     = -1;
+        };
+        // Enter glider mode (G key / Glider-panel checkbox): fly the nearest glider
+        // entity. Arcade in both editor and Play, so no physics body is created.
+        auto enterGliderMode = [&] {
+            fpsMode = false;
+            input.setCursorLocked(false);
+            const int g = findNearestGlider();
+            if (g >= 0) beginGliderDrive(g);
+            else        gliderMode = false; // nothing to fly
+            // In Play, start a race with a Ready/Set/Go countdown when the scene
+            // is a race (has opponents or a start/finish line) -- craft + opponents
+            // are held frozen until GO so nobody jumps the start.
+            if (gliderMode && playMode) {
+                bool hasRace = false;
+                for (const Entity& e : entities)
+                    if (e.components.get<OpponentComponent>() ||
+                        e.components.get<FinishLineComponent>()) { hasRace = true; break; }
+                raceCountdown = hasRace ? 3.0f : 0.0f;
+                goFlash = 0.0f;
+            }
+            camChase = camera.position();
+        };
+
         // Play-mode camera state. Declared ahead of the script bridge because
         // game.setCamera reaches `activeCam`.
         glm::vec3 playCamPos{0.0f};
@@ -2780,6 +2999,28 @@ int main(int argc, char** argv) {
             return soundDir + "/" + n;
         };
         host.playSound = [&](const std::string& n){ audio.playOneShot(resolveSoundPath(n)); };
+        // Boost-pad punch voices, cached by sound file. CRUCIAL: each file is loaded
+        // once and only re-played (seek+start) -- never re-created while it may still
+        // be sounding. Re-assigning a live Sound uninits its miniaudio instance out
+        // from under the audio thread, which corrupted the mixer graph (the sound cut
+        // out, then the app crashed). Same load-once/replay pattern as the ambience.
+        std::unordered_map<std::string, Sound> boostVoices;
+        // Fire a boost pad's punch at its own gain/pitch (tunable + auditionable per
+        // pad); a low pitch gives the deep thump. Shared by the glider's pad-entry
+        // (below) and the Inspector's Preview button.
+        auto playBoostPunch = [&](const BoostPadComponent& bp){
+            if (bp.sound.empty()) return;
+            auto it = boostVoices.find(bp.sound);
+            if (it == boostVoices.end())
+                it = boostVoices.emplace(bp.sound,
+                        Sound::fromFile(audio, resolveSoundPath(bp.sound), false)).first;
+            Sound& voice = it->second;
+            if (!voice.isValid()) return;
+            const float g = muted ? 0.0f : masterVolume * glm::clamp(bp.soundGain, 0.0f, 2.0f);
+            voice.setVolume(g);
+            voice.setPitch(glm::clamp(bp.soundPitch, 0.2f, 3.0f));
+            voice.play(); // seek-to-0 + start: safe to retrigger a live voice
+        };
         // Looping ambient voices for TriggerSound zones (entity id -> Sound),
         // created lazily in Play and cleared on stop. Sound is move-only.
         std::unordered_map<int, Sound> zoneSounds;
@@ -2908,6 +3149,7 @@ int main(int argc, char** argv) {
         auto startPlay = [&] {
             if (playMode) return;
             endEditorDrive(); // a test-drive must not leak into the Play backup
+            endGliderDrive(); // ...nor a test-flight
             playMode      = true;
             playEntities  = entities;
             playMaterials = materials;
@@ -2920,6 +3162,13 @@ int main(int argc, char** argv) {
             entityEditMode = false;
             entitySel      = -1;
             vehicleMode    = false;
+            gliderMode     = false;
+            // Fresh race: no laps timed until the glider crosses the start line.
+            raceActive = raceFinished = false;
+            raceClock = lapClock = lastLap = bestLap = 0.0f;
+            raceLap = raceLaps = 0; finishWasOver = false; finishArm = 0.0f;
+            cpPassed.clear(); cpTotal = 0; raceMissedFlash = 0.0f;
+            raceCountdown = goFlash = 0.0f;
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -2992,6 +3241,10 @@ int main(int argc, char** argv) {
                 if (!pc || !e.activeInHierarchy ||
                     e.type == EntityType::Light || e.type == EntityType::Sun)
                     continue;
+                // Opponents are kinematic (driven along the road each frame), so
+                // they must never get a dynamic body -- one would be flung by the
+                // solver (e.g. spawning inside the terrain) and fight the tick.
+                if (e.components.get<OpponentComponent>()) continue;
                 const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
                 const glm::quat q = glm::quat(glm::radians(e.rotation));
                 PhysicsBodyId id = 0;
@@ -3071,6 +3324,11 @@ int main(int argc, char** argv) {
             if (startInVehicleMode) {
                 vehicleMode = true;
                 enterVehicleMode();
+            } else if (startInGliderMode) {
+                // ...or straight into the glider: enterGliderMode flies the
+                // nearest glider entity (no-op if the scene has none).
+                gliderMode = true;
+                enterGliderMode();
             }
         };
         auto stopPlay = [&] {
@@ -3078,6 +3336,9 @@ int main(int argc, char** argv) {
             playMode  = false;
             vehicleMode = false;    // the physics car is gone with the world
             driveVehicleId = -1;    // the scene restore below un-drives the model
+            gliderMode = false;     // stop flying; the scene restore un-flies the craft
+            driveGliderId = -1;
+            gliderDriveActive = false; gliderBackup.clear(); // Play restore owns the transform
             skids.clear();          // drop skid marks so they don't linger in the editor
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
@@ -3106,6 +3367,14 @@ int main(int argc, char** argv) {
         // start playing immediately. Esc quits (handled in the input loop).
         if (playerMode) {
             if (openProjectFolder(bootProject)) {
+                // Boot into the configured start scene (materials/mounts already
+                // set up by openProjectFolder); empty keeps the default scene.
+                if (!bootScene.empty()) {
+                    const std::string scenePath =
+                        bootProject + "/" + bootScene + ".fitzel";
+                    if (std::filesystem::exists(scenePath))
+                        projectio::loadSceneFile(pio, scenePath);
+                }
                 if (bootFullscreen) {
                     GLFWwindow* w = window.nativeHandle();
                     glfwGetWindowPos(w, &savedWX, &savedWY);
@@ -3162,8 +3431,28 @@ int main(int argc, char** argv) {
             input.update();
 
             const double now = window.time();
-            const float  dt  = static_cast<float>(now - lastTime);
+            // Clamp the frame delta. A single long frame (the 0.5 s asset-poll
+            // scan below, a texture/model hot-reload, a GC/stall) would otherwise
+            // hand the arcade sims a huge dt: the glider integrates position
+            // linearly and lurches forward, while the chase camera eases with a
+            // saturating min(1, dt*k) and snaps fully onto the craft -- so the
+            // craft slides *backward on screen* for one frame ("jumps back a
+            // little"). Capping dt makes a hitch briefly slow time instead.
+            const float  dt  = static_cast<float>(std::min(now - lastTime, 0.05));
             lastTime = now;
+
+            // Fixed-timestep clock for the arcade sims (car + glider). Their
+            // visible motion is integrated in constant H-second ticks and the
+            // render pose is interpolated by simAlpha, so the frame-to-frame dt
+            // jitter that vsync/DWM hands us stops showing up as micro-stutter
+            // (worst in curves, where the motion is lateral on screen). Every
+            // other subsystem keeps running at frame dt.
+            constexpr float kSimH = 1.0f / 120.0f;
+            simAccum += dt;
+            int simSteps = 0;
+            while (simAccum >= kSimH && simSteps < 5) { simAccum -= kSimH; ++simSteps; }
+            if (simSteps == 5) simAccum = 0.0f;   // dropped backlog: a hitch slows time
+            const float simAlpha = simAccum / kSimH; // in [0,1): pose blend to render
 
             // Hot reload: pick up on-disk asset edits ~twice a second. Textures
             // and models reload in place (existing handles update automatically);
@@ -3185,7 +3474,7 @@ int main(int argc, char** argv) {
             const bool fDown  = input.isKeyDown(GLFW_KEY_F);
             const bool shiftF = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
                                 input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
-            if (fDown && !prevF && !vehicleMode && !ImGui::GetIO().WantTextInput) {
+            if (fDown && !prevF && !vehicleMode && !gliderMode && !ImGui::GetIO().WantTextInput) {
                 if (shiftF) { // Shift+F: toggle first-person (cursor locks, mouse-look)
                     fpsMode = !fpsMode;
                     input.setCursorLocked(fpsMode);
@@ -3221,6 +3510,21 @@ int main(int argc, char** argv) {
             }
             prevV = vDown;
 
+            // G toggles the fly-a-glider mode: take the nearest glider (a model
+            // with a Glider component) and fly it with the arcade hover sim, in
+            // the editor or in Play. Mutually exclusive with the car's drive mode.
+            const bool gDown = input.isKeyDown(GLFW_KEY_G);
+            if (gDown && !prevG && !ImGui::GetIO().WantTextInput) {
+                gliderMode = !gliderMode;
+                if (gliderMode) {
+                    if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
+                    enterGliderMode();
+                } else {
+                    endGliderDrive();
+                }
+            }
+            prevG = gDown;
+
             // F11 toggles borderless-fullscreen presentation (UI hidden).
             const bool f11 = input.isKeyDown(GLFW_KEY_F11);
             if (f11 && !prevF11) {
@@ -3247,6 +3551,7 @@ int main(int argc, char** argv) {
                                          savedWX, savedWY, savedWW, savedWH, 0);
                 } else if (playMode)     { stopPlay(); }
                 else if (vehicleMode)    { vehicleMode = false; endEditorDrive(); }
+                else if (gliderMode)     { gliderMode = false; endGliderDrive(); }
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
                 // Plain editor: Esc steps back to selection (drop the transform
                 // tool), then a second Esc clears the selection. Never quits.
@@ -3261,7 +3566,7 @@ int main(int argc, char** argv) {
             // Transform-tool shortcuts (Blender/Unity-style): Q/W/E pick the gizmo
             // and (re)enter Edit mode. Only in the plain editor, never while a
             // camera-fly drag (right mouse) or a text field owns the keys.
-            if (!playMode && !fpsMode && !vehicleMode && !presentMode &&
+            if (!playMode && !fpsMode && !vehicleMode && !gliderMode && !presentMode &&
                 !ImGui::GetIO().WantTextInput &&
                 !input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                 const bool qd = input.isKeyDown(GLFW_KEY_Q);
@@ -3297,6 +3602,9 @@ int main(int argc, char** argv) {
             }
 
             engineDriving = false; // re-armed by whichever drive block runs below
+            gliderAudioActive = false; // re-armed by the glider flight tick below
+            blurAnchorValid = false;   // re-armed by whichever chase-cam block runs
+            blurSpeed01     = 0.0f;    // ...along with the craft's speed for the blur
             carWaterSub   = 0.0f;  // re-armed by the buoyancy block when submerged
 
             if (vehicleMode && playMode && physics && physics->hasVehicle()) {
@@ -3333,8 +3641,10 @@ int main(int argc, char** argv) {
                 // choose which control scheme (wheels vs boat) to feed the sim.
                 glm::vec3 cp(0.0f); glm::quat cq(1.0f, 0.0f, 0.0f, 0.0f);
                 physics->getTransform(physCarId, cp, cq);
+                blurAnchorWorld = cp; blurAnchorValid = true; // keep the car sharp
                 glm::vec3 vel(0.0f);
                 physics->getLinearVelocity(physCarId, vel);
+                blurSpeed01 = glm::clamp(glm::length(vel) / 40.0f, 0.0f, 1.2f);
                 const float halfH = svc ? glm::max(svc->chassisHalf.y, 0.1f) : 0.5f;
                 const float mass  = svc ? glm::max(svc->mass, 1.0f)         : 1200.0f;
                 const float depth = waterLevel - (cp.y - halfH);
@@ -3504,12 +3814,16 @@ int main(int argc, char** argv) {
                 // Arcade car: throttle + steering, drag, bicycle-model heading.
                 // When a scene vehicle is being test-driven, its component
                 // supplies the geometry and the sim glues the model along.
+                // Integrated on the fixed kSimH clock; the drawn pose is the
+                // interpolation of the pre-/post-step state (see simAlpha), so
+                // the follow stays smooth under jittery frame times.
                 Entity* dv  = (driveVehicleId >= 0) ? document.find(driveVehicleId)
                                                     : nullptr;
                 auto*   dvc = dv ? dv->components.get<VehicleComponent>() : nullptr;
                 const float wb = dvc ? glm::max(dvc->frontZ - dvc->rearZ, 0.5f) : 2.7f;
                 const float wr = dvc ? glm::max(dvc->wheelRadius, 0.05f) : wheelR;
 
+                // Controls sampled once per frame, applied to every substep.
                 const bool kW = input.isKeyDown(GLFW_KEY_W);
                 const bool kS = input.isKeyDown(GLFW_KEY_S);
                 const bool kA = input.isKeyDown(GLFW_KEY_A);
@@ -3528,17 +3842,55 @@ int main(int argc, char** argv) {
                     if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) kBrake = true;
                 }
 
-                const float maxSteer =
-                    glm::radians(dvc ? dvc->maxSteerDeg : 32.0f);
-                const float steerSpd = dvc ? dvc->steerSpeed : 7.0f;
-                steerAngle += (steerIn * maxSteer - steerAngle) * std::min(1.0f, dt * steerSpd);
+                const float maxSteer = glm::radians(dvc ? dvc->maxSteerDeg : 32.0f);
+                const float steerSpd = dvc ? dvc->steerSpeed   : 7.0f;
+                const float camDist  = dvc ? dvc->camDistance  : 7.0f;
+                const float camH     = dvc ? dvc->camHeight    : 3.2f;
+                const float camSide  = dvc ? dvc->camSide      : 0.0f;
+                const float camLook  = dvc ? dvc->camLookHeight: 1.2f;
+                const float camStiff = dvc ? dvc->camStiffness : 4.0f;
 
-                carSpeed += throttle * 14.0f * dt;                    // accelerate
-                if (kBrake) carSpeed -= glm::sign(carSpeed) * 26.0f * dt;
-                carSpeed *= (1.0f - 0.6f * dt);                       // drag
-                if (throttle == 0.0f && !kBrake) carSpeed *= (1.0f - 1.2f * dt);
-                carSpeed = glm::clamp(carSpeed, -8.0f, 26.0f);
-                if (std::abs(carSpeed) < 0.02f) carSpeed = 0.0f;
+                // *0 hold the pose just BEFORE the final substep (== the current
+                // pose when no substep runs), so the render interpolates across the
+                // last step by simAlpha -- the standard fixed-timestep interpolation.
+                // Snapshotting once before the loop would blend across the whole
+                // (often 2-step) frame and snap the craft backward.
+                glm::vec3 carPos0    = carPos;
+                float     carYaw0    = carYaw;
+                float     steerAng0  = steerAngle;
+                float     wheelSpin0 = wheelSpin;
+                glm::vec3 camChase0  = camChase;
+                for (int s = 0; s < simSteps; ++s) {
+                    carPos0 = carPos; carYaw0 = carYaw; steerAng0 = steerAngle;
+                    wheelSpin0 = wheelSpin; camChase0 = camChase;
+                    steerAngle += (steerIn * maxSteer - steerAngle) * std::min(1.0f, kSimH * steerSpd);
+                    carSpeed += throttle * 14.0f * kSimH;                 // accelerate
+                    if (kBrake) carSpeed -= glm::sign(carSpeed) * 26.0f * kSimH;
+                    carSpeed *= (1.0f - 0.6f * kSimH);                    // drag
+                    if (throttle == 0.0f && !kBrake) carSpeed *= (1.0f - 1.2f * kSimH);
+                    carSpeed = glm::clamp(carSpeed, -8.0f, 26.0f);
+                    if (std::abs(carSpeed) < 0.02f) carSpeed = 0.0f;
+                    carYaw += (carSpeed / wb) * std::tan(steerAngle) * kSimH;
+                    const glm::vec3 fwdS(std::sin(carYaw), 0.0f, std::cos(carYaw));
+                    carPos   += fwdS * carSpeed * kSimH;
+                    carPos.y  = streamer.heightAt(carPos.x, carPos.z);
+                    wheelSpin += (carSpeed / wr) * kSimH;
+                    // Chase camera eased in the same fixed step so its follow is
+                    // as smooth as the craft it interpolates alongside.
+                    const glm::vec3 rightS  = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwdS));
+                    const glm::vec3 wantedS = carPos - fwdS * camDist + rightS * camSide +
+                                              glm::vec3(0.0f, camH, 0.0f);
+                    camChase += (wantedS - camChase) * std::min(1.0f, kSimH * camStiff);
+                }
+
+                // Render pose: blend pre-/post-step state. All of these are
+                // continuous accumulators (no angle wrap within a frame), so a
+                // plain lerp is exact.
+                const glm::vec3 rPos   = glm::mix(carPos0,    carPos,    simAlpha);
+                const float     rYaw   = glm::mix(carYaw0,    carYaw,    simAlpha);
+                const float     rSteer = glm::mix(steerAng0,  steerAngle,simAlpha);
+                const float     rSpin  = glm::mix(wheelSpin0, wheelSpin, simAlpha);
+                const glm::vec3 rCam   = glm::mix(camChase0,  camChase,  simAlpha);
 
                 // Feed the engine sound from the arcade sim's speed/throttle.
                 engineDriving  = true;
@@ -3546,21 +3898,15 @@ int main(int argc, char** argv) {
                 engineThrottle = std::abs(throttle);
                 engineWheelR   = wr;
 
-                carYaw += (carSpeed / wb) * std::tan(steerAngle) * dt;
-                const glm::vec3 fwd(std::sin(carYaw), 0.0f, std::cos(carYaw));
-                carPos   += fwd * carSpeed * dt;
-                carPos.y  = streamer.heightAt(carPos.x, carPos.z);
-                wheelSpin += (carSpeed / wr) * dt;
-
-                // Glue the driven model onto the sim: the root follows the
-                // heading at its rest ride height, wheel children spin/steer
-                // (restored from the snapshot when drive mode ends).
+                // Glue the driven model onto the interpolated pose: the root
+                // follows the heading at its rest ride height, wheel children
+                // spin/steer (restored from the snapshot when drive mode ends).
                 if (dv && dvc) {
                     const float restY  = wr - dvc->wheelY; // ground -> body centre
-                    const float yawDeg = glm::degrees(carYaw) -
+                    const float yawDeg = glm::degrees(rYaw) -
                                          (dvc->forward == 1 ? 180.0f : 0.0f);
                     const glm::mat4 pw = parentWorldMat(*dv);
-                    setWorld(*dv, carPos + glm::vec3(0.0f, restY, 0.0f),
+                    setWorld(*dv, rPos + glm::vec3(0.0f, restY, 0.0f),
                              glm::vec3(0.0f, yawDeg, 0.0f),
                              dv->parent >= 0 ? &pw : nullptr);
                     const float spinSign = (dvc->forward == 1) ? -1.0f : 1.0f;
@@ -3574,28 +3920,315 @@ int main(int argc, char** argv) {
                         const Entity* rest = restOf(dvc->wheelId[i]);
                         if (!w || !rest) continue;
                         glm::vec3 rot = rest->localRotation;
-                        rot.x += glm::degrees(wheelSpin) * spinSign;
-                        if (i < 2) rot.y += glm::degrees(steerAngle); // fronts steer
+                        rot.x += glm::degrees(rSpin) * spinSign;
+                        if (i < 2) rot.y += glm::degrees(rSteer); // fronts steer
                         w->localRotation = rot;
                     }
                 }
 
-                // Chase camera: behind and above, smoothly following, looking
-                // ahead; distance/height/stiffness come from the vehicle component.
-                const float camDist  = dvc ? dvc->camDistance   : 7.0f;
-                const float camH     = dvc ? dvc->camHeight     : 3.2f;
-                const float camSide  = dvc ? dvc->camSide       : 0.0f;
-                const float camLook  = dvc ? dvc->camLookHeight : 1.2f;
-                const float camStiff = dvc ? dvc->camStiffness  : 4.0f;
-                const glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
-                const glm::vec3 target = carPos + glm::vec3(0.0f, camLook, 0.0f);
-                const glm::vec3 wanted = carPos - fwd * camDist + right * camSide +
-                                         glm::vec3(0.0f, camH, 0.0f);
-                camChase += (wanted - camChase) * std::min(1.0f, dt * camStiff);
-                camera.setPosition(camChase);
-                const glm::vec3 d = glm::normalize(target - camChase);
+                // Chase camera: aim from the interpolated cam position at the
+                // craft (behind and above, looking ahead).
+                blurAnchorWorld = rPos; blurAnchorValid = true; // keep the car sharp
+                blurSpeed01 = glm::clamp(std::abs(carSpeed) / 28.0f, 0.0f, 1.2f);
+                camera.setPosition(rCam);
+                const glm::vec3 d = glm::normalize(
+                    (rPos + glm::vec3(0.0f, camLook, 0.0f)) - rCam);
                 camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
                 camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+            } else if (gliderMode && driveGliderId >= 0) {
+                // Wipeout-style hover racer: an arcade flight sim (no Jolt). The
+                // craft thrusts along its heading, floats a ride height above the
+                // ground under it, kills sideways drift by `grip`, banks into
+                // turns, and a chase camera trails it -- same controls/feel as the
+                // car (W/S thrust, A/D steer, Space air-brake). Runs identically in
+                // the editor and in Play; the driven model is glued to the sim and
+                // restored from the snapshot when flight ends.
+                Entity* dg = document.find(driveGliderId);
+                auto*   gc = dg ? dg->components.get<GliderComponent>() : nullptr;
+                if (dg && gc) {
+                    const bool kW = input.isKeyDown(GLFW_KEY_W);
+                    const bool kS = input.isKeyDown(GLFW_KEY_S);
+                    const bool kA = input.isKeyDown(GLFW_KEY_A);
+                    const bool kD = input.isKeyDown(GLFW_KEY_D);
+                    bool  kBrake  = input.isKeyDown(GLFW_KEY_SPACE);
+                    float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
+                    float steerIn  = (kD ? 1.0f : 0.0f) - (kA ? 1.0f : 0.0f); // right +
+                    // Gamepad: RT accelerate / LT reverse, left stick steers, B brakes.
+                    if (input.hasGamepad()) {
+                        throttle = glm::clamp(throttle
+                            + input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
+                            - input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER), -1.0f, 1.0f);
+                        steerIn = glm::clamp(
+                            steerIn + input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X), -1.0f, 1.0f);
+                        if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) kBrake = true;
+                    }
+                    if (gc->invertSteer) steerIn = -steerIn; // flip left/right
+
+                    // Race over: the craft flies itself away. Take the controls off
+                    // the player and hold a steady forward cruise (no steering, no
+                    // brake) so it keeps gliding on past the finish instead of
+                    // coasting to a stop -- a little victory fly-out.
+                    if (raceFinished) {
+                        throttle = 1.0f;
+                        steerIn  = 0.0f;
+                        kBrake   = false;
+                    }
+
+                    // Ready/Set/Go: hold the craft still until GO, then start the
+                    // race clock (so the timer and the opponents begin exactly at
+                    // GO -- no one jumps the start). The countdown ticks once per
+                    // frame; sub-ms precision here is irrelevant.
+                    const bool frozen = raceCountdown > 0.0f;
+                    if (frozen) {
+                        raceCountdown = glm::max(0.0f, raceCountdown - dt);
+                        throttle = 0.0f; steerIn = 0.0f; kBrake = false;
+                        gliderVel = glm::vec3(0.0f);
+                        if (raceCountdown <= 0.0f) {
+                            goFlash = 1.3f;               // "GO!" flash
+                            // The race starts now; the finish line then only
+                            // completes laps. Ignore the immediate first crossing
+                            // as the craft drives off the start line.
+                            raceActive = true; raceFinished = false;
+                            raceClock = lapClock = 0.0f; raceLap = 0;
+                            lastLap = bestLap = 0.0f; cpPassed.clear();
+                            raceLaps = 0;
+                            for (const Entity& fe : entities)
+                                if (const auto* fl = fe.components.get<FinishLineComponent>())
+                                    { raceLaps = static_cast<int>(std::lround(fl->laps)); break; }
+                            finishWasOver = true; finishArm = 1.0f;
+                        }
+                    } else if (goFlash > 0.0f) {
+                        goFlash = glm::max(0.0f, goFlash - dt);
+                    }
+
+                    // Advance simSteps fixed ticks. Integration and every step-bound
+                    // event (heading, velocity, boost pads, gate/checkpoint/lap
+                    // logic, hover, attitude, chase-cam easing) run on the fixed
+                    // clock; fixed steps also stop a fast craft tunnelling a gate.
+                    // The *0 snapshots hold the pose just BEFORE the final substep
+                    // (== current pose if no step runs) so the render interpolates
+                    // across the last step by simAlpha -- snapshotting once before
+                    // the loop would blend the whole (often 2-step) frame and snap
+                    // the craft backward.
+                    glm::vec3 gliderPos0   = gliderPos;
+                    float     gliderYaw0   = gliderYaw;
+                    float     gliderBank0  = gliderBank;
+                    float     gliderPitch0 = gliderPitch;
+                    glm::vec3 camChase0    = camChase;
+                    for (int s = 0; s < simSteps; ++s) {
+                        gliderPos0 = gliderPos; gliderYaw0 = gliderYaw;
+                        gliderBank0 = gliderBank; gliderPitch0 = gliderPitch;
+                        camChase0 = camChase;
+                        // Heading: steer right increases yaw (fwd rotates +Z -> +X).
+                        gliderYaw += glm::radians(gc->turnRate) * steerIn * kSimH;
+                        const glm::vec3 fwd(std::sin(gliderYaw), 0.0f, std::cos(gliderYaw));
+                        const glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
+
+                        // Horizontal velocity: thrust along heading, brake, kill
+                        // drift, drag, then clamp to the top speed.
+                        glm::vec3 velH(gliderVel.x, 0.0f, gliderVel.z);
+                        const float accel = (throttle >= 0.0f) ? throttle * gc->thrust
+                                                               : throttle * gc->thrust * 0.6f;
+                        velH += fwd * accel * kSimH;
+                        if (kBrake) {
+                            const float sp = glm::length(velH);
+                            if (sp > 1e-4f) velH -= glm::normalize(velH) * glm::min(sp, gc->brakeForce * kSimH);
+                        }
+                        const float lat = glm::dot(velH, right);          // sideways slip
+                        velH -= right * lat * glm::clamp(gc->grip * kSimH, 0.0f, 1.0f);
+                        velH *= glm::max(0.0f, 1.0f - gc->drag * kSimH);
+
+                        // Boost pads: the instant the craft's footprint touches an
+                        // active BoostPad, its forward speed snaps up to that pad's
+                        // boostSpeed (a punchy kick that doesn't depend on how long
+                        // it sits on the strip -- a thin strip works), with an extra
+                        // push while it stays on. The raised speed cap
+                        // (gliderOverspeed) then bleeds off over the pad's `hold`
+                        // seconds after leaving.
+                        gliderOverspeed -= gliderOverspeed *
+                            glm::min(1.0f, kSimH / glm::max(gliderBoostHold, 0.1f));
+                        if (gliderOverspeed < 0.05f) gliderOverspeed = 0.0f;
+                        bool onBoostPad = false;
+                        const BoostPadComponent* hitPad = nullptr; // the pad just mounted
+                        for (const Entity& pe : entities) {
+                            if (!pe.activeInHierarchy) continue;
+                            const auto* bp = pe.components.get<BoostPadComponent>();
+                            if (!bp) continue;
+                            if (gliderPos.x < pe.center.x - pe.half.x ||
+                                gliderPos.x > pe.center.x + pe.half.x) continue;
+                            if (gliderPos.z < pe.center.z - pe.half.z ||
+                                gliderPos.z > pe.center.z + pe.half.z) continue;
+                            // Generous vertical window: the craft hovers rideHeight
+                            // above the pad, and may still be rising onto it.
+                            const float padTop = pe.center.y + pe.half.y;
+                            if (gliderPos.y < padTop - 2.0f ||
+                                gliderPos.y > padTop + gc->rideHeight + 5.0f) continue;
+                            glm::vec3 dir = fwd; // default: along the craft's heading
+                            if (bp->usePadDir) {
+                                glm::vec3 pd = glm::quat(glm::radians(pe.rotation)) *
+                                               glm::vec3(0.0f, 0.0f, 1.0f);
+                                pd.y = 0.0f;
+                                if (glm::length(pd) > 1e-4f) dir = glm::normalize(pd);
+                            }
+                            if (bp->reverse) dir = -dir; // flip the boost direction
+                            // Instant kick: bring the forward speed up to boostSpeed
+                            // (never slows a craft already going faster), plus a
+                            // small sustained shove while still on the strip.
+                            const float along = glm::dot(velH, dir);
+                            if (along < bp->boostSpeed) velH += dir * (bp->boostSpeed - along);
+                            velH += dir * bp->accel * kSimH;
+                            gliderBoostHold = glm::max(bp->hold, 0.1f);
+                            gliderOverspeed = glm::max(gliderOverspeed,
+                                                       bp->boostSpeed - gc->maxSpeed);
+                            onBoostPad = true;
+                            hitPad     = bp;
+                        }
+                        gliderBoosting = onBoostPad || gliderOverspeed > 1.0f; // HUD
+                        // Deep punch the instant the craft mounts a pad (rising
+                        // edge), so the boost is *felt*, not just seen. Retriggers
+                        // only on a fresh entry, not every tick it sits on the strip.
+                        if (onBoostPad && !gliderWasOnPad && hitPad) playBoostPunch(*hitPad);
+                        gliderWasOnPad = onBoostPad;
+
+                        // Gate trigger shared by checkpoints and the finish line. The
+                        // gate has its OWN size (w x h x d) and orientation (the
+                        // entity rotation plus a `yaw` offset), independent of the
+                        // visual object -- so a checkpoint plane authored/rotated
+                        // 90 deg is lined up by setting Yaw, and the trigger is sized
+                        // to the track by Width/Depth. Horizontal test is in the
+                        // gate's turned frame; vertical is world up.
+                        auto overGate = [&](const Entity& fe, float w, float h, float d, float yawOff) {
+                            const glm::quat q = glm::quat(glm::radians(fe.rotation)) *
+                                                glm::angleAxis(glm::radians(yawOff), glm::vec3(0, 1, 0));
+                            const glm::vec3 l = glm::conjugate(q) * (gliderPos - fe.center);
+                            if (std::abs(l.x) > w * 0.5f || std::abs(l.z) > d * 0.5f) return false;
+                            const float dy = gliderPos.y - fe.center.y;
+                            return dy > -2.0f && dy < h + gc->rideHeight + 2.0f;
+                        };
+
+                        // Checkpoints: every one must be flown through before a lap
+                        // counts. Passing one records it for the current lap (order
+                        // doesn't matter). cpTotal drives the HUD.
+                        cpTotal = 0;
+                        for (const Entity& ce : entities) {
+                            if (!ce.activeInHierarchy) continue;
+                            const auto* cp = ce.components.get<CheckpointComponent>();
+                            if (!cp) continue;
+                            ++cpTotal;
+                            if (raceActive && overGate(ce, cp->width, cp->height, cp->depth, cp->yaw))
+                                cpPassed.insert(ce.id);
+                        }
+
+                        // Start/Finish line: first crossing starts the clock; each
+                        // later crossing completes a lap -- but only if all
+                        // checkpoints were passed this lap. A re-arm guard stops one
+                        // pass counting twice.
+                        if (finishArm > 0.0f) finishArm = glm::max(0.0f, finishArm - kSimH);
+                        if (raceMissedFlash > 0.0f) raceMissedFlash = glm::max(0.0f, raceMissedFlash - kSimH);
+                        raceHasLine = false;
+                        bool overFinish = false; int lineLaps = 0;
+                        for (const Entity& fe : entities) {
+                            if (!fe.activeInHierarchy) continue;
+                            const auto* fl = fe.components.get<FinishLineComponent>();
+                            if (!fl) continue;
+                            raceHasLine = true;
+                            lineLaps = static_cast<int>(std::lround(fl->laps));
+                            if (overGate(fe, fl->width, fl->height, fl->depth, fl->yaw))
+                                overFinish = true;
+                        }
+                        if (raceActive && !raceFinished) { raceClock += kSimH; lapClock += kSimH; }
+                        if (raceCountdown <= 0.0f && overFinish && !finishWasOver &&
+                            finishArm <= 0.0f && !raceFinished) {
+                            finishArm = 2.0f; // no legit re-cross within 2 s
+                            if (!raceActive) {
+                                raceActive = true; raceClock = lapClock = 0.0f;
+                                raceLap = 0; raceLaps = lineLaps;
+                                lastLap = bestLap = 0.0f; cpPassed.clear();
+                            } else if (static_cast<int>(cpPassed.size()) >= cpTotal) {
+                                lastLap = lapClock;
+                                if (bestLap <= 0.0f || lastLap < bestLap) bestLap = lastLap;
+                                lapClock = 0.0f;
+                                ++raceLap;
+                                cpPassed.clear(); // fresh set for the next lap
+                                if (raceLaps > 0 && raceLap >= raceLaps) raceFinished = true;
+                            } else {
+                                raceMissedFlash = 2.5f; // crossed the line a checkpoint short
+                            }
+                        }
+                        finishWasOver = overFinish;
+
+                        const float effMax = gc->maxSpeed + glm::max(0.0f, gliderOverspeed);
+                        const float hs = glm::length(velH);
+                        if (hs > effMax) velH *= effMax / hs;
+                        gliderVel.x = velH.x; gliderVel.z = velH.z;
+                        gliderPos.x += gliderVel.x * kSimH;
+                        gliderPos.z += gliderVel.z * kSimH;
+
+                        // Hover: a spring-damper holds the body centre a ride height
+                        // above the ground under it; gravity takes over when launched
+                        // well above the band (flying off a ledge), and it never
+                        // sinks through the surface.
+                        const float ground = gliderGround(gliderPos.x, gliderPos.z,
+                                                           gliderPos.y + gc->rideHeight);
+                        const float restY = ground + gc->rideHeight;
+                        const float gap   = restY - gliderPos.y; // >0: below rest
+                        gliderVel.y += (gap * gc->hoverStiffness - gliderVel.y * gc->hoverDamp) * kSimH;
+                        if (gap < -0.5f) gliderVel.y -= gc->gravity * kSimH; // airborne above band
+                        gliderPos.y += gliderVel.y * kSimH;
+                        const float floorY = ground + gc->rideHeight * 0.3f;
+                        if (gliderPos.y < floorY) { gliderPos.y = floorY; if (gliderVel.y < 0) gliderVel.y = 0; }
+
+                        // Attitude (visual): bank into the turn, tip the nose with
+                        // climb/descent, both eased toward their target.
+                        const float targetBank  = -steerIn * gc->bankAngle;
+                        const float targetPitch = glm::clamp(-gliderVel.y * gc->pitchFollow * 2.0f,
+                                                             -25.0f, 25.0f);
+                        const float k = std::min(1.0f, kSimH * gc->levelRate);
+                        gliderBank  += (targetBank  - gliderBank)  * k;
+                        gliderPitch += (targetPitch - gliderPitch) * k;
+
+                        // Chase camera eased on the fixed clock (same knobs as car).
+                        const glm::vec3 wantedC = gliderPos - fwd * gc->camDistance +
+                                                  right * gc->camSide + glm::vec3(0.0f, gc->camHeight, 0.0f);
+                        camChase += (wantedC - camChase) * std::min(1.0f, kSimH * gc->camStiffness);
+                    }
+
+                    // Render pose: blend pre-/post-step state (continuous values ->
+                    // plain lerp, no angle wrap within a frame).
+                    const glm::vec3 rPos   = glm::mix(gliderPos0,   gliderPos,   simAlpha);
+                    const float     rYaw   = glm::mix(gliderYaw0,   gliderYaw,   simAlpha);
+                    const float     rBank  = glm::mix(gliderBank0,  gliderBank,  simAlpha);
+                    const float     rPitch = glm::mix(gliderPitch0, gliderPitch, simAlpha);
+                    const glm::vec3 rCam   = glm::mix(camChase0,    camChase,    simAlpha);
+
+                    // Feed the jet-thruster sound: airspeed + throttle load.
+                    const float airspeed = glm::length(glm::vec2(gliderVel.x, gliderVel.z));
+                    gliderAudioActive = true;
+                    gliderSpeedMps    = airspeed;
+                    gliderThrottle    = std::abs(throttle);
+                    gliderTopSpeed    = gc->maxSpeed;
+
+                    // Glue the model onto the interpolated pose (children ride along
+                    // via the graph).
+                    const float yawDeg = glm::degrees(rYaw) -
+                                         (gc->forward == 1 ? 180.0f : 0.0f);
+                    const glm::mat4 pw = parentWorldMat(*dg);
+                    setWorld(*dg, rPos, glm::vec3(rPitch, yawDeg, rBank),
+                             dg->parent >= 0 ? &pw : nullptr);
+
+                    // The craft is what the camera follows: anchor the radial speed
+                    // blur to it (stays sharp) and drive its length by airspeed.
+                    blurAnchorWorld = rPos; blurAnchorValid = true;
+                    blurSpeed01 = glm::clamp(airspeed / glm::max(gc->maxSpeed, 1.0f),
+                                             0.0f, 1.4f);
+
+                    // Chase camera aims from the interpolated cam position at the craft.
+                    camera.setPosition(rCam);
+                    const glm::vec3 dc = glm::normalize(
+                        (rPos + glm::vec3(0.0f, gc->camLookHeight, 0.0f)) - rCam);
+                    camera.setYaw(glm::degrees(std::atan2(dc.z, dc.x)));
+                    camera.setPitch(glm::degrees(std::asin(glm::clamp(dc.y, -1.0f, 1.0f))));
+                }
             } else if (fpsMode) {
                 // Mouse look is always active; movement is on the ground plane.
                 const glm::vec2 d = input.mouseDelta();
@@ -3822,7 +4455,7 @@ int main(int argc, char** argv) {
             // Focus (F): glide the camera to the target, cancelled by any manual
             // camera input (right-mouse fly) or leaving the free camera.
             if (camFocusing) {
-                if (fpsMode || vehicleMode || playMode ||
+                if (fpsMode || vehicleMode || gliderMode || playMode ||
                     input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                     camFocusing = false;
                 } else {
@@ -3838,7 +4471,7 @@ int main(int argc, char** argv) {
             }
 
             // --- Camera path: record samples or drive playback ----------
-            camPathRec.update(camera, dt, !vehicleMode);
+            camPathRec.update(camera, dt, !vehicleMode && !gliderMode);
 
             // View distance: drive the streaming radius and the camera far plane.
             streamer.setRadius(viewRadius);
@@ -3944,6 +4577,16 @@ int main(int argc, char** argv) {
                                 mixSfx.gain());
             } else if (carAudio.running()) {
                 carAudio.stop();
+            }
+
+            // Glider jet thruster: whine + roar layers spooled by speed/throttle
+            // while flying; silenced the moment flight ends.
+            if (gliderAudioActive) {
+                if (!gliderAudio.running()) gliderAudio.start();
+                gliderAudio.update(dt, gliderSpeedMps, gliderTopSpeed, gliderThrottle,
+                                   mixSfx.gain());
+            } else if (gliderAudio.running()) {
+                gliderAudio.stop();
             }
 
             // --- Day/night: advance time, derive sun direction and lighting ---
@@ -4096,10 +4739,16 @@ int main(int argc, char** argv) {
                                 e.localRotation += sp->axis * sp->speed * dt;
 
                 // Player-proximity behaviours (Collectible, Trigger). A mid-body
-                // reference point keeps low objects reachable.
+                // reference point keeps low objects reachable. While flying the
+                // glider (or driving), the "player" is the CRAFT, not the chase
+                // camera behind it -- so proximity triggers fire where the craft
+                // actually passes, not ~9 m back and up.
                 {
                     glm::vec3 playerC = camera.position();
                     playerC.y -= eyeHeight * 0.5f;
+                    if (gliderMode && driveGliderId >= 0) playerC = gliderPos;
+                    else if (vehicleMode && driveVehicleId >= 0)
+                        if (const Entity* dv = document.find(driveVehicleId)) playerC = dv->center;
                     for (Entity& e : entities) {
                         if (!e.activeInHierarchy) continue;  // deactivated: inert
                         // Collectible: on reach, award points, play sound, remove
@@ -4140,7 +4789,13 @@ int main(int argc, char** argv) {
                         if (auto* ts = e.components.get<TriggerSoundComponent>()) {
                             const float dist   = glm::distance(playerC, e.center);
                             const bool  inside = dist <= ts->radius;
-                            if (ts->loop) {
+                            if (ts->oneShot) {
+                                // Fire-and-forget on every entry: a full one-shot
+                                // that a fast fly-through can't cut off, and that
+                                // replays on each pass (edge-triggered).
+                                if (inside && !ts->insideLast && !ts->sound.empty())
+                                    host.playSound(ts->sound);
+                            } else if (ts->loop) {
                                 Sound& voice = zoneSounds[e.id];
                                 if (inside && !ts->sound.empty()) {
                                     if (!voice.isValid())
@@ -4246,6 +4901,86 @@ int main(int argc, char** argv) {
                         const float s = 0.5f - 0.5f * std::cos(6.2831853f * mv->phase);
                         e.localCenter = mv->home + mv->offset * s;
                     }
+
+                // Opponents: AI racers that travel along the built road centreline
+                // (world XZ polyline + terrain height), facing along the road and
+                // banking into corners. Kinematic; a closed track loops, an open
+                // road stops at the end. Snaps onto the road on the first tick, so
+                // the marker can be placed anywhere.
+                if (road.built()) {
+                    const std::vector<glm::vec2>& cl = road.centerline();
+                    if (cl.size() >= 2) {
+                        const std::size_t n = cl.size();
+                        const std::size_t segs = road.closed ? n : n - 1;
+                        float total = 0.0f;
+                        for (std::size_t i = 0; i < segs; ++i)
+                            total += glm::length(cl[(i + 1) % n] - cl[i]);
+                        // Position + tangent at arc-length `s` (wrapped/clamped).
+                        auto sampleAt = [&](float s, glm::vec2& pos, glm::vec2& dir) {
+                            if (total < 1e-3f) { pos = cl[0]; dir = glm::vec2(0.0f, 1.0f); return; }
+                            if (road.closed) { s = std::fmod(s, total); if (s < 0.0f) s += total; }
+                            else s = glm::clamp(s, 0.0f, total);
+                            float acc = 0.0f;
+                            for (std::size_t i = 0; i < segs; ++i) {
+                                const glm::vec2 a = cl[i], b = cl[(i + 1) % n];
+                                const float seg = glm::length(b - a);
+                                if (seg < 1e-5f) continue;
+                                if (acc + seg >= s || i == segs - 1) {
+                                    pos = a + (b - a) * glm::clamp((s - acc) / seg, 0.0f, 1.0f);
+                                    dir = (b - a) / seg;
+                                    return;
+                                }
+                                acc += seg;
+                            }
+                        };
+                        for (Entity& e : entities) {
+                            auto* op = e.components.get<OpponentComponent>();
+                            if (!op) continue;
+                            // Held at the start line until GO (no jumping the start).
+                            const bool frozen = raceCountdown > 0.0f;
+                            if (!op->started) {
+                                // Seed travel distance from WHERE THE MARKER WAS
+                                // PLACED: project its XZ onto the centreline so it
+                                // starts there, not at spline point 0. `startDistance`
+                                // is then a forward offset (stagger a starting grid).
+                                const glm::vec2 q(e.center.x, e.center.z);
+                                float bestD = 1e30f, bestS = 0.0f, walk = 0.0f;
+                                for (std::size_t i = 0; i < segs; ++i) {
+                                    const glm::vec2 a = cl[i], b = cl[(i + 1) % n];
+                                    const glm::vec2 ab = b - a;
+                                    const float L2 = glm::dot(ab, ab);
+                                    const float t = L2 > 1e-8f
+                                        ? glm::clamp(glm::dot(q - a, ab) / L2, 0.0f, 1.0f) : 0.0f;
+                                    const float d = glm::length(q - (a + ab * t));
+                                    if (d < bestD) { bestD = d; bestS = walk + glm::length(ab) * t; }
+                                    walk += glm::length(ab);
+                                }
+                                op->dist = bestS + op->startDistance;
+                                op->started = true;
+                            }
+                            if (!frozen) op->dist += op->speed * dt; // wait for GO
+                            if (!op->loop) op->dist = glm::min(op->dist, total);
+                            glm::vec2 pos = cl[0], dir(0.0f, 1.0f);
+                            sampleAt(op->dist, pos, dir);
+                            const glm::vec2 perp(dir.y, -dir.x);          // right of travel
+                            const glm::vec2 p = pos + perp * op->laneOffset;
+                            const glm::vec3 wpos(p.x, streamer.heightAt(p.x, p.y) + op->rideHeight, p.y);
+                            const float yaw0 = std::atan2(dir.x, dir.y);
+                            const float yawDeg = glm::degrees(yaw0) - (op->forward == 1 ? 180.0f : 0.0f);
+                            // Bank into the corner: heading change a little ahead.
+                            glm::vec2 pa = pos, da = dir; sampleAt(op->dist + 5.0f, pa, da);
+                            float dYaw = glm::degrees(std::atan2(da.x, da.y) - yaw0);
+                            while (dYaw > 180.0f) dYaw -= 360.0f;
+                            while (dYaw < -180.0f) dYaw += 360.0f;
+                            const float targetBank =
+                                glm::clamp(-dYaw * 0.6f, -op->bankAngle, op->bankAngle);
+                            op->bankCur += (targetBank - op->bankCur) * glm::min(1.0f, dt * 5.0f);
+                            const glm::mat4 pw = parentWorldMat(e);
+                            setWorld(e, wpos, glm::vec3(0.0f, yawDeg, op->bankCur),
+                                     e.parent >= 0 ? &pw : nullptr);
+                        }
+                    }
+                }
 
                 // Door: ease toward open/closed (open set by a DoorOpener), swing
                 // or slide from the captured closed pose. A kinematic collider
@@ -4431,6 +5166,11 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // Drive a non-blocking project/scene load a slice at a time. Kept to a
+            // few ms per frame so the editor keeps rendering (and the progress modal
+            // below stays live) instead of freezing on a big scene.
+            if (sceneLoad.active) projectio::stepLoad(pio, sceneLoad, 8.0);
+
             // --- UI ------------------------------------------------------
             gui.beginFrame();
             ImGuizmo::BeginFrame();
@@ -4462,6 +5202,14 @@ int main(int argc, char** argv) {
                         wizardOpen = true;
                     }
                     ImGui::Separator();
+                    if (ImGui::MenuItem("Game Settings...", nullptr, false,
+                                        !currentProject.empty())) {
+                        // Load the project's current settings, then open the modal.
+                        gameSettings = game::load(
+                            std::filesystem::path(currentProject)
+                                .parent_path().generic_string());
+                        gameSettingsOpen = true;
+                    }
                     if (ImGui::MenuItem("Export Game...", nullptr, false,
                                         !currentProject.empty())) {
                         std::string picked;
@@ -4474,18 +5222,23 @@ int main(int argc, char** argv) {
                         if (ImGui::MenuItem("Browse folder...")) {
                             std::string picked;
                             if (ed::pickFolder(picked, prefLocation) &&
-                                !openProjectFolder(picked))
+                                !openProjectAsync(picked))
                                 std::fprintf(stderr,
                                     "No project (.fitzel) in %s\n", picked.c_str());
                         }
                         if (!recentProjects.empty()) {
                             ui::sectionText("Recent");
+                            int ri = 0;
                             for (const std::string& folder : recentProjects) {
+                                // Scope each item by index so two entries can never
+                                // share an ImGui id, even if a duplicate path slips
+                                // into the list.
+                                ImGui::PushID(ri++);
                                 const std::string lbl =
-                                    std::filesystem::path(folder).filename().string() +
-                                    "##r" + folder;
+                                    std::filesystem::path(folder).filename().string();
                                 if (ImGui::MenuItem(lbl.c_str()))
-                                    openProjectFolder(folder);
+                                    openProjectAsync(folder);
+                                ImGui::PopID();
                             }
                         }
                         ui::sectionText("In default location");
@@ -4493,7 +5246,7 @@ int main(int argc, char** argv) {
                         if (projs.empty()) ImGui::TextDisabled("(none)");
                         for (const auto& [n, folder] : projs)
                             if (ImGui::MenuItem((n + "##d" + folder).c_str()))
-                                openProjectFolder(folder);
+                                openProjectAsync(folder);
                         ImGui::EndMenu();
                     }
                     ImGui::Separator();
@@ -4528,7 +5281,7 @@ int main(int argc, char** argv) {
                             if (ImGui::MenuItem((n + "##sc" + path).c_str(), nullptr, active) &&
                                 !active) {
                                 saveSceneFile(currentProject); // don't lose current edits
-                                loadSceneFile(path);
+                                loadSceneAsync(path);
                             }
                         }
                     }
@@ -4589,8 +5342,10 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Scatter",         nullptr, &showScatter);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
+                    ImGui::MenuItem("UI Overlay",      nullptr, &showUiOverlay);
                     ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
                     ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
+                    ImGui::MenuItem("Glider",          nullptr, &showGliderPanel);
                     ImGui::Separator();
                     ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                     ImGui::MenuItem("Models",          nullptr, &showModels);
@@ -4905,6 +5660,19 @@ int main(int argc, char** argv) {
                 ImGui::EndPopup();
             }
 
+            // --- Game Settings dialog ----------------------------------------
+            if (gameSettingsOpen) { ImGui::OpenPopup("Game Settings"); gameSettingsOpen = false; }
+            if (!currentProject.empty()) {
+                const std::string gsFolder =
+                    std::filesystem::path(currentProject).parent_path().generic_string();
+                std::vector<std::string> sceneStems;
+                for (const auto& sc : projectio::listScenesIn(gsFolder))
+                    sceneStems.push_back(sc.first);
+                if (game::drawSettingsModal("Game Settings", gameSettings,
+                                            sceneStems, gsFolder))
+                    game::save(gsFolder, gameSettings);
+            }
+
             // --- Scene manager dialogs (New / Rename / Delete) ---------------
             if (sceneNewOpen)    { ImGui::OpenPopup("New Scene");    sceneNewOpen = false; }
             if (sceneRenameOpen) { ImGui::OpenPopup("Rename Scene"); sceneRenameOpen = false; }
@@ -5001,6 +5769,23 @@ int main(int argc, char** argv) {
                 ImGui::EndPopup();
             }
 
+            // Non-blocking project/scene load: a modal over the (still-rendering)
+            // editor shows progress while stepLoad streams the scene in over the
+            // next frames. Being modal, it also stops the half-built scene from
+            // being clicked/edited mid-load. It closes itself the frame the loader
+            // finishes (stepLoad clears sceneLoad.active before this runs).
+            if (sceneLoad.active && !ImGui::IsPopupOpen("Loading project"))
+                ImGui::OpenPopup("Loading project");
+            if (ImGui::BeginPopupModal("Loading project", nullptr,
+                    ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar)) {
+                ImGui::TextUnformatted(sceneLoad.label.empty() ? "Loading..."
+                                                              : sceneLoad.label.c_str());
+                ImGui::Spacing();
+                ImGui::ProgressBar(sceneLoad.progress, ImVec2(360.0f, 0.0f));
+                if (!sceneLoad.active) ImGui::CloseCurrentPopup(); // finished this frame
+                ImGui::EndPopup();
+            }
+
             const ImGuiID dockId = gui.dockspace();
 
             // First run (or after "Reset layout"): lay the panels out into a tidy
@@ -5055,6 +5840,16 @@ int main(int argc, char** argv) {
                 normalizeSelection();
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+
+                // UI overlay authoring preview: while the overlay editor is open and
+                // we're not playing, draw the 2D elements over the viewport (clipped
+                // to the Scene window) with the selected one outlined, so placement
+                // is visible without pressing Play.
+                if (showUiOverlay && !playMode && !uiOverlay.empty()) {
+                    uiOverlay.drawAuthoring(ImGui::GetWindowDrawList(),
+                                            glm::vec2(rmin.x, rmin.y),
+                                            glm::vec2(rsz.x, rsz.y), assetDb, uiSel);
+                }
 
                 // Drag an asset from the Assets browser into the viewport: a Model
                 // drops onto the terrain; a Texture drops onto the object under the
@@ -6230,6 +7025,12 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
                 ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
                 ImGui::SliderFloat("Focus far",  &dofFar, 20.0f, 400.0f, "%.0f m");
+                ui::sectionText("Motion blur");
+                ImGui::SliderFloat("Speed blur", &motionBlurStrength, 0.0f, 2.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Radial speed streak while driving/flying: the\n"
+                                      "world smears outward past the craft, growing\n"
+                                      "with speed. 0 = off. (No effect on the free camera.)");
                 ui::sectionText("Anti-aliasing");
                 ImGui::Checkbox("FXAA", &fxaaEnabled);
             }
@@ -6715,15 +7516,27 @@ int main(int argc, char** argv) {
                         for (std::size_t ci = 0; ci < be.components.items.size(); ++ci) {
                             ComponentBase* c = be.components.items[ci].get();
                             ImGui::PushID(static_cast<int>(ci));
-                            ImGui::TextUnformatted(c->displayName());
-                            ImGui::SameLine();
-                            // Engine-managed components (Sun) aren't removable.
+                            // Each component is a collapsible card: a semibold
+                            // header bar you can fold away (its background makes the
+                            // component's extent obvious), with a right-aligned X to
+                            // detach it. Folding keeps a busy inspector readable.
                             bool addable = true;
                             for (const auto& t : components::registry())
                                 if (t.typeId == c->typeId()) { addable = t.addable; break; }
-                            ImGui::BeginDisabled(!addable);
-                            const bool remove = ImGui::SmallButton("Remove");
-                            ImGui::EndDisabled();
+                            const bool open = ui::header(c->displayName(),
+                                ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
+                            // X (detach) sitting on the right of the header bar.
+                            // Engine-managed components (Sun) can't be removed.
+                            bool remove = false;
+                            if (addable) {
+                                const float xW = ImGui::GetFrameHeight();
+                                ImGui::SameLine(ImGui::GetContentRegionMax().x - xW);
+                                remove = ImGui::SmallButton("X");
+                                if (ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("Remove this component");
+                            }
+                            if (open) {
+                                ImGui::Indent();
                             if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
                                 // Bespoke picker: enumerate the project's .lua files.
                                 std::vector<std::string> luaFiles = listScripts();
@@ -6739,13 +7552,71 @@ int main(int argc, char** argv) {
                                 ImGui::BeginDisabled(sc->file.empty());
                                 if (ImGui::Button("Edit##scr")) openScript(sc->file);
                                 ImGui::EndDisabled();
-                                if (!sc->file.empty() &&
-                                    std::find(luaFiles.begin(), luaFiles.end(), sc->file) == luaFiles.end())
+                                const bool scriptMissing = !sc->file.empty() &&
+                                    std::find(luaFiles.begin(), luaFiles.end(), sc->file) == luaFiles.end();
+                                if (scriptMissing)
                                     ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
                                         "Missing: scripts/%s", sc->file.c_str());
                                 else if (!scripts.lastError().empty())
                                     ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
                                                        "Script error: %s", scripts.lastError().c_str());
+                                // --- Exported parameters: the script's module-level
+                                // globals (see ScriptParam). Each is a persisted,
+                                // editable field whose value overrides the script's
+                                // default when Play starts.
+                                if (!sc->file.empty() && !scriptMissing) {
+                                    const ScriptParamScan& scan = scanScriptParams(sc->file);
+                                    if (!scan.ok) {
+                                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                            "Parameters unavailable: %s", scan.err.c_str());
+                                    } else if (!scan.defs.empty()) {
+                                        ImGui::Separator();
+                                        ImGui::TextDisabled("Script parameters");
+                                        // Reconcile the stored overrides with the
+                                        // current globals: keep a matching value, seed
+                                        // a new one from its default, drop the gone.
+                                        // (Idempotent, so it doesn't churn undo.)
+                                        std::vector<ScriptParam> merged;
+                                        merged.reserve(scan.defs.size());
+                                        for (const ScriptParam& def : scan.defs) {
+                                            const ScriptParam* prev = nullptr;
+                                            for (const ScriptParam& sp : sc->params)
+                                                if (sp.sameShape(def)) { prev = &sp; break; }
+                                            merged.push_back(prev ? *prev : def);
+                                        }
+                                        sc->params = std::move(merged);
+                                        for (ScriptParam& sp : sc->params) {
+                                            ImGui::PushID(sp.name.c_str());
+                                            switch (sp.type) {
+                                                case ScriptParam::Type::Number: {
+                                                    float v = static_cast<float>(sp.num);
+                                                    if (ImGui::DragFloat(sp.name.c_str(), &v, 0.1f))
+                                                        sp.num = v;
+                                                    break;
+                                                }
+                                                case ScriptParam::Type::Bool:
+                                                    ImGui::Checkbox(sp.name.c_str(), &sp.b);
+                                                    break;
+                                                case ScriptParam::Type::String: {
+                                                    char buf[128];
+                                                    std::snprintf(buf, sizeof(buf), "%s", sp.str.c_str());
+                                                    if (ImGui::InputText(sp.name.c_str(), buf, sizeof(buf)))
+                                                        sp.str = buf;
+                                                    break;
+                                                }
+                                                case ScriptParam::Type::Vec3:
+                                                    ImGui::DragFloat3(sp.name.c_str(), &sp.vec.x, 0.1f);
+                                                    break;
+                                                case ScriptParam::Type::Color:
+                                                    ImGui::ColorEdit3(sp.name.c_str(), &sp.vec.x);
+                                                    break;
+                                            }
+                                            ImGui::PopID();
+                                        }
+                                        if (ImGui::SmallButton("Reset to defaults"))
+                                            sc->params = scan.defs;
+                                    }
+                                }
                             } else if (auto* mc = dynamic_cast<MaterialComponent*>(c)) {
                                 // Bespoke picker: pick from the material library.
                                 const int mi = document.materialIndex(mc->material);
@@ -6773,6 +7644,16 @@ int main(int argc, char** argv) {
                                 for (const Property& pr : col->props())
                                     if (pr.key != "sound") drawProperty(pr, col);
                                 soundPickerCombo("Sound", col->sound);
+                            } else if (auto* bp = dynamic_cast<BoostPadComponent*>(c)) {
+                                // Speed/accel/direction from metadata; the punch SFX
+                                // is a Sound picker (with volume/pitch already drawn
+                                // as sliders above), plus a Preview to audition it.
+                                for (const Property& pr : bp->props())
+                                    if (pr.key != "sound") drawProperty(pr, bp);
+                                soundPickerCombo("Punch sound", bp->sound);
+                                ImGui::BeginDisabled(bp->sound.empty());
+                                if (ImGui::Button("Preview punch")) playBoostPunch(*bp);
+                                ImGui::EndDisabled();
                             } else if (auto* tr = dynamic_cast<TriggerComponent*>(c)) {
                                 // Radius/once/message from metadata; Sound is a picker.
                                 for (const Property& pr : tr->props())
@@ -6899,10 +7780,16 @@ int main(int argc, char** argv) {
                                 // Props + wheel-slot pickers + re-detect
                                 // (see VehicleTool).
                                 vehicleui::inspector(*vh, be, document);
+                            } else if (auto* gl = dynamic_cast<GliderComponent*>(c)) {
+                                // Grouped flight tuning + drive hint (see GliderTool).
+                                gliderui::inspector(*gl, be, document);
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
+                                ImGui::Unindent();
+                            } // if (open): collapsed cards render just their header
                             ImGui::PopID();
+                            ImGui::Spacing();        // gap between cards
                             if (remove) {
                                 be.components.items.erase(be.components.items.begin() + ci);
                                 break;
@@ -7852,6 +8739,82 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
+            if (showGliderPanel) { if (ImGui::Begin("Glider", &showGliderPanel)) {
+                if (ImGui::Checkbox("Fly mode (G)", &gliderMode)) {
+                    if (gliderMode) {
+                        if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
+                        enterGliderMode();
+                    } else {
+                        endGliderDrive();
+                    }
+                }
+                if (gliderMode && driveGliderId >= 0)
+                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                                       "W/S thrust, A/D steer, Space air-brake, Esc exit");
+                else
+                    ImGui::TextDisabled("Add a Glider component, then press G to fly");
+
+                // Per-scene Play option (saved with the scene / exported game):
+                // begin Play already flying the nearest glider.
+                ui::sectionText("Play start");
+                ImGui::Checkbox("Start Play in glider mode", &startInGliderMode);
+
+                // Turn a selected model into a glider with one click (undoable).
+                auto makeGlider = [&](int rootId) -> std::string {
+                    Entity* e = document.find(rootId);
+                    if (!e) return std::string();
+                    const Entity before = *e;
+                    std::string rep = gliderui::autoSetup(document, rootId);
+                    if (Entity* after = document.find(rootId)) {
+                        auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
+                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                    }
+                    return rep;
+                };
+                const int selId =
+                    (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
+                        ? entities[entitySel].id : -1;
+                const int pick = gliderui::panelSection(document, selId, makeGlider);
+                if (pick >= 0) entitySel = document.indexOf(pick);
+
+                if (gliderMode && driveGliderId >= 0)
+                    ImGui::Text("Speed: %.0f km/h",
+                                glm::length(glm::vec3(gliderVel.x, 0.0f, gliderVel.z)) * 3.6f);
+            }
+            ImGui::End(); }
+
+            // Scene UI overlay editor: author the per-scene 2D HUD (text, buttons,
+            // images). The list edit is bracketed into one undo step -- opened when
+            // a field is first touched, committed when nothing is active -- exactly
+            // like the Inspector and the road edits.
+            if (showUiOverlay) {
+                const std::vector<UiElement> uiFrameStart = uiOverlay.elements();
+
+                // Scene names for the LoadScene action picker (stems of the sibling
+                // .fitzel files), and the sound list for PlaySound.
+                std::vector<std::string> sceneNames;
+                if (!currentProject.empty()) {
+                    const std::string projFolder =
+                        std::filesystem::path(currentProject).parent_path().generic_string();
+                    for (const auto& sc : listScenesIn(projFolder))
+                        sceneNames.push_back(sc.first);
+                }
+                const std::vector<std::string> soundNames = listSounds();
+
+                uiOverlay.drawEditorPanel(&showUiOverlay, uiSel, assetDb,
+                                          sceneNames, soundNames);
+
+                const bool uiActive  = ImGui::IsAnyItemActive();
+                const bool uiChanged = uiOverlay.elements() != uiFrameStart;
+                if (uiChanged && !uiEditOpen) { uiEditOpen = true; uiEditBefore = uiFrameStart; }
+                if (uiEditOpen && !uiActive) {
+                    uiEditOpen = false;
+                    auto cmd = std::make_unique<UiOverlayCmd>(
+                        uiOverlay, uiEditBefore, uiOverlay.elements());
+                    if (!cmd->trivial()) history.push(std::move(cmd), document);
+                }
+            }
+
             } // end editor UI (skipped in presentation mode)
 #endif // !FITZEL_PLAYER
 
@@ -8398,6 +9361,7 @@ int main(int argc, char** argv) {
                 ssaoRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
                 viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
                 postRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
+                mbRT   = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
             }
             hdrRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -8538,8 +9502,37 @@ int main(int argc, char** argv) {
             composite.setFloat("uContrast", contrast);
             fsQuad.draw();
 
-            // --- FXAA: filter the composite to the viewport texture (editor) or
-            //     straight to the screen (presentation mode) ------------------
+            // --- Camera motion blur: streak the composite along per-pixel screen
+            //     velocity (this VP vs last frame's, by depth reprojection). FXAA
+            //     then reads this instead of postRT. Skipped when off (strength 0)
+            //     or on the very first frame (prevMainVP not primed yet). --------
+            // Radial speed blur, centred on the followed craft and driven by its
+            // speed: the world streaks outward past a sharp craft. Only while a
+            // chase cam is active and moving; free camera = no blur.
+            RenderTarget* fxaaSrc = &postRT;
+            const float blurAmount = motionBlurStrength * blurSpeed01 * 0.35f;
+            if (blurAnchorValid && blurAmount > 0.002f) {
+                // The craft's screen position is the streak focus (stays sharp).
+                glm::vec2 center(0.5f, 0.5f);
+                const glm::vec4 cc = mainVP * glm::vec4(blurAnchorWorld, 1.0f);
+                if (cc.w > 1e-4f) center = glm::vec2(cc) / cc.w * 0.5f + 0.5f;
+
+                mbRT.bind();
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                motionBlur.bind();
+                postRT.bindColorTexture(0); motionBlur.setInt("uImage", 0);
+                hdrRT.bindDepthTexture(1);  motionBlur.setInt("uDepth", 1);
+                motionBlur.setVec2("uCenter", center);
+                motionBlur.setFloat("uAmount", glm::min(blurAmount, 0.5f));
+                motionBlur.setInt("uSamples", 16);
+                motionBlur.setFloat("uNear", camera.nearPlane());
+                motionBlur.setFloat("uFar", camera.farPlane());
+                fsQuad.draw();
+                fxaaSrc = &mbRT;
+            }
+
+            // --- FXAA: filter the (motion-blurred) composite to the viewport
+            //     texture (editor) or straight to the screen (presentation) -----
             if (presentMode) {
                 int winW = 0, winH = 0;
                 window.framebufferSize(winW, winH);
@@ -8549,7 +9542,7 @@ int main(int argc, char** argv) {
             }
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             fxaa.bind();
-            postRT.bindColorTexture(0);
+            fxaaSrc->bindColorTexture(0);
             fxaa.setInt("uImage", 0);
             fxaa.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
             fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);
@@ -8602,15 +9595,17 @@ int main(int argc, char** argv) {
 
                 // Crosshair, sized to the view. Hidden when disabled, and always
                 // hidden while driving (you aim on foot, not from the car).
-                if (showCrosshair && !vehicleMode) {
+                if (showCrosshair && !vehicleMode && !gliderMode) {
                     const float ch = std::max(10.0f, vsize.y * 0.018f);
                     const ImU32 white = IM_COL32(255, 255, 255, 220);
                     dl->AddLine(ImVec2(c.x - ch, c.y), ImVec2(c.x + ch, c.y), white, 2.0f);
                     dl->AddLine(ImVec2(c.x, c.y - ch), ImVec2(c.x, c.y + ch), white, 2.0f);
                 }
 
-                // Score + HUD line, scaled to the view height and drawn with a
-                // dark shadow so it stays legible over any scene.
+                // Script HUD line, scaled to the view height and drawn with a dark
+                // shadow so it stays legible over any scene. (The old fixed "Score:"
+                // readout was a game leftover -- a script that wants to show a score
+                // does it via game.setHud.)
                 ImFont* font = ImGui::GetFont();
                 const float fs  = glm::clamp(vsize.y * 0.04f, 22.0f, 48.0f);
                 const float pad = fs * 0.6f;
@@ -8619,11 +9614,8 @@ int main(int argc, char** argv) {
                                 IM_COL32(0, 0, 0, 190), s);
                     dl->AddText(font, fs, ImVec2(x, y), col, s);
                 };
-                char buf[128];
-                std::snprintf(buf, sizeof(buf), "Score: %d", host.score);
-                shadowText(vmin.x + pad, vmin.y + pad, IM_COL32(255, 232, 120, 255), buf);
                 if (!host.hud.empty())
-                    shadowText(vmin.x + pad, vmin.y + pad + fs * 1.2f,
+                    shadowText(vmin.x + pad, vmin.y + pad,
                                IM_COL32(235, 235, 240, 235), host.hud.c_str());
                 // Boat-mode banner while afloat: centred near the top of the view.
                 if (vehicleMode && boatMode) {
@@ -8631,6 +9623,86 @@ int main(int argc, char** argv) {
                     const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, bm);
                     shadowText(c.x - sz.x * 0.5f, vmin.y + pad,
                                IM_COL32(130, 210, 255, 255), bm);
+                }
+                // Boost banner while a glider rides / just left a boost pad.
+                if (gliderMode && gliderBoosting) {
+                    const char* bm = ">> BOOST >>";
+                    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, bm);
+                    shadowText(c.x - sz.x * 0.5f, vmin.y + pad,
+                               IM_COL32(120, 235, 255, 255), bm);
+                }
+                // Race HUD: lap + times, centred under the boost banner.
+                if (gliderMode && (raceHasLine || raceActive || raceFinished)) {
+                    auto fmtTime = [](float t) {
+                        const int m = static_cast<int>(t / 60.0f);
+                        const float s = t - m * 60.0f;
+                        char b[24];
+                        if (m > 0) std::snprintf(b, sizeof(b), "%d:%05.2f", m, s);
+                        else       std::snprintf(b, sizeof(b), "%.2f", s);
+                        return std::string(b);
+                    };
+                    const float y0 = vmin.y + pad + fs * 1.4f;
+                    auto centered = [&](float y, ImU32 col, const char* s) {
+                        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
+                        shadowText(c.x - sz.x * 0.5f, y, col, s);
+                    };
+                    char line[64];
+                    if (raceFinished) {
+                        std::snprintf(line, sizeof(line), "FINISH   total %s   best %s",
+                                      fmtTime(raceClock).c_str(), fmtTime(bestLap).c_str());
+                        centered(y0, IM_COL32(120, 255, 150, 255), line);
+                    } else if (raceActive) {
+                        if (raceLaps > 0)
+                            std::snprintf(line, sizeof(line), "LAP %d/%d   %s",
+                                          raceLap + 1, raceLaps, fmtTime(lapClock).c_str());
+                        else
+                            std::snprintf(line, sizeof(line), "LAP %d   %s",
+                                          raceLap + 1, fmtTime(lapClock).c_str());
+                        centered(y0, IM_COL32(255, 235, 140, 255), line);
+                        float yr = y0 + fs * 1.15f;
+                        if (cpTotal > 0) {
+                            std::snprintf(line, sizeof(line), "CP %d/%d",
+                                          static_cast<int>(cpPassed.size()), cpTotal);
+                            centered(yr, IM_COL32(150, 220, 255, 235), line);
+                            yr += fs * 1.15f;
+                        }
+                        if (bestLap > 0.0f) {
+                            std::snprintf(line, sizeof(line), "best %s  last %s",
+                                          fmtTime(bestLap).c_str(), fmtTime(lastLap).c_str());
+                            centered(yr, IM_COL32(200, 220, 255, 235), line);
+                        }
+                        if (raceMissedFlash > 0.0f)
+                            centered(y0 - fs * 1.2f, IM_COL32(255, 120, 100, 255),
+                                     "MISSED A CHECKPOINT");
+                    } else if (raceCountdown <= 0.0f) {
+                        centered(y0, IM_COL32(220, 220, 230, 220), "Cross the start line to begin");
+                    }
+                }
+                // Ready / Set / Go! -- big and centred at the start of a race.
+                if (gliderMode && (raceCountdown > 0.0f || goFlash > 0.0f)) {
+                    const char* txt; ImU32 col;
+                    if (raceCountdown > 1.5f)      { txt = "READY"; col = IM_COL32(255, 235, 140, 255); }
+                    else if (raceCountdown > 0.0f) { txt = "SET";   col = IM_COL32(255, 170, 80, 255); }
+                    else                           { txt = "GO!";   col = IM_COL32(120, 255, 140, 255); }
+                    const float fss = fs * 2.6f;
+                    const ImVec2 sz = font->CalcTextSizeA(fss, FLT_MAX, 0.0f, txt);
+                    const float x = c.x - sz.x * 0.5f, y = c.y - sz.y * 0.7f;
+                    dl->AddText(font, fss, ImVec2(x + 3.0f, y + 3.0f), IM_COL32(0, 0, 0, 190), txt);
+                    dl->AddText(font, fss, ImVec2(x, y), col, txt);
+                }
+
+                // Scene 2D UI overlay: authored text/buttons/images, drawn last so
+                // it sits above the rest of the HUD. Buttons fire their data-authored
+                // action through this sink (so this stays free of the overlay code).
+                if (!uiOverlay.empty()) {
+                    UiActionSink sink;
+                    sink.loadScene   = [&](const std::string& s){ pendingSceneLoad = s; };
+                    sink.showMessage = [&](const std::string& s){ host.hud = s; };
+                    sink.addScore    = [&](float n){ host.score += static_cast<int>(n); };
+                    sink.playSound   = [&](const std::string& s){ if (host.playSound) host.playSound(s); };
+                    sink.quit        = [&](){ window.requestClose(); };
+                    uiOverlay.drawRuntime(dl, glm::vec2(vmin.x, vmin.y),
+                                          glm::vec2(vsize.x, vsize.y), assetDb, sink);
                 }
             }
 
@@ -8666,7 +9738,7 @@ int main(int argc, char** argv) {
                 input.isKeyDown(GLFW_KEY_LEFT) || input.isKeyDown(GLFW_KEY_RIGHT);
             const bool interacting =
                 mouseActive || keyHeld || io.WantTextInput ||
-                ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || vehicleMode;
+                ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || vehicleMode || gliderMode;
             if (interacting) lastActive = now;
             activeFrame = (now - lastActive) < kIdleGrace;
 

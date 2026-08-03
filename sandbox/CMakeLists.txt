@@ -9,6 +9,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ScriptSystem.cpp
     src/ScriptBridge.cpp
     src/ProjectIO.cpp
+    src/GameSettings.cpp
     src/PropertyMeta.cpp
     src/Component.cpp
     src/PrefabSystem.cpp
@@ -21,6 +22,8 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SpraySystem.cpp
     src/SkidSystem.cpp
     src/CarAudio.cpp
+    src/GliderAudio.cpp
+    src/UiOverlay.cpp
     src/UiStyle.cpp)
 
 # Editor-only sources: panels, tools and dialogs reachable only from the editor
@@ -34,8 +37,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/SculptPanel.cpp
     src/PaintPanel.cpp
     src/FolderDialog.cpp
+    src/GameSettingsPanel.cpp
     src/ScatterTool.cpp
-    src/VehicleTool.cpp)
+    src/VehicleTool.cpp
+    src/GliderTool.cpp)
 
 # The editor: full sandbox with all panels/tools.
 add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})

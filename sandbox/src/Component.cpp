@@ -26,6 +26,68 @@ std::unique_ptr<ComponentBase> create(const std::string& typeId) {
 void ComponentBase::save(nlohmann::json& j) const { writeProps(j, props(), this); }
 void ComponentBase::load(const nlohmann::json& j) { readProps(j, props(), this); }
 
+// --- ScriptParam JSON --------------------------------------------------------
+// A tagged value: {name, type, value}. `type` is stored as a short string so the
+// scene file stays readable and forward-compatible with new kinds.
+namespace {
+const char* scriptParamTypeName(ScriptParam::Type t) {
+    switch (t) {
+        case ScriptParam::Type::Number: return "number";
+        case ScriptParam::Type::Bool:   return "bool";
+        case ScriptParam::Type::String: return "string";
+        case ScriptParam::Type::Vec3:   return "vec3";
+        case ScriptParam::Type::Color:  return "color";
+    }
+    return "number";
+}
+ScriptParam::Type scriptParamType(const std::string& s) {
+    if (s == "bool")   return ScriptParam::Type::Bool;
+    if (s == "string") return ScriptParam::Type::String;
+    if (s == "vec3")   return ScriptParam::Type::Vec3;
+    if (s == "color")  return ScriptParam::Type::Color;
+    return ScriptParam::Type::Number;
+}
+} // namespace
+
+void to_json(nlohmann::json& j, const ScriptParam& p) {
+    j = nlohmann::json{{"name", p.name}, {"type", scriptParamTypeName(p.type)}};
+    switch (p.type) {
+        case ScriptParam::Type::Number: j["value"] = p.num; break;
+        case ScriptParam::Type::Bool:   j["value"] = p.b;   break;
+        case ScriptParam::Type::String: j["value"] = p.str; break;
+        case ScriptParam::Type::Vec3:
+        case ScriptParam::Type::Color:
+            j["value"] = nlohmann::json::array({p.vec.x, p.vec.y, p.vec.z}); break;
+    }
+}
+void from_json(const nlohmann::json& j, ScriptParam& p) {
+    p.name = j.value("name", std::string());
+    p.type = scriptParamType(j.value("type", std::string("number")));
+    const nlohmann::json& v = j.contains("value") ? j.at("value") : nlohmann::json();
+    switch (p.type) {
+        case ScriptParam::Type::Number: if (v.is_number())  p.num = v.get<double>(); break;
+        case ScriptParam::Type::Bool:   if (v.is_boolean()) p.b   = v.get<bool>();   break;
+        case ScriptParam::Type::String: if (v.is_string())  p.str = v.get<std::string>(); break;
+        case ScriptParam::Type::Vec3:
+        case ScriptParam::Type::Color:
+            if (v.is_array() && v.size() == 3) {
+                p.vec = glm::vec3(v[0].get<float>(), v[1].get<float>(), v[2].get<float>());
+            }
+            break;
+    }
+}
+
+void ScriptComponent::save(nlohmann::json& j) const {
+    j["file"] = file;
+    if (!params.empty()) j["params"] = params; // vector<ScriptParam> -> array
+}
+void ScriptComponent::load(const nlohmann::json& j) {
+    file = j.value("file", std::string());
+    params.clear();
+    if (j.contains("params") && j["params"].is_array())
+        params = j["params"].get<std::vector<ScriptParam>>();
+}
+
 void MaterialComponent::save(nlohmann::json& j) const {
     if (material.valid()) j["material"] = material.toString();
 }
@@ -249,13 +311,21 @@ const std::vector<Property>& TriggerSoundComponent::properties() {
         vol.slider = true; vol.min = 0.0f; vol.max = 1.0f; vol.fmt = "%.2f";
         vol.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->volume; };
         p.push_back(std::move(vol));
+        Property oneShot;
+        oneShot.label = "One-shot (full play)"; oneShot.key = "oneShot"; oneShot.kind = PropKind::Bool;
+        oneShot.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->oneShot; };
+        p.push_back(std::move(oneShot));
         Property loop;
         loop.label = "Loop (zone)"; loop.key = "loop"; loop.kind = PropKind::Bool;
+        loop.visible = [](const void* o) { return !static_cast<const TriggerSoundComponent*>(o)->oneShot; };
         loop.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->loop; };
         p.push_back(std::move(loop));
         Property once;
         once.label = "Once"; once.key = "once"; once.kind = PropKind::Bool;
-        once.visible = [](const void* o) { return !static_cast<const TriggerSoundComponent*>(o)->loop; };
+        once.visible = [](const void* o) {
+            const auto* t = static_cast<const TriggerSoundComponent*>(o);
+            return !t->loop && !t->oneShot;
+        };
         once.field = [](void* o) -> void* { return &static_cast<TriggerSoundComponent*>(o)->once; };
         p.push_back(std::move(once));
         return p;
@@ -468,6 +538,175 @@ void VehicleComponent::load(const nlohmann::json& j) {
     if (j.contains("wheels") && j["wheels"].is_array())
         for (std::size_t i = 0; i < 4 && i < j["wheels"].size(); ++i)
             wheelId[i] = j["wheels"][i].is_number_integer() ? j["wheels"][i].get<int>() : -1;
+}
+
+const std::vector<Property>& GliderComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float GliderComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.05f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<GliderComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        // Flight
+        addFloat("Thrust",       "thrust",     &GliderComponent::thrust,     2.0f, 120.0f, "%.0f m/s2");
+        addFloat("Max speed",    "maxSpeed",   &GliderComponent::maxSpeed,   5.0f, 200.0f, "%.0f m/s");
+        addFloat("Brake",        "brakeForce", &GliderComponent::brakeForce, 2.0f, 120.0f, "%.0f m/s2");
+        addFloat("Turn rate",    "turnRate",   &GliderComponent::turnRate,   10.0f, 300.0f,"%.0f deg/s");
+        Property inv;
+        inv.label = "Invert steering"; inv.key = "invertSteer"; inv.kind = PropKind::Bool;
+        inv.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->invertSteer; };
+        p.push_back(std::move(inv));
+        addFloat("Grip",         "grip",       &GliderComponent::grip,       0.0f, 12.0f,  "%.2f");
+        addFloat("Drag",         "drag",       &GliderComponent::drag,       0.0f, 4.0f,   "%.2f");
+        // Hover (grouped under a "Hover" header at "rideHeight" -- see gliderui::inspector)
+        addFloat("Ride height",  "rideHeight",     &GliderComponent::rideHeight,     0.2f, 12.0f, "%.2f m");
+        addFloat("Hover spring", "hoverStiffness", &GliderComponent::hoverStiffness, 0.5f, 20.0f, "%.1f");
+        addFloat("Hover damp",   "hoverDamp",      &GliderComponent::hoverDamp,      0.0f, 12.0f, "%.1f");
+        addFloat("Gravity",      "gravity",        &GliderComponent::gravity,        0.0f, 60.0f, "%.0f");
+        // Attitude (grouped under an "Attitude" header at "bankAngle")
+        addFloat("Bank angle",   "bankAngle",   &GliderComponent::bankAngle,   0.0f, 60.0f, "%.0f deg");
+        addFloat("Pitch follow", "pitchFollow", &GliderComponent::pitchFollow, 0.0f, 2.0f,  "%.2f");
+        addFloat("Level rate",   "levelRate",   &GliderComponent::levelRate,   0.5f, 20.0f, "%.1f");
+        Property fwd;
+        fwd.label = "Model nose"; fwd.key = "forward"; fwd.kind = PropKind::EnumInt;
+        fwd.enumLabels = {"+Z", "-Z"};
+        fwd.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->forward; };
+        p.push_back(std::move(fwd));
+        // Follow camera (kept last so the inspector groups them under a header)
+        addFloat("Cam distance",   "camDistance",   &GliderComponent::camDistance,   1.0f, 100.0f, "%.1f m");
+        addFloat("Cam height",     "camHeight",     &GliderComponent::camHeight,     0.0f, 40.0f,  "%.1f m");
+        addFloat("Cam side",       "camSide",       &GliderComponent::camSide,      -30.0f, 30.0f, "%.1f m");
+        addFloat("Cam look height","camLookHeight", &GliderComponent::camLookHeight, 0.0f, 10.0f,  "%.1f m");
+        addFloat("Cam stiffness",  "camStiffness",  &GliderComponent::camStiffness,  0.5f, 20.0f,  "%.1f");
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& BoostPadComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property bs;
+        bs.label = "Boost speed"; bs.key = "boostSpeed"; bs.kind = PropKind::Float;
+        bs.slider = true; bs.min = 10.0f; bs.max = 250.0f; bs.fmt = "%.0f m/s";
+        bs.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->boostSpeed; };
+        p.push_back(std::move(bs));
+        Property ac;
+        ac.label = "Acceleration"; ac.key = "accel"; ac.kind = PropKind::Float;
+        ac.slider = true; ac.min = 5.0f; ac.max = 300.0f; ac.fmt = "%.0f m/s2";
+        ac.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->accel; };
+        p.push_back(std::move(ac));
+        Property hd;
+        hd.label = "Hold"; hd.key = "hold"; hd.kind = PropKind::Float;
+        hd.slider = true; hd.min = 0.1f; hd.max = 6.0f; hd.fmt = "%.1f s";
+        hd.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->hold; };
+        p.push_back(std::move(hd));
+        Property pd;
+        pd.label = "Boost along pad"; pd.key = "usePadDir"; pd.kind = PropKind::Bool;
+        pd.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->usePadDir; };
+        p.push_back(std::move(pd));
+        Property rv;
+        rv.label = "Reverse direction"; rv.key = "reverse"; rv.kind = PropKind::Bool;
+        rv.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->reverse; };
+        p.push_back(std::move(rv));
+        // Punch SFX: the filename is a Text prop (so it persists); the Inspector
+        // swaps in a Sound picker for it. Gain + pitch tune how the kick lands.
+        Property sg;
+        sg.label = "Punch volume"; sg.key = "soundGain"; sg.kind = PropKind::Float;
+        sg.slider = true; sg.min = 0.0f; sg.max = 2.0f; sg.fmt = "%.2f";
+        sg.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->soundGain; };
+        p.push_back(std::move(sg));
+        Property sp;
+        sp.label = "Punch pitch"; sp.key = "soundPitch"; sp.kind = PropKind::Float;
+        sp.slider = true; sp.min = 0.3f; sp.max = 2.0f; sp.fmt = "%.2f";
+        sp.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->soundPitch; };
+        p.push_back(std::move(sp));
+        Property snd;
+        snd.label = "Punch sound"; snd.key = "sound"; snd.kind = PropKind::Text;
+        snd.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->sound; };
+        p.push_back(std::move(snd));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& OpponentComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float OpponentComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.1f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<OpponentComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addFloat("Speed",         "speed",        &OpponentComponent::speed,        2.0f, 200.0f, "%.0f m/s");
+        addFloat("Lane offset",   "laneOffset",   &OpponentComponent::laneOffset,  -20.0f, 20.0f, "%.1f m");
+        addFloat("Ride height",   "rideHeight",   &OpponentComponent::rideHeight,   0.0f, 12.0f,  "%.2f m");
+        addFloat("Start distance","startDistance",&OpponentComponent::startDistance,0.0f, 2000.0f,"%.0f m");
+        addFloat("Bank angle",    "bankAngle",    &OpponentComponent::bankAngle,    0.0f, 60.0f,  "%.0f deg");
+        Property lp;
+        lp.label = "Loop"; lp.key = "loop"; lp.kind = PropKind::Bool;
+        lp.field = [](void* o) -> void* { return &static_cast<OpponentComponent*>(o)->loop; };
+        p.push_back(std::move(lp));
+        Property fwd;
+        fwd.label = "Model nose"; fwd.key = "forward"; fwd.kind = PropKind::EnumInt;
+        fwd.enumLabels = {"+Z", "-Z"};
+        fwd.field = [](void* o) -> void* { return &static_cast<OpponentComponent*>(o)->forward; };
+        p.push_back(std::move(fwd));
+        return p;
+    }();
+    return props;
+}
+
+namespace {
+// Append the shared gate size/orientation properties (width/height/depth/yaw) for
+// a Checkpoint- or FinishLine-style component. `mW`... are member pointers.
+template <class C>
+void addGateProps(std::vector<Property>& p,
+                  float C::* mW, float C::* mH, float C::* mD, float C::* mYaw) {
+    auto add = [&](const char* label, const char* key, float C::* m,
+                   float lo, float hi, const char* fmt) {
+        Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+        f.slider = true; f.min = lo; f.max = hi; f.speed = 0.1f; f.fmt = fmt;
+        f.field = [m](void* o) -> void* { return &(static_cast<C*>(o)->*m); };
+        p.push_back(std::move(f));
+    };
+    add("Width",  "gateW",   mW,   1.0f, 120.0f, "%.1f m");
+    add("Height", "gateH",   mH,   1.0f,  40.0f, "%.1f m");
+    add("Depth",  "gateD",   mD,   0.5f,  40.0f, "%.1f m");
+    add("Yaw",    "gateYaw", mYaw, -180.0f, 180.0f, "%.0f deg");
+}
+} // namespace
+
+const std::vector<Property>& FinishLineComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property l;
+        l.label = "Laps"; l.key = "laps"; l.kind = PropKind::Float;
+        l.slider = true; l.min = 0.0f; l.max = 50.0f; l.fmt = "%.0f";
+        l.field = [](void* o) -> void* { return &static_cast<FinishLineComponent*>(o)->laps; };
+        p.push_back(std::move(l));
+        addGateProps<FinishLineComponent>(p, &FinishLineComponent::width,
+            &FinishLineComponent::height, &FinishLineComponent::depth,
+            &FinishLineComponent::yaw);
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& CheckpointComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        addGateProps<CheckpointComponent>(p, &CheckpointComponent::width,
+            &CheckpointComponent::height, &CheckpointComponent::depth,
+            &CheckpointComponent::yaw);
+        return p;
+    }();
+    return props;
 }
 
 const std::vector<Property>& PusherComponent::properties() {
@@ -691,6 +930,16 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PusherComponent>()); }});
         components::registerType({"vehicle", "Vehicle",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<VehicleComponent>()); }});
+        components::registerType({"glider", "Glider",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<GliderComponent>()); }});
+        components::registerType({"boost_pad", "Boost Pad",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<BoostPadComponent>()); }});
+        components::registerType({"opponent", "Opponent",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<OpponentComponent>()); }});
+        components::registerType({"finish_line", "Start/Finish",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<FinishLineComponent>()); }});
+        components::registerType({"checkpoint", "Checkpoint",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<CheckpointComponent>()); }});
         components::registerType({"door", "Door",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<DoorComponent>()); }});
         components::registerType({"door_opener", "Door Opener",

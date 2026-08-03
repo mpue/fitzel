@@ -1,5 +1,7 @@
 #include "ScriptSystem.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <optional>
 #include <string>
@@ -914,7 +916,41 @@ bool ScriptSystem::loadFor(const Entity& e, const std::string& path) {
         return false;
     }
     m_env[e.id] = envRef;
+    applyParams(envRef, e); // inspector overrides win over the module defaults
     return true;
+}
+
+// Push each ScriptComponent override into the entity's environment as a global,
+// after the chunk (which set the defaults) has run and before start() sees them.
+void ScriptSystem::applyParams(int envRef, const Entity& e) {
+    const auto* sc = e.components.get<ScriptComponent>();
+    if (!sc || sc->params.empty()) return;
+    lua_State* L = m_lua;
+    lua_rawgeti(L, LUA_REGISTRYINDEX, envRef); // env at -1
+    const int env = lua_gettop(L);
+    for (const ScriptParam& p : sc->params) {
+        switch (p.type) {
+            case ScriptParam::Type::Number: lua_pushnumber(L, p.num); break;
+            case ScriptParam::Type::Bool:   lua_pushboolean(L, p.b);  break;
+            case ScriptParam::Type::String: lua_pushlstring(L, p.str.c_str(), p.str.size()); break;
+            case ScriptParam::Type::Vec3:
+            case ScriptParam::Type::Color: {
+                // Same layout as setVec: readable as t.x/y/z, t.r/g/b or t[1..3].
+                lua_createtable(L, 3, 6);
+                const float c[3] = {p.vec.x, p.vec.y, p.vec.z};
+                const char* xyz[3] = {"x", "y", "z"};
+                const char* rgb[3] = {"r", "g", "b"};
+                for (int i = 0; i < 3; ++i) {
+                    lua_pushnumber(L, c[i]); lua_seti(L, -2, i + 1);
+                    lua_pushnumber(L, c[i]); lua_setfield(L, -2, xyz[i]);
+                    lua_pushnumber(L, c[i]); lua_setfield(L, -2, rgb[i]);
+                }
+                break;
+            }
+        }
+        lua_setfield(L, env, p.name.c_str());
+    }
+    lua_pop(L, 1); // env
 }
 
 bool ScriptSystem::callFunction(Entity& e, const char* fn, float dt, float time) {
@@ -953,4 +989,151 @@ void ScriptSystem::update(Entity& e, const std::string& scriptPath,
         if (!callFunction(e, "start", dt, time)) return;
     }
     callFunction(e, "update", dt, time);
+}
+
+namespace {
+
+// A "colour" if the field's name reads like one -- so a 3-number table gets a
+// colour swatch rather than a bare xyz drag.
+bool looksLikeColor(const std::string& name) {
+    std::string n;
+    for (char c : name) n += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    auto has = [&](const char* s) { return n.find(s) != std::string::npos; };
+    return has("color") || has("colour") || has("tint") || has("rgb");
+}
+
+// Pull three floats from the table at stack index `t`, trying array [1..3], then
+// x/y/z, then r/g/b. Sets `hasRgb` if it read via r/g/b keys. Returns whether all
+// three came back as numbers (i.e. this really is a 3-vector).
+bool readVec3(lua_State* L, int t, glm::vec3& out, bool& hasRgb) {
+    hasRgb = false;
+    int got = 0;
+    for (int i = 0; i < 3; ++i) {
+        lua_geti(L, t, i + 1);
+        if (lua_isnumber(L, -1)) { out[i] = static_cast<float>(lua_tonumber(L, -1)); ++got; }
+        lua_pop(L, 1);
+    }
+    if (got == 3) return true;
+    const char* xyz[3] = {"x", "y", "z"};
+    got = 0;
+    for (int i = 0; i < 3; ++i) {
+        lua_getfield(L, t, xyz[i]);
+        if (lua_isnumber(L, -1)) { out[i] = static_cast<float>(lua_tonumber(L, -1)); ++got; }
+        lua_pop(L, 1);
+    }
+    if (got == 3) return true;
+    const char* rgb[3] = {"r", "g", "b"};
+    got = 0;
+    for (int i = 0; i < 3; ++i) {
+        lua_getfield(L, t, rgb[i]);
+        if (lua_isnumber(L, -1)) { out[i] = static_cast<float>(lua_tonumber(L, -1)); ++got; }
+        lua_pop(L, 1);
+    }
+    if (got == 3) { hasRgb = true; return true; }
+    return false;
+}
+
+} // namespace
+
+std::vector<ScriptParam> ScriptSystem::scanParams(const std::string& path,
+                                                  std::string* err) {
+    std::vector<ScriptParam> out;
+    // A throwaway VM: running an arbitrary module body must not touch the play VM.
+    lua_State* L = luaL_newstate();
+    if (!L) { if (err) *err = "out of memory"; return out; }
+    luaL_openlibs(L);
+
+    // Stub `game`: any access yields a no-op function, so module-level code that
+    // pokes the API while we scan just gets nil back instead of faulting.
+    lua_newtable(L);                       // game
+    lua_newtable(L);                       // metatable
+    lua_pushcclosure(L,
+        [](lua_State* s) -> int {          // __index(table, key) -> a no-op fn
+            lua_pushcfunction(s, [](lua_State*) { return 0; });
+            return 1;
+        }, 0);
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, -2);
+    lua_setglobal(L, "game");
+
+    if (luaL_loadfile(L, path.c_str()) != LUA_OK) {
+        if (err) *err = lua_tostring(L, -1);
+        lua_close(L);
+        return out;
+    }
+    // Own environment (globals as read fallback), exactly like loadFor -- so the
+    // keys we enumerate are only what THIS chunk assigned. The env is held by a
+    // registry ref so the chunk can be pcall'd (it must sit alone on the stack top).
+    lua_newtable(L);                 // env
+    lua_newtable(L);                 // metatable
+    lua_pushglobaltable(L);
+    lua_setfield(L, -2, "__index");
+    lua_setmetatable(L, -2);
+    lua_pushvalue(L, -1);            // copy of env to register
+    const int envRef = luaL_ref(L, LUA_REGISTRYINDEX);
+    lua_setupvalue(L, -2, 1);        // chunk's _ENV = env (pops env)
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+        if (err) *err = lua_tostring(L, -1);
+        luaL_unref(L, LUA_REGISTRYINDEX, envRef);
+        lua_close(L);
+        return out;
+    }
+
+    // Enumerate the environment: every string key of a supported value type
+    // becomes a parameter. Functions (start/update/helpers) and private "_name"
+    // globals are skipped.
+    lua_rawgeti(L, LUA_REGISTRYINDEX, envRef); // env at the top
+    const int env = lua_gettop(L);
+    lua_pushnil(L);
+    while (lua_next(L, env) != 0) {
+        // key at -2, value at -1
+        if (lua_type(L, -2) == LUA_TSTRING) {
+            const std::string name = lua_tostring(L, -2);
+            if (!name.empty() && name[0] != '_') {
+                ScriptParam p;
+                p.name = name;
+                bool keep = true;
+                switch (lua_type(L, -1)) {
+                    case LUA_TNUMBER:
+                        p.type = ScriptParam::Type::Number;
+                        p.num  = lua_tonumber(L, -1);
+                        break;
+                    case LUA_TBOOLEAN:
+                        p.type = ScriptParam::Type::Bool;
+                        p.b    = lua_toboolean(L, -1) != 0;
+                        break;
+                    case LUA_TSTRING:
+                        p.type = ScriptParam::Type::String;
+                        p.str  = lua_tostring(L, -1);
+                        break;
+                    case LUA_TTABLE: {
+                        glm::vec3 v{0.0f};
+                        bool hasRgb = false;
+                        if (readVec3(L, lua_gettop(L), v, hasRgb)) {
+                            p.type = (hasRgb || looksLikeColor(name))
+                                         ? ScriptParam::Type::Color
+                                         : ScriptParam::Type::Vec3;
+                            p.vec  = v;
+                        } else {
+                            keep = false; // a table that isn't a 3-vector
+                        }
+                        break;
+                    }
+                    default:
+                        keep = false; // function, userdata, nil, ...
+                        break;
+                }
+                if (keep) out.push_back(std::move(p));
+            }
+        }
+        lua_pop(L, 1); // value; keep key for the next lua_next
+    }
+    lua_pop(L, 1); // env
+    luaL_unref(L, LUA_REGISTRYINDEX, envRef);
+    lua_close(L);
+
+    // Stable, predictable order (Lua table iteration order is unspecified).
+    std::sort(out.begin(), out.end(),
+              [](const ScriptParam& a, const ScriptParam& b) { return a.name < b.name; });
+    return out;
 }
