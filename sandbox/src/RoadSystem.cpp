@@ -520,6 +520,7 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
                       const std::vector<float>& height) {
     fitzel::MeshData md;
     m_centerline = center; // flat centre for vegetation masking
+    m_centerlineY = height; // road surface height per sample (deck top over bridges)
 
     const float half = width * 0.5f;
     float vlen = 0.0f;
@@ -665,10 +666,33 @@ RoadSystem::Layout RoadSystem::layout() const {
     return lo;
 }
 
+bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY) const {
+    const std::size_t n = m_centerline.size();
+    if (n < 2 || m_centerlineY.size() != n) return false;
+    const std::size_t segs = closed ? n : n - 1;
+    float bestD2 = halfWidth * halfWidth;
+    bool  found  = false;
+    for (std::size_t i = 0; i < segs; ++i) {
+        const glm::vec2 a = m_centerline[i], b = m_centerline[(i + 1) % n];
+        const glm::vec2 ab = b - a;
+        const float L2 = glm::dot(ab, ab);
+        const float t = L2 > 1e-8f ? glm::clamp(glm::dot(xz - a, ab) / L2, 0.0f, 1.0f) : 0.0f;
+        const glm::vec2 p = a + ab * t;
+        const float d2 = glm::dot(xz - p, xz - p);
+        if (d2 <= bestD2) {
+            bestD2 = d2;
+            outY   = glm::mix(m_centerlineY[i], m_centerlineY[(i + 1) % n], t);
+            found  = true;
+        }
+    }
+    return found;
+}
+
 void RoadSystem::clearGeometry() {
     m_mesh = fitzel::Mesh(); m_verts = 0;
     m_bridgeMesh = fitzel::Mesh(); m_bridgeVerts = 0;
     m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
+    m_centerlineY.clear();
     m_sideBatches.clear();
 }
 

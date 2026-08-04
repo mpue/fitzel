@@ -68,6 +68,7 @@
 #include "RaceSim.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
+#include "TrailSystem.hpp"
 #include "ScatterTool.hpp"
 #include "VehicleTool.hpp"
 #include "GliderTool.hpp"
@@ -687,6 +688,7 @@ int main(int argc, char** argv) {
         // by every viewport brush, not just roads).
         RoadSystem road(lit, assetDb, streamer, texDir);
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
+        TrailSystem trails(lit);     // vapour contrails streaming behind the racers
         bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
@@ -2145,6 +2147,9 @@ int main(int argc, char** argv) {
         addB("showCrosshair", showCrosshair);
         addB("skidMarks", skids.enabled);      addF("skidSlip", skids.slipThresh);
         addF("skidWidth", skids.markHalfW);    addF("skidDark", skids.opacity);
+        addB("contrails", trails.enabled);     addF("trailLife", trails.life);
+        addF("trailWidth", trails.width);      addF("trailOpacity", trails.opacity);
+        addF("trailGlow", trails.glow);
         addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
         addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
@@ -2783,6 +2788,13 @@ int main(int argc, char** argv) {
                 const float top = e.center.y + e.half.y;
                 if (top <= yMax && top > h) h = top;
             }
+            // Road/bridge deck: a bridged (elevated) road stretch is ground too --
+            // without this the craft sinks through a high bridge to the terrain far
+            // below. Same yMax gate as the blocks, so flying UNDER a bridge still
+            // leaves the deck out of reach.
+            float roadY = 0.0f;
+            if (road.surfaceHeightAt(glm::vec2(x, z), road.width * 0.5f, roadY))
+                if (roadY <= yMax && roadY > h) h = roadY;
             return h;
         };
         auto findNearestGlider = [&]() -> int {
@@ -3248,6 +3260,7 @@ int main(int argc, char** argv) {
                     }
                 }
             skids.clear(); // no skid marks carry over from a previous Play session
+            trails.clear(); // ...nor stale contrails
             physicsBody.clear();
             for (Entity& e : entities) {
                 const auto* pc = e.components.get<PhysicsComponent>();
@@ -3353,6 +3366,7 @@ int main(int argc, char** argv) {
             driveGliderId = -1;
             gliderDriveActive = false; gliderBackup.clear(); // Play restore owns the transform
             skids.clear();          // drop skid marks so they don't linger in the editor
+            trails.clear();         // and the contrails
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
             physicsBody.clear();
@@ -3627,6 +3641,9 @@ int main(int argc, char** argv) {
                 input, camera, document, entities, streamer, road,
                 driveVehicleId, driveGliderId, driveBackup,
                 dt, kSimH, simAlpha, simSteps,
+                (gliderMode ? gliderPos : carPos),               // player world pos
+                (gliderMode ? gliderSpeedMps : engineSpeedMps),  // player speed
+                (playMode && (vehicleMode || gliderMode)),       // a craft is driven
                 setWorld, parentWorldMat, gliderGround, playBoostPunch,
             };
 
@@ -3664,6 +3681,7 @@ int main(int argc, char** argv) {
                 // choose which control scheme (wheels vs boat) to feed the sim.
                 glm::vec3 cp(0.0f); glm::quat cq(1.0f, 0.0f, 0.0f, 0.0f);
                 physics->getTransform(physCarId, cp, cq);
+                carPos = cp; // mirror the chassis so opponents can see the player
                 blurAnchorWorld = cp; blurAnchorValid = true; // keep the car sharp
                 glm::vec3 vel(0.0f);
                 physics->getLinearVelocity(physCarId, vel);
@@ -4518,6 +4536,21 @@ int main(int argc, char** argv) {
                 // Opponents: AI racers lapping the road centreline, slowing for
                 // corners and banking into them. (racesim::updateOpponents.)
                 racesim::updateOpponents(race, raceEnv);
+
+                // Vapour contrails behind every racer -- the driven craft (keyed by
+                // its entity id) and each opponent (at its just-placed centre). The
+                // ribbons billboard toward the chase camera and fade out on their
+                // own, so a stopped racer's trail dissolves.
+                if (trails.enabled) {
+                    if (vehicleMode || gliderMode) {
+                        const int pid = gliderMode ? driveGliderId : driveVehicleId;
+                        if (pid >= 0) trails.emit(pid, gliderMode ? gliderPos : carPos);
+                    }
+                    for (Entity& te : entities)
+                        if (te.activeInHierarchy && te.components.get<OpponentComponent>())
+                            trails.emit(te.id, te.center);
+                }
+                trails.update(dt, camera.position());
 
                 // Door: ease toward open/closed (open set by a DoorOpener), swing
                 // or slide from the captured closed pose. A kinematic collider
@@ -8249,6 +8282,29 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Darkness", &skids.opacity, 0.1f, 1.0f, "%.2f");
                 ImGui::EndDisabled();
 
+                ui::sectionText("Contrails");
+                ImGui::Checkbox("Enable contrails", &trails.enabled);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Vapour trails streaming behind the racers\n"
+                                      "(the driven craft and every opponent) in Play.");
+                ImGui::BeginDisabled(!trails.enabled);
+                ImGui::SliderFloat("Trail length", &trails.life, 0.3f, 5.0f, "%.1f s");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("How long each puff lingers before it fades\n"
+                                      "out -- longer = a longer streak.");
+                ImGui::SliderFloat("Trail width", &trails.width, 0.05f, 1.5f, "%.2f m");
+                ImGui::SliderFloat("Trail opacity", &trails.opacity, 0.05f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Trail glow", &trails.glow, 0.0f, 6.0f, "%.1f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Self-illumination: the streak glows on its\n"
+                                      "own instead of being lit (and dimmed) by the sun.");
+                ImGui::SliderFloat("Trail spacing", &trails.minStep, 0.2f, 3.0f, "%.1f m");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Distance between recorded points. Smaller = a\n"
+                                      "smoother ribbon (more geometry).");
+                ImGui::ColorEdit3("Trail colour", &trails.color.x);
+                ImGui::EndDisabled();
+
                 // Scene vehicles: hook a model into the vehicle system with one
                 // click. The auto-setup edit goes through the undo history.
                 auto makeDrivable = [&](int rootId) -> std::string {
@@ -8444,6 +8500,7 @@ int main(int argc, char** argv) {
 
             // Tyre skid marks accumulated while driving (alpha-blended, on ground).
             skids.render(renderer);
+            trails.render(renderer);
 
             // Rain wets the (primitive) test car too. Set every frame so the shared
             // lit program never inherits another material's wetness.

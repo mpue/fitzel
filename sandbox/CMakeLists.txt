@@ -22,6 +22,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RainRenderer.cpp
     src/SpraySystem.cpp
     src/SkidSystem.cpp
+    src/TrailSystem.cpp
     src/CarAudio.cpp
     src/GliderAudio.cpp
     src/UiOverlay.cpp

@@ -65,6 +65,13 @@ public:
     };
     Preview previewGeometry() const;
 
+    // Road surface height at world XZ, if within `halfWidth` of the centreline.
+    // Over a bridged (elevated) stretch this is the deck top, not the terrain far
+    // below -- so a hover craft can use it as ground and not sink through the
+    // bridge. Cheap: projects onto the cached sampled centreline. Returns false
+    // when off the road or the road isn't built.
+    bool surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY) const;
+
     // Swap the surface texture (by file name; resolved against the scanned
     // texture dirs, see refreshTextures).
     void setSurface(const std::string& file);
@@ -264,5 +271,6 @@ private:
     std::vector<glm::vec3>       m_collVerts;   // road + bridge geometry for physics
     std::vector<std::uint32_t>   m_collIndices;
     std::vector<glm::vec2>       m_centerline;  // sampled centre (for veg masking)
+    std::vector<float>           m_centerlineY; // road surface height per sample (deck over bridges)
     std::vector<SideBatch>       m_sideBatches; // derived side-object instances
 };

@@ -44,6 +44,11 @@ struct RaceState {
     float gliderBoostHold = 1.5f; // linger time of the last pad's boost (s)
     bool  gliderBoosting  = false; // on/just-left a boost pad (HUD flash)
     bool  gliderWasOnPad  = false; // last frame's pad contact (entry punch edge)
+    // Off-track rescue: the last spot the glider was safely on the road, to pop
+    // it back onto after it falls off (e.g. off a bridge).
+    glm::vec3 respawnPos{0.0f};
+    float     respawnYaw  = 0.0f;
+    bool      haveRespawn = false;
 
     // --- Race / lap timing ----------------------------------------------
     bool  raceActive = false, raceFinished = false, raceHasLine = false;
@@ -93,6 +98,13 @@ struct RaceEnv {
     float kSimH;     // fixed sim step (s)
     float simAlpha;  // render interpolation blend in [0,1)
     int   simSteps;  // fixed steps taken this frame
+
+    // The human racer, for opponent rubber-band + overtaking. playerActive is
+    // false when no craft is being driven (e.g. plain editing) -> opponents then
+    // only race each other.
+    glm::vec3 playerPos{0.0f};
+    float     playerSpeed = 0.0f;
+    bool      playerActive = false;
 
     std::function<void(Entity&, const glm::vec3&, const glm::vec3&, const glm::mat4*)> setWorld;
     std::function<glm::mat4(const Entity&)>       parentWorldMat;

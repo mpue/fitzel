@@ -559,10 +559,22 @@ public:
     float grip         = 14.0f; // lateral grip -> how fast corners can be taken (m/s^2)
     float accel        = 10.0f; // acceleration out of corners / off the line (m/s^2)
     float brake        = 22.0f; // braking into corners (m/s^2)
+    // Race sense: rubber-band toward the player. A leading racer eases off and a
+    // trailing one pushes on by up to this fraction of its speed, so the pack
+    // stays close. 0 = ignore the player (constant pace).
+    float catchup      = 0.35f; // rubber-band strength (0..1)
+    float racingLine   = 0.7f;  // how hard to cut to the apex (0 = hug base lane)
+    float awareness    = 1.0f;  // avoid/overtake other racers + the player (0 = blind)
 
     float dist    = 0.0f;  // runtime: distance travelled along the road (m)
     float bankCur = 0.0f;  // runtime: smoothed bank
     float curSpeed = 0.0f; // runtime: current speed (eased toward the corner target)
+    float laneCur = 0.0f;  // runtime: current lateral offset (racing line + avoidance)
+    float overspeed = 0.0f;// runtime: speed cap above `speed` from a boost pad
+    float boostHold = 1.5f;// runtime: linger time of the last pad's boost (s)
+    float mistakeT = 0.0f; // runtime: time left in the current slip-up (s)
+    float mistakeCd = 0.0f;// runtime: countdown to the next slip-up (s)
+    bool  laneSeeded = false; // runtime: laneCur seeded to laneOffset on first tick
     bool  started = false; // runtime: dist + curSpeed seeded
 
     std::unique_ptr<ComponentBase> clone() const override {
