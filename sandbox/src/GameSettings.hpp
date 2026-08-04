@@ -16,6 +16,7 @@ struct Settings {
     std::string splash;                     // splash image, project-relative ("" = engine default)
     std::string startScene;                 // scene stem the game boots into ("" = default scene)
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
+    bool trimAssets = false;                 // export only assets the project references
 };
 
 // Read <projectFolder>/game.json. Missing file / parse error -> a default Settings

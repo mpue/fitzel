@@ -104,6 +104,14 @@ bool drawSettingsModal(const char* popupId, Settings& s,
         ImGui::Unindent();
         ui::hint("The start scene is always bundled, even if unchecked.");
     }
+
+    ImGui::Spacing();
+    ui::sectionText("Assets");
+    ImGui::Checkbox("Export only used assets", &s.trimAssets);
+    ui::hint("Ship only the models/textures the project references instead of the\n"
+             "whole content library. Sounds and prefabs are always kept, and .lua\n"
+             "scripts are scanned for asset names. Off = copy everything (safe).");
+
     ImGui::Spacing();
     ImGui::Separator();
 

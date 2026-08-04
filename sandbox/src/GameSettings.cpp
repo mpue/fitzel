@@ -20,6 +20,7 @@ Settings load(const std::string& projectFolder) {
     s.splash       = j.value("splash", std::string{});
     s.startScene   = j.value("startScene", std::string{});
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
+    s.trimAssets   = j.value("trimAssets", false);
     return s;
 }
 
@@ -29,6 +30,7 @@ void save(const std::string& projectFolder, const Settings& s) {
     j["splash"]       = s.splash;
     j["startScene"]   = s.startScene;
     j["exportScenes"] = s.exportScenes;
+    j["trimAssets"]   = s.trimAssets;
     std::ofstream f(settingsPath(projectFolder));
     if (f) f << j.dump(2) << '\n';
 }

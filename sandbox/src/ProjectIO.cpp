@@ -7,7 +7,9 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <set>
 #include <sstream>
+#include <unordered_map>
 
 #include <glm/glm.hpp>
 
@@ -560,6 +562,141 @@ void saveCurrent(Context& ctx) {
                                .parent_path().generic_string());
 }
 
+namespace {
+// A 32-hex-char string is an AssetId GUID (how scenes/materials reference models
+// and textures). Sound/road/tree refs are bare filenames instead.
+bool looksLikeGuid(const std::string& s) {
+    if (s.size() != 32) return false;
+    for (unsigned char c : s) if (!std::isxdigit(c)) return false;
+    return true;
+}
+// A string that names an asset file we might have to ship (by extension).
+bool hasAssetExt(const std::string& name) {
+    const auto dot = name.rfind('.');
+    if (dot == std::string::npos || dot + 1 >= name.size()) return false;
+    std::string e = name.substr(dot + 1);
+    for (auto& c : e) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    static const char* const exts[] = {
+        "png", "jpg", "jpeg", "tga", "bmp", "exr", "hdr", // textures
+        "gltf", "glb", "dae", "fbx", "obj",               // models
+        "bin", "mtl"                                       // model companions
+    };
+    for (const char* x : exts) if (e == x) return true;
+    return false;
+}
+std::string lowerCopy(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+// Every string value in a JSON tree (scene / material / prefab), recursively.
+void collectJsonStrings(const nlohmann::json& j, std::vector<std::string>& out) {
+    if (j.is_string())      out.push_back(j.get<std::string>());
+    else if (j.is_array())  { for (const auto& e : j) collectJsonStrings(e, out); }
+    else if (j.is_object()) { for (const auto& it : j.items()) collectJsonStrings(it.value(), out); }
+}
+// Quoted string literals out of Lua source (both "..." and '...'), so a script
+// that names an asset keeps it from being trimmed away. Best-effort.
+void collectLuaStrings(const std::string& src, std::vector<std::string>& out) {
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        const char q = src[i];
+        if (q != '"' && q != '\'') continue;
+        std::string s;
+        for (++i; i < src.size() && src[i] != q; ++i) {
+            if (src[i] == '\\' && i + 1 < src.size()) { s.push_back(src[++i]); }
+            else s.push_back(src[i]);
+        }
+        out.push_back(s);
+    }
+}
+
+// "Export only used assets": copy just the content the project references into
+// out/content, instead of the whole library. Sounds are copied wholesale (small,
+// and script-driven), and every scene/prefab/material/.lua is walked for asset
+// references (GUIDs -> pathForId, filenames -> basename lookup). Model companion
+// files that share a stem (e.g. a .gltf's .bin) ride along.
+void copyUsedContent(Context& ctx, const std::filesystem::path& out,
+                     const std::filesystem::path& projDir, const game::Settings& gs,
+                     const std::string& bootScene, std::error_code& ec) {
+    namespace fs = std::filesystem;
+    const fs::path contentRoot = fs::weakly_canonical(fs::path(ctx.contentRoot), ec);
+
+    auto sceneKept = [&](const std::string& stem) {
+        if (gs.exportScenes.empty()) return true;
+        return stem == bootScene ||
+               std::find(gs.exportScenes.begin(), gs.exportScenes.end(), stem) !=
+                   gs.exportScenes.end();
+    };
+
+    // 1) Gather every asset-reference token from the kept project files.
+    std::vector<std::string> tokens;
+    std::error_code de;
+    for (fs::recursive_directory_iterator it(projDir, de), end; it != end; it.increment(de)) {
+        if (de || !it->is_regular_file()) continue;
+        const std::string ext = lowerCopy(it->path().extension().string());
+        if (ext == ".fitzel") {
+            if (!sceneKept(it->path().stem().string())) continue;
+        } else if (ext != ".fprefab" && ext != ".fmat" && ext != ".lua") {
+            continue;
+        }
+        std::ifstream f(it->path(), std::ios::binary);
+        if (!f) continue;
+        std::string body((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        if (ext == ".lua") {
+            collectLuaStrings(body, tokens);
+        } else {
+            try { collectJsonStrings(nlohmann::json::parse(body), tokens); }
+            catch (const nlohmann::json::exception&) {}
+        }
+    }
+
+    // 2) Resolve tokens to content files. GUIDs via the database; filenames via a
+    //    basename lookup over every scanned asset.
+    std::unordered_map<std::string, fs::path> byName;
+    for (const fitzel::AssetId id : ctx.assetDb.allAssets())
+        if (const auto* e = ctx.assetDb.entry(id))
+            byName[lowerCopy(e->absPath.filename().string())] = e->absPath;
+
+    std::set<fs::path> keep;
+    for (const std::string& tok : tokens) {
+        if (looksLikeGuid(tok)) {
+            const fitzel::AssetId id = fitzel::AssetId::fromString(tok);
+            if (!id.valid()) continue;
+            const fs::path p = ctx.assetDb.pathForId(id);
+            if (!p.empty()) keep.insert(fs::weakly_canonical(p, ec));
+        } else if (hasAssetExt(tok)) {
+            const auto hit = byName.find(lowerCopy(fs::path(tok).filename().string()));
+            if (hit != byName.end()) keep.insert(fs::weakly_canonical(hit->second, ec));
+        }
+    }
+
+    // 3) Copy: sounds wholesale, then each kept file (+ stem-siblings). Anything
+    //    that isn't under the content root is a project asset already shipped in
+    //    out/project, so it's skipped here.
+    const auto rec = fs::copy_options::recursive | fs::copy_options::overwrite_existing;
+    if (fs::exists(contentRoot / "sounds", ec))
+        fs::copy(contentRoot / "sounds", out / "content" / "sounds", rec, ec);
+
+    auto shipUnderContent = [&](const fs::path& src) {
+        std::error_code re;
+        const fs::path rel = fs::relative(src, contentRoot, re);
+        const std::string relS = rel.generic_string();
+        if (re || relS.empty() || relS.rfind("..", 0) == 0) return; // outside content
+        if (relS.rfind("sounds/", 0) == 0) return;                  // already whole
+        const fs::path dst = out / "content" / rel;
+        fs::create_directories(dst.parent_path(), re);
+        fs::copy_file(src, dst, fs::copy_options::overwrite_existing, re);
+    };
+    for (const fs::path& src : keep) {
+        shipUnderContent(src);
+        std::error_code se;
+        for (const auto& sib : fs::directory_iterator(src.parent_path(), se))
+            if (!se && sib.is_regular_file() && sib.path() != src &&
+                sib.path().stem() == src.stem())
+                shipUnderContent(sib.path());
+    }
+}
+} // namespace
+
 void exportGame(Context& ctx, const std::string& outDir) {
     namespace fs = std::filesystem;
     if (ctx.currentProject.empty()) {
@@ -594,13 +731,19 @@ void exportGame(Context& ctx, const std::string& outDir) {
     fs::copy_file(player, out / (game + ".exe"),
                   fs::copy_options::overwrite_existing, ec);
     fs::copy(exeDir / "assets", out / "assets", rec, ec);
-    fs::copy(ctx.contentRoot,   out / "content", rec, ec);
-    fs::copy(projDir, out / "project", rec, ec);
 
     // The boot scene: the configured start scene, else the project's default
     // (<project>.fitzel). Always bundled, whatever the export-scene selection is.
     const std::string bootScene =
         !gs.startScene.empty() ? gs.startScene : projDir.filename().string();
+
+    // Content: the whole library, or -- with "export only used assets" -- just
+    // the models/textures the project actually references.
+    if (gs.trimAssets)
+        copyUsedContent(ctx, out, projDir, gs, bootScene, ec);
+    else
+        fs::copy(ctx.contentRoot, out / "content", rec, ec);
+    fs::copy(projDir, out / "project", rec, ec);
 
     // Optional scene filter: with an explicit export list, drop every other
     // .fitzel from the copied project (materials/models/scripts stay shared). An
