@@ -528,11 +528,47 @@ int main(int argc, char** argv) {
         float bloomIntensity = 0.35f;
         float rayIntensity   = 0.5f;
 
-        // SSAO (half-res), reconstructing position/normal from the HDR depth.
+        // Bloom pyramid: threshold + progressive 13-tap downsample, then a tent
+        // upsample that adds each level back. Replaces a single 5x5 tap grid at a
+        // 9-texel stride, which under-sampled small bright features (emissive
+        // materials above all) into a moire that crawled with the camera.
+        Shader bloomDown = Shader::fromFiles("assets/shaders/sky.vert",
+                                             "assets/shaders/bloomdown.frag");
+        Shader bloomUp   = Shader::fromFiles("assets/shaders/sky.vert",
+                                             "assets/shaders/bloomup.frag");
+        if (!bloomDown.isValid() || !bloomUp.isValid()) {
+            std::fprintf(stderr, "Failed to load bloom shaders\n");
+            return 1;
+        }
+        // [0] is half res, each level halves again. Levels stop before they get
+        // degenerate, so a small viewport simply gets a shorter pyramid.
+        std::vector<RenderTarget> bloomRT;
+        auto rebuildBloom = [&bloomRT](int w, int h) {
+            bloomRT.clear();
+            int lw = std::max(1, w / 2), lh = std::max(1, h / 2);
+            for (int i = 0; i < 5 && lw >= 8 && lh >= 8; ++i) {
+                bloomRT.emplace_back(lw, lh, RenderTarget::Format::RGBA16F);
+                lw = std::max(1, lw / 2);
+                lh = std::max(1, lh / 2);
+            }
+        };
+        rebuildBloom(hdrW, hdrH);
+        float bloomThreshold = 1.0f;  // luminance where the glow starts
+        float bloomKnee      = 0.5f;  // soft-knee width below it
+
+        // SSAO (half-res), reconstructing position/normal from the HDR depth,
+        // plus a depth-aware blur that resolves its dither without smearing AO
+        // across silhouettes (which the old in-composite box blur did).
         Shader ssao = Shader::fromFiles("assets/shaders/sky.vert",
                                         "assets/shaders/ssao.frag");
         if (!ssao.isValid()) { std::fprintf(stderr, "Failed to load ssao shader\n"); return 1; }
+        Shader ssaoBlur = Shader::fromFiles("assets/shaders/sky.vert",
+                                            "assets/shaders/ssaoblur.frag");
+        if (!ssaoBlur.isValid()) {
+            std::fprintf(stderr, "Failed to load ssao blur shader\n"); return 1;
+        }
         RenderTarget ssaoRT(hdrW / 2, hdrH / 2);
+        RenderTarget ssaoBlurRT(hdrW / 2, hdrH / 2);
 
         // The final composited image lives in this target and is shown as the
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
@@ -571,23 +607,11 @@ int main(int argc, char** argv) {
         bool viewportClicked = false;     // left-click landed on the viewport image
         glm::vec2 viewportRectMin(0.0f);  // viewport image top-left in screen px
         glm::vec2 viewportRectSize(0.0f); // viewport image size in screen px
-        {
-            std::mt19937 rng(1337u);
-            std::uniform_real_distribution<float> d(0.0f, 1.0f);
-            ssao.bind();
-            const int kn = 24;
-            for (int i = 0; i < kn; ++i) {
-                glm::vec3 s(d(rng) * 2.0f - 1.0f, d(rng) * 2.0f - 1.0f, d(rng));
-                s = glm::normalize(s) * d(rng);
-                const float t = static_cast<float>(i) / kn;
-                s *= glm::mix(0.1f, 1.0f, t * t); // cluster samples near the origin
-                ssao.setVec3("uKernel[" + std::to_string(i) + "]", s);
-            }
-            ssao.setInt("uKernelSize", kn);
-        }
+        // The horizon-based AO samples along screen-space directions it derives
+        // itself, so there is no sample kernel to upload any more.
         float ssaoStrength = 0.7f;
         float ssaoRadius   = 1.5f;
-        float ssaoBias     = 0.03f;
+        float ssaoBias     = 0.15f; // radians: horizons below this don't occlude
         float ssaoPower    = 1.6f;
 
         // Day/night cycle.
@@ -2221,7 +2245,9 @@ int main(int argc, char** argv) {
         addF("fogDensity", fogDensity);        addF("fogFalloff", fogFalloff);
         addF("exposure", exposure);            addF("bloom", bloomIntensity);
         addF("rays", rayIntensity);            addF("ssao", ssaoStrength);
-        addF("ssaoRadius", ssaoRadius);        addF("cascadeSplit", renderer.shadows().splitLambda);
+        addF("ssaoRadius", ssaoRadius);        addF("ssaoBias", ssaoBias);
+        addF("bloomThreshold", bloomThreshold); addF("bloomKnee", bloomKnee);
+        addF("cascadeSplit", renderer.shadows().splitLambda);
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
@@ -6748,9 +6774,20 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
                 ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
                 ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
+                ImGui::SliderFloat("Bloom threshold", &bloomThreshold, 0.2f, 4.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Luminance where the glow starts. Lower it to make\n"
+                                      "emissive materials bloom sooner; the knee below\n"
+                                      "keeps the onset soft instead of popping.");
+                ImGui::SliderFloat("Bloom knee", &bloomKnee, 0.0f, 1.5f, "%.2f");
                 ImGui::SliderFloat("Sun rays",   &rayIntensity, 0.0f, 1.5f);
                 ImGui::SliderFloat("SSAO",       &ssaoStrength, 0.0f, 1.0f);
                 ImGui::SliderFloat("SSAO radius",&ssaoRadius, 0.2f, 4.0f);
+                ImGui::SliderFloat("SSAO angle bias", &ssaoBias, 0.0f, 0.6f, "%.2f rad");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Horizons below this elevation don't occlude.\n"
+                                      "Raise it if flat surfaces look dirty, lower it\n"
+                                      "for more contact shading in creases.");
                 ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
                 ui::sectionText("Depth of field");
                 ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
@@ -9171,9 +9208,11 @@ int main(int argc, char** argv) {
             if (hdrRT.width() != fbW || hdrRT.height() != fbH) {
                 hdrRT  = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA16F, true);
                 ssaoRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
+                ssaoBlurRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
                 viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
                 postRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
                 mbRT   = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
+                rebuildBloom(fbW, fbH);
             }
             hdrRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -9244,12 +9283,17 @@ int main(int argc, char** argv) {
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
 
-            // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
-            ssaoRT.bind();
-            glClear(GL_COLOR_BUFFER_BIT);
+            // --- Post-processing passes (all fullscreen, no depth, no blending
+            //     unless a pass asks for it). SSAO -> its denoise -> the bloom
+            //     pyramid; the composite below consumes both. ------------------
             glDisable(GL_DEPTH_TEST);
             glDepthMask(GL_FALSE);
             glDisable(GL_CULL_FACE);
+            glDisable(GL_BLEND);
+
+            // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
+            ssaoRT.bind();
+            glClear(GL_COLOR_BUFFER_BIT);
             ssao.bind();
             hdrRT.bindDepthTexture(0);
             ssao.setInt("uDepth", 0);
@@ -9258,14 +9302,61 @@ int main(int argc, char** argv) {
             ssao.setFloat("uRadius", ssaoRadius);
             ssao.setFloat("uBias", ssaoBias);
             ssao.setFloat("uPower", ssaoPower);
-            // Fade AO out past the near/mid field so distant, low-precision terrain
-            // toward the horizon can't band into horizontal stripes.
-            ssao.setFloat("uFadeStart", 50.0f);
-            ssao.setFloat("uFadeEnd", 120.0f);
+            // Distance fade: depth precision toward the horizon isn't worth an AO
+            // term, and the far field reads better hazy than dirty.
+            ssao.setFloat("uFadeStart", 60.0f);
+            ssao.setFloat("uFadeEnd", 160.0f);
             fsQuad.draw();
-            glDepthMask(GL_TRUE);
-            glEnable(GL_DEPTH_TEST);
-            glEnable(GL_CULL_FACE);
+
+            // --- SSAO denoise: depth-aware blur, so the dither resolves without
+            //     dragging occlusion across silhouettes ----------------------
+            ssaoBlurRT.bind();
+            glClear(GL_COLOR_BUFFER_BIT);
+            ssaoBlur.bind();
+            ssaoRT.bindColorTexture(0);   ssaoBlur.setInt("uAO", 0);
+            hdrRT.bindDepthTexture(1);    ssaoBlur.setInt("uDepth", 1);
+            ssaoBlur.setVec2("uTexel", {1.0f / ssaoRT.width(), 1.0f / ssaoRT.height()});
+            ssaoBlur.setFloat("uNear", camera.nearPlane());
+            ssaoBlur.setFloat("uFar", camera.farPlane());
+            ssaoBlur.setFloat("uDepthSigma", 0.4f);
+            fsQuad.draw();
+
+            // --- Bloom pyramid: threshold + downsample, then tent-upsample the
+            //     levels back on top of each other (additive) ----------------
+            for (std::size_t i = 0; i < bloomRT.size(); ++i) {
+                bloomRT[i].bind();
+                glClear(GL_COLOR_BUFFER_BIT);
+                bloomDown.bind();
+                if (i == 0) {
+                    hdrRT.bindColorTexture(0);
+                    bloomDown.setVec2("uSrcTexel", {1.0f / fbW, 1.0f / fbH});
+                } else {
+                    bloomRT[i - 1].bindColorTexture(0);
+                    bloomDown.setVec2("uSrcTexel",
+                                      {1.0f / bloomRT[i - 1].width(),
+                                       1.0f / bloomRT[i - 1].height()});
+                }
+                bloomDown.setInt("uSrc", 0);
+                bloomDown.setInt("uFirstPass", i == 0 ? 1 : 0);
+                bloomDown.setFloat("uThreshold", bloomThreshold);
+                bloomDown.setFloat("uKnee", bloomKnee);
+                fsQuad.draw();
+            }
+            if (bloomRT.size() > 1) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_ONE, GL_ONE); // each level adds onto the larger one
+                bloomUp.bind();
+                bloomUp.setInt("uSrc", 0);
+                bloomUp.setFloat("uRadius", 1.0f);
+                for (std::size_t i = bloomRT.size(); i-- > 1;) {
+                    bloomRT[i - 1].bind();
+                    bloomRT[i].bindColorTexture(0);
+                    bloomUp.setVec2("uSrcTexel",
+                                    {1.0f / bloomRT[i].width(), 1.0f / bloomRT[i].height()});
+                    fsQuad.draw();
+                }
+                glDisable(GL_BLEND);
+            }
 
             // --- Composite: bloom + god rays + lens flare + tonemap ------
             // Project the sun to screen space for the rays/flare.
@@ -9296,9 +9387,13 @@ int main(int argc, char** argv) {
             composite.setFloat("uFocusNear", dofNear);
             composite.setFloat("uFocusFar", dofFar);
             composite.setFloat("uDofMax", dofMax);
-            ssaoRT.bindColorTexture(2);
+            ssaoBlurRT.bindColorTexture(2);
             composite.setInt("uAO", 2);
             composite.setFloat("uAoStrength", ssaoStrength);
+            // The bloom pyramid's top level: already thresholded and blurred, so
+            // the composite only samples it (for the glow and the god rays).
+            if (!bloomRT.empty()) bloomRT[0].bindColorTexture(3);
+            composite.setInt("uBloomTex", 3);
             composite.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
             composite.setFloat("uAspect", aspect);
             composite.setFloat("uExposure", exposure);

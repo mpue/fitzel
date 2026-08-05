@@ -12,10 +12,12 @@ uniform vec2  uSunUV;       // sun screen position
 uniform float uSunOnScreen; // 1 if the sun projects in front of the camera
 uniform vec3  uSunColor;    // linear sun tint
 
+uniform sampler2D uBloomTex; // pre-blurred bloom pyramid (half res, already
+                             // thresholded -- see bloomdown/bloomup.frag)
 uniform float uBloom;       // bloom intensity
 uniform float uRays;        // god-ray intensity
 
-uniform sampler2D uAO;      // screen-space ambient occlusion
+uniform sampler2D uAO;      // screen-space ambient occlusion (already denoised)
 uniform float uAoStrength;
 
 // Depth of field (distance blur toward the background).
@@ -62,11 +64,11 @@ vec3 colorGrade(vec3 c) {
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 
-// Isolate bright highlights (sun, sky, cloud rims) for bloom / rays.
-vec3 bright(vec2 uv) {
-    vec3 c = texture(uHdr, uv).rgb;
-    return c * smoothstep(1.4, 4.0, luma(c));
-}
+// Bright highlights (sun, sky, cloud rims, emissive surfaces) for the rays.
+// Read from the bloom pyramid, which is already thresholded *and* blurred: the
+// rays used to march the raw HDR, so every bright sub-pixel detail they crossed
+// aliased into the streaks. A pre-filtered source cannot alias.
+vec3 bright(vec2 uv) { return texture(uBloomTex, uv).rgb; }
 
 vec3 aces(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -81,18 +83,23 @@ float linearDepth(vec2 uv) {
 // Blur amount 0..1 by distance (sharp foreground, blurred background).
 float cocAt(vec2 uv) { return smoothstep(uFocusNear, uFocusFar, linearDepth(uv)); }
 
-// Depth-of-field gather: a two-ring disk scaled by CoC. Samples are weighted by
-// their own CoC so sharp foreground pixels don't bleed into blurred background.
+// Depth-of-field gather. A single ring of 8 taps left the ring itself visible on
+// anything with a bright background -- out-of-focus points became little rosettes.
+// A golden-angle spiral spreads the same budget (raised to 24) evenly over the
+// whole disc, so the blur reads as one soft circle of confusion. Samples are
+// weighted by their own CoC so sharp foreground pixels don't bleed backwards.
 vec3 dofColor(vec2 uv) {
     float c0 = cocAt(uv);
     if (uDofMax < 0.5 || c0 < 0.02) return texture(uHdr, uv).rgb;
     float radius = c0 * uDofMax;
     vec3  sum  = texture(uHdr, uv).rgb;
     float wsum = 1.0;
-    const int TAPS = 8; // single ring is enough for a soft background blur
+    const int   TAPS  = 24;
+    const float GOLD  = 2.39996323; // golden angle (radians)
     for (int i = 0; i < TAPS; ++i) {
-        float a = float(i) / float(TAPS) * 6.2831853;
-        vec2  suv = uv + vec2(cos(a), sin(a)) * uTexel * radius;
+        float t = (float(i) + 0.5) / float(TAPS);
+        float a = float(i) * GOLD;
+        vec2  suv = uv + vec2(cos(a), sin(a)) * sqrt(t) * uTexel * radius;
         float w = cocAt(suv);
         sum  += texture(uHdr, suv).rgb * w;
         wsum += w;
@@ -104,29 +111,14 @@ void main() {
     vec2 uv  = vNdc * 0.5 + 0.5;
     vec3 hdr = dofColor(uv);
 
-    // Ambient occlusion darkens creases/valleys. The half-res AO carries the
-    // SSAO kernel's per-pixel dither, so denoise it with a 4x4 box blur (step =
-    // one AO texel = two full-res texels) before applying -- this is the SSAO
-    // blur pass, folded into the composite to avoid a separate target.
-    float aoSum = 0.0;
-    for (int x = -2; x <= 1; ++x)
-        for (int y = -2; y <= 1; ++y)
-            aoSum += texture(uAO, uv + vec2(x, y) * uTexel * 2.0).r;
-    float ao = mix(1.0, aoSum / 16.0, uAoStrength);
+    // Ambient occlusion darkens creases/valleys. Already denoised by the
+    // depth-aware blur pass, so one bilinear tap is all it takes here.
+    float ao = mix(1.0, texture(uAO, uv).r, uAoStrength);
     hdr *= ao;
 
-    // --- Bloom: gaussian-weighted blur of the bright pass (5x5, wider step) --
-    vec3  bloom = vec3(0.0);
-    float wsum  = 0.0;
-    for (int x = -2; x <= 2; ++x) {
-        for (int y = -2; y <= 2; ++y) {
-            vec2  o = vec2(x, y) * uTexel * 9.0;
-            float w = exp(-dot(vec2(x, y), vec2(x, y)) * 0.30);
-            bloom += bright(uv + o) * w;
-            wsum  += w;
-        }
-    }
-    bloom /= wsum;
+    // Bloom: the pyramid pass did the work (threshold, downsample, tent
+    // upsample); this is just its result, filtered up to full res.
+    vec3 bloom = texture(uBloomTex, uv).rgb;
 
     // How visible the sun actually is (0 when occluded by terrain).
     float occl = smoothstep(1.5, 4.0, luma(texture(uHdr, clamp(uSunUV, 0.0, 1.0)).rgb))

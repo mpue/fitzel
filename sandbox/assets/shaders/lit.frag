@@ -181,32 +181,73 @@ int selectCascade() {
     return uCascadeCount - 1;
 }
 
-float computeShadow(int layer, vec3 N, vec3 L) {
-    vec4 lsPos = uLightSpace[layer] * vec4(vWorldPos, 1.0);
-    vec3 proj  = lsPos.xyz / lsPos.w;
-    proj = proj * 0.5 + 0.5;
+// Interleaved gradient noise -- the per-pixel rotation for the PCF kernel below.
+float ignRot(vec2 p) {
+    return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
+}
+
+// World size of one shadow texel in `layer` (the light matrix is orthographic, so
+// its column length is the world -> light-space scale).
+float shadowTexelWorld(int layer) {
+    float scale = length(uLightSpace[layer][0].xyz);
+    return 2.0 / max(scale * float(textureSize(uShadowMap, 0).x), 1.0e-4);
+}
+
+// One cascade's PCF lookup at an already normal-offset world position.
+float shadowPcf(int layer, vec3 wp, float ndl, float rot) {
+    vec4 lsPos = uLightSpace[layer] * vec4(wp, 1.0);
+    vec3 proj  = lsPos.xyz / lsPos.w * 0.5 + 0.5;
     if (proj.z > 1.0) return 0.0;
 
-    // Kept small: glPolygonOffset in the depth pass already handles most acne, so
-    // a large bias here only detaches the shadow from the caster (peter-panning).
-    float bias = max(0.0010 * (1.0 - dot(N, L)), 0.00025);
-    bias *= 1.0 + float(layer) * 0.35; // coarser cascades need a little more
+    // Kept small: the normal offset below does the acne work geometrically, and
+    // glPolygonOffset in the depth pass covers the rest. A large depth bias only
+    // detaches the shadow from its caster (peter-panning).
+    float bias = max(0.0010 * (1.0 - ndl), 0.00025) * (1.0 + float(layer) * 0.35);
 
-    vec2  texel   = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
-    float current = proj.z;
-    float shadow  = 0.0;
-    // Wider 5x5 PCF at 1.35-texel spacing: a broader, softer penumbra so cast
-    // shadows (e.g. a tree on the meadow) fade out instead of ending on a hard
-    // edge. Nearer cascades cover less ground per texel, so their edge is softest.
+    vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0).xy);
+    // Rotate the 5x5 tap grid per pixel. A fixed grid quantises the penumbra into
+    // the same handful of levels everywhere, which reads as stepped, blocky
+    // shadow edges; rotating it turns those steps into a fine dither that the eye
+    // (and FXAA) resolve as a smooth gradient.
+    float s = sin(rot), c = cos(rot);
+    mat2  R = mat2(c, -s, s, c);
     const float spread = 1.35;
+
+    float shadow = 0.0;
     for (int x = -2; x <= 2; ++x) {
         for (int y = -2; y <= 2; ++y) {
-            float closest = texture(uShadowMap,
-                vec3(proj.xy + vec2(x, y) * texel * spread, float(layer))).r;
-            shadow += (current - bias > closest) ? 1.0 : 0.0;
+            vec2 o = R * (vec2(x, y) * spread) * texel;
+            float closest = texture(uShadowMap, vec3(proj.xy + o, float(layer))).r;
+            shadow += (proj.z - bias > closest) ? 1.0 : 0.0;
         }
     }
     return shadow / 25.0;
+}
+
+float computeShadow(int layer, vec3 N, vec3 L) {
+    float ndl = clamp(dot(N, L), 0.0, 1.0);
+    float rot = 6.2831853 * ignRot(gl_FragCoord.xy);
+
+    // Normal offset: move the lookup off the surface by about one shadow texel,
+    // more as the light grazes. This is what actually removes acne -- and unlike a
+    // depth bias it doesn't slide the shadow away from the object's contact point.
+    vec3 wp = vWorldPos + N * shadowTexelWorld(layer) * (1.0 + 2.0 * (1.0 - ndl));
+    float shadow = shadowPcf(layer, wp, ndl, rot);
+
+    // Cascade blend: cross-fade into the next cascade over the last stretch of
+    // this one. Without it the filter width (and bias) jump at the split, and the
+    // jump draws a visible line straight across the ground.
+    if (layer + 1 < uCascadeCount) {
+        float split = uCascadeSplits[layer];
+        float prev  = (layer == 0) ? 0.0 : uCascadeSplits[layer - 1];
+        float t = smoothstep(mix(prev, split, 0.85), split, vViewDepth);
+        if (t > 0.001) {
+            vec3 wp2 = vWorldPos +
+                       N * shadowTexelWorld(layer + 1) * (1.0 + 2.0 * (1.0 - ndl));
+            shadow = mix(shadow, shadowPcf(layer + 1, wp2, ndl, rot), t);
+        }
+    }
+    return shadow;
 }
 
 // --- Cheap procedural value-noise fBm for surface micro-detail -------------
@@ -466,6 +507,18 @@ void main() {
     // Wet surfaces gain a stronger, tighter specular highlight (the sheen).
     specPower = mix(specPower, max(specPower, 0.9), rainWet);
     specExp   = mix(specExp, 160.0, rainWet);
+    // Geometric specular anti-aliasing. Where the normal swings a lot *within one
+    // pixel* -- distant normal-mapped detail, thin or dense geometry, a grazing
+    // road -- a tight highlight is smaller than the pixel and turns into crawling
+    // sparkle/moire. Widen the lobe by the pixel's normal variance instead, which
+    // is what integrating over the pixel would have done anyway. (Kaplanyan's
+    // roughness clamp, expressed for a Phong exponent.)
+    {
+        float variance = 0.25 * (dot(dFdx(N), dFdx(N)) + dot(dFdy(N), dFdy(N)));
+        float alpha    = sqrt(2.0 / (specExp + 2.0));           // exponent -> width
+        alpha          = sqrt(min(alpha * alpha + variance, 1.0));
+        specExp        = max(2.0 / (alpha * alpha) - 2.0, 1.0); // ...and back
+    }
     float spec      = pow(max(dot(N, H), 0.0), specExp) * specPower;
 
     int   layer   = selectCascade();

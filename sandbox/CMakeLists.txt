@@ -66,24 +66,38 @@ foreach(tgt sandbox player)
         FITZEL_SOUND_DIR="${CMAKE_SOURCE_DIR}/content/sounds"
         FITZEL_MODEL_DIR="${CMAKE_SOURCE_DIR}/content/models")
 
-    # Copy shader assets + scripts next to the executable so relative paths
-    # resolve at runtime. Both targets share one bin/ output dir, so this is a
-    # (harmless) no-op overwrite for whichever builds second.
-    add_custom_command(TARGET ${tgt} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${CMAKE_CURRENT_SOURCE_DIR}/assets
-                $<TARGET_FILE_DIR:${tgt}>/assets
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                ${CMAKE_CURRENT_SOURCE_DIR}/scripts
-                $<TARGET_FILE_DIR:${tgt}>/scripts
-        # Startup splash art. Kept in the repo's images/ folder (it's branding,
-        # not a sandbox asset) but copied into assets/, which "Export Game"
-        # ships wholesale -- so the exported player gets the same splash.
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${CMAKE_SOURCE_DIR}/images/splash.png
-                $<TARGET_FILE_DIR:${tgt}>/assets/splash.png
-        COMMENT "Copying ${tgt} assets")
 endforeach()
+
+# Shader assets + Lua scripts next to the executable, so relative paths resolve at
+# runtime. This is a real build step keyed on the asset files themselves, not a
+# POST_BUILD hook on the executables: a POST_BUILD only runs when the exe relinks,
+# so editing a shader and rebuilding left the *old* shader sitting next to the
+# binary and the change silently didn't show up. CONFIGURE_DEPENDS re-globs on
+# build, so a newly added shader is picked up without re-running CMake by hand.
+file(GLOB_RECURSE FITZEL_SANDBOX_ASSETS CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/assets/*
+     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/*)
+set(FITZEL_ASSET_STAMP ${CMAKE_CURRENT_BINARY_DIR}/assets.stamp)
+add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/assets
+            $<TARGET_FILE_DIR:sandbox>/assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/scripts
+            $<TARGET_FILE_DIR:sandbox>/scripts
+    # Startup splash art. Kept in the repo's images/ folder (it's branding, not a
+    # sandbox asset) but copied into assets/, which "Export Game" ships wholesale
+    # -- so the exported player gets the same splash.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/images/splash.png
+            $<TARGET_FILE_DIR:sandbox>/assets/splash.png
+    COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_ASSET_STAMP}
+    DEPENDS ${FITZEL_SANDBOX_ASSETS} ${CMAKE_SOURCE_DIR}/images/splash.png
+    COMMENT "Copying sandbox assets")
+add_custom_target(sandbox_assets ALL DEPENDS ${FITZEL_ASSET_STAMP})
+# Both executables share one bin/ dir, so one copy serves both.
+add_dependencies(sandbox sandbox_assets)
+add_dependencies(player  sandbox_assets)
 
 # Native folder-picker (IFileOpenDialog) needs COM + the shell on Windows. Only
 # the editor uses it (FolderDialog.cpp); the player has no file dialogs.
