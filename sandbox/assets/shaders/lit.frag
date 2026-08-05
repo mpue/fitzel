@@ -280,24 +280,35 @@ float detailFbm(vec2 p) {
 
 // Triplanar sampling: project the texture along the three world axes and blend
 // by the (squared) normal, so steep terrain doesn't stretch a flat UV.
-vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale) {
+//
+// The derivatives are passed IN (dpdx/dpdy of the world position) and the samples
+// use textureGrad rather than plain texture(). That is not a micro-optimisation:
+// these calls sit inside the layer loop's `if (w > 0.0)`, and a texture() with
+// implicit LOD inside non-uniform control flow has *undefined* derivatives --
+// neighbouring pixels of a quad take different branches, so the finite difference
+// the hardware forms is garbage and it picks a wrong mip. Since the three
+// projections mix per pixel, the wrongness lands diagonally and swims as the
+// camera turns: the diagonal, view-direction-dependent moire on the terrain.
+vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
     vec3 bw = abs(n);
     bw = pow(bw, vec3(4.0));
     bw /= (bw.x + bw.y + bw.z);
-    vec3 cx = texture(tex, wp.zy * scale).rgb;
-    vec3 cy = texture(tex, wp.xz * scale).rgb;
-    vec3 cz = texture(tex, wp.xy * scale).rgb;
+    vec3 cx = textureGrad(tex, wp.zy * scale, dpdx.zy * scale, dpdy.zy * scale).rgb;
+    vec3 cy = textureGrad(tex, wp.xz * scale, dpdx.xz * scale, dpdy.xz * scale).rgb;
+    vec3 cz = textureGrad(tex, wp.xy * scale, dpdx.xy * scale, dpdy.xy * scale).rgb;
     return cx * bw.x + cy * bw.y + cz * bw.z;
 }
 
 // Triplanar normal mapping (Whiteout blend): reorient each plane's tangent-space
-// normal onto the geometry normal, then blend by the (squared) normal.
-vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale) {
+// normal onto the geometry normal, then blend by the (squared) normal. Same
+// explicit-derivative treatment as the colour path above.
+vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale,
+                     vec3 dpdx, vec3 dpdy) {
     vec3 bw = pow(abs(n), vec3(4.0));
     bw /= (bw.x + bw.y + bw.z);
-    vec3 tx = texture(nmap, wp.zy * scale).xyz * 2.0 - 1.0;
-    vec3 ty = texture(nmap, wp.xz * scale).xyz * 2.0 - 1.0;
-    vec3 tz = texture(nmap, wp.xy * scale).xyz * 2.0 - 1.0;
+    vec3 tx = textureGrad(nmap, wp.zy * scale, dpdx.zy * scale, dpdy.zy * scale).xyz * 2.0 - 1.0;
+    vec3 ty = textureGrad(nmap, wp.xz * scale, dpdx.xz * scale, dpdy.xz * scale).xyz * 2.0 - 1.0;
+    vec3 tz = textureGrad(nmap, wp.xy * scale, dpdx.xy * scale, dpdy.xy * scale).xyz * 2.0 - 1.0;
     tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
     ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
     tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
@@ -313,23 +324,23 @@ float band(float x, float start, float end, float feather) {
 
 // Triplanar-sample a layer by index using CONSTANT sampler indices only --
 // GLSL 3.30 forbids indexing a sampler array with a non-constant expression.
-vec3 layerTriplanar(int i, vec3 wp, vec3 n, float scale) {
-    if (i == 0) return triplanar(uLayerTex[0], wp, n, scale);
-    if (i == 1) return triplanar(uLayerTex[1], wp, n, scale);
-    if (i == 2) return triplanar(uLayerTex[2], wp, n, scale);
-    if (i == 3) return triplanar(uLayerTex[3], wp, n, scale);
-    if (i == 4) return triplanar(uLayerTex[4], wp, n, scale);
-    return triplanar(uLayerTex[5], wp, n, scale);
+vec3 layerTriplanar(int i, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
+    if (i == 0) return triplanar(uLayerTex[0], wp, n, scale, dpdx, dpdy);
+    if (i == 1) return triplanar(uLayerTex[1], wp, n, scale, dpdx, dpdy);
+    if (i == 2) return triplanar(uLayerTex[2], wp, n, scale, dpdx, dpdy);
+    if (i == 3) return triplanar(uLayerTex[3], wp, n, scale, dpdx, dpdy);
+    if (i == 4) return triplanar(uLayerTex[4], wp, n, scale, dpdx, dpdy);
+    return triplanar(uLayerTex[5], wp, n, scale, dpdx, dpdy);
 }
 
 // Same constant-index dispatch for the per-layer normal maps.
-vec3 layerTriplanarNormal(int i, vec3 wp, vec3 n, float scale) {
-    if (i == 0) return triplanarNormal(uLayerNorm[0], wp, n, scale);
-    if (i == 1) return triplanarNormal(uLayerNorm[1], wp, n, scale);
-    if (i == 2) return triplanarNormal(uLayerNorm[2], wp, n, scale);
-    if (i == 3) return triplanarNormal(uLayerNorm[3], wp, n, scale);
-    if (i == 4) return triplanarNormal(uLayerNorm[4], wp, n, scale);
-    return triplanarNormal(uLayerNorm[5], wp, n, scale);
+vec3 layerTriplanarNormal(int i, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
+    if (i == 0) return triplanarNormal(uLayerNorm[0], wp, n, scale, dpdx, dpdy);
+    if (i == 1) return triplanarNormal(uLayerNorm[1], wp, n, scale, dpdx, dpdy);
+    if (i == 2) return triplanarNormal(uLayerNorm[2], wp, n, scale, dpdx, dpdy);
+    if (i == 3) return triplanarNormal(uLayerNorm[3], wp, n, scale, dpdx, dpdy);
+    if (i == 4) return triplanarNormal(uLayerNorm[4], wp, n, scale, dpdx, dpdy);
+    return triplanarNormal(uLayerNorm[5], wp, n, scale, dpdx, dpdy);
 }
 
 // Height- and slope-driven terrain surface: blends the configured texture layers
@@ -339,6 +350,11 @@ vec3 layerTriplanarNormal(int i, vec3 wp, vec3 n, float scale) {
 void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 normalOut) {
     normalOut = n;
     if (uLayerCount == 0) { albedo = uAlbedo; return; } // no layers -> flat base
+
+    // Screen-space derivatives of the world position, taken HERE -- in uniform
+    // control flow -- and handed to every triplanar sample below. See triplanar().
+    vec3 dpdx = dFdx(wp);
+    vec3 dpdy = dFdy(wp);
 
     float slopeDeg = degrees(acos(clamp(n.y, -1.0, 1.0))); // 0 flat .. 90 vertical
     float h        = wp.y + (detail - 0.5) * 3.0;          // jitter the height edges
@@ -360,9 +376,9 @@ void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 nor
         float pw    = (i < 4) ? paint[i] : 0.0;
         float w     = autoW * (1.0 - paintCover) + pw;
         if (w > 0.0) {
-            acc += layerTriplanar(i, wp, n, uLayerScale[i]) * w;
+            acc += layerTriplanar(i, wp, n, uLayerScale[i], dpdx, dpdy) * w;
             vec3 ln = (uLayerHasNorm[i] == 1)
-                    ? layerTriplanarNormal(i, wp, n, uLayerScale[i]) : n;
+                    ? layerTriplanarNormal(i, wp, n, uLayerScale[i], dpdx, dpdy) : n;
             nacc += ln * w;
             wsum += w;
         }
@@ -452,7 +468,17 @@ vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap) {
 void main() {
     vec3 N = normalize(vNormal); // smooth geometry normal (drives material masks)
 
-    float detail = (uColorMode == 1) ? detailFbm(vWorldPos.xz * uDetailScale) : 0.0;
+    // Procedural micro-detail. It has no mip chain to fall back on, so once a
+    // pixel covers more than about one noise period it aliases -- a fixed
+    // world-space frequency beating against the pixel grid, which is the other
+    // half of the terrain's shimmer. Fade it to its mean (0.5, the neutral value
+    // for every consumer) exactly where the footprint outruns it.
+    float detail = 0.5;
+    if (uColorMode == 1) {
+        vec2  dp   = fwidth(vWorldPos.xz * uDetailScale); // periods per pixel
+        float fade = 1.0 - smoothstep(0.35, 1.0, max(dp.x, dp.y));
+        detail = mix(0.5, detailFbm(vWorldPos.xz * uDetailScale), fade);
+    }
 
     vec3 albedo;
     vec3 terrainNrm = N; // terrain's perturbed normal (filled in layer mode)
