@@ -289,13 +289,20 @@ float detailFbm(vec2 p) {
 // the hardware forms is garbage and it picks a wrong mip. Since the three
 // projections mix per pixel, the wrongness lands diagonally and swims as the
 // camera turns: the diagonal, view-direction-dependent moire on the terrain.
+// Wrap a scaled world-space UV into [0,1). With GL_REPEAT this samples exactly
+// the same texels -- but far from the origin the un-wrapped coordinate is a big
+// float with barely any sub-texel bits left, which quantises the filter into
+// bands. Safe only because the sampling below passes its derivatives explicitly:
+// a fract() seam would otherwise wreck the implicit LOD along one pixel row.
+vec2 wrapUv(vec2 uv) { return fract(uv); }
+
 vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
     vec3 bw = abs(n);
     bw = pow(bw, vec3(4.0));
     bw /= (bw.x + bw.y + bw.z);
-    vec3 cx = textureGrad(tex, wp.zy * scale, dpdx.zy * scale, dpdy.zy * scale).rgb;
-    vec3 cy = textureGrad(tex, wp.xz * scale, dpdx.xz * scale, dpdy.xz * scale).rgb;
-    vec3 cz = textureGrad(tex, wp.xy * scale, dpdx.xy * scale, dpdy.xy * scale).rgb;
+    vec3 cx = textureGrad(tex, wrapUv(wp.zy * scale), dpdx.zy * scale, dpdy.zy * scale).rgb;
+    vec3 cy = textureGrad(tex, wrapUv(wp.xz * scale), dpdx.xz * scale, dpdy.xz * scale).rgb;
+    vec3 cz = textureGrad(tex, wrapUv(wp.xy * scale), dpdx.xy * scale, dpdy.xy * scale).rgb;
     return cx * bw.x + cy * bw.y + cz * bw.z;
 }
 
@@ -306,9 +313,9 @@ vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale,
                      vec3 dpdx, vec3 dpdy) {
     vec3 bw = pow(abs(n), vec3(4.0));
     bw /= (bw.x + bw.y + bw.z);
-    vec3 tx = textureGrad(nmap, wp.zy * scale, dpdx.zy * scale, dpdy.zy * scale).xyz * 2.0 - 1.0;
-    vec3 ty = textureGrad(nmap, wp.xz * scale, dpdx.xz * scale, dpdy.xz * scale).xyz * 2.0 - 1.0;
-    vec3 tz = textureGrad(nmap, wp.xy * scale, dpdx.xy * scale, dpdy.xy * scale).xyz * 2.0 - 1.0;
+    vec3 tx = textureGrad(nmap, wrapUv(wp.zy * scale), dpdx.zy * scale, dpdy.zy * scale).xyz * 2.0 - 1.0;
+    vec3 ty = textureGrad(nmap, wrapUv(wp.xz * scale), dpdx.xz * scale, dpdy.xz * scale).xyz * 2.0 - 1.0;
+    vec3 tz = textureGrad(nmap, wrapUv(wp.xy * scale), dpdx.xy * scale, dpdy.xy * scale).xyz * 2.0 - 1.0;
     tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
     ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
     tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);

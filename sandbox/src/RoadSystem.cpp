@@ -604,8 +604,55 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     m_centerline = center; // flat centre for vegetation masking
     m_centerlineY = height; // road surface height per sample (deck top over bridges)
 
+    // Along-road UV wrap. `v` is metres/texTile accumulated from the start line,
+    // so on a few-kilometre circuit it climbs into the hundreds -- and a float
+    // has no bits to spare there. Two things break at that magnitude, both of
+    // them subtle and both of them view-dependent: the sampler quantises
+    // sub-texel positions, and dFdx(vUV) -- which selects the mip level and
+    // builds the normal-map basis -- loses most of its precision to
+    // cancellation, so the chosen mip flickers between quads. The result is a
+    // fine banding across the carriageway that shifts as you turn: moire.
+    //
+    // Restarting `v` periodically keeps the numbers small. The restart is only
+    // invisible if it happens after a WHOLE number of repeats -- of the surface
+    // texture *and* of the emission map, which tiles independently every
+    // `emissionTile` metres (see applyEmission). So the wrap distance is picked
+    // in metres as a common multiple of both. If the two tilings have no small
+    // common multiple (arbitrary user values), the wrap is pushed out to a
+    // distance no real track reaches, i.e. it simply doesn't happen -- a track
+    // that long would show a seam, which is worse than the banding.
+    const float wrapDist = [&] {
+        float period = texTile;                    // always a whole surface repeat
+        if (emissionTile > 1e-4f) {
+            bool found = false;
+            for (int k = 1; k <= 64 && !found; ++k) {
+                const float m = static_cast<float>(k) * texTile / emissionTile;
+                if (std::fabs(m - std::round(m)) < 1e-3f) {
+                    period = static_cast<float>(k) * texTile;
+                    found  = true;
+                }
+            }
+            if (!found) return 1.0e6f; // incommensurable tilings: never wrap
+        }
+        if (period < 1e-4f) return 1.0e6f;
+        // Round up to ~256 m of road per wrap: small enough to keep v in the low
+        // tens, large enough that the duplicated rungs stay negligible.
+        return period * std::max(1.0f, std::floor(256.0f / period));
+    }();
+
     const float half = width * 0.5f;
+    const glm::vec3 up(0.0f, 1.0f, 0.0f);
     float vlen = 0.0f;
+    float mOff = 0.0f;          // metres already wrapped away
+    std::vector<bool> link;     // link[k]: is there a quad between rung k and k+1?
+
+    auto pushRung = [&](const glm::vec3& Lp, const glm::vec3& Rp, float v,
+                        bool linkNext) {
+        md.vertices.push_back({Lp, up, {0.0f, v}});
+        md.vertices.push_back({Rp, up, {width / texTile, v}});
+        link.push_back(linkNext);
+    };
+
     for (std::size_t i = 0; i < center.size(); ++i) {
         glm::vec2 fwd = (i == 0)                 ? center[1] - center[0]
                       : (i + 1 == center.size()) ? center[i] - center[i - 1]
@@ -616,18 +663,25 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
         // front-face-up (see the index order below).
         const glm::vec2 side(fwd.y, -fwd.x);
         if (i > 0) vlen += glm::length(center[i] - center[i - 1]);
-        const float v = vlen / texTile;
         const glm::vec3 Lp(center[i].x - side.x * half, height[i],
                            center[i].y - side.y * half);
         const glm::vec3 Rp(center[i].x + side.x * half, height[i],
                            center[i].y + side.y * half);
-        const glm::vec3 up(0.0f, 1.0f, 0.0f);
-        md.vertices.push_back({Lp, up, {0.0f, v}});
-        md.vertices.push_back({Rp, up, {width / texTile, v}});
+
+        float v = (vlen - mOff) / texTile;
+        if (vlen - mOff >= wrapDist && i + 1 < center.size()) {
+            pushRung(Lp, Rp, v, /*linkNext=*/false); // closes the running strip
+            mOff += wrapDist;
+            v     = (vlen - mOff) / texTile;
+            pushRung(Lp, Rp, v, /*linkNext=*/true);  // ...and restarts it here
+        } else {
+            pushRung(Lp, Rp, v, i + 1 < center.size());
+        }
     }
-    // Two triangles per rung, wound CCW-from-above (front faces up).
-    for (std::uint32_t i = 0; i + 1 < center.size(); ++i) {
-        const std::uint32_t a = 2 * i;
+    // Two triangles per linked rung pair, wound CCW-from-above (front faces up).
+    for (std::size_t k = 0; k + 1 < link.size(); ++k) {
+        if (!link[k]) continue;
+        const auto a = static_cast<std::uint32_t>(2 * k);
         md.indices.insert(md.indices.end(), {a, a + 2, a + 1, a + 1, a + 2, a + 3});
     }
     m_mesh  = fitzel::Mesh::create(md);
