@@ -44,6 +44,8 @@ enum class UiActionKind {
     AddScore,    // add num to the score
     PlaySound,   // play a one-shot sound (str = file under sounds/)
     Quit,        // quit the game / leave play
+    Resume,      // close a menu overlay and hand control back to the game
+    Restart,     // restart the level from how it stood when Play began
 };
 
 // One overlay element. A flat struct (like the scene's other data-authored
@@ -84,6 +86,8 @@ struct UiActionSink {
     std::function<void(float)>              addScore;
     std::function<void(const std::string&)> playSound;
     std::function<void()>                   quit;
+    std::function<void()>                   resume;   // close the menu
+    std::function<void()>                   restart;  // replay the level
 };
 
 class UiOverlay {
@@ -92,10 +96,30 @@ public:
     // scaled by (actual height / kRefHeight), so a layout holds across resolutions.
     static constexpr float kRefHeight = 1080.0f;
 
+    // GLFW_KEY_ESCAPE, spelled out so this header stays free of GLFW.
+    static constexpr int kKeyEscape = 256;
+
     std::vector<UiElement>&       elements()       { return m_elements; }
     const std::vector<UiElement>& elements() const { return m_elements; }
     void setElements(std::vector<UiElement> v)     { m_elements = std::move(v); }
     bool empty() const                             { return m_elements.empty(); }
+
+    // Menu mode. A plain overlay is a HUD: always on screen while playing. A
+    // *menu* overlay starts hidden and is opened/closed with `toggleKey` (a GLFW
+    // key code, Escape by default). While it is open the game hands it the mouse
+    // and takes no gameplay input -- and with Escape as the key, Escape no longer
+    // quits: the way out of the game is a button with the Quit action.
+    bool menuMode() const          { return m_menuMode; }
+    void setMenuMode(bool v)       { m_menuMode = v; resetRuntime(); }
+    int  toggleKey() const         { return m_toggleKey; }
+    void setToggleKey(int k)       { m_toggleKey = k; }
+
+    // Runtime visibility, honoured by drawRuntime. resetRuntime() puts it back to
+    // the authored default (menus closed, HUDs shown) and runs whenever play
+    // starts or a scene loads.
+    bool runtimeVisible() const    { return m_runtimeVisible; }
+    void setRuntimeVisible(bool v) { m_runtimeVisible = v; }
+    void resetRuntime()            { m_runtimeVisible = !m_menuMode; }
 
     // Persist to / restore from the scene's "settings" object (under "uiOverlay").
     // load() clears the list first, so a scene without the key loads as empty.
@@ -120,9 +144,14 @@ public:
     // is the selected element index, kept in range. `scenes`/`sounds` populate the
     // LoadScene / PlaySound action pickers; `assets` backs the image slot. Mutates
     // the element list directly; the caller brackets the frame for undo.
+    // `copyToScene` backs the "Copy to scene" button: it writes this overlay into
+    // the named scene of the project (this module knows nothing about files) and
+    // returns a one-line result shown under the button. Omit it to hide the button.
     void drawEditorPanel(bool* open, int& sel, fitzel::AssetDatabase& assets,
                          const std::vector<std::string>& scenes,
-                         const std::vector<std::string>& sounds);
+                         const std::vector<std::string>& sounds,
+                         const std::function<std::string(const std::string&)>&
+                             copyToScene = {});
 #endif
 
 private:
@@ -134,4 +163,9 @@ private:
 
     std::vector<UiElement> m_elements;
     std::unordered_map<fitzel::AssetId, std::shared_ptr<fitzel::Texture>> m_texCache;
+    std::string m_copyTarget;            // editor: "Copy to scene" target + result
+    std::string m_copyStatus;
+    bool m_menuMode      = false;        // authored: HUD (false) or menu (true)
+    int  m_toggleKey     = kKeyEscape;   // authored: which key opens a menu
+    bool m_runtimeVisible = true;        // runtime only, never serialized
 };

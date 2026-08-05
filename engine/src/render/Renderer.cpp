@@ -254,6 +254,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setVec3("uEmission", glm::vec3(0.0f)); // baseline: no glow
         s->setFloat("uEmissionStrength", 1.0f);
         s->setInt("uHasEmissionMap", 0);
+        s->setVec2("uEmissionUVScale", glm::vec2(1.0f)); // baseline: the mesh's own UVs
 
         r.material->apply(); // binds shader + material params/textures
 

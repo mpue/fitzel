@@ -18,7 +18,7 @@ class Texture;
 // Material -- a Material describes surface appearance only.
 class Material {
 public:
-    using Value = std::variant<int, float, glm::vec3, glm::vec4, glm::mat4>;
+    using Value = std::variant<int, float, glm::vec2, glm::vec3, glm::vec4, glm::mat4>;
 
     explicit Material(Shader& shader) : m_shader(&shader) {}
 

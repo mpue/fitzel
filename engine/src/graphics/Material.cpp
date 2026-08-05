@@ -24,6 +24,7 @@ void Material::apply() const {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, int>)             m_shader->setInt(name, v);
             else if constexpr (std::is_same_v<T, float>)      m_shader->setFloat(name, v);
+            else if constexpr (std::is_same_v<T, glm::vec2>)  m_shader->setVec2(name, v);
             else if constexpr (std::is_same_v<T, glm::vec3>)  m_shader->setVec3(name, v);
             else if constexpr (std::is_same_v<T, glm::vec4>)  m_shader->setVec4(name, v);
             else if constexpr (std::is_same_v<T, glm::mat4>)  m_shader->setMat4(name, v);

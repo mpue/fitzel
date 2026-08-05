@@ -12,6 +12,8 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/AssetTypes.hpp>
 
+#include "UiStyle.hpp"
+
 #include "RoadBridge.hpp"
 #include "RoadSide.hpp"
 #include "RoadSystem.hpp"
@@ -427,6 +429,53 @@ void drawPanel(const PanelState& s) {
             ImGui::SetTooltip("Follows the surface by name when you pick one\n"
                               "(asphalt_02_diff_4k -> asphalt_02_nor_gl_4k).\n"
                               "Strength is the global \"Normal strength\" in Terrain.");
+
+        // Glow: self-illumination on top of the lit surface, so the track stays
+        // bright at night. Pure shader state -- no rebuild, like the fade above.
+        ui::sectionText("Glow");
+        ImGui::SliderFloat("Glow strength", &s.road.emissionStrength, 0.0f, 6.0f,
+                           "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("0 = off. Emission is added after lighting, so the\n"
+                              "road keeps glowing at night and through fog.\n"
+                              "Push past 1 for a hard neon look.");
+        ImGui::BeginDisabled(s.road.emissionStrength <= 0.0f);
+        ImGui::ColorEdit3("Glow colour", &s.road.emission.x);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Multiplies the glow map. With no map the whole\n"
+                              "carriageway glows in this colour.");
+
+        const char* curE = (s.road.emisSel >= 0 &&
+                            s.road.emisSel < static_cast<int>(s.road.emisFiles.size()))
+                               ? s.road.emisFiles[s.road.emisSel].c_str()
+                               : "(whole road)";
+        if (ImGui::BeginCombo("Glow map", curE)) {
+            if (ImGui::Selectable("(whole road)", s.road.emisSel < 0))
+                s.road.setEmission(std::string());
+            for (int i = 0; i < static_cast<int>(s.road.emisFiles.size()); ++i) {
+                const bool sel = (i == s.road.emisSel);
+                if (ImGui::Selectable(s.road.emisFiles[i].c_str(), sel)) {
+                    s.road.setEmission(s.road.emisFiles[i]);
+                    s.road.emisSel = i;
+                }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Only the map's lit texels glow -- centre lines,\n"
+                              "edge strips, light channels. The image spans the\n"
+                              "road width exactly once, left to right, whatever\n"
+                              "the surface tiling is: paint a stripe down the\n"
+                              "middle of the image and it lands on the centre line.");
+        ImGui::BeginDisabled(s.road.emisSel < 0);
+        ImGui::SliderFloat("Glow repeat", &s.road.emissionTile, 1.0f, 200.0f,
+                           "%.0f m");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Metres of road per repeat of the glow map along\n"
+                              "the drive. Small values make chevrons/dashes.");
+        ImGui::EndDisabled();
+        ImGui::EndDisabled();
 
         ImGui::BeginDisabled(s.sel < 0 || s.sel >= static_cast<int>(s.road.roadPts.size()));
         if (ImGui::Button("Delete selected")) s.removePoint(s.sel);

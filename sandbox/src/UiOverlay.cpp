@@ -135,6 +135,12 @@ void fireAction(const UiElement& e, const UiActionSink& sink) {
         case UiActionKind::Quit:
             if (sink.quit) sink.quit();
             break;
+        case UiActionKind::Resume:
+            if (sink.resume) sink.resume();
+            break;
+        case UiActionKind::Restart:
+            if (sink.restart) sink.restart();
+            break;
     }
 }
 
@@ -176,6 +182,8 @@ const char* actionName(UiActionKind a) {
         case UiActionKind::AddScore:    return "addScore";
         case UiActionKind::PlaySound:   return "playSound";
         case UiActionKind::Quit:        return "quit";
+        case UiActionKind::Resume:      return "resume";
+        case UiActionKind::Restart:     return "restart";
     }
     return "none";
 }
@@ -185,12 +193,20 @@ UiActionKind actionKind(const std::string& s) {
     if (s == "addScore")    return UiActionKind::AddScore;
     if (s == "playSound")   return UiActionKind::PlaySound;
     if (s == "quit")        return UiActionKind::Quit;
+    if (s == "resume")      return UiActionKind::Resume;
+    if (s == "restart")     return UiActionKind::Restart;
     return UiActionKind::None;
 }
 } // namespace
 
 void UiOverlay::save(nlohmann::json& settings) const {
     if (m_elements.empty()) return; // keep clean scenes free of an empty key
+    // Menu settings ride in their own key so the element array keeps its shape
+    // (scenes written before menu mode existed still load unchanged).
+    settings["uiOverlayMenu"] = {
+        {"menu", m_menuMode},
+        {"toggleKey", m_toggleKey},
+    };
     nlohmann::json arr = nlohmann::json::array();
     for (const UiElement& e : m_elements) {
         nlohmann::json j = {
@@ -217,6 +233,14 @@ void UiOverlay::save(nlohmann::json& settings) const {
 void UiOverlay::load(const nlohmann::json& settings) {
     m_elements.clear();
     m_texCache.clear(); // drop the previous scene's texture handles
+    m_menuMode  = false;        // scenes without the key are plain HUDs
+    m_toggleKey = kKeyEscape;
+    if (settings.contains("uiOverlayMenu") && settings["uiOverlayMenu"].is_object()) {
+        const nlohmann::json& o = settings["uiOverlayMenu"];
+        m_menuMode  = o.value("menu", false);
+        m_toggleKey = o.value("toggleKey", static_cast<int>(kKeyEscape));
+    }
+    resetRuntime(); // a loaded menu starts closed, a HUD starts shown
     if (!settings.contains("uiOverlay") || !settings["uiOverlay"].is_array()) return;
     for (const nlohmann::json& j : settings["uiOverlay"]) {
         UiElement e;
@@ -259,6 +283,7 @@ fitzel::Texture* UiOverlay::resolve(AssetDatabase& assets, const AssetId& id) {
 
 void UiOverlay::drawRuntime(ImDrawList* dl, const glm::vec2& vmin, const glm::vec2& vsize,
                             AssetDatabase& assets, const UiActionSink& sink) {
+    if (!m_runtimeVisible) return; // a closed menu draws nothing and eats no clicks
     const ImVec2 vm(vmin.x, vmin.y), vs(vsize.x, vsize.y);
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
@@ -323,8 +348,9 @@ const char* kAnchorLabels[9] = {
     "Bottom-Left", "Bottom-Center", "Bottom-Right",
 };
 const char* kTypeLabels[3]   = {"Text", "Button", "Image"};
-const char* kActionLabels[6] = {"None", "Load scene", "Show message",
-                                "Add score", "Play sound", "Quit"};
+const char* kActionLabels[8] = {"None", "Load scene", "Show message",
+                                "Add score", "Play sound", "Quit",
+                                "Resume", "Restart level"};
 
 // A combo that assigns one of `items` (or "(none)") to a string field.
 void stringCombo(const char* label, std::string& field,
@@ -343,10 +369,71 @@ void stringCombo(const char* label, std::string& field,
 
 void UiOverlay::drawEditorPanel(bool* open, int& sel, AssetDatabase& assets,
                                 const std::vector<std::string>& scenes,
-                                const std::vector<std::string>& sounds) {
+                                const std::vector<std::string>& sounds,
+                                const std::function<std::string(const std::string&)>&
+                                    copyToScene) {
     if (!ImGui::Begin("UI Overlay", open)) { ImGui::End(); return; }
 
     ImGui::TextDisabled("Screen-space 2D drawn over the scene while playing.");
+
+    // --- HUD or menu -------------------------------------------------------
+    // A menu overlay is the scene's pause/start screen: hidden until its key is
+    // pressed, and while it is open the game frees the mouse and stops taking
+    // gameplay input.
+    {
+        bool menu = m_menuMode;
+        if (ImGui::Checkbox("Menu (hidden until the key below)", &menu))
+            setMenuMode(menu);
+        if (m_menuMode) {
+            // A short list of keys that never clash with movement or the editor's
+            // own shortcuts. GLFW key codes.
+            struct KeyOpt { const char* name; int key; };
+            static const KeyOpt kOpts[] = {
+                {"Escape", kKeyEscape}, {"Tab", 258}, {"F1", 290},
+                {"M", 77}, {"P", 80},
+            };
+            int cur = 0;
+            for (int i = 0; i < IM_ARRAYSIZE(kOpts); ++i)
+                if (kOpts[i].key == m_toggleKey) cur = i;
+            if (ImGui::BeginCombo("Opens with", kOpts[cur].name)) {
+                for (int i = 0; i < IM_ARRAYSIZE(kOpts); ++i)
+                    if (ImGui::Selectable(kOpts[i].name, i == cur))
+                        m_toggleKey = kOpts[i].key;
+                ImGui::EndCombo();
+            }
+            if (m_toggleKey == kKeyEscape)
+                ImGui::TextDisabled("Escape opens/closes this menu instead of\n"
+                                    "quitting -- give it a button with the Quit\n"
+                                    "action so the game can still be left.");
+        }
+    }
+
+    // --- Copy this overlay into another scene ------------------------------
+    // Writes the elements + the menu settings straight into the target scene
+    // file, replacing whatever overlay it had. The scene stays closed; nothing
+    // about the one being edited changes.
+    if (copyToScene && !scenes.empty()) {
+        ImGui::SetNextItemWidth(190.0f);
+        if (ImGui::BeginCombo("##copyTarget",
+                              m_copyTarget.empty() ? "(pick a scene)"
+                                                   : m_copyTarget.c_str())) {
+            for (const std::string& s : scenes)
+                if (ImGui::Selectable(s.c_str(), s == m_copyTarget)) {
+                    m_copyTarget = s;
+                    m_copyStatus.clear();
+                }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(m_copyTarget.empty() || m_elements.empty());
+        if (ImGui::Button("Copy to scene")) m_copyStatus = copyToScene(m_copyTarget);
+        ImGui::EndDisabled();
+        if (m_elements.empty()) ImGui::TextDisabled("(nothing to copy yet)");
+        else if (!m_copyStatus.empty())
+            ImGui::TextDisabled("%s", m_copyStatus.c_str());
+    }
+
+    ImGui::Separator();
 
     // --- Add elements ------------------------------------------------------
     auto addElement = [&](UiElementType t, const char* defName) {
@@ -474,7 +561,7 @@ void UiOverlay::drawEditorPanel(bool* open, int& sel, AssetDatabase& assets,
         ImGui::TextDisabled("(background shows only when no image is set)");
         ImGui::Separator();
         int aci = static_cast<int>(e.action);
-        if (ImGui::Combo("On click", &aci, kActionLabels, 6))
+        if (ImGui::Combo("On click", &aci, kActionLabels, IM_ARRAYSIZE(kActionLabels)))
             e.action = static_cast<UiActionKind>(aci);
         switch (e.action) {
             case UiActionKind::LoadScene:   stringCombo("Scene", e.actionStr, scenes); break;
@@ -487,6 +574,13 @@ void UiOverlay::drawEditorPanel(bool* open, int& sel, AssetDatabase& assets,
             }
             case UiActionKind::AddScore:
                 ImGui::DragFloat("Points", &e.actionNum, 1.0f, -100000.0f, 100000.0f, "%.0f");
+                break;
+            case UiActionKind::Resume:
+                ImGui::TextDisabled("(closes this menu -- same as pressing its key)");
+                break;
+            case UiActionKind::Restart:
+                ImGui::TextDisabled("(replays the level from how it stood when Play\n"
+                                    " began; unsaved editor edits are kept)");
                 break;
             case UiActionKind::None:
             case UiActionKind::Quit:

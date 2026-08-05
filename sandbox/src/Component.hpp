@@ -240,13 +240,19 @@ public:
 };
 
 // --- Built-in component: Spawner (emits entities on a timer in Play) ----------
-// Data-authored, no scripting: while playing it spawns a solid of `spawnType`
-// every `interval` seconds -- just above the spawner -- as a dynamic body with
-// an initial upward `speed`, up to `maxCount` total. Reuses the same deferred
-// spawn path as game.spawn. `timer`/`spawned` are transient and reset when Play
-// stops. A fountain of balls, a wave of crates -- all without code.
+// Data-authored, no scripting: while playing it emits something just above
+// itself every `interval` seconds, as a dynamic body with an initial upward
+// `speed`, up to `maxCount` total. What it emits is either a primitive solid
+// (`spawnType`) or -- when `prefab` names one -- a whole prefab instance, turned
+// to the spawner's own yaw. Reuses the same deferred spawn path as game.spawn /
+// game.spawnPrefab. `timer`/`spawned` are transient and reset when Play stops.
+// A fountain of balls, a wave of crates, a stream of enemies -- all without code.
 class SpawnerComponent : public ComponentBase {
 public:
+    // Prefab to emit, by name (as in the project's prefabs/ folder). Empty = emit
+    // the primitive `spawnType` instead. Serialized like the other Text fields;
+    // the inspector draws it as a prefab picker (see main's component inspector).
+    std::string prefab;
     int   spawnType = 3;      // EntityType to emit (0 Box .. 3 Sphere)
     float interval  = 1.0f;   // seconds between spawns
     float speed     = 4.0f;   // initial launch velocity (m/s)

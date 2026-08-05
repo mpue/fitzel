@@ -113,6 +113,10 @@ vec3 envBRDFApprox(vec3 F0, float rough, float NoV) {
 // Surface.
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
+// Multiplies the sampled base colour (uColorMode == 2). White leaves the map
+// alone; every textured material must set it, or the previous draw's tint
+// leaks in through the shared program.
+uniform vec3 uTint;
 
 // Road edge fade: alpha tapers to 0 over the outer `uRoadFade` metres of the
 // ribbon so the road blends into the terrain instead of ending on a hard line.
@@ -132,6 +136,12 @@ uniform vec3  uEmission;         // emissive colour (sRGB); 0 = none
 uniform float uEmissionStrength; // scales the emission (>1 for a strong glow)
 uniform sampler2D uEmissionMap;  // optional emission mask/colour (Unity _Illum)
 uniform int   uHasEmissionMap;   // 1 = modulate emission by uEmissionMap
+// Scales vUV for the emission map only, so a glow map can tile differently from
+// the base colour. (1,1) = same UVs as everything else, which is what object
+// materials use. The road sets it so the map spans the carriageway exactly once
+// across and repeats along the drive -- that is what keeps a painted centre
+// line down the middle instead of tiling sideways with the asphalt.
+uniform vec2  uEmissionUVScale;
 
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
@@ -410,7 +420,7 @@ void main() {
         terrainSurface(vWorldPos, N, detail, albedo, terrainNrm);
     } else if (uColorMode == 2) {
         vec4 t = texture(uTexture, vUV);
-        albedo = t.rgb; texA = t.a;
+        albedo = t.rgb * uTint; texA = t.a;
     } else {
         albedo = uAlbedo;
     }
@@ -544,7 +554,7 @@ void main() {
     // (Unity _Illum) restricts the glow to its lit texels.
     vec3 emissive = pow(uEmission, vec3(2.2)) * uEmissionStrength;
     if (uHasEmissionMap == 1)
-        emissive *= pow(texture(uEmissionMap, vUV).rgb, vec3(2.2));
+        emissive *= pow(texture(uEmissionMap, vUV * uEmissionUVScale).rgb, vec3(2.2));
     color += emissive;
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);

@@ -41,6 +41,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/FolderDialog.cpp
     src/GameSettingsPanel.cpp
     src/ScatterTool.cpp
+    src/BuildingGen.cpp
+    src/BuildingPanel.cpp
     src/VehicleTool.cpp
     src/GliderTool.cpp)
 

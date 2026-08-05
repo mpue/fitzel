@@ -196,6 +196,26 @@ private:
     std::vector<Reparent> m_reparent;
 };
 
+// Swap one set of entities for another as a SINGLE undoable step: delete the
+// old ones, add the new ones. A procedural generator re-running with tweaked
+// parameters (see BuildingGen) replaces its whole output every time; doing that
+// as two commands would make one edit cost two undos and could leave a half-
+// applied scene in between. Undo unwinds in the mirror order.
+class ReplaceEntitiesCmd : public Command {
+public:
+    ReplaceEntitiesCmd(const Document& d, const std::vector<int>& remove,
+                       std::vector<Entity> add, const char* label)
+        : m_del(d, remove), m_add(std::move(add), label), m_label(label) {}
+    void redo(Document& d) override { m_del.redo(d); m_add.redo(d); }
+    void undo(Document& d) override { m_add.undo(d); m_del.undo(d); }
+    const char* name() const override { return m_label; }
+
+private:
+    DeleteEntitiesCmd m_del;
+    AddEntitiesCmd    m_add;
+    const char*       m_label; // static string ("Building", ...)
+};
+
 // Modify one entity in place via a before/after snapshot. One command type
 // covers every per-entity field edit (transform, colour, physics, script, ...)
 // because Entity is a small, cheaply-copied value. Callers snapshot the entity

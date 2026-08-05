@@ -245,9 +245,17 @@ const std::vector<Property>& MoverComponent::properties() {
 const std::vector<Property>& SpawnerComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
+        Property prefab;
+        prefab.label = "Prefab"; prefab.key = "prefab"; prefab.kind = PropKind::Text;
+        prefab.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->prefab; };
+        p.push_back(std::move(prefab));
+        // Only relevant while no prefab is picked -- a prefab brings its own shape.
         Property type;
         type.label = "Spawns"; type.key = "spawnType"; type.kind = PropKind::EnumInt;
         type.enumLabels = {"Box", "Ramp", "Cylinder", "Sphere"};
+        type.visible = [](const void* o) {
+            return static_cast<const SpawnerComponent*>(o)->prefab.empty();
+        };
         type.field = [](void* o) -> void* { return &static_cast<SpawnerComponent*>(o)->spawnType; };
         p.push_back(std::move(type));
         Property interval;

@@ -70,6 +70,8 @@
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
 #include "ScatterTool.hpp"
+#include "BuildingGen.hpp"
+#include "BuildingPanel.hpp"
 #include "VehicleTool.hpp"
 #include "GliderTool.hpp"
 #include "CarAudio.hpp"
@@ -677,6 +679,16 @@ int main(int argc, char** argv) {
         bool               scatterMode = false;
         scatterui::Settings scatterCfg;
 
+        // --- Procedural buildings -------------------------------------------
+        // Skyscraper/megastructure generator (BuildingGen): the parameters, plus
+        // the id of the building last generated -- the one "Rebuild in place"
+        // and "Save as prefab" act on (-1 = none, or it was deleted since).
+        buildings::Params buildingCfg;
+        int  buildingLiveId   = -1;
+        bool buildingAuto     = false;   // re-generate on every parameter edit
+        bool buildingPending  = false;   // an edit is waiting for the widget release
+        char buildingNameBuf[64] = "Skyscraper";
+
 
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
         if (!veg.initTrees(modelDir, texDir)) return 1;
@@ -1119,6 +1131,7 @@ int main(int argc, char** argv) {
         bool showPaint       = false;
         bool showVegetation  = false;
         bool showScatter     = false;
+        bool showBuildings   = false;
         bool showCamPath     = false;
         bool showRoads       = false;
         bool showUiOverlay   = false; // scene 2D UI overlay editor
@@ -1682,6 +1695,56 @@ int main(int argc, char** argv) {
             for (int id : ids) if (const Entity* e = document.find(id)) out.push_back(*e);
             return out;
         };
+
+#ifndef FITZEL_PLAYER
+        // --- Procedural buildings (see BuildingGen.hpp) -------------------------
+        // Generate a building on the ground in front of the camera as one undoable
+        // step, select it, and remember it as the "live" one so it can be re-tuned
+        // and saved without hunting for it in the hierarchy.
+        auto generateBuilding = [&]() {
+            const glm::vec3 f = camera.position() + camera.front() * 60.0f;
+            const glm::vec3 g(f.x, streamer.heightAt(f.x, f.z), f.z);
+            const buildings::Palette pal = buildings::ensurePalette(materials, buildingCfg);
+            std::vector<Entity> es = buildings::generate(buildingCfg, pal, entityCounter, g);
+            if (es.empty()) return;
+            if (buildingNameBuf[0] != '\0') es.front().name = buildingNameBuf;
+            buildingLiveId = es.front().id;
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(es), "Building"),
+                         document);
+            entitySel = document.indexOf(buildingLiveId);
+            exportStatus = "Generated building.";
+        };
+        // Re-generate the live building with the current parameters, keeping its
+        // place in the world (and its name/parent). The old subtree and the new one
+        // swap in a single undo step.
+        auto rebuildBuilding = [&]() {
+            const int idx = document.indexOf(buildingLiveId);
+            if (idx < 0) { buildingLiveId = -1; return; }
+            const Entity old = entities[idx];
+            const std::vector<int> ids = collectSubtreeIds(old.id);
+            const buildings::Palette pal = buildings::ensurePalette(materials, buildingCfg);
+            std::vector<Entity> es =
+                buildings::generate(buildingCfg, pal, entityCounter, old.localCenter);
+            if (es.empty()) return;
+            es.front().name          = old.name;
+            es.front().parent        = old.parent;
+            es.front().localRotation = old.localRotation;
+            es.front().rotation      = old.rotation;
+            buildingLiveId = es.front().id;
+            history.push(std::make_unique<ReplaceEntitiesCmd>(document, ids,
+                                                              std::move(es), "Building"),
+                         document);
+            entitySel = document.indexOf(buildingLiveId);
+        };
+        // Save the live building as a prefab (the same path as the Prefabs panel,
+        // just aimed at the generated root instead of the current selection).
+        auto saveBuildingPrefab = [&]() {
+            const int idx = document.indexOf(buildingLiveId);
+            if (idx < 0) { exportStatus = "Generate a building first."; return; }
+            entitySel = idx;
+            createPrefabFromSelection(buildingNameBuf);
+        };
+#endif // !FITZEL_PLAYER
 
 #ifndef FITZEL_PLAYER
         // --- Multi-selection helpers (see the multiSel declaration) -------------
@@ -2279,6 +2342,7 @@ int main(int argc, char** argv) {
                     ov[key] = {
                         {"name", md.name},
                         {"albedo", {md.albedo.x, md.albedo.y, md.albedo.z}},
+                        {"tint", {md.tint.x, md.tint.y, md.tint.z}},
                         {"reflectivity", md.reflectivity},
                         {"roughness", md.roughness},
                         {"opacity", md.opacity},
@@ -2288,6 +2352,21 @@ int main(int argc, char** argv) {
                         {"emission", {md.emission.x, md.emission.y, md.emission.z}},
                         {"emissionStrength", md.emissionStrength},
                     };
+                    // Map slots: a bound texture asset stores its GUID, a slot the
+                    // user emptied stores "" (so the model's own map isn't just
+                    // restored on load), and an untouched slot stores nothing.
+                    auto slotJson = [](const AssetId& id,
+                                       const std::shared_ptr<Texture>& tex,
+                                       const std::shared_ptr<Texture>& shipped,
+                                       const char* key, nlohmann::json& out) {
+                        if (id.valid())            out[key] = id.toString();
+                        else if (shipped && !tex)  out[key] = "";
+                    };
+                    slotJson(md.texId, md.tex, md.modelTex, "texture", ov[key]);
+                    slotJson(md.normalTexId, md.normalTex, md.modelNormalTex,
+                             "normalMap", ov[key]);
+                    slotJson(md.emissionTexId, md.emissionTex, md.modelEmissionTex,
+                             "emissionMap", ov[key]);
                 }
             }
             j["modelMaterialOverrides"] = std::move(ov);
@@ -2455,6 +2534,7 @@ int main(int argc, char** argv) {
                         const auto& e = ov[key];
                         md.name          = e.value("name", md.name);
                         md.albedo        = rd3(e.value("albedo", nlohmann::json{}), md.albedo);
+                        md.tint          = rd3(e.value("tint", nlohmann::json{}), md.tint);
                         md.reflectivity  = e.value("reflectivity", md.reflectivity);
                         md.roughness     = e.value("roughness", md.roughness);
                         md.opacity       = e.value("opacity", md.opacity);
@@ -2464,6 +2544,22 @@ int main(int argc, char** argv) {
                         md.alphaCutoff   = e.value("alphaCutoff", md.alphaCutoff);
                         md.emission      = rd3(e.value("emission", nlohmann::json{}), md.emission);
                         md.emissionStrength = e.value("emissionStrength", md.emissionStrength);
+                        // Map slots (see writeSettings): a GUID re-binds the
+                        // texture asset, "" means the user emptied the slot, and
+                        // an absent key leaves the model's own map in place.
+                        auto readSlot = [&](const char* key, AssetId& id,
+                                            std::shared_ptr<Texture>& tex) {
+                            if (!e.contains(key) || !e[key].is_string()) return;
+                            const std::string s = e[key].get<std::string>();
+                            if (s.empty()) { id = {}; tex.reset(); return; }
+                            const AssetId gid = AssetId::fromString(s);
+                            if (!gid.valid()) return;
+                            id  = gid;
+                            tex = assetDb.loadTexture(gid);
+                        };
+                        readSlot("texture", md.texId, md.tex);
+                        readSlot("normalMap", md.normalTexId, md.normalTex);
+                        readSlot("emissionMap", md.emissionTexId, md.emissionTex);
                     }
                 }
             }
@@ -2474,6 +2570,11 @@ int main(int argc, char** argv) {
         // first-person walk mode; Stop restores the snapshot and the edit camera
         // exactly, so play-time changes never leak into the edited scene.
         bool playMode = false;
+        // The scene's UI overlay is open as a menu right now (see UiOverlay's
+        // menu mode): the game is running but the overlay owns mouse + keyboard,
+        // so no walking, driving or script input this frame.
+        bool uiMenuOpen = false;
+        bool prevUiKey  = false; // edge state for the menu's toggle key
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
@@ -2876,14 +2977,20 @@ int main(int argc, char** argv) {
         std::unordered_map<int, glm::vec3> pendingSpawnVel; // spawn id -> velocity
         std::vector<int>                 pendingDestroy;
         std::string                      pendingSceneLoad; // scene a SceneTrigger asked to load (deferred)
+        bool                             pendingRestart = false; // overlay "Restart level" (deferred)
         std::unordered_map<int, unsigned char> keyPrev, mousePrev; // edge state
         std::vector<int>                 keyQ, mouseQ;              // queried this frame
-        host.keyDown      = [&](int kc){ return input.isKeyDown(kc); };
+        // Gameplay input, as scripts see it. An open menu overlay swallows it all
+        // (the menu's own buttons are handled by the overlay, not by scripts), so
+        // a paused game doesn't keep shooting while the player picks an option.
+        host.keyDown      = [&](int kc){ return !uiMenuOpen && input.isKeyDown(kc); };
         host.keyPressed   = [&](int kc){ keyQ.push_back(kc);
-                                         return input.isKeyDown(kc) && !keyPrev[kc]; };
-        host.mouseDown    = [&](int b){ return input.isMouseButtonDown(b); };
+                                         return !uiMenuOpen &&
+                                                input.isKeyDown(kc) && !keyPrev[kc]; };
+        host.mouseDown    = [&](int b){ return !uiMenuOpen && input.isMouseButtonDown(b); };
         host.mousePressed = [&](int b){ mouseQ.push_back(b);
-                                        return input.isMouseButtonDown(b) && !mousePrev[b]; };
+                                        return !uiMenuOpen &&
+                                               input.isMouseButtonDown(b) && !mousePrev[b]; };
         host.spawn = [&](const ScriptSpawn& s) -> int {
             Entity e;
             e.type     = static_cast<EntityType>(s.type);
@@ -3212,6 +3319,11 @@ int main(int argc, char** argv) {
             pendingSpawnVel.clear();
             pendingDestroy.clear();
             keyPrev.clear(); mousePrev.clear();
+            // A menu overlay starts closed, a HUD starts shown (Play always
+            // begins in the game, never in the scene's menu).
+            uiOverlay.resetRuntime();
+            uiMenuOpen = false;
+            prevUiKey  = true; // the key that started Play must be released first
             resolveHierarchy(); // world transforms fresh before bodies are created
 
             // Physics: fresh world with the terrain as a static heightfield
@@ -3360,6 +3472,7 @@ int main(int argc, char** argv) {
         auto stopPlay = [&] {
             if (!playMode) return;
             playMode  = false;
+            uiMenuOpen = false;     // back to the editor: the scene's menu is gone
             vehicleMode = false;    // the physics car is gone with the world
             driveVehicleId = -1;    // the scene restore below un-drives the model
             gliderMode = false;     // stop flying; the scene restore un-flies the craft
@@ -3569,8 +3682,29 @@ int main(int argc, char** argv) {
             }
             prevF11 = f11;
 
+            // Scene menu overlay: while playing, its key opens/closes it. Opening
+            // frees the mouse so the menu's buttons can be clicked; closing gives
+            // the cursor back to the game if it was walking first-person.
+            const bool uiMenuArmed = (playMode || playerMode) && uiOverlay.menuMode() &&
+                                     !uiOverlay.empty() && uiOverlay.toggleKey() != 0;
+            if (uiMenuArmed) {
+                const bool uiKeyDown = input.isKeyDown(uiOverlay.toggleKey());
+                if (uiKeyDown && !prevUiKey) {
+                    uiOverlay.setRuntimeVisible(!uiOverlay.runtimeVisible());
+                    input.setCursorLocked(uiOverlay.runtimeVisible() ? false : fpsMode);
+                }
+                prevUiKey = uiKeyDown;
+            } else {
+                prevUiKey = false;
+            }
+            uiMenuOpen = uiMenuArmed && uiOverlay.runtimeVisible();
+
             const bool escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
-            if (escDown && !prevEsc) {
+            // A menu on Escape owns the key outright -- that is what stops Escape
+            // from dropping the player straight out of the game.
+            const bool escIsMenuKey =
+                uiMenuArmed && uiOverlay.toggleKey() == GLFW_KEY_ESCAPE;
+            if (escDown && !prevEsc && !escIsMenuKey) {
                 if (playerMode)          { window.requestClose(); }
                 else if (presentMode) {
                     presentMode = false;
@@ -3647,7 +3781,11 @@ int main(int argc, char** argv) {
                 setWorld, parentWorldMat, gliderGround, playBoostPunch,
             };
 
-            if (vehicleMode && playMode && physics && physics->hasVehicle()) {
+            if (uiMenuOpen) {
+                // The scene's menu is open: it owns mouse and keyboard, so no
+                // look, no walking, no driving until it is closed again. (The
+                // world keeps ticking -- this is a menu, not a pause.)
+            } else if (vehicleMode && playMode && physics && physics->hasVehicle()) {
                 // Physics car: WASD -> engine/steer/brake; chase camera from the
                 // chassis. The vehicle updates during the physics step below.
                 float fwdIn = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f) -
@@ -4584,31 +4722,44 @@ int main(int argc, char** argv) {
                         }
                     }
 
-                // Spawner: emit a dynamic solid above itself every `interval`, up
-                // to `maxCount`, through the same deferred spawn queue as scripts.
+                // Spawner: emit a dynamic solid -- or a whole prefab instance --
+                // above itself every `interval`, up to `maxCount`, through the
+                // same deferred spawn queue as scripts.
                 for (Entity& e : entities) {
                     auto* sw = e.components.get<SpawnerComponent>();
                     if (!sw || sw->spawned >= static_cast<int>(sw->maxCount)) continue;
                     sw->timer += dt;
                     if (sw->timer < glm::max(sw->interval, 0.05f)) continue;
                     sw->timer = 0.0f;
-                    ScriptSpawn s;
-                    s.type    = sw->spawnType;
-                    s.pos     = e.center + glm::vec3(0.0f, e.half.y + 0.4f, 0.0f);
-                    s.half    = glm::vec3(0.3f);
-                    s.physics = 2; // dynamic
+                    const glm::vec3 from = e.center + glm::vec3(0.0f, e.half.y + 0.4f, 0.0f);
                     // Launch direction: random within a cone of half-angle `spread`
                     // (deg) around +Y. Sampling cos(theta) uniformly over the cap
                     // gives an even spread; spread 0 -> straight up, 180 -> any dir.
-                    {
-                        const float spreadRad =
-                            glm::radians(glm::clamp(sw->spread, 0.0f, 180.0f));
-                        const float ct = glm::mix(std::cos(spreadRad), 1.0f, spawnU(spawnRng));
-                        const float st = std::sqrt(glm::max(0.0f, 1.0f - ct * ct));
-                        const float ph = 6.2831853f * spawnU(spawnRng);
-                        const glm::vec3 dir(st * std::cos(ph), ct, st * std::sin(ph));
-                        s.vel = dir * sw->speed;
+                    const float spreadRad =
+                        glm::radians(glm::clamp(sw->spread, 0.0f, 180.0f));
+                    const float ct = glm::mix(std::cos(spreadRad), 1.0f, spawnU(spawnRng));
+                    const float st = std::sqrt(glm::max(0.0f, 1.0f - ct * ct));
+                    const float ph = 6.2831853f * spawnU(spawnRng);
+                    const glm::vec3 dir(st * std::cos(ph), ct, st * std::sin(ph));
+                    if (!sw->prefab.empty()) {
+                        // Prefab: the whole subtree, turned to the spawner's yaw.
+                        // The launch velocity lands on the instance root, so it
+                        // flies only if the prefab's root carries a dynamic body.
+                        const int rootId = host.spawnPrefab
+                            ? host.spawnPrefab(sw->prefab, from, e.rotation.y) : 0;
+                        if (rootId && sw->speed > 0.0f)
+                            pendingSpawnVel[rootId] = dir * sw->speed;
+                        // A missing/broken prefab still counts as an attempt, so a
+                        // typo stops after `maxCount` instead of logging forever.
+                        ++sw->spawned;
+                        continue;
                     }
+                    ScriptSpawn s;
+                    s.type    = sw->spawnType;
+                    s.pos     = from;
+                    s.half    = glm::vec3(0.3f);
+                    s.physics = 2; // dynamic
+                    s.vel     = dir * sw->speed;
                     s.name    = "spawned";
                     host.spawn(s);
                     ++sw->spawned;
@@ -4719,6 +4870,15 @@ int main(int argc, char** argv) {
             // never mid-iteration. The name resolves to a .fitzel in the current
             // project folder; if the game was playing we re-enter Play in the new
             // scene, so walking through the trigger reads as a seamless level change.
+            // Deferred level restart (an overlay Restart button). Leaving and
+            // re-entering Play rewinds the scene to the snapshot Play started
+            // from -- physics, scripts and the player start included -- without
+            // touching the file, so unsaved editor edits survive it.
+            if (pendingRestart) {
+                pendingRestart = false;
+                if (playMode) { stopPlay(); startPlay(); }
+            }
+
             if (!pendingSceneLoad.empty()) {
                 const std::filesystem::path folder =
                     std::filesystem::path(currentProject).parent_path();
@@ -4910,6 +5070,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Terrain paint",   nullptr, &showPaint);
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
                     ImGui::MenuItem("Scatter",         nullptr, &showScatter);
+                    ImGui::MenuItem("Buildings",       nullptr, &showBuildings);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
                     ImGui::MenuItem("UI Overlay",      nullptr, &showUiOverlay);
@@ -6682,6 +6843,19 @@ int main(int argc, char** argv) {
                 });
             }
 
+            if (showBuildings) {
+                buildingui::drawPanel({
+                    showBuildings, buildingCfg,
+                    buildings::objectCount(buildingCfg),
+                    !currentProject.empty(),
+                    document.indexOf(buildingLiveId) >= 0,
+                    buildingNameBuf, sizeof(buildingNameBuf),
+                    buildingAuto, buildingPending,
+                    generateBuilding, rebuildBuilding, saveBuildingPrefab,
+                    exportStatus,
+                });
+            }
+
             if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
                 ui::sectionText("Grass");
                 ImGui::Checkbox("Grass", &veg.grassEnabled);
@@ -7247,6 +7421,48 @@ int main(int argc, char** argv) {
                                     }
                                     ImGui::EndCombo();
                                 }
+                            } else if (auto* sw = dynamic_cast<SpawnerComponent*>(c)) {
+                                // Prefab is a picker over the project's prefabs
+                                // (chosen, not typed); picking one hides the
+                                // primitive "Spawns" enum -- a prefab brings its
+                                // own shape. Everything else from metadata.
+                                const std::string pdir = currentProject.empty()
+                                    ? std::string()
+                                    : prefab::prefabsDirIn(
+                                          std::filesystem::path(currentProject)
+                                              .parent_path().generic_string());
+                                const auto prefabs = prefab::list(pdir);
+                                const char* kNoPrefab = "(none - spawn a solid)";
+                                const std::string plabel =
+                                    sw->prefab.empty() ? kNoPrefab : sw->prefab;
+                                if (ImGui::BeginCombo("Prefab", plabel.c_str())) {
+                                    if (ImGui::Selectable(kNoPrefab, sw->prefab.empty()))
+                                        sw->prefab.clear();
+                                    for (const auto& [pn, ppath] : prefabs) {
+                                        (void)ppath;
+                                        if (ImGui::Selectable(pn.c_str(), sw->prefab == pn))
+                                            sw->prefab = pn;
+                                    }
+                                    ImGui::EndCombo();
+                                }
+                                // A renamed/deleted prefab would silently spawn
+                                // nothing, so say so where it's authored.
+                                if (!sw->prefab.empty() &&
+                                    std::none_of(prefabs.begin(), prefabs.end(),
+                                                 [&](const auto& np) {
+                                                     return np.first == sw->prefab;
+                                                 }))
+                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                                       "Missing: %s", sw->prefab.c_str());
+                                for (const Property& pr : sw->props()) {
+                                    if (pr.key == "prefab") continue;
+                                    if (pr.visible && !pr.visible(sw)) continue;
+                                    drawProperty(pr, sw);
+                                }
+                                if (!sw->prefab.empty())
+                                    ImGui::TextDisabled("Launch speed only moves the\n"
+                                                        "instance if its root has a\n"
+                                                        "dynamic Physics component.");
                             } else if (auto* ts = dynamic_cast<TriggerSoundComponent*>(c)) {
                                 // Radius/volume/loop/once from metadata; Sound picker.
                                 for (const Property& pr : ts->props()) drawProperty(pr, ts);
@@ -7447,11 +7663,14 @@ int main(int argc, char** argv) {
                         std::snprintf(mbuf, sizeof(mbuf), "%s", md.name.c_str());
                         if (ImGui::InputText("Name", mbuf, sizeof(mbuf))) md.name = mbuf;
                         if (md.fromModel)
-                            ImGui::TextDisabled(md.tex ? "From model (textured)"
-                                                       : "From model");
+                            ImGui::TextDisabled("From model (edits are saved with "
+                                                "the scene, not as a .fmat)");
                         // A textured material samples its base-colour map, so the
-                        // flat albedo is unused; only show it for untextured ones.
-                        if (!md.tex)
+                        // flat albedo would do nothing; it gets a tint multiplied
+                        // over the map instead (white = the map untouched).
+                        if (md.tex)
+                            ImGui::ColorEdit3("Tint", &md.tint.x);
+                        else
                             ImGui::ColorEdit3("Albedo", &md.albedo.x);
                         ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
                         ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
@@ -7480,99 +7699,70 @@ int main(int argc, char** argv) {
                         if (md.emission != glm::vec3(0.0f))
                             ImGui::TextDisabled("Strength >~1.5 makes the glow bloom "
                                                 "into the surroundings.");
-                        // Base-colour texture slot: drop a Texture asset here from
-                        // the Assets browser. File-backed textures persist by GUID
-                        // (md.texId) into the .fmat; model-embedded ones don't.
-                        if (!md.fromModel) {
+                        // Texture slots (base colour / normal / emission). Drop a
+                        // Texture asset from the Assets browser on one to bind it;
+                        // hover the swatch for a big preview. A model material
+                        // starts out on the maps the model shipped -- "Model" puts
+                        // one back, "Clear" empties the slot. Bound textures persist
+                        // by GUID: into the .fmat for library materials, into the
+                        // scene's model-material overrides for model-owned ones.
+                        auto mapSlot = [&](const char* label, const char* tag,
+                                           std::shared_ptr<Texture>& tex,
+                                           AssetId& texId,
+                                           const std::shared_ptr<Texture>& shipped) {
                             std::string slot = "(none)";
-                            if (md.texId.valid()) {
-                                const AssetDatabase::Entry* te = assetDb.entry(md.texId);
-                                slot = te ? te->relPath : md.texId.toString();
+                            if (texId.valid()) {
+                                const AssetDatabase::Entry* te = assetDb.entry(texId);
+                                slot = te ? te->relPath : texId.toString();
+                            } else if (tex) {
+                                slot = "(from model)";
                             }
-                            ImGui::Text("Base texture:");
-                            ImGui::SameLine();
-                            texSwatch(md.tex, md.texId);
-                            ImGui::Button((slot + "##texslot").c_str());
+                            ImGui::Text("%s", label);
+                            ImGui::SameLine(140.0f);
+                            texSwatch(tex, texId);
+                            if (tex && tex->isValid() && ImGui::IsItemHovered()) {
+                                ImGui::BeginTooltip();
+                                ImGui::Image((ImTextureID)(intptr_t)tex->id(),
+                                             ImVec2(256.0f, 256.0f));
+                                ImGui::Text("%d x %d", tex->width(), tex->height());
+                                ImGui::EndTooltip();
+                            }
+                            ImGui::Button((slot + "##" + tag).c_str());
                             if (ImGui::BeginDragDropTarget()) {
                                 if (const ImGuiPayload* pl =
                                         ImGui::AcceptDragDropPayload("ASSET_GUID")) {
                                     const AssetId gid = AssetId::fromString(std::string(
                                         static_cast<const char*>(pl->Data), pl->DataSize));
                                     if (assetDb.typeForId(gid) == AssetType::Texture) {
-                                        md.texId = gid;
-                                        md.tex   = assetDb.loadTexture(gid);
+                                        texId = gid;
+                                        tex   = assetDb.loadTexture(gid);
                                     }
                                 }
                                 ImGui::EndDragDropTarget();
                             }
-                            if (md.texId.valid()) {
+                            if (texId.valid() || tex) {
                                 ImGui::SameLine();
-                                if (ImGui::SmallButton("Clear##tex")) {
-                                    md.texId = {};
-                                    md.tex.reset();
+                                if (ImGui::SmallButton(
+                                        (std::string("Clear##") + tag).c_str())) {
+                                    texId = {};
+                                    tex.reset();
                                 }
                             }
-
-                            // Normal map slot (tangent-space, OpenGL convention).
-                            std::string nslot = "(none)";
-                            if (md.normalTexId.valid()) {
-                                const AssetDatabase::Entry* ne = assetDb.entry(md.normalTexId);
-                                nslot = ne ? ne->relPath : md.normalTexId.toString();
-                            }
-                            ImGui::Text("Normal map:");
-                            ImGui::SameLine();
-                            texSwatch(md.normalTex, md.normalTexId);
-                            ImGui::Button((nslot + "##nrmslot").c_str());
-                            if (ImGui::BeginDragDropTarget()) {
-                                if (const ImGuiPayload* pl =
-                                        ImGui::AcceptDragDropPayload("ASSET_GUID")) {
-                                    const AssetId gid = AssetId::fromString(std::string(
-                                        static_cast<const char*>(pl->Data), pl->DataSize));
-                                    if (assetDb.typeForId(gid) == AssetType::Texture) {
-                                        md.normalTexId = gid;
-                                        md.normalTex   = assetDb.loadTexture(gid);
-                                    }
-                                }
-                                ImGui::EndDragDropTarget();
-                            }
-                            if (md.normalTexId.valid()) {
+                            if (shipped && tex != shipped) {
                                 ImGui::SameLine();
-                                if (ImGui::SmallButton("Clear##nrm")) {
-                                    md.normalTexId = {};
-                                    md.normalTex.reset();
+                                if (ImGui::SmallButton(
+                                        (std::string("Model##") + tag).c_str())) {
+                                    texId = {};
+                                    tex   = shipped;
                                 }
                             }
-
-                            // Emission map slot (Unity _Illum): masks the glow.
-                            std::string eslot = "(none)";
-                            if (md.emissionTexId.valid()) {
-                                const AssetDatabase::Entry* ee = assetDb.entry(md.emissionTexId);
-                                eslot = ee ? ee->relPath : md.emissionTexId.toString();
-                            }
-                            ImGui::Text("Emission map:");
-                            ImGui::SameLine();
-                            texSwatch(md.emissionTex, md.emissionTexId);
-                            ImGui::Button((eslot + "##emslot").c_str());
-                            if (ImGui::BeginDragDropTarget()) {
-                                if (const ImGuiPayload* pl =
-                                        ImGui::AcceptDragDropPayload("ASSET_GUID")) {
-                                    const AssetId gid = AssetId::fromString(std::string(
-                                        static_cast<const char*>(pl->Data), pl->DataSize));
-                                    if (assetDb.typeForId(gid) == AssetType::Texture) {
-                                        md.emissionTexId = gid;
-                                        md.emissionTex   = assetDb.loadTexture(gid);
-                                    }
-                                }
-                                ImGui::EndDragDropTarget();
-                            }
-                            if (md.emissionTexId.valid()) {
-                                ImGui::SameLine();
-                                if (ImGui::SmallButton("Clear##em")) {
-                                    md.emissionTexId = {};
-                                    md.emissionTex.reset();
-                                }
-                            }
-                        }
+                        };
+                        mapSlot("Base texture:", "texslot", md.tex, md.texId,
+                                md.modelTex);
+                        mapSlot("Normal map:", "nrmslot", md.normalTex, md.normalTexId,
+                                md.modelNormalTex);
+                        mapSlot("Emission map:", "emslot", md.emissionTex,
+                                md.emissionTexId, md.modelEmissionTex);
                         ImGui::TextDisabled("Reflectivity mirrors the scene (env probe).");
                     }
                 }
@@ -8394,8 +8584,31 @@ int main(int argc, char** argv) {
                 }
                 const std::vector<std::string> soundNames = listSounds();
 
+                // "Copy to scene": write this overlay into a sibling scene file
+                // without opening it. Only the overlay keys of the target's
+                // settings are touched -- its entities and everything else stay.
+                auto copyOverlayToScene = [&](const std::string& stem) -> std::string {
+                    if (currentProject.empty()) return "No project open.";
+                    const std::filesystem::path cur(currentProject);
+                    if (cur.stem().string() == stem)
+                        return "That's the scene you're editing.";
+                    const std::filesystem::path target =
+                        cur.parent_path() / (stem + ".fitzel");
+                    std::error_code cec;
+                    if (!std::filesystem::exists(target, cec))
+                        return "Scene not found: " + stem;
+                    nlohmann::json keys = nlohmann::json::object();
+                    uiOverlay.save(keys); // "uiOverlay" + "uiOverlayMenu"
+                    if (keys.empty()) return "Nothing to copy.";
+                    if (!projectio::mergeSceneSettings(target.generic_string(), keys))
+                        return "Could not write " + stem + ".fitzel";
+                    return "Copied " + std::to_string(uiOverlay.elements().size()) +
+                           " element(s) into " + stem +
+                           " (its previous overlay was replaced).";
+                };
+
                 uiOverlay.drawEditorPanel(&showUiOverlay, uiSel, assetDb,
-                                          sceneNames, soundNames);
+                                          sceneNames, soundNames, copyOverlayToScene);
 
                 const bool uiActive  = ImGui::IsAnyItemActive();
                 const bool uiChanged = uiOverlay.elements() != uiFrameStart;
@@ -8482,6 +8695,10 @@ int main(int argc, char** argv) {
                 road.material().set("uRoadWidth", road.width);
                 road.material().set("uRoadUMax",  road.texTile > 1e-4f
                                                       ? road.width / road.texTile : 0.0f);
+                // Glow: colour/strength/map plus the UV scale that keeps the map
+                // spanning the carriageway. Re-applied per frame because it is
+                // derived from width/texTile, which the panel edits live.
+                road.applyEmission();
                 renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false,
                                 false, 1.0f, /*forceTransparent=*/roadFades);
             }
@@ -8643,7 +8860,8 @@ int main(int argc, char** argv) {
                  .set("uRoughness", md.roughness)
                  .set("uGlass", md.glass ? 1 : 0);
                 if (md.tex)
-                    m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0);
+                    m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0)
+                     .set("uTint", md.tint); // always written (shared program)
                 else
                     m.set("uColorMode", 0).set("uAlbedo", md.albedo);
                 if (md.normalTex)
@@ -9295,6 +9513,15 @@ int main(int argc, char** argv) {
                     sink.addScore    = [&](float n){ host.score += static_cast<int>(n); };
                     sink.playSound   = [&](const std::string& s){ if (host.playSound) host.playSound(s); };
                     sink.quit        = [&](){ window.requestClose(); };
+                    // Resume: close the menu and give the cursor back to the game,
+                    // exactly like pressing the menu's key again.
+                    sink.resume      = [&](){
+                        uiOverlay.setRuntimeVisible(false);
+                        input.setCursorLocked(fpsMode);
+                    };
+                    // Restart: deferred, so the entity list is swapped between
+                    // frames rather than underneath this draw call.
+                    sink.restart     = [&](){ pendingRestart = true; };
                     uiOverlay.drawRuntime(dl, glm::vec2(vmin.x, vmin.y),
                                           glm::vec2(vsize.x, vsize.y), assetDb, sink);
                 }

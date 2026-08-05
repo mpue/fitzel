@@ -127,7 +127,9 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                        fitzel::TerrainStreamer& streamer, const std::string& texDir)
     : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit),
       m_bridgeMat(lit) {
-    m_mat.set("uColorMode", 2);
+    // uTint is written for the same reason as uRoadFade below: the shared lit
+    // program keeps the last draw's tint otherwise.
+    m_mat.set("uColorMode", 2).set("uTint", glm::vec3(1.0f));
     // Populate the picker from the built-in content textures (no project yet).
     refreshTextures(std::string());
     // Default surface. Loaded through the asset database (cached/deduplicated);
@@ -147,11 +149,17 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
         }
     }
 
+    // No glow until the user asks for one, but the uniforms are written anyway so
+    // the material never inherits another draw's emission (see the Renderer's
+    // baseline note).
+    applyEmission();
+
     // Bridges are cast concrete, and not user-selectable: a deck is structure, not
     // surface. uRoadFade is pinned off here on purpose -- the road turns the shared
     // lit program's edge fade on, and a material that never writes a uniform
     // inherits whatever the last one left in it.
-    m_bridgeMat.set("uColorMode", 2).set("uRoadFade", 0.0f);
+    m_bridgeMat.set("uColorMode", 2).set("uRoadFade", 0.0f)
+               .set("uTint", glm::vec3(1.0f));
     m_bridgeTex = m_assetDb.loadTexture(m_texDir + "/cracked_concrete_02_diff_4k.jpg");
     if (m_bridgeTex) m_bridgeMat.setTexture("uTexture", *m_bridgeTex, 0);
 }
@@ -165,12 +173,19 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
         (normSel >= 0 && normSel < static_cast<int>(normFiles.size()))
             ? normFiles[normSel] : std::string();
 
+    const std::string prevEmis =
+        (emisSel >= 0 && emisSel < static_cast<int>(emisFiles.size()))
+            ? emisFiles[emisSel] : std::string();
+
     texFiles.clear();
     m_texPaths.clear();
     normFiles.clear();
     m_normPaths.clear();
+    emisFiles.clear();
+    m_emisPaths.clear();
     std::unordered_set<std::string> seen;     // dedupe by display name
     std::unordered_set<std::string> seenNorm;
+    std::unordered_set<std::string> seenEmis;
 
     auto add = [&](const std::filesystem::path& p) {
         const std::string name = p.filename().string();
@@ -180,6 +195,15 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
             normFiles.push_back(name);
             m_normPaths.push_back(p.generic_string());
             return;
+        }
+        // Any other image can serve as a glow map -- a hand-painted stripe, a
+        // "_mask", a whole neon pattern -- so this list is deliberately wider
+        // than the surface list, which only wants tileable colour maps.
+        const std::string ext = p.extension().string();
+        if ((ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga") &&
+            seenEmis.insert(name).second) {
+            emisFiles.push_back(name);
+            m_emisPaths.push_back(p.generic_string());
         }
         if (!isRoadAlbedo(name) || !seen.insert(name).second) return;
         texFiles.push_back(name);
@@ -211,6 +235,7 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
     };
     sortPair(texFiles, m_texPaths);
     sortPair(normFiles, m_normPaths);
+    sortPair(emisFiles, m_emisPaths);
 
     // Restore the selections by name (else fall back: first surface, no normal).
     texSel = 0;
@@ -219,6 +244,13 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
     normSel = -1;
     for (int i = 0; i < static_cast<int>(normFiles.size()); ++i)
         if (normFiles[i] == prevNorm) { normSel = i; break; }
+    emisSel = -1;
+    for (int i = 0; i < static_cast<int>(emisFiles.size()); ++i)
+        if (emisFiles[i] == prevEmis) { emisSel = i; break; }
+    // A glow map that is no longer on disk (project switched away from it) has to
+    // be dropped from the material too, or the road keeps glowing through a
+    // texture the picker says isn't selected.
+    if (emisSel < 0 && !prevEmis.empty()) setEmission(std::string());
 }
 
 std::string RoadSystem::normalFor(const std::string& file) const {
@@ -260,6 +292,39 @@ void RoadSystem::setNormal(const std::string& file) {
         m_mat.setTexture("uNormalMap", *m_normTex, 1); // unit 1: uTexture holds 0
         m_mat.set("uHasNormalMap", 1);
     }
+}
+
+void RoadSystem::setEmission(const std::string& file) {
+    if (file.empty()) {
+        m_emisTex.reset();
+        emisSel = -1;
+        applyEmission();
+        return;
+    }
+    std::string path;
+    for (std::size_t i = 0; i < emisFiles.size(); ++i)
+        if (emisFiles[i] == file) { path = m_emisPaths[i]; break; }
+    if (path.empty()) path = m_texDir + "/" + file;
+    if (auto t = m_assetDb.loadTexture(path)) {
+        m_emisTex = t;
+        // Unit 3: 0 is the surface, 1 its normal map, 7 the shadow array -- the
+        // same slot object materials use for their _Illum maps.
+        m_mat.setTexture("uEmissionMap", *m_emisTex, 3);
+    }
+    applyEmission();
+}
+
+void RoadSystem::applyEmission() {
+    m_mat.set("uEmission", emission)
+         .set("uEmissionStrength", std::max(emissionStrength, 0.0f))
+         .set("uHasEmissionMap", m_emisTex ? 1 : 0);
+    // The ribbon's own UVs run 0..width/texTile across and metres/texTile along
+    // (see loft). Undo both so the glow map spans the carriageway exactly once
+    // across -- a stripe at the centre of the image lands on the centre line --
+    // and repeats every `emissionTile` metres along the drive.
+    const float uScale = (width > 1e-4f) ? texTile / width : 1.0f;
+    const float vScale = (emissionTile > 1e-4f) ? texTile / emissionTile : 1.0f;
+    m_mat.set("uEmissionUVScale", glm::vec2(uScale, vScale));
 }
 
 void RoadSystem::setSurface(const std::string& file) {
@@ -359,6 +424,11 @@ void RoadSystem::save(nlohmann::json& j) const {
                           ? texFiles[texSel] : std::string()},
         {"normal",    (normSel >= 0 && normSel < static_cast<int>(normFiles.size()))
                           ? normFiles[normSel] : std::string()},
+        {"glowMap",   (emisSel >= 0 && emisSel < static_cast<int>(emisFiles.size()))
+                          ? emisFiles[emisSel] : std::string()},
+        {"glow",      {emission.r, emission.g, emission.b}},
+        {"glowStrength", emissionStrength},
+        {"glowTile",     emissionTile},
         {"bridges",   bridges_},
         {"bridgeStyle", {
             {"deckThick",   bridgeStyle.deckThick},
@@ -423,6 +493,18 @@ void RoadSystem::load(const nlohmann::json& j) {
                 if (normFiles[i] == nf) normSel = i;
         }
     }
+
+    // Glow. Absent in scenes saved before it existed, and its default strength is
+    // 0 -- so an older track loads exactly as dark as it was built.
+    emissionStrength = j.value("glowStrength", 0.0f);
+    emissionTile     = j.value("glowTile",     40.0f);
+    emission         = glm::vec3(1.0f);
+    if (const auto g = j.find("glow"); g != j.end() && g->is_array() && g->size() == 3)
+        emission = glm::vec3((*g)[0].get<float>(), (*g)[1].get<float>(),
+                             (*g)[2].get<float>());
+    setEmission(j.value("glowMap", std::string())); // also (re)applies the uniforms
+    for (int i = 0; i < static_cast<int>(emisFiles.size()); ++i)
+        if (emisFiles[i] == j.value("glowMap", std::string())) emisSel = i;
 
     // Bridges are absent from scenes saved before they existed -- those roads
     // simply have none, which is exactly how they were built.

@@ -93,6 +93,10 @@ struct MaterialDef {
     // discard threshold (unused for Opaque/Blend).
     AlphaMode   alphaMode    = AlphaMode::Opaque;
     float       alphaCutoff  = 0.5f;
+    // Multiplies the base-colour texture (textured materials only -- an
+    // untextured surface is coloured by `albedo` alone). White = the texture
+    // unchanged; darker/coloured tints recolour a model's map without editing it.
+    glm::vec3   tint{1.0f};
     // Optional base-colour texture (shared so MaterialDef stays copyable). When
     // set, the surface samples it (uColorMode 2) instead of the flat albedo.
     std::shared_ptr<fitzel::Texture> tex;
@@ -112,6 +116,13 @@ struct MaterialDef {
     std::shared_ptr<fitzel::Texture> emissionTex;
     fitzel::AssetId emissionTexId;
     bool        fromModel = false;           // created by a model import
+    // The maps the model itself shipped (only filled for `fromModel` materials).
+    // The three above are what actually renders; these are kept so an overridden
+    // -- or removed -- map can be put back with one click ("Model" in the
+    // Materials panel). Not serialized: re-created by the next import.
+    std::shared_ptr<fitzel::Texture> modelTex;
+    std::shared_ptr<fitzel::Texture> modelNormalTex;
+    std::shared_ptr<fitzel::Texture> modelEmissionTex;
 };
 
 // An imported glTF/GLB, uploaded to the GPU: one Mesh + Material per material

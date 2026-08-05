@@ -103,9 +103,12 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
                 if (glm::any(glm::greaterThan(glm::abs(m.albedo - albedo), glm::vec3(1e-3f))))
                     continue;
                 if (std::abs(m.opacity - opacity) > 1e-3f || m.alphaMode != alpha) continue;
-                if (!sameTex(m.tex, hasTex, p.texWidth, p.texHeight)) continue;
-                if (!sameTex(m.normalTex, hasNorm, p.normalWidth, p.normalHeight)) continue;
-                if (!sameTex(m.emissionTex, hasEmis, p.emissionWidth, p.emissionHeight)) continue;
+                // Compare against the maps the model shipped, not the live ones:
+                // a material whose texture the user overrode in the Materials
+                // panel still stands for the same source material.
+                if (!sameTex(m.modelTex, hasTex, p.texWidth, p.texHeight)) continue;
+                if (!sameTex(m.modelNormalTex, hasNorm, p.normalWidth, p.normalHeight)) continue;
+                if (!sameTex(m.modelEmissionTex, hasEmis, p.emissionWidth, p.emissionHeight)) continue;
                 matId = m.assetId; reused = true; break;
             }
         if (!reused) {
@@ -138,6 +141,11 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
                 def.emission = glm::vec3(1.0f);
                 def.emissionStrength = 3.0f;
             }
+            // Remember what the model shipped so the Materials panel can revert
+            // a user override back to it (see MaterialDef::modelTex).
+            def.modelTex         = def.tex;
+            def.modelNormalTex   = def.normalTex;
+            def.modelEmissionTex = def.emissionTex;
             matId = def.assetId;
             materials.push_back(std::move(def));
         }

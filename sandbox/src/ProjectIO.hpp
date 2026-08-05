@@ -163,4 +163,11 @@ std::string renameScene(Context& ctx, const std::string& scenePath,
 // success. Callers switch to another scene themselves when the active one is gone.
 bool deleteSceneFile(const std::string& scenePath);
 
+// Write `keys` into another scene's "settings" object, in place: each key
+// replaces the one already there, everything else in the file (entities, the
+// rest of the settings) is left exactly as it was. This is how a per-scene block
+// is copied into a scene without opening it -- see the UI Overlay panel's
+// "Copy to scene". False if the file can't be read as a scene or written back.
+bool mergeSceneSettings(const std::string& scenePath, const nlohmann::json& keys);
+
 } // namespace projectio

@@ -48,6 +48,7 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     nlohmann::json m;
     m["name"]         = md.name;
     m["albedo"]       = vec3Json(md.albedo);
+    m["tint"]         = vec3Json(md.tint);
     m["reflectivity"] = md.reflectivity;
     m["roughness"]    = md.roughness;
     m["opacity"]      = md.opacity;
@@ -290,6 +291,7 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         if (!md.assetId.valid()) md.assetId = AssetId::generate();
         md.name         = m.value("name", de.path().stem().string());
         md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
+        md.tint         = readVec3Json(m.value("tint", nlohmann::json{}), md.tint);
         md.reflectivity = m.value("reflectivity", md.reflectivity);
         md.roughness    = m.value("roughness", md.roughness);
         md.opacity      = m.value("opacity", md.opacity);
@@ -882,6 +884,24 @@ bool deleteSceneFile(const std::string& scenePath) {
     std::error_code ec;
     std::filesystem::remove(scenePath + ".meta", ec); // ignore if absent
     return std::filesystem::remove(scenePath, ec);
+}
+
+bool mergeSceneSettings(const std::string& scenePath, const nlohmann::json& keys) {
+    if (scenePath.empty() || !keys.is_object()) return false;
+    nlohmann::json j;
+    {
+        std::ifstream f(scenePath);
+        if (!f) return false;
+        try { f >> j; } catch (const nlohmann::json::exception&) { return false; }
+    }
+    if (!j.is_object()) return false; // not a v3 scene (old text format)
+    if (!j.contains("settings") || !j["settings"].is_object())
+        j["settings"] = nlohmann::json::object();
+    for (const auto& [k, v] : keys.items()) j["settings"][k] = v;
+    std::ofstream out(scenePath);
+    if (!out) return false;
+    out << j.dump(2) << '\n';
+    return static_cast<bool>(out);
 }
 
 } // namespace projectio

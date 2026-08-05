@@ -75,6 +75,19 @@ public:
     // Swap the surface texture (by file name; resolved against the scanned
     // texture dirs, see refreshTextures).
     void setSurface(const std::string& file);
+    // Swap the emission (glow) map: the image whose lit texels make the road
+    // glow -- centre lines, edge strips, Wipeout-style light channels. Pass "" for
+    // none, which leaves the whole carriageway glowing flat in `emission` (or not
+    // at all while `emissionStrength` is 0). The map is sampled across the road's
+    // OWN width (see applyEmission), not with the asphalt's tiling, so a stripe
+    // painted down the middle of the image stays down the middle of the road.
+    void setEmission(const std::string& file);
+    // Push the glow settings (colour, strength, map, UV scale) onto the surface
+    // material. The UV scale depends on `width`/`texTile`/`emissionTile`, which
+    // the editor changes freely, so the renderer calls this each frame rather
+    // than trying to catch every edit.
+    void applyEmission();
+
     // Swap the surface's normal map, which is what gives the asphalt its grain
     // under a low sun. Pass "" for none. The mesh needs no tangents: the lit shader
     // builds a frame from screen-space derivatives (see applyNormalMap).
@@ -207,6 +220,16 @@ public:
     int                      texSel = 0;
     std::vector<std::string> normFiles;        // selectable normal maps (display names)
     int                      normSel = -1;     // -1 = none (flat, lit by geometry alone)
+    // Glow. `emissionStrength` 0 (the default, and what an older scene loads as)
+    // means the road doesn't glow at all, so nothing changes for existing tracks.
+    // With a map, only its lit texels glow; without one the whole surface does.
+    // Emission is added after lighting, so a glowing road stays bright at night
+    // and reads through fog -- the point of the whole feature.
+    std::vector<std::string> emisFiles;        // selectable glow maps (display names)
+    int                      emisSel = -1;     // -1 = none (glow the whole surface)
+    glm::vec3                emission{1.0f};   // glow colour (multiplies the map)
+    float                    emissionStrength = 0.0f; // 0 = off; >1 for a hard glow
+    float                    emissionTile = 40.0f;    // metres per repeat ALONG the road
 
     std::vector<BridgeSpec> bridges;
     roadbridge::Params      bridgeStyle; // deck look, shared by all of them
@@ -258,9 +281,11 @@ private:
     std::string              m_texDir;
     std::vector<std::string> m_texPaths;  // full paths, parallel to texFiles
     std::vector<std::string> m_normPaths; // full paths, parallel to normFiles
+    std::vector<std::string> m_emisPaths; // full paths, parallel to emisFiles
 
     std::shared_ptr<fitzel::Texture> m_tex;     // kept alive while the material binds it
     std::shared_ptr<fitzel::Texture> m_normTex;
+    std::shared_ptr<fitzel::Texture> m_emisTex;
     fitzel::Material         m_mat;
     fitzel::Mesh             m_mesh;
     int                      m_verts = 0;
