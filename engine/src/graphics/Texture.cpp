@@ -37,6 +37,46 @@ float maxAnisotropy() {
     return level;
 }
 
+// Expand ANY source (1/2/3/4 channels) into a tightly-packed RGBA buffer.
+//
+// Every upload in this file goes through here, because uploading GL_RED/GL_RG/
+// GL_RGB trips an NVIDIA driver bug the engine hits constantly: glTexImage2D
+// with those formats runs a JIT conversion loop that over-reads the tightly-
+// packed source a few bytes past its end -- an AV inside driver JIT code (RIP
+// ...FEEE) whenever the buffer ends near a page boundary. Handing the driver
+// pre-expanded RGBA makes it take a straight copy, so that loop never runs.
+// RGBA rows are inherently 4-aligned, so no GL_UNPACK_ALIGNMENT juggling.
+std::vector<unsigned char> expandToRGBA(const unsigned char* pixels, int width,
+                                        int height, int channels) {
+    const std::size_t n = static_cast<std::size_t>(width) * height;
+    std::vector<unsigned char> rgba(n * 4);
+    for (std::size_t i = 0; i < n; ++i) {
+        unsigned char r, g, b, a = 255;
+        switch (channels) {
+            case 1:  r = g = b = pixels[i]; break;
+            case 2:  r = g = b = pixels[i * 2]; a = pixels[i * 2 + 1]; break;
+            case 3:  r = pixels[i * 3]; g = pixels[i * 3 + 1]; b = pixels[i * 3 + 2]; break;
+            default: r = pixels[i * 4]; g = pixels[i * 4 + 1]; b = pixels[i * 4 + 2];
+                     a = pixels[i * 4 + 3]; break;
+        }
+        rgba[i * 4 + 0] = r; rgba[i * 4 + 1] = g;
+        rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
+    }
+    return rgba;
+}
+
+// Never trust ambient pixel-store state: reset it explicitly before uploading.
+// Dear ImGui's OpenGL3 backend sets GL_UNPACK_ROW_LENGTH to a texture width and
+// (before its 2026-07-15 fix, #8802/#9473) left it set, corrupting the next
+// caller's upload -- our tightly-packed buffer would then be read with a wrong
+// row stride, over-reading past its end and crashing inside the driver (the
+// ...FEEE AV). Forcing ROW_LENGTH=0 (= use `width`) and ALIGNMENT immunises us
+// against any dependency's leaked state, regardless of which imgui tip we fetch.
+void resetPixelStore() {
+    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+}
+
 bool endsWithExr(const std::string& p) {
     if (p.size() < 4) return false;
     std::string ext = p.substr(p.size() - 4);
@@ -76,42 +116,16 @@ Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
     tex.m_height = height;
     if (!pixels || width <= 0 || height <= 0) return tex;
 
-    // Expand ANY source (1/2/3/4 channels) to a tightly-packed RGBA buffer on the
-    // CPU and upload that as GL_RGBA8. This dodges an NVIDIA driver bug the engine
-    // hits constantly: glTexImage2D with GL_RED/GL_RG/GL_RGB runs a JIT conversion
-    // loop that over-reads the tightly-packed source a few bytes past its end -- an
-    // AV inside driver JIT code (RIP ...FEEE) whenever the buffer ends near a page
-    // boundary. Uploading pre-expanded RGBA makes the driver take a straight copy
-    // with no conversion, so that loop never runs. (The other symptom once blamed
-    // on this path -- corrupt/crashing mipmaps -- was really leaked pixel-store
+    // Pre-expanded RGBA, uploaded as GL_RGBA8 -- see expandToRGBA for why the
+    // driver is never handed a narrower format. (The other symptom once blamed on
+    // this path -- corrupt/crashing mipmaps -- was really leaked pixel-store
     // state; see the glGenerateMipmap note below.)
-    // RGBA rows are inherently 4-aligned, so no GL_UNPACK_ALIGNMENT juggling.
-    const std::size_t n = static_cast<std::size_t>(width) * height;
-    std::vector<unsigned char> rgba(n * 4);
-    for (std::size_t i = 0; i < n; ++i) {
-        unsigned char r, g, b, a = 255;
-        switch (channels) {
-            case 1:  r = g = b = pixels[i]; break;
-            case 2:  r = g = b = pixels[i * 2]; a = pixels[i * 2 + 1]; break;
-            case 3:  r = pixels[i * 3]; g = pixels[i * 3 + 1]; b = pixels[i * 3 + 2]; break;
-            default: r = pixels[i * 4]; g = pixels[i * 4 + 1]; b = pixels[i * 4 + 2];
-                     a = pixels[i * 4 + 3]; break;
-        }
-        rgba[i * 4 + 0] = r; rgba[i * 4 + 1] = g;
-        rgba[i * 4 + 2] = b; rgba[i * 4 + 3] = a;
-    }
+    const std::vector<unsigned char> rgba =
+        expandToRGBA(pixels, width, height, channels);
 
     glGenTextures(1, &tex.m_id);
     glBindTexture(GL_TEXTURE_2D, tex.m_id);
-    // Never trust ambient pixel-store state: reset it explicitly before uploading.
-    // Dear ImGui's OpenGL3 backend sets GL_UNPACK_ROW_LENGTH to a texture width and
-    // (before its 2026-07-15 fix, #8802/#9473) left it set, corrupting the next
-    // caller's upload -- our tightly-packed buffer would then be read with a wrong
-    // row stride, over-reading past its end and crashing inside the driver (the
-    // ...FEEE AV). Forcing ROW_LENGTH=0 (= use `width`) and ALIGNMENT immunises us
-    // against any dependency's leaked state, regardless of which imgui tip we fetch.
-    glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    resetPixelStore();
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, rgba.data());
 
@@ -132,6 +146,51 @@ Texture Texture::fromPixels(const unsigned char* pixels, int width, int height,
 
     glBindTexture(GL_TEXTURE_2D, 0);
     return tex;
+}
+
+Texture Texture::blank(int width, int height) {
+    Texture tex;
+    if (width <= 0 || height <= 0) return tex;
+    tex.m_width  = width;
+    tex.m_height = height;
+
+    // Black, fully opaque -- a video quad shows this for the frame or two before
+    // the first decode lands, and black reads as "screen is off", not as a bug.
+    const std::vector<unsigned char> black(
+        static_cast<std::size_t>(width) * height * 4, 0);
+
+    glGenTextures(1, &tex.m_id);
+    glBindTexture(GL_TEXTURE_2D, tex.m_id);
+    resetPixelStore();
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, black.data());
+    // No mipmaps: this level is rewritten every few frames, and regenerating the
+    // chain each time would cost more than the sampling it saves. LINEAR only,
+    // which also means MIN_FILTER must not name a mip level -- an incomplete
+    // texture samples black.
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return tex;
+}
+
+bool Texture::update(const unsigned char* pixels, int width, int height,
+                     int channels) {
+    // Size changes would need a reallocation, which would break the "same GL
+    // name throughout" contract callers rely on. A video's frames are all one
+    // size, so a mismatch means the caller got its bookkeeping wrong.
+    if (!m_id || !pixels || width != m_width || height != m_height) return false;
+
+    const std::vector<unsigned char> rgba =
+        expandToRGBA(pixels, width, height, channels);
+    glBindTexture(GL_TEXTURE_2D, m_id);
+    resetPixelStore();
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA,
+                    GL_UNSIGNED_BYTE, rgba.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return true;
 }
 
 Texture Texture::fromFile(const std::string& path, bool flipVertically) {

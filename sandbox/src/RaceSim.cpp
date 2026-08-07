@@ -20,11 +20,13 @@
 namespace racesim {
 
 namespace {
-// The road's travel heading (yaw, radians -- atan2(dir.x, dir.z)) a little ahead
-// of a world point, for steering a free-flying craft along the track. Projects
-// the point onto the centreline, then samples the tangent `lookahead` metres
-// further on (wrapping on a closed loop). Returns false if there's no road.
-bool roadHeadingAhead(RoadSystem& road, const glm::vec3& p, float lookahead, float& yawOut) {
+// Steering aim for a free-flying craft on autopilot: the yaw (radians --
+// atan2(dx, dz)) from a world point TOWARD the centreline `lookahead` metres
+// further along the track (wrapping on a closed loop). Aiming at the point
+// rather than copying the road's tangent is what pulls a craft that is off to
+// one side back to the middle -- with the tangent alone it would fly the whole
+// lap parallel to the track, permanently offset. Returns false if there's no road.
+bool roadAimAhead(RoadSystem& road, const glm::vec3& p, float lookahead, float& yawOut) {
     if (!road.built()) return false;
     const std::vector<glm::vec2>& cl = road.centerline();
     if (cl.size() < 2) return false;
@@ -46,20 +48,27 @@ bool roadHeadingAhead(RoadSystem& road, const glm::vec3& p, float lookahead, flo
         walk += glm::length(ab);
     }
 
-    // Tangent a little further along (the way the track runs).
+    // The centreline point a little further along, and the tangent there.
     float s = bestS + lookahead;
     if (road.closed) { s = std::fmod(s, total); if (s < 0.0f) s += total; }
     else             s = glm::clamp(s, 0.0f, total);
-    glm::vec2 dir(0.0f, 1.0f);
+    glm::vec2 aim = cl[0], dir(0.0f, 1.0f);
     float acc = 0.0f;
     for (std::size_t i = 0; i < segs; ++i) {
         const glm::vec2 a = cl[i], b = cl[(i + 1) % n];
         const float seg = glm::length(b - a);
         if (seg < 1e-5f) continue;
-        if (acc + seg >= s || i == segs - 1) { dir = (b - a) / seg; break; }
+        if (acc + seg >= s || i == segs - 1) {
+            dir = (b - a) / seg;
+            aim = a + dir * glm::clamp(s - acc, 0.0f, seg);
+            break;
+        }
         acc += seg;
     }
-    yawOut = std::atan2(dir.x, dir.y);
+    // Aim at that point; fall back to the tangent if we are sitting right on it.
+    const glm::vec2 to = aim - q;
+    yawOut = glm::dot(to, to) > 1.0f ? std::atan2(to.x, to.y)
+                                     : std::atan2(dir.x, dir.y);
     return true;
 }
 
@@ -250,14 +259,18 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     // Race over: the craft flies itself away on a victory lap. Take the controls
     // off the player and cruise at full throttle, but STEER ALONG THE ROAD (the
     // craft is a free flyer, so without this it would just fly dead straight off
-    // the track). Autopilot toward the road heading a little ahead; falls back to
-    // straight flight if there's no road.
+    // the track). Pure pursuit: aim at the centreline a bit ahead, so wherever
+    // the craft took the flag it eases back to the middle instead of flying the
+    // lap offset to one side. The aim point runs further ahead the faster it
+    // goes, so the correction stays smooth rather than weaving.
     if (st.raceFinished) {
         throttle = 1.0f;
         kBrake   = false;
         steerIn  = 0.0f;
+        const float speed = glm::length(glm::vec2(st.gliderVel.x, st.gliderVel.z));
+        const float look  = glm::clamp(speed * 0.6f, 14.0f, 45.0f);
         float roadYaw = 0.0f;
-        if (roadHeadingAhead(env.road, st.gliderPos, 18.0f, roadYaw)) {
+        if (roadAimAhead(env.road, st.gliderPos, look, roadYaw)) {
             float diff = roadYaw - st.gliderYaw;
             while (diff >  3.14159265f) diff -= 6.28318531f;
             while (diff < -3.14159265f) diff += 6.28318531f;
@@ -539,9 +552,11 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
     // polyline + terrain height), facing along the road and banking into corners.
     // Kinematic; a closed track loops, an open road stops at the end. Snaps onto
     // the road on the first tick, so the marker can be placed anywhere.
-    if (!env.road.built()) return;
+    // Without a road there is nothing to measure progress along, so the field
+    // (and with it the HUD's participant list) stays empty.
+    if (!env.road.built()) { st.standings.clear(); return; }
     const std::vector<glm::vec2>& cl = env.road.centerline();
-    if (cl.size() < 2) return;
+    if (cl.size() < 2) { st.standings.clear(); return; }
     const std::size_t n = cl.size();
     const std::size_t segs = env.road.closed ? n : n - 1;
     float total = 0.0f;
@@ -635,14 +650,66 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
     if (haveP) racers.push_back({playerDist, playerLane, env.playerSpeed});
 
     // Boost pads on the track, gathered once: opponents grab them like the player.
-    struct Pad { glm::vec2 c, h; float boostSpeed, hold; };
+    // Each is also projected onto the centreline (along-track distance + lane), so
+    // a racer can spot one ahead and steer onto it instead of only taking the ones
+    // that happen to sit under its line.
+    struct Pad { glm::vec2 c, h; float boostSpeed, hold; float dist, lane, radius; };
     std::vector<Pad> pads;
     for (const Entity& pe : env.entities) {
         if (!pe.activeInHierarchy) continue;
         const auto* bp = pe.components.get<BoostPadComponent>();
         if (!bp) continue;
-        pads.push_back({ glm::vec2(pe.center.x, pe.center.z),
-                         glm::vec2(pe.half.x, pe.half.z), bp->boostSpeed, bp->hold });
+        Pad pad{ glm::vec2(pe.center.x, pe.center.z),
+                 glm::vec2(pe.half.x, pe.half.z), bp->boostSpeed, bp->hold,
+                 0.0f, 0.0f, 0.0f };
+        pad.dist = projDist(pad.c);
+        glm::vec2 pp, pd; sampleAt(pad.dist, pp, pd);
+        pad.lane   = glm::dot(pad.c - pp, glm::vec2(pd.y, -pd.x));
+        // The AABB is axis-aligned, so its worst-case reach sideways is the
+        // smaller half-extent -- a conservative "how close must I be to touch it".
+        pad.radius = glm::max(glm::min(pad.h.x, pad.h.y), 0.1f);
+        pads.push_back(pad);
+    }
+
+    // Race gates, projected onto the centreline the same way. Opponents lap by
+    // the player's rules -- every checkpoint crossed, then the start/finish line
+    // -- but tested in arc length instead of box overlap: a kinematic racer can
+    // never tunnel a gate that way, however fast it runs. The lane test keeps a
+    // gate that only spans part of the track meaningful (drive around it and it
+    // does not count).
+    struct Gate { int id; float dist, lane, halfW; };
+    std::vector<Gate> cps;
+    bool  haveLine = false;
+    float lineDist = 0.0f;
+    int   lineLaps = 0;
+    for (const Entity& ge : env.entities) {
+        if (!ge.activeInHierarchy) continue;
+        const auto* cp = ge.components.get<CheckpointComponent>();
+        const auto* fl = ge.components.get<FinishLineComponent>();
+        if (!cp && !fl) continue;
+        const glm::vec2 gxz(ge.center.x, ge.center.z);
+        const float gs = projDist(gxz);
+        glm::vec2 gp, gd; sampleAt(gs, gp, gd);
+        const float lane = glm::dot(gxz - gp, glm::vec2(gd.y, -gd.x));
+        if (cp) {
+            // A gate placed so far off the track that nobody on the road could
+            // fly through it would make a lap impossible -- ignore it rather
+            // than stall the whole field on lap 1.
+            if (std::abs(lane) > cp->width * 0.5f + halfW) continue;
+            cps.push_back({ ge.id, gs, lane, cp->width * 0.5f });
+        }
+        else if (!haveLine) {
+            haveLine = true; lineDist = gs;
+            lineLaps = static_cast<int>(std::lround(fl->laps));
+        }
+    }
+    // The race restarting (GO, or the player crossing the line to begin) wipes
+    // the whole field's progress, so a second run in one Play session is clean.
+    const bool startEdge = st.raceActive && !st.oppWasActive;
+    st.oppWasActive = st.raceActive;
+    if (startEdge) {
+        st.winnerName.clear(); st.winnerIsPlayer = false; st.winnerTime = 0.0f;
+        st.raceOver = false; st.playerPlace = 0;
     }
 
     for (std::size_t oi = 0; oi < oppComps.size(); ++oi) {
@@ -653,6 +720,17 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         const float h1 = hash01(e.id, 1), h2 = hash01(e.id, 2), h3 = hash01(e.id, 3);
         const float skillSpeed = 0.92f + 0.12f * h1;  // some run faster than others
         const float skillGrip  = 0.90f + 0.18f * h2;  // ...and corner better/worse
+
+        // Seed this racer's lap/timing state on the first tick it may move, and
+        // again whenever the race (re)starts.
+        if (startEdge || !op->raceSeeded) {
+            op->raceSeeded = true;
+            op->lap = 0; op->place = 0;
+            op->raceT = op->lapT = op->lapDist = 0.0f;
+            op->lastLapT = op->bestLapT = op->finishT = 0.0f;
+            op->finishedRace = false;
+            op->cpDone.clear();
+        }
 
         bool slipping = false;
         if (!frozen) {
@@ -713,6 +791,7 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
             // stable snapshot) and the target lane is ABSOLUTE -- never relative to
             // our own eased lane -- so laneCur can't oscillate around the blocker
             // (that ping-pong is what made them shiver and weave).
+            bool dodging = false;
             if (op->awareness > 0.0f) {
                 const float look = glm::clamp(op->curSpeed * 0.9f, 6.0f, 45.0f);
                 float bestGap = 1e9f; const Racer* block = nullptr;
@@ -729,6 +808,37 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
                     laneTarget = glm::clamp(dodge * glm::min(laneMax, halfW * 0.6f) * op->awareness,
                                             -laneMax, laneMax);
                     if (bestGap < 4.0f) vtarget = glm::min(vtarget, block->speed); // no rear-end
+                    dodging = true;
+                }
+            }
+
+            // --- Pad hunting: steer onto the nearest boost pad ahead. Skipped
+            // while dodging (a blocker outranks a boost) and while slipping, and
+            // only for pads we can still cross to in the distance left -- so they
+            // commit to a line early instead of lurching sideways at the last
+            // metre. Chasing one also quickens the lane easing a little.
+            float laneEase = 1.8f;
+            if (!dodging && !slipping && op->padSeek > 0.0f) {
+                const float look = glm::clamp(op->curSpeed * 1.3f, 12.0f, 70.0f);
+                const Pad* best = nullptr; float bestGap = 1e9f;
+                for (const Pad& pad : pads) {
+                    const float gap = signedDelta(pad.dist, op->dist);
+                    if (gap <= 1.0f || gap > look) continue;
+                    // Off to the side of the road (or beyond our lane limits): not
+                    // worth leaving the track for.
+                    if (std::abs(pad.lane) - pad.radius > laneMax) continue;
+                    const float need = std::abs(pad.lane - op->laneCur) - pad.radius;
+                    if (need > 0.0f) {
+                        // Sideways speed we can realistically carry ~= 6 m/s.
+                        const float reach = 6.0f * gap / glm::max(op->curSpeed, 4.0f);
+                        if (need > reach) continue;   // can't get across in time
+                    }
+                    if (gap < bestGap) { bestGap = gap; best = &pad; }
+                }
+                if (best) {
+                    const float aim = glm::clamp(best->lane, -laneMax, laneMax);
+                    laneTarget = glm::mix(laneTarget, aim, op->padSeek);
+                    laneEase   = 2.8f;
                 }
             }
             if (slipping) laneTarget = glm::clamp(laneTarget + (h3 - 0.5f) * 2.0f, -laneMax, laneMax);
@@ -758,8 +868,38 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
             if (vtarget > op->curSpeed) op->curSpeed = glm::min(vtarget, op->curSpeed + accel * env.dt);
             else                        op->curSpeed = glm::max(vtarget, op->curSpeed - brake * env.dt);
             op->curSpeed = glm::min(op->curSpeed, effTop);
-            op->laneCur += (laneTarget - op->laneCur) * glm::min(1.0f, env.dt * 1.8f);
+            op->laneCur += (laneTarget - op->laneCur) * glm::min(1.0f, env.dt * laneEase);
+            const float prevDist = op->dist;
             op->dist += op->curSpeed * env.dt;
+
+            // --- Laps: which gates did this step carry us across? --------------
+            if (!op->finishedRace) {
+                op->raceT   += env.dt;
+                op->lapT    += env.dt;
+                op->lapDist += op->dist - prevDist;
+                // `s` was ahead of us before the step and is behind us after it.
+                auto crossed = [&](float s) {
+                    return signedDelta(s, prevDist) > 0.0f && signedDelta(s, op->dist) <= 0.0f;
+                };
+                for (const Gate& g : cps)
+                    if (crossed(g.dist) && std::abs(op->laneCur - g.lane) <= g.halfW + 1.0f)
+                        op->cpDone.insert(g.id);
+                // A lap needs the line AND every checkpoint. The half-lap distance
+                // guard keeps the pass right after the start (and a racer parked on
+                // the line) from ticking laps over.
+                if (haveLine && crossed(lineDist) && op->lapDist > total * 0.5f &&
+                    op->cpDone.size() >= cps.size()) {
+                    op->lastLapT = op->lapT;
+                    if (op->bestLapT <= 0.0f || op->lastLapT < op->bestLapT)
+                        op->bestLapT = op->lastLapT;
+                    op->lapT = 0.0f; op->lapDist = 0.0f; op->cpDone.clear();
+                    ++op->lap;
+                    if (lineLaps > 0 && op->lap >= lineLaps) {
+                        op->finishedRace = true;
+                        op->finishT = op->raceT;
+                    }
+                }
+            }
         }
         if (!op->loop) op->dist = glm::min(op->dist, total);
 
@@ -782,6 +922,85 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         const glm::mat4 pw = env.parentWorldMat(e);
         env.setWorld(e, wpos, glm::vec3(0.0f, yawDeg, op->bankCur),
                      e.parent >= 0 ? &pw : nullptr);
+    }
+
+    // --- Standings: the field in running order ------------------------------
+    // Progress is measured from the start/finish line so the order is the racing
+    // order, not "distance from the road's first point": completed laps times the
+    // lap length, plus how far into the current lap each racer is.
+    auto lapPos = [&](float d) {
+        if (total < 1e-3f) return 0.0f;
+        float v = std::fmod(d - (haveLine ? lineDist : 0.0f), total);
+        if (v < 0.0f) v += total;
+        return v;
+    };
+    st.standings.clear();
+    st.standings.reserve(oppComps.size() + 1);
+    for (std::size_t oi = 0; oi < oppComps.size(); ++oi) {
+        const OpponentComponent* op = oppComps[oi];
+        const Entity& e = *oppEnts[oi];
+        RaceState::Standing s;
+        s.id       = e.id;
+        s.name     = !e.name.empty() ? e.name : ("Racer " + std::to_string(e.id));
+        s.lap      = op->lap;
+        s.progress = static_cast<float>(op->lap) * total + lapPos(op->dist);
+        s.bestLap  = op->bestLapT;
+        s.lastLap  = op->lastLapT;
+        s.finished = op->finishedRace;
+        s.totalTime = op->finishT;
+        st.standings.push_back(std::move(s));
+    }
+    if (haveP) {
+        RaceState::Standing s;
+        s.id       = -1;
+        s.name     = "YOU";
+        s.isPlayer = true;
+        s.lap      = st.raceLap;
+        s.progress = static_cast<float>(st.raceLap) * total + lapPos(playerDist);
+        s.bestLap  = st.bestLap;
+        s.lastLap  = st.lastLap;
+        s.finished = st.raceFinished;
+        s.totalTime = st.raceClock;
+        st.standings.push_back(std::move(s));
+    }
+    // Finishers rank ahead of anyone still running, by the time they took.
+    std::sort(st.standings.begin(), st.standings.end(),
+              [](const RaceState::Standing& a, const RaceState::Standing& b) {
+                  if (a.finished != b.finished) return a.finished;
+                  if (a.finished) return a.totalTime < b.totalTime;
+                  return a.progress > b.progress;
+              });
+    st.playerPlace = 0;
+    st.raceOver = !st.standings.empty();
+    for (std::size_t i = 0; i < st.standings.size(); ++i) {
+        RaceState::Standing& s = st.standings[i];
+        s.gap = glm::max(0.0f, st.standings[0].progress - s.progress);
+        if (s.isPlayer) st.playerPlace = static_cast<int>(i) + 1;
+        if (!s.finished) st.raceOver = false;
+        // Mirror the live position back onto the racer (handy for scripts/debug).
+        if (!s.isPlayer)
+            for (std::size_t oi = 0; oi < oppComps.size(); ++oi)
+                if (oppEnts[oi]->id == s.id) { oppComps[oi]->place = static_cast<int>(i) + 1; break; }
+    }
+
+    // Winner: the first racer over the last lap's line. The player's finish is
+    // resolved in updateGlider earlier this frame, so check it first.
+    if (st.winnerName.empty()) {
+        if (haveP && st.raceFinished) {
+            st.winnerName = "YOU"; st.winnerIsPlayer = true; st.winnerTime = st.raceClock;
+        } else {
+            const OpponentComponent* first = nullptr; const Entity* firstE = nullptr;
+            for (std::size_t oi = 0; oi < oppComps.size(); ++oi)
+                if (oppComps[oi]->finishedRace &&
+                    (!first || oppComps[oi]->finishT < first->finishT))
+                    { first = oppComps[oi]; firstE = oppEnts[oi]; }
+            if (first) {
+                st.winnerName = !firstE->name.empty() ? firstE->name
+                                                      : ("Racer " + std::to_string(firstE->id));
+                st.winnerIsPlayer = false;
+                st.winnerTime = first->finishT;
+            }
+        }
     }
 }
 

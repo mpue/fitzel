@@ -104,6 +104,12 @@ struct MaterialDef {
     // reference survives save/load). Invalid for model-embedded textures, which
     // are recreated on import and therefore not serialized.
     fitzel::AssetId texId;
+    // Optional video (a .fvid asset) driving the base colour. When set, `tex`
+    // points at the video's own texture, whose pixels the VideoLibrary rewrites
+    // as it plays -- so nothing downstream of here knows or cares that the
+    // surface is moving. Mutually exclusive with `texId`: binding one clears the
+    // other, since both feed the same slot.
+    fitzel::AssetId videoId;
     // Optional tangent-space normal map (same conventions as `tex`).
     std::shared_ptr<fitzel::Texture> normalTex;
     fitzel::AssetId normalTexId;

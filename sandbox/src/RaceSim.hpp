@@ -2,6 +2,7 @@
 
 #include <glm/glm.hpp>
 #include <functional>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -61,6 +62,30 @@ struct RaceState {
     float raceMissedFlash = 0.0f;      // HUD flash after finishing a lap short
     float raceCountdown = 0.0f;        // Ready/Set/Go: > 0 holds everyone still
     float goFlash       = 0.0f;        // "GO!" flash once the countdown hits 0
+
+    // --- Standings (the HUD's participant list) --------------------------
+    // Rebuilt every frame by updateOpponents from the opponents' race state plus
+    // the human racer, ordered leader-first. Empty when there is no road (nothing
+    // to measure progress along), in which case the HUD falls back to plain lap
+    // times.
+    struct Standing {
+        int         id = -1;          // entity id (-1 = the human racer)
+        std::string name;
+        int   lap       = 0;          // completed laps
+        float progress  = 0.0f;       // laps * lapLength + metres into this lap
+        float gap       = 0.0f;       // metres behind the leader (0 = leading)
+        float bestLap   = 0.0f, lastLap = 0.0f;
+        float totalTime = 0.0f;       // final time once finished
+        bool  finished  = false;
+        bool  isPlayer  = false;
+    };
+    std::vector<Standing> standings;   // leader first; [i].place == i + 1
+    int   playerPlace = 0;             // 1-based, 0 = not in the field
+    bool  raceOver    = false;         // every racer has taken the flag
+    std::string winnerName;            // first over the last lap's line
+    bool  winnerIsPlayer = false;
+    float winnerTime     = 0.0f;
+    bool  oppWasActive   = false;      // edge-detect the race start (re-seeds the field)
 
     // --- Engine-sound feed (car), consumed in the audio mix -------------
     bool  engineDriving  = false;

@@ -58,6 +58,7 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["emission"]         = vec3Json(md.emission);
     m["emissionStrength"] = md.emissionStrength;
     if (md.texId.valid())         m["texture"]     = md.texId.toString();
+    if (md.videoId.valid())       m["video"]       = md.videoId.toString();
     if (md.normalTexId.valid())   m["normalMap"]   = md.normalTexId.toString();
     if (md.emissionTexId.valid()) m["emissionMap"] = md.emissionTexId.toString();
     std::ofstream f(file); if (f) f << m.dump(2) << '\n';
@@ -305,6 +306,10 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
         }
+        // Only the reference: opening the video needs the VideoLibrary, which
+        // main owns. Its per-frame bind pass picks this up on the next frame.
+        if (m.contains("video"))
+            md.videoId = AssetId::fromString(m["video"].get<std::string>());
         if (m.contains("normalMap")) {
             md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
             if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
@@ -349,6 +354,8 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
         }
+        if (m.contains("video"))
+            md.videoId = AssetId::fromString(m["video"].get<std::string>());
         if (m.contains("normalMap")) {
             md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
             if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);

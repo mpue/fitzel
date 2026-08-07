@@ -43,3 +43,6 @@ content/models/*/
 # OS
 Thumbs.db
 .DS_Store
+
+# Video assets (imported/converted locally, not tracked)
+/content/videos/

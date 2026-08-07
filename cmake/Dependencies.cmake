@@ -34,36 +34,44 @@ FetchContent_Declare(
     SOURCE_SUBDIR  cmake
 )
 
+# The four dependencies below track branches upstream, not releases. They are
+# pinned to commits here because a branch name means every CMake re-configure can
+# silently swap the library under a build that changed nothing -- and this project
+# has been bitten by exactly that: an imgui revision leaking GL_UNPACK_ROW_LENGTH
+# turned into driver-level texture corruption and a crash that looked for all the
+# world like a bug in our own upload path (see the notes in Texture.cpp).
+#
+# GIT_SHALLOW is off for these: a shallow clone can only fetch a branch or tag
+# tip, not an arbitrary commit. Bumping one is a deliberate edit -- change the
+# hash, rebuild, and if something breaks you know what did it.
+
 # --- stb: single-header image loading --------------------------------------
 FetchContent_Declare(
     stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG        master
-    GIT_SHALLOW    ON
+    GIT_TAG        2c980bb59875b0d32144a71867fbdebb2f77cd20 # master @ 2026-08-01
 )
 
 # --- Dear ImGui: immediate-mode debug UI -----------------------------------
 FetchContent_Declare(
     imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG        docking          # docking lives on this branch, not the release tags
-    GIT_SHALLOW    ON
+    # docking branch (the feature lives there, not on the release tags).
+    GIT_TAG        035c87ef847e5b6188713a6009f383f633b6043d # docking @ 2026-08-05
 )
 
 # --- ImGuizmo: 3D transform gizmos for the editor viewport -----------------
 FetchContent_Declare(
     imguizmo
     GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
-    GIT_TAG        master
-    GIT_SHALLOW    ON
+    GIT_TAG        5ab7676402ace03cdf930b2d972f59c7d03c6fa8 # master @ 2026-07-29
 )
 
 # --- ImGuiColorTextEdit: syntax-highlighting code editor (Lua script editor) -
 FetchContent_Declare(
     imcolortextedit
     GIT_REPOSITORY https://github.com/BalazsJako/ImGuiColorTextEdit.git
-    GIT_TAG        master
-    GIT_SHALLOW    ON
+    GIT_TAG        ca2f9f1462e3b60e56351bc466acda448c5ea50d # master @ 2025-11-24
 )
 
 # --- tinyexr: load OpenEXR (.exr) images (e.g. PBR normal maps) -------------

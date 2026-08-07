@@ -658,6 +658,7 @@ const std::vector<Property>& OpponentComponent::properties() {
         addFloat("Catch-up",      "catchup",      &OpponentComponent::catchup,      0.0f, 1.0f,   "%.2f");
         addFloat("Racing line",   "racingLine",   &OpponentComponent::racingLine,   0.0f, 1.0f,   "%.2f");
         addFloat("Awareness",     "awareness",    &OpponentComponent::awareness,    0.0f, 1.0f,   "%.2f");
+        addFloat("Pad seek",      "padSeek",      &OpponentComponent::padSeek,      0.0f, 1.0f,   "%.2f");
         addFloat("Lane offset",   "laneOffset",   &OpponentComponent::laneOffset,  -20.0f, 20.0f, "%.1f m");
         addFloat("Ride height",   "rideHeight",   &OpponentComponent::rideHeight,   0.0f, 12.0f,  "%.2f m");
         addFloat("Start distance","startDistance",&OpponentComponent::startDistance,0.0f, 2000.0f,"%.0f m");

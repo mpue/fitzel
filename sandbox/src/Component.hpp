@@ -571,6 +571,10 @@ public:
     float catchup      = 0.35f; // rubber-band strength (0..1)
     float racingLine   = 0.7f;  // how hard to cut to the apex (0 = hug base lane)
     float awareness    = 1.0f;  // avoid/overtake other racers + the player (0 = blind)
+    // Boost pads: how far off the racing line a racer will swerve to drive over
+    // a pad ahead. 1 = aim dead centre at it, 0 = only take pads it happens to
+    // cross. Dodging a blocker always wins (no boost is worth a rear-end).
+    float padSeek      = 0.8f;  // eagerness to detour onto a boost pad (0..1)
 
     float dist    = 0.0f;  // runtime: distance travelled along the road (m)
     float bankCur = 0.0f;  // runtime: smoothed bank
@@ -582,6 +586,22 @@ public:
     float mistakeCd = 0.0f;// runtime: countdown to the next slip-up (s)
     bool  laneSeeded = false; // runtime: laneCur seeded to laneOffset on first tick
     bool  started = false; // runtime: dist + curSpeed seeded
+
+    // --- Runtime: race progress ------------------------------------------
+    // Opponents race by the player's rules: every checkpoint has to be crossed
+    // (within the gate's width) before a pass over the start/finish line counts
+    // as a lap, and the race ends for them after the line's lap count.
+    int   lap        = 0;     // completed laps
+    float raceT      = 0.0f;  // running time since GO (s)
+    float lapT       = 0.0f;  // current lap time (s)
+    float lastLapT   = 0.0f;  // previous lap's time (s)
+    float bestLapT   = 0.0f;  // fastest lap so far (s, 0 = none yet)
+    float lapDist    = 0.0f;  // metres covered on this lap (guards double counts)
+    float finishT    = 0.0f;  // raceT when it took the flag
+    int   place      = 0;     // 1-based position (live while racing, final after)
+    bool  finishedRace = false;
+    bool  raceSeeded = false; // race fields initialised for this run
+    std::unordered_set<int> cpDone; // checkpoint ids crossed this lap
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<OpponentComponent>(*this);

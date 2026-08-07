@@ -1,11 +1,14 @@
 #include "AssetDrop.hpp"
 
+#include <cstdio>
 #include <filesystem>
 #include <functional>
 #include <system_error>
 
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/AssetTypes.hpp>
+
+#include "VideoImport.hpp"
 
 namespace assetdrop {
 namespace {
@@ -20,6 +23,7 @@ const char* folderFor(fitzel::AssetType t) {
         case fitzel::AssetType::Model:    return "models";
         case fitzel::AssetType::Sound:    return "sounds";
         case fitzel::AssetType::Material: return "materials";
+        case fitzel::AssetType::Video:    return "videos";
         case fitzel::AssetType::Unknown:  break;
     }
     return nullptr;
@@ -52,6 +56,24 @@ Result importInto(const std::string& projectFolder,
                 take(de.path(), depth + 1);
             return;
         }
+        // A source video (mp4/mov/...) isn't an asset and never becomes one:
+        // the importer transcodes it into the engine's own .fvid, and *that* is
+        // what lands in the project. Done before the type lookup below, which
+        // would otherwise call an .mp4 unknown and skip it.
+        if (videoimport::isSourceVideo(p.extension().string())) {
+            const fs::path dst =
+                fs::path(projectFolder) / "videos" / (p.stem().string() + ".fvid");
+            if (fs::exists(dst, ec)) { ++r.existing; return; }
+            const videoimport::Result vr =
+                videoimport::transcode(p.string(), dst.string());
+            if (vr.ok) { ++r.imported; ++r.transcoded; }
+            else {
+                ++r.skipped;
+                std::fprintf(stderr, "[Fitzel] %s\n", vr.message.c_str());
+            }
+            return;
+        }
+
         const char* sub =
             folderFor(fitzel::assetTypeForExtension(p.extension().string()));
         if (!sub) { ++r.skipped; return; }
@@ -79,6 +101,8 @@ Result importInto(const std::string& projectFolder,
         return r;
     }
     std::string m = std::to_string(r.imported) + " imported";
+    if (r.transcoded)
+        m += " (" + std::to_string(r.transcoded) + " video transcoded)";
     if (r.existing) m += ", " + std::to_string(r.existing) + " already there";
     if (r.skipped)  m += ", " + std::to_string(r.skipped) + " not an asset type";
     r.message = m + ".";

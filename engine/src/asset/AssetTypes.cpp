@@ -23,6 +23,10 @@ AssetType assetTypeForExtension(std::string_view ext) {
         return AssetType::Sound;
     if (e == "fmat")
         return AssetType::Material;
+    // Only the engine's own container. An .mp4 dropped on the editor is a
+    // *source* file: the importer transcodes it and registers the .fvid.
+    if (e == "fvid")
+        return AssetType::Video;
     return AssetType::Unknown;
 }
 

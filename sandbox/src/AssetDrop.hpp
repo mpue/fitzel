@@ -17,10 +17,12 @@ class AssetDatabase;
 namespace assetdrop {
 
 struct Result {
-    int         imported = 0; // copied in and registered
-    int         existing = 0; // already an asset, or a file of that name is there
-    int         skipped  = 0; // not a type the database recognises, or copy failed
-    std::string message;      // one line for the panel
+    int         imported   = 0; // copied in and registered
+    int         existing   = 0; // already an asset, or a file of that name is there
+    int         skipped    = 0; // not a type the database recognises, or copy failed
+    int         transcoded = 0; // source videos turned into .fvid (counted in
+                                // `imported` too -- this is just for the message)
+    std::string message;        // one line for the panel
 };
 
 // Copy `paths` (files, or folders walked recursively) into `projectFolder`, each

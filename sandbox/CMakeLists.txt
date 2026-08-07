@@ -18,6 +18,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RoadSystem.cpp
     src/RoadBridge.cpp
     src/RaceSim.cpp
+    src/RaceHud.cpp
     src/RoadSide.cpp
     src/RainRenderer.cpp
     src/SpraySystem.cpp
@@ -26,7 +27,13 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CarAudio.cpp
     src/GliderAudio.cpp
     src/UiOverlay.cpp
-    src/UiStyle.cpp)
+    src/UiStyle.cpp
+    src/VideoLibrary.cpp
+    # Profiler + its window are runtime, not editor-only: measuring the shipped
+    # player is the case that matters most, and the editor's own panels are
+    # exactly the overhead you want excluded when you do.
+    src/Profiler.cpp
+    src/DebugOverlay.cpp)
 
 # Editor-only sources: panels, tools and dialogs reachable only from the editor
 # UI. Compiled into `sandbox` but not `player`. (TerrainPanel.hpp stays included
@@ -34,6 +41,7 @@ set(SANDBOX_RUNTIME_SOURCES
 # TerrainPanel.cpp, the panel widget, is editor-only.)
 set(SANDBOX_EDITOR_SOURCES
     src/AssetDrop.cpp
+    src/VideoImport.cpp
     src/RoadPanel.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp
@@ -99,8 +107,44 @@ add_custom_target(sandbox_assets ALL DEPENDS ${FITZEL_ASSET_STAMP})
 add_dependencies(sandbox sandbox_assets)
 add_dependencies(player  sandbox_assets)
 
+# ffmpeg, sitting next to the editor. The video importer (VideoImport.cpp) runs
+# it as a child process rather than linking libav*: ffmpeg has no CMake build, so
+# linking it would mean a prebuilt binary blob or vcpkg -- either of which breaks
+# the property that every dependency here is FetchContent'd and the whole thing
+# builds from one .bat. As a separate program it is also outside the LGPL/GPL
+# question entirely. VideoImport falls back to the PATH, so a build without it
+# still works for anyone who has ffmpeg installed; only the copy is skipped.
+find_program(FITZEL_FFMPEG ffmpeg)
+if(FITZEL_FFMPEG)
+    # Keyed on a stamp rather than on the copied exe: the destination is only
+    # expressible as a generator expression, and those aren't allowed in OUTPUT.
+    # Same shape as the asset copy above, for the same reason.
+    set(FITZEL_FFMPEG_STAMP ${CMAKE_CURRENT_BINARY_DIR}/ffmpeg.stamp)
+    add_custom_command(OUTPUT ${FITZEL_FFMPEG_STAMP}
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FITZEL_FFMPEG}
+                $<TARGET_FILE_DIR:sandbox>/ffmpeg${CMAKE_EXECUTABLE_SUFFIX}
+        COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_FFMPEG_STAMP}
+        DEPENDS ${FITZEL_FFMPEG}
+        COMMENT "Copying ffmpeg next to the editor")
+    add_custom_target(sandbox_ffmpeg ALL DEPENDS ${FITZEL_FFMPEG_STAMP})
+    add_dependencies(sandbox sandbox_ffmpeg)
+else()
+    message(STATUS
+        "ffmpeg not found -- video import will look for it on the PATH instead. "
+        "Install it (winget install Gyan.FFmpeg) and re-run CMake to have the "
+        "build place a copy next to sandbox.exe.")
+endif()
+
+# The video importer reads back the JPEG frames ffmpeg wrote to check their size
+# (VideoImport.cpp). Headers only -- the STB_IMAGE_IMPLEMENTATION TU lives in the
+# engine, so the symbols come in with fitzel.
+target_link_libraries(sandbox PRIVATE stb_headers)
+
 # Native folder-picker (IFileOpenDialog) needs COM + the shell on Windows. Only
 # the editor uses it (FolderDialog.cpp); the player has no file dialogs.
+# psapi is for the Performance window's working-set figure and applies to both.
 if(WIN32)
     target_link_libraries(sandbox PRIVATE ole32 shell32)
+    target_link_libraries(sandbox PRIVATE psapi)
+    target_link_libraries(player  PRIVATE psapi)
 endif()

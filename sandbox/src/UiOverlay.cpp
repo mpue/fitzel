@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <vector>
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -281,23 +283,113 @@ fitzel::Texture* UiOverlay::resolve(AssetDatabase& assets, const AssetId& id) {
     return (t && t->isValid()) ? t.get() : nullptr;
 }
 
+// --- Focus (keyboard / gamepad navigation) ----------------------------------
+// A button is navigable when it is visible and actually does something; a
+// decorative button (action None) would be a dead stop in the cycle.
+bool UiOverlay::navigable(const UiElement& e) {
+    return e.type == UiElementType::Button && e.visible &&
+           e.action != UiActionKind::None;
+}
+
+bool UiOverlay::anyButtons() const {
+    for (const UiElement& e : m_elements)
+        if (navigable(e)) return true;
+    return false;
+}
+
+// Start on the first navigable button so something is always highlighted -- a
+// menu that comes up with nothing selected leaves the pad with nothing to do.
+// "First" is the first in reading order, i.e. the same order moveFocus walks:
+// the element list is authoring order and says nothing about the layout, so
+// picking from it would highlight an arbitrary entry.
+void UiOverlay::focusFirst() {
+    m_focus = -1;
+    for (int i = 0; i < static_cast<int>(m_elements.size()); ++i) {
+        if (!navigable(m_elements[i])) continue;
+        if (m_focus < 0) { m_focus = i; continue; }
+        const UiElement& best = m_elements[m_focus];
+        const UiElement& cand = m_elements[i];
+        const bool sameRow = std::abs(cand.offset.y - best.offset.y) <= 1.0f;
+        if (( sameRow && cand.offset.x < best.offset.x) ||
+            (!sameRow && cand.offset.y < best.offset.y))
+            m_focus = i;
+    }
+}
+
+void UiOverlay::resetRuntime() {
+    m_runtimeVisible = !m_menuMode;
+    focusFirst();
+}
+
+void UiOverlay::setRuntimeVisible(bool v) {
+    if (v && !m_runtimeVisible) focusFirst();
+    m_runtimeVisible = v;
+}
+
+void UiOverlay::moveFocus(int dir) {
+    const int n = static_cast<int>(m_elements.size());
+    if (n == 0 || dir == 0) return;
+    // Reading order, so "down" walks a stacked menu the way it looks: sort the
+    // navigable buttons by their authored offset (top to bottom, then left to
+    // right) rather than by their order in the element list, which is authoring
+    // order and has nothing to do with the layout.
+    std::vector<int> order;
+    for (int i = 0; i < n; ++i)
+        if (navigable(m_elements[i])) order.push_back(i);
+    if (order.empty()) { m_focus = -1; return; }
+    std::sort(order.begin(), order.end(), [this](int a, int b) {
+        const UiElement& ea = m_elements[a];
+        const UiElement& eb = m_elements[b];
+        if (std::abs(ea.offset.y - eb.offset.y) > 1.0f) return ea.offset.y < eb.offset.y;
+        return ea.offset.x < eb.offset.x;
+    });
+    int at = 0;
+    for (int i = 0; i < static_cast<int>(order.size()); ++i)
+        if (order[i] == m_focus) { at = i; break; }
+    const int cnt = static_cast<int>(order.size());
+    m_focus = order[((at + dir) % cnt + cnt) % cnt]; // wrap both ways
+}
+
+bool UiOverlay::activateFocus(const UiActionSink& sink) {
+    if (m_focus < 0 || m_focus >= static_cast<int>(m_elements.size())) return false;
+    const UiElement& e = m_elements[m_focus];
+    if (!navigable(e)) return false;
+    fireAction(e, sink);
+    return true;
+}
+
 void UiOverlay::drawRuntime(ImDrawList* dl, const glm::vec2& vmin, const glm::vec2& vsize,
                             AssetDatabase& assets, const UiActionSink& sink) {
     if (!m_runtimeVisible) return; // a closed menu draws nothing and eats no clicks
     const ImVec2 vm(vmin.x, vmin.y), vs(vsize.x, vsize.y);
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-    for (const UiElement& e : m_elements) {
+    const bool moved   = ImGui::GetIO().MouseDelta.x != 0.0f ||
+                         ImGui::GetIO().MouseDelta.y != 0.0f;
+    for (int i = 0; i < static_cast<int>(m_elements.size()); ++i) {
+        const UiElement& e = m_elements[i];
         if (!e.visible) continue;
         const fitzel::Texture* tex = resolve(assets, e.image);
-        bool hovered = false;
         ImVec2 p0, p1;
         if (e.type == UiElementType::Button) {
-            // Pre-place to hit-test before drawing, so the hover highlight shows.
+            // Pre-place to hit-test before drawing, so the highlight shows.
             drawVisual(dl, e, vm, vs, tex, false, p0, p1); // rect only; redraw below
-            hovered = mouse.x >= p0.x && mouse.x <= p1.x &&
-                      mouse.y >= p0.y && mouse.y <= p1.y;
-            if (hovered) { ImVec2 q0, q1; drawVisual(dl, e, vm, vs, tex, true, q0, q1); }
+            const bool hovered = mouse.x >= p0.x && mouse.x <= p1.x &&
+                                 mouse.y >= p0.y && mouse.y <= p1.y;
+            // Moving the mouse onto a button takes the focus with it, so the
+            // highlight always agrees with what a click would hit.
+            if (hovered && moved && navigable(e)) m_focus = i;
+            const bool lit = hovered || i == m_focus;
+            if (lit) { ImVec2 q0, q1; drawVisual(dl, e, vm, vs, tex, true, q0, q1); }
+            if (i == m_focus) {
+                // Focus ring: a bright outline just outside the button, so the
+                // selection is unmistakable on a pad even on a busy background
+                // (the hover lift alone is too subtle from across the room).
+                const float r = std::min((p1.y - p0.y) * 0.25f, 10.0f) + 3.0f;
+                dl->AddRect(ImVec2(p0.x - 3.0f, p0.y - 3.0f),
+                            ImVec2(p1.x + 3.0f, p1.y + 3.0f),
+                            IM_COL32(255, 215, 120, 255), r, 0, 3.0f);
+            }
             if (hovered && clicked) fireAction(e, sink);
         } else {
             drawVisual(dl, e, vm, vs, tex, false, p0, p1);

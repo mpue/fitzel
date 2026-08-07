@@ -31,6 +31,7 @@ AssetType typeFromName(const std::string& s) {
     if (t == "model")    return AssetType::Model;
     if (t == "sound")    return AssetType::Sound;
     if (t == "material") return AssetType::Material;
+    if (t == "video")    return AssetType::Video;
     return AssetType::Unknown; // also what "" (any) maps to
 }
 

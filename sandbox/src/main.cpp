@@ -39,6 +39,7 @@
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/Version.hpp>   // generated: x.y.z.<commits> + git hash
 #include <fitzel/graphics/EnvironmentIBL.hpp>
+#include <fitzel/graphics/VideoTexture.hpp>
 #include <fitzel/physics/Physics.hpp>
 
 #include "SceneTypes.hpp"
@@ -48,6 +49,9 @@
 #include "RoadCommand.hpp"
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
+#include "VideoLibrary.hpp"
+#include "Profiler.hpp"
+#include "DebugOverlay.hpp"
 #include "SandboxMath.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
@@ -66,6 +70,7 @@
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
 #include "RaceSim.hpp"
+#include "RaceHud.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
@@ -1145,6 +1150,9 @@ int main(int argc, char** argv) {
         bool showScriptEditor = false;
         bool showAbout       = false;
         bool showStats       = false;
+        // Frame-cost window (F3). Lives outside the editor-only block: the
+        // player build shows it too, which is the build whose numbers count.
+        bool showPerf        = false;
         bool showCamera      = false;
         bool showWeather     = false;
         bool showSky         = false;
@@ -1246,6 +1254,9 @@ int main(int argc, char** argv) {
         // Imported glTF/GLB models, uploaded to the GPU (see ModelLibrary). main
         // owns one registry and threads it in where models are placed/drawn.
         ModelLibrary models;
+        // Videos playing into material textures (billboards). One decoder per
+        // clip, shared by every material bound to it -- see VideoLibrary.
+        VideoLibrary videos;
         // The scene always has exactly one Sun (directional light), non-deletable.
         {
             Entity sun;
@@ -2105,6 +2116,7 @@ int main(int argc, char** argv) {
         // First-person (walk on terrain) mode.
         bool        fpsMode  = false;
         bool        prevF    = false;
+        bool        prevF3   = false;
         bool        prevEsc  = false;
         bool        prevSpace = false;
         bool        prevQkey = false, prevWkey = false, prevEkey = false; // gizmo tools
@@ -2389,6 +2401,10 @@ int main(int argc, char** argv) {
                         else if (shipped && !tex)  out[key] = "";
                     };
                     slotJson(md.texId, md.tex, md.modelTex, "texture", ov[key]);
+                    // A video bound over a model's own base map. Plain GUID, no
+                    // "emptied" marker: clearing the slot clears videoId, which
+                    // then simply isn't written.
+                    if (md.videoId.valid()) ov[key]["video"] = md.videoId.toString();
                     slotJson(md.normalTexId, md.normalTex, md.modelNormalTex,
                              "normalMap", ov[key]);
                     slotJson(md.emissionTexId, md.emissionTex, md.modelEmissionTex,
@@ -2584,6 +2600,11 @@ int main(int argc, char** argv) {
                             tex = assetDb.loadTexture(gid);
                         };
                         readSlot("texture", md.texId, md.tex);
+                        // Reference only -- the bind pass in the frame loop opens
+                        // it, the same as for .fmat materials.
+                        if (e.contains("video") && e["video"].is_string())
+                            md.videoId =
+                                AssetId::fromString(e["video"].get<std::string>());
                         readSlot("normalMap", md.normalTexId, md.normalTex);
                         readSlot("emissionMap", md.emissionTexId, md.emissionTex);
                     }
@@ -2601,6 +2622,11 @@ int main(int argc, char** argv) {
         // so no walking, driving or script input this frame.
         bool uiMenuOpen = false;
         bool prevUiKey  = false; // edge state for the menu's toggle key
+        // Keyboard / gamepad navigation of the scene overlay's buttons. The
+        // activation is deferred to the HUD pass, which is where the action sink
+        // (scene load, quit, restart, ...) is assembled.
+        bool uiActivate  = false;
+        bool prevUiPrev  = false, prevUiNext = false, prevUiFire = false;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
@@ -3327,6 +3353,10 @@ int main(int argc, char** argv) {
             raceLap = raceLaps = 0; finishWasOver = false; finishArm = 0.0f;
             cpPassed.clear(); cpTotal = 0; raceMissedFlash = 0.0f;
             raceCountdown = goFlash = 0.0f;
+            // ...and an empty field: standings/winner are rebuilt from GO.
+            race.standings.clear(); race.winnerName.clear();
+            race.winnerIsPlayer = false; race.winnerTime = 0.0f;
+            race.playerPlace = 0; race.raceOver = false; race.oppWasActive = false;
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -3594,6 +3624,10 @@ int main(int argc, char** argv) {
                 window.waitEventsTimeout(kIdleFrame);
             }
             frameStart = window.time();
+            // Opened after the polling block above so the editor's frame cap and
+            // idle wait aren't billed as frame cost; closes at the bottom of the
+            // loop and files the frame with the profiler.
+            prof::Frame fzFrame;
             input.update();
 
             const double now = window.time();
@@ -3624,6 +3658,7 @@ int main(int argc, char** argv) {
             // and models reload in place (existing handles update automatically);
             // edited/added/removed materials refresh the project's library.
             if (now >= nextAssetPoll) {
+                FZ_ZONE("assets (0.5s poll)");
                 nextAssetPoll = now + 0.5;
                 const std::vector<AssetChange> changes = assetDb.pollChanges();
                 bool materialsChanged = false;
@@ -3633,6 +3668,33 @@ int main(int argc, char** argv) {
                     loadProjectMaterials(
                         std::filesystem::path(currentProject).parent_path()
                             .generic_string() + "/materials");
+            }
+
+            // Video materials. Binding happens here rather than at load time
+            // because a material's videoId arrives from three directions (.fmat
+            // files, scene overrides, the panel) and all of them only store the
+            // GUID. Re-checking every frame is a walk over a few dozen materials
+            // and makes the binding self-healing after a hot reload; the actual
+            // open is cached in the VideoLibrary and happens once.
+            {
+            FZ_ZONE("video");
+            for (MaterialDef& md : materials) {
+                if (!md.videoId.valid()) continue;
+                // A video that won't open leaves the slot untouched rather than
+                // clearing it: the surface keeps whatever it had (a model's own
+                // map, say) instead of turning flat because a file went missing.
+                if (auto v = videos.get(assetDb, md.videoId))
+                    if (md.tex != v->texture()) md.tex = v->texture();
+            }
+            videos.advanceAll(dt);
+            }
+
+            // F3 toggles the Performance window. A bare function key so it works
+            // in play mode and in the player, where there is no menu bar.
+            {
+                const bool f3 = input.isKeyDown(GLFW_KEY_F3);
+                if (f3 && !prevF3) showPerf = !showPerf;
+                prevF3 = f3;
             }
 
             // --- Input ---------------------------------------------------
@@ -3724,6 +3786,45 @@ int main(int argc, char** argv) {
                 prevUiKey = false;
             }
             uiMenuOpen = uiMenuArmed && uiOverlay.runtimeVisible();
+
+            // Overlay navigation: arrow keys, D-pad or left stick move the focus,
+            // Enter / pad A or Start fires it. Active whenever a visible overlay
+            // has buttons at all -- Play locks the cursor and a pad has none, so
+            // without this an on-screen menu is only reachable by feel.
+            if ((playMode || playerMode) && uiOverlay.runtimeVisible() &&
+                uiOverlay.anyButtons()) {
+                const bool pad = input.hasGamepad();
+                // GLFW's stick Y is -1 up. A half-deflection threshold plus the
+                // edge check below makes one push move exactly one entry.
+                const float stickY = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y)
+                                         : 0.0f;
+                const bool prevBtn =
+                    input.isKeyDown(GLFW_KEY_UP) || input.isKeyDown(GLFW_KEY_LEFT) ||
+                    stickY < -0.5f ||
+                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_UP) ||
+                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_LEFT)));
+                const bool nextBtn =
+                    input.isKeyDown(GLFW_KEY_DOWN) || input.isKeyDown(GLFW_KEY_RIGHT) ||
+                    stickY > 0.5f ||
+                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_DOWN) ||
+                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)));
+                const bool fireBtn =
+                    input.isKeyDown(GLFW_KEY_ENTER) ||
+                    input.isKeyDown(GLFW_KEY_KP_ENTER) ||
+                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
+                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_START)));
+                if (prevBtn || nextBtn || fireBtn)
+                    std::fprintf(stderr, "[navdbg] prev=%d next=%d fire=%d pad=%d\n",
+                                 prevBtn ? 1 : 0, nextBtn ? 1 : 0, fireBtn ? 1 : 0,
+                                 pad ? 1 : 0);
+                if (prevBtn && !prevUiPrev) uiOverlay.moveFocus(-1);
+                if (nextBtn && !prevUiNext) uiOverlay.moveFocus(+1);
+                if (fireBtn && !prevUiFire) uiActivate = true;
+                prevUiPrev = prevBtn; prevUiNext = nextBtn; prevUiFire = fireBtn;
+            } else {
+                prevUiPrev = prevUiNext = prevUiFire = false;
+                uiActivate = false;
+            }
 
             const bool escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
             // A menu on Escape owns the key outright -- that is what stops Escape
@@ -4912,6 +5013,9 @@ int main(int argc, char** argv) {
                 const std::string want = pendingSceneLoad;
                 pendingSceneLoad.clear();
                 std::error_code ec;
+                std::fprintf(stderr, "[navdbg] sceneload want='%s' cur='%s' target='%s'\n",
+                             want.c_str(), currentProject.c_str(),
+                             target.generic_string().c_str());
                 if (std::filesystem::exists(target, ec)) {
                     const bool wasPlaying = playMode;
                     if (playMode) stopPlay();
@@ -4928,6 +5032,7 @@ int main(int argc, char** argv) {
             if (sceneLoad.active) projectio::stepLoad(pio, sceneLoad, 8.0);
 
             // --- UI ------------------------------------------------------
+            const long long fzUiMark = prof::mark();
             gui.beginFrame();
             ImGuizmo::BeginFrame();
             if (presentMode) {
@@ -5084,6 +5189,7 @@ int main(int argc, char** argv) {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("View")) {
+                    ImGui::MenuItem("Performance", "F3", &showPerf);
                     ImGui::MenuItem("Stats",           nullptr, &showStats);
                     ImGui::MenuItem("Camera",          nullptr, &showCamera);
                     ImGui::MenuItem("Mixer",           nullptr, &showMixer);
@@ -6682,6 +6788,14 @@ int main(int argc, char** argv) {
                             camera.position().x, camera.position().y, camera.position().z);
                 ImGui::Text("Chunks: %d loaded, %d pending",
                             streamer.loadedChunkCount(), streamer.pendingChunkCount());
+                // `multiSel` is empty for a plain single selection, so fall back
+                // to entitySel for the "selected" count.
+                const int selCount =
+                    !multiSel.empty() ? static_cast<int>(multiSel.size())
+                    : (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) ? 1
+                                                                                        : 0;
+                ImGui::Text("Entities: %d (%d selected)",
+                            static_cast<int>(entities.size()), selCount);
                 ImGui::Text("Draws: %d visible, %d culled",
                             renderer.lastDrawn(), renderer.lastCulled());
                 ImGui::Separator();
@@ -7401,7 +7515,9 @@ int main(int argc, char** argv) {
                             } else if (auto* mc = dynamic_cast<MaterialComponent*>(c)) {
                                 // Bespoke picker: pick from the material library.
                                 const int mi = document.materialIndex(mc->material);
-                                if (ImGui::BeginCombo("Material", materials[mi].name.c_str())) {
+                                // "##pick": the component header above is also
+                                // labelled "Material" -> same ID stack, same hash.
+                                if (ImGui::BeginCombo("Material##pick", materials[mi].name.c_str())) {
                                     for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
                                         const bool sel = (i == mi);
                                         if (ImGui::Selectable(materials[i].name.c_str(), sel)) {
@@ -7796,6 +7912,55 @@ int main(int argc, char** argv) {
                         };
                         mapSlot("Base texture:", "texslot", md.tex, md.texId,
                                 md.modelTex);
+                        // One source per slot: a texture dropped on the base slot
+                        // wins over a video that was bound there.
+                        if (md.texId.valid() && md.videoId.valid()) md.videoId = {};
+                        // Video slot: drop a .fvid asset (an mp4 dropped on the
+                        // Assets panel is transcoded into one). It feeds the same
+                        // base-colour slot as the texture above, so binding one
+                        // clears the other -- the frame loop then points md.tex
+                        // at the playing texture and keeps it there.
+                        {
+                            std::string vslot = "(none)";
+                            if (md.videoId.valid()) {
+                                const AssetDatabase::Entry* ve =
+                                    assetDb.entry(md.videoId);
+                                vslot = ve ? ve->relPath : md.videoId.toString();
+                            }
+                            ImGui::Text("Video:");
+                            ImGui::SameLine(140.0f);
+                            ImGui::Button((vslot + "##vidslot").c_str());
+                            if (ImGui::BeginDragDropTarget()) {
+                                if (const ImGuiPayload* pl =
+                                        ImGui::AcceptDragDropPayload("ASSET_GUID")) {
+                                    const AssetId gid = AssetId::fromString(std::string(
+                                        static_cast<const char*>(pl->Data), pl->DataSize));
+                                    if (assetDb.typeForId(gid) == AssetType::Video) {
+                                        md.videoId = gid;
+                                        md.texId   = {};   // same slot, one source
+                                        md.tex.reset();    // rebound next frame
+                                    }
+                                }
+                                ImGui::EndDragDropTarget();
+                            }
+                            if (md.videoId.valid()) {
+                                ImGui::SameLine();
+                                if (ImGui::SmallButton("Clear##vidslot")) {
+                                    md.videoId = {};
+                                    md.tex.reset();
+                                }
+                                if (auto v = videos.get(assetDb, md.videoId)) {
+                                    ui::hint("%d x %d, %d frames at %.0f fps "
+                                             "(%.1f s, loops)",
+                                             v->width(), v->height(),
+                                             v->frameCount(), v->fps(),
+                                             v->duration());
+                                } else {
+                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                                       "This video won't open.");
+                                }
+                            }
+                        }
                         mapSlot("Normal map:", "nrmslot", md.normalTex, md.normalTexId,
                                 md.modelNormalTex);
                         mapSlot("Emission map:", "emslot", md.emissionTex,
@@ -8198,7 +8363,8 @@ int main(int argc, char** argv) {
                             } else {
                                 const char* tag = isTex ? "TEX"
                                     : e->type == AssetType::Model ? "MDL"
-                                    : e->type == AssetType::Sound ? "SND" : "?";
+                                    : e->type == AssetType::Sound ? "SND"
+                                    : e->type == AssetType::Video ? "VID" : "?";
                                 ImGui::Button(tag, sz);
                             }
 
@@ -9073,6 +9239,16 @@ int main(int argc, char** argv) {
                     pointLights.push_back(pl);
                 }
             }
+            // Everything from gui.beginFrame() down to here is scene assembly:
+            // the editor's panels plus walking the entities and submitting them.
+            // Measured as one span because it is one cost -- CPU work before a
+            // single GL draw has been issued.
+            // Drawn last so it reports the frame that just happened, and inside
+            // the UI span so its own cost is honestly counted rather than hidden.
+            debugoverlay::draw(&showPerf);
+            prof::addSince("ui + submit", fzUiMark);
+
+            const long long fzShadowMark = prof::mark();
             renderer.setPointLights(pointLights);
             renderer.setSpotLights(spotLights);
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
@@ -9083,6 +9259,8 @@ int main(int argc, char** argv) {
                 veg.drawTreeShadow(lightSpace, now, weather);
             };
             renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
+            prof::addSince("shadows", fzShadowMark);
+            const long long fzSceneMark = prof::mark();
 
             const glm::vec3& camPos = camera.position();
             const glm::mat4  view   = camera.viewMatrix();
@@ -9531,72 +9709,12 @@ int main(int argc, char** argv) {
                     shadowText(c.x - sz.x * 0.5f, vmin.y + pad,
                                IM_COL32(130, 210, 255, 255), bm);
                 }
-                // Boost banner while a glider rides / just left a boost pad.
-                if (gliderMode && gliderBoosting) {
-                    const char* bm = ">> BOOST >>";
-                    const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, bm);
-                    shadowText(c.x - sz.x * 0.5f, vmin.y + pad,
-                               IM_COL32(120, 235, 255, 255), bm);
-                }
-                // Race HUD: lap + times, centred under the boost banner.
-                if (gliderMode && (raceHasLine || raceActive || raceFinished)) {
-                    auto fmtTime = [](float t) {
-                        const int m = static_cast<int>(t / 60.0f);
-                        const float s = t - m * 60.0f;
-                        char b[24];
-                        if (m > 0) std::snprintf(b, sizeof(b), "%d:%05.2f", m, s);
-                        else       std::snprintf(b, sizeof(b), "%.2f", s);
-                        return std::string(b);
-                    };
-                    const float y0 = vmin.y + pad + fs * 1.4f;
-                    auto centered = [&](float y, ImU32 col, const char* s) {
-                        const ImVec2 sz = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, s);
-                        shadowText(c.x - sz.x * 0.5f, y, col, s);
-                    };
-                    char line[64];
-                    if (raceFinished) {
-                        std::snprintf(line, sizeof(line), "FINISH   total %s   best %s",
-                                      fmtTime(raceClock).c_str(), fmtTime(bestLap).c_str());
-                        centered(y0, IM_COL32(120, 255, 150, 255), line);
-                    } else if (raceActive) {
-                        if (raceLaps > 0)
-                            std::snprintf(line, sizeof(line), "LAP %d/%d   %s",
-                                          raceLap + 1, raceLaps, fmtTime(lapClock).c_str());
-                        else
-                            std::snprintf(line, sizeof(line), "LAP %d   %s",
-                                          raceLap + 1, fmtTime(lapClock).c_str());
-                        centered(y0, IM_COL32(255, 235, 140, 255), line);
-                        float yr = y0 + fs * 1.15f;
-                        if (cpTotal > 0) {
-                            std::snprintf(line, sizeof(line), "CP %d/%d",
-                                          static_cast<int>(cpPassed.size()), cpTotal);
-                            centered(yr, IM_COL32(150, 220, 255, 235), line);
-                            yr += fs * 1.15f;
-                        }
-                        if (bestLap > 0.0f) {
-                            std::snprintf(line, sizeof(line), "best %s  last %s",
-                                          fmtTime(bestLap).c_str(), fmtTime(lastLap).c_str());
-                            centered(yr, IM_COL32(200, 220, 255, 235), line);
-                        }
-                        if (raceMissedFlash > 0.0f)
-                            centered(y0 - fs * 1.2f, IM_COL32(255, 120, 100, 255),
-                                     "MISSED A CHECKPOINT");
-                    } else if (raceCountdown <= 0.0f) {
-                        centered(y0, IM_COL32(220, 220, 230, 220), "Cross the start line to begin");
-                    }
-                }
-                // Ready / Set / Go! -- big and centred at the start of a race.
-                if (gliderMode && (raceCountdown > 0.0f || goFlash > 0.0f)) {
-                    const char* txt; ImU32 col;
-                    if (raceCountdown > 1.5f)      { txt = "READY"; col = IM_COL32(255, 235, 140, 255); }
-                    else if (raceCountdown > 0.0f) { txt = "SET";   col = IM_COL32(255, 170, 80, 255); }
-                    else                           { txt = "GO!";   col = IM_COL32(120, 255, 140, 255); }
-                    const float fss = fs * 2.6f;
-                    const ImVec2 sz = font->CalcTextSizeA(fss, FLT_MAX, 0.0f, txt);
-                    const float x = c.x - sz.x * 0.5f, y = c.y - sz.y * 0.7f;
-                    dl->AddText(font, fss, ImVec2(x + 3.0f, y + 3.0f), IM_COL32(0, 0, 0, 190), txt);
-                    dl->AddText(font, fss, ImVec2(x, y), col, txt);
-                }
+                // The racing HUD (speed, lap + times, the field, countdown, final
+                // classification) lives in RaceHud.cpp and reads the race state
+                // directly. `topInset` keeps it clear of the script's HUD line.
+                if (gliderMode)
+                    racehud::draw(dl, vmin, vsize, race,
+                                  host.hud.empty() ? 0.0f : fs * 1.5f);
 
                 // Scene 2D UI overlay: authored text/buttons/images, drawn last so
                 // it sits above the rest of the HUD. Buttons fire their data-authored
@@ -9617,6 +9735,14 @@ int main(int argc, char** argv) {
                     // Restart: deferred, so the entity list is swapped between
                     // frames rather than underneath this draw call.
                     sink.restart     = [&](){ pendingRestart = true; };
+                    // Keyboard / gamepad activation, fired here because this is
+                    // where the sink exists. Consumed either way, so a press
+                    // can't queue up for the next frame.
+                    if (uiActivate) {
+                        const bool ok = uiOverlay.activateFocus(sink);
+                        std::fprintf(stderr, "[navdbg] activate -> %d\n", ok ? 1 : 0);
+                        uiActivate = false;
+                    }
                     uiOverlay.drawRuntime(dl, glm::vec2(vmin.x, vmin.y),
                                           glm::vec2(vsize.x, vsize.y), assetDb, sink);
                 }
@@ -9665,8 +9791,21 @@ int main(int argc, char** argv) {
             // at the wrong moment.
             g_fileDrop.paths.clear();
 #endif
-            gui.endFrame();
-            window.swapBuffers();
+            prof::addSince("scene (GPU submit)", fzSceneMark);
+
+            {   // Dear ImGui's own draw: building its vertex buffers and issuing
+                // the UI draw calls, separate from the panels' logic above.
+                FZ_ZONE("imgui draw");
+                gui.endFrame();
+            }
+            {   // The buffer swap. With vsync on, this is where the wait for the
+                // display lands -- so it is normally the largest number here and
+                // that is healthy. What matters is whether it *spikes* while
+                // every other section stays flat: that means the stall is on the
+                // GPU or in the driver, not in our frame.
+                FZ_ZONE("present (swap)");
+                window.swapBuffers();
+            }
         }
 
     } catch (const std::exception& e) {

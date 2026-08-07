@@ -118,8 +118,22 @@ public:
     // the authored default (menus closed, HUDs shown) and runs whenever play
     // starts or a scene loads.
     bool runtimeVisible() const    { return m_runtimeVisible; }
-    void setRuntimeVisible(bool v) { m_runtimeVisible = v; }
-    void resetRuntime()            { m_runtimeVisible = !m_menuMode; }
+    // Showing an overlay also puts the focus back on its first button, so a menu
+    // always opens on a known entry rather than wherever it was left.
+    void setRuntimeVisible(bool v);
+    void resetRuntime();
+
+    // --- Keyboard / gamepad navigation ------------------------------------
+    // The overlay keeps a focused button, drawn highlighted, so a menu is usable
+    // without a mouse -- which matters because Play locks the cursor, and a
+    // gamepad has none to begin with. The mouse still works and simply moves the
+    // focus wherever it hovers, so the two never disagree about what is selected.
+    bool anyButtons() const;
+    // Move the focus by `dir` (+1 next, -1 previous) in reading order: top to
+    // bottom, then left to right. Wraps around. No-op without buttons.
+    void moveFocus(int dir);
+    // Fire the focused button's action. Returns false if nothing was focused.
+    bool activateFocus(const UiActionSink& sink);
 
     // Persist to / restore from the scene's "settings" object (under "uiOverlay").
     // load() clears the list first, so a scene without the key loads as empty.
@@ -155,6 +169,10 @@ public:
 #endif
 
 private:
+    // A button worth focusing: visible, and it actually does something (a
+    // decorative one would be a dead stop when cycling with the pad).
+    static bool navigable(const UiElement& e);
+    void focusFirst();
     // Resolve an image GUID to a live texture, caching the shared handle so the GL
     // texture stays alive until ImGui actually renders the draw list at frame end.
     // (Drawing with a texture whose handle is dropped the same frame leaves ImGui
@@ -165,6 +183,8 @@ private:
     std::unordered_map<fitzel::AssetId, std::shared_ptr<fitzel::Texture>> m_texCache;
     std::string m_copyTarget;            // editor: "Copy to scene" target + result
     std::string m_copyStatus;
+    // Element index of the focused button (-1 = none). Runtime only.
+    int  m_focus = -1;
     bool m_menuMode      = false;        // authored: HUD (false) or menu (true)
     int  m_toggleKey     = kKeyEscape;   // authored: which key opens a menu
     bool m_runtimeVisible = true;        // runtime only, never serialized

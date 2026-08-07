@@ -36,6 +36,18 @@ public:
     // Procedural checkerboard -- useful as a default/placeholder texture.
     static Texture checkerboard(int size = 256, int cells = 8);
 
+    // An empty RGBA8 texture of a fixed size, meant to be rewritten every frame
+    // with update() (video playback). Deliberately unlike the other factories:
+    // no mipmaps (regenerating them per frame costs more than it saves on a
+    // screen-sized quad) and CLAMP_TO_EDGE (a video is one image, not a tile).
+    static Texture blank(int width, int height);
+
+    // Overwrite the pixels of an existing texture in place, keeping the GL name
+    // -- so anything already holding this Texture (a Material binding, say) sees
+    // the new frame without rebinding. `channels` is 1/3/4 as in fromPixels.
+    // The size must match the texture's; a mismatch is ignored and returns false.
+    bool update(const unsigned char* pixels, int width, int height, int channels);
+
     // Small preview texture: decode `path` (PNG/JPG/EXR) and box-downsample it so
     // its longest side is <= maxDim. Cheap to keep resident (a few KB of VRAM),
     // meant for asset-browser thumbnails. Invalid Texture on failure. Not flipped,
