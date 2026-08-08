@@ -62,6 +62,7 @@ struct RaceState {
     float raceMissedFlash = 0.0f;      // HUD flash after finishing a lap short
     float raceCountdown = 0.0f;        // Ready/Set/Go: > 0 holds everyone still
     float goFlash       = 0.0f;        // "GO!" flash once the countdown hits 0
+    int   cdPhase       = -1;          // countdown step already announced (0/1/2, -1 = none)
 
     // --- Standings (the HUD's participant list) --------------------------
     // Rebuilt every frame by updateOpponents from the opponents' race state plus
@@ -135,6 +136,10 @@ struct RaceEnv {
     std::function<glm::mat4(const Entity&)>       parentWorldMat;
     std::function<float(float, float, float)>      gliderGround;
     std::function<void(const BoostPadComponent&)>  playBoostPunch;
+    // One-shot race cue by Sound-asset filename, with gain and pitch: the
+    // Ready/Set/Go samples off the start/finish line and a checkpoint's gate
+    // sound. Generic on purpose -- the sim shouldn't grow a callback per SFX.
+    std::function<void(const std::string&, float, float)> playCue;
 };
 
 // Arcade car: fixed-step bicycle-model integration + interpolated chase cam.

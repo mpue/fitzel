@@ -641,6 +641,107 @@ const std::vector<Property>& BoostPadComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& ShowroomComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float ShowroomComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.05f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<ShowroomComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        auto addText = [&](const char* label, const char* key, std::string ShowroomComponent::* m) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Text;
+            f.field = [m](void* o) -> void* { return &(static_cast<ShowroomComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addText("Headline", "title",    &ShowroomComponent::title);
+        addText("Overline", "subtitle", &ShowroomComponent::subtitle);
+        // Stage
+        addFloat("Ring radius", "ringRadius", &ShowroomComponent::ringRadius, 0.0f, 40.0f, "%.1f m");
+        addFloat("Rise height", "riseHeight", &ShowroomComponent::riseHeight, 0.0f, 10.0f, "%.2f m");
+        addFloat("Spin speed",  "spinSpeed",  &ShowroomComponent::spinSpeed, -90.0f, 90.0f, "%.0f deg/s");
+        addFloat("Bob amount",  "bobAmount",  &ShowroomComponent::bobAmount,  0.0f,  1.5f, "%.2f m");
+        // Orbit camera
+        addFloat("Cam distance", "camDistance", &ShowroomComponent::camDistance, 1.0f, 60.0f, "%.1f m");
+        addFloat("Cam height",   "camHeight",   &ShowroomComponent::camHeight, -5.0f, 30.0f, "%.1f m");
+        addFloat("Cam pitch",    "camPitch",    &ShowroomComponent::camPitch, -60.0f, 30.0f, "%.0f deg");
+        addFloat("Cam orbit",    "camOrbit",    &ShowroomComponent::camOrbit, -60.0f, 60.0f, "%.0f deg/s");
+        addFloat("Cam FOV",      "camFov",      &ShowroomComponent::camFov,   20.0f, 100.0f, "%.0f deg");
+        Property acc;
+        acc.label = "Accent"; acc.key = "accent"; acc.kind = PropKind::Color;
+        acc.field = [](void* o) -> void* { return &static_cast<ShowroomComponent*>(o)->accent; };
+        p.push_back(std::move(acc));
+        // SFX (filenames are Text props; the Inspector swaps in a Sound picker)
+        addText("Move sound",   "soundMove",   &ShowroomComponent::soundMove);
+        addText("Select sound", "soundSelect", &ShowroomComponent::soundSelect);
+        addText("Start sound",  "soundStart",  &ShowroomComponent::soundStart);
+        addFloat("Sound volume", "soundGain", &ShowroomComponent::soundGain, 0.0f, 2.0f, "%.2f");
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& CraftEntryComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addText = [&](const char* label, const char* key, std::string CraftEntryComponent::* m) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Text;
+            f.field = [m](void* o) -> void* { return &(static_cast<CraftEntryComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addText("Name",  "title", &CraftEntryComponent::title);
+        addText("Team",  "team",  &CraftEntryComponent::team);
+        addText("Blurb", "blurb", &CraftEntryComponent::blurb);
+        Property acc;
+        acc.label = "Accent"; acc.key = "accent"; acc.kind = PropKind::Color;
+        acc.field = [](void* o) -> void* { return &static_cast<CraftEntryComponent*>(o)->accent; };
+        p.push_back(std::move(acc));
+        Property ord;
+        ord.label = "Order"; ord.key = "order"; ord.kind = PropKind::Float;
+        ord.speed = 1.0f; ord.fmt = "%.0f";
+        ord.field = [](void* o) -> void* { return &static_cast<CraftEntryComponent*>(o)->order; };
+        p.push_back(std::move(ord));
+        return p;
+    }();
+    return props;
+}
+
+const std::vector<Property>& TrackEntryComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addText = [&](const char* label, const char* key, std::string TrackEntryComponent::* m) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Text;
+            f.field = [m](void* o) -> void* { return &(static_cast<TrackEntryComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        auto addFloat = [&](const char* label, const char* key, float TrackEntryComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.1f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<TrackEntryComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        // The scene stem is a Text prop so it persists; the Inspector swaps in a
+        // scene picker for it, exactly like the Scene Trigger's.
+        addText("Scene", "scene", &TrackEntryComponent::scene);
+        addText("Name",  "title", &TrackEntryComponent::title);
+        addText("Blurb", "blurb", &TrackEntryComponent::blurb);
+        addText("Preview image", "image", &TrackEntryComponent::image);
+        addFloat("Laps",       "laps",       &TrackEntryComponent::laps,       0.0f, 30.0f, "%.0f");
+        addFloat("Length",     "lengthKm",   &TrackEntryComponent::lengthKm,   0.0f, 30.0f, "%.2f km");
+        addFloat("Difficulty", "difficulty", &TrackEntryComponent::difficulty,  1.0f,  5.0f, "%.0f");
+        Property ord;
+        ord.label = "Order"; ord.key = "order"; ord.kind = PropKind::Float;
+        ord.speed = 1.0f; ord.fmt = "%.0f";
+        ord.field = [](void* o) -> void* { return &static_cast<TrackEntryComponent*>(o)->order; };
+        p.push_back(std::move(ord));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& OpponentComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -708,6 +809,22 @@ const std::vector<Property>& FinishLineComponent::properties() {
         addGateProps<FinishLineComponent>(p, &FinishLineComponent::width,
             &FinishLineComponent::height, &FinishLineComponent::depth,
             &FinishLineComponent::yaw);
+        // Start sequence SFX: the filenames are Text props (so they persist);
+        // the Inspector swaps in Sound pickers for them.
+        Property sg;
+        sg.label = "Start volume"; sg.key = "soundGain"; sg.kind = PropKind::Float;
+        sg.slider = true; sg.min = 0.0f; sg.max = 2.0f; sg.fmt = "%.2f";
+        sg.field = [](void* o) -> void* { return &static_cast<FinishLineComponent*>(o)->soundGain; };
+        p.push_back(std::move(sg));
+        auto addSound = [&](const char* label, const char* key,
+                            std::string FinishLineComponent::* m) {
+            Property s; s.label = label; s.key = key; s.kind = PropKind::Text;
+            s.field = [m](void* o) -> void* { return &(static_cast<FinishLineComponent*>(o)->*m); };
+            p.push_back(std::move(s));
+        };
+        addSound("Ready sound", "soundReady", &FinishLineComponent::soundReady);
+        addSound("Set sound",   "soundSet",   &FinishLineComponent::soundSet);
+        addSound("Go sound",    "soundGo",    &FinishLineComponent::soundGo);
         return p;
     }();
     return props;
@@ -719,6 +836,22 @@ const std::vector<Property>& CheckpointComponent::properties() {
         addGateProps<CheckpointComponent>(p, &CheckpointComponent::width,
             &CheckpointComponent::height, &CheckpointComponent::depth,
             &CheckpointComponent::yaw);
+        // Gate SFX, same shape as the boost pad's punch: sliders here, and the
+        // filename as a Text prop the Inspector turns into a Sound picker.
+        Property sg;
+        sg.label = "Gate volume"; sg.key = "soundGain"; sg.kind = PropKind::Float;
+        sg.slider = true; sg.min = 0.0f; sg.max = 2.0f; sg.fmt = "%.2f";
+        sg.field = [](void* o) -> void* { return &static_cast<CheckpointComponent*>(o)->soundGain; };
+        p.push_back(std::move(sg));
+        Property sp;
+        sp.label = "Gate pitch"; sp.key = "soundPitch"; sp.kind = PropKind::Float;
+        sp.slider = true; sp.min = 0.3f; sp.max = 2.0f; sp.fmt = "%.2f";
+        sp.field = [](void* o) -> void* { return &static_cast<CheckpointComponent*>(o)->soundPitch; };
+        p.push_back(std::move(sp));
+        Property snd;
+        snd.label = "Gate sound"; snd.key = "sound"; snd.kind = PropKind::Text;
+        snd.field = [](void* o) -> void* { return &static_cast<CheckpointComponent*>(o)->sound; };
+        p.push_back(std::move(snd));
         return p;
     }();
     return props;
@@ -955,6 +1088,12 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<FinishLineComponent>()); }});
         components::registerType({"checkpoint", "Checkpoint",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CheckpointComponent>()); }});
+        components::registerType({"showroom", "Showroom",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<ShowroomComponent>()); }});
+        components::registerType({"craft_entry", "Craft Entry",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<CraftEntryComponent>()); }});
+        components::registerType({"track_entry", "Track Entry",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<TrackEntryComponent>()); }});
         components::registerType({"door", "Door",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<DoorComponent>()); }});
         components::registerType({"door_opener", "Door Opener",

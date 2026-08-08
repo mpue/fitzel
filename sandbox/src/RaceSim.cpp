@@ -304,6 +304,30 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         st.goFlash = glm::max(0.0f, st.goFlash - env.dt);
     }
 
+    // Announce each step of the start sequence once, from the samples on the
+    // start/finish line. Phase boundaries are the ones the HUD draws, so word
+    // and sound always land together; cdPhase re-arms after "GO!" has faded.
+    {
+        int phase = -1;
+        if (st.raceCountdown > 1.5f)      phase = 0;   // READY
+        else if (st.raceCountdown > 0.0f) phase = 1;   // SET
+        else if (st.goFlash > 0.0f)       phase = 2;   // GO!
+        if (phase < 0) st.cdPhase = -1;
+        else if (phase != st.cdPhase) {
+            st.cdPhase = phase;
+            if (env.playCue)
+                for (const Entity& fe : env.entities) {
+                    const auto* fl = fe.components.get<FinishLineComponent>();
+                    if (!fl) continue;
+                    const std::string& s = phase == 0 ? fl->soundReady
+                                         : phase == 1 ? fl->soundSet
+                                                      : fl->soundGo;
+                    if (!s.empty()) env.playCue(s, fl->soundGain, 1.0f);
+                    break;
+                }
+        }
+    }
+
     // Off-track rescue: drop a breadcrumb whenever the craft is safely on the
     // road, and if it later falls well off (far to the side, or well below the
     // road/bridge surface next to it -- i.e. off a bridge) pop it back onto the
@@ -435,8 +459,12 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             const auto* cp = ce.components.get<CheckpointComponent>();
             if (!cp) continue;
             ++st.cpTotal;
-            if (st.raceActive && overGate(ce, cp->width, cp->height, cp->depth, cp->yaw))
-                st.cpPassed.insert(ce.id);
+            if (st.raceActive && overGate(ce, cp->width, cp->height, cp->depth, cp->yaw)) {
+                // insert() reports whether this is the first pass this lap, which
+                // is exactly when the gate should sound.
+                if (st.cpPassed.insert(ce.id).second && !cp->sound.empty() && env.playCue)
+                    env.playCue(cp->sound, cp->soundGain, cp->soundPitch);
+            }
         }
 
         // Start/Finish line: first crossing starts the clock; each later crossing
@@ -558,13 +586,24 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
     const std::vector<glm::vec2>& cl = env.road.centerline();
     if (cl.size() < 2) { st.standings.clear(); return; }
     const std::size_t n = cl.size();
+    // The road surface per sample: over a bridged stretch this is the deck, so a
+    // racer that follows it drives ACROSS the gap instead of diving into the
+    // ravine with the terrain. Missing only on a road that was never built with
+    // heights cached -- then we fall back to the ground, i.e. the old behaviour.
+    const std::vector<float>& cy = env.road.centerlineY();
+    const bool haveY = cy.size() == n;
     const std::size_t segs = env.road.closed ? n : n - 1;
     float total = 0.0f;
     for (std::size_t i = 0; i < segs; ++i)
         total += glm::length(cl[(i + 1) % n] - cl[i]);
-    // Position + tangent at arc-length `s` (wrapped/clamped).
-    auto sampleAt = [&](float s, glm::vec2& pos, glm::vec2& dir) {
-        if (total < 1e-3f) { pos = cl[0]; dir = glm::vec2(0.0f, 1.0f); return; }
+    // Position + tangent at arc-length `s` (wrapped/clamped), and -- when asked
+    // for -- the road surface height there.
+    auto sampleAt = [&](float s, glm::vec2& pos, glm::vec2& dir, float* outY = nullptr) {
+        if (total < 1e-3f) {
+            pos = cl[0]; dir = glm::vec2(0.0f, 1.0f);
+            if (outY && haveY) *outY = cy[0];
+            return;
+        }
         if (env.road.closed) { s = std::fmod(s, total); if (s < 0.0f) s += total; }
         else s = glm::clamp(s, 0.0f, total);
         float acc = 0.0f;
@@ -573,8 +612,10 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
             const float seg = glm::length(b - a);
             if (seg < 1e-5f) continue;
             if (acc + seg >= s || i == segs - 1) {
-                pos = a + (b - a) * glm::clamp((s - acc) / seg, 0.0f, 1.0f);
+                const float t = glm::clamp((s - acc) / seg, 0.0f, 1.0f);
+                pos = a + (b - a) * t;
                 dir = (b - a) / seg;
+                if (outY && haveY) *outY = glm::mix(cy[i], cy[(i + 1) % n], t);
                 return;
             }
             acc += seg;
@@ -903,12 +944,16 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         }
         if (!op->loop) op->dist = glm::min(op->dist, total);
 
-        // Place: centreline point offset by the live lane, dropped on the terrain.
+        // Place: centreline point offset by the live lane, on the ROAD surface --
+        // the ribbon is lofted flat across its width, so the centreline height is
+        // the right one whatever lane we sit in, and over a bridge it is the deck.
         glm::vec2 pos = cl[0], dir(0.0f, 1.0f);
-        sampleAt(op->dist, pos, dir);
+        float surfY = 0.0f;
+        sampleAt(op->dist, pos, dir, &surfY);
         const glm::vec2 perp(dir.y, -dir.x);          // right of travel
         const glm::vec2 p = pos + perp * op->laneCur;
-        const glm::vec3 wpos(p.x, env.streamer.heightAt(p.x, p.y) + op->rideHeight, p.y);
+        if (!haveY) surfY = env.streamer.heightAt(p.x, p.y);
+        const glm::vec3 wpos(p.x, surfY + op->rideHeight, p.y);
         const float yaw0 = std::atan2(dir.x, dir.y);
         const float yawDeg = glm::degrees(yaw0) - (op->forward == 1 ? 180.0f : 0.0f);
         // Bank into the corner: heading change a little ahead.
@@ -919,8 +964,21 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         const float targetBank =
             glm::clamp(-dYaw * 0.6f, -op->bankAngle, op->bankAngle);
         op->bankCur += (targetBank - op->bankCur) * glm::min(1.0f, env.dt * 5.0f);
+        // Pitch onto the slope, measured over a short chord around us: a bridge
+        // ramp (or any hill) is climbed nose-up instead of level-through-the-deck.
+        // Positive pitch is nose-down for a +Z model, so a -Z nose flips the sign.
+        float targetPitch = 0.0f;
+        if (haveY) {
+            const float ds = 4.0f;
+            float yB = surfY, yA = surfY; glm::vec2 tp, td;
+            sampleAt(op->dist - ds, tp, td, &yB);
+            sampleAt(op->dist + ds, tp, td, &yA);
+            targetPitch = -glm::degrees(std::atan2(yA - yB, 2.0f * ds)) *
+                          (op->forward == 1 ? -1.0f : 1.0f);
+        }
+        op->pitchCur += (targetPitch - op->pitchCur) * glm::min(1.0f, env.dt * 5.0f);
         const glm::mat4 pw = env.parentWorldMat(e);
-        env.setWorld(e, wpos, glm::vec3(0.0f, yawDeg, op->bankCur),
+        env.setWorld(e, wpos, glm::vec3(op->pitchCur, yawDeg, op->bankCur),
                      e.parent >= 0 ? &pw : nullptr);
     }
 

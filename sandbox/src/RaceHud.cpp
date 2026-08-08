@@ -304,16 +304,40 @@ void drawCountdown(const Ctx& g, const racesim::RaceState& st) {
                   fade(col, alpha), txt);
 }
 
-// --- Final classification ---------------------------------------------------
-void drawResults(const Ctx& g, const racesim::RaceState& st) {
+// A big menu button. Selected = gold fill and border; hovering selects it too,
+// so the mouse never has to hit anything small or be held steady while clicking.
+bool endButton(const Ctx& g, float ax, float ay, float bx, float by,
+               const char* label, bool selected, bool mouseUsable, int* hovered) {
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 m = io.MousePos;
+    const bool over = mouseUsable && m.x >= ax && m.x <= bx && m.y >= ay && m.y <= by;
+    if (over && hovered) *hovered = 1;
+    const bool lit = selected || over;
+    g.dl->AddRectFilled(ImVec2(ax, ay), ImVec2(bx, by),
+                        lit ? IM_COL32(255, 212, 106, 40) : IM_COL32(14, 18, 26, 220),
+                        6.0f * g.S);
+    g.dl->AddRect(ImVec2(ax, ay), ImVec2(bx, by), lit ? kGold : kEdge,
+                  6.0f * g.S, 0, lit ? 2.0f : 1.0f);
+    g.textC((ax + bx) * 0.5f, (ay + by) * 0.5f - g.fBody * 0.5f, g.fBody,
+            lit ? kGold : kText, label);
+    return over && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+}
+
+// --- Final classification, then the "what now?" question --------------------
+EndAction drawResults(const Ctx& g, const racesim::RaceState& st,
+                      EndPrompt& p, const EndInput& in) {
     const std::vector<racesim::RaceState::Standing>& rows = st.standings;
+    p.boardT += ImGui::GetIO().DeltaTime;
     // Dim the world so the board is the only thing to look at.
     g.dl->AddRectFilled(ImVec2(g.x0, g.y0), ImVec2(g.x1, g.y1), IM_COL32(4, 6, 10, 140));
 
     const float rh = 30.0f * g.S, w = 420.0f * g.S;
     const float head = 96.0f * g.S, foot = 44.0f * g.S;
     const float h = head + rh * std::max<std::size_t>(rows.size(), 1) + foot;
-    const float ax = g.cx - w * 0.5f, ay = g.y0 + (g.y1 - g.y0) * 0.5f - h * 0.5f;
+    // The question sits under the board; centre board + question as one block.
+    const float extra = (p.asked ? 104.0f : 40.0f) * g.S;
+    const float ax = g.cx - w * 0.5f;
+    const float ay = g.y0 + (g.y1 - g.y0) * 0.5f - (h + extra) * 0.5f;
     g.panel(ax, ay, ax + w, ay + h, kInkDeep, kGold);
 
     g.label(ax + 18.0f * g.S, ay + 12.0f * g.S, kDim, "RACE OVER");
@@ -358,13 +382,54 @@ void drawResults(const Ctx& g, const racesim::RaceState& st) {
                       ordinal(st.playerPlace), static_cast<int>(rows.size()));
         g.textC(g.cx, y + 12.0f * g.S, g.fBody, kGold, pb);
     }
+
+    // --- Read the board first, decide second --------------------------------
+    // A short arming delay keeps a button still held from the last corner from
+    // skipping straight past the summary.
+    const float qy = ay + h + 14.0f * g.S;
+    if (!p.asked) {
+        if (p.boardT > 1.0f) {
+            const float blink = 0.55f + 0.45f * std::sin(g.time * 3.0f);
+            g.textC(g.cx, qy, g.fSmall, fade(kDim, blink),
+                    "PRESS ENTER  /  PAD A  TO CONTINUE");
+        }
+        if (in.confirm && p.boardT > 0.8f) { p.asked = true; p.boardT = 0.0f; }
+        return EndAction::None;
+    }
+
+    // The question. Two targets, deliberately large: this is answered with the
+    // keyboard or a pad as readily as with the mouse, and hovering picks.
+    if (in.prev) p.choice = 0;
+    if (in.next) p.choice = 1;
+    p.choice = std::clamp(p.choice, 0, 1);
+    g.textC(g.cx, qy, g.fSmall, kDim, "RACE AGAIN, OR BACK TO THE START SCREEN?");
+
+    const float bw = 200.0f * g.S, bh = 52.0f * g.S, gap = 16.0f * g.S;
+    const float bx0 = g.cx - bw - gap * 0.5f, by0 = qy + 22.0f * g.S;
+    const bool  mouse = !ImGui::GetIO().WantCaptureMouse;
+    int hoverA = 0, hoverB = 0;
+    const bool clickA = endButton(g, bx0, by0, bx0 + bw, by0 + bh,
+                                  "RACE AGAIN", p.choice == 0, mouse, &hoverA);
+    const float bx1 = g.cx + gap * 0.5f;
+    const bool clickB = endButton(g, bx1, by0, bx1 + bw, by0 + bh,
+                                  "START SCREEN", p.choice == 1, mouse, &hoverB);
+    // Hovering moves the selection, so a confirm key always fires what is lit.
+    if (hoverA) p.choice = 0;
+    if (hoverB) p.choice = 1;
+
+    if (clickA) return EndAction::RaceAgain;
+    if (clickB) return EndAction::StartScreen;
+    if (in.confirm && p.boardT > 0.25f)
+        return p.choice == 0 ? EndAction::RaceAgain : EndAction::StartScreen;
+    return EndAction::None;
 }
 
 } // namespace
 
-void draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
-          const racesim::RaceState& st, float topInset) {
-    if (!dl) return;
+EndAction draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
+               const racesim::RaceState& st, float topInset,
+               EndPrompt& prompt, const EndInput& in) {
+    if (!dl) return EndAction::None;
     Ctx g;
     g.dl   = dl;
     g.font = ImGui::GetFont();
@@ -385,17 +450,19 @@ void draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
 
     const bool inRace = st.raceHasLine || st.raceActive || st.raceFinished ||
                         !st.standings.empty();
-    if (!inRace) return;
+    if (!inRace) return EndAction::None;
 
+    EndAction act = EndAction::None;
     const bool over = st.raceFinished || st.raceOver;
     if (over) {
-        drawResults(g, st);
+        act = drawResults(g, st, prompt, in);
     } else {
         drawLapBlock(g, st, topInset);
         if (st.standings.size() > 1) drawStandings(g, st);
         drawBanners(g, st, topInset);
     }
     drawCountdown(g, st);
+    return act;
 }
 
 } // namespace racehud

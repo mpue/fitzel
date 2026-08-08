@@ -71,6 +71,7 @@
 #include "RoadSystem.hpp"
 #include "RaceSim.hpp"
 #include "RaceHud.hpp"
+#include "Showroom.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
@@ -94,6 +95,13 @@ extern "C" {
     __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
+// AttachConsole, for the windowed Release build (see main()). GLFW has already
+// defined APIENTRY by this point and windows.h defines it again, identically --
+// drop it first so the duplicate doesn't warn.
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#undef APIENTRY
+#include <windows.h>
 #endif
 
 #ifndef FITZEL_PLAYER
@@ -256,6 +264,19 @@ FileDrop g_fileDrop;
 
 int main(int argc, char** argv) {
     try {
+#if defined(_WIN32) && defined(FITZEL_WINDOWED)
+        // Release builds link as a GUI app (see sandbox/CMakeLists.txt), so
+        // double-clicking the exe no longer flashes up a console window. That
+        // would also throw away every fprintf(stderr) log line -- so if we WERE
+        // started from a terminal, adopt it and point the C streams back at it.
+        // Started from Explorer there is no parent console, AttachConsole fails,
+        // and the streams stay where they were (nowhere). Nothing else changes.
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            FILE* f = nullptr;
+            freopen_s(&f, "CONOUT$", "w", stdout);
+            freopen_s(&f, "CONOUT$", "w", stderr);
+        }
+#endif
         // Resolve all relative paths (assets/, content/, scripts/, game.json,
         // project/) against the executable's own directory, so the app behaves
         // the same whether launched from a shell, a shortcut, or a double-click.
@@ -2627,6 +2648,27 @@ int main(int argc, char** argv) {
         // (scene load, quit, restart, ...) is assembled.
         bool uiActivate  = false;
         bool prevUiPrev  = false, prevUiNext = false, prevUiFire = false;
+        // End-of-race question ("race again / start screen"): the HUD draws and
+        // answers it, main owns the state, the key edges and the two actions.
+        racehud::EndPrompt endPrompt;
+        bool prevEndPrev = false, prevEndNext = false, prevEndFire = false;
+        bool pendingStartScreen = false; // deferred: leave the race (see below)
+
+        // --- Showroom: the start screen a race is launched from --------------
+        // A scene carrying a Showroom component stops being a level while it
+        // plays and becomes the craft/circuit picker (Showroom.cpp). Its own
+        // key edges, mirroring the end-of-race question's.
+        showroom::Showroom showroomUi;
+        bool prevShLeft = false, prevShRight = false, prevShUp = false;
+        bool prevShDown = false, prevShFire = false;
+        // The craft the showroom picked, carried into the circuit. Held as JSON
+        // rather than as live entities: loading the circuit clears the model
+        // library, so a live copy's model ids would dangle -- the asset GUIDs in
+        // the JSON re-import against the new one. Same round trip a .fprefab
+        // makes, without the file.
+        nlohmann::json pendingCraftJson;
+        std::string    pendingCraftName;
+        int            pendingCraftLaps = 0;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
@@ -3009,6 +3051,7 @@ int main(int argc, char** argv) {
                         e.components.get<FinishLineComponent>()) { hasRace = true; break; }
                 raceCountdown = hasRace ? 3.0f : 0.0f;
                 goFlash = 0.0f;
+                endPrompt = racehud::EndPrompt{};
             }
             camChase = camera.position();
         };
@@ -3183,27 +3226,32 @@ int main(int argc, char** argv) {
             return soundDir + "/" + n;
         };
         host.playSound = [&](const std::string& n){ audio.playOneShot(resolveSoundPath(n)); };
-        // Boost-pad punch voices, cached by sound file. CRUCIAL: each file is loaded
-        // once and only re-played (seek+start) -- never re-created while it may still
-        // be sounding. Re-assigning a live Sound uninits its miniaudio instance out
-        // from under the audio thread, which corrupted the mixer graph (the sound cut
-        // out, then the app crashed). Same load-once/replay pattern as the ambience.
-        std::unordered_map<std::string, Sound> boostVoices;
-        // Fire a boost pad's punch at its own gain/pitch (tunable + auditionable per
-        // pad); a low pitch gives the deep thump. Shared by the glider's pad-entry
-        // (below) and the Inspector's Preview button.
-        auto playBoostPunch = [&](const BoostPadComponent& bp){
-            if (bp.sound.empty()) return;
-            auto it = boostVoices.find(bp.sound);
-            if (it == boostVoices.end())
-                it = boostVoices.emplace(bp.sound,
-                        Sound::fromFile(audio, resolveSoundPath(bp.sound), false)).first;
+        // One-shot SFX voices, cached by sound file: boost punches, the Ready/Set/Go
+        // samples, checkpoint gates. CRUCIAL: each file is loaded once and only
+        // re-played (seek+start) -- never re-created while it may still be sounding.
+        // Re-assigning a live Sound uninits its miniaudio instance out from under the
+        // audio thread, which corrupted the mixer graph (the sound cut out, then the
+        // app crashed). Same load-once/replay pattern as the ambience.
+        std::unordered_map<std::string, Sound> cueVoices;
+        // Fire one of those cues at a given gain/pitch. Every race SFX goes through
+        // here, so they all share the cache and the master volume/mute.
+        auto playCue = [&](const std::string& file, float gain, float pitch){
+            if (file.empty()) return;
+            auto it = cueVoices.find(file);
+            if (it == cueVoices.end())
+                it = cueVoices.emplace(file,
+                        Sound::fromFile(audio, resolveSoundPath(file), false)).first;
             Sound& voice = it->second;
             if (!voice.isValid()) return;
-            const float g = muted ? 0.0f : masterVolume * glm::clamp(bp.soundGain, 0.0f, 2.0f);
-            voice.setVolume(g);
-            voice.setPitch(glm::clamp(bp.soundPitch, 0.2f, 3.0f));
+            voice.setVolume(muted ? 0.0f : masterVolume * glm::clamp(gain, 0.0f, 2.0f));
+            voice.setPitch(glm::clamp(pitch, 0.2f, 3.0f));
             voice.play(); // seek-to-0 + start: safe to retrigger a live voice
+        };
+        // A boost pad's punch at its own gain/pitch (tunable + auditionable per pad);
+        // a low pitch gives the deep thump. Shared by the glider's pad-entry (below)
+        // and the Inspector's Preview button.
+        auto playBoostPunch = [&](const BoostPadComponent& bp){
+            playCue(bp.sound, bp.soundGain, bp.soundPitch);
         };
         // Looping ambient voices for TriggerSound zones (entity id -> Sound),
         // created lazily in Play and cleared on stop. Sound is move-only.
@@ -3357,6 +3405,7 @@ int main(int argc, char** argv) {
             race.standings.clear(); race.winnerName.clear();
             race.winnerIsPlayer = false; race.winnerTime = 0.0f;
             race.playerPlace = 0; race.raceOver = false; race.oppWasActive = false;
+            endPrompt = racehud::EndPrompt{}; // no stale end-of-race question
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -3524,9 +3573,30 @@ int main(int argc, char** argv) {
                 gliderMode = true;
                 enterGliderMode();
             }
+
+            // A showroom scene is a start screen, not a level: no walking player
+            // and no locked cursor -- the picker owns the frame, and it takes the
+            // scene over from here (arranging the craft, driving the camera).
+            // Checked last so it overrules whichever start mode ran above.
+            if (showroom::Showroom::isShowroomScene(entities)) {
+                fpsMode = false;
+                vehicleMode = gliderMode = false;
+                input.setCursorLocked(false);
+                std::vector<std::string> otherScenes;
+                if (!currentProject.empty()) {
+                    const std::string me =
+                        std::filesystem::path(currentProject).stem().string();
+                    for (const auto& sc : projectio::listScenesIn(
+                             std::filesystem::path(currentProject)
+                                 .parent_path().generic_string()))
+                        if (sc.first != me) otherScenes.push_back(sc.first);
+                }
+                showroomUi.begin(entities, otherScenes);
+            }
         };
         auto stopPlay = [&] {
             if (!playMode) return;
+            showroomUi.end(entities); // hand the craft back before the snapshot restore
             playMode  = false;
             uiMenuOpen = false;     // back to the editor: the scene's menu is gone
             vehicleMode = false;    // the physics car is gone with the world
@@ -3826,6 +3896,36 @@ int main(int argc, char** argv) {
                 uiActivate = false;
             }
 
+            // Same navigation for the end-of-race question, edge-detected here
+            // where the input lives; the HUD pass below draws it and reports the
+            // answer. Polled every frame so a key held across the finish line is
+            // never read as an answer.
+            racehud::EndInput endIn;
+            {
+                const bool pad = input.hasGamepad();
+                const float sx = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X) : 0.0f;
+                const float sy = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y) : 0.0f;
+                const bool prevB =
+                    input.isKeyDown(GLFW_KEY_LEFT) || input.isKeyDown(GLFW_KEY_UP) ||
+                    sx < -0.5f || sy < -0.5f ||
+                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) ||
+                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_UP)));
+                const bool nextB =
+                    input.isKeyDown(GLFW_KEY_RIGHT) || input.isKeyDown(GLFW_KEY_DOWN) ||
+                    sx > 0.5f || sy > 0.5f ||
+                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) ||
+                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_DOWN)));
+                const bool fireB =
+                    input.isKeyDown(GLFW_KEY_ENTER) || input.isKeyDown(GLFW_KEY_KP_ENTER) ||
+                    input.isKeyDown(GLFW_KEY_SPACE) ||
+                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
+                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_START)));
+                endIn.prev    = prevB && !prevEndPrev;
+                endIn.next    = nextB && !prevEndNext;
+                endIn.confirm = fireB && !prevEndFire;
+                prevEndPrev = prevB; prevEndNext = nextB; prevEndFire = fireB;
+            }
+
             const bool escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
             // A menu on Escape owns the key outright -- that is what stops Escape
             // from dropping the player straight out of the game.
@@ -3905,10 +4005,53 @@ int main(int argc, char** argv) {
                 (gliderMode ? gliderPos : carPos),               // player world pos
                 (gliderMode ? gliderSpeedMps : engineSpeedMps),  // player speed
                 (playMode && (vehicleMode || gliderMode)),       // a craft is driven
-                setWorld, parentWorldMat, gliderGround, playBoostPunch,
+                setWorld, parentWorldMat, gliderGround, playBoostPunch, playCue,
             };
 
-            if (uiMenuOpen) {
+            // --- Showroom: the scene IS the start screen ---------------------
+            // Poses the craft on the podium and drives the camera; the picker
+            // itself is drawn in the HUD pass, which is where the answer comes
+            // back. Runs before the control chain below, which it then owns.
+            if (showroomUi.active()) {
+                showroom::Input shIn;
+                {
+                    const bool pad = input.hasGamepad();
+                    const float sx = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X) : 0.0f;
+                    const float sy = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y) : 0.0f;
+                    const bool l = input.isKeyDown(GLFW_KEY_LEFT) || input.isKeyDown(GLFW_KEY_A) ||
+                                   sx < -0.5f ||
+                                   (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_LEFT));
+                    const bool r = input.isKeyDown(GLFW_KEY_RIGHT) || input.isKeyDown(GLFW_KEY_D) ||
+                                   sx > 0.5f ||
+                                   (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT));
+                    const bool u = input.isKeyDown(GLFW_KEY_UP) || input.isKeyDown(GLFW_KEY_W) ||
+                                   sy < -0.5f ||
+                                   (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_UP));
+                    const bool d = input.isKeyDown(GLFW_KEY_DOWN) || input.isKeyDown(GLFW_KEY_S) ||
+                                   sy > 0.5f ||
+                                   (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_DOWN));
+                    const bool f = input.isKeyDown(GLFW_KEY_ENTER) ||
+                                   input.isKeyDown(GLFW_KEY_KP_ENTER) ||
+                                   input.isKeyDown(GLFW_KEY_SPACE) ||
+                                   (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
+                                            input.gamepadButton(GLFW_GAMEPAD_BUTTON_START)));
+                    shIn.left = l && !prevShLeft;  shIn.right   = r && !prevShRight;
+                    shIn.up   = u && !prevShUp;    shIn.down    = d && !prevShDown;
+                    shIn.confirm = f && !prevShFire;
+                    // `back` stays unwired: Esc already leaves Play (or quits the
+                    // player) in the key handler above, and answering it twice
+                    // would leave the scene half torn down.
+                    prevShLeft = l; prevShRight = r; prevShUp = u;
+                    prevShDown = d; prevShFire = f;
+                }
+                showroomUi.update(entities, camera, dt, shIn);
+                for (const showroom::Cue& c : showroomUi.takeCues())
+                    playCue(c.sound, c.gain, c.pitch);
+            }
+
+            if (showroomUi.active()) {
+                // The picker owns the frame: no look, no walking, no driving.
+            } else if (uiMenuOpen) {
                 // The scene's menu is open: it owns mouse and keyboard, so no
                 // look, no walking, no driving until it is closed again. (The
                 // world keeps ticking -- this is a menu, not a pause.)
@@ -5006,6 +5149,23 @@ int main(int argc, char** argv) {
                 if (playMode) { stopPlay(); startPlay(); }
             }
 
+            // "Back to the start screen" from the end-of-race question. The start
+            // scene is the one the game boots into (game.json's startScene): in
+            // the player that is `bootScene`, in the editor the project's own
+            // setting. With none configured there is nothing to go back TO, so
+            // the player quits and the editor drops out of Play.
+            if (pendingStartScreen) {
+                pendingStartScreen = false;
+                std::string startScene = bootScene;
+                if (startScene.empty() && !currentProject.empty())
+                    startScene = game::load(std::filesystem::path(currentProject)
+                                                .parent_path().generic_string())
+                                     .startScene;
+                if (!startScene.empty())      pendingSceneLoad = startScene;
+                else if (playerMode)          window.requestClose();
+                else if (playMode)            stopPlay();
+            }
+
             if (!pendingSceneLoad.empty()) {
                 const std::filesystem::path folder =
                     std::filesystem::path(currentProject).parent_path();
@@ -5023,6 +5183,92 @@ int main(int argc, char** argv) {
                         startPlay();
                 } else {
                     host.hud = "Scene not found: " + want;
+                }
+            }
+
+            // --- The showroom's craft arrives on the grid ---------------------
+            // The circuit is loaded and Play has restarted; now the chosen craft
+            // is rebuilt from its JSON (which re-imports its models against the
+            // fresh model library), dropped onto the scene's grid slot, and flown.
+            // Everything here happens AFTER startPlay took its snapshot, so
+            // stopping Play removes the craft again -- the circuit scene on disk
+            // never learns that a race was run in it.
+            if (!pendingCraftJson.empty()) {
+                const nlohmann::json craftJson = std::move(pendingCraftJson);
+                pendingCraftJson = nlohmann::json();
+                const int laps = pendingCraftLaps;
+                pendingCraftLaps = 0;
+                if (playMode) {
+                    // The circuit may be flagged "start in glider mode", in which
+                    // case startPlay already put us in its own craft. Let that go
+                    // first (restoring its transform) -- the showroom's choice is
+                    // what gets flown.
+                    endGliderDrive();
+                    gliderMode = false;
+
+                    prefab::Prefab p;
+                    p.name = pendingCraftName;
+                    p.guid = fitzel::AssetId::generate();
+                    for (const auto& ej : craftJson)
+                        p.entities.push_back(projectio::readEntityJson(pio, ej));
+
+                    // The grid slot: the circuit's own glider if it has one (that
+                    // is where a craft is meant to stand), else the start/finish
+                    // line, else the player start.
+                    glm::vec3 pos(0.0f);
+                    float     yaw  = 0.0f;
+                    int       slot = -1;
+                    for (const Entity& e : entities)
+                        if (e.components.get<GliderComponent>()) {
+                            slot = e.id; pos = e.center; yaw = e.rotation.y; break;
+                        }
+                    if (slot < 0)
+                        for (const Entity& e : entities)
+                            if (e.components.get<FinishLineComponent>()) {
+                                pos = e.center; yaw = e.rotation.y; break;
+                            }
+                    if (slot < 0)
+                        for (const Entity& e : entities)
+                            if (e.components.get<PlayerStartComponent>()) {
+                                pos = e.center; yaw = e.rotation.y; break;
+                            }
+                    // The slot's own craft steps aside, so the field isn't two
+                    // gliders deep on the same square.
+                    if (slot >= 0)
+                        if (Entity* se = document.find(slot)) se->active = false;
+
+                    std::vector<Entity> spawn =
+                        prefab::instantiate(p, entityCounter, pos, yaw);
+                    const int rootId = spawn.empty() ? -1 : spawn.front().id;
+                    for (Entity& e : spawn) entities.push_back(std::move(e));
+                    resolveHierarchy();
+
+                    // The circuit is run over the laps its card promised.
+                    if (laps > 0)
+                        for (Entity& e : entities)
+                            if (auto* fl = e.components.get<FinishLineComponent>())
+                                fl->laps = static_cast<float>(laps);
+
+                    if (rootId >= 0) {
+                        // Fly THIS craft, not "the nearest glider": the grid slot
+                        // it replaced is still in the scene, only deactivated.
+                        fpsMode = false;
+                        input.setCursorLocked(false);
+                        gliderMode = true;
+                        beginGliderDrive(rootId);
+                        bool hasRace = false;
+                        for (const Entity& e : entities)
+                            if (e.components.get<OpponentComponent>() ||
+                                e.components.get<FinishLineComponent>()) {
+                                hasRace = true; break;
+                            }
+                        raceCountdown = hasRace ? 3.0f : 0.0f;
+                        goFlash   = 0.0f;
+                        endPrompt = racehud::EndPrompt{};
+                        camChase  = camera.position();
+                    } else {
+                        host.hud = "Could not place the craft on the grid.";
+                    }
                 }
             }
 
@@ -7551,6 +7797,35 @@ int main(int argc, char** argv) {
                                 ImGui::BeginDisabled(bp->sound.empty());
                                 if (ImGui::Button("Preview punch")) playBoostPunch(*bp);
                                 ImGui::EndDisabled();
+                            } else if (auto* fl = dynamic_cast<FinishLineComponent*>(c)) {
+                                // Laps + gate size from metadata; the three start
+                                // samples are Sound pickers with one Preview each,
+                                // so the sequence can be auditioned while placing it.
+                                for (const Property& pr : fl->props())
+                                    if (pr.key != "soundReady" && pr.key != "soundSet" &&
+                                        pr.key != "soundGo")
+                                        drawProperty(pr, fl);
+                                auto startCue = [&](const char* label, const char* btn,
+                                                    std::string& field) {
+                                    soundPickerCombo(label, field);
+                                    ImGui::BeginDisabled(field.empty());
+                                    if (ImGui::Button(btn)) playCue(field, fl->soundGain, 1.0f);
+                                    ImGui::EndDisabled();
+                                };
+                                startCue("Ready sound", "Preview##ready", fl->soundReady);
+                                startCue("Set sound",   "Preview##set",   fl->soundSet);
+                                startCue("Go sound",    "Preview##go",    fl->soundGo);
+                            } else if (auto* cp = dynamic_cast<CheckpointComponent*>(c)) {
+                                // Gate size from metadata; the pass SFX is a picker
+                                // with volume/pitch sliders and a Preview, like the
+                                // boost pad's punch.
+                                for (const Property& pr : cp->props())
+                                    if (pr.key != "sound") drawProperty(pr, cp);
+                                soundPickerCombo("Gate sound", cp->sound);
+                                ImGui::BeginDisabled(cp->sound.empty());
+                                if (ImGui::Button("Preview gate"))
+                                    playCue(cp->sound, cp->soundGain, cp->soundPitch);
+                                ImGui::EndDisabled();
                             } else if (auto* tr = dynamic_cast<TriggerComponent*>(c)) {
                                 // Radius/once/message from metadata; Sound is a picker.
                                 for (const Property& pr : tr->props())
@@ -7571,6 +7846,44 @@ int main(int argc, char** argv) {
                                         (void)path;
                                         if (ImGui::Selectable(n.c_str(), stc->scene == n))
                                             stc->scene = n;
+                                    }
+                                    ImGui::EndCombo();
+                                }
+                            } else if (auto* sr = dynamic_cast<ShowroomComponent*>(c)) {
+                                // Stage + camera from metadata; the three cues are
+                                // Sound pickers with a Preview each, so the picker's
+                                // feel can be tuned while it is being built.
+                                for (const Property& pr : sr->props())
+                                    if (pr.key != "soundMove" && pr.key != "soundSelect" &&
+                                        pr.key != "soundStart")
+                                        drawProperty(pr, sr);
+                                auto shCue = [&](const char* label, const char* btn,
+                                                 std::string& field) {
+                                    soundPickerCombo(label, field);
+                                    ImGui::BeginDisabled(field.empty());
+                                    if (ImGui::Button(btn)) playCue(field, sr->soundGain, 1.0f);
+                                    ImGui::EndDisabled();
+                                };
+                                shCue("Move sound",   "Preview##shmove", sr->soundMove);
+                                shCue("Select sound", "Preview##shsel",  sr->soundSelect);
+                                shCue("Start sound",  "Preview##shgo",   sr->soundStart);
+                            } else if (auto* tec = dynamic_cast<TrackEntryComponent*>(c)) {
+                                // Everything from metadata except the scene, which is
+                                // a picker over the project's scenes (chosen, not
+                                // typed) -- same rule as the Scene Trigger's.
+                                for (const Property& pr : tec->props())
+                                    if (pr.key != "scene") drawProperty(pr, tec);
+                                const std::string tfolder =
+                                    std::filesystem::path(currentProject).parent_path().string();
+                                const std::string tlabel =
+                                    tec->scene.empty() ? "(none)" : tec->scene;
+                                if (ImGui::BeginCombo("Scene", tlabel.c_str())) {
+                                    if (ImGui::Selectable("(none)", tec->scene.empty()))
+                                        tec->scene.clear();
+                                    for (const auto& [n, path] : listScenesIn(tfolder)) {
+                                        (void)path;
+                                        if (ImGui::Selectable(n.c_str(), tec->scene == n))
+                                            tec->scene = n;
                                     }
                                     ImGui::EndCombo();
                                 }
@@ -9680,7 +9993,7 @@ int main(int argc, char** argv) {
 
                 // Crosshair, sized to the view. Hidden when disabled, and always
                 // hidden while driving (you aim on foot, not from the car).
-                if (showCrosshair && !vehicleMode && !gliderMode) {
+                if (showCrosshair && !vehicleMode && !gliderMode && !showroomUi.active()) {
                     const float ch = std::max(10.0f, vsize.y * 0.018f);
                     const ImU32 white = IM_COL32(255, 255, 255, 220);
                     dl->AddLine(ImVec2(c.x - ch, c.y), ImVec2(c.x + ch, c.y), white, 2.0f);
@@ -9712,9 +10025,17 @@ int main(int argc, char** argv) {
                 // The racing HUD (speed, lap + times, the field, countdown, final
                 // classification) lives in RaceHud.cpp and reads the race state
                 // directly. `topInset` keeps it clear of the script's HUD line.
-                if (gliderMode)
-                    racehud::draw(dl, vmin, vsize, race,
-                                  host.hud.empty() ? 0.0f : fs * 1.5f);
+                if (gliderMode) {
+                    const racehud::EndAction act =
+                        racehud::draw(dl, vmin, vsize, race,
+                                      host.hud.empty() ? 0.0f : fs * 1.5f,
+                                      endPrompt, endIn);
+                    // Both answers are deferred to the top of the next frame --
+                    // they tear down and rebuild the scene, which must not happen
+                    // underneath the draw call that asked the question.
+                    if (act == racehud::EndAction::RaceAgain)         pendingRestart = true;
+                    else if (act == racehud::EndAction::StartScreen)  pendingStartScreen = true;
+                }
 
                 // Scene 2D UI overlay: authored text/buttons/images, drawn last so
                 // it sits above the rest of the HUD. Buttons fire their data-authored
@@ -9745,6 +10066,45 @@ int main(int argc, char** argv) {
                     }
                     uiOverlay.drawRuntime(dl, glm::vec2(vmin.x, vmin.y),
                                           glm::vec2(vsize.x, vsize.y), assetDb, sink);
+                }
+
+                // --- The showroom, drawn last: it is the whole screen --------
+                // `mainVP` lets it project the podium, so the stage effects sit
+                // on the craft rather than on a guessed point.
+                if (showroomUi.active()) {
+                    const showroom::Launch go =
+                        showroomUi.draw(dl, vmin, vsize, assetDb, mainVP);
+                    if (go.back) {
+                        // Same exit as Esc: quit the game, or drop the editor
+                        // out of Play.
+                        if (playerMode) window.requestClose();
+                        else            stopPlay();
+                    } else if (go.start && !go.scene.empty()) {
+                        // Hand the scene back first: the craft must be captured
+                        // in its authored pose, not floating over the podium.
+                        showroomUi.end(entities);
+                        resolveHierarchy();
+                        pendingCraftJson = nlohmann::json();
+                        pendingCraftName = go.craftName;
+                        pendingCraftLaps = go.laps;
+                        if (go.craftId >= 0)
+                            if (auto p = prefab::fromSubtree(entities, go.craftId,
+                                                             go.craftName)) {
+                                const auto modelGuidOf = [&](int mid) -> std::string {
+                                    LoadedModel* lm = models.byId(mid);
+                                    return (lm && lm->assetId.valid())
+                                               ? lm->assetId.toString() : std::string();
+                                };
+                                nlohmann::json ents = nlohmann::json::array();
+                                for (const Entity& pe : p->entities)
+                                    ents.push_back(projectio::writeEntityJson(pe, modelGuidOf));
+                                pendingCraftJson = std::move(ents);
+                            }
+                        // Deferred, like every other scene change: the entity
+                        // list is swapped between frames, never underneath the
+                        // draw call that asked for it.
+                        pendingSceneLoad = go.scene;
+                    }
                 }
             }
 

@@ -193,6 +193,11 @@ public:
     const std::vector<glm::vec3>&     collVerts()   const { return m_collVerts; }
     const std::vector<std::uint32_t>& collIndices() const { return m_collIndices; }
     const std::vector<glm::vec2>&     centerline()  const { return m_centerline; }
+    // Road surface height per centreline sample -- the DECK top over a bridged
+    // stretch, not the ground far below. Parallel to centerline() (same length
+    // once the road is built), so anything already walking the centreline by arc
+    // length gets the drivable height for free. Empty before the first build.
+    const std::vector<float>&         centerlineY() const { return m_centerlineY; }
 
     // --- Editor state the viewport handles + panel drive directly ------------
     std::vector<glm::vec2>   roadPts;          // control points (world x,z)

@@ -19,6 +19,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RoadBridge.cpp
     src/RaceSim.cpp
     src/RaceHud.cpp
+    src/Showroom.cpp
     src/RoadSide.cpp
     src/RainRenderer.cpp
     src/SpraySystem.cpp
@@ -73,6 +74,19 @@ foreach(tgt sandbox player)
         FITZEL_TEXTURE_DIR="${CMAKE_SOURCE_DIR}/content/textures"
         FITZEL_SOUND_DIR="${CMAKE_SOURCE_DIR}/content/sounds"
         FITZEL_MODEL_DIR="${CMAKE_SOURCE_DIR}/content/models")
+
+    # Release on Windows: link as a GUI app so starting the exe doesn't put a
+    # console window behind it. /ENTRY keeps plain main() as the entry point --
+    # /SUBSYSTEM:WINDOWS would otherwise demand a WinMain. Debug keeps its
+    # console: that's the build you attach a debugger to and watch logs in.
+    # main() re-adopts the parent console when there is one (FITZEL_WINDOWED),
+    # so running it FROM a terminal still prints.
+    if(MSVC)
+        target_compile_definitions(${tgt} PRIVATE $<$<CONFIG:Release>:FITZEL_WINDOWED>)
+        target_link_options(${tgt} PRIVATE
+            $<$<CONFIG:Release>:/SUBSYSTEM:WINDOWS>
+            $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>)
+    endif()
 
 endforeach()
 

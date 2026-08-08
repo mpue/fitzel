@@ -578,6 +578,7 @@ public:
 
     float dist    = 0.0f;  // runtime: distance travelled along the road (m)
     float bankCur = 0.0f;  // runtime: smoothed bank
+    float pitchCur = 0.0f; // runtime: smoothed pitch (nose follows the road slope)
     float curSpeed = 0.0f; // runtime: current speed (eased toward the corner target)
     float laneCur = 0.0f;  // runtime: current lateral offset (racing line + avoidance)
     float overspeed = 0.0f;// runtime: speed cap above `speed` from a boost pad
@@ -646,6 +647,13 @@ public:
     float height = 6.0f;
     float depth  = 3.0f;
     float yaw    = 0.0f;   // degrees, added to the entity's rotation
+    // Start sequence SFX: one Sound asset per step of Ready/Set/Go, played as the
+    // countdown reaches it (empty = silent). They sit on the start/finish line
+    // because that is the object which defines the race, not on the craft.
+    std::string soundReady;
+    std::string soundSet;
+    std::string soundGo;
+    float       soundGain = 1.0f;   // volume for all three (0..2)
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<FinishLineComponent>(*this);
@@ -673,6 +681,12 @@ public:
     float height = 6.0f;
     float depth  = 3.0f;
     float yaw    = 0.0f;   // degrees, added to the entity's rotation
+    // Gate SFX, played once the moment the flown craft passes through (empty =
+    // silent). Only the player's own pass sounds -- a field of opponents lapping
+    // would otherwise machine-gun the same sample.
+    std::string sound;
+    float       soundGain  = 1.0f;  // volume (0..2)
+    float       soundPitch = 1.0f;  // pitch (lower = deeper)
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<CheckpointComponent>(*this);
@@ -684,6 +698,106 @@ public:
     void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
         drawGateGizmo(g, c, rot, width, height, depth, yaw, {0.5f, 0.9f, 1.0f, 0.9f});
     }
+};
+
+// --- Built-in component: Showroom (turns a scene into the craft/track picker) --
+// Attach to ONE entity of a scene -- the podium. While playing, that scene stops
+// being a level and becomes the start screen: the camera orbits the podium, every
+// glider in the scene becomes a selectable craft, every Track Entry becomes a
+// selectable circuit, and pressing START carries the chosen craft into the chosen
+// circuit and begins the race.
+//
+// The entity's own position is the podium centre, so the stage is placed by
+// dropping this component on whatever object the craft should float above; the
+// craft are arranged BY the showroom (on the podium, or around a ring of
+// `ringRadius`) and never have to be positioned by hand -- which is the point:
+// authoring a start screen must not require precise dragging.
+class ShowroomComponent : public ComponentBase {
+public:
+    std::string title    = "SELECT YOUR CRAFT";  // headline
+    std::string subtitle = "FITZEL RACING";      // small line above it
+    // Stage layout. `ringRadius` 0 = podium mode (only the chosen craft is on
+    // stage, the rest are off); > 0 = carousel (all craft on a ring that turns to
+    // bring the chosen one to the front).
+    float ringRadius = 0.0f;   // m
+    float riseHeight = 1.6f;   // how high the chosen craft floats over the podium (m)
+    float spinSpeed  = 16.0f;  // turntable rate of the chosen craft (deg/s)
+    float bobAmount  = 0.18f;  // vertical float of the chosen craft (m)
+    // Orbit camera. The showroom drives the camera outright while it is up.
+    float camDistance = 9.0f;   // m from the podium
+    float camHeight   = 2.6f;   // m above the podium
+    float camPitch    = -8.0f;  // degrees (negative looks down)
+    float camOrbit    = 6.0f;   // idle orbit rate (deg/s)
+    float camFov      = 48.0f;
+    glm::vec3 accent{0.38f, 0.87f, 1.0f}; // UI accent (the craft's own overrides it)
+    // SFX, by Sound-asset filename (empty = silent), like the boost pad's punch.
+    std::string soundMove;    // moving through a list
+    std::string soundSelect;  // a craft comes on stage
+    std::string soundStart;   // the race is launched
+    float       soundGain = 1.0f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<ShowroomComponent>(*this);
+    }
+    const char* typeId() const override { return "showroom"; }
+    const char* displayName() const override { return "Showroom"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        // The podium: the ring the craft float over, and the camera's orbit.
+        g.circle(c, glm::max(ringRadius, 1.5f), glm::vec3(0.0f, 1.0f, 0.0f),
+                 {0.4f, 0.9f, 1.0f, 0.9f});
+        g.circle(c + glm::vec3(0.0f, camHeight, 0.0f), camDistance,
+                 glm::vec3(0.0f, 1.0f, 0.0f), {1.0f, 0.82f, 0.35f, 0.5f});
+    }
+};
+
+// --- Built-in component: Craft Entry (a craft's showroom presentation) ---------
+// OPTIONAL, and only meaningful next to a Glider: every glider in a showroom
+// scene is selectable with or without one. It exists purely so a craft can be
+// described in the picker -- a display name that isn't the entity name, the team
+// line under it, a sentence of flavour, and the accent colour the whole UI takes
+// on while that craft is on stage.
+class CraftEntryComponent : public ComponentBase {
+public:
+    std::string title;                    // "" = the entity's name
+    std::string team  = "PRIVATEER";      // small line under the name
+    std::string blurb;                    // one sentence of flavour
+    glm::vec3   accent{0.38f, 0.87f, 1.0f};
+    float       order = 0.0f;             // sort key (low first)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<CraftEntryComponent>(*this);
+    }
+    const char* typeId() const override { return "craft_entry"; }
+    const char* displayName() const override { return "Craft Entry"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Track Entry (one circuit in the showroom's picker) ----
+// Attach to any object in a showroom scene (a plinth, a holo-map, an Empty): it
+// contributes one card to the circuit list. `scene` is the .fitzel stem the race
+// loads. A showroom with no Track Entry at all falls back to listing every other
+// scene in the project, so the picker is never empty.
+class TrackEntryComponent : public ComponentBase {
+public:
+    std::string scene;                 // scene stem to load
+    std::string title;                 // "" = the scene stem
+    std::string blurb;                 // one sentence of flavour
+    std::string image;                 // preview texture, project-relative ("" = none)
+    float       laps       = 3.0f;     // laps the race is run over (0 = the scene's own)
+    float       lengthKm   = 0.0f;     // circuit length, for the card (0 = hidden)
+    float       difficulty = 3.0f;     // 1..5, drawn as pips
+    float       order      = 0.0f;     // sort key (low first)
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<TrackEntryComponent>(*this);
+    }
+    const char* typeId() const override { return "track_entry"; }
+    const char* displayName() const override { return "Track Entry"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
 };
 
 // --- Built-in component: Pusher (a directional force field in Play) -----------
