@@ -77,6 +77,25 @@ struct Params {
     bool  beaconLight  = true;     // a real point light in the beacon (1 per tower)
     bool  collider     = true;     // static physics on the masses (drive into it)
 
+    // --- Wear ----------------------------------------------------------------
+    // How run-down the building is. `weathering` acts on the MATERIALS (shared
+    // per palette slot, so it is a district-wide property): it kills the mirror
+    // finish and soils the colours. The default is deliberately not 0 -- a
+    // freshly generated tower should look like a building, and 0.70 reflectivity
+    // on glass is a chrome ball, not a facade. Set it to 0 for the pristine
+    // curtain-wall look.
+    float weathering = 0.55f;      // 0 = new glass tower .. 1 = derelict concrete
+    // Fraction of a tower's masses that are bare structural concrete (the `base`
+    // material) instead of glazing. This is what varies building to building
+    // WITHOUT costing another material: a street where some towers are glass and
+    // their neighbours are raw concrete reads as neglected, where a street of
+    // uniformly dark glass just reads as night.
+    float grime      = 0.0f;       // 0..1
+    // Rooftop and terrace clutter: tanks, vents, plant boxes and ducts scattered
+    // over the setback roofs. Pure silhouette junk, and the cheapest way to make
+    // a clean extrusion look lived-in and unmaintained.
+    int   clutter    = 0;
+
     // Look --------------------------------------------------------------------
     // Generated buildings share ONE material set per `palette` slot (A..H), so a
     // whole city costs at most 8 x 4 materials instead of four per tower. Editing

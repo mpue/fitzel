@@ -41,6 +41,7 @@ public:
                m_before.lifts   == m_after.lifts  &&
                m_before.closed  == m_after.closed &&
                m_before.sideObjects == m_after.sideObjects &&
+               m_before.biomes      == m_after.biomes &&
                m_before.bridges.size() == m_after.bridges.size() &&
                std::equal(m_before.bridges.begin(), m_before.bridges.end(),
                           m_after.bridges.begin(),

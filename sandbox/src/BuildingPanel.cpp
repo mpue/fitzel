@@ -127,6 +127,19 @@ void drawPanel(const PanelState& s) {
                               "glider crashes into the building instead of "
                               "flying through it.");
 
+        ui::sectionText("Wear");
+        changed |= ImGui::SliderFloat("Weathering", &c.weathering, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("0 = new curtain wall, 1 = derelict concrete. Drops "
+                              "the mirror finish (glass reflectivity 0.70 -> "
+                              "almost none) and soils the colours. Acts on the "
+                              "shared palette, so it re-skins every building on "
+                              "this slot.");
+        changed |= ImGui::SliderFloat("Bare concrete", &c.grime, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("Chance a mass is raw structural concrete instead of "
+                              "glazing -- a glass shaft on a concrete stump.");
+        changed |= stepInt("Roof clutter", c.clutter, 0, 60);
+        ImGui::SetItemTooltip("Tanks, vents and ducts on the setback roofs.");
+
         ui::sectionText("Look");
         {
             const char* slots[] = {"A", "B", "C", "D", "E", "F", "G", "H"};

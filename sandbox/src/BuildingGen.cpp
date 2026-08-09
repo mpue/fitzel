@@ -48,7 +48,21 @@ Params sane(const Params& in) {
     p.crownHeight = glm::clamp(p.crownHeight, 0.0f, 1.5f);
     p.accentStrength = glm::clamp(p.accentStrength, 0.0f, 12.0f);
     p.palette     = glm::clamp(p.palette, 0, 7);
+    p.weathering  = glm::clamp(p.weathering, 0.0f, 1.0f);
+    p.grime       = glm::clamp(p.grime, 0.0f, 1.0f);
+    p.clutter     = glm::clamp(p.clutter, 0, 60);
     return p;
+}
+
+// Age a colour: grime does two things to a surface, and doing only one of them
+// looks wrong. It desaturates (dust and soot are grey, and they sit on top of
+// whatever colour was underneath), and it darkens toward that soot rather than
+// toward black -- a filthy white wall goes grey-brown, not dark white.
+glm::vec3 soiled(glm::vec3 c, float amount) {
+    const float lum = c.r * 0.299f + c.g * 0.587f + c.b * 0.114f;
+    const glm::vec3 soot(0.19f, 0.18f, 0.16f);
+    c = glm::mix(c, glm::vec3(lum), amount * 0.55f);
+    return glm::mix(c, soot, amount * 0.40f);
 }
 
 // One stacked mass of the tower: the slab of height [y0,y1) with its own
@@ -198,16 +212,34 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& pIn) {
     const std::string slot =
         std::string("Building ") + static_cast<char>('A' + p.palette) + " ";
     Palette pal;
-    pal.glass = ensureMaterial(materials, slot + "Glass", p.glassTint,
-                               0.70f, 0.08f, glm::vec3(0.0f), 1.0f);
-    pal.frame = ensureMaterial(materials, slot + "Frame", p.frameTint,
-                               0.25f, 0.45f, glm::vec3(0.0f), 1.0f);
+    // Weathering drives reflectivity and roughness together, because that pair is
+    // what actually says "new" or "old" about a surface.
+    //
+    // The lit shader builds its base reflectance as F0 = mix(0.04, 1.0, refl), so
+    // the 0.70 this used to hand glass unconditionally was F0 = 0.71 -- a chromed
+    // ball, not a window (real glass is 0.04). Even the CLEAN end is now well
+    // below where it was: a showroom curtain wall is glossy, not mirrored. Both
+    // curves are bent (w^0.7 / w^0.6) so the finish falls away early rather than
+    // sitting at half-mirror through the middle of the slider, which is where
+    // most districts live.
+    const float w  = p.weathering;
+    const float wr = std::pow(w, 0.7f);   // reflectivity falls off first
+    const float wg = std::pow(w, 0.6f);   // roughness climbs even faster
+    pal.glass = ensureMaterial(materials, slot + "Glass", soiled(p.glassTint, w),
+                               glm::mix(0.40f, 0.015f, wr), glm::mix(0.07f, 0.80f, wg),
+                               glm::vec3(0.0f), 1.0f);
+    pal.frame = ensureMaterial(materials, slot + "Frame", soiled(p.frameTint, w),
+                               glm::mix(0.18f, 0.008f, wr), glm::mix(0.50f, 0.95f, wg),
+                               glm::vec3(0.0f), 1.0f);
     // The neon: nearly black under light, all of its brightness from emission --
     // so it reads as a lit strip at night instead of a pale grey band by day.
+    // Weathering dims it a little; a filthy tube does not glow like a new one.
     pal.accent = ensureMaterial(materials, slot + "Neon", p.accentColor * 0.15f,
-                                0.0f, 0.5f, p.accentColor, p.accentStrength);
-    pal.base  = ensureMaterial(materials, slot + "Base", p.baseTint,
-                               0.08f, 0.70f, glm::vec3(0.0f), 1.0f);
+                                0.0f, 0.5f, p.accentColor,
+                                p.accentStrength * glm::mix(1.0f, 0.7f, w));
+    pal.base  = ensureMaterial(materials, slot + "Base", soiled(p.baseTint, w),
+                               glm::mix(0.05f, 0.0f, wr), glm::mix(0.75f, 1.0f, wg),
+                               glm::vec3(0.0f), 1.0f);
     return pal;
 }
 
@@ -218,6 +250,13 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal,
     auto jit = [&](float amount) { // symmetric jitter in [-amount, amount]
         std::uniform_real_distribution<float> u(-1.0f, 1.0f);
         return u(rng) * amount;
+    };
+    // Wear draws from its OWN stream, so turning grime or clutter up does not
+    // shift the massing jitter and reshape a tower the user had already framed.
+    std::mt19937 wrng(p.seed ^ 0x9e3779b9u);
+    auto wear = [&]() {
+        std::uniform_real_distribution<float> u(0.0f, 1.0f);
+        return u(wrng);
     };
 
     std::vector<Entity> out;
@@ -342,10 +381,16 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal,
         emitMass("Podium", -p.sink, podH, p.width * p.podiumSpread,
                  p.depth * p.podiumSpread, 0.0f, pal.base, p.collider);
 
+    // A mass is glazed or it is raw structural concrete. Deciding it per MASS
+    // rather than per building also breaks up a single tower -- a glass shaft on
+    // a concrete stump is exactly what a half-finished or stripped block looks
+    // like -- and it costs no extra material, which is what makes it usable
+    // across a whole district (see Params::grime).
     for (std::size_t i = 0; i < masses.size(); ++i) {
         const Mass& m = masses[i];
+        const AssetId skin = (wear() < p.grime) ? pal.base : pal.glass;
         emitMass("Mass " + std::to_string(i + 1), m.y0, m.y1, m.w, m.d, m.yaw,
-                 pal.glass, p.collider);
+                 skin, p.collider);
     }
 
     // The footprint at a given height (for bands and the crown), plus which mass
@@ -494,6 +539,37 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal,
         case Crown::None:
         case Crown::Count:
             break;
+    }
+
+    // --- Rooftop and terrace clutter -----------------------------------------
+    // Water tanks, plant housings, ducts and vent stacks, dropped on the roofs of
+    // the setback masses. Nothing here is architecture -- it is junk on top of
+    // architecture, and that is the point: a clean extrusion reads as a render,
+    // the same extrusion with a scatter of tanks on its ledges reads as a
+    // building nobody has looked after. Kept to the PERIMETER of each roof, where
+    // it clears the narrower mass rising out of the middle and where it actually
+    // breaks the silhouette.
+    for (int i = 0; i < p.clutter; ++i) {
+        const std::size_t mi = static_cast<std::size_t>(wear() * masses.size()) %
+                               std::max<std::size_t>(masses.size(), 1);
+        const Mass& m  = masses[mi];
+        // The next mass up (if any) sits in the middle, so stay outside its
+        // footprint: start beyond half of this roof and keep clear of the edge.
+        const float ring = 0.58f + wear() * 0.34f;
+        const float a    = wear() * 2.0f * kPi;
+        const glm::vec2 lp(std::sin(a) * m.w * 0.5f * ring,
+                           std::cos(a) * m.d * 0.5f * ring);
+        const glm::vec2 wp = yawXZ(lp, m.yaw);
+        const float span = std::min(m.w, m.d);
+        const float hw   = glm::clamp(span * (0.035f + wear() * 0.06f), 0.5f, 4.0f);
+        const float hh   = hw * (0.6f + wear() * 2.6f);
+        const bool  tank = wear() < 0.3f;
+        add(tank ? EntityType::Cylinder : EntityType::Box,
+            "Roof unit " + std::to_string(i + 1),
+            {wp.x, m.y1 + hh, wp.y},
+            {hw, hh, hw * (tank ? 1.0f : 0.6f + wear() * 0.9f)},
+            m.yaw + wear() * 90.0f,
+            (wear() < 0.35f) ? pal.base : pal.frame, false);
     }
 
     return out;

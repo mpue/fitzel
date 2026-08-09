@@ -102,6 +102,32 @@ MeshData makeCylinderX(float r, float ht, int seg) {
     return m;
 }
 
+std::vector<Vertex> makeCubeVerts() {
+    // Six flat-shaded faces, expanded to triangles (unindexed) so a caller can
+    // append it to a merged buffer without remapping indices. Same corners,
+    // normals and UVs as fitzel::Mesh::cube().
+    std::vector<Vertex> v;
+    v.reserve(36);
+    auto face = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {
+        const glm::vec2 uv[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+        const glm::vec3 p[4]  = {a, b, c, d};
+        for (int i : {0, 1, 2, 2, 3, 0}) v.push_back({p[i], n, uv[i]});
+    };
+    face({-0.5f, -0.5f,  0.5f}, { 0.5f, -0.5f,  0.5f},
+         { 0.5f,  0.5f,  0.5f}, {-0.5f,  0.5f,  0.5f}, { 0,  0,  1});
+    face({ 0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f, -0.5f},
+         {-0.5f,  0.5f, -0.5f}, { 0.5f,  0.5f, -0.5f}, { 0,  0, -1});
+    face({ 0.5f, -0.5f,  0.5f}, { 0.5f, -0.5f, -0.5f},
+         { 0.5f,  0.5f, -0.5f}, { 0.5f,  0.5f,  0.5f}, { 1,  0,  0});
+    face({-0.5f, -0.5f, -0.5f}, {-0.5f, -0.5f,  0.5f},
+         {-0.5f,  0.5f,  0.5f}, {-0.5f,  0.5f, -0.5f}, {-1,  0,  0});
+    face({-0.5f,  0.5f,  0.5f}, { 0.5f,  0.5f,  0.5f},
+         { 0.5f,  0.5f, -0.5f}, {-0.5f,  0.5f, -0.5f}, { 0,  1,  0});
+    face({-0.5f, -0.5f, -0.5f}, { 0.5f, -0.5f, -0.5f},
+         { 0.5f, -0.5f,  0.5f}, {-0.5f, -0.5f,  0.5f}, { 0, -1,  0});
+    return v;
+}
+
 std::vector<Vertex> makeRampVerts() {
     std::vector<Vertex> v;
     auto quad = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {

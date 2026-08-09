@@ -407,6 +407,44 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"mass",     l.mass},
         });
 
+    // City biomes. One object per biome; the buildings they produce are derived
+    // and never written -- the whole point of CityGen (a four-hundred-tower
+    // district costs these few hundred bytes in the scene file).
+    nlohmann::json city_ = nlohmann::json::array();
+    for (const city::Biome& b : biomes) {
+        nlohmann::json mix = nlohmann::json::array();
+        for (int i = 0; i < city::kStyleCount; ++i) mix.push_back(b.styleMix[i]);
+        city_.push_back({
+            {"enabled", b.enabled},   {"name", b.name},
+            {"from", b.from},         {"to", b.to},          {"blend", b.blend},
+            {"side", b.side},
+            {"setback", b.setback},   {"setbackVar", b.setbackVar},
+            {"frontage", b.frontage}, {"frontageVar", b.frontageVar},
+            {"gap", b.gap},
+            {"depth", b.depth},       {"depthVar", b.depthVar},
+            {"fill", b.fill},
+            {"blockLength", b.blockLength}, {"blockGap", b.blockGap},
+            {"maxSlope", b.maxSlope}, {"maxDrop", b.maxDrop},
+            {"floorsMin", b.floorsMin}, {"floorsMax", b.floorsMax},
+            {"floorHeight", b.floorHeight},
+            {"skylineScale", b.skylineScale}, {"skylineBias", b.skylineBias},
+            {"twist", b.twist},
+            {"styleMix", mix},
+            {"skywayEvery", b.skywayEvery}, {"skywayHeight", b.skywayHeight},
+            {"skywayWidth", b.skywayWidth}, {"signChance", b.signChance},
+            {"palette", b.palette},
+            {"glassTint", {b.glassTint.r, b.glassTint.g, b.glassTint.b}},
+            {"frameTint", {b.frameTint.r, b.frameTint.g, b.frameTint.b}},
+            {"accentColor", {b.accentColor.r, b.accentColor.g, b.accentColor.b}},
+            {"baseTint", {b.baseTint.r, b.baseTint.g, b.baseTint.b}},
+            {"accentStrength", b.accentStrength},
+            {"neon", b.neon}, {"collider", b.collider}, {"seed", b.seed},
+            {"weathering", b.weathering}, {"grime", b.grime},
+            {"clutter", b.clutter}, {"clutterVar", b.clutterVar},
+            {"deadNeon", b.deadNeon},
+        });
+    }
+
     j = {
         {"points",    rs.str()},
         {"lifts",     ls.str()},
@@ -440,6 +478,10 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"abutment",    bridgeStyle.abutment},
         }},
         {"sideObjects", side_},
+        {"cityEnabled", cityEnabled},
+        {"cityBudget",  cityBudget},
+        {"cityRange",   cityRange},
+        {"biomes",      city_},
     };
 }
 
@@ -547,6 +589,71 @@ void RoadSystem::load(const nlohmann::json& j) {
             l.knockable = e.value("knockable", l.knockable);
             l.mass      = e.value("mass",      l.mass);
             sideLines.push_back(std::move(l));
+        }
+
+    // City biomes. Absent in scenes saved before they existed -> no city, which
+    // is how those tracks looked. Every field falls back to a default Biome's, so
+    // a blob from a leaner build still loads as something buildable.
+    cityEnabled = j.value("cityEnabled", true);
+    cityBudget  = j.value("cityBudget",  400);
+    cityRange   = j.value("cityRange",   1200.0f);
+    biomes.clear();
+    auto vec3Of = [](const nlohmann::json& o, const char* key, glm::vec3 def) {
+        const auto it = o.find(key);
+        if (it == o.end() || !it->is_array() || it->size() != 3) return def;
+        return glm::vec3((*it)[0].get<float>(), (*it)[1].get<float>(),
+                         (*it)[2].get<float>());
+    };
+    if (const auto cb = j.find("biomes"); cb != j.end() && cb->is_array())
+        for (const auto& e : *cb) {
+            city::Biome b;
+            b.enabled     = e.value("enabled", b.enabled);
+            b.name        = e.value("name", b.name);
+            b.from        = e.value("from", b.from);
+            b.to          = e.value("to", b.to);
+            b.blend       = e.value("blend", b.blend);
+            b.side        = e.value("side", b.side);
+            b.setback     = e.value("setback", b.setback);
+            b.setbackVar  = e.value("setbackVar", b.setbackVar);
+            b.frontage    = e.value("frontage", b.frontage);
+            b.frontageVar = e.value("frontageVar", b.frontageVar);
+            b.gap         = e.value("gap", b.gap);
+            b.depth       = e.value("depth", b.depth);
+            b.depthVar    = e.value("depthVar", b.depthVar);
+            b.fill        = e.value("fill", b.fill);
+            b.blockLength = e.value("blockLength", b.blockLength);
+            b.blockGap    = e.value("blockGap", b.blockGap);
+            b.maxSlope    = e.value("maxSlope", b.maxSlope);
+            b.maxDrop     = e.value("maxDrop", b.maxDrop);
+            b.floorsMin   = e.value("floorsMin", b.floorsMin);
+            b.floorsMax   = e.value("floorsMax", b.floorsMax);
+            b.floorHeight = e.value("floorHeight", b.floorHeight);
+            b.skylineScale = e.value("skylineScale", b.skylineScale);
+            b.skylineBias  = e.value("skylineBias", b.skylineBias);
+            b.twist        = e.value("twist", b.twist);
+            if (const auto m = e.find("styleMix"); m != e.end() && m->is_array())
+                for (int i = 0; i < city::kStyleCount &&
+                                i < static_cast<int>(m->size()); ++i)
+                    b.styleMix[i] = (*m)[i].get<float>();
+            b.skywayEvery  = e.value("skywayEvery", b.skywayEvery);
+            b.skywayHeight = e.value("skywayHeight", b.skywayHeight);
+            b.skywayWidth  = e.value("skywayWidth", b.skywayWidth);
+            b.signChance   = e.value("signChance", b.signChance);
+            b.palette      = e.value("palette", b.palette);
+            b.glassTint    = vec3Of(e, "glassTint",   b.glassTint);
+            b.frameTint    = vec3Of(e, "frameTint",   b.frameTint);
+            b.accentColor  = vec3Of(e, "accentColor", b.accentColor);
+            b.baseTint     = vec3Of(e, "baseTint",    b.baseTint);
+            b.accentStrength = e.value("accentStrength", b.accentStrength);
+            b.neon         = e.value("neon", b.neon);
+            b.collider     = e.value("collider", b.collider);
+            b.seed         = e.value("seed", b.seed);
+            b.weathering   = e.value("weathering", b.weathering);
+            b.grime        = e.value("grime", b.grime);
+            b.clutter      = e.value("clutter", b.clutter);
+            b.clutterVar   = e.value("clutterVar", b.clutterVar);
+            b.deadNeon     = e.value("deadNeon", b.deadNeon);
+            biomes.push_back(std::move(b));
         }
 }
 
@@ -847,6 +954,28 @@ void RoadSystem::rebuildSideObjects() {
     }
 }
 
+void RoadSystem::rebuildCity() {
+    m_city.clear();
+    m_cityMeshes.clear();
+    if (!cityEnabled || biomes.empty() || !cityPalettes) return;
+    if (m_centerline.size() < 2) return; // the city follows a committed road
+    // Terrain heights come from the LIVE streamer, which already holds the graded
+    // corridor: a facade meets the ground the road actually cut, not the hillside
+    // that was there before Build. Same reason rebuildSideObjects samples here.
+    auto ground = [this](float x, float z) { return m_streamer.heightAt(x, z); };
+    m_city = city::generate(m_centerline, m_centerlineY, width * 0.5f, biomes,
+                            cityPalettes(biomes), ground, std::max(cityBudget, 0));
+
+    // Upload the merged geometry and drop the CPU copy: a district's vertices are
+    // tens of megabytes, and nothing reads them again (bake() re-runs the
+    // generator from the stored params rather than scavenging triangles).
+    m_cityMeshes.reserve(m_city.batches.size());
+    for (city::Batch& b : m_city.batches) {
+        m_cityMeshes.push_back(fitzel::Mesh::create(b.data));
+        b.data = fitzel::MeshData{};
+    }
+}
+
 void RoadSystem::rebuildMesh() {
     needsBuild = false;
     const Layout lo = layout();
@@ -869,6 +998,7 @@ void RoadSystem::rebuildMesh() {
     loft(lo.center, h);
     buildBridges(lo);
     rebuildSideObjects();
+    rebuildCity();
 }
 
 bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,

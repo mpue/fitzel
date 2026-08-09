@@ -74,6 +74,15 @@ struct PanelState {
     // Resolve a texture asset id to a small preview GL id (0 until decoded). Backed
     // by the shared thumbnail cache in main; used to preview the layer textures.
     std::function<unsigned(fitzel::AssetId)> thumbFor;
+
+    // The two hand-made layers on top of the generated ground, so "Reset terrain"
+    // can actually put the world back rather than only the sliders. Neither is on
+    // the undo stack -- sculpting and painting write their fields directly -- which
+    // is why the reset asks first.
+    fitzel::TerrainEditField&  sculpt;        // sculpted height deltas
+    std::function<void()>      publishSculpt; // republish the snapshot after clearing
+    fitzel::TerrainPaintField& paint;         // painted layer weights
+    std::function<void()>      publishPaint;
 };
 
 void drawPanel(const PanelState& s);

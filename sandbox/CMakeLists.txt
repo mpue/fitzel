@@ -21,6 +21,11 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RaceHud.cpp
     src/Showroom.cpp
     src/RoadSide.cpp
+    # The tower generator and the roadside city are RUNTIME, not editor-only: a
+    # district is derived from its biome rules on load, so the shipped player has
+    # to be able to build it too -- the scene file holds the rules, not the towers.
+    src/BuildingGen.cpp
+    src/CityGen.cpp
     src/RainRenderer.cpp
     src/SpraySystem.cpp
     src/SkidSystem.cpp
@@ -50,8 +55,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/FolderDialog.cpp
     src/GameSettingsPanel.cpp
     src/ScatterTool.cpp
-    src/BuildingGen.cpp
     src/BuildingPanel.cpp
+    src/CityPanel.cpp
     src/VehicleTool.cpp
     src/GliderTool.cpp)
 

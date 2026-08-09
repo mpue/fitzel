@@ -22,6 +22,11 @@ fitzel::MeshData makeCylinderX(float r, float ht, int seg);
 // A unit ramp in [-0.5,0.5]^3 rising along +Z. Double-sided.
 std::vector<fitzel::Vertex> makeRampVerts();
 
+// The unit cube as CPU data, vertex-for-vertex what fitzel::Mesh::cube() uploads.
+// Exists so geometry can be MERGED on the CPU (see CityGen's batching) and come
+// out identical to the same box drawn as an entity.
+std::vector<fitzel::Vertex> makeCubeVerts();
+
 // A unit cylinder (radius 0.5, y in [-0.5,0.5], axle Y). Double-sided.
 std::vector<fitzel::Vertex> makeCylinderYVerts(int seg = 20);
 

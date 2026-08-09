@@ -56,6 +56,101 @@ void applyPreset(fitzel::TerrainSettings& u, const GenPreset& p) {
     u.islandRadius = p.islandRadius; u.islandShape   = p.islandShape;
 }
 
+// The "Reset terrain" confirmation.
+//
+// It asks rather than just doing it, because two of the three things it can throw
+// away are NOT undoable: sculpting and painting write their fields directly, with
+// no command on the history stack. It also spells out how much there is to lose,
+// so "reset" is a decision rather than a gamble.
+//
+// The choice between a default landscape and flat ground is offered instead of
+// guessed: in a generator panel "reset" plausibly means either "back to the shape
+// the generator makes untouched" or "give me the blank sandbox back", and the two
+// are not close enough to pick one silently.
+void resetPopup(const PanelState& s, const std::function<void()>& regenerate) {
+    static bool flat         = false;
+    static bool clearSculpt  = true;
+    static bool clearPaint   = true;
+
+    ImGui::SetNextWindowSize(ImVec2(430.0f, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Reset terrain", nullptr,
+                                ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+
+    ui::sectionText("Ground");
+    int mode = flat ? 1 : 0;
+    if (ImGui::RadioButton("Default landscape", &mode, 0)) flat = false;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Every generator slider back to its default -- the shape\n"
+                          "the generator makes with nothing tuned.");
+    if (ImGui::RadioButton("Flat ground", &mode, 1)) flat = true;
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A level plane, like the Empty scene: height, ridges,\n"
+                          "continents, warp, terraces and valleys all at zero.");
+
+    ui::sectionText("Hand-made edits");
+    const int sculpted = static_cast<int>(s.sculpt.deltas.size());
+    const int painted  = static_cast<int>(s.paint.weights.size());
+
+    ImGui::BeginDisabled(sculpted == 0);
+    ImGui::Checkbox("Discard sculpting", &clearSculpt);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (sculpted > 0) ui::hint("%d edited cells", sculpted);
+    else              ui::hint("nothing sculpted");
+    if (sculpted > 0 && clearSculpt)
+        ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                           "Sculpting cannot be undone once discarded.");
+
+    ImGui::BeginDisabled(painted == 0);
+    ImGui::Checkbox("Discard texture painting", &clearPaint);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (painted > 0) ui::hint("%d painted cells", painted);
+    else             ui::hint("nothing painted");
+
+    // The road grades its corridor INTO the sculpt field, so discarding sculpting
+    // takes the road's bed with it and leaves the ribbon hanging. Say so here
+    // rather than let it be discovered.
+    if (sculpted > 0 && clearSculpt)
+        ui::hint("A built road grades its corridor into the sculpt layer, so it\n"
+                 "will need rebuilding afterwards.");
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset", ImVec2(120.0f, 0.0f))) {
+        // Chunk size and resolution are not in this panel and are not part of
+        // what the terrain LOOKS like -- resetting them silently would change the
+        // world's memory and detail budget behind the user's back.
+        const float chunk = s.uiSettings.chunkSize;
+        const int   res   = s.uiSettings.resolution;
+        s.uiSettings = fitzel::TerrainSettings{};
+        s.uiSettings.chunkSize  = chunk;
+        s.uiSettings.resolution = res;
+        if (flat) {
+            s.uiSettings.heightScale  = 0.0f;
+            s.uiSettings.ridgeScale   = 0.0f;
+            s.uiSettings.continentAmp = 0.0f;
+            s.uiSettings.warpStrength = 0.0f;
+            s.uiSettings.terrace      = 0.0f;
+            s.uiSettings.valleyDepth  = 0.0f;
+            s.uiSettings.islandRadius = 0.0f;
+        }
+        if (clearSculpt && sculpted > 0) {
+            s.sculpt.deltas.clear();
+            if (s.publishSculpt) s.publishSculpt();
+        }
+        if (clearPaint && painted > 0) {
+            s.paint.weights.clear();
+            if (s.publishPaint) s.publishPaint();
+        }
+        regenerate();   // pushes the settings, rebuilds, regrows, re-drapes
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
 } // namespace
 
 void drawPanel(const PanelState& s) {
@@ -121,6 +216,13 @@ void drawPanel(const PanelState& s) {
             s.uiSettings.seed = std::fmod(s.uiSettings.seed + 17.3f, 100.0f);
             regenerate();
         }
+        ImGui::SameLine();
+        if (ImGui::Button("Reset terrain...")) ImGui::OpenPopup("Reset terrain");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Put the ground back to a clean slate -- the "
+                              "generator settings, and optionally the sculpting\n"
+                              "and painting on top of them.");
+        resetPopup(s, regenerate);
 
         ui::sectionText("Texture layers");
         ImGui::TextDisabled("A layer paints where BOTH the height and the slope "

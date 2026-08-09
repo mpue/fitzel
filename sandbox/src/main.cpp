@@ -78,6 +78,7 @@
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
+#include "CityPanel.hpp"
 #include "VehicleTool.hpp"
 #include "GliderTool.hpp"
 #include "CarAudio.hpp"
@@ -846,8 +847,10 @@ int main(int argc, char** argv) {
                 publishSculpt();
                 streamer.editsChanged(mn, mx);
                 // Now that the corridor is graded into the live terrain, drape the
-                // side objects (rails/curbs/posts) on it.
+                // side objects (rails/curbs/posts) on it -- and re-plan the city,
+                // whose facades stand on the same freshly cut ground.
                 road.rebuildSideObjects();
+                road.rebuildCity();
             }
         };
 
@@ -1056,6 +1059,16 @@ int main(int argc, char** argv) {
         // Material library: named surface assets solids can be assigned. New
         // objects get the material selected in the Materials panel (matSel).
         std::vector<MaterialDef>& materials = document.materials();
+        // The roadside city needs the four shared materials each biome's palette
+        // slot names, which live in this library -- something a road has no
+        // business reaching into. So it asks, once, through a hook (see
+        // RoadSystem::cityPalettes), and everything downstream (Build, a scene
+        // load, an undo) re-derives the district without main having to remember
+        // to. Set here rather than at construction because `materials` is the
+        // Document's and only exists from this line on.
+        road.cityPalettes = [&materials](const std::vector<city::Biome>& bs) {
+            return city::ensurePalettes(materials, bs);
+        };
         int  matSel          = 0;    // selected material in the Materials panel
         // Secondary-panel visibility (toggled from the View menu). The default
         // layout is just Hierarchy | Scene | Inspector; everything else is hidden.
@@ -1185,6 +1198,7 @@ int main(int argc, char** argv) {
         bool showVegetation  = false;
         bool showScatter     = false;
         bool showBuildings   = false;
+        bool showCity        = false;
         bool showCamPath     = false;
         bool showRoads       = false;
         bool showUiOverlay   = false; // scene 2D UI overlay editor
@@ -1799,6 +1813,34 @@ int main(int argc, char** argv) {
             if (idx < 0) { exportStatus = "Generate a building first."; return; }
             entitySel = idx;
             createPrefabFromSelection(buildingNameBuf);
+        };
+        // Lift the derived building nearest the camera out of the city and into
+        // the scene as a real, editable subtree -- the escape hatch from "derived"
+        // to "authored" (see city::bake). It becomes the live building, so the
+        // Buildings panel can re-tune it or save it as a prefab straight away.
+        auto bakeNearestBuilding = [&]() {
+            const city::District& d = road.district();
+            const glm::vec3 eye = camera.position();
+            int   best = -1;
+            float bestD = 0.0f;
+            for (int i = 0; i < static_cast<int>(d.buildings.size()); ++i) {
+                if (d.buildings[i].params.floors <= 0) continue; // a skyway, not a tower
+                const glm::vec3 dv = d.buildings[i].center - eye;
+                const float     dd = glm::dot(dv, dv);
+                if (best < 0 || dd < bestD) { best = i; bestD = dd; }
+            }
+            if (best < 0) { exportStatus = "No city building to bake."; return; }
+            const std::vector<buildings::Palette> pals =
+                city::ensurePalettes(materials, road.biomes);
+            const int bi = d.buildings[best].biome;
+            if (bi < 0 || bi >= static_cast<int>(pals.size())) return;
+            std::vector<Entity> es = city::bake(d, best, pals[bi], entityCounter);
+            if (es.empty()) return;
+            buildingLiveId = es.front().id;
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(es), "Bake building"),
+                         document);
+            entitySel = document.indexOf(buildingLiveId);
+            exportStatus = "Baked the nearest city building into the scene.";
         };
 #endif // !FITZEL_PLAYER
 
@@ -3476,6 +3518,20 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+            // The city's facades: a static box per piece the generator flagged as
+            // solid (its masses and podium, not the bands, fins or signs), so a
+            // vehicle crashes into a building instead of driving through it. That
+            // is a handful per tower rather than one per part -- BuildingGen only
+            // marks the load-bearing shapes -- which is what keeps a whole
+            // district's collision affordable. Discarded with the physics world
+            // when Play stops, like the road mesh.
+            if (road.enabled && road.cityEnabled)
+                for (const city::Piece& pc : road.district().colliders) {
+                    physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
+                                    glm::angleAxis(glm::radians(pc.yaw),
+                                                   glm::vec3(0, 1, 0)),
+                                    0.0f);
+                }
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
             physicsBody.clear();
@@ -3591,12 +3647,13 @@ int main(int argc, char** argv) {
                                  .parent_path().generic_string()))
                         if (sc.first != me) otherScenes.push_back(sc.first);
                 }
-                showroomUi.begin(entities, otherScenes);
+                showroomUi.begin(entities, otherScenes, camera);
             }
         };
         auto stopPlay = [&] {
             if (!playMode) return;
-            showroomUi.end(entities); // hand the craft back before the snapshot restore
+            // Hand the craft and the camera back before the snapshot restore.
+            showroomUi.end(entities, camera);
             playMode  = false;
             uiMenuOpen = false;     // back to the editor: the scene's menu is gone
             vehicleMode = false;    // the physics car is gone with the world
@@ -3843,10 +3900,18 @@ int main(int argc, char** argv) {
             // Scene menu overlay: while playing, its key opens/closes it. Opening
             // frees the mouse so the menu's buttons can be clicked; closing gives
             // the cursor back to the game if it was walking first-person.
+            // The toggle key is a KEYBOARD setting (0 = the author turned it off),
+            // so it no longer gates whether the menu can be opened at all: a pad
+            // reaches it through its own Menu button, which is the pause button on
+            // every console pad and is not the author's to reassign.
             const bool uiMenuArmed = (playMode || playerMode) && uiOverlay.menuMode() &&
-                                     !uiOverlay.empty() && uiOverlay.toggleKey() != 0;
+                                     !uiOverlay.empty();
             if (uiMenuArmed) {
-                const bool uiKeyDown = input.isKeyDown(uiOverlay.toggleKey());
+                const bool uiKeyDown =
+                    (uiOverlay.toggleKey() != 0 &&
+                     input.isKeyDown(uiOverlay.toggleKey())) ||
+                    (input.hasGamepad() &&
+                     input.gamepadButton(GLFW_GAMEPAD_BUTTON_START));
                 if (uiKeyDown && !prevUiKey) {
                     uiOverlay.setRuntimeVisible(!uiOverlay.runtimeVisible());
                     input.setCursorLocked(uiOverlay.runtimeVisible() ? false : fpsMode);
@@ -3878,11 +3943,14 @@ int main(int argc, char** argv) {
                     stickY > 0.5f ||
                     (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_DOWN) ||
                              input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)));
+                // A confirms; Start does NOT. Start is the Menu button now (it
+                // opens and closes this very overlay), and letting it confirm as
+                // well would fire the focused entry on the same press that opened
+                // the menu.
                 const bool fireBtn =
                     input.isKeyDown(GLFW_KEY_ENTER) ||
                     input.isKeyDown(GLFW_KEY_KP_ENTER) ||
-                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
-                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_START)));
+                    (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_A));
                 if (prevBtn || nextBtn || fireBtn)
                     std::fprintf(stderr, "[navdbg] prev=%d next=%d fire=%d pad=%d\n",
                                  prevBtn ? 1 : 0, nextBtn ? 1 : 0, fireBtn ? 1 : 0,
@@ -3918,8 +3986,7 @@ int main(int argc, char** argv) {
                 const bool fireB =
                     input.isKeyDown(GLFW_KEY_ENTER) || input.isKeyDown(GLFW_KEY_KP_ENTER) ||
                     input.isKeyDown(GLFW_KEY_SPACE) ||
-                    (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
-                             input.gamepadButton(GLFW_GAMEPAD_BUTTON_START)));
+                    (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_A)); // Start = Menu
                 endIn.prev    = prevB && !prevEndPrev;
                 endIn.next    = nextB && !prevEndNext;
                 endIn.confirm = fireB && !prevEndFire;
@@ -4033,8 +4100,9 @@ int main(int argc, char** argv) {
                     const bool f = input.isKeyDown(GLFW_KEY_ENTER) ||
                                    input.isKeyDown(GLFW_KEY_KP_ENTER) ||
                                    input.isKeyDown(GLFW_KEY_SPACE) ||
-                                   (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A) ||
-                                            input.gamepadButton(GLFW_GAMEPAD_BUTTON_START)));
+                                   (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_A));
+                    // Start is the Menu button, not a confirm -- see the scene
+                    // overlay's toggle above.
                     shIn.left = l && !prevShLeft;  shIn.right   = r && !prevShRight;
                     shIn.up   = u && !prevShUp;    shIn.down    = d && !prevShDown;
                     shIn.confirm = f && !prevShFire;
@@ -5216,31 +5284,116 @@ int main(int argc, char** argv) {
                     // is where a craft is meant to stand), else the start/finish
                     // line, else the player start.
                     glm::vec3 pos(0.0f);
-                    float     yaw  = 0.0f;
                     int       slot = -1;
+                    // Where the craft must POINT. Taken from the grid slot's world
+                    // orientation, never from its rotation.y: a decomposed Euler
+                    // triple can express the same facing as [-180, y, -180], where
+                    // the y component is not the heading at all (two circuits here
+                    // are authored exactly that way), and reading .y off one aims
+                    // the craft into the scenery. The world matrix is what the
+                    // renderer uses, so its axes are the facing by definition.
+                    bool  haveHeading = false;
+                    float headRad     = 0.0f;
+                    // `nose` is the craft's forward in world space, flattened to
+                    // the ground plane; the sim's heading convention is
+                    // dir = (sin H, 0, cos H) (see updateGlider), hence atan2(x, z).
+                    auto headingFrom = [&](const glm::vec3& nose) {
+                        glm::vec3 n(nose.x, 0.0f, nose.z);
+                        if (glm::length(n) < 1e-4f) return;
+                        n = glm::normalize(n);
+                        headRad     = std::atan2(n.x, n.z);
+                        haveHeading = true;
+                    };
+                    // The circuit's own chase-camera tuning, lifted off the craft
+                    // that was parked on the grid. The arriving craft brings its
+                    // flight model -- that is what picking a craft MEANS -- but
+                    // not its camera: how close the view sits and how hard it
+                    // follows is a property of the track (a tight technical
+                    // circuit wants a different camera from an open one), and
+                    // every circuit here tunes it separately. Without this, the
+                    // showroom's podium craft silently reframes every race.
+                    bool  haveSlotCam = false;
+                    float slotCamDist = 0.0f, slotCamH = 0.0f, slotCamSide = 0.0f;
+                    float slotCamLook = 0.0f, slotCamStiff = 0.0f;
                     for (const Entity& e : entities)
-                        if (e.components.get<GliderComponent>()) {
-                            slot = e.id; pos = e.center; yaw = e.rotation.y; break;
+                        if (const auto* sg = e.components.get<GliderComponent>()) {
+                            slot = e.id; pos = e.center;
+                            // The model's nose: +Z, or -Z for a craft authored the
+                            // other way round (the Glider's own "Model nose").
+                            headingFrom(glm::vec3(worldOf(e)[2]) *
+                                        (sg->forward == 1 ? -1.0f : 1.0f));
+                            haveSlotCam  = true;
+                            slotCamDist  = sg->camDistance;
+                            slotCamH     = sg->camHeight;
+                            slotCamSide  = sg->camSide;
+                            slotCamLook  = sg->camLookHeight;
+                            slotCamStiff = sg->camStiffness;
+                            break;
                         }
+                    // No craft on the grid: line up on the start/finish gate
+                    // instead. Its direction of travel is its local +Z after its
+                    // own `yaw` offset -- the same axis the sim tests a crossing
+                    // along (see overGate), so the craft faces the way a lap runs.
                     if (slot < 0)
                         for (const Entity& e : entities)
-                            if (e.components.get<FinishLineComponent>()) {
-                                pos = e.center; yaw = e.rotation.y; break;
+                            if (const auto* fl = e.components.get<FinishLineComponent>()) {
+                                pos = e.center;
+                                const glm::quat gq =
+                                    glm::quat(glm::radians(e.rotation)) *
+                                    glm::angleAxis(glm::radians(fl->yaw), glm::vec3(0, 1, 0));
+                                headingFrom(gq * glm::vec3(0.0f, 0.0f, 1.0f));
+                                break;
                             }
-                    if (slot < 0)
+                    if (slot < 0 && !haveHeading)
                         for (const Entity& e : entities)
                             if (e.components.get<PlayerStartComponent>()) {
-                                pos = e.center; yaw = e.rotation.y; break;
+                                pos = e.center;
+                                headingFrom(glm::vec3(worldOf(e)[2]));
+                                break;
                             }
                     // The slot's own craft steps aside, so the field isn't two
                     // gliders deep on the same square.
                     if (slot >= 0)
                         if (Entity* se = document.find(slot)) se->active = false;
 
+                    // Yaw offset 0, deliberately: instantiate ADDS its yaw to the
+                    // root's own, and the root's own is whatever pose the craft
+                    // was authored in on the podium (one of these is turned 71
+                    // degrees to face the showroom camera). Adding that to the
+                    // grid's heading points the craft somewhere between the two.
+                    // The heading is set outright below instead.
                     std::vector<Entity> spawn =
-                        prefab::instantiate(p, entityCounter, pos, yaw);
+                        prefab::instantiate(p, entityCounter, pos, 0.0f);
                     const int rootId = spawn.empty() ? -1 : spawn.front().id;
                     for (Entity& e : spawn) entities.push_back(std::move(e));
+                    if (rootId >= 0)
+                        if (Entity* re = document.find(rootId))
+                            if (auto* rg = re->components.get<GliderComponent>()) {
+                                // Hand the circuit's camera tuning to the craft
+                                // that replaced its grid slot. Only the camera
+                                // block -- thrust, grip and handling stay the
+                                // chosen craft's own.
+                                if (haveSlotCam) {
+                                    rg->camDistance   = slotCamDist;
+                                    rg->camHeight     = slotCamH;
+                                    rg->camSide       = slotCamSide;
+                                    rg->camLookHeight = slotCamLook;
+                                    rg->camStiffness  = slotCamStiff;
+                                }
+                                // Point it down the track, level. The offset
+                                // mirrors beginGliderDrive's own reading of
+                                // rotation.y, so the flight heading comes out as
+                                // exactly `headRad` whichever way this craft's
+                                // model nose is authored. Level because the sim
+                                // computes bank and pitch itself every frame --
+                                // an authored tilt would only fight it.
+                                if (haveHeading) {
+                                    const float rotY = glm::degrees(headRad) -
+                                                       (rg->forward == 1 ? 180.0f : 0.0f);
+                                    re->localRotation = glm::vec3(0.0f, rotY, 0.0f);
+                                    re->rotation      = re->localRotation;
+                                }
+                            }
                     resolveHierarchy();
 
                     // The circuit is run over the laps its card promised.
@@ -5265,7 +5418,11 @@ int main(int argc, char** argv) {
                         raceCountdown = hasRace ? 3.0f : 0.0f;
                         goFlash   = 0.0f;
                         endPrompt = racehud::EndPrompt{};
-                        camChase  = camera.position();
+                        // Seed the chase camera AT the craft, not at wherever the
+                        // camera happens to sit (the showroom just handed it back
+                        // to the editor's own position, which can be a mile off).
+                        // Otherwise the race opens on a swoop in from nowhere.
+                        camChase  = gliderPos;
                     } else {
                         host.hud = "Could not place the craft on the grid.";
                     }
@@ -5449,6 +5606,7 @@ int main(int argc, char** argv) {
                     ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
                     ImGui::MenuItem("Scatter",         nullptr, &showScatter);
                     ImGui::MenuItem("Buildings",       nullptr, &showBuildings);
+                    ImGui::MenuItem("City",            nullptr, &showCity);
                     ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
                     ImGui::MenuItem("Roads",           nullptr, &showRoads);
                     ImGui::MenuItem("UI Overlay",      nullptr, &showUiOverlay);
@@ -7204,6 +7362,7 @@ int main(int argc, char** argv) {
                 showTerrain, uiSettings, streamer, camera, look,
                 texScale, normalStrength, veg.grassDirty, veg.treeCenter, road.needsBuild,
                 assetDb, thumbFor,
+                sculptWork, publishSculpt, paintWork, publishPaint,
             });
 
             sculptui::drawPanel({
@@ -7353,6 +7512,15 @@ int main(int argc, char** argv) {
                 [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
                          paintMode = scatterMode = false; }, // don't fight over LMB
                 buildRoad, deleteRoadPoint, beginRoadEdit, commitRoadEdit});
+
+            // Roadside city: the biome rules live on the road (saved + undoable
+            // with it), the panel only edits them. See CityPanel.cpp.
+            if (showCity)
+                cityui::drawPanel({showCity, road, road.built(),
+                                   [&]{ road.rebuildCity(); },
+                                   bakeNearestBuilding,
+                                   beginRoadEdit, commitRoadEdit,
+                                   exportStatus});
 
             if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
                 ImGui::Checkbox("Show cursor", &cursorVisible);
@@ -9463,6 +9631,41 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // --- Roadside city (see CityGen.hpp) -------------------------------
+            // Drawn as a handful of MERGED meshes, not as twenty thousand loose
+            // primitives. The renderer replays its queue about a dozen times a
+            // frame (four shadow cascades, six probe faces, the water mirror, the
+            // main pass) and re-uploads ~25 uniforms per mesh per pass, so the
+            // cost of a city is its DRAW count, not its triangle count -- and
+            // merging is what collapses one into the other. Geometry is already in
+            // world space, hence the identity model matrix.
+            //
+            // Distance culling stays on this side because submission is shared by
+            // every pass; a frustum test against the main camera would wrongly
+            // empty the reflection. The renderer frustum-culls per pass itself.
+            // The buildings are never entities either, so they cost no hierarchy
+            // row, no undo snapshot and no line in the scene file. Their materials
+            // are the shared "Building A..H" library slots, so they ride in
+            // gpuMats like anything else.
+            if (road.enabled && road.cityEnabled && !road.district().empty()) {
+                const city::District& dist = road.district();
+                const glm::vec3 eye = camera.position();
+                for (std::size_t i = 0; i < dist.batches.size(); ++i) {
+                    const city::Batch& b = dist.batches[i];
+                    // Nearest point of the chunk's box to the eye, so a long chunk
+                    // is not dropped because its centre happens to be far.
+                    const glm::vec3 d = glm::max(glm::max(b.lo - eye, eye - b.hi),
+                                                 glm::vec3(0.0f));
+                    if (glm::dot(d, d) > road.cityRange * road.cityRange) continue;
+                    const int mi = document.materialIndex(b.material);
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) continue;
+                    renderer.submit(road.cityMesh(i), gpuMats[mi], glm::mat4(1.0f),
+                                    true, materials[mi].reflectivity > 0.0f,
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
+                }
+            }
+
             // --- Road side objects (guard rails, curbs, posts) -----------------
             // Derived from the road's side lines and drawn as instanced models: one
             // model resolved per batch, then its baked meshes submitted at every
@@ -10080,9 +10283,11 @@ int main(int argc, char** argv) {
                         if (playerMode) window.requestClose();
                         else            stopPlay();
                     } else if (go.start && !go.scene.empty()) {
-                        // Hand the scene back first: the craft must be captured
-                        // in its authored pose, not floating over the podium.
-                        showroomUi.end(entities);
+                        // Hand the scene and the camera back first: the craft
+                        // must be captured in its authored pose (not floating
+                        // over the podium), and the race must not inherit the
+                        // showroom's lens.
+                        showroomUi.end(entities, camera);
                         resolveHierarchy();
                         pendingCraftJson = nlohmann::json();
                         pendingCraftName = go.craftName;
