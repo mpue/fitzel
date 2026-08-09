@@ -120,12 +120,52 @@ void placeChip(const Ctx& g, float x, float y, float h, int place, float alpha) 
            fsz, fade(col, alpha), b);
 }
 
+// --- Boost: a segmented tank gauge under the speed bar ----------------------
+// Segments rather than a smooth fill because a boost is spent in decisions, not
+// in millilitres: discrete blocks let the pilot see "two more presses" at a
+// glance, mid-corner, without reading a number. The part-full block at the head
+// of the row is drawn faded so the bar still moves continuously as it drains --
+// a purely blocky gauge looks broken while it is refilling.
+void drawBoostBar(const Ctx& g, const racesim::RaceState& st, float x0, float x1,
+                  float y) {
+    const int   n    = std::clamp(st.boostSegments, 1, 40);
+    const float cap  = std::max(st.boostCapacity, 1.0f);
+    const float fill = std::clamp(st.boostCharge / cap, 0.0f, 1.0f) * n; // in segments
+    const float gap  = 2.0f * g.S;
+    const float segW = ((x1 - x0) - gap * (n - 1)) / n;
+    const float segH = 5.0f * g.S;
+    const float r    = 1.5f * g.S;
+
+    // Running dry flashes the whole row red; while boosting it pulses, so the
+    // gauge reads as "in use" from peripheral vision.
+    const bool  dry   = st.boostDryFlash > 0.0f;
+    const float pulse = st.boostActive
+                            ? 0.75f + 0.25f * std::sin(g.time * 18.0f)
+                            : 1.0f;
+    const ImU32 on    = dry ? IM_COL32(255, 96, 96, 255)
+                            : (st.boostActive ? kCyan : IM_COL32(120, 220, 255, 235));
+
+    for (int i = 0; i < n; ++i) {
+        const float sx = x0 + i * (segW + gap);
+        const ImVec2 a(sx, y), b(sx + segW, y + segH);
+        g.dl->AddRectFilled(a, b, IM_COL32(255, 255, 255, 28), r);
+        const float f = std::clamp(fill - static_cast<float>(i), 0.0f, 1.0f);
+        if (f > 0.02f)
+            g.dl->AddRectFilled(a, b, fade(on, f * pulse), r);
+    }
+    g.label(x0, y - g.fSmall - 2.0f * g.S, dry ? IM_COL32(255, 120, 120, 255) : kDim,
+            "BOOST");
+}
+
 // --- Speed: big number + a bar that runs past the top-speed tick on boost ----
 void drawSpeed(const Ctx& g, const racesim::RaceState& st) {
     const float kmh  = st.gliderSpeedMps * 3.6f;
     const float top  = std::max(st.gliderTopSpeed, 1.0f);
     const float barMax = top * 1.35f;                 // headroom for boost
-    const float w  = 250.0f * g.S, h = 86.0f * g.S;
+    // Taller than the plain speed panel: the boost gauge lives inside it rather
+    // than floating on its own, so the two numbers a pilot reads mid-corner are
+    // in one place.
+    const float w  = 250.0f * g.S, h = 118.0f * g.S;
     const float ax = g.x0 + g.pad, ay = g.y1 - g.pad - h;
     const bool  boosting = st.gliderBoosting;
     g.panel(ax, ay, ax + w, ay + h, kInk, boosting ? kCyan : kGold);
@@ -139,7 +179,7 @@ void drawSpeed(const Ctx& g, const racesim::RaceState& st) {
 
     // Bar: base fill to the top-speed tick, the boost overrun beyond it in cyan.
     const float bx0 = ix, bx1 = ax + w - 14.0f * g.S;
-    const float by0 = ay + h - 16.0f * g.S, by1 = by0 + 7.0f * g.S;
+    const float by0 = ay + h - 48.0f * g.S, by1 = by0 + 7.0f * g.S;
     g.dl->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1),
                         IM_COL32(255, 255, 255, 30), 3.0f * g.S);
     const float f = std::clamp(st.gliderSpeedMps / barMax, 0.0f, 1.0f);
@@ -149,6 +189,8 @@ void drawSpeed(const Ctx& g, const racesim::RaceState& st) {
     const float tick = bx0 + (bx1 - bx0) * (top / barMax);
     g.dl->AddLine(ImVec2(tick, by0 - 2.0f * g.S), ImVec2(tick, by1 + 2.0f * g.S),
                   IM_COL32(255, 255, 255, 120), 1.0f);
+
+    drawBoostBar(g, st, bx0, bx1, ay + h - 13.0f * g.S);
 }
 
 // --- Lap + times, and the position badge under it ---------------------------

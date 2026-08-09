@@ -45,6 +45,17 @@ struct RaceState {
     float gliderBoostHold = 1.5f; // linger time of the last pad's boost (s)
     bool  gliderBoosting  = false; // on/just-left a boost pad (HUD flash)
     bool  gliderWasOnPad  = false; // last frame's pad contact (entry punch edge)
+
+    // --- Manual boost (gamepad A / Left Shift) ---------------------------
+    // A tank the pilot spends, as opposed to the boost PADS above, which the
+    // track hands out. Refilled to full at every race start (the countdown), so
+    // nobody lines up on the grid with an empty one.
+    float boostCharge   = 100.0f;  // what is left in the tank
+    float boostCapacity = 100.0f;  // what a full one holds (mirrored for the HUD)
+    int   boostSegments = 10;      // HUD bar divisions, derived from the capacity
+    bool  boostActive   = false;   // held AND actually spending (HUD + speed FX)
+    float boostIdle     = 0.0f;    // seconds since it last spent anything
+    float boostDryFlash = 0.0f;    // counts down after running the tank dry (HUD)
     // Off-track rescue: the last spot the glider was safely on the road, to pop
     // it back onto after it falls off (e.g. off a bridge).
     glm::vec3 respawnPos{0.0f};

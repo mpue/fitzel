@@ -465,6 +465,18 @@ public:
     bool  invertSteer = false;// swap A/D (left stick) so the craft steers the other way
     float grip       = 3.0f;  // how fast sideways drift is killed (1/s; higher = less slide)
     float drag       = 0.4f;  // linear damping (1/s)
+    // Manual boost (gamepad A / Left Shift): a tank the pilot spends rather than
+    // a pad they drive over. Holding the button drains `boostCapacity` at
+    // `boostDrain` a second and pushes the craft past its own top speed; letting
+    // go refills it at `boostRegen` a second, but only after `boostDelay` has
+    // passed -- without that pause, tapping the button would be strictly better
+    // than holding it, which is the wrong thing to teach.
+    float boostCapacity = 100.0f; // full tank (the HUD bar's 100%)
+    float boostDrain    = 34.0f;  // tank units per second while held (~3 s of boost)
+    float boostRegen    = 9.0f;   // tank units per second while idle (~11 s to refill)
+    float boostDelay    = 1.2f;   // seconds after release before it starts refilling
+    float boostThrust   = 55.0f;  // extra forward acceleration while boosting (m/s^2)
+    float boostTopSpeed = 30.0f;  // m/s of speed cap ABOVE maxSpeed while boosting
     // Hover
     float rideHeight     = 1.6f; // body-centre height held above the ground (m)
     float hoverStiffness = 6.0f; // spring pulling back to rideHeight (1/s)

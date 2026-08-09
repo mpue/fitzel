@@ -43,8 +43,12 @@ std::string autoSetup(Document& doc, int rootId) {
 }
 
 void inspector(GliderComponent& gc, Entity& /*root*/, Document& /*doc*/) {
-    bool hoverHdr = false, attHdr = false, camHdr = false;
+    bool hoverHdr = false, attHdr = false, camHdr = false, boostHdr = false;
     for (const Property& pr : gc.props()) {
+        if (!boostHdr && pr.key == "boostCapacity") {
+            ui::sectionText("Boost (A / Left Shift)");
+            boostHdr = true;
+        }
         if (!hoverHdr && pr.key == "rideHeight") { ui::sectionText("Hover");    hoverHdr = true; }
         if (!attHdr   && pr.key == "bankAngle")  { ui::sectionText("Attitude"); attHdr   = true; }
         if (!camHdr   && pr.key.rfind("cam", 0) == 0) { ui::sectionText("Follow camera"); camHdr = true; }

@@ -256,6 +256,25 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     }
     if (gc->invertSteer) steerIn = -steerIn; // flip left/right
 
+    // Manual boost: held, not tapped. Read here with the rest of the input; what
+    // it costs and what it does is settled inside the fixed step below, because
+    // both are rates and a rate integrated on the render clock would make the
+    // tank last longer on a fast machine than on a slow one.
+    bool boostHeld = env.input.isKeyDown(GLFW_KEY_LEFT_SHIFT);
+    if (env.input.hasGamepad() && env.input.gamepadButton(GLFW_GAMEPAD_BUTTON_A))
+        boostHeld = true;
+    // The HUD's end-of-race prompt also answers to A, and the victory lap flies
+    // itself -- so a finished race must not read the button as thrust.
+    if (st.raceFinished) boostHeld = false;
+    // Keep the tank's shape in step with the craft that is being flown, so
+    // editing the component in the inspector shows up immediately.
+    st.boostCapacity = glm::max(gc->boostCapacity, 1.0f);
+    st.boostCharge   = glm::min(st.boostCharge, st.boostCapacity);
+    // Segments are derived, not authored: one per ten units of tank, so a bigger
+    // tank reads as a longer bar rather than the same bar with coarser steps.
+    st.boostSegments = glm::clamp(
+        static_cast<int>(std::lround(st.boostCapacity / 10.0f)), 4, 20);
+
     // Race over: the craft flies itself away on a victory lap. Take the controls
     // off the player and cruise at full throttle, but STEER ALONG THE ROAD (the
     // craft is a free flyer, so without this it would just fly dead straight off
@@ -292,6 +311,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             // Ignore the immediate first crossing as the craft drives off the
             // start line.
             st.raceActive = true; st.raceFinished = false;
+            // Everyone leaves the grid with a full tank.
+            st.boostCharge = st.boostCapacity;
+            st.boostIdle   = 0.0f;
             st.raceClock = st.lapClock = 0.0f; st.raceLap = 0;
             st.lastLap = st.bestLap = 0.0f; st.cpPassed.clear();
             st.raceLaps = 0;
@@ -432,7 +454,39 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             onBoostPad = true;
             hitPad     = bp;
         }
-        st.gliderBoosting = onBoostPad || st.gliderOverspeed > 1.0f; // HUD
+        // --- Manual boost ------------------------------------------------
+        // Spent and refilled on the FIXED clock: both are rates, and a rate
+        // integrated on the render clock would empty the tank faster on a slow
+        // machine than on a fast one. Sits after the pads so it shares their
+        // decay and their speed-cap path rather than fighting over it.
+        //
+        // Frozen on the grid counts as not spending: a pilot leaning on the
+        // button through "Ready, Set..." would otherwise reach GO with nothing
+        // left, which punishes exactly the wrong instinct.
+        const bool spending = boostHeld && !frozen && st.boostCharge > 0.0f;
+        if (spending) {
+            st.boostCharge = glm::max(0.0f,
+                                      st.boostCharge - gc->boostDrain * env.kSimH);
+            st.boostIdle   = 0.0f;
+            velH += fwd * gc->boostThrust * env.kSimH;
+            st.gliderOverspeed = glm::max(st.gliderOverspeed, gc->boostTopSpeed);
+            // Long enough that the cap does not collapse between two steps, short
+            // enough that letting go slows the craft promptly -- a manual boost
+            // should end when the pilot ends it, unlike a pad's afterglow.
+            st.gliderBoostHold = glm::max(st.gliderBoostHold, 0.55f);
+            if (st.boostCharge <= 0.0f) st.boostDryFlash = 0.9f; // HUD: ran dry
+        } else {
+            st.boostIdle += env.kSimH;
+            if (st.boostIdle >= glm::max(gc->boostDelay, 0.0f))
+                st.boostCharge = glm::min(st.boostCapacity,
+                                          st.boostCharge + gc->boostRegen * env.kSimH);
+        }
+        st.boostActive = spending;
+        if (st.boostDryFlash > 0.0f)
+            st.boostDryFlash = glm::max(0.0f, st.boostDryFlash - env.kSimH);
+
+        st.gliderBoosting = onBoostPad || spending ||
+                            st.gliderOverspeed > 1.0f; // HUD
         // Deep punch the instant the craft mounts a pad (rising edge), so the
         // boost is *felt*, not just seen. Retriggers only on a fresh entry.
         if (onBoostPad && !st.gliderWasOnPad && hitPad) env.playBoostPunch(*hitPad);

@@ -569,6 +569,14 @@ const std::vector<Property>& GliderComponent::properties() {
         p.push_back(std::move(inv));
         addFloat("Grip",         "grip",       &GliderComponent::grip,       0.0f, 12.0f,  "%.2f");
         addFloat("Drag",         "drag",       &GliderComponent::drag,       0.0f, 4.0f,   "%.2f");
+        // Manual boost (grouped under a "Boost" header at "boostCapacity" --
+        // see gliderui::inspector)
+        addFloat("Boost tank",   "boostCapacity", &GliderComponent::boostCapacity, 10.0f, 500.0f, "%.0f");
+        addFloat("Boost drain",  "boostDrain",    &GliderComponent::boostDrain,     1.0f, 200.0f, "%.0f /s");
+        addFloat("Boost regen",  "boostRegen",    &GliderComponent::boostRegen,     0.0f, 100.0f, "%.1f /s");
+        addFloat("Boost delay",  "boostDelay",    &GliderComponent::boostDelay,     0.0f,  10.0f, "%.2f s");
+        addFloat("Boost thrust", "boostThrust",   &GliderComponent::boostThrust,    0.0f, 200.0f, "%.0f m/s2");
+        addFloat("Boost top-up", "boostTopSpeed", &GliderComponent::boostTopSpeed,  0.0f, 120.0f, "%.0f m/s");
         // Hover (grouped under a "Hover" header at "rideHeight" -- see gliderui::inspector)
         addFloat("Ride height",  "rideHeight",     &GliderComponent::rideHeight,     0.2f, 12.0f, "%.2f m");
         addFloat("Hover spring", "hoverStiffness", &GliderComponent::hoverStiffness, 0.5f, 20.0f, "%.1f");
