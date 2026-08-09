@@ -185,6 +185,9 @@ private:
     std::string m_copyStatus;
     // Element index of the focused button (-1 = none). Runtime only.
     int  m_focus = -1;
+    // Menu entry animation, 0..1, restarted each time the menu opens. Runtime
+    // only, never serialized.
+    float m_openT = 0.0f;
     bool m_menuMode      = false;        // authored: HUD (false) or menu (true)
     int  m_toggleKey     = kKeyEscape;   // authored: which key opens a menu
     bool m_runtimeVisible = true;        // runtime only, never serialized

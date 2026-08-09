@@ -62,15 +62,24 @@ public:
 
     // Take the scene over. `fallbackScenes` are the project's other scene stems,
     // used as the circuit list when the scene authors no Track Entry -- so the
-    // picker is never empty. Snapshots every craft's pose so end() can put the
-    // scene back exactly as it was.
+    // picker is never empty. Snapshots every craft's pose AND the camera, so
+    // end() can put both back exactly as they were.
     void begin(const std::vector<Entity>& entities,
-               const std::vector<std::string>& fallbackScenes);
-    // Hand the scene back: craft poses and active flags restored. Safe to call
-    // when not active. Call before reading the chosen craft out of the scene --
-    // a craft that is off stage is deactivated, and a prefab built from it would
-    // carry that.
-    void end(std::vector<Entity>& entities);
+               const std::vector<std::string>& fallbackScenes,
+               const fitzel::Camera& camera);
+    // Hand the scene and the camera back: craft poses, active flags, and the
+    // camera's own settings restored. Safe to call when not active.
+    //
+    // The camera matters as much as the poses here. A race drives position, yaw
+    // and pitch every frame, but nothing downstream ever writes the FOV -- so a
+    // showroom that walked off with a 46-degree lens (or mid-launch, a 72-degree
+    // one) would hand the race a camera that is silently wrong for the rest of
+    // the session, and Play's own snapshot would then carry it back into the
+    // editor. The showroom BORROWS the camera; it does not get to keep it.
+    //
+    // Call before reading the chosen craft out of the scene -- a craft that is
+    // off stage is deactivated, and a prefab built from it would carry that.
+    void end(std::vector<Entity>& entities, fitzel::Camera& camera);
     bool active() const { return m_active; }
 
     // Pose the craft, drive the camera, advance the effect clocks. Runs before
@@ -134,6 +143,10 @@ private:
     float m_camDist = 9.0f, m_camHeight = 2.6f, m_camPitch = -8.0f;
     float m_camOrbit = 6.0f, m_camFov = 48.0f;
     glm::vec3 m_accent{0.38f, 0.87f, 1.0f};
+
+    // The camera as it stood when the showroom took it over, restored by end().
+    glm::vec3 m_camHome{0.0f};
+    float     m_camHomeYaw = 0.0f, m_camHomePitch = 0.0f, m_camHomeFov = 60.0f;
 
     std::vector<Craft> m_craft;
     std::vector<Track> m_tracks;

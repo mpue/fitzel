@@ -255,7 +255,8 @@ bool Showroom::isShowroomScene(const std::vector<Entity>& entities) {
 }
 
 void Showroom::begin(const std::vector<Entity>& entities,
-                     const std::vector<std::string>& fallbackScenes) {
+                     const std::vector<std::string>& fallbackScenes,
+                     const fitzel::Camera& camera) {
     m_craft.clear();
     m_tracks.clear();
     m_cues.clear();
@@ -342,6 +343,12 @@ void Showroom::begin(const std::vector<Entity>& entities,
             Track t; t.scene = s; t.title = s; m_tracks.push_back(std::move(t));
         }
 
+    // The camera is borrowed from here until end() gives it back.
+    m_camHome      = camera.position();
+    m_camHomeYaw   = camera.yaw();
+    m_camHomePitch = camera.pitch();
+    m_camHomeFov   = camera.fov();
+
     m_craftSel = m_trackSel = 0;
     m_prevCraft = -1;
     m_row      = Row::Craft;
@@ -354,8 +361,14 @@ void Showroom::begin(const std::vector<Entity>& entities,
     m_active = true;
 }
 
-void Showroom::end(std::vector<Entity>& entities) {
+void Showroom::end(std::vector<Entity>& entities, fitzel::Camera& camera) {
     if (!m_active) return;
+    // Give the camera back before anything else looks at it. The FOV especially:
+    // a race never writes one, so whatever is left here is what it runs with.
+    camera.setPosition(m_camHome);
+    camera.setYaw(m_camHomeYaw);
+    camera.setPitch(m_camHomePitch);
+    camera.setFov(m_camHomeFov);
     // Put every craft back exactly as the scene had it. Without this the chosen
     // craft would be carried into the race in its showroom pose -- floating,
     // spun, and (for the ones that were off stage) deactivated.

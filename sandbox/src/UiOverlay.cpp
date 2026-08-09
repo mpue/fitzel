@@ -26,9 +26,24 @@ namespace {
 int colOf(UiAnchor a) { return static_cast<int>(a) % 3; } // 0 left, 1 centre, 2 right
 int rowOf(UiAnchor a) { return static_cast<int>(a) / 3; } // 0 top,  1 middle, 2 bottom
 
-ImU32 col32(const glm::vec4& c) {
+ImU32 col32(const glm::vec4& c, float alpha = 1.0f) {
     auto b = [](float v) { return static_cast<int>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
-    return IM_COL32(b(c.r), b(c.g), b(c.b), b(c.a));
+    return IM_COL32(b(c.r), b(c.g), b(c.b), b(c.a * std::clamp(alpha, 0.0f, 1.0f)));
+}
+
+// Scale an already-packed colour's alpha (for the menu's fade-in).
+ImU32 fade(ImU32 c, float a) {
+    const float f = std::clamp(a, 0.0f, 1.0f);
+    return (c & 0x00FFFFFFu) | (static_cast<ImU32>(((c >> 24) & 0xFF) * f) << 24);
+}
+
+// The menu's one accent, matching the focus ring the pad navigation already
+// used -- and the racing HUD's gold, so the game speaks with one voice.
+constexpr ImU32 kMenuAccent = IM_COL32(255, 215, 120, 255);
+
+float easeOutCubic(float t) {
+    const float u = 1.0f - std::clamp(t, 0.0f, 1.0f);
+    return 1.0f - u * u * u;
 }
 
 // Screen-space top-left of an element's box. `box` is the already-scaled pixel
@@ -57,8 +72,31 @@ float baseFontPx(const ImVec2& vsize) {
 // Text with a soft drop shadow, like the Play HUD's shadowText.
 void shadowText(ImDrawList* dl, ImFont* font, float px, const ImVec2& p,
                 ImU32 col, const char* s) {
-    dl->AddText(font, px, ImVec2(p.x + 2.0f, p.y + 2.0f), IM_COL32(0, 0, 0, 170), s);
+    const float a = ((col >> 24) & 0xFF) / 255.0f;
+    dl->AddText(font, px, ImVec2(p.x + 2.0f, p.y + 2.0f),
+                fade(IM_COL32(0, 0, 0, 170), a), s);
     dl->AddText(font, px, p, col, s);
+}
+
+// Where an element lands on screen, without drawing it. Split out of drawVisual
+// so a caller can know the rectangles BEFORE anything is drawn -- which is what
+// lets the menu frame itself around its own contents, and what stops a lit
+// button being drawn twice (once to measure, once to light).
+void elementRect(const UiElement& e, const ImVec2& vmin, const ImVec2& vsize,
+                 ImVec2& p0, ImVec2& p1) {
+    const float scale = vsize.y / UiOverlay::kRefHeight;
+    const ImVec2 off(e.offset.x * scale, e.offset.y * scale);
+    if (e.type == UiElementType::Text) {
+        const float px = std::max(6.0f, baseFontPx(vsize) * e.fontScale);
+        const ImVec2 ts =
+            ImGui::GetFont()->CalcTextSizeA(px, FLT_MAX, 0.0f, e.text.c_str());
+        p0 = topLeft(e.anchor, vmin, vsize, off, ts);
+        p1 = ImVec2(p0.x + ts.x, p0.y + ts.y);
+        return;
+    }
+    const ImVec2 box(std::max(4.0f, e.size.x * scale), std::max(4.0f, e.size.y * scale));
+    p0 = topLeft(e.anchor, vmin, vsize, off, box);
+    p1 = ImVec2(p0.x + box.x, p0.y + box.y);
 }
 
 // Draw one element's visuals and return its screen rect (p0=top-left, p1=bottom-
@@ -66,33 +104,30 @@ void shadowText(ImDrawList* dl, ImFont* font, float px, const ImVec2& p,
 // null = none). `hovered` lifts a button's background so a click reads pressable.
 void drawVisual(ImDrawList* dl, const UiElement& e, const ImVec2& vmin,
                 const ImVec2& vsize, const fitzel::Texture* tex, bool hovered,
-                ImVec2& outP0, ImVec2& outP1) {
-    const float scale = vsize.y / UiOverlay::kRefHeight;
+                ImVec2& outP0, ImVec2& outP1, const ImVec2& shift = ImVec2(0, 0),
+                float alpha = 1.0f) {
     ImFont* font = ImGui::GetFont();
+    ImVec2 p0, p1;
+    elementRect(e, vmin, vsize, p0, p1);
+    p0.x += shift.x; p0.y += shift.y;
+    p1.x += shift.x; p1.y += shift.y;
+    outP0 = p0; outP1 = p1;
 
     if (e.type == UiElementType::Text) {
         const float px = std::max(6.0f, baseFontPx(vsize) * e.fontScale);
-        const ImVec2 ts = font->CalcTextSizeA(px, FLT_MAX, 0.0f, e.text.c_str());
-        const ImVec2 p0 = topLeft(e.anchor, vmin, vsize, ImVec2(e.offset.x * scale,
-                                  e.offset.y * scale), ts);
-        shadowText(dl, font, px, p0, col32(e.color), e.text.c_str());
-        outP0 = p0; outP1 = ImVec2(p0.x + ts.x, p0.y + ts.y);
+        shadowText(dl, font, px, p0, col32(e.color, alpha), e.text.c_str());
         return;
     }
 
-    // Button / Image share a boxed layout.
-    const ImVec2 box(std::max(4.0f, e.size.x * scale), std::max(4.0f, e.size.y * scale));
-    const ImVec2 p0 = topLeft(e.anchor, vmin, vsize, ImVec2(e.offset.x * scale,
-                              e.offset.y * scale), box);
-    const ImVec2 p1(p0.x + box.x, p0.y + box.y);
-    outP0 = p0; outP1 = p1;
+    const ImVec2 box(p1.x - p0.x, p1.y - p0.y);
 
     if (e.type == UiElementType::Image) {
         // GL textures are bottom-up, so flip V (uv0.y=1, uv1.y=0) -- same as the
         // scene viewport image -- or the picture shows upside down.
         if (tex && tex->isValid())
             dl->AddImage((ImTextureID)(std::intptr_t)tex->id(), p0, p1,
-                         ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                         ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f),
+                         fade(IM_COL32_WHITE, alpha));
         // No placeholder in the runtime path -- an unset image simply draws
         // nothing; the authoring pass outlines it instead (see drawAuthoring).
         return;
@@ -102,20 +137,22 @@ void drawVisual(ImDrawList* dl, const UiElement& e, const ImVec2& vmin,
     const float rounding = std::min(box.y * 0.25f, 10.0f);
     if (tex && tex->isValid()) {
         dl->AddImageRounded((ImTextureID)(std::intptr_t)tex->id(), p0, p1,
-            ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), IM_COL32_WHITE, rounding); // flip V (GL bottom-up)
+            ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f), fade(IM_COL32_WHITE, alpha),
+            rounding); // flip V (GL bottom-up)
         if (hovered)
-            dl->AddRectFilled(p0, p1, IM_COL32(255, 255, 255, 40), rounding);
+            dl->AddRectFilled(p0, p1, fade(IM_COL32(255, 255, 255, 40), alpha), rounding);
     } else {
         glm::vec4 bg = e.bgColor;
         if (hovered) bg = glm::vec4(glm::min(glm::vec3(bg) + 0.12f, glm::vec3(1.0f)), bg.a);
-        dl->AddRectFilled(p0, p1, col32(bg), rounding);
-        dl->AddRect(p0, p1, IM_COL32(255, 255, 255, hovered ? 120 : 60), rounding, 0, 1.5f);
+        dl->AddRectFilled(p0, p1, col32(bg, alpha), rounding);
+        dl->AddRect(p0, p1, fade(IM_COL32(255, 255, 255, hovered ? 120 : 60), alpha),
+                    rounding, 0, 1.5f);
     }
     if (!e.text.empty()) {
         const float px = std::max(6.0f, baseFontPx(vsize) * e.fontScale);
         const ImVec2 ts = font->CalcTextSizeA(px, FLT_MAX, 0.0f, e.text.c_str());
         const ImVec2 tp(p0.x + (box.x - ts.x) * 0.5f, p0.y + (box.y - ts.y) * 0.5f);
-        shadowText(dl, font, px, tp, col32(e.color), e.text.c_str());
+        shadowText(dl, font, px, tp, col32(e.color, alpha), e.text.c_str());
     }
 }
 
@@ -318,11 +355,14 @@ void UiOverlay::focusFirst() {
 
 void UiOverlay::resetRuntime() {
     m_runtimeVisible = !m_menuMode;
+    m_openT = m_menuMode ? 0.0f : 1.0f;
     focusFirst();
 }
 
 void UiOverlay::setRuntimeVisible(bool v) {
-    if (v && !m_runtimeVisible) focusFirst();
+    // Opening replays the entry animation, so a menu always comes up the same
+    // way rather than snapping in on every re-open but the first.
+    if (v && !m_runtimeVisible) { focusFirst(); m_openT = 0.0f; }
     m_runtimeVisible = v;
 }
 
@@ -362,37 +402,143 @@ void UiOverlay::drawRuntime(ImDrawList* dl, const glm::vec2& vmin, const glm::ve
                             AssetDatabase& assets, const UiActionSink& sink) {
     if (!m_runtimeVisible) return; // a closed menu draws nothing and eats no clicks
     const ImVec2 vm(vmin.x, vmin.y), vs(vsize.x, vsize.y);
-    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mouse = io.MousePos;
     const bool clicked = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
-    const bool moved   = ImGui::GetIO().MouseDelta.x != 0.0f ||
-                         ImGui::GetIO().MouseDelta.y != 0.0f;
+    const bool moved   = io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f;
+    const float S = std::clamp(vs.y / 900.0f, 0.55f, 2.2f);
+
+    // --- Menu mode: give it a stage ----------------------------------------
+    // A HUD overlay is drawn bare, as it always was -- it belongs ON the game. A
+    // MENU is a different thing: it stops the game being the thing you are
+    // looking at, and until now it was drawn just as bare, which left authored
+    // buttons floating unreadably over whatever happened to be on screen. The
+    // chrome below is generated, not authored: the author still only places
+    // buttons, and gets a menu that frames itself around them.
+    float t = 1.0f, alpha = 1.0f, slide = 0.0f;
+    if (m_menuMode) {
+        m_openT = std::min(1.0f, m_openT + io.DeltaTime * 4.5f);
+        t     = easeOutCubic(m_openT);
+        alpha = t;
+        slide = (1.0f - t) * 26.0f * S;   // the block settles up into place
+
+        // Scrim: the game recedes. Darkest at the edges so the middle -- where a
+        // centred menu sits -- keeps some of the scene showing through.
+        dl->AddRectFilled(ImVec2(vm.x, vm.y), ImVec2(vm.x + vs.x, vm.y + vs.y),
+                          fade(IM_COL32(4, 6, 11, 200), alpha));
+        const float band = vs.y * 0.34f;
+        dl->AddRectFilledMultiColor(ImVec2(vm.x, vm.y), ImVec2(vm.x + vs.x, vm.y + band),
+                                    fade(IM_COL32(2, 3, 6, 170), alpha),
+                                    fade(IM_COL32(2, 3, 6, 170), alpha),
+                                    fade(IM_COL32(2, 3, 6, 0), alpha),
+                                    fade(IM_COL32(2, 3, 6, 0), alpha));
+        dl->AddRectFilledMultiColor(ImVec2(vm.x, vm.y + vs.y - band),
+                                    ImVec2(vm.x + vs.x, vm.y + vs.y),
+                                    fade(IM_COL32(2, 3, 6, 0), alpha),
+                                    fade(IM_COL32(2, 3, 6, 0), alpha),
+                                    fade(IM_COL32(2, 3, 6, 170), alpha),
+                                    fade(IM_COL32(2, 3, 6, 170), alpha));
+
+        // The frame, fitted to whatever the author placed. Skipped when the
+        // elements sprawl across most of the screen -- a full-bleed menu is a
+        // deliberate layout, and boxing it would only add a pointless border.
+        ImVec2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+        int counted = 0;
+        for (const UiElement& e : m_elements) {
+            if (!e.visible) continue;
+            ImVec2 a, b;
+            elementRect(e, vm, vs, a, b);
+            lo.x = std::min(lo.x, a.x); lo.y = std::min(lo.y, a.y);
+            hi.x = std::max(hi.x, b.x); hi.y = std::max(hi.y, b.y);
+            ++counted;
+        }
+        if (counted > 0 &&
+            (hi.x - lo.x) < vs.x * 0.86f && (hi.y - lo.y) < vs.y * 0.86f) {
+            const float padX = 34.0f * S, padY = 30.0f * S;
+            const ImVec2 a(lo.x - padX, lo.y - padY + slide);
+            const ImVec2 b(hi.x + padX, hi.y + padY + slide);
+            const float r = 10.0f * S;
+            // Outer glow, then the panel, then a hairline and an accent spine.
+            for (int i = 4; i >= 1; --i)
+                dl->AddRect(ImVec2(a.x - i * 2.0f * S, a.y - i * 2.0f * S),
+                            ImVec2(b.x + i * 2.0f * S, b.y + i * 2.0f * S),
+                            fade(kMenuAccent, 0.05f * alpha / i),
+                            r + i * 2.0f * S, 0, 2.0f * S);
+            dl->AddRectFilled(a, b, fade(IM_COL32(9, 12, 19, 236), alpha), r);
+            dl->AddRect(a, b, fade(IM_COL32(255, 255, 255, 34), alpha), r, 0, 1.0f);
+            dl->AddRectFilled(a, ImVec2(a.x + 3.0f * S, b.y),
+                              fade(kMenuAccent, 0.9f * alpha), r,
+                              ImDrawFlags_RoundCornersLeft);
+            // Corner ticks: cheap, and they make a plain rectangle read as a
+            // deliberate frame rather than a default one.
+            const float tick = 16.0f * S, th = 2.0f * S;
+            const ImU32 tc = fade(kMenuAccent, 0.55f * alpha);
+            dl->AddLine(ImVec2(b.x - tick, a.y), ImVec2(b.x, a.y), tc, th);
+            dl->AddLine(ImVec2(b.x, a.y), ImVec2(b.x, a.y + tick), tc, th);
+            dl->AddLine(ImVec2(b.x - tick, b.y), ImVec2(b.x, b.y), tc, th);
+            dl->AddLine(ImVec2(b.x, b.y - tick), ImVec2(b.x, b.y), tc, th);
+
+            // Control hint under the frame. The close half is only claimed when
+            // the menu really is on Escape -- the toggle key is authored, and a
+            // hint that names the wrong key is worse than none.
+            ImFont* font = ImGui::GetFont();
+            const float hs = 13.0f * S;
+            const char* hint = (m_toggleKey == kKeyEscape)
+                                   ? "ENTER / (A)  SELECT       ESC / MENU  CLOSE"
+                                   : "ENTER / (A)  SELECT";
+            const float hw = font->CalcTextSizeA(hs, FLT_MAX, 0.0f, hint).x;
+            shadowText(dl, font, hs,
+                       ImVec2((a.x + b.x) * 0.5f - hw * 0.5f, b.y + 12.0f * S),
+                       fade(IM_COL32(150, 162, 182, 255), alpha), hint);
+        }
+    }
+
+    const ImVec2 shift(0.0f, slide);
+    const float  pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 3.2f);
+
     for (int i = 0; i < static_cast<int>(m_elements.size()); ++i) {
         const UiElement& e = m_elements[i];
         if (!e.visible) continue;
         const fitzel::Texture* tex = resolve(assets, e.image);
         ImVec2 p0, p1;
         if (e.type == UiElementType::Button) {
-            // Pre-place to hit-test before drawing, so the highlight shows.
-            drawVisual(dl, e, vm, vs, tex, false, p0, p1); // rect only; redraw below
+            // Hit-test off the placement, not off a throwaway draw: lighting a
+            // button used to draw it twice, which double-blended its background.
+            elementRect(e, vm, vs, p0, p1);
+            p0.y += slide; p1.y += slide;
             const bool hovered = mouse.x >= p0.x && mouse.x <= p1.x &&
                                  mouse.y >= p0.y && mouse.y <= p1.y;
             // Moving the mouse onto a button takes the focus with it, so the
             // highlight always agrees with what a click would hit.
             if (hovered && moved && navigable(e)) m_focus = i;
             const bool lit = hovered || i == m_focus;
-            if (lit) { ImVec2 q0, q1; drawVisual(dl, e, vm, vs, tex, true, q0, q1); }
+            ImVec2 q0, q1;
+            drawVisual(dl, e, vm, vs, tex, lit, q0, q1, shift, alpha);
             if (i == m_focus) {
                 // Focus ring: a bright outline just outside the button, so the
                 // selection is unmistakable on a pad even on a busy background
-                // (the hover lift alone is too subtle from across the room).
-                const float r = std::min((p1.y - p0.y) * 0.25f, 10.0f) + 3.0f;
-                dl->AddRect(ImVec2(p0.x - 3.0f, p0.y - 3.0f),
-                            ImVec2(p1.x + 3.0f, p1.y + 3.0f),
-                            IM_COL32(255, 215, 120, 255), r, 0, 3.0f);
+                // (the hover lift alone is too subtle from across the room). In
+                // menu mode it breathes and grows a caret, because there the
+                // focus is the only thing telling you what a button press does.
+                const float grow = m_menuMode ? 3.0f + pulse * 2.5f * S : 3.0f;
+                const float r = std::min((p1.y - p0.y) * 0.25f, 10.0f) + grow;
+                if (m_menuMode) {
+                    dl->AddRectFilled(p0, p1, fade(kMenuAccent, 0.14f * alpha),
+                                      std::min((p1.y - p0.y) * 0.25f, 10.0f));
+                    const float ch = (p1.y - p0.y) * 0.22f;
+                    const float cx = p0.x - 14.0f * S, cy = (p0.y + p1.y) * 0.5f;
+                    dl->AddTriangleFilled(ImVec2(cx - ch * 0.6f, cy - ch),
+                                          ImVec2(cx + ch * 0.6f, cy),
+                                          ImVec2(cx - ch * 0.6f, cy + ch),
+                                          fade(kMenuAccent, alpha));
+                }
+                dl->AddRect(ImVec2(p0.x - grow, p0.y - grow),
+                            ImVec2(p1.x + grow, p1.y + grow),
+                            fade(kMenuAccent, alpha), r, 0, 3.0f);
             }
             if (hovered && clicked) fireAction(e, sink);
         } else {
-            drawVisual(dl, e, vm, vs, tex, false, p0, p1);
+            drawVisual(dl, e, vm, vs, tex, false, p0, p1, shift, alpha);
         }
     }
 }
