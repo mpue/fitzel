@@ -68,6 +68,13 @@ bool isRoadAlbedo(const std::string& filename) {
 // the measured sub-cell bulge (see baseBulge).
 constexpr float kRoadClear = 0.02f;
 
+// How far the carriageway may be rolled about its centreline. Well short of
+// vertical, because the cross-fall enters the corridor grading as a tangent and
+// that has to stay finite -- and because a road that wants to go past this is
+// asking to be a loop, which a ribbon over an XZ centreline cannot express at
+// all (its surface would need two heights over one ground position).
+constexpr float kMaxBankDeg = 60.0f;
+
 // How far the base terrain bulges above its own linear interpolation on a `cell`
 // grid, at the four edge midpoints around `p`. This is exactly the part of the
 // ground the edit field cannot flatten away: the terrain mesh samples the deltas
@@ -341,25 +348,30 @@ void RoadSystem::setSurface(const std::string& file) {
     }
 }
 
-void RoadSystem::insertPoint(int at, glm::vec2 p, float lift) {
+void RoadSystem::insertPoint(int at, glm::vec2 p, float lift, float bank) {
     at = std::clamp(at, 0, static_cast<int>(roadPts.size()));
     ptLift.resize(roadPts.size(), 0.0f); // heal a short array before indexing it
+    ptBank.resize(roadPts.size(), 0.0f);
     roadPts.insert(roadPts.begin() + at, p);
     ptLift.insert(ptLift.begin() + at, lift);
+    ptBank.insert(ptBank.begin() + at, bank);
     needsBuild = true;
 }
 
 void RoadSystem::erasePoint(int at) {
     if (at < 0 || at >= static_cast<int>(roadPts.size())) return;
     ptLift.resize(roadPts.size(), 0.0f);
+    ptBank.resize(roadPts.size(), 0.0f);
     roadPts.erase(roadPts.begin() + at);
     ptLift.erase(ptLift.begin() + at);
+    ptBank.erase(ptBank.begin() + at);
     needsBuild = true;
 }
 
 void RoadSystem::clearPoints() {
     roadPts.clear();
     ptLift.clear();
+    ptBank.clear();
     needsBuild = true;
 }
 
@@ -374,6 +386,20 @@ void RoadSystem::setLift(int i, float lift) {
     needsBuild = true;
 }
 
+float RoadSystem::bankOf(int i) const {
+    return (i >= 0 && i < static_cast<int>(ptBank.size())) ? ptBank[i] : 0.0f;
+}
+
+void RoadSystem::setBank(int i, float deg) {
+    if (i < 0 || i >= static_cast<int>(roadPts.size())) return;
+    ptBank.resize(roadPts.size(), 0.0f);
+    // Clamped well short of vertical: the cross-fall is applied as a tangent in
+    // the corridor grading, and it has to stay finite. A road that wants to go
+    // past this is asking to be a loop, which this model cannot express.
+    ptBank[i] = std::clamp(deg, -kMaxBankDeg, kMaxBankDeg);
+    needsBuild = true;
+}
+
 void RoadSystem::save(nlohmann::json& j) const {
     // Control points as a compact "x z x z ..." blob rather than an array of pairs:
     // a road is hundreds of points and this keeps the scene file readable.
@@ -385,9 +411,18 @@ void RoadSystem::save(nlohmann::json& j) const {
     std::ostringstream ls;
     ls.precision(4);
     for (std::size_t i = 0; i < roadPts.size(); ++i) ls << liftOf(static_cast<int>(i)) << ' ';
+    // Cross-fall rides in its own blob for the same reason the heights do: a
+    // scene written here still loads in a build that predates banking.
+    std::ostringstream bs;
+    bs.precision(4);
+    for (std::size_t i = 0; i < roadPts.size(); ++i) bs << bankOf(static_cast<int>(i)) << ' ';
 
     nlohmann::json bridges_ = nlohmann::json::array();
     for (const BridgeSpec& b : bridges) bridges_.push_back({b.a, b.b});
+
+    nlohmann::json loops_ = nlohmann::json::array();
+    for (const roadloop::Spec& l : loops)
+        loops_.push_back({{"a", l.a}, {"b", l.b}, {"radius", l.radius}});
 
     nlohmann::json side_ = nlohmann::json::array();
     for (const roadside::Line& l : sideLines)
@@ -448,6 +483,7 @@ void RoadSystem::save(nlohmann::json& j) const {
     j = {
         {"points",    rs.str()},
         {"lifts",     ls.str()},
+        {"banks",     bs.str()},
         {"closed",    closed},
         {"enabled",   enabled},
         {"width",     width},
@@ -468,6 +504,7 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"glowStrength", emissionStrength},
         {"glowTile",     emissionTile},
         {"bridges",   bridges_},
+        {"loops",     loops_},
         {"bridgeStyle", {
             {"deckThick",   bridgeStyle.deckThick},
             {"overhang",    bridgeStyle.overhang},
@@ -500,9 +537,17 @@ void RoadSystem::load(const nlohmann::json& j) {
         float h;
         while (ls >> h) ptLift.push_back(h);
     }
-    // A scene from before heights (or a truncated/overlong blob) is filled out
-    // to match the points, so nothing downstream has to bounds-check the pair.
+    ptBank.clear();
+    if (j.contains("banks") && j["banks"].is_string()) {
+        std::istringstream bs(j["banks"].get<std::string>());
+        float b;
+        while (bs >> b) ptBank.push_back(b);
+    }
+    // A scene from before heights or banking (or a truncated/overlong blob) is
+    // filled out to match the points, so nothing downstream has to bounds-check
+    // the triple.
     ptLift.resize(roadPts.size(), 0.0f);
+    ptBank.resize(roadPts.size(), 0.0f);
     closed    = j.value("closed",    false);
     enabled   = j.value("enabled",   true);
     width     = j.value("width",     5.0f);
@@ -555,6 +600,18 @@ void RoadSystem::load(const nlohmann::json& j) {
         for (const auto& b : j["bridges"])
             if (b.is_array() && b.size() == 2)
                 bridges.push_back({b[0].get<int>(), b[1].get<int>()});
+
+    // Loops. Absent in scenes saved before they existed -> none, which is how
+    // those roads drove.
+    loops.clear();
+    if (const auto lj = j.find("loops"); lj != j.end() && lj->is_array())
+        for (const auto& e : *lj) {
+            roadloop::Spec sp;
+            sp.a      = e.value("a", 0);
+            sp.b      = e.value("b", 0);
+            sp.radius = e.value("radius", 12.0f);
+            loops.push_back(sp);
+        }
 
     const roadbridge::Params bd;
     bridgeStyle = bd;
@@ -706,7 +763,8 @@ std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ(
 }
 
 void RoadSystem::loft(const std::vector<glm::vec2>& center,
-                      const std::vector<float>& height) {
+                      const std::vector<float>& height,
+                      const std::vector<float>& bank) {
     fitzel::MeshData md;
     m_centerline = center; // flat centre for vegetation masking
     m_centerlineY = height; // road surface height per sample (deck top over bridges)
@@ -748,15 +806,17 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     }();
 
     const float half = width * 0.5f;
-    const glm::vec3 up(0.0f, 1.0f, 0.0f);
     float vlen = 0.0f;
     float mOff = 0.0f;          // metres already wrapped away
     std::vector<bool> link;     // link[k]: is there a quad between rung k and k+1?
 
-    auto pushRung = [&](const glm::vec3& Lp, const glm::vec3& Rp, float v,
-                        bool linkNext) {
-        md.vertices.push_back({Lp, up, {0.0f, v}});
-        md.vertices.push_back({Rp, up, {width / texTile, v}});
+    // The rung normal is no longer a constant up: a banked section leans, and a
+    // ribbon that leans while claiming to face straight up is lit as if it were
+    // flat -- the one thing that would give the whole feature away at a glance.
+    auto pushRung = [&](const glm::vec3& Lp, const glm::vec3& Rp,
+                        const glm::vec3& nrm, float v, bool linkNext) {
+        md.vertices.push_back({Lp, nrm, {0.0f, v}});
+        md.vertices.push_back({Rp, nrm, {width / texTile, v}});
         link.push_back(linkNext);
     };
 
@@ -770,19 +830,29 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
         // front-face-up (see the index order below).
         const glm::vec2 side(fwd.y, -fwd.x);
         if (i > 0) vlen += glm::length(center[i] - center[i - 1]);
-        const glm::vec3 Lp(center[i].x - side.x * half, height[i],
-                           center[i].y - side.y * half);
-        const glm::vec3 Rp(center[i].x + side.x * half, height[i],
-                           center[i].y + side.y * half);
+
+        // Roll the section about the centreline. Positive bank drops the RIGHT
+        // edge, so a right-hand corner banks into the turn. The centreline keeps
+        // its profile height -- the two edges move oppositely around it, which is
+        // what makes banking a tilt rather than a lift.
+        const float br = glm::radians((i < bank.size()) ? bank[i] : 0.0f);
+        const float cb = std::cos(br), sb = std::sin(br);
+        const glm::vec3 sideDir(side.x * cb, -sb, side.y * cb);  // centre -> right
+        const glm::vec3 C(center[i].x, height[i], center[i].y);
+        const glm::vec3 Lp = C - sideDir * half;
+        const glm::vec3 Rp = C + sideDir * half;
+        // Perpendicular to sideDir in the plane it shares with world up, i.e. the
+        // section normal rolled by the same angle.
+        const glm::vec3 nrm(side.x * sb, cb, side.y * sb);
 
         float v = (vlen - mOff) / texTile;
         if (vlen - mOff >= wrapDist && i + 1 < center.size()) {
-            pushRung(Lp, Rp, v, /*linkNext=*/false); // closes the running strip
+            pushRung(Lp, Rp, nrm, v, /*linkNext=*/false); // closes the running strip
             mOff += wrapDist;
             v     = (vlen - mOff) / texTile;
-            pushRung(Lp, Rp, v, /*linkNext=*/true);  // ...and restarts it here
+            pushRung(Lp, Rp, nrm, v, /*linkNext=*/true);  // ...and restarts it here
         } else {
-            pushRung(Lp, Rp, v, i + 1 < center.size());
+            pushRung(Lp, Rp, nrm, v, i + 1 < center.size());
         }
     }
     // Two triangles per linked rung pair, wound CCW-from-above (front faces up).
@@ -801,6 +871,22 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     m_collIndices = md.indices;
 }
 
+void RoadSystem::buildLoops(const Layout& lo) {
+    m_loops = lo.loops;
+    fitzel::MeshData md;
+    roadloop::build(m_loops, width, texTile, md);
+    m_loopVerts = static_cast<int>(md.vertices.size());
+    m_loopMesh  = fitzel::Mesh::create(md);
+    if (md.vertices.empty()) return;
+    // Merge into the road's collider, exactly as the bridge decks do -- a loop is
+    // something you crash into as much as something you drive on.
+    const auto base = static_cast<std::uint32_t>(m_collVerts.size());
+    m_collVerts.reserve(m_collVerts.size() + md.vertices.size());
+    for (const fitzel::Vertex& v : md.vertices) m_collVerts.push_back(v.position);
+    m_collIndices.reserve(m_collIndices.size() + md.indices.size());
+    for (std::uint32_t i : md.indices) m_collIndices.push_back(base + i);
+}
+
 void RoadSystem::buildBridges(const Layout& lo) {
     fitzel::MeshData md;
     roadbridge::build(lo.center, lo.prof, lo.ground, lo.spans, width, bridgeStyle, md);
@@ -817,28 +903,32 @@ void RoadSystem::buildBridges(const Layout& lo) {
     for (std::uint32_t idx : md.indices) m_collIndices.push_back(base + idx);
 }
 
-std::vector<float> RoadSystem::liftRamp(const std::vector<int>& ptSample,
-                                        std::size_t samples) const {
-    if (samples == 0 || std::none_of(ptLift.begin(), ptLift.end(),
+std::vector<float> RoadSystem::pointRamp(const std::vector<float>& perPoint,
+                                         const std::vector<int>& ptSample,
+                                         std::size_t samples) const {
+    if (samples == 0 || std::none_of(perPoint.begin(), perPoint.end(),
                                      [](float v) { return v != 0.0f; }))
-        return {}; // no heights set: the caller skips the whole addition
+        return {}; // nothing set: the caller skips the whole addition
     const int n = static_cast<int>(roadPts.size());
+    auto at = [&](int i) {
+        return (i >= 0 && i < static_cast<int>(perPoint.size())) ? perPoint[i] : 0.0f;
+    };
     std::vector<float> off(samples, 0.0f);
     // Linear between control points -- predictable, and unlike a spline it cannot
     // overshoot and dip a raised stretch back into the ground it is meant to
-    // clear.
+    // clear (or roll a bank past the angle the user asked for).
     for (std::size_t k = 0; k + 1 < ptSample.size(); ++k) {
         const int a = ptSample[k], b = ptSample[k + 1];
         if (b <= a) continue;
-        const float la = liftOf(static_cast<int>(k));
+        const float la = at(static_cast<int>(k));
         // The closing entry wraps to point 0 on a loop and repeats the last point
         // on an open road; the modulo covers both.
-        const float lb = liftOf(n > 0 ? static_cast<int>(k + 1) % n : 0);
+        const float lb = at(n > 0 ? static_cast<int>(k + 1) % n : 0);
         for (int i = a; i <= b && i < static_cast<int>(off.size()); ++i)
             off[i] = glm::mix(la, lb, static_cast<float>(i - a) / (b - a));
     }
     // Round off the kink each control point leaves in the ramp. Ends are held, so
-    // a road that starts or ends lifted keeps that height exactly.
+    // a road that starts or ends lifted (or banked) keeps that value exactly.
     smooth(off, 5);
     return off;
 }
@@ -877,9 +967,16 @@ RoadSystem::Layout RoadSystem::layout() const {
 
     // Per-point height offsets, added *after* the smoothing -- smoothing them
     // together with the ground would flatten the very edit the user just made.
-    const std::vector<float> off = liftRamp(ptSample, lo.center.size());
+    const std::vector<float> off = pointRamp(ptLift, ptSample, lo.center.size());
     if (!off.empty())
         for (std::size_t i = 0; i < lo.prof.size(); ++i) lo.prof[i] += off[i];
+
+    // Cross-fall, ramped the same way. Kept out of `prof` deliberately: the
+    // profile is the height of the CENTRELINE, and banking tilts the section
+    // about it -- folding the two together would raise the whole road instead of
+    // rolling it.
+    lo.bank = pointRamp(ptBank, ptSample, lo.center.size());
+    if (lo.bank.empty()) lo.bank.assign(lo.center.size(), 0.0f);
 
     // Each bridge the user asked for, as a run of samples, looked up through the
     // control point -> sample map. Specs naming points that have since been
@@ -902,6 +999,9 @@ RoadSystem::Layout RoadSystem::layout() const {
     // Fly the road along each bridge and work out where the terrain must stop being
     // pulled up to it.
     lo.spans = roadbridge::plan(lo.center, lo.prof, cores, bridgeStyle, lo.gradeW);
+    // Loops ride on the profile the bridges have already settled, so a loop on a
+    // bridged stretch leaves from the deck rather than from the gorge below it.
+    lo.loops = roadloop::plan(lo.center, lo.prof, ptSample, loops);
     // The chords meet the road at an angle; round those two kinks off so a bridge
     // entrance isn't a bump. A straight chord is a fixed point of this filter, so
     // only the tangents move.
@@ -909,12 +1009,29 @@ RoadSystem::Layout RoadSystem::layout() const {
     return lo;
 }
 
-bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY) const {
+bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY,
+                                 float maxY) const {
     const std::size_t n = m_centerline.size();
     if (n < 2 || m_centerlineY.size() != n) return false;
     const std::size_t segs = closed ? n : n - 1;
-    float bestD2 = halfWidth * halfWidth;
-    bool  found  = false;
+    const float lim = halfWidth * halfWidth;
+    // NEAREST among the surfaces at or below the ceiling. Both halves of that are
+    // load-bearing.
+    //
+    // Nearest, because anything that picked by HEIGHT would make the answer
+    // depend on the caller's own height -- and the caller is a hover craft whose
+    // height depends on the answer. That loop bounces: a road sample two metres
+    // uphill slips in and out of the ceiling as the craft bobs, the ground under
+    // it moves by the slope, and the hover spring chases it. (It did; this
+    // function used to return the highest, and gliders juddered on every
+    // gradient.)
+    //
+    // The ceiling only REJECTS, never selects. A branch out of reach overhead --
+    // a flyover -- is skipped and the next-nearest answers instead, which is what
+    // an underpass needs, and it costs no feedback because the two storeys are
+    // metres apart rather than a bob apart.
+    float bestD2 = 0.0f, bestY = 0.0f;
+    bool  found = false;
     for (std::size_t i = 0; i < segs; ++i) {
         const glm::vec2 a = m_centerline[i], b = m_centerline[(i + 1) % n];
         const glm::vec2 ab = b - a;
@@ -922,18 +1039,20 @@ bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& ou
         const float t = L2 > 1e-8f ? glm::clamp(glm::dot(xz - a, ab) / L2, 0.0f, 1.0f) : 0.0f;
         const glm::vec2 p = a + ab * t;
         const float d2 = glm::dot(xz - p, xz - p);
-        if (d2 <= bestD2) {
-            bestD2 = d2;
-            outY   = glm::mix(m_centerlineY[i], m_centerlineY[(i + 1) % n], t);
-            found  = true;
-        }
+        if (d2 > lim) continue;
+        const float y = glm::mix(m_centerlineY[i], m_centerlineY[(i + 1) % n], t);
+        if (y > maxY) continue;                       // out of reach overhead
+        if (!found || d2 < bestD2) { bestD2 = d2; bestY = y; found = true; }
     }
+    if (found) outY = bestY;
     return found;
 }
 
 void RoadSystem::clearGeometry() {
     m_mesh = fitzel::Mesh(); m_verts = 0;
     m_bridgeMesh = fitzel::Mesh(); m_bridgeVerts = 0;
+    m_loopMesh = fitzel::Mesh(); m_loopVerts = 0;
+    m_loops.clear();
     m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
     m_centerlineY.clear();
     m_sideBatches.clear();
@@ -995,8 +1114,9 @@ void RoadSystem::rebuildMesh() {
     std::vector<float> h(lo.center.size());
     for (std::size_t i = 0; i < lo.center.size(); ++i)
         h[i] = lo.prof[i] + 0.06f; // lifted a touch so the ribbon reads above the ground
-    loft(lo.center, h);
+    loft(lo.center, h, lo.bank);
     buildBridges(lo);
+    buildLoops(lo);
     rebuildSideObjects();
     rebuildCity();
 }
@@ -1016,8 +1136,9 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     //    then hang the decks under wherever it crosses a gap.
     std::vector<float> surf(L.prof.size());
     for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
-    loft(L.center, surf);
+    loft(L.center, surf, L.bank);
     buildBridges(L);
+    buildLoops(L);
     // Side objects are generated by the caller AFTER it republishes the graded
     // terrain (rebuildSideObjects), so posts drape on the corridor this build
     // just cut -- not on the pre-grade ground. loft() has set m_centerline for it.
@@ -1044,27 +1165,67 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     for (int iz = iz0; iz <= iz1; ++iz) {
         for (int ix = ix0; ix <= ix1; ++ix) {
             const glm::vec2 w(ix * cell, iz * cell);
-            // Nearest point on the centreline + the road height and grading weight
-            // there.
-            float bestD2 = reach * reach + 1.0f, roadH = 0.0f, gradeW = 1.0f;
+            // Which stretch of road owns this cell.
+            //
+            // "The nearest one in plan view" is wrong wherever the road crosses
+            // itself -- a figure-of-eight's underpass being the case that matters.
+            // There, two branches sit over the same ground at different heights,
+            // and the nearer one in XZ is not the one the ground belongs to: the
+            // ground belongs to the LOWER branch, because the upper is on a deck
+            // that wants no grading at all (its gradeW is 0). Deciding by distance
+            // graded the underpass floor up to the flyover's height, which is
+            // exactly what made a working figure-of-eight look broken.
+            //
+            // So: any branch whose CARRIAGEWAY covers this cell claims it, lowest
+            // wins. Only if none does -- the cell is in a shoulder and nothing
+            // else -- does distance decide, which is the old behaviour and the
+            // right one for a road that does not cross itself.
+            float bestD2 = reach * reach + 1.0f;   // for the shoulder fallback
+            float roadH = 0.0f, gradeW = 1.0f, lateral = 0.0f, bankDeg = 0.0f;
+            float ownD2 = 0.0f;
+            bool  owned = false;                   // a carriageway covers the cell
+            const float half2 = half * half;
             for (std::size_t k = 0; k + 1 < L.center.size(); ++k) {
                 float t;
                 const float d2 = distToSeg(w, L.center[k], L.center[k + 1], t);
-                if (d2 < bestD2) {
-                    bestD2 = d2;
-                    roadH  = glm::mix(L.prof[k], L.prof[k + 1], t);
-                    gradeW = glm::mix(L.gradeW[k], L.gradeW[k + 1], t);
-                }
+                if (d2 > reach * reach) continue;
+                const float h = glm::mix(L.prof[k], L.prof[k + 1], t);
+                const bool  under = d2 <= half2;
+                if (under ? (owned && h >= roadH)
+                          : (owned || d2 >= bestD2)) continue;
+                // Signed offset across the road, so a banked section grades the
+                // bed it actually needs rather than a level one its low edge then
+                // pokes through. Sign matches loft's `side` = (fwd.y, -fwd.x),
+                // i.e. positive is the right-hand edge.
+                const glm::vec2 seg = L.center[k + 1] - L.center[k];
+                const float     len = glm::length(seg);
+                const glm::vec2 dir = (len > 1e-5f) ? seg / len : glm::vec2(0.0f, 1.0f);
+                const glm::vec2 rel = w - (L.center[k] + seg * t);
+                roadH   = h;
+                gradeW  = glm::mix(L.gradeW[k], L.gradeW[k + 1], t);
+                bankDeg = L.bank.empty() ? 0.0f
+                                         : glm::mix(L.bank[k], L.bank[k + 1], t);
+                lateral = rel.x * dir.y - rel.y * dir.x; // dot(rel, (dir.y,-dir.x))
+                ownD2   = d2;
+                if (under) owned = true;
+                else       bestD2 = d2;
             }
-            const float d = std::sqrt(bestD2);
-            if (d > reach) continue; // outside the corridor -> leave the ground be
+            if (!owned && bestD2 > reach * reach) continue; // outside the corridor
+            const float d = std::sqrt(ownD2);
             const float base = terrainBaseHeight(s, w.x, w.y);
-            float target = roadH;
+            // The surface a banked section presents at this offset. Positive bank
+            // drops the RIGHT edge (loft rolls sideDir's y to -sin), and `lateral`
+            // is positive to the right -- so the surface FALLS across the offset,
+            // hence the minus. Getting this backwards grades the bed the mirror
+            // image of the road above it, which buries one edge and leaves the
+            // other hanging.
+            const float surfH = roadH - lateral * std::tan(glm::radians(bankDeg));
+            float target = surfH;
             float flat   = 1.0f; // 1 = flattened onto the road, 0 = natural ground
             if (d > half) {
                 const float e = glm::clamp((d - half) / shoulder, 0.0f, 1.0f);
                 const float k = e * e * (3.0f - 2.0f * e);
-                target = glm::mix(roadH, base, k);
+                target = glm::mix(surfH, base, k);
                 flat   = 1.0f - k;
             }
             // Ease the whole corridor back to the bare ground across a bridge's
@@ -1101,7 +1262,8 @@ RoadSystem::Preview RoadSystem::previewGeometry() const {
     // Draped on the *current* ground (cheap, and after a build that ground is
     // the graded corridor) plus the height offsets, so raising a point shows up
     // in the preview immediately instead of only after Build.
-    const std::vector<float> off = liftRamp(ptSample, center.size());
+    const std::vector<float> off  = pointRamp(ptLift, ptSample, center.size());
+    const std::vector<float> roll = pointRamp(ptBank, ptSample, center.size());
     pv.ptSample = ptSample;
     const float half = width * 0.5f;
     pv.center.reserve(center.size());
@@ -1115,12 +1277,23 @@ RoadSystem::Preview RoadSystem::previewGeometry() const {
         fwd = glm::normalize(fwd);
         const glm::vec2 side(fwd.y, -fwd.x);
         const glm::vec2 c = center[i];
-        const glm::vec2 l = c - side * half;
-        const glm::vec2 r = c + side * half;
         const float lift = off.empty() ? 0.0f : off[i];
-        pv.center.push_back({c.x, m_streamer.heightAt(c.x, c.y) + 0.10f + lift, c.y});
-        pv.left.push_back  ({l.x, m_streamer.heightAt(l.x, l.y) + 0.10f + lift, l.y});
-        pv.right.push_back ({r.x, m_streamer.heightAt(r.x, r.y) + 0.10f + lift, r.y});
+        // The edges tilt with the section, exactly as loft() will build them --
+        // the preview is the only thing the user sees while setting the cross-fall,
+        // so it has to show the roll rather than two level rails.
+        const float br = glm::radians(roll.empty() ? 0.0f : roll[i]);
+        const float cb = std::cos(br), sb = std::sin(br);
+        const glm::vec2 l = c - side * (half * cb);
+        const glm::vec2 r = c + side * (half * cb);
+        const float cy = m_streamer.heightAt(c.x, c.y) + 0.10f + lift;
+        // Edges ride off the CENTRE's height once banked -- draping each rail on
+        // its own ground would cancel the tilt on a slope.
+        const float drop = half * sb;
+        pv.center.push_back({c.x, cy, c.y});
+        pv.left.push_back  ({l.x, (br != 0.0f) ? cy + drop
+                                    : m_streamer.heightAt(l.x, l.y) + 0.10f + lift, l.y});
+        pv.right.push_back ({r.x, (br != 0.0f) ? cy - drop
+                                    : m_streamer.heightAt(r.x, r.y) + 0.10f + lift, r.y});
     }
     return pv;
 }

@@ -72,6 +72,68 @@ bool bridgeSection(const PanelState& s) {
     return rc;
 }
 
+// Vertical loops. Named by a pair of control points exactly like a bridge, and
+// for the same reason: the loop is derived from the centreline on every build,
+// so the only thing worth saving -- and the only thing worth editing -- is which
+// stretch it applies to.
+bool loopSection(const PanelState& s) {
+    bool rc = false;
+    if (!ui::header("Loops")) return rc;
+
+    ui::hint("A loop curls the road up, over and back down. How far it travels\n"
+             "while it turns is the distance between the two points, so stretch\n"
+             "it by dragging them; the radius sets how tall it stands.");
+
+    const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
+    int existing = -1;
+    for (int i = 0; pair && i < static_cast<int>(s.road.loops.size()); ++i)
+        if ((s.road.loops[i].a == s.sel && s.road.loops[i].b == s.sel2) ||
+            (s.road.loops[i].a == s.sel2 && s.road.loops[i].b == s.sel))
+            existing = i;
+
+    ImGui::BeginDisabled(!pair || existing >= 0);
+    if (ImGui::Button("Create loop", ImVec2(-1.0f, 0.0f))) {
+        s.beginEdit();
+        roadloop::Spec sp;
+        sp.a = s.sel; sp.b = s.sel2;
+        s.road.loops.push_back(sp);
+        s.endEdit("Create loop");
+        rc = true;
+    }
+    ImGui::EndDisabled();
+    if (!pair)
+        ImGui::TextDisabled("Select a handle, then shift+click another");
+    else if (existing >= 0)
+        ImGui::TextDisabled("#%d \xE2\x86\x92 #%d already loops", s.sel, s.sel2);
+
+    for (int i = 0; i < static_cast<int>(s.road.loops.size()); ++i) {
+        ImGui::PushID(i);
+        ImGui::Text("Loop #%d \xE2\x86\x92 #%d", s.road.loops[i].a, s.road.loops[i].b);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) {
+            s.beginEdit();
+            s.road.loops.erase(s.road.loops.begin() + i);
+            s.endEdit("Remove loop");
+            ImGui::PopID();
+            return true; // the list just shifted under us
+        }
+        ImGui::SetNextItemWidth(-70.0f);
+        if (ImGui::DragFloat("Radius", &s.road.loops[i].radius, 0.1f, 3.0f, 120.0f,
+                             "%.1f m"))
+            rc = true;
+        if (ImGui::IsItemActivated())            s.beginEdit();
+        if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Loop radius");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The turn stands twice this tall. It also sets how\n"
+                              "fast you have to arrive: holding the top needs\n"
+                              "v^2 > gravity * radius, so a bigger loop is a\n"
+                              "faster one to commit to.");
+        ImGui::PopID();
+    }
+    if (s.road.loops.empty()) ImGui::TextDisabled("No loops");
+    return rc;
+}
+
 // Side objects: a list of placement rules (guard rails, curbs, posts) repeated
 // along the road from a model asset. Each rule is derived, not authored -- so the
 // panel edits a handful of numbers, not hundreds of objects. Edits go on the same
@@ -311,6 +373,36 @@ void drawPanel(const PanelState& s) {
             ImGui::EndDisabled();
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Put the point back on the terrain (height 0).");
+
+            // --- ...and its cross-fall ----------------------------------------
+            // Banking is a per-point value ramped along the road exactly like the
+            // height, so a corner is banked by setting its apex and letting the
+            // entry and exit ease into it -- not by tilting a whole stretch.
+            float bank = s.road.bankOf(s.sel);
+            ImGui::SetNextItemWidth(-90.0f);
+            if (ImGui::DragFloat("Tilt##pt", &bank, 0.2f, -60.0f, 60.0f, "%+.1f deg"))
+                s.road.setBank(s.sel, bank);
+            if (ImGui::IsItemActivated())            s.beginEdit();
+            if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Point tilt");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Cross-fall at point #%d: the carriageway rolls\n"
+                                  "about its centreline. Positive drops the RIGHT\n"
+                                  "edge, which banks a right-hand corner into the\n"
+                                  "turn. The corridor is graded along with the\n"
+                                  "tilt, so the ground follows the low edge instead\n"
+                                  "of poking through it.\n\n"
+                                  "Capped at 60 deg: past that a road is asking to\n"
+                                  "be a loop, which this ribbon cannot be.", s.sel);
+            ImGui::SameLine();
+            ImGui::BeginDisabled(bank == 0.0f);
+            if (ImGui::SmallButton("Level")) {
+                s.beginEdit();
+                s.road.setBank(s.sel, 0.0f);
+                s.endEdit("Point level");
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Take the cross-fall back out (tilt 0).");
         }
 
         // --- Build: commit the previewed spline into the terrain --------------
@@ -360,6 +452,9 @@ void drawPanel(const PanelState& s) {
 
         ImGui::Separator();
         rc |= bridgeSection(s);
+
+        ImGui::Separator();
+        rc |= loopSection(s);
 
         if (rc) s.road.needsBuild = true;
 

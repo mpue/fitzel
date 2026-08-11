@@ -602,6 +602,91 @@ const std::vector<Property>& GliderComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& ParticleComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto f = [&](const char* label, const char* key, float ParticleComponent::* m,
+                     float lo, float hi, const char* fmt) {
+            Property q; q.label = label; q.key = key; q.kind = PropKind::Float;
+            q.slider = true; q.min = lo; q.max = hi; q.speed = 0.05f; q.fmt = fmt;
+            q.field = [m](void* o) -> void* { return &(static_cast<ParticleComponent*>(o)->*m); };
+            p.push_back(std::move(q));
+        };
+        auto b = [&](const char* label, const char* key, bool ParticleComponent::* m) {
+            Property q; q.label = label; q.key = key; q.kind = PropKind::Bool;
+            q.field = [m](void* o) -> void* { return &(static_cast<ParticleComponent*>(o)->*m); };
+            p.push_back(std::move(q));
+        };
+        auto v3 = [&](const char* label, const char* key, glm::vec3 ParticleComponent::* m) {
+            Property q; q.label = label; q.key = key; q.kind = PropKind::Vec3;
+            q.speed = 0.05f;
+            q.field = [m](void* o) -> void* { return &(static_cast<ParticleComponent*>(o)->*m); };
+            p.push_back(std::move(q));
+        };
+        auto col = [&](const char* label, const char* key, glm::vec3 ParticleComponent::* m) {
+            Property q; q.label = label; q.key = key; q.kind = PropKind::Color;
+            q.field = [m](void* o) -> void* { return &(static_cast<ParticleComponent*>(o)->*m); };
+            p.push_back(std::move(q));
+        };
+
+        // Emission
+        b("Playing",     "playing",  &ParticleComponent::playing);
+        b("Loop",        "loop",     &ParticleComponent::loop);
+        f("Duration",    "duration", &ParticleComponent::duration, 0.05f,  60.0f, "%.2f s");
+        f("Rate",        "rate",     &ParticleComponent::rate,      0.0f, 500.0f, "%.0f /s");
+        f("Burst",       "burst",    &ParticleComponent::burst,     0.0f, 500.0f, "%.0f");
+        f("Max count",   "maxCount", &ParticleComponent::maxCount,  1.0f, 5000.0f, "%.0f");
+        f("Lifetime",    "lifetime", &ParticleComponent::lifetime, 0.05f,  30.0f, "%.2f s");
+        f("Life spread", "lifeVar",  &ParticleComponent::lifeVar,   0.0f,   1.0f, "%.2f");
+
+        // Shape
+        Property sh;
+        sh.label = "Shape"; sh.key = "shape"; sh.kind = PropKind::EnumInt;
+        sh.enumLabels = {"Point", "Sphere", "Cone", "Box"};
+        sh.field = [](void* o) -> void* { return &static_cast<ParticleComponent*>(o)->shape; };
+        p.push_back(std::move(sh));
+        f("Radius",     "radius",    &ParticleComponent::radius,    0.0f, 50.0f, "%.2f m");
+        f("Cone angle", "coneAngle", &ParticleComponent::coneAngle, 0.0f, 90.0f, "%.0f deg");
+        v3("Box size",  "boxSize",   &ParticleComponent::boxSize);
+
+        // Motion
+        f("Speed",          "speed",    &ParticleComponent::speed,    0.0f, 80.0f, "%.2f m/s");
+        f("Speed spread",   "speedVar", &ParticleComponent::speedVar, 0.0f, 40.0f, "%.2f m/s");
+        v3("Gravity",       "gravity",  &ParticleComponent::gravity);
+        f("Drag",           "drag",     &ParticleComponent::drag,     0.0f,  8.0f, "%.2f");
+        v3("Wind",          "wind",     &ParticleComponent::wind);
+        b("World space",    "worldSpace", &ParticleComponent::worldSpace);
+        f("Inherit motion", "inherit",  &ParticleComponent::inherit,  0.0f,  1.0f, "%.2f");
+
+        // Look. `sprite` is a Text prop so it persists; the Inspector swaps in a
+        // texture picker for it, the same way the sound fields get one.
+        Property sp;
+        sp.label = "Sprite"; sp.key = "sprite"; sp.kind = PropKind::Text;
+        sp.field = [](void* o) -> void* { return &static_cast<ParticleComponent*>(o)->sprite; };
+        p.push_back(std::move(sp));
+        col("Colour start", "colorStart", &ParticleComponent::colorStart);
+        col("Colour end",   "colorEnd",   &ParticleComponent::colorEnd);
+        f("Alpha start", "alphaStart", &ParticleComponent::alphaStart, 0.0f, 1.0f, "%.2f");
+        f("Alpha end",   "alphaEnd",   &ParticleComponent::alphaEnd,   0.0f, 1.0f, "%.2f");
+        f("Size start",  "sizeStart",  &ParticleComponent::sizeStart, 0.01f, 20.0f, "%.2f m");
+        f("Size end",    "sizeEnd",    &ParticleComponent::sizeEnd,   0.01f, 20.0f, "%.2f m");
+        f("Size spread", "sizeVar",    &ParticleComponent::sizeVar,    0.0f, 1.0f, "%.2f");
+        f("Rotation",    "rotation",   &ParticleComponent::rotation,   0.0f, 360.0f, "%.0f deg");
+        f("Spin",        "spin",       &ParticleComponent::spin,    -720.0f, 720.0f, "%.0f deg/s");
+        Property bl;
+        bl.label = "Blend"; bl.key = "blend"; bl.kind = PropKind::EnumInt;
+        bl.enumLabels = {"Alpha (smoke)", "Additive (fire)"};
+        bl.field = [](void* o) -> void* { return &static_cast<ParticleComponent*>(o)->blend; };
+        p.push_back(std::move(bl));
+        f("Brightness", "brightness", &ParticleComponent::brightness, 0.0f, 8.0f, "%.2f");
+        f("Glow at rest",  "speedGlowMin", &ParticleComponent::speedGlowMin, 0.0f, 8.0f, "%.2f");
+        f("Glow at speed", "speedGlowMax", &ParticleComponent::speedGlowMax, 0.0f, 8.0f, "%.2f");
+        f("Stretch",    "stretch",    &ParticleComponent::stretch,    0.0f, 1.0f, "%.3f");
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& BoostPadComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -768,6 +853,10 @@ const std::vector<Property>& OpponentComponent::properties() {
         addFloat("Racing line",   "racingLine",   &OpponentComponent::racingLine,   0.0f, 1.0f,   "%.2f");
         addFloat("Awareness",     "awareness",    &OpponentComponent::awareness,    0.0f, 1.0f,   "%.2f");
         addFloat("Pad seek",      "padSeek",      &OpponentComponent::padSeek,      0.0f, 1.0f,   "%.2f");
+        Property en;
+        en.label = "In the race"; en.key = "entered"; en.kind = PropKind::Bool;
+        en.field = [](void* o) -> void* { return &static_cast<OpponentComponent*>(o)->entered; };
+        p.push_back(std::move(en));
         addFloat("Lane offset",   "laneOffset",   &OpponentComponent::laneOffset,  -20.0f, 20.0f, "%.1f m");
         addFloat("Ride height",   "rideHeight",   &OpponentComponent::rideHeight,   0.0f, 12.0f,  "%.2f m");
         addFloat("Start distance","startDistance",&OpponentComponent::startDistance,0.0f, 2000.0f,"%.0f m");
@@ -814,6 +903,25 @@ const std::vector<Property>& FinishLineComponent::properties() {
         l.slider = true; l.min = 0.0f; l.max = 50.0f; l.fmt = "%.0f";
         l.field = [](void* o) -> void* { return &static_cast<FinishLineComponent*>(o)->laps; };
         p.push_back(std::move(l));
+        Property md;
+        md.label = "Session"; md.key = "mode"; md.kind = PropKind::EnumInt;
+        md.enumLabels = {"Race", "Time trial"};
+        md.field = [](void* o) -> void* { return &static_cast<FinishLineComponent*>(o)->mode; };
+        p.push_back(std::move(md));
+        auto addGrid = [&](const char* label, const char* key,
+                           float FinishLineComponent::* m, float lo, float hi) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.1f; f.fmt = "%.1f m";
+            f.field = [m](void* o) -> void* { return &(static_cast<FinishLineComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addGrid("Grid setback", "gridBack", &FinishLineComponent::gridBack, 0.0f, 120.0f);
+        addGrid("Row spacing",  "gridRow",  &FinishLineComponent::gridRow,  2.0f,  40.0f);
+        addGrid("Lane offset",  "gridLane", &FinishLineComponent::gridLane, 0.0f,  20.0f);
+        Property pp;
+        pp.label = "Player on pole"; pp.key = "playerPole"; pp.kind = PropKind::Bool;
+        pp.field = [](void* o) -> void* { return &static_cast<FinishLineComponent*>(o)->playerPole; };
+        p.push_back(std::move(pp));
         addGateProps<FinishLineComponent>(p, &FinishLineComponent::width,
             &FinishLineComponent::height, &FinishLineComponent::depth,
             &FinishLineComponent::yaw);
@@ -1088,6 +1196,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<VehicleComponent>()); }});
         components::registerType({"glider", "Glider",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<GliderComponent>()); }});
+        components::registerType({"particles", "Particles",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<ParticleComponent>()); }});
         components::registerType({"boost_pad", "Boost Pad",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<BoostPadComponent>()); }});
         components::registerType({"opponent", "Opponent",

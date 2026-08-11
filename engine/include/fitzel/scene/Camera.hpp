@@ -39,6 +39,29 @@ public:
     void  setYaw(float deg)   { m_yaw = deg;   updateVectors(); }
     void  setPitch(float deg) { m_pitch = deg; updateVectors(); }
 
+    // Set the view basis outright, bypassing yaw/pitch.
+    //
+    // Yaw and pitch cannot express every orientation a camera may need: looking
+    // straight up is a gimbal lock (yaw stops meaning anything), and there is no
+    // roll at all, so a chase camera following a craft round a vertical loop --
+    // where the tangent passes through vertical and the craft ends up inverted --
+    // has no yaw/pitch pair to be at. This takes the basis directly.
+    //
+    // It does NOT write back to m_yaw/m_pitch: the next mouse or keyboard input
+    // calls updateVectors() and the camera snaps back to whatever those still
+    // say. That is deliberate -- an override is meant to last exactly as long as
+    // the caller keeps applying it, and a free-look camera that had silently
+    // inherited an inverted roll would be worse than one that resets.
+    void setBasis(const glm::vec3& front, const glm::vec3& up) {
+        const float fl = glm::length(front);
+        if (fl < 1e-5f) return;
+        m_front = front / fl;
+        glm::vec3 r = glm::cross(m_front, up);
+        if (glm::length(r) < 1e-5f) return;   // up parallel to front: no basis
+        m_right = glm::normalize(r);
+        m_up    = glm::normalize(glm::cross(m_right, m_front));
+    }
+
     float moveSpeed   = 3.0f;   // units per second
     float mouseSens   = 0.1f;   // degrees per pixel
 

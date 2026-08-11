@@ -64,12 +64,14 @@
 #include "FrameRender.hpp"
 #include "RainRenderer.hpp"
 #include "SpraySystem.hpp"
+#include "ParticleSystem.hpp"
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
 #include "GameSettingsPanel.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
 #include "RaceSim.hpp"
+#include "RaceGrid.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "RoadPanel.hpp"
@@ -666,6 +668,10 @@ int main(int argc, char** argv) {
         if (!rain.init()) return 1;
         SpraySystem  spray;
         spray.init(); // a missing spray shader costs droplets, not the session
+        // Authored emitters (ParticleComponent). Same bargain as the spray: a
+        // shader that failed to compile costs the effects, not the session.
+        ParticleSystem particles;
+        particles.init();
         float sprayAccum = 0.0f;             // droplet emitter carry
         float foamAccum  = 0.0f;             // surface-foam emitter carry
         std::mt19937 sprayRng(1337u);
@@ -770,6 +776,17 @@ int main(int argc, char** argv) {
                 keep.push_back(b);
             }
             road.bridges.swap(keep);
+            // Loops name their ends the same way a bridge does, so they need the
+            // same bookkeeping -- a loop left pointing at a deleted point would
+            // silently move to whatever slid into its place.
+            std::vector<roadloop::Spec> keepL;
+            for (roadloop::Spec l : road.loops) {
+                if (l.a == k || l.b == k) continue;
+                if (l.a > k) --l.a;
+                if (l.b > k) --l.b;
+                keepL.push_back(l);
+            }
+            road.loops.swap(keepL);
             roadSel = roadSel2 = -1;
             road.needsBuild = true;
         };
@@ -787,10 +804,22 @@ int main(int argc, char** argv) {
                 const int b = std::clamp(at,     0, n - 1);
                 lift = 0.5f * (road.liftOf(a) + road.liftOf(b));
             }
-            road.insertPoint(at, p, lift);
+            // ...and its cross-fall, for the same reason: dropping a point into a
+            // banked corner should not flatten it at that one station.
+            float bank = 0.0f;
+            if (n > 0) {
+                const int a = std::clamp(at - 1, 0, n - 1);
+                const int b = std::clamp(at,     0, n - 1);
+                bank = 0.5f * (road.bankOf(a) + road.bankOf(b));
+            }
+            road.insertPoint(at, p, lift, bank);
             for (RoadSystem::BridgeSpec& b : road.bridges) {
                 if (b.a >= at) ++b.a;
                 if (b.b >= at) ++b.b;
+            }
+            for (roadloop::Spec& l : road.loops) {
+                if (l.a >= at) ++l.a;
+                if (l.b >= at) ++l.b;
             }
             roadSel   = at;
             roadSel2  = -1;
@@ -2868,6 +2897,33 @@ int main(int argc, char** argv) {
             out.erase(std::unique(out.begin(), out.end()), out.end());
             return out;
         };
+        // The same two, for Texture assets. Sprites are named rather than held by
+        // GUID for the same reason sounds are: a filename survives a re-import and
+        // reads sensibly in the scene file.
+        auto listTextures = [&](){
+            std::vector<std::string> out;
+            for (const AssetId& id : assetDb.allAssets())
+                if (assetDb.typeForId(id) == AssetType::Texture)
+                    if (const auto* e = assetDb.entry(id))
+                        out.push_back(e->absPath.filename().string());
+            std::sort(out.begin(), out.end());
+            out.erase(std::unique(out.begin(), out.end()), out.end());
+            return out;
+        };
+        auto texturePickerCombo = [&](const char* label, std::string& field) {
+            const std::vector<std::string> texs = listTextures();
+            const std::string cur = field.empty() ? "(soft dot)" : field;
+            if (ImGui::BeginCombo(label, cur.c_str())) {
+                if (ImGui::Selectable("(soft dot)", field.empty())) field.clear();
+                for (const std::string& t : texs)
+                    if (ImGui::Selectable(t.c_str(), field == t)) field = t;
+                ImGui::EndCombo();
+            }
+            if (!field.empty() &&
+                std::find(texs.begin(), texs.end(), field) == texs.end())
+                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                   "Missing texture: %s", field.c_str());
+        };
         // Inspector combo that assigns a Sound asset (by filename) to a string
         // field. Shared by the Collectible and Trigger sound pickers.
         auto soundPickerCombo = [&](const char* label, std::string& field) {
@@ -3029,9 +3085,15 @@ int main(int argc, char** argv) {
             // without this the craft sinks through a high bridge to the terrain far
             // below. Same yMax gate as the blocks, so flying UNDER a bridge still
             // leaves the deck out of reach.
+            // The ceiling goes INTO the query, not after it: where the road
+            // crosses itself, asking without one comes back with whichever branch
+            // is nearer in plan view, and if that is the flyover it is then thrown
+            // away here -- taking the underpass with it, so a craft driving
+            // through drops to the terrain. Passing yMax lets the query answer
+            // with the storey the craft is actually on.
             float roadY = 0.0f;
-            if (road.surfaceHeightAt(glm::vec2(x, z), road.width * 0.5f, roadY))
-                if (roadY <= yMax && roadY > h) h = roadY;
+            if (road.surfaceHeightAt(glm::vec2(x, z), road.width * 0.5f, roadY, yMax))
+                if (roadY > h) h = roadY;
             return h;
         };
         auto findNearestGlider = [&]() -> int {
@@ -3081,6 +3143,12 @@ int main(int argc, char** argv) {
             fpsMode = false;
             input.setCursorLocked(false);
             const int g = findNearestGlider();
+            // Line the field up BEFORE taking the controls: an opponent seeds its
+            // race distance from where it stands, and the drive reads the craft's
+            // position, so the grid has to exist first or everyone starts from
+            // wherever they were parked.
+            if (g >= 0 && playMode)
+                racegrid::lineUp(entities, road, g, /*applyParticipation=*/true);
             if (g >= 0) beginGliderDrive(g);
             else        gliderMode = false; // nothing to fly
             // In Play, start a race with a Ready/Set/Go countdown when the scene
@@ -3534,6 +3602,7 @@ int main(int argc, char** argv) {
                 }
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
+            particles.clear(); // ...nor a cloud of smoke from the last run
             physicsBody.clear();
             for (Entity& e : entities) {
                 const auto* pc = e.components.get<PhysicsComponent>();
@@ -5408,6 +5477,8 @@ int main(int argc, char** argv) {
                         fpsMode = false;
                         input.setCursorLocked(false);
                         gliderMode = true;
+                        racegrid::lineUp(entities, road, rootId,
+                                         /*applyParticipation=*/true);
                         beginGliderDrive(rootId);
                         bool hasRace = false;
                         for (const Entity& e : entities)
@@ -7955,6 +8026,37 @@ int main(int argc, char** argv) {
                                 for (const Property& pr : col->props())
                                     if (pr.key != "sound") drawProperty(pr, col);
                                 soundPickerCombo("Sound", col->sound);
+                            } else if (auto* pa = dynamic_cast<ParticleComponent*>(c)) {
+                                // Everything from metadata except the sprite, which
+                                // gets a Texture picker instead of a raw filename.
+                                for (const Property& pr : pa->props())
+                                    if (pr.key != "sprite") drawProperty(pr, pa);
+                                texturePickerCombo("Sprite", pa->sprite);
+                                // Where the speed glow gets its speed from. Shown
+                                // because the link is invisible otherwise: the
+                                // craft is usually an ANCESTOR, and an emitter
+                                // parented to the wrong thing would just never
+                                // flare, with nothing on screen to say why.
+                                if (pa->speedGlowMin != pa->speedGlowMax) {
+                                    float top = 0.0f;
+                                    std::string src;
+                                    if (ParticleSystem::speedSource(entities, be, top, src))
+                                        ImGui::TextDisabled("Speed from %s (top %.0f m/s)",
+                                                            src.c_str(), top);
+                                    else
+                                        ImGui::TextColored(
+                                            ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
+                                            "No Glider or Opponent here or above -- "
+                                            "the speed glow does nothing.");
+                                }
+                                if (ImGui::Button("Restart burst")) {
+                                    particles.restart(be.id);
+                                    pa->playing = true;
+                                }
+                                ImGui::SameLine();
+                                ImGui::TextDisabled("%d live / %d emitters",
+                                                    particles.liveCount(),
+                                                    particles.emitterCount());
                             } else if (auto* bp = dynamic_cast<BoostPadComponent*>(c)) {
                                 // Speed/accel/direction from metadata; the punch SFX
                                 // is a Sound picker (with volume/pitch already drawn
@@ -7983,6 +8085,13 @@ int main(int argc, char** argv) {
                                 startCue("Ready sound", "Preview##ready", fl->soundReady);
                                 startCue("Set sound",   "Preview##set",   fl->soundSet);
                                 startCue("Go sound",    "Preview##go",    fl->soundGo);
+                                // Session type, the roster of who is in it, and the
+                                // grid (see RaceGrid). Folded into THIS branch
+                                // rather than added as another `else if` further
+                                // down -- the chain stops at the first match, so a
+                                // second branch for the same component type would
+                                // never run.
+                                racegrid::inspector(*fl, entities, road);
                             } else if (auto* cp = dynamic_cast<CheckpointComponent*>(c)) {
                                 // Gate size from metadata; the pass SFX is a picker
                                 // with volume/pitch sliders and a Preview, like the
@@ -9399,6 +9508,13 @@ int main(int argc, char** argv) {
                                 glm::mat4(1.0f));
             }
 
+            // Vertical loops. Drawn with the road's OWN surface material -- a loop
+            // is carriageway, not structure -- but as a separate mesh, because its
+            // geometry cannot live in a ribbon that has one height per ground
+            // position (see RoadLoop.hpp).
+            if (road.enabled && road.hasLoops())
+                renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f));
+
             // Tyre skid marks accumulated while driving (alpha-blended, on ground).
             skids.render(renderer);
             trails.render(renderer);
@@ -9973,6 +10089,13 @@ int main(int argc, char** argv) {
             rain.draw(gctx);
             spray.update(dt, waterLevel); // age the pool, then draw what survived
             spray.draw(gctx);
+            // Authored emitters. Stepped with the frame clock rather than the
+            // sim's fixed one: these are decoration, and a puff of smoke that
+            // resolves one frame late is worth less than the code to avoid it.
+            // Updated HERE, next to the draw, so a paused editor still shows the
+            // effect it is being tuned against.
+            particles.update(entities, dt, assetDb);
+            particles.draw(gctx);
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);

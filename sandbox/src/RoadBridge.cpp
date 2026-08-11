@@ -213,6 +213,29 @@ std::vector<Span> plan(const std::vector<glm::vec2>& center, std::vector<float>&
     return spans;
 }
 
+namespace {
+// Would a pier standing here come down in the middle of whatever the bridge is
+// flying over? The commonest case is a road crossing itself -- a
+// figure-of-eight -- where the very same centreline passes a few metres below
+// the span, and dropping a column through the underpass is the single most
+// obvious way an otherwise working crossing looks broken.
+//
+// `center`/`prof` are the whole road, so the test needs nothing the builder does
+// not already have: any sample sitting well BELOW the deck (same storey doesn't
+// count -- that is just the approach) and close enough in plan to be under the
+// column is a carriageway the pier would block.
+bool footBlocksRoad(const std::vector<glm::vec2>& center,
+                    const std::vector<float>& prof, glm::vec2 foot, float deckY,
+                    float halfW) {
+    constexpr float kStoreySep = 3.0f;  // below this it is the same road, not an underpass
+    for (std::size_t k = 0; k < center.size() && k < prof.size(); ++k) {
+        if (deckY - prof[k] < kStoreySep) continue;
+        if (glm::length(center[k] - foot) < halfW) return true;
+    }
+    return false;
+}
+} // namespace
+
 void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
            const std::vector<float>& ground, const std::vector<Span>& spans,
            float roadWidth, const Params& p, fitzel::MeshData& md) {
@@ -276,6 +299,12 @@ void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
             const float gnd = glm::mix(ground[i], ground[i + 1], t);
             const float top = fr.pos.y - dt; // flush with the slab underside
             if (top - gnd < kMinPierHeight) continue;
+            // Leave the bay unsupported rather than plant a column in the road
+            // below. A longer clear span reads as a bridge; a pier through the
+            // underpass reads as a bug.
+            if (footBlocksRoad(center, prof, glm::vec2(fr.pos.x, fr.pos.z), fr.pos.y,
+                               roadWidth * 0.5f + p.pierWidth))
+                continue;
             addPier(md, fr, top, gnd - kPierEmbed, p.pierWidth);
         }
     }

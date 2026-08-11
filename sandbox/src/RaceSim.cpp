@@ -359,8 +359,13 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         glm::vec2 snapXZ; float lateral = 0.0f, roadYaw = 0.0f;
         if (roadSnap(env.road, st.gliderPos, snapXZ, lateral, roadYaw)) {
             const float halfW = env.road.width * 0.5f;
+            // Ask for the storey the craft is ON, not the nearest branch in plan
+            // view: under a flyover the deck overhead would otherwise read as the
+            // road surface, and the craft -- twenty metres below it -- would count
+            // as having fallen off and be teleported back.
             float surfY = st.gliderPos.y;
-            env.road.surfaceHeightAt(glm::vec2(st.gliderPos.x, st.gliderPos.z), 1.0e6f, surfY);
+            env.road.surfaceHeightAt(glm::vec2(st.gliderPos.x, st.gliderPos.z), 1.0e6f,
+                                     surfY, st.gliderPos.y + gc->rideHeight + 3.0f);
             if (lateral < halfW + 4.0f && st.gliderPos.y > surfY - 4.0f) {
                 // safely on the road here: remember it as the rescue point
                 st.respawnPos = glm::vec3(snapXZ.x, surfY + gc->rideHeight, snapXZ.y);
@@ -559,6 +564,96 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         st.finishWasOver = overFinish;
 
         const float effMax = gc->maxSpeed + glm::max(0.0f, st.gliderOverspeed);
+        const float halfW  = env.road.width * 0.5f;
+        const std::vector<roadloop::Loop>& lps = env.road.loopGeometry();
+        if (st.loopExitFlash > 0.0f)
+            st.loopExitFlash = glm::max(0.0f, st.loopExitFlash - env.kSimH);
+
+        if (st.loopIndex >= 0 && st.loopIndex < static_cast<int>(lps.size())) {
+            // --- Riding a vertical loop -----------------------------------
+            // The hover model is switched off here, and it has to be: it holds
+            // the craft a ride height above gliderGround(x,z) with gravity
+            // pointing at world down, and neither of those means anything on a
+            // surface that is vertical and then inverted. Instead the craft is
+            // integrated ALONG the turn, with gravity resolved against the
+            // track's own frame.
+            const roadloop::Loop& lp = lps[st.loopIndex];
+            roadloop::Frame fr = roadloop::at(lp, st.loopArc);
+
+            float acc = (throttle >= 0.0f) ? throttle * gc->thrust
+                                           : throttle * gc->thrust * 0.6f;
+            if (spending) acc += gc->boostThrust;      // the boost works in here too
+            if (kBrake)   acc -= gc->brakeForce;
+            // Gravity along the track: climbing the front of the turn costs
+            // speed, coming down the back gives it back. This is what makes a
+            // loop something you have to arrive at fast enough for.
+            acc -= gc->gravity * fr.tangent.y;
+            st.loopSpeed += acc * env.kSimH;
+            st.loopSpeed *= glm::max(0.0f, 1.0f - gc->drag * env.kSimH);
+            st.loopSpeed  = glm::min(st.loopSpeed, effMax);
+
+            // Steering moves the craft ACROSS the carriageway rather than
+            // turning it -- on a loop there is nowhere to turn to.
+            st.loopSide = glm::clamp(
+                st.loopSide + steerIn * gc->turnRate * 0.05f * env.kSimH,
+                -halfW + 0.4f, halfW - 0.4f);
+            st.loopArc += st.loopSpeed * env.kSimH;
+
+            // Does the track still hold it? The surface can only PUSH, so the
+            // normal force per unit mass is v^2/R + g*n.y, and once that goes
+            // negative the craft is asking to be pulled through the road. At the
+            // bottom n.y is +1 and it can never happen; at the top n.y is -1 and
+            // it needs v^2 > g*R -- the classic condition, and exactly the
+            // "arrive fast enough or fall out of it" the loop exists for.
+            const float hold = st.loopSpeed * st.loopSpeed /
+                                   glm::max(lp.radius, 1.0f) +
+                               gc->gravity * fr.normal.y;
+
+            fr = roadloop::at(lp, glm::clamp(st.loopArc, 0.0f, lp.length));
+            st.gliderPos = fr.pos + fr.side * st.loopSide + fr.normal * gc->rideHeight;
+            st.gliderVel = fr.tangent * st.loopSpeed;
+            st.loopFwd   = fr.tangent;
+            st.loopUp    = fr.normal;
+            // Keep the flat sim's heading in step, so leaving the loop -- at
+            // either end, or halfway up -- carries on the way the craft was
+            // actually pointing.
+            st.gliderYaw   = std::atan2(fr.tangent.x, fr.tangent.z);
+            st.gliderBank  = 0.0f;
+            // Nose-up is negative pitch here (see targetPitch below), and the
+            // frame's angle runs 0..2pi without wrapping, so the model rolls right
+            // through the inversion instead of flipping at the top.
+            st.gliderPitch = -glm::degrees(fr.pitch);
+
+            // Chase camera in the LOOP's frame: behind along the tangent and out
+            // along the surface normal, so it rolls with the craft. Left in world
+            // up it would watch the craft go inverted from overhead, which reads
+            // as the track moving rather than the craft.
+            const glm::vec3 wantL = st.gliderPos - fr.tangent * gc->camDistance +
+                                    fr.normal * gc->camHeight;
+            st.camChase += (wantL - st.camChase) *
+                           std::min(1.0f, env.kSimH * gc->camStiffness);
+
+            const bool ranOut = st.loopArc >= lp.length || st.loopArc <= 0.0f;
+            if (ranOut || hold < 0.0f || st.loopSpeed < 1.0f) {
+                st.loopIndex = -1;
+                if (!ranOut) st.loopExitFlash = 1.2f;  // thrown off mid-turn
+                // Hand the craft back to the flight sim carrying the velocity it
+                // had, so being thrown off the top is a real fall and finishing
+                // the turn is a clean exit at speed.
+                velH = glm::vec3(st.gliderVel.x, 0.0f, st.gliderVel.z);
+                st.loopFwd = glm::vec3(std::sin(st.gliderYaw), 0.0f,
+                                       std::cos(st.gliderYaw));
+                st.loopUp  = glm::vec3(0.0f, 1.0f, 0.0f);
+                // Fold the accumulated turn back into (-180, 180]: a full loop
+                // leaves pitch at -360, and easing THAT back to level would spin
+                // the craft a whole extra revolution. The pre-step snapshot moves
+                // with it, or the render would lerp across the fold for a frame.
+                st.gliderPitch = std::remainder(st.gliderPitch, 360.0f);
+                gliderPitch0   = st.gliderPitch;
+            }
+            continue;   // the flat sim does not get a say while on a loop
+        }
+
         const float hs = glm::length(velH);
         if (hs > effMax) velH *= effMax / hs;
         st.gliderVel.x = velH.x; st.gliderVel.z = velH.z;
@@ -586,6 +681,30 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         const float k = std::min(1.0f, env.kSimH * gc->levelRate);
         st.gliderBank  += (targetBank  - st.gliderBank)  * k;
         st.gliderPitch += (targetPitch - st.gliderPitch) * k;
+
+        // --- Mounting a loop -------------------------------------------------
+        // Only near a loop's ENTRY, and only heading into it. A loop leaves the
+        // ground tangentially, so a craft on the flat road arrives on its first
+        // metres with no lip to climb -- but the turn also passes back over its
+        // own start, and without the arc test the craft would be snatched onto
+        // the top of it while driving underneath.
+        st.loopUp  = glm::vec3(0.0f, 1.0f, 0.0f);
+        st.loopFwd = glm::vec3(std::sin(st.gliderYaw), 0.0f, std::cos(st.gliderYaw));
+        if (!frozen && !st.raceFinished && st.loopExitFlash <= 0.0f)
+            for (std::size_t li = 0; li < lps.size(); ++li) {
+                float arc = 0.0f, lat = 0.0f, hgt = 0.0f;
+                if (!roadloop::locate(lps[li], st.gliderPos, halfW, arc, lat, hgt))
+                    continue;
+                if (arc > 8.0f && arc < lps[li].length - 8.0f) continue; // not at an end
+                const roadloop::Frame lf = roadloop::at(lps[li], arc);
+                const glm::vec3 v = st.gliderVel;
+                if (glm::dot(glm::vec3(v.x, 0.0f, v.z), lf.tangent) <= 0.0f) continue;
+                st.loopIndex = static_cast<int>(li);
+                st.loopArc   = (arc <= 8.0f) ? arc : 0.0f;
+                st.loopSide  = glm::clamp(lat, -halfW + 0.4f, halfW - 0.4f);
+                st.loopSpeed = glm::length(glm::vec2(v.x, v.z));
+                break;
+            }
 
         // Chase camera eased on the fixed clock (same knobs as car).
         const glm::vec3 wantedC = st.gliderPos - fwd * gc->camDistance +
@@ -623,10 +742,19 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
 
     // Chase camera aims from the interpolated cam position at the craft.
     env.camera.setPosition(rCam);
-    const glm::vec3 dc = glm::normalize(
-        (rPos + glm::vec3(0.0f, gc->camLookHeight, 0.0f)) - rCam);
-    env.camera.setYaw(glm::degrees(std::atan2(dc.z, dc.x)));
-    env.camera.setPitch(glm::degrees(std::asin(glm::clamp(dc.y, -1.0f, 1.0f))));
+    if (st.loopIndex >= 0) {
+        // On a loop the camera takes its basis outright: the tangent passes
+        // through vertical (where yaw stops meaning anything) and the craft ends
+        // up inverted (which yaw/pitch has no roll to express). Aim at the craft,
+        // roll with the surface.
+        const glm::vec3 dc = (rPos + st.loopUp * gc->camLookHeight) - rCam;
+        env.camera.setBasis(dc, st.loopUp);
+    } else {
+        const glm::vec3 dc = glm::normalize(
+            (rPos + glm::vec3(0.0f, gc->camLookHeight, 0.0f)) - rCam);
+        env.camera.setYaw(glm::degrees(std::atan2(dc.z, dc.x)));
+        env.camera.setPitch(glm::degrees(std::asin(glm::clamp(dc.y, -1.0f, 1.0f))));
+    }
 }
 
 void updateOpponents(RaceState& st, const RaceEnv& env) {
@@ -730,6 +858,11 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
     for (Entity& e : env.entities) {
         auto* op = e.components.get<OpponentComponent>();
         if (!op) continue;
+        // Sat out of this session (unticked, or a time trial): not on the grid,
+        // not in the standings, not in anyone's mirrors. Checked here rather than
+        // by deactivating the entity so the sim reads the same in the editor,
+        // where nothing has been deactivated.
+        if (!op->entered || !e.activeInHierarchy) continue;
         if (!op->started) {
             // Seed dist from where the marker was placed (projected onto the road);
             // startDistance then staggers the grid.

@@ -508,6 +508,140 @@ public:
     }
 };
 
+// --- Built-in component: Particles -------------------------------------------
+// A configurable emitter on any object: exhaust, sparks, steam, dust, embers,
+// snow. The hard-wired effects (rain, boat spray, skid marks, contrails) stay
+// where they are -- each knows something about its effect that a general system
+// should not have to. This is for the effects a track needs and the engine cannot
+// guess.
+//
+// Every field here is authored; nothing about the live particles is stored on the
+// component. That is what lets a prefab, an undo step or Play's snapshot copy an
+// emitter around without dragging a cloud of particles along with it (the pools
+// live in ParticleSystem, keyed by entity id).
+class ParticleComponent : public ComponentBase {
+public:
+    // --- Emission ------------------------------------------------------------
+    bool  playing   = true;   // emitting at all (integration continues regardless)
+    bool  loop      = true;   // repeat the cycle, or emit once and stop
+    float duration  = 3.0f;   // seconds of emission per cycle
+    float rate      = 40.0f;  // particles per second (0 = burst only)
+    // Whole numbers carried as floats, the same way FinishLineComponent::laps is:
+    // the Property metadata has no integer slider, and one rounding at the point
+    // of use is cheaper than a new metadata kind for two fields.
+    float burst     = 0.0f;   // extra particles at the start of every cycle
+    float maxCount  = 500.0f; // hard ceiling; emission stalls rather than growing
+    float lifetime  = 2.0f;   // seconds a particle lives
+    float lifeVar   = 0.3f;   // +/- fraction of that
+
+    // --- Where they start ----------------------------------------------------
+    // 0 = point, 1 = sphere (filled), 2 = cone up the object's +Y, 3 = box.
+    int       shape     = 0;
+    float     radius    = 0.5f;
+    float     coneAngle = 25.0f;      // degrees from the axis
+    glm::vec3 boxSize{1.0f, 1.0f, 1.0f};
+
+    // --- How they move -------------------------------------------------------
+    float     speed    = 4.0f;
+    float     speedVar = 1.0f;
+    glm::vec3 gravity{0.0f, -3.0f, 0.0f};
+    float     drag     = 0.4f;        // 1/s; air resistance, not a speed cap
+    glm::vec3 wind{0.0f, 0.0f, 0.0f};
+    // World space: a particle stays where it was born while the emitter moves on
+    // -- a trail, a smoke plume, a shower of sparks left behind.
+    //
+    // OFF is full local space: positions and velocities are held in the emitter's
+    // own frame, so the object's motion cannot reach them at all. It accelerates,
+    // it banks, and the plume sits on the nozzle looking exactly the same. That is
+    // what a thruster or an engine flame wants, and it is why following only the
+    // object's translation is not enough -- a craft that turned would leave its
+    // flame pointing where it used to be.
+    //
+    // Gravity and wind still act in WORLD directions either way (they are rotated
+    // into the local frame), so a local-space plume still falls downward.
+    bool      worldSpace = true;
+    // How much of the emitter's own motion a new particle keeps: exhaust from a
+    // craft at speed should not hang in the air at the point it left the pipe.
+    // World space only -- in local space there is no emitter motion to inherit,
+    // by construction.
+    float     inherit  = 0.0f;        // 0..1 of the emitter's velocity
+
+    // --- How they look -------------------------------------------------------
+    // Sprite by file name, resolved through the asset database. Empty draws a
+    // soft round dot generated in the shader, so a fresh emitter shows something
+    // before any texture has been chosen.
+    std::string sprite;
+    glm::vec3 colorStart{1.0f, 0.85f, 0.5f};
+    glm::vec3 colorEnd{1.0f, 0.25f, 0.05f};
+    float     alphaStart = 1.0f, alphaEnd = 0.0f;
+    float     sizeStart  = 0.4f, sizeEnd  = 1.2f;
+    float     sizeVar    = 0.25f;
+    float     rotation   = 0.0f;      // degrees of random spread at birth
+    float     spin       = 0.0f;      // degrees per second
+    int       blend      = 1;         // 0 = alpha (smoke), 1 = additive (fire)
+    float     brightness = 1.0f;      // multiplies the colour; >1 to feed bloom
+    // Brightness driven by how fast the craft is going: `brightness` is scaled
+    // between these two as its speed runs from a standstill to its own top speed.
+    // A thruster that glows the same parked as it does flat out reads as a decal;
+    // one that flares is the single cue that sells thrust.
+    //
+    // The craft is whatever Glider or Opponent sits on this object or on one of
+    // its ancestors -- an exhaust is a child of the ship, so looking only at the
+    // emitter would find nothing. Its OWN top speed is the reference, so there is
+    // no second number to keep in sync with the flight model.
+    //
+    // Both default to 1, which is exactly no effect: equal values disable the
+    // whole thing, so existing emitters are untouched and there is no separate
+    // on/off flag to forget.
+    float     speedGlowMin = 1.0f;    // multiplier at a standstill
+    float     speedGlowMax = 1.0f;    // ...and at the craft's top speed
+    // Metres of extra length per m/s of speed. 0 = a round billboard; above that
+    // the quad turns along its travel, which is what makes sparks read as
+    // streaks instead of dots.
+    float     stretch    = 0.0f;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<ParticleComponent>(*this);
+    }
+    const char* typeId() const override { return "particles"; }
+    const char* displayName() const override { return "Particles"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        // Draw the spawn volume: aiming an emitter should not be guesswork, and
+        // a point emitter is otherwise invisible until it is running.
+        const glm::vec4 col{1.0f, 0.75f, 0.35f, 0.9f};
+        if (shape == 1) {
+            g.sphere(c, radius, col);
+        } else if (shape == 2) {
+            const glm::vec3 axis = rot * glm::vec3(0.0f, 1.0f, 0.0f);
+            const float h = 2.0f;
+            const glm::vec3 tip = c + axis * h;
+            g.circle(tip, h * glm::tan(glm::radians(coneAngle)), axis, col);
+            const glm::vec3 a1 = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+            const glm::vec3 a2 = rot * glm::vec3(0.0f, 0.0f, 1.0f);
+            const float r = h * glm::tan(glm::radians(coneAngle));
+            g.line(c, tip + a1 * r, col);
+            g.line(c, tip - a1 * r, col);
+            g.line(c, tip + a2 * r, col);
+            g.line(c, tip - a2 * r, col);
+        } else if (shape == 3) {
+            const glm::vec3 h = boxSize * 0.5f;
+            glm::vec3 v[8];
+            for (int i = 0; i < 8; ++i)
+                v[i] = c + rot * glm::vec3((i & 1) ? h.x : -h.x,
+                                           (i & 2) ? h.y : -h.y,
+                                           (i & 4) ? h.z : -h.z);
+            const int e[12][2] = {{0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
+                                  {0,4},{1,5},{2,6},{3,7}};
+            for (const auto& k : e) g.line(v[k[0]], v[k[1]], col);
+        } else {
+            g.circle(c, 0.25f, {0.0f, 1.0f, 0.0f}, col);
+            g.circle(c, 0.25f, {1.0f, 0.0f, 0.0f}, col);
+        }
+    }
+};
+
 // --- Built-in component: Boost Pad (a Wipeout-style speed strip) --------------
 // Attach to a flat object placed on the track: while playing, when a GLIDER
 // flies over the object's footprint it gets shoved forward and its speed cap is
@@ -587,6 +721,11 @@ public:
     // a pad ahead. 1 = aim dead centre at it, 0 = only take pads it happens to
     // cross. Dodging a blocker always wins (no boost is worth a rear-end).
     float padSeek      = 0.8f;  // eagerness to detour onto a boost pad (0..1)
+    // Does this one actually take part? Unticked, the craft stays in the scene
+    // but sits out the session -- which is how a track can carry a full field and
+    // a given race pick three of them. A time trial ignores this and sits
+    // everybody out (see racegrid).
+    bool  entered      = true;
 
     float dist    = 0.0f;  // runtime: distance travelled along the road (m)
     float bankCur = 0.0f;  // runtime: smoothed bank
@@ -651,6 +790,20 @@ inline void drawGateGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot
 class FinishLineComponent : public ComponentBase {
 public:
     float laps = 3.0f; // race length in laps (whole number; 0 = endless practice)
+    // What kind of session this scene holds: 0 = race (the entered opponents fly
+    // against the player), 1 = time trial (the player alone, opponents sat out).
+    // It lives here rather than in a project-wide setting because this object is
+    // already what defines the race -- putting the mode anywhere else would split
+    // it from the lap count it belongs with.
+    int   mode = 0;
+    // The grid, laid out BEHIND this line. Craft are placed automatically at the
+    // start of a race, so setting one up is choosing who is in it rather than
+    // dragging craft onto a start line by hand -- which is not something that
+    // should need a steady mouse.
+    float gridBack  = 12.0f; // metres behind the line the pole slot sits
+    float gridRow   =  8.0f; // metres between rows
+    float gridLane  =  2.4f; // lateral stagger, alternating side to side
+    bool  playerPole = false;// player on pole; otherwise at the back of the grid
     // The trigger gate -- its own size and orientation, independent of the
     // (possibly rotated) visual object it is attached to. width spans the track,
     // depth is the thickness along travel, height the vertical reach; yaw turns

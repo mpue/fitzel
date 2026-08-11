@@ -46,6 +46,21 @@ struct RaceState {
     bool  gliderBoosting  = false; // on/just-left a boost pad (HUD flash)
     bool  gliderWasOnPad  = false; // last frame's pad contact (entry punch edge)
 
+    // --- Riding a vertical loop ------------------------------------------
+    // While on a loop the craft leaves the hover model entirely: it is carried
+    // ALONG the loop's frames with gravity resolved against the surface, because
+    // hovering over gliderGround(x,z) has no meaning on a surface that is
+    // vertical (and then inverted). `loopIndex` < 0 means the normal flight sim
+    // is in charge.
+    int   loopIndex = -1;   // which loop of road.loopGeometry(), -1 = none
+    float loopArc   = 0.0f; // metres travelled around it
+    float loopSide  = 0.0f; // offset across the carriageway (m)
+    float loopSpeed = 0.0f; // speed along the loop (m/s)
+    // The craft's orientation while on a loop, for the render and the camera --
+    // a Euler yaw cannot describe being upside down at the top of a turn.
+    glm::vec3 loopFwd{0.0f, 0.0f, 1.0f}, loopUp{0.0f, 1.0f, 0.0f};
+    float loopExitFlash = 0.0f; // counts down after being thrown off (HUD/FX)
+
     // --- Manual boost (gamepad A / Left Shift) ---------------------------
     // A tank the pilot spends, as opposed to the boost PADS above, which the
     // track hands out. Refilled to full at every race start (the countdown), so
