@@ -73,12 +73,22 @@ public:
     // below -- so a hover craft can use it as ground and not sink through the
     // bridge. Cheap: projects onto the cached sampled centreline. Returns false
     // when off the road or the road isn't built.
-    // `maxY` is a ceiling: only surfaces at or below it are considered, and the
-    // HIGHEST of those wins. That is what makes an underpass work. Where a road
-    // crosses itself -- a figure-of-eight -- two branches sit over the same XZ,
-    // and answering with the nearer one in plan view hands a craft driving
-    // through the underpass the flyover's deck as its ground. The caller knows
-    // which storey it is on; it passes its own height and gets that one.
+    //
+    // The answer follows the CROSS-FALL: on a banked stretch the carriageway at
+    // the query point is `lateral * tan(bank)` off the centreline, and returning
+    // the centreline height there would float a craft over the low edge and bury
+    // it in the high one.
+    // `maxY` is a ceiling that only REJECTS: surfaces above it are skipped, and
+    // the NEAREST of what is left wins. That is what makes an underpass work --
+    // where a road crosses itself, the flyover's deck is out of reach overhead
+    // and the carriageway being driven answers instead.
+    //
+    // It must not select by height, and that is not a stylistic point. The hover
+    // craft that asks this passes its OWN height as the ceiling, so an answer
+    // chosen by height feeds back into the next question: a sample two metres
+    // uphill slips in and out as the craft bobs, the ground moves by the
+    // gradient, and the hover spring chases it. That version shipped once and
+    // made gliders judder on every slope.
     bool surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY,
                          float maxY = 1.0e9f) const;
 
@@ -249,6 +259,11 @@ public:
     // once the road is built), so anything already walking the centreline by arc
     // length gets the drivable height for free. Empty before the first build.
     const std::vector<float>&         centerlineY() const { return m_centerlineY; }
+    // Cross-fall per centreline sample, in degrees, parallel to centerlineY().
+    // Anything that stands OFF the centre of a banked road needs it: the
+    // carriageway there is `lateral * tan(bank)` below the centreline, and a
+    // craft that ignores it floats over the low edge and cuts into the high one.
+    const std::vector<float>&         centerlineBank() const { return m_centerlineBank; }
 
     // --- Editor state the viewport handles + panel drive directly ------------
     std::vector<glm::vec2>   roadPts;          // control points (world x,z)
@@ -396,6 +411,7 @@ private:
     std::vector<std::uint32_t>   m_collIndices;
     std::vector<glm::vec2>       m_centerline;  // sampled centre (for veg masking)
     std::vector<float>           m_centerlineY; // road surface height per sample (deck over bridges)
+    std::vector<float>           m_centerlineBank; // cross-fall per sample (degrees)
     std::vector<SideBatch>       m_sideBatches; // derived side-object instances
     city::District               m_city;        // derived roadside buildings
     std::vector<fitzel::Mesh>    m_cityMeshes;  // one per m_city.batches entry

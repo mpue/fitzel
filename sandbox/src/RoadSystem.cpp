@@ -768,6 +768,8 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     fitzel::MeshData md;
     m_centerline = center; // flat centre for vegetation masking
     m_centerlineY = height; // road surface height per sample (deck top over bridges)
+    m_centerlineBank = bank;
+    m_centerlineBank.resize(center.size(), 0.0f);
 
     // Along-road UV wrap. `v` is metres/texTile accumulated from the start line,
     // so on a few-kilometre circuit it climbs into the hundreds -- and a float
@@ -1040,7 +1042,24 @@ bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& ou
         const glm::vec2 p = a + ab * t;
         const float d2 = glm::dot(xz - p, xz - p);
         if (d2 > lim) continue;
-        const float y = glm::mix(m_centerlineY[i], m_centerlineY[(i + 1) % n], t);
+        float y = glm::mix(m_centerlineY[i], m_centerlineY[(i + 1) % n], t);
+        // Follow the cross-fall out to where the question was actually asked. The
+        // sign matches loft's: `side` is the road's right, positive bank drops
+        // that edge, so the surface FALLS across a positive offset. Clamped to the
+        // carriageway, or a query beyond the edge would extrapolate the tilt off
+        // into the scenery.
+        if (i < m_centerlineBank.size()) {
+            const float bk = glm::mix(m_centerlineBank[i],
+                                      m_centerlineBank[(i + 1) % n], t);
+            if (bk != 0.0f) {
+                const float L = std::sqrt(L2);
+                const glm::vec2 dir = (L > 1e-5f) ? ab / L : glm::vec2(0.0f, 1.0f);
+                const glm::vec2 rel = xz - p;
+                const float half = width * 0.5f;
+                const float o = glm::clamp(rel.x * dir.y - rel.y * dir.x, -half, half);
+                y -= o * std::tan(glm::radians(bk));
+            }
+        }
         if (y > maxY) continue;                       // out of reach overhead
         if (!found || d2 < bestD2) { bestD2 = d2; bestY = y; found = true; }
     }
@@ -1055,6 +1074,7 @@ void RoadSystem::clearGeometry() {
     m_loops.clear();
     m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
     m_centerlineY.clear();
+    m_centerlineBank.clear();
     m_sideBatches.clear();
 }
 

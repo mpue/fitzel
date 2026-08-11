@@ -774,16 +774,23 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
     // heights cached -- then we fall back to the ground, i.e. the old behaviour.
     const std::vector<float>& cy = env.road.centerlineY();
     const bool haveY = cy.size() == n;
+    // Cross-fall per sample. A racer runs OFF the centreline, so on a banked
+    // stretch the height the centreline reports is not the height under it.
+    const std::vector<float>& cb = env.road.centerlineBank();
+    const bool haveBank = cb.size() == n;
     const std::size_t segs = env.road.closed ? n : n - 1;
     float total = 0.0f;
     for (std::size_t i = 0; i < segs; ++i)
         total += glm::length(cl[(i + 1) % n] - cl[i]);
     // Position + tangent at arc-length `s` (wrapped/clamped), and -- when asked
     // for -- the road surface height there.
-    auto sampleAt = [&](float s, glm::vec2& pos, glm::vec2& dir, float* outY = nullptr) {
+    auto sampleAt = [&](float s, glm::vec2& pos, glm::vec2& dir, float* outY = nullptr,
+                        float* outBank = nullptr) {
+        if (outBank) *outBank = 0.0f;
         if (total < 1e-3f) {
             pos = cl[0]; dir = glm::vec2(0.0f, 1.0f);
             if (outY && haveY) *outY = cy[0];
+            if (outBank && haveBank) *outBank = cb[0];
             return;
         }
         if (env.road.closed) { s = std::fmod(s, total); if (s < 0.0f) s += total; }
@@ -798,6 +805,7 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
                 pos = a + (b - a) * t;
                 dir = (b - a) / seg;
                 if (outY && haveY) *outY = glm::mix(cy[i], cy[(i + 1) % n], t);
+                if (outBank && haveBank) *outBank = glm::mix(cb[i], cb[(i + 1) % n], t);
                 return;
             }
             acc += seg;
@@ -1136,10 +1144,19 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         // the right one whatever lane we sit in, and over a bridge it is the deck.
         glm::vec2 pos = cl[0], dir(0.0f, 1.0f);
         float surfY = 0.0f;
-        sampleAt(op->dist, pos, dir, &surfY);
+        float lineBank = 0.0f;
+        sampleAt(op->dist, pos, dir, &surfY, &lineBank);
         const glm::vec2 perp(dir.y, -dir.x);          // right of travel
         const glm::vec2 p = pos + perp * op->laneCur;
         if (!haveY) surfY = env.streamer.heightAt(p.x, p.y);
+        // On a banked stretch the carriageway under this racer is `lane *
+        // tan(bank)` off the centreline the sample reported. Without it a whole
+        // field floats over the outside of a banked corner and cuts into the
+        // inside. Positive bank drops the right edge and laneCur is positive to
+        // the right, hence the minus -- the same sign the road's own height query
+        // uses.
+        if (haveY && lineBank != 0.0f)
+            surfY -= op->laneCur * std::tan(glm::radians(lineBank));
         const glm::vec3 wpos(p.x, surfY + op->rideHeight, p.y);
         const float yaw0 = std::atan2(dir.x, dir.y);
         const float yawDeg = glm::degrees(yaw0) - (op->forward == 1 ? 180.0f : 0.0f);
