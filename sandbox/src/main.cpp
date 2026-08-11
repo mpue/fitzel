@@ -1716,15 +1716,27 @@ int main(int argc, char** argv) {
             history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
             entitySel = -1;
         };
-        // Duplicate an entity (offset copy, unparented) as one undoable step.
+        // Duplicate an entity as one undoable step: an offset copy that KEEPS its
+        // parent.
+        //
+        // It used to unparent the copy, and that moved it. localCenter is relative
+        // to the parent and is the source of truth; resolveHierarchy gives a ROOT
+        // the world position `center = localCenter`. So a child sitting at local
+        // (0, 0, -3) on a craft half a map away had its copy teleported to world
+        // (1.1, 0, -3) -- next to the origin. On a visible object you would watch
+        // it fly off; on an Empty there is nothing to see, so the copy was simply
+        // somewhere else, unclickable where you were looking. Duplicating a
+        // thruster mount is exactly that case.
+        //
+        // The offset is in the parent's frame, which is what "beside the original"
+        // means for a child. `center` is left alone: it is derived, and
+        // resolveHierarchy fills it from the parent this frame.
         auto duplicateEntity = [&](int idx) {
             if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
             if (entities[idx].type == EntityType::Sun) return;
             Entity nb = entities[idx];
             nb.localCenter.x += nb.half.x * 2.2f;
-            nb.center.x     += nb.half.x * 2.2f;
             nb.id     = entityCounter++;
-            nb.parent = -1;
             nb.name  += " copy";
             history.push(std::make_unique<AddEntityCmd>(nb), document);
             entitySel = document.indexOf(nb.id);
@@ -1958,24 +1970,35 @@ int main(int argc, char** argv) {
             history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
             entitySel = -1; multiSel.clear();
         };
-        // Duplicate every selected object (offset copy, unparented -- mirrors the
-        // single Duplicate) as one undoable step; the copies become the selection.
+        // Duplicate every selected object as one undoable step; the copies become
+        // the selection. Parents are kept, exactly as the single Duplicate does
+        // and for the same reason (see there).
+        //
+        // With one wrinkle a single copy cannot have: when a selected object's
+        // PARENT was copied too, the copy must hang off the copied parent rather
+        // than the original. Otherwise duplicating a craft and its thrusters
+        // together gives you a second craft whose thrusters are still bolted to
+        // the first one.
         auto duplicateSelection = [&]() {
             const std::vector<int> sel = selectedIds();
             if (sel.size() <= 1) { duplicateEntity(entitySel); return; }
             std::vector<Entity> copies;
             std::vector<int>    newIds;
+            std::unordered_map<int, int> remap;   // original id -> copy id
             for (int id : sel) {
                 const Entity* src = document.find(id);
                 if (!src || src->type == EntityType::Sun) continue;
                 Entity nb = *src;
                 nb.localCenter.x += nb.half.x * 2.2f;
-                nb.center.x     += nb.half.x * 2.2f;
                 nb.id     = entityCounter++;
-                nb.parent = -1;
                 nb.name  += " copy";
+                remap[id] = nb.id;
                 newIds.push_back(nb.id);
                 copies.push_back(std::move(nb));
+            }
+            for (Entity& c : copies) {
+                const auto it = remap.find(c.parent);
+                if (it != remap.end()) c.parent = it->second;
             }
             if (copies.empty()) return;
             history.push(std::make_unique<AddEntitiesCmd>(std::move(copies), "Duplicate"),
@@ -5663,35 +5686,59 @@ int main(int argc, char** argv) {
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("View")) {
-                    ImGui::MenuItem("Performance", "F3", &showPerf);
-                    ImGui::MenuItem("Stats",           nullptr, &showStats);
-                    ImGui::MenuItem("Camera",          nullptr, &showCamera);
-                    ImGui::MenuItem("Mixer",           nullptr, &showMixer);
-                    ImGui::MenuItem("Weather & audio", nullptr, &showWeather);
-                    ImGui::MenuItem("Sky & atmosphere",nullptr, &showSky);
-                    ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
-                    ImGui::MenuItem("Water",           nullptr, &showWater);
-                    ImGui::MenuItem("Terrain",         nullptr, &showTerrain);
-                    ImGui::MenuItem("Terrain sculpt",  nullptr, &showSculpt);
-                    ImGui::MenuItem("Terrain paint",   nullptr, &showPaint);
-                    ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
-                    ImGui::MenuItem("Scatter",         nullptr, &showScatter);
-                    ImGui::MenuItem("Buildings",       nullptr, &showBuildings);
-                    ImGui::MenuItem("City",            nullptr, &showCity);
-                    ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
-                    ImGui::MenuItem("Roads",           nullptr, &showRoads);
-                    ImGui::MenuItem("UI Overlay",      nullptr, &showUiOverlay);
-                    ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
-                    ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
-                    ImGui::MenuItem("Glider",          nullptr, &showGliderPanel);
-                    ImGui::Separator();
-                    ImGui::MenuItem("Materials",       nullptr, &showMaterials);
-                    ImGui::MenuItem("Models",          nullptr, &showModels);
-                    ImGui::MenuItem("Prefabs",         nullptr, &showPrefabs);
-                    ImGui::MenuItem("Import Unity asset", nullptr, &showUnityImport);
-                    ImGui::MenuItem("Assets",          nullptr, &showAssets);
-                    ImGui::MenuItem("Scripts",         nullptr, &showScriptEditor);
-                    ImGui::MenuItem("Environment",     nullptr, &showEnv);
+                    // Grouped by the JOB, not by which file draws it. A flat list
+                    // of twenty-eight entries is a list you read start to finish
+                    // every time; "where do I set fog" has an obvious answer only
+                    // once the entries are sorted the way the work is.
+                    if (ImGui::BeginMenu("World")) {
+                        ImGui::MenuItem("Terrain",         nullptr, &showTerrain);
+                        ImGui::MenuItem("Terrain sculpt",  nullptr, &showSculpt);
+                        ImGui::MenuItem("Terrain paint",   nullptr, &showPaint);
+                        ImGui::MenuItem("Water",           nullptr, &showWater);
+                        ImGui::Separator();
+                        ImGui::MenuItem("Sky & atmosphere",nullptr, &showSky);
+                        ImGui::MenuItem("Weather & audio", nullptr, &showWeather);
+                        ImGui::MenuItem("Colour grade",    nullptr, &showColorGrade);
+                        ImGui::MenuItem("Environment",     nullptr, &showEnv);
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Planting")) {
+                        ImGui::MenuItem("Vegetation",      nullptr, &showVegetation);
+                        ImGui::MenuItem("Scatter",         nullptr, &showScatter);
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Track")) {
+                        ImGui::MenuItem("Roads",           nullptr, &showRoads);
+                        ImGui::MenuItem("City",            nullptr, &showCity);
+                        ImGui::MenuItem("Buildings",       nullptr, &showBuildings);
+                        ImGui::Separator();
+                        ImGui::MenuItem("Vehicle",         nullptr, &showVehiclePanel);
+                        ImGui::MenuItem("Glider",          nullptr, &showGliderPanel);
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Assets")) {
+                        ImGui::MenuItem("Materials",       nullptr, &showMaterials);
+                        ImGui::MenuItem("Models",          nullptr, &showModels);
+                        ImGui::MenuItem("Prefabs",         nullptr, &showPrefabs);
+                        ImGui::MenuItem("Assets",          nullptr, &showAssets);
+                        ImGui::MenuItem("Scripts",         nullptr, &showScriptEditor);
+                        ImGui::Separator();
+                        ImGui::MenuItem("Import Unity asset", nullptr, &showUnityImport);
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Presentation")) {
+                        ImGui::MenuItem("UI Overlay",      nullptr, &showUiOverlay);
+                        ImGui::MenuItem("Camera",          nullptr, &showCamera);
+                        ImGui::MenuItem("Camera path",     nullptr, &showCamPath);
+                        ImGui::MenuItem("Mixer",           nullptr, &showMixer);
+                        ImGui::EndMenu();
+                    }
+                    if (ImGui::BeginMenu("Inspect")) {
+                        ImGui::MenuItem("Performance", "F3", &showPerf);
+                        ImGui::MenuItem("Stats",           nullptr, &showStats);
+                        ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
+                        ImGui::EndMenu();
+                    }
                     ImGui::Separator();
                     // Text size/typeface are a comfort setting, not a scene one:
                     // they live in the editor prefs and apply immediately.
@@ -5720,7 +5767,27 @@ int main(int argc, char** argv) {
                                  "-- easiest to read at small sizes.");
                         ImGui::EndMenu();
                     }
+                    if (ImGui::MenuItem("Close all panels")) {
+                        // One click back to scene + hierarchy + inspector. The
+                        // panels are cheap to reopen and expensive to look past.
+                        showPerf = showStats = showCamera = showMixer = false;
+                        showWeather = showSky = showColorGrade = showWater = false;
+                        showTerrain = showSculpt = showPaint = false;
+                        showVegetation = showScatter = false;
+                        showBuildings = showCity = showRoads = false;
+                        showCamPath = showUiOverlay = showCursor = false;
+                        showVehiclePanel = showGliderPanel = false;
+                        showMaterials = showModels = showPrefabs = false;
+                        showAssets = showScriptEditor = showEnv = false;
+                        showUnityImport = false;
+                    }
                     if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Put the panels back into one docked tab\n"
+                                          "strip on the right, with the scene in the\n"
+                                          "middle. Needed once after an update: your\n"
+                                          "own arrangement is remembered in imgui.ini\n"
+                                          "and wins until you ask for this.");
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Help")) {
@@ -6136,18 +6203,49 @@ int main(int argc, char** argv) {
                                                 | ImGuiDockNodeFlags_DockSpace);
                 ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->WorkSize);
 
-                // Default layout: Hierarchy (left) | Scene (centre) | Inspector
-                // (right). Every other panel is toggled from the View menu and
-                // floats until the user docks it where they like.
+                // Hierarchy (left) | Scene (centre) | Inspector over ONE tool dock
+                // (right).
+                //
+                // Every tool panel is pre-docked into that single node, so opening
+                // one adds a TAB rather than a window. Left to float, they get
+                // dragged out into a tiled wall -- which is exactly what happened:
+                // fourteen panels side by side and the viewport reduced to a tab
+                // behind one of them. The panels are not the work; the scene is,
+                // and it keeps the middle.
+                //
+                // This does not make the panels fewer, only stop them competing
+                // for the same space. Fewer is a different job (merging them by
+                // task rather than by source file).
                 ImGuiID central = 0;
-                ImGuiID left  = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.20f,
+                ImGuiID left  = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.18f,
                                                             nullptr, &central);
-                ImGuiID right = ImGui::DockBuilderSplitNode(central, ImGuiDir_Right, 0.28f,
+                ImGuiID right = ImGui::DockBuilderSplitNode(central, ImGuiDir_Right, 0.30f,
                                                             nullptr, &central);
+                // Inspector keeps its own strip above the tools: it is the one
+                // panel wanted WHILE a tool is open (pick a road point, look at
+                // what it is), so making it a peer tab would mean flipping back
+                // and forth.
+                ImGuiID inspector = 0;
+                ImGuiID tools = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.62f,
+                                                            nullptr, &inspector);
 
                 ImGui::DockBuilderDockWindow("Scene", central);
                 ImGui::DockBuilderDockWindow("Hierarchy", left);
-                ImGui::DockBuilderDockWindow("Inspector", right);
+                ImGui::DockBuilderDockWindow("Inspector", inspector);
+                // Titles must match the ImGui::Begin() strings exactly -- a typo
+                // costs a floating window and nothing else, which is why they are
+                // in one list rather than scattered over the call sites.
+                for (const char* w : {
+                        "Terrain", "Terrain Sculpt", "Terrain Paint", "Water",
+                        "Sky & atmosphere", "Weather & audio", "Colour grade",
+                        "Environment",
+                        "Vegetation", "Scatter",
+                        "Roads", "City", "Buildings",
+                        "Materials", "Models", "Prefabs", "Assets",
+                        "UI Overlay", "Camera path", "Camera", "3D Cursor",
+                        "Vehicle", "Glider", "Voxels", "Mixer", "Scripts",
+                        "Performance", "Stats"})
+                    ImGui::DockBuilderDockWindow(w, tools);
                 ImGui::DockBuilderFinish(dockId);
             }
 
