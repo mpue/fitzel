@@ -83,6 +83,11 @@ struct RaceState {
     int   raceLap = 0, raceLaps = 0;   // completed laps / target
     bool  finishWasOver = false;       // edge-detect the line crossing
     float finishArm = 0.0f;            // re-arm guard so one pass counts once (s)
+    // Has the line been crossed to BEGIN lap 1? A countdown start puts the craft
+    // on the grid, which stands behind the line, so the first pass opens the lap
+    // instead of closing one -- without this it reads as a lap flown without a
+    // single checkpoint. False only between GO and that first pass.
+    bool  lapBegun = true;
     std::unordered_set<int> cpPassed;  // checkpoint entity ids passed this lap
     int   cpTotal = 0;                 // checkpoints in the scene (for the HUD)
     float raceMissedFlash = 0.0f;      // HUD flash after finishing a lap short

@@ -1,6 +1,7 @@
 #include "Component.hpp"
 
 #include <filesystem>
+#include <sstream>
 
 #include <nlohmann/json.hpp>
 
@@ -1170,6 +1171,114 @@ const std::vector<Property>& SunComponent::properties() {
     return props;
 }
 
+// Geometry as two compact blobs, for the same reason the terrain's sculpt cells
+// are stored that way: a JSON array per coordinate would turn a modest shape
+// into thousands of pretty-printed lines. Vertices are "x y z ...", faces are
+// "n i0..in-1 ..." -- a corner count followed by that many indices, which is
+// what lets a mesh of quads and the odd triangle share one stream.
+void MeshComponent::save(nlohmann::json& j) const {
+    std::ostringstream vs;
+    vs.precision(7);
+    for (const glm::vec3& v : mesh.verts) vs << v.x << ' ' << v.y << ' ' << v.z << ' ';
+    j["verts"] = vs.str();
+    std::ostringstream fs;
+    for (const std::vector<int>& f : mesh.faces) {
+        fs << f.size() << ' ';
+        for (int i : f) fs << i << ' ';
+    }
+    j["faces"] = fs.str();
+}
+
+void MeshComponent::load(const nlohmann::json& j) {
+    mesh.verts.clear();
+    mesh.faces.clear();
+    if (j.contains("verts") && j["verts"].is_string()) {
+        std::istringstream vs(j["verts"].get<std::string>());
+        glm::vec3 v;
+        while (vs >> v.x >> v.y >> v.z) mesh.verts.push_back(v);
+    }
+    if (j.contains("faces") && j["faces"].is_string()) {
+        std::istringstream fs(j["faces"].get<std::string>());
+        int n = 0;
+        while (fs >> n) {
+            if (n < 3 || n > 64) break;          // corrupt stream: stop, don't guess
+            std::vector<int> f;
+            f.reserve(static_cast<std::size_t>(n));
+            for (int k = 0; k < n; ++k) {
+                int i = -1;
+                if (!(fs >> i) || i < 0 || i >= static_cast<int>(mesh.verts.size())) {
+                    f.clear();
+                    break;
+                }
+                f.push_back(i);
+            }
+            if (f.size() != static_cast<std::size_t>(n)) break;
+            mesh.faces.push_back(std::move(f));
+        }
+    }
+    // A scene that stored nothing usable still has to draw something.
+    if (mesh.faces.empty()) mesh = EditMesh::box(glm::vec3(0.5f));
+    touch();
+}
+
+const std::vector<Property>& TerrainComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        // Every knob addresses the engine's TerrainSettings through a
+        // pointer-to-member, so the component and the streamer stay one struct
+        // apart -- there is no second copy of the terrain's definition to keep in
+        // step. Ranges match the Terrain panel's sliders, which edits the same
+        // fields from the other side.
+        auto addF = [&](const char* label, const char* key,
+                        float fitzel::TerrainSettings::* m,
+                        float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.01f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* {
+                return &(static_cast<TerrainComponent*>(o)->settings.*m);
+            };
+            p.push_back(std::move(f));
+        };
+        auto addI = [&](const char* label, const char* key,
+                        int fitzel::TerrainSettings::* m, int lo, int hi) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Int;
+            f.slider = true; f.min = float(lo); f.max = float(hi); f.speed = 1.0f;
+            f.field = [m](void* o) -> void* {
+                return &(static_cast<TerrainComponent*>(o)->settings.*m);
+            };
+            p.push_back(std::move(f));
+        };
+        // Relief
+        addF("Height",      "heightScale",  &fitzel::TerrainSettings::heightScale,   0.0f, 30.0f,  "%.1f");
+        addF("Ridges",      "ridgeScale",   &fitzel::TerrainSettings::ridgeScale,    0.0f, 60.0f,  "%.1f");
+        addF("Continents",  "continentAmp", &fitzel::TerrainSettings::continentAmp,  0.0f, 4.0f,   "%.2f");
+        addF("Region size", "biomeFreq",    &fitzel::TerrainSettings::biomeFreq,     0.0002f, 0.01f, "%.4f");
+        addF("Terracing",   "terrace",      &fitzel::TerrainSettings::terrace,       0.0f, 1.0f,   "%.2f");
+        addF("Warp",        "warpStrength", &fitzel::TerrainSettings::warpStrength,  0.0f, 60.0f,  "%.1f");
+        addF("Warp size",   "warpFrequency",&fitzel::TerrainSettings::warpFrequency, 0.001f, 0.05f, "%.4f");
+        addF("Detail",      "frequency",    &fitzel::TerrainSettings::frequency,     0.001f, 0.06f, "%.4f");
+        addI("Octaves",     "octaves",      &fitzel::TerrainSettings::octaves,       1, 10);
+        addF("Lacunarity",  "lacunarity",   &fitzel::TerrainSettings::lacunarity,    1.2f, 4.0f,   "%.2f");
+        addF("Gain",        "gain",         &fitzel::TerrainSettings::gain,          0.1f, 0.9f,   "%.2f");
+        addF("Seed",        "seed",         &fitzel::TerrainSettings::seed,       -1000.0f, 1000.0f,"%.0f");
+        // Epic shaping
+        addF("Valleys",     "valleyDepth",  &fitzel::TerrainSettings::valleyDepth,   0.0f, 60.0f,  "%.1f");
+        addF("Peaks",       "peakSharpness",&fitzel::TerrainSettings::peakSharpness, 0.4f, 3.0f,   "%.2f");
+        addF("Relief gain", "reliefGain",   &fitzel::TerrainSettings::reliefGain,    0.2f, 3.0f,   "%.2f");
+        // Island mask (radius 0 = an endless field, the default)
+        addF("Island radius","islandRadius", &fitzel::TerrainSettings::islandRadius,  0.0f, 4000.0f,"%.0f m");
+        addF("Island X",    "islandCenterX",&fitzel::TerrainSettings::islandCenterX,-4000.0f, 4000.0f,"%.0f");
+        addF("Island Z",    "islandCenterZ",&fitzel::TerrainSettings::islandCenterZ,-4000.0f, 4000.0f,"%.0f");
+        addF("Atoll",       "islandShape",  &fitzel::TerrainSettings::islandShape,   0.0f, 1.0f,   "%.2f");
+        // Streaming granularity -- what the ground is cut into, not what it looks
+        // like. Last, because changing either rebuilds every loaded chunk.
+        addF("Chunk size",  "chunkSize",    &fitzel::TerrainSettings::chunkSize,     16.0f, 256.0f,"%.0f m");
+        addI("Chunk detail","resolution",   &fitzel::TerrainSettings::resolution,    8, 192);
+        return p;
+    }();
+    return props;
+}
+
 namespace {
 // Register built-in component types at startup.
 struct AutoRegister {
@@ -1242,6 +1351,14 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
         components::registerType({"player_start", "Player Start",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PlayerStartComponent>()); }});
+        // Not in the Add Component menu: a mesh replaces what an entity draws, so
+        // it is made by "Make editable" / the Mesh button, which also squares the
+        // entity's half-extents with the geometry.
+        components::registerType({"mesh", "Mesh",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<MeshComponent>()); },
+            /*addable=*/false});
+        components::registerType({"terrain", "Terrain",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<TerrainComponent>()); }});
         components::registerType({"sun", "Sun",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SunComponent>()); },
             /*addable=*/false});

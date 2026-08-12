@@ -487,6 +487,8 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"closed",    closed},
         {"enabled",   enabled},
         {"width",     width},
+        {"edgeWidth", edgeWidth},
+        {"edgeAngle", edgeAngle},
         {"texTile",   texTile},
         {"fadeWidth", fadeWidth},
         {"rainRings", rainRings},
@@ -551,6 +553,9 @@ void RoadSystem::load(const nlohmann::json& j) {
     closed    = j.value("closed",    false);
     enabled   = j.value("enabled",   true);
     width     = j.value("width",     5.0f);
+    // 0 for a road saved before raised edges existed -- it loads flat, as it was.
+    edgeWidth = j.value("edgeWidth", 0.0f);
+    edgeAngle = j.value("edgeAngle", 35.0f);
     texTile   = j.value("texTile",   8.0f);
     fadeWidth = j.value("fadeWidth", 0.0f);
     rainRings = j.value("rainRings", 1.0f);
@@ -808,17 +813,58 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     }();
 
     const float half = width * 0.5f;
+
+    // --- The cross-section ---------------------------------------------------
+    // A list of columns across the road, each an offset from the centreline, a
+    // rise above it and the surface normal there -- all in the SECTION's own 2D
+    // frame, so the bank rolls the whole profile by rotating two vectors rather
+    // than by special-casing each piece.
+    //
+    // Plain road: two columns, the left and right edges. With raised edges: six,
+    // because the lip needs its own normal. The carriageway edge appears twice at
+    // the same point, once carrying the flat road's normal and once the lip's --
+    // that duplicate is what puts a crease where the wall starts instead of a
+    // smeared fillet, and it costs two vertices per rung.
+    struct Col { float off, rise; glm::vec2 n; float u; };
+    std::vector<Col> section;
+    {
+        const float reach = edgeReach(), rise = edgeRise();
+        const glm::vec2 flat(0.0f, 1.0f);
+        if (reach > 1e-4f || rise > 1e-4f) {
+            // Outward-and-up on the right is (cos a, sin a); its normal leans back
+            // over the road, which is what makes the lip catch a craft rather than
+            // launch it. Mirrored on the left.
+            const glm::vec2 nR = glm::normalize(glm::vec2(-rise, reach));
+            const glm::vec2 nL = glm::vec2(-nR.x, nR.y);
+            section = {
+                {-half - reach, rise, nL, 0.0f},
+                {-half,         0.0f, nL, reach},
+                {-half,         0.0f, flat, reach},
+                { half,         0.0f, flat, reach + width},
+                { half,         0.0f, nR, reach + width},
+                { half + reach, rise, nR, reach + width + reach},
+            };
+        } else {
+            section = {{-half, 0.0f, flat, 0.0f}, {half, 0.0f, flat, width}};
+        }
+        for (Col& c : section) c.u /= texTile;   // metres across -> texture u
+    }
+    const int cols = static_cast<int>(section.size());
+
     float vlen = 0.0f;
     float mOff = 0.0f;          // metres already wrapped away
     std::vector<bool> link;     // link[k]: is there a quad between rung k and k+1?
 
-    // The rung normal is no longer a constant up: a banked section leans, and a
-    // ribbon that leans while claiming to face straight up is lit as if it were
-    // flat -- the one thing that would give the whole feature away at a glance.
-    auto pushRung = [&](const glm::vec3& Lp, const glm::vec3& Rp,
-                        const glm::vec3& nrm, float v, bool linkNext) {
-        md.vertices.push_back({Lp, nrm, {0.0f, v}});
-        md.vertices.push_back({Rp, nrm, {width / texTile, v}});
+    // One rung = the whole section placed at this station. The normals are no
+    // longer a constant up: a banked section leans, and a ribbon that leans while
+    // claiming to face straight up is lit as if it were flat -- the one thing that
+    // would give the whole feature away at a glance.
+    auto pushRung = [&](const glm::vec3& C, const glm::vec3& sideDir,
+                        const glm::vec3& up, float v, bool linkNext) {
+        for (const Col& c : section)
+            md.vertices.push_back({C + sideDir * c.off + up * c.rise,
+                                   sideDir * c.n.x + up * c.n.y,
+                                   {c.u, v}});
         link.push_back(linkNext);
     };
 
@@ -841,27 +887,34 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
         const float cb = std::cos(br), sb = std::sin(br);
         const glm::vec3 sideDir(side.x * cb, -sb, side.y * cb);  // centre -> right
         const glm::vec3 C(center[i].x, height[i], center[i].y);
-        const glm::vec3 Lp = C - sideDir * half;
-        const glm::vec3 Rp = C + sideDir * half;
         // Perpendicular to sideDir in the plane it shares with world up, i.e. the
-        // section normal rolled by the same angle.
+        // section's "up", rolled by the same angle.
         const glm::vec3 nrm(side.x * sb, cb, side.y * sb);
 
         float v = (vlen - mOff) / texTile;
         if (vlen - mOff >= wrapDist && i + 1 < center.size()) {
-            pushRung(Lp, Rp, nrm, v, /*linkNext=*/false); // closes the running strip
+            pushRung(C, sideDir, nrm, v, /*linkNext=*/false); // closes the running strip
             mOff += wrapDist;
             v     = (vlen - mOff) / texTile;
-            pushRung(Lp, Rp, nrm, v, /*linkNext=*/true);  // ...and restarts it here
+            pushRung(C, sideDir, nrm, v, /*linkNext=*/true);  // ...and restarts it here
         } else {
-            pushRung(Lp, Rp, nrm, v, i + 1 < center.size());
+            pushRung(C, sideDir, nrm, v, i + 1 < center.size());
         }
     }
-    // Two triangles per linked rung pair, wound CCW-from-above (front faces up).
+    // Two triangles per linked rung pair per column pair, wound CCW-from-above
+    // (front faces up). The duplicated carriageway edges are skipped: their two
+    // columns sit at the same point, so the quad between them has no area.
     for (std::size_t k = 0; k + 1 < link.size(); ++k) {
         if (!link[k]) continue;
-        const auto a = static_cast<std::uint32_t>(2 * k);
-        md.indices.insert(md.indices.end(), {a, a + 2, a + 1, a + 1, a + 2, a + 3});
+        for (int c = 0; c + 1 < cols; ++c) {
+            if (section[c].off == section[c + 1].off &&
+                section[c].rise == section[c + 1].rise)
+                continue;                       // the crease seam, not a surface
+            const auto l0 = static_cast<std::uint32_t>(k * cols + c);
+            const auto l1 = static_cast<std::uint32_t>((k + 1) * cols + c);
+            md.indices.insert(md.indices.end(),
+                              {l0, l1, l0 + 1, l0 + 1, l1, l1 + 1});
+        }
     }
     m_mesh  = fitzel::Mesh::create(md);
     m_verts = static_cast<int>(md.vertices.size());
@@ -891,7 +944,11 @@ void RoadSystem::buildLoops(const Layout& lo) {
 
 void RoadSystem::buildBridges(const Layout& lo) {
     fitzel::MeshData md;
-    roadbridge::build(lo.center, lo.prof, lo.ground, lo.spans, width, bridgeStyle, md);
+    // The deck carries the whole section: with raised edges the carriageway is
+    // wider than `width`, and a deck built to the bare width would leave the lip
+    // hanging over thin air.
+    roadbridge::build(lo.center, lo.prof, lo.ground, lo.bank, lo.spans,
+                      surfaceHalf() * 2.0f, bridgeStyle, md);
     m_bridgeVerts = static_cast<int>(md.vertices.size());
     if (md.indices.empty()) { m_bridgeMesh = fitzel::Mesh(); return; }
     m_bridgeMesh = fitzel::Mesh::create(md);
@@ -1048,16 +1105,25 @@ bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& ou
         // that edge, so the surface FALLS across a positive offset. Clamped to the
         // carriageway, or a query beyond the edge would extrapolate the tilt off
         // into the scenery.
-        if (i < m_centerlineBank.size()) {
-            const float bk = glm::mix(m_centerlineBank[i],
-                                      m_centerlineBank[(i + 1) % n], t);
-            if (bk != 0.0f) {
-                const float L = std::sqrt(L2);
-                const glm::vec2 dir = (L > 1e-5f) ? ab / L : glm::vec2(0.0f, 1.0f);
-                const glm::vec2 rel = xz - p;
-                const float half = width * 0.5f;
-                const float o = glm::clamp(rel.x * dir.y - rel.y * dir.x, -half, half);
-                y -= o * std::tan(glm::radians(bk));
+        const float reach = edgeReach();
+        if (i < m_centerlineBank.size() || reach > 1e-4f) {
+            const float bk = (i < m_centerlineBank.size())
+                ? glm::mix(m_centerlineBank[i], m_centerlineBank[(i + 1) % n], t)
+                : 0.0f;
+            const float L = std::sqrt(L2);
+            const glm::vec2 dir = (L > 1e-5f) ? ab / L : glm::vec2(0.0f, 1.0f);
+            const glm::vec2 rel = xz - p;
+            const float half = width * 0.5f;
+            const float across = rel.x * dir.y - rel.y * dir.x;   // signed, to the right
+            if (bk != 0.0f)
+                y -= glm::clamp(across, -half, half) * std::tan(glm::radians(bk));
+            // ...and climb the raised edge beyond the carriageway, so a craft that
+            // rides up the lip is lifted by it. Without this the wall is something
+            // you collide with but hover straight through, which is the difference
+            // between a banked track and a fence.
+            if (reach > 1e-4f) {
+                const float up = glm::clamp(std::abs(across) - half, 0.0f, reach);
+                y += up * (edgeRise() / reach);
             }
         }
         if (y > maxY) continue;                       // out of reach overhead
@@ -1169,7 +1235,10 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     //    owned/overwritten here (repeatable, and it flattens whatever was under it).
     //    Under a bridge the grading is weighted out entirely -- the ground keeps its
     //    natural shape and the deck does the crossing.
-    const float half   = width * 0.5f;
+    // The corridor is cut to the whole section, raised edges included: the lip
+    // stands ABOVE the road, but its footprint is still road, and ground left
+    // ungraded under it would poke through the outer half of the wall.
+    const float half   = surfaceHalf();
     const float reach  = half + shoulder;
     glm::vec2 lo(L.center[0]), hi(L.center[0]);
     for (const glm::vec2& c : L.center) {

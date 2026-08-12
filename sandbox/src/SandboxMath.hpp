@@ -19,3 +19,9 @@ float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z);
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
 float rayAABB(const glm::vec3& ro, const glm::vec3& rd,
               const glm::vec3& bmin, const glm::vec3& bmax);
+
+// Ray vs triangle (Moller-Trumbore). Returns the hit distance along the ray, or
+// -1 on a miss. Double-sided: picking a face you are looking at from inside a
+// shape has to work, and a modelled mesh is routinely open.
+float rayTriangle(const glm::vec3& ro, const glm::vec3& rd,
+                  const glm::vec3& a, const glm::vec3& b, const glm::vec3& c);

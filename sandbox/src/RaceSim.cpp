@@ -321,6 +321,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 if (const auto* fl = fe.components.get<FinishLineComponent>())
                     { st.raceLaps = static_cast<int>(std::lround(fl->laps)); break; }
             st.finishWasOver = true; st.finishArm = 1.0f;
+            // The grid stands behind the line, so the run up to it is not a lap:
+            // the next crossing opens lap 1 (see lapBegun).
+            st.lapBegun = false;
         }
     } else if (st.goFlash > 0.0f) {
         st.goFlash = glm::max(0.0f, st.goFlash - env.dt);
@@ -358,21 +361,43 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     if (env.road.built() && !frozen) {
         glm::vec2 snapXZ; float lateral = 0.0f, roadYaw = 0.0f;
         if (roadSnap(env.road, st.gliderPos, snapXZ, lateral, roadYaw)) {
-            const float halfW = env.road.width * 0.5f;
+            // The raised edges are road too: a craft parked up the lip has not
+            // left the track, so the rescue must measure against the whole
+            // section, not just the carriageway between the walls.
+            const float halfW = env.road.surfaceHalf();
             // Ask for the storey the craft is ON, not the nearest branch in plan
             // view: under a flyover the deck overhead would otherwise read as the
             // road surface, and the craft -- twenty metres below it -- would count
             // as having fallen off and be teleported back.
-            float surfY = st.gliderPos.y;
-            env.road.surfaceHeightAt(glm::vec2(st.gliderPos.x, st.gliderPos.z), 1.0e6f,
-                                     surfY, st.gliderPos.y + gc->rideHeight + 3.0f);
-            if (lateral < halfW + 4.0f && st.gliderPos.y > surfY - 4.0f) {
+            //
+            // Whether an answer came back at all is half the information. Under a
+            // bridge that spans open ground there IS no carriageway below the
+            // craft's head: every branch sits overhead and the query finds
+            // nothing. Reading that as "no news, carry on" is what broke the
+            // rescue there -- surfY kept the craft's own height, "am I above the
+            // surface" compared the craft against itself and always said yes, so
+            // a craft that had dropped off a bridge counted as safely on the road,
+            // was never fetched back, and quietly overwrote its own rescue point
+            // with the spot under the bridge. No surface below = not on the road.
+            float surfY = 0.0f;
+            const bool onRoadDeck = env.road.surfaceHeightAt(
+                glm::vec2(st.gliderPos.x, st.gliderPos.z), 1.0e6f, surfY,
+                st.gliderPos.y + gc->rideHeight + 3.0f);
+            // ...unless the road carries no height data at all (an older road that
+            // was never built with one). Then "nothing found" says nothing about
+            // where the craft is, and pinning it to its breadcrumb every frame
+            // would be worse than not rescuing it.
+            const bool haveRoadY =
+                env.road.centerlineY().size() == env.road.centerline().size();
+            if (onRoadDeck && lateral < halfW + 4.0f && st.gliderPos.y > surfY - 4.0f) {
                 // safely on the road here: remember it as the rescue point
                 st.respawnPos = glm::vec3(snapXZ.x, surfY + gc->rideHeight, snapXZ.y);
                 st.respawnYaw = roadYaw;
                 st.haveRespawn = true;
             } else if (st.haveRespawn &&
-                       (lateral > halfW + 25.0f || st.gliderPos.y < surfY - 12.0f)) {
+                       (lateral > halfW + 25.0f ||
+                        (onRoadDeck && st.gliderPos.y < surfY - 12.0f) ||
+                        (!onRoadDeck && haveRoadY))) {
                 // fallen off the track -> back to the last safe road point
                 st.gliderPos = st.respawnPos;
                 st.gliderYaw = st.respawnYaw;
@@ -550,6 +575,18 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 st.raceActive = true; st.raceClock = st.lapClock = 0.0f;
                 st.raceLap = 0; st.raceLaps = lineLaps;
                 st.lastLap = st.bestLap = 0.0f; st.cpPassed.clear();
+                st.lapBegun = true;
+            } else if (!st.lapBegun) {
+                // First pass after GO: the craft has just driven up from the grid
+                // BEHIND the line, so this opens lap 1 rather than completing one.
+                // Nothing was missed here -- flashing "missed a checkpoint" at a
+                // pilot who has not had the chance to fly through one yet is the
+                // bug this branch exists for. The lap clock restarts at the line so
+                // lap 1 is measured line-to-line like every other lap (the race
+                // clock keeps running from GO, so the run-up still costs time).
+                st.lapBegun = true;
+                st.lapClock = 0.0f;
+                st.cpPassed.clear();
             } else if (static_cast<int>(st.cpPassed.size()) >= st.cpTotal) {
                 st.lastLap = st.lapClock;
                 if (st.bestLap <= 0.0f || st.lastLap < st.bestLap) st.bestLap = st.lastLap;

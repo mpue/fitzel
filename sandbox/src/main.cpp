@@ -63,6 +63,11 @@
 #include "AssetDrop.hpp"
 #include "FrameRender.hpp"
 #include "RainRenderer.hpp"
+#include "EditMesh.hpp"
+#ifndef FITZEL_PLAYER
+#include "GridRenderer.hpp"
+#include "ModelingPanel.hpp"
+#endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
 #include "TerrainPanel.hpp"
@@ -668,6 +673,12 @@ int main(int argc, char** argv) {
         if (!rain.init()) return 1;
         SpraySystem  spray;
         spray.init(); // a missing spray shader costs droplets, not the session
+#ifndef FITZEL_PLAYER
+        // The editor's construction grid, on the 3D cursor's plane. A drawing aid,
+        // so a shader that failed to compile costs the aid, not the session.
+        GridRenderer grid;
+        grid.init();
+#endif
         // Authored emitters (ParticleComponent). Same bargain as the spray: a
         // shader that failed to compile costs the effects, not the session.
         ParticleSystem particles;
@@ -1084,6 +1095,12 @@ int main(int argc, char** argv) {
         glm::vec3 cursor3D{0.0f};
         bool      cursorVisible = true;
         float     cursorGrid    = 1.0f;
+        // The construction grid draws that snap step on the cursor's plane, so
+        // the lattice you aim at and the one "snap to grid" rounds to are the
+        // same thing seen twice. Held here rather than on the renderer (which is
+        // editor-only) because these two persist with the scene.
+        bool      showGrid = true;
+        float     gridFade = 220.0f; // metres until it has faded out entirely
 
         // Material library: named surface assets solids can be assigned. New
         // objects get the material selected in the Materials panel (matSel).
@@ -1232,6 +1249,21 @@ int main(int argc, char** argv) {
         bool showRoads       = false;
         bool showUiOverlay   = false; // scene 2D UI overlay editor
         bool showCursor      = false; // 3D cursor panel
+        bool showModeling    = false; // face-modelling panel
+        // Which face of the selected mesh the modelling operations act on. Reset
+        // whenever the selection moves to another object: a face index means
+        // nothing on a different mesh.
+        int  meshFaceSel     = -1;
+        int  meshFaceOwner   = -1;   // entity id that index belongs to
+        // A face-gizmo drag in flight: the entity as it was when the drag began
+        // (one undo step for the whole drag) and the scale it applies to its mesh.
+        bool      faceGizmoActive = false;
+        Entity    faceGizmoBefore;
+        glm::vec3 faceGizmoScale{1.0f};
+        // The scale the gizmo has reported so far in this drag (see the SCALE
+        // branch: ImGuizmo measures that one from the start of the drag, not from
+        // the last frame).
+        glm::vec3 faceGizmoAccScale{1.0f};
         bool showVehiclePanel = false;
         bool showGliderPanel  = false;
         bool showEnv         = false;
@@ -1300,6 +1332,10 @@ int main(int argc, char** argv) {
         // loadScene call through these std::functions instead of the registry.
         std::function<void(nlohmann::json&)>       writeSettingsFn;
         std::function<void(const nlohmann::json&)> readSettingsFn;
+        // Runs once per finished scene load, after the entity ids are settled.
+        // Where a loaded scene is brought up to date with things that used to live
+        // outside the entity list -- today: the terrain (see terrainWasEntity).
+        std::function<void()>                      afterSceneLoadFn;
         // Seed a fresh project with the built-in materials (saved as project
         // .fmat files on first save); entities reference these by their GUID.
         auto seedDefaultMaterials = [&]() {
@@ -1318,6 +1354,10 @@ int main(int argc, char** argv) {
         // Imported glTF/GLB models, uploaded to the GPU (see ModelLibrary). main
         // owns one registry and threads it in where models are placed/drawn.
         ModelLibrary models;
+        // GPU copies of the entities' edited meshes (see MeshComponent). Keyed by
+        // entity id and rebuilt when an edit stamps a new revision -- a GL mesh is
+        // move-only, so it cannot live on the copyable Entity itself.
+        EditMeshCache meshCache;
         // Videos playing into material textures (billboards). One decoder per
         // clip, shared by every material bound to it -- see VideoLibrary.
         VideoLibrary videos;
@@ -1562,8 +1602,11 @@ int main(int argc, char** argv) {
             [&](int id){ return models.byId(id); },
             // Clearing the model library invalidates every cached prefab's resolved
             // modelIds, so drop the prefab cache on the same beat (every loadScene).
-            [&]{ models.clear(); prefabCache.clear(); },
-            writeSettingsFn, readSettingsFn,
+            // ...and the modelled meshes, keyed by entity id: the next scene's ids
+            // start again from 0, so a stale entry would hand a new object the
+            // shape of an old one.
+            [&]{ models.clear(); prefabCache.clear(); meshCache.clear(); },
+            writeSettingsFn, readSettingsFn, afterSceneLoadFn,
         };
         projectio::loadPrefs(pio);
         // Apply the saved UI text settings (the typeface by name, so a prefs file
@@ -1691,6 +1734,90 @@ int main(int argc, char** argv) {
         auto snapCursorToSelection = [&] { if (cursorHaveSel()) cursor3D = entities[entitySel].center; };
         auto snapSelectionToCursor = [&] { moveSelectionTo(cursor3D); };
         auto snapSelectionToGrid   = [&] { if (cursorHaveSel()) moveSelectionTo(snapToGrid(entities[entitySel].center)); };
+
+#ifndef FITZEL_PLAYER
+        // --- Face modelling ---------------------------------------------------
+        // The editable mesh on the selected object, if it has one.
+        auto selectedMesh = [&]() -> MeshComponent* {
+            if (!cursorHaveSel()) return nullptr;
+            return entities[entitySel].components.get<MeshComponent>();
+        };
+        // Turn the selected box into an editable mesh of exactly the same size --
+        // built at the object's real dimensions, so a metre in the modelling
+        // panel is a metre in the world rather than a fraction of a unit cube.
+        // Nothing else about the object changes: same transform, same material,
+        // same collider.
+        auto convertToMesh = [&] {
+            if (!cursorHaveSel()) return;
+            Entity& e = entities[entitySel];
+            if (e.type != EntityType::Box || e.components.get<MeshComponent>()) return;
+            const Entity before = e;
+            auto mc = std::make_unique<MeshComponent>();
+            mc->mesh = EditMesh::box(e.half);
+            mc->touch();
+            e.components.items.push_back(std::move(mc));
+            meshFaceSel = -1;
+            history.push(std::make_unique<ModifyEntityCmd>(before, e), document);
+        };
+        // The scale an entity currently applies to its mesh (1 unless someone has
+        // dragged the Scale gizmo). Read before an edit and re-applied after, or
+        // re-deriving the half-extents from raw bounds would quietly undo it.
+        auto meshScaleOf = [](const Entity& e, const MeshComponent& mc) {
+            glm::vec3 mn, mx;
+            mc.mesh.bounds(mn, mx);
+            return (e.half * 2.0f) / glm::max(mx - mn, glm::vec3(1e-4f));
+        };
+        // What every mesh edit ends with, whichever way it was made -- a panel
+        // button or a gizmo drag: re-centre the geometry on the object's origin,
+        // move the object by that same shift so nothing appears to jump, and take
+        // the new bounds as its half-extents. That invariant is what keeps the
+        // pick box, the gizmo and the collider describing the shape that is
+        // actually there -- an extruded tower whose AABB still claimed to be the
+        // original cube would be unpickable at the top and would collide with air
+        // at the bottom.
+        auto normalizeMeshEntity = [&](Entity& e, MeshComponent& mc,
+                                       const glm::vec3& scale) {
+            const glm::vec3 shift = editmesh::recenter(mc.mesh);
+            glm::vec3 mn, mx;
+            mc.mesh.bounds(mn, mx);
+            e.half = glm::max((mx - mn) * 0.5f * scale, glm::vec3(1e-3f));
+            if (glm::dot(shift, shift) > 0.0f) {
+                const glm::quat q  = glm::quat(glm::radians(e.rotation));
+                const glm::mat4 pw = parentWorldMat(e);
+                setWorld(e, e.center + q * (shift * scale), e.rotation,
+                         e.parent >= 0 ? &pw : nullptr);
+            }
+            mc.touch();
+        };
+        // Run one face operation as one undoable step.
+        auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
+                                 const char* /*label*/) {
+            if (!cursorHaveSel()) return;
+            Entity& e = entities[entitySel];
+            MeshComponent* mc = e.components.get<MeshComponent>();
+            if (!mc || !op) return;
+            const Entity    before = e;
+            const glm::vec3 scale  = meshScaleOf(e, *mc);
+            meshFaceSel = op(*mc);
+            normalizeMeshEntity(e, *mc, scale);
+            auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
+            if (!cmd->trivial()) history.push(std::move(cmd), document);
+        };
+        // World-space corners of one face of the selected mesh, for picking and
+        // for drawing the highlight. Empty when there is no such face.
+        auto meshFaceWorld = [&](const Entity& e, const MeshComponent& mc, int face) {
+            std::vector<glm::vec3> out;
+            if (!mc.mesh.validFace(face)) return out;
+            glm::vec3 mn, mx;
+            mc.mesh.bounds(mn, mx);
+            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
+            const glm::mat4 m = composeModel(e.center, e.rotation, (e.half * 2.0f) / sz);
+            out.reserve(mc.mesh.faces[face].size());
+            for (int i : mc.mesh.faces[face])
+                out.push_back(glm::vec3(m * glm::vec4(mc.mesh.verts[i], 1.0f)));
+            return out;
+        };
+#endif // !FITZEL_PLAYER
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
         auto isUnderId = [&](int a, int ancestorId) {
@@ -2328,6 +2455,109 @@ int main(int argc, char** argv) {
             applyScene(1); // flat default terrain + rebuild + re-drape the (now empty) road
         };
 
+        // --- The terrain is an entity ----------------------------------------
+        // A scene has ground because a Terrain component is in it -- nothing is
+        // implied, the author puts it there (and can delete it again). What
+        // follows is the seam between that component and the running world:
+        //
+        //   the component  = what gets SAVED with the scene (per-entity, undoable)
+        //   `uiSettings`   = the working copy every tool edits (panel, presets)
+        //   the streamer   = the ground actually being generated and drawn
+        //
+        // syncTerrainEntity mirrors the first two onto each other once a frame,
+        // whichever side moved last, so the Terrain panel and the Inspector are
+        // two views of one terrain rather than two terrains. With no component in
+        // the scene there is no ground at all: the streamer drops every chunk and
+        // every height query in the engine answers 0, so objects sit at y=0
+        // instead of on an invisible landscape.
+        int  terrainEntity  = -1;    // entity id carrying the terrain (-1 = none)
+        bool terrainOn      = false; // was there ground last frame?
+        bool terrainSynced  = false; // has the mirror run at least once?
+        TerrainSettings compMirror{};             // component state as of last sync
+        TerrainSettings uiMirror = uiSettings;    // working copy as of last sync
+        auto syncTerrainEntity = [&] {
+            // First sync after boot or a scene load: the world is being set up, not
+            // edited, so nothing here is reported back to the author as a change.
+            const bool fresh = !terrainSynced;
+            TerrainComponent* tc = nullptr;
+            int owner = -1;
+            for (Entity& e : entities) {
+                if (!e.activeInHierarchy) continue;
+                if (auto* c = e.components.get<TerrainComponent>()) {
+                    tc = c; owner = e.id; break;   // one terrain: the first wins
+                }
+            }
+            if (tc) {
+                // A different terrain than last frame (loaded, added, undone, or
+                // re-activated) is adopted wholesale; otherwise the side that
+                // actually changed wins. Adoption regenerates, a mirror copy does
+                // not -- the panel has already applied its own edits.
+                const bool adopt = (owner != terrainEntity) || (tc->settings != compMirror);
+                if (adopt) {
+                    uiSettings = tc->settings;
+                    streamer.settings() = uiSettings;
+                    streamer.rebuild();
+                    veg.grassDirty  = true;
+                    veg.treeCenter  = glm::vec2(1e9f);
+                    // The ground moved under a built road, so its graded corridor
+                    // wants cutting again -- flag it, never rebuild behind the
+                    // author's back. On a load there is nothing to report: that
+                    // road was built on this terrain.
+                    if (!fresh) road.needsBuild = true;
+                } else if (uiSettings != uiMirror) {
+                    tc->settings = uiSettings;
+                }
+                compMirror = tc->settings;
+                uiMirror   = uiSettings;
+            }
+            const bool on = tc != nullptr;
+            if (fresh || on != terrainOn) {
+                terrainSynced = true;
+                terrainOn     = on;
+                fitzel::setTerrainPresent(on); // every height query in the engine
+                streamer.setEnabled(on);       // chunks: streamed, or none at all
+                veg.terrainPresent = on;       // nothing grows on a void
+                if (on) { veg.grassDirty = true; veg.treeCenter = glm::vec2(1e9f); }
+                // The committed road drapes on the ground, so re-loft it now that
+                // the ground has arrived (or gone). A load lofts the road before
+                // the terrain entity exists, which is exactly when this matters.
+                road.rebuildMesh();
+                if (!fresh) road.needsBuild = true; // ...and re-cut its corridor
+            }
+            terrainEntity = owner;
+        };
+        // One Empty carrying a Terrain component: the scene's ground as an object.
+        // The entity's transform is only where its marker sits in the viewport --
+        // the field itself is world-wide.
+        auto makeTerrainEntity = [&](const TerrainSettings& s) {
+            Entity t;
+            t.type        = EntityType::Empty;
+            t.name        = "Terrain";
+            t.half        = glm::vec3(0.5f);
+            t.id          = entityCounter++;
+            t.localCenter = t.center = glm::vec3(0.0f);
+            auto tc = std::make_unique<TerrainComponent>();
+            tc->settings = s;
+            t.components.items.push_back(std::move(tc));
+            return t;
+        };
+        // Put ground in the scene (undoable), seeded with whatever terrain the
+        // editor is currently showing. Returns the existing one if the scene
+        // already has ground -- a scene has one terrain.
+        auto addTerrainEntity = [&]() -> int {
+            for (const Entity& e : entities)
+                if (e.components.get<TerrainComponent>()) return e.id;
+            const Entity t = makeTerrainEntity(uiSettings);
+            history.push(std::make_unique<AddEntityCmd>(t), document);
+            entitySel = document.indexOf(t.id);
+            return t.id;
+        };
+        // Did the scene being loaded come from a version that stores its terrain as
+        // an entity? Set from the file's settings block; when it is false after a
+        // load, the scene predates this and its terrain has to be migrated (see
+        // afterSceneLoadFn) -- otherwise opening an old world would lose its ground.
+        bool sceneStoredTerrainEntity = false;
+
         // --- Scene settings registry --------------------------------------
         // Every tunable is bound by name to a getter/setter and serialised as
         // part of the project scene (.fitzel "settings" object). Missing keys are
@@ -2387,6 +2617,7 @@ int main(int argc, char** argv) {
         addF("waterIor", waterIor);
         addF("cursorX", cursor3D.x); addF("cursorY", cursor3D.y); addF("cursorZ", cursor3D.z);
         addF("cursorGrid", cursorGrid);
+        addB("showGrid", showGrid);            addF("gridFade", gridFade);
         addF("terrHeight", uiSettings.heightScale);   addF("terrRidge", uiSettings.ridgeScale);
         addF("terrContinent", uiSettings.continentAmp); addF("terrBiome", uiSettings.biomeFreq);
         addF("terrTerrace", uiSettings.terrace);      addF("terrWarp", uiSettings.warpStrength);
@@ -2429,6 +2660,13 @@ int main(int argc, char** argv) {
                                 {"sStart", L.slopeStart}, {"sEnd", L.slopeEnd},
                                 {"scale", L.scale}});
             j["terrainLayers"] = larr;
+            // Marker: this scene's terrain is an ENTITY (a Terrain component), so
+            // the terr* keys above are only a legacy echo of it. Its absence is
+            // what identifies an older scene whose ground has to be migrated into
+            // an entity on load -- see afterSceneLoadFn. Deleting the terrain is a
+            // real edit, so the marker stays true even with no terrain in the
+            // scene: an emptied world must not grow ground again on reload.
+            j["terrainEntity"] = true;
             // Hand-painted grass: a compact space-separated float blob (7 per
             // blade). Stored as one JSON string so pretty-printing doesn't
             // explode into a line per number.
@@ -2554,6 +2792,9 @@ int main(int argc, char** argv) {
             uiSettings.islandCenterZ = 0.0f;
             uiSettings.islandShape   = 0.0f;
             for (const Setting& s : tunables) s.read(j);
+            // Does this file keep its terrain in an entity? (Consumed and reset by
+            // afterSceneLoadFn, which migrates the ones that don't.)
+            sceneStoredTerrainEntity = j.value("terrainEntity", false);
             // Restore the editor fly-camera pose. Absent in scenes saved before this
             // existed -> fall back to the current pose so the view just stays put.
             if (j.contains("editorCamera") && j["editorCamera"].is_object()) {
@@ -2725,6 +2966,31 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+        };
+
+        // Post-load migration, run once per scene load with the entity ids settled.
+        //
+        // The terrain used to be part of the world's SETTINGS -- every scene had
+        // ground whether it asked for it or not. It is an entity now, so a scene
+        // saved back then has terrain parameters but no Terrain component, and
+        // would open as an empty void. Recognise that case (no "terrainEntity"
+        // marker in the file) and give the scene the ground it was authored with:
+        // readSettings has just loaded those parameters into uiSettings, so the
+        // migrated terrain is exactly the one the file described. Saving the scene
+        // then writes the marker and the world is an entity from there on.
+        afterSceneLoadFn = [&] {
+            bool have = false;
+            for (const Entity& e : entities)
+                if (e.components.get<TerrainComponent>()) { have = true; break; }
+            if (!have && !sceneStoredTerrainEntity) {
+                entities.push_back(makeTerrainEntity(uiSettings));
+                std::puts("[Fitzel] Scene predates terrain objects: its terrain was "
+                          "migrated into a Terrain entity.");
+            }
+            sceneStoredTerrainEntity = false; // consumed; the next load sets it again
+            // Make the mirror adopt whatever the scene brought, settings and all.
+            terrainEntity = -1;
+            terrainSynced = false;
         };
 
         // --- Play mode: run the scene as a game -------------------------------
@@ -3115,7 +3381,9 @@ int main(int argc, char** argv) {
             // through drops to the terrain. Passing yMax lets the query answer
             // with the storey the craft is actually on.
             float roadY = 0.0f;
-            if (road.surfaceHeightAt(glm::vec2(x, z), road.width * 0.5f, roadY, yMax))
+            // The whole section counts as ground, raised edges included -- riding
+            // up the lip is the point of it.
+            if (road.surfaceHeightAt(glm::vec2(x, z), road.surfaceHalf(), roadY, yMax))
                 if (roadY > h) h = roadY;
             return h;
         };
@@ -3532,6 +3800,7 @@ int main(int argc, char** argv) {
             raceActive = raceFinished = false;
             raceClock = lapClock = lastLap = bestLap = 0.0f;
             raceLap = raceLaps = 0; finishWasOver = false; finishArm = 0.0f;
+            race.lapBegun = true;  // no countdown yet: a crossing starts the race
             cpPassed.clear(); cpTotal = 0; raceMissedFlash = 0.0f;
             raceCountdown = goFlash = 0.0f;
             // ...and an empty field: standings/winner are rebuilt from GO.
@@ -4672,6 +4941,11 @@ int main(int argc, char** argv) {
             // --- Camera path: record samples or drive playback ----------
             camPathRec.update(camera, dt, !vehicleMode && !gliderMode);
 
+            // Terrain: adopt the scene's Terrain component (or, with none in the
+            // scene, switch the ground off entirely). Before the streaming below,
+            // so a terrain added/edited/removed this frame is what gets streamed.
+            syncTerrainEntity();
+
             // View distance: drive the streaming radius and the camera far plane.
             streamer.setRadius(viewRadius);
             camera.setFarPlane(
@@ -5716,6 +5990,18 @@ int main(int argc, char** argv) {
                         ImGui::MenuItem("Glider",          nullptr, &showGliderPanel);
                         ImGui::EndMenu();
                     }
+                    // Shaping and placing the things in the scene. The 3D cursor
+                    // moved here from "Inspect", where it had been sitting alone:
+                    // it is the anchor the grid is drawn on and objects are placed
+                    // at, so the three belong on one submenu, not scattered by
+                    // which panel happens to draw them.
+                    if (ImGui::BeginMenu("Objects")) {
+                        ImGui::MenuItem("Modeling",        nullptr, &showModeling);
+                        ImGui::Separator();
+                        ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
+                        ImGui::MenuItem("Grid",            nullptr, &showGrid);
+                        ImGui::EndMenu();
+                    }
                     if (ImGui::BeginMenu("Assets")) {
                         ImGui::MenuItem("Materials",       nullptr, &showMaterials);
                         ImGui::MenuItem("Models",          nullptr, &showModels);
@@ -5736,7 +6022,6 @@ int main(int argc, char** argv) {
                     if (ImGui::BeginMenu("Inspect")) {
                         ImGui::MenuItem("Performance", "F3", &showPerf);
                         ImGui::MenuItem("Stats",           nullptr, &showStats);
-                        ImGui::MenuItem("3D cursor",       nullptr, &showCursor);
                         ImGui::EndMenu();
                     }
                     ImGui::Separator();
@@ -5881,6 +6166,31 @@ int main(int argc, char** argv) {
                     shapeBtn(EntityType::Sphere, "Sphere");
                     shapeBtn(EntityType::Light, "Light");
                     shapeBtn(EntityType::Empty, "Empty (transform-only grouping node)");
+                    // Terrain: an object like any other, so it is added like any
+                    // other. Not a shapeBtn -- it is a component on an Empty, not
+                    // an entity type -- and disabled once the scene has ground,
+                    // since a scene has one terrain.
+                    {
+                        ImGui::PushID("terrainAdd");
+                        ImGui::BeginDisabled(terrainOn);
+                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        const bool clicked = ImGui::Button("##t", bs);
+                        ImGui::EndDisabled();
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(terrainOn ? "Terrain (the scene already has one)"
+                                                        : "Terrain (adds ground to the scene)");
+                        // A little horizon with a hill on it.
+                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
+                        const float r = 8.0f;
+                        const ImU32 col = terrainOn ? IM_COL32(130, 132, 140, 255)
+                                                    : IM_COL32(215, 215, 220, 255);
+                        dl->AddLine({c.x - r, c.y + r * 0.6f}, {c.x + r, c.y + r * 0.6f}, col, 1.5f);
+                        dl->AddTriangle({c.x - r * 0.8f, c.y + r * 0.6f}, {c.x, c.y - r * 0.7f},
+                                        {c.x + r * 0.8f, c.y + r * 0.6f}, col, 1.8f);
+                        ImGui::PopID();
+                        ImGui::SameLine();
+                        if (clicked) addTerrainEntity();
+                    }
 
                     // Gap, then the transform-gizmo modes (Q/W/E).
                     ImGui::Dummy(ImVec2(10.0f, 1.0f));
@@ -6417,11 +6727,26 @@ int main(int argc, char** argv) {
                         } else {
                             glm::vec3 h;
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
-                                // Insert at the nearest segment so a click on an
-                                // existing road drops a waypoint in the middle; a
-                                // click past an open end still extends the road.
-                                addRoadPoint(roadInsertIndex({h.x, h.z}),
-                                             glm::vec2(h.x, h.z));
+                                // With an END of the road selected, extend from
+                                // THAT end. Otherwise insert at the nearest
+                                // segment, so a click on an existing road drops a
+                                // waypoint in the middle.
+                                //
+                                // Nearest-in-plan-view is the wrong question once
+                                // roads cross in three dimensions: drawing a road
+                                // UNDER a bridge puts every click right beside the
+                                // stretch flying overhead, and the new point gets
+                                // spliced into that stretch instead of continuing
+                                // the one being drawn. Having picked an end, the
+                                // author has already said which end they mean --
+                                // and since the new point takes the selection, a
+                                // run of clicks lays out a road point by point.
+                                const int n = static_cast<int>(road.roadPts.size());
+                                const bool ends = !road.closed && n >= 2;
+                                const int at = (ends && roadSel == n - 1) ? n
+                                             : (ends && roadSel == 0)     ? 0
+                                             : roadInsertIndex({h.x, h.z});
+                                addRoadPoint(at, glm::vec2(h.x, h.z));
                             }
                         }
                     }
@@ -6998,6 +7323,34 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
+                    // The face the modelling operations act on, outlined and
+                    // faintly filled. Drawn as a 2D overlay like the cursor: it is
+                    // an authoring mark, not something in the scene.
+                    if (showModeling && !playMode) {
+                        if (const MeshComponent* mc = selectedMesh()) {
+                            const std::vector<glm::vec3> fw =
+                                meshFaceWorld(entities[entitySel], *mc, meshFaceSel);
+                            std::vector<ImVec2> pts;
+                            bool onScreen = !fw.empty();
+                            for (const glm::vec3& p : fw) {
+                                const glm::vec4 cc = vp * glm::vec4(p, 1.0f);
+                                if (cc.w <= 1e-4f) { onScreen = false; break; }
+                                const glm::vec3 n = glm::vec3(cc) / cc.w;
+                                pts.push_back(ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
+                                                     rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH));
+                            }
+                            if (onScreen && pts.size() >= 3) {
+                                ImDrawList* fdl = ImGui::GetWindowDrawList();
+                                fdl->AddConvexPolyFilled(pts.data(),
+                                                         static_cast<int>(pts.size()),
+                                                         IM_COL32(255, 170, 40, 55));
+                                fdl->AddPolyline(pts.data(), static_cast<int>(pts.size()),
+                                                 IM_COL32(255, 195, 70, 235),
+                                                 ImDrawFlags_Closed, 2.0f);
+                            }
+                        }
+                    }
+
                     // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
                     if (!playMode && viewportHovered && !ImGui::GetIO().WantTextInput &&
                         ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl &&
@@ -7057,7 +7410,90 @@ int main(int argc, char** argv) {
                         float t[3] = {b.center.x, b.center.y, b.center.z};
                         float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
                         float s[3] = {b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f};
-                        if (entityEditMode) {
+
+                        // --- Face gizmo -------------------------------------
+                        // With a face selected in Modeling, the gizmo drives THAT
+                        // face rather than the object: the same Move/Rotate/Scale
+                        // handles (Q/W/E), the same drag, applied to four corners
+                        // instead of a transform. The panel's numbered buttons
+                        // stay -- typing 0.4 m and dragging to about 0.4 m are
+                        // different tools, and which one is right depends on the
+                        // day and on the hand.
+                        MeshComponent* faceMc =
+                            (showModeling && entityEditMode) ? b.components.get<MeshComponent>()
+                                                             : nullptr;
+                        if (faceMc && !faceMc->mesh.validFace(meshFaceSel)) faceMc = nullptr;
+                        if (faceMc) {
+                            glm::vec3 mn, mx;
+                            faceMc->mesh.bounds(mn, mx);
+                            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
+                            const glm::mat4 M  =
+                                composeModel(b.center, b.rotation, (b.half * 2.0f) / sz);
+                            // The gizmo sits at the face's centre, oriented like
+                            // the object. Handed over fresh each frame; what comes
+                            // back is a DELTA, which is the only form that can be
+                            // baked into geometry -- an absolute matrix would be
+                            // re-applied on top of itself every frame and a scale
+                            // drag would run away exponentially.
+                            const glm::mat4 F =
+                                glm::translate(glm::mat4(1.0f),
+                                               faceMc->mesh.faceCenter(meshFaceSel));
+                            glm::mat4 world = M * F;
+                            float delta[16];
+                            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
+                                                 gizmoOp, gizmoMode,
+                                                 glm::value_ptr(world), delta);
+                            const bool using3d = ImGuizmo::IsUsing();
+                            if (using3d && !faceGizmoActive) {
+                                faceGizmoActive   = true;
+                                faceGizmoBefore   = b;   // one undo step per drag
+                                faceGizmoScale    = meshScaleOf(b, *faceMc);
+                                faceGizmoAccScale = glm::vec3(1.0f);
+                            }
+                            if (using3d) {
+                                const glm::mat4 D = glm::make_mat4(delta);
+                                glm::mat4 L(1.0f);
+                                if (gizmoOp == ImGuizmo::SCALE) {
+                                    // ImGuizmo reports the scale delta on different
+                                    // terms from the other two: measured from the
+                                    // START of the drag, and in the gizmo's own
+                                    // frame -- while move and rotate report the step
+                                    // since the last frame, in world space. Applying
+                                    // it as if it were a step multiplies the face by
+                                    // the whole drag again every frame, which runs
+                                    // away exponentially. Divide out what has
+                                    // already been applied to get the actual step.
+                                    const glm::vec3 acc(D[0][0], D[1][1], D[2][2]);
+                                    const glm::vec3 step =
+                                        acc / glm::max(faceGizmoAccScale, glm::vec3(1e-6f));
+                                    faceGizmoAccScale = acc;
+                                    L = F * glm::scale(glm::mat4(1.0f), step) *
+                                        glm::inverse(F);
+                                } else {
+                                    // World-space step, conjugated into the mesh's
+                                    // own space: p' = M^-1 * D * M * p.
+                                    L = glm::inverse(M) * D * M;
+                                }
+                                editmesh::transformFace(faceMc->mesh, meshFaceSel, L);
+                                // Square the object's bounds with the new shape NOW,
+                                // not when the drag ends. The mesh is drawn at
+                                // half/bounds, so leaving `half` behind while the
+                                // geometry grows shrinks that factor by exactly as
+                                // much as the mesh grew: the shape would sit there
+                                // apparently unmoved while its local size ran off,
+                                // and let go of it at the end to reveal a body
+                                // stretched to the horizon.
+                                normalizeMeshEntity(b, *faceMc, faceGizmoScale);
+                            } else if (faceGizmoActive) {
+                                // Drag finished: bank the whole of it as one
+                                // undoable step. The bounds are already square with
+                                // the shape -- that happens on every frame above.
+                                faceGizmoActive = false;
+                                auto cmd = std::make_unique<ModifyEntityCmd>(faceGizmoBefore, b);
+                                if (!cmd->trivial()) history.push(std::move(cmd), document);
+                            }
+                        }
+                        else if (entityEditMode) {
                             float model[16];
                             ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
@@ -7300,6 +7736,40 @@ int main(int argc, char** argv) {
                     // Plain left-click (no Ctrl): select/place exactly as before.
                     else if (canPick && !selMod &&
                              ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                        // ...except while modelling, where a click that lands on
+                        // the selected mesh picks one of its FACES. It only takes
+                        // the click when it actually hits that mesh, so clicking
+                        // anything else still selects objects as usual -- and
+                        // clicking the object you already have selected was a
+                        // no-op anyway, which is the click this borrows.
+                        int   faceHit = -1;
+                        float faceT   = 1e30f;
+                        if (showModeling) {
+                            if (const MeshComponent* mc = selectedMesh()) {
+                                const Entity& me = entities[entitySel];
+                                const glm::mat4 inv = glm::inverse(vp);
+                                glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
+                                glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
+                                const glm::vec3 ro = glm::vec3(pn);
+                                const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+                                for (int f = 0; f < static_cast<int>(mc->mesh.faces.size()); ++f) {
+                                    const std::vector<glm::vec3> w = meshFaceWorld(me, *mc, f);
+                                    // Same fan the GPU mesh is built from, so what
+                                    // is picked is exactly what is drawn.
+                                    for (std::size_t i = 1; i + 1 < w.size(); ++i) {
+                                        const float t = rayTriangle(ro, rd, w[0], w[i], w[i + 1]);
+                                        if (t >= 0.0f && t < faceT) { faceT = t; faceHit = f; }
+                                    }
+                                }
+                            }
+                        }
+                        if (faceHit >= 0) {
+                            meshFaceSel = faceHit;   // the click went to the face
+                        } else {
+                        // A click that missed every face lets go of the one that
+                        // was selected -- which is also how the gizmo is handed
+                        // back to the whole object.
+                        meshFaceSel = -1;
                         const std::vector<int> ids = rayPickIds();
                         if (!ids.empty()) {
                             // Same overlapping stack as last click -> advance to the
@@ -7314,6 +7784,7 @@ int main(int argc, char** argv) {
                         } else {
                             entitySel = -1; multiSel.clear(); // empty click clears it
                             pickStack.clear(); pickIdx = -1;
+                        }
                         }
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
@@ -7532,6 +8003,7 @@ int main(int argc, char** argv) {
                 texScale, normalStrength, veg.grassDirty, veg.treeCenter, road.needsBuild,
                 assetDb, thumbFor,
                 sculptWork, publishSculpt, paintWork, publishPaint,
+                terrainOn, [&]{ addTerrainEntity(); },
             });
 
             sculptui::drawPanel({
@@ -7691,6 +8163,25 @@ int main(int argc, char** argv) {
                                    beginRoadEdit, commitRoadEdit,
                                    exportStatus});
 
+            if (showModeling) {
+                MeshComponent* mc = selectedMesh();
+                const bool haveSel = cursorHaveSel();
+                // A face index belongs to one object's mesh and to one version of
+                // it: drop it when the selection moves, or when an undo left the
+                // mesh with fewer faces than the index.
+                const int selId = haveSel ? entities[entitySel].id : -1;
+                if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
+                if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
+                    meshFaceSel = -1;
+                modelui::drawPanel({
+                    showModeling, mc, meshFaceSel, haveSel,
+                    haveSel && !mc && entities[entitySel].type == EntityType::Box,
+                    [&]{ convertToMesh(); }, applyMeshEdit,
+                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
+                    mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
+                });
+            }
+
             if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
                 ImGui::Checkbox("Show cursor", &cursorVisible);
                 ImGui::TextDisabled("Shift+Right-click in the viewport to place it.");
@@ -7698,6 +8189,19 @@ int main(int argc, char** argv) {
                 ImGui::SetNextItemWidth(140.0f);
                 ImGui::DragFloat("Grid step", &cursorGrid, 0.05f, 0.01f, 100.0f, "%.2f m");
                 ImGui::TextDisabled("Shift+S in the viewport opens the snap menu.");
+
+                // The drawn grid IS this step, on this cursor's plane -- so these
+                // controls belong next to it rather than in a panel of their own.
+                ui::sectionText("Grid");
+                ImGui::Checkbox("Show grid", &showGrid);
+                ImGui::BeginDisabled(!showGrid);
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::DragFloat("Fade out", &gridFade, 2.0f, 20.0f, 1000.0f, "%.0f m");
+                ImGui::EndDisabled();
+                ui::hint("One cell = the grid step above, a heavier line every ten.\n"
+                         "It lies on the cursor's height, so moving the cursor up\n"
+                         "moves the plane you are building on with it. The fade is\n"
+                         "capped by the view distance -- it cannot reach past it.");
 
                 const bool haveSel = cursorHaveSel();
 
@@ -9583,9 +10087,13 @@ int main(int argc, char** argv) {
                 // the road through the transparent (alpha-blended) queue when it's on.
                 const bool roadFades = road.fadeWidth > 0.0f;
                 road.material().set("uRoadFade",  roadFades ? road.fadeWidth : 0.0f);
-                road.material().set("uRoadWidth", road.width);
+                // Measured across the WHOLE section (raised edges included), which
+                // is what the ribbon's u now spans -- against the bare width the
+                // fade would find its edge halfway up the lip and dissolve it.
+                const float roadSpan = road.surfaceHalf() * 2.0f;
+                road.material().set("uRoadWidth", roadSpan);
                 road.material().set("uRoadUMax",  road.texTile > 1e-4f
-                                                      ? road.width / road.texTile : 0.0f);
+                                                      ? roadSpan / road.texTile : 0.0f);
                 // Glow: colour/strength/map plus the UV scale that keeps the map
                 // spanning the carriageway. Re-applied per frame because it is
                 // derived from width/texTile, which the panel edits live.
@@ -9817,6 +10325,28 @@ int main(int argc, char** argv) {
                     }
                     continue;
                 }
+                // Modelled geometry replaces the primitive this entity would
+                // otherwise draw. Scaled to fill center +/- half exactly, the same
+                // way an imported model is: the mesh is kept centred on its own
+                // bounds after every edit, so that factor is 1 until someone drags
+                // the Scale gizmo -- and then the shape scales with the box, which
+                // is what dragging it is asking for.
+                if (const auto* meshC = b.components.get<MeshComponent>()) {
+                    glm::vec3 mn, mx;
+                    meshC->mesh.bounds(mn, mx);
+                    const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
+                    const glm::mat4 mm =
+                        composeModel(b.center, b.rotation, (b.half * 2.0f) / sz);
+                    const auto* mc = b.components.get<MaterialComponent>();
+                    const int   mi = document.materialIndex(mc ? mc->material : AssetId{});
+                    renderer.submit(meshCache.mesh(b.id, meshC->revision, meshC->mesh),
+                                    gpuMats[mi], mm, true,
+                                    materials[mi].reflectivity > 0.0f,
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
+                    continue;
+                }
+
                 const Mesh& mesh = (b.type == EntityType::Ramp)     ? rampMesh
                                  : (b.type == EntityType::Cylinder) ? cylMesh
                                  : (b.type == EntityType::Sphere)   ? sphereMesh
@@ -10131,6 +10661,7 @@ int main(int argc, char** argv) {
             // in this HDR pass.
             const FrameContext gctx =
                 makeFrameContext(mainVP, camPos, now, weather, light, fog);
+
             veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
 
             // Flowers into the HDR buffer, lit + fogged like grass.
@@ -10372,6 +10903,36 @@ int main(int argc, char** argv) {
             glDepthMask(GL_TRUE);
             glEnable(GL_DEPTH_TEST);
             glEnable(GL_CULL_FACE);
+
+#ifndef FITZEL_PLAYER
+            // --- The construction grid, onto the finished image ---------------
+            // Last of all, and deliberately so: it is a drawing aid, not part of
+            // the world, so nothing that happens to the world may happen to it.
+            // Here it is past tonemapping, exposure, bloom, SSAO, motion blur and
+            // FXAA -- its colour is the colour authored, at dawn as at midnight.
+            // It is still hidden by whatever stands in front of it: the shader
+            // reads the scene's depth (bound here as a texture, since the buffer
+            // itself is long unbound) and drops the fragments behind it.
+            //
+            // Editor only, three times over: compiled out of the player, skipped
+            // in Play, and skipped in presentation mode -- which draws the game
+            // straight to the screen and has no viewport image to draw onto.
+            if (showGrid && !playMode && !presentMode) {
+                grid.cell   = cursorGrid;   // what you see is what you snap to
+                grid.plane  = cursor3D.y;   // ...on the plane the cursor is on
+                grid.cursor = cursor3D;
+                // Never fade beyond what the camera can see: the grid's quad ends
+                // at its fade distance, so a fade further out than the far plane
+                // would be sliced off mid-strength by the clip instead of easing
+                // away. View distance is the knob for seeing further.
+                grid.fade   = std::min(gridFade, camera.farPlane() * 0.7f);
+                grid.highlightCursorCell = cursorVisible;
+                grid.viewportPx    = glm::vec2(fbW, fbH);
+                grid.sceneDepthUnit = 0;
+                hdrRT.bindDepthTexture(0);
+                grid.draw(makeFrameContext(mainVP, camPos, now, weather, light, fog));
+            }
+#endif
 
             // Editor: return to the window framebuffer and clear a dark backdrop
             // for the dock panels. Presentation mode already drew to the screen.

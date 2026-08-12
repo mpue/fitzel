@@ -3,6 +3,10 @@
 set(SANDBOX_RUNTIME_SOURCES
     src/main.cpp
     src/Primitives.cpp
+    # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
+    # the shipped player has to be able to build and draw it too. Only the panel
+    # that edits one is editor-only.
+    src/EditMesh.cpp
     src/ModelLibrary.cpp
     src/SandboxMath.cpp
     src/CameraPath.cpp
@@ -49,6 +53,8 @@ set(SANDBOX_RUNTIME_SOURCES
 # by both -- the runtime render uses its TerrainLook/TerrainLayer structs -- but
 # TerrainPanel.cpp, the panel widget, is editor-only.)
 set(SANDBOX_EDITOR_SOURCES
+    src/GridRenderer.cpp
+    src/ModelingPanel.cpp
     src/AssetDrop.cpp
     src/VideoImport.cpp
     src/RoadPanel.cpp

@@ -22,6 +22,21 @@
 namespace roadui {
 namespace {
 
+// Show a structural edit at once instead of leaving the viewport unchanged until
+// the road is built.
+//
+// Adding a bridge or a loop only set a flag before: the geometry appeared on the
+// next "Build road into terrain" and nothing happened in between, which reads
+// exactly like the button not working -- and for a loop, which needs no terrain
+// work at all, there was nothing to wait for in the first place. Re-lofting is
+// the same pass a scene load runs, so it is a preview of what was just asked
+// for, not a substitute for building: the Build prompt stays lit, because a
+// bridge still needs its corridor cut and its abutments ramped.
+void showAtOnce(const PanelState& s) {
+    s.road.rebuildMesh();
+    s.road.needsBuild = true;
+}
+
 // The bridge list + its style sliders. A bridge names the two control points the
 // user picked; the road flies straight between them and the ground below is left
 // alone. Returns true when something changed that the road must be rebuilt for.
@@ -42,6 +57,7 @@ bool bridgeSection(const PanelState& s) {
         s.beginEdit();
         s.road.bridges.push_back({s.sel, s.sel2});
         s.endEdit("Create bridge");
+        showAtOnce(s);
         rc = true;
     }
     ImGui::EndDisabled();
@@ -50,6 +66,11 @@ bool bridgeSection(const PanelState& s) {
     else if (existing >= 0)
         ImGui::TextDisabled("#%d \xE2\x86\x92 #%d is already a bridge", s.sel, s.sel2);
 
+    // Scoped by name, not just by index. Every list in this window numbers its
+    // rows from 0 and puts a "Remove" in each, so bridge row 0 and loop row 0
+    // would otherwise be the SAME widget as far as ImGui is concerned: it reports
+    // the clash as an ID conflict, and a click on one of them acts on the other.
+    ImGui::PushID("bridges");
     for (int i = 0; i < static_cast<int>(s.road.bridges.size()); ++i) {
         ImGui::PushID(i);
         ImGui::Text("Bridge #%d \xE2\x86\x92 #%d", s.road.bridges[i].a,
@@ -59,12 +80,14 @@ bool bridgeSection(const PanelState& s) {
             s.beginEdit();
             s.road.bridges.erase(s.road.bridges.begin() + i);
             s.endEdit("Remove bridge");
+            showAtOnce(s);
             rc = true;
             ImGui::PopID();
             break; // the list just shifted under us
         }
         ImGui::PopID();
     }
+    ImGui::PopID(); // "bridges"
     if (s.road.bridges.empty()) ImGui::TextDisabled("No bridges");
 
     ImGui::Separator();
@@ -98,6 +121,7 @@ bool loopSection(const PanelState& s) {
         sp.a = s.sel; sp.b = s.sel2;
         s.road.loops.push_back(sp);
         s.endEdit("Create loop");
+        showAtOnce(s);
         rc = true;
     }
     ImGui::EndDisabled();
@@ -106,6 +130,7 @@ bool loopSection(const PanelState& s) {
     else if (existing >= 0)
         ImGui::TextDisabled("#%d \xE2\x86\x92 #%d already loops", s.sel, s.sel2);
 
+    ImGui::PushID("loops");   // own ID scope -- see the note in bridgeSection
     for (int i = 0; i < static_cast<int>(s.road.loops.size()); ++i) {
         ImGui::PushID(i);
         ImGui::Text("Loop #%d \xE2\x86\x92 #%d", s.road.loops[i].a, s.road.loops[i].b);
@@ -114,7 +139,9 @@ bool loopSection(const PanelState& s) {
             s.beginEdit();
             s.road.loops.erase(s.road.loops.begin() + i);
             s.endEdit("Remove loop");
+            showAtOnce(s);
             ImGui::PopID();
+            ImGui::PopID(); // "loops"
             return true; // the list just shifted under us
         }
         ImGui::SetNextItemWidth(-70.0f);
@@ -122,7 +149,7 @@ bool loopSection(const PanelState& s) {
                              "%.1f m"))
             rc = true;
         if (ImGui::IsItemActivated())            s.beginEdit();
-        if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Loop radius");
+        if (ImGui::IsItemDeactivatedAfterEdit()) { s.endEdit("Loop radius"); showAtOnce(s); }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The turn stands twice this tall. It also sets how\n"
                               "fast you have to arrive: holding the top needs\n"
@@ -130,6 +157,7 @@ bool loopSection(const PanelState& s) {
                               "faster one to commit to.");
         ImGui::PopID();
     }
+    ImGui::PopID(); // "loops"
     if (s.road.loops.empty()) ImGui::TextDisabled("No loops");
     return rc;
 }
@@ -164,6 +192,7 @@ void sideSection(const PanelState& s) {
 
     bool changed = false; // re-derive instances this frame (live preview)
 
+    ImGui::PushID("sideobjects");   // own ID scope -- see the note in bridgeSection
     for (int i = 0; i < static_cast<int>(s.road.sideLines.size()); ++i) {
         roadside::Line& L = s.road.sideLines[i];
         ImGui::PushID(i);
@@ -283,6 +312,7 @@ void sideSection(const PanelState& s) {
         }
         ImGui::PopID();
     }
+    ImGui::PopID(); // "sideobjects"
 
     if (changed) s.road.rebuildSideObjects();
 }
@@ -334,6 +364,8 @@ void drawPanel(const PanelState& s) {
                                "Ctrl+drag a handle = raise/lower it");
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                "Shift+click a second handle = pick a bridge");
+            ImGui::TextDisabled("With an end handle selected, clicks extend from");
+            ImGui::TextDisabled("that end -- which is how you draw under a bridge.");
             ImGui::TextDisabled("Arrows nudge (Shift = coarse), PgUp/PgDn height,");
             ImGui::TextDisabled("Esc deselects, Ctrl+Z undoes.");
         } else {
@@ -440,6 +472,26 @@ void drawPanel(const PanelState& s) {
             ImGui::SetTooltip("Join the last control point back to the first\n"
                               "(needs at least 3 points).");
         rc |= ImGui::SliderFloat("Width", &s.road.width, 1.0f, 20.0f, "%.1f m");
+
+        // Raised edges: a wall along both sides, part of the carriageway rather
+        // than scenery beside it. Live-previewed like the rest of the section, so
+        // the two sliders can be dialled in against the craft they are for.
+        const bool edgeChanged =
+            ImGui::SliderFloat("Edge height", &s.road.edgeWidth, 0.0f, 6.0f, "%.2f m") |
+            ImGui::SliderFloat("Edge angle", &s.road.edgeAngle, 0.0f, 90.0f, "%.0f deg");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("0 = flat (no edge at all), 90 = a vertical wall.\n"
+                              "In between it is a bank a craft can ride up and be\n"
+                              "turned back down by.");
+        if (edgeChanged) {
+            rc = true;
+            showAtOnce(s);   // the section changed: show it, don't wait for Build
+        }
+        if (s.road.edgeWidth > 0.001f)
+            ui::hint("The road is %.1f m wide across everything, and the lip\n"
+                     "stands %.2f m proud of the carriageway.",
+                     s.road.surfaceHalf() * 2.0f, s.road.edgeRise());
+
         rc |= ImGui::SliderFloat("Smoothing", &s.road.grade, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How much the road grade is flattened along its\n"

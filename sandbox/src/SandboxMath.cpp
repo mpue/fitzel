@@ -48,3 +48,22 @@ float rayAABB(const glm::vec3& ro, const glm::vec3& rd,
     }
     return tmin;
 }
+
+float rayTriangle(const glm::vec3& ro, const glm::vec3& rd,
+                  const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
+    // Moller-Trumbore, without the backface cull: a face is pickable from either
+    // side, because a mesh being modelled is routinely open and often looked into.
+    const glm::vec3 e1 = b - a, e2 = c - a;
+    const glm::vec3 p  = glm::cross(rd, e2);
+    const float det = glm::dot(e1, p);
+    if (std::abs(det) < 1e-8f) return -1.0f;   // ray parallel to the triangle
+    const float inv = 1.0f / det;
+    const glm::vec3 tv = ro - a;
+    const float u = glm::dot(tv, p) * inv;
+    if (u < 0.0f || u > 1.0f) return -1.0f;
+    const glm::vec3 q = glm::cross(tv, e1);
+    const float v = glm::dot(rd, q) * inv;
+    if (v < 0.0f || u + v > 1.0f) return -1.0f;
+    const float t = glm::dot(e2, q) * inv;
+    return t > 1e-5f ? t : -1.0f;              // behind the eye: not a hit
+}

@@ -7,7 +7,21 @@
 
 namespace fitzel {
 
+namespace {
+// Whether the world has ground at all (see terrainPresent in the header). Read
+// from worker threads while chunks build, written by the host when the scene's
+// terrain object comes or goes -- hence atomic. Relaxed: nothing is published
+// through it, it only answers a question.
+std::atomic<bool> g_terrainPresent{true};
+} // namespace
+
+bool terrainPresent() { return g_terrainPresent.load(std::memory_order_relaxed); }
+void setTerrainPresent(bool present) {
+    g_terrainPresent.store(present, std::memory_order_relaxed);
+}
+
 float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
+    if (!terrainPresent()) return 0.0f; // no terrain in the scene: flat void at y=0
     // Domain warp: displace the sample point by a low-frequency noise field so
     // features bend and meander instead of looking grid-aligned.
     const float wf = s.warpFrequency;
@@ -388,6 +402,9 @@ void setTerrainEditSnapshot(std::shared_ptr<const TerrainEditField> field) {
 }
 
 float terrainHeight(const TerrainSettings& s, float worldX, float worldZ) {
+    // Without ground the sculpted deltas have nothing to sit on either -- a road's
+    // graded corridor must not survive as a floating ribbon of edits.
+    if (!terrainPresent()) return 0.0f;
     float h = terrainBaseHeight(s, worldX, worldZ);
     if (const auto e = terrainEditSnapshot()) h += e->sample(worldX, worldZ);
     return h;
@@ -572,6 +589,10 @@ void TerrainStreamer::workerLoop() {
 }
 
 int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
+    // No terrain object in the scene: nothing to stream. setEnabled(false) already
+    // dropped the chunks, and results from jobs still in flight are discarded as
+    // stale the moment streaming resumes (rebuild bumped the generation).
+    if (!m_enabled) return 0;
     const glm::ivec2 center = chunkCoordOf(cameraPos);
 
     // 1) Upload finished chunks (render thread). Bounded per frame.

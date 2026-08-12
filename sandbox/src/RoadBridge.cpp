@@ -31,25 +31,44 @@ constexpr float kPierEmbed = 1.5f;
 // (cross((0,1,0), forward)), so the deck sits square under the road.
 struct Frame {
     glm::vec3 pos;
-    glm::vec3 side;
+    glm::vec3 side;      // across the deck, ROLLED by the road's cross-fall
     glm::vec3 fwd;
+    glm::vec3 up;        // deck normal, rolled with `side`
+    glm::vec3 sideFlat;  // across, level -- the piers stay upright whatever the deck does
 };
 
+// The deck's frame at sample `i`, rolled by the road's cross-fall there.
+//
+// The roll is the whole point: the ribbon is lofted banked (see RoadSystem::loft),
+// so a deck built on a level cross-section leaves the carriageway tilting out of
+// its own parapets -- the road leaning one way and the concrete under it another.
+// The angle and its sign are loft's, deliberately: positive bank drops the RIGHT
+// edge, and the section turns about the centreline rather than lifting off it.
 Frame frameAt(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
-              std::size_t i) {
+              const std::vector<float>& bank, std::size_t i) {
     glm::vec2 f = (i == 0)                 ? center[1] - center[0]
                 : (i + 1 == center.size()) ? center[i] - center[i - 1]
                                            : center[i + 1] - center[i - 1];
     if (glm::length(f) < 1e-4f) f = glm::vec2(0.0f, 1.0f);
     f = glm::normalize(f);
-    return {glm::vec3(center[i].x, prof[i], center[i].y),
-            glm::vec3(f.y, 0.0f, -f.x), glm::vec3(f.x, 0.0f, f.y)};
+    const glm::vec2 sd(f.y, -f.x);
+    const float br = glm::radians((i < bank.size()) ? bank[i] : 0.0f);
+    const float cb = std::cos(br), sb = std::sin(br);
+    Frame fr;
+    fr.pos      = glm::vec3(center[i].x, prof[i], center[i].y);
+    fr.side     = glm::vec3(sd.x * cb, -sb, sd.y * cb);
+    fr.up       = glm::vec3(sd.x * sb,  cb, sd.y * sb);
+    fr.fwd      = glm::vec3(f.x, 0.0f, f.y);
+    fr.sideFlat = glm::vec3(sd.x, 0.0f, sd.y);
+    return fr;
 }
 
 // A point of the cross-section placed in the world: `o` metres sideways of the
 // centreline, `h` metres above the road surface.
 glm::vec3 place(const Frame& fr, glm::vec2 oh) {
-    return fr.pos + fr.side * oh.x + glm::vec3(0.0f, oh.y, 0.0f);
+    // Both axes come from the frame, so everything swept through here -- slab,
+    // parapets, end caps -- rolls together with the carriageway.
+    return fr.pos + fr.side * oh.x + fr.up * oh.y;
 }
 
 // Append one flat-shaded quad. a,b,c,d run around the face counter-clockwise as
@@ -126,7 +145,9 @@ void addCap(fitzel::MeshData& md, const Frame& fr, float roadWidth,
 void addPier(fitzel::MeshData& md, const Frame& fr, float top, float bottom,
              float widthM) {
     const float hw = widthM * 0.5f;
-    const glm::vec3 u = fr.side * hw, f = fr.fwd * hw;
+    // Level footprint: a column is upright even where the deck it holds up is
+    // banked, so this takes the unrolled side vector.
+    const glm::vec3 u = fr.sideFlat * hw, f = fr.fwd * hw;
     const glm::vec3 flat(fr.pos.x, 0.0f, fr.pos.z);
     const glm::vec3 ring[4] = {flat - u - f, flat + u - f, flat + u + f,
                                flat - u + f};
@@ -237,8 +258,9 @@ bool footBlocksRoad(const std::vector<glm::vec2>& center,
 } // namespace
 
 void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
-           const std::vector<float>& ground, const std::vector<Span>& spans,
-           float roadWidth, const Params& p, fitzel::MeshData& md) {
+           const std::vector<float>& ground, const std::vector<float>& bank,
+           const std::vector<Span>& spans, float roadWidth, const Params& p,
+           fitzel::MeshData& md) {
     if (spans.empty() || center.size() < 2) return;
 
     const std::vector<float> s = arcLengths(center);
@@ -260,8 +282,8 @@ void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
         // and the deck is a solid. The deck top between the parapets is part of the
         // outline, so the road ribbon (which floats 6 cm up) never leaves a gap.
         for (int i = sp.begin; i < sp.end; ++i) {
-            const Frame f0 = frameAt(center, prof, static_cast<std::size_t>(i));
-            const Frame f1 = frameAt(center, prof, static_cast<std::size_t>(i + 1));
+            const Frame f0 = frameAt(center, prof, bank, static_cast<std::size_t>(i));
+            const Frame f1 = frameAt(center, prof, bank, static_cast<std::size_t>(i + 1));
             const float v0 = s[i] / kTile, v1 = s[i + 1] / kTile;
             for (std::size_t k = 0; k < outline.size(); ++k) {
                 const glm::vec2 e0 = outline[k];
@@ -270,9 +292,9 @@ void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
                      {ou[k], v0}, {ou[k + 1], v0}, {ou[k + 1], v1}, {ou[k], v1});
             }
         }
-        addCap(md, frameAt(center, prof, static_cast<std::size_t>(sp.begin)),
+        addCap(md, frameAt(center, prof, bank, static_cast<std::size_t>(sp.begin)),
                roadWidth, p, /*front=*/false);
-        addCap(md, frameAt(center, prof, static_cast<std::size_t>(sp.end)),
+        addCap(md, frameAt(center, prof, bank, static_cast<std::size_t>(sp.end)),
                roadWidth, p, /*front=*/true);
 
         if (p.pierSpacing < 0.5f || p.pierWidth < 0.05f) continue;
@@ -290,11 +312,13 @@ void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
             const float seg = s[i + 1] - s[i];
             const float t = (seg > 1e-5f) ? glm::clamp((at - s[i]) / seg, 0.0f, 1.0f)
                                           : 0.0f;
-            Frame fr = frameAt(center, prof, static_cast<std::size_t>(i));
-            const Frame nx = frameAt(center, prof, static_cast<std::size_t>(i + 1));
+            Frame fr = frameAt(center, prof, bank, static_cast<std::size_t>(i));
+            const Frame nx = frameAt(center, prof, bank, static_cast<std::size_t>(i + 1));
             fr.pos  = glm::mix(fr.pos, nx.pos, t);
             fr.side = glm::normalize(glm::mix(fr.side, nx.side, t));
             fr.fwd  = glm::normalize(glm::mix(fr.fwd, nx.fwd, t));
+            fr.up   = glm::normalize(glm::mix(fr.up, nx.up, t));
+            fr.sideFlat = glm::normalize(glm::mix(fr.sideFlat, nx.sideFlat, t));
 
             const float gnd = glm::mix(ground[i], ground[i + 1], t);
             const float top = fr.pos.y - dt; // flush with the slab underside

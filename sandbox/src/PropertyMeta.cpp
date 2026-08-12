@@ -94,6 +94,12 @@ bool drawProperty(const Property& p, void* owner) {
             return ImGui::ColorEdit3(p.label.c_str(), &static_cast<glm::vec3*>(f)->x);
         case PropKind::Bool:
             return ImGui::Checkbox(p.label.c_str(), static_cast<bool*>(f));
+        case PropKind::Int: {
+            int* v = static_cast<int*>(f);
+            const int lo = static_cast<int>(p.min), hi = static_cast<int>(p.max);
+            return p.slider ? ImGui::SliderInt(p.label.c_str(), v, lo, hi)
+                            : ImGui::DragInt(p.label.c_str(), v, p.speed, lo, hi);
+        }
         case PropKind::EnumInt: {
             std::vector<const char*> items;
             for (const std::string& s : p.enumLabels) items.push_back(s.c_str());
@@ -116,6 +122,7 @@ void writeProps(nlohmann::json& j, const std::vector<Property>& props, const voi
                 j[p.key] = nlohmann::json::array({v->x, v->y, v->z}); break;
             }
             case PropKind::Bool:    j[p.key] = *static_cast<bool*>(f); break;
+            case PropKind::Int:
             case PropKind::EnumInt: j[p.key] = *static_cast<int*>(f); break;
         }
     }
@@ -145,6 +152,7 @@ void readProps(const nlohmann::json& j, const std::vector<Property>& props, void
             case PropKind::Bool:
                 if (val.is_boolean()) *static_cast<bool*>(f) = val.get<bool>();
                 break;
+            case PropKind::Int:
             case PropKind::EnumInt:
                 if (val.is_number_integer()) *static_cast<int*>(f) = val.get<int>();
                 break;

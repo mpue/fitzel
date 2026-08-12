@@ -57,6 +57,25 @@ struct TerrainSettings {
     float islandShape   = 0.0f;   // 0 island, 1 atoll (float for uniform serialization)
 };
 
+// Value equality, so a host can tell "these settings changed" without keeping a
+// hash or trusting memcmp over a struct's padding.
+inline bool operator==(const TerrainSettings& a, const TerrainSettings& b) {
+    return a.chunkSize == b.chunkSize && a.resolution == b.resolution &&
+           a.heightScale == b.heightScale && a.frequency == b.frequency &&
+           a.octaves == b.octaves && a.lacunarity == b.lacunarity &&
+           a.gain == b.gain && a.seed == b.seed &&
+           a.ridgeScale == b.ridgeScale && a.warpStrength == b.warpStrength &&
+           a.warpFrequency == b.warpFrequency &&
+           a.continentAmp == b.continentAmp && a.biomeFreq == b.biomeFreq &&
+           a.terrace == b.terrace && a.valleyDepth == b.valleyDepth &&
+           a.peakSharpness == b.peakSharpness && a.reliefGain == b.reliefGain &&
+           a.islandRadius == b.islandRadius && a.islandCenterX == b.islandCenterX &&
+           a.islandCenterZ == b.islandCenterZ && a.islandShape == b.islandShape;
+}
+inline bool operator!=(const TerrainSettings& a, const TerrainSettings& b) {
+    return !(a == b);
+}
+
 // --- Editable deformation layer -------------------------------------------
 // A sparse grid of manual height offsets, sampled bilinearly and layered on top
 // of the procedural terrain by terrainHeight(). A sculpt brush edits it. Cells
@@ -135,6 +154,18 @@ struct TerrainPaintField {
 std::shared_ptr<const TerrainPaintField> terrainPaintSnapshot();
 void setTerrainPaintSnapshot(std::shared_ptr<const TerrainPaintField> field);
 
+// --- Is there a terrain at all? ---------------------------------------------
+// The ground is an OBJECT the author places (the sandbox's Terrain component),
+// so "this scene has no terrain" is a legitimate state -- and it has to mean
+// something to everyone who asks the world how high the ground is, not just to
+// the renderer. With no terrain present every height query answers 0 and the
+// streamer holds no chunks, so an empty scene is genuinely empty instead of an
+// invisible landscape that objects still snap to and cars still drive over.
+// Defaults to true, so a host that never calls this behaves exactly as before.
+// Thread-safe (worker threads query heights).
+bool terrainPresent();
+void setTerrainPresent(bool present);
+
 // Pure procedural height, with no manual edits applied. Thread-safe.
 float terrainBaseHeight(const TerrainSettings& settings, float worldX, float worldZ);
 
@@ -203,6 +234,17 @@ public:
     // new snapshot with setTerrainEditSnapshot().
     void editsChanged(const glm::vec2& worldMin, const glm::vec2& worldMax);
 
+    // Is there ground to stream? A scene without a terrain object switches this
+    // off: every chunk is dropped (so nothing draws) and update() does nothing
+    // until it comes back. Kept separate from setTerrainPresent() above, which is
+    // the same answer given to height queries -- a host sets both from one state.
+    bool enabled() const { return m_enabled; }
+    void setEnabled(bool on) {
+        if (on == m_enabled) return;
+        m_enabled = on;
+        rebuild(); // off: drop every chunk; on: stream the ring back in
+    }
+
     // View distance in chunks. Changing it streams the new ring in/out.
     int  radius() const { return m_radius; }
     void setRadius(int r) {
@@ -235,6 +277,7 @@ private:
 
     TerrainSettings m_settings;
     int             m_radius;
+    bool            m_enabled = true;
     glm::ivec2      m_center{INT32_MAX, INT32_MAX};
     bool            m_dirty = true;
     std::uint64_t   m_generation = 0;

@@ -433,6 +433,9 @@ static void finalizeSceneLoad(Context& ctx, int maxId) {
         sunE->components.items.push_back(std::make_unique<SunComponent>());
     }
     ctx.entitySel = -1;
+    // Last: give the host its migration pass. The id counter is correct by now, so
+    // it may add entities (the terrain migration does exactly that).
+    if (ctx.afterSceneLoad) ctx.afterSceneLoad();
 }
 
 // Shared entry point for both the synchronous loadScene and the incremental

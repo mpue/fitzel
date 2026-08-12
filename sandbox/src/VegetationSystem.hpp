@@ -147,6 +147,13 @@ public:
                        const glm::vec3& camPos);
     void panelBirdsFireflies();
 
+    // Does the scene have ground? Vegetation is scattered ONTO the terrain, so a
+    // scene whose terrain object was removed must not keep a carpet of grass and
+    // a forest floating over the void. Set by the host from the same state that
+    // drives fitzel::setTerrainPresent; the field keeps its contents so putting
+    // the terrain back brings the planting back with it.
+    bool  terrainPresent = true;
+
     // Tunables the editor panel / scene setup drive directly.
     bool  grassEnabled = true;
     float grassHeight  = 0.35f;

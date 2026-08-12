@@ -160,6 +160,20 @@ void drawPanel(const PanelState& s) {
     static bool autoPreview = true;
 
     if (ImGui::Begin("Terrain", &s.show)) {
+        // No ground in this scene: the terrain is an object someone adds, so say
+        // that plainly and offer the one action that makes sense here. Everything
+        // below edits a terrain that does not exist yet.
+        if (!s.hasTerrain) {
+            ui::sectionText("No terrain in this scene");
+            ui::hint("The terrain is an object in the scene, like the Sun or a\n"
+                     "road. Add one and this panel edits it; delete it in the\n"
+                     "Hierarchy and the world has no ground at all.");
+            ImGui::Spacing();
+            if (ImGui::Button("Add terrain", ImVec2(-1.0f, 0.0f)) && s.addTerrain)
+                s.addTerrain();
+            ImGui::End();
+            return;
+        }
         // Push new generator params into the streamer and rebuild the world.
         auto regenerate = [&] {
             s.streamer.settings() = s.uiSettings;

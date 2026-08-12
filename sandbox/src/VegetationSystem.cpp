@@ -340,6 +340,7 @@ void VegetationSystem::eraseGrass(glm::vec2 c, float radius) {
 
 bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>& road,
                                    float roadClear, float waterLevel, float snowLevel) {
+    if (!terrainPresent) return false; // nothing to grow on
     bool regenerated = false;
 
     // (Re)wire the tile generator whenever an input that changes placement moves
@@ -407,6 +408,7 @@ static void bindGrassInstanceAttribs(std::uint32_t instVBO) {
 }
 
 void VegetationSystem::drawGrass(const FrameContext& c) {
+    if (!terrainPresent) return;
     const bool drawProc    = grassEnabled && m_grassTiles.instanceCount() > 0;
     const bool drawPainted = m_paintedGrass.count() > 0;
     if (!drawProc && !drawPainted) return;
@@ -847,6 +849,7 @@ void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& ro
 
 void VegetationSystem::updateTrees(glm::vec2 camXZ, const std::vector<glm::vec2>& road,
                                    float roadWidth, float waterLevel, float snowLevel) {
+    if (!terrainPresent) return; // nothing to plant on
     if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f)
         regenTrees(camXZ, road, roadWidth, waterLevel, snowLevel);
 }
@@ -904,7 +907,7 @@ void VegetationSystem::eraseTree(glm::vec2 c, float radius) {
 
 void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
                                       float weather) {
-    if (!treeEnabled || treeCount == 0) return;
+    if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     glDisable(GL_CULL_FACE);
     m_treeDepth.bind();
     m_treeDepth.setMat4("uLightSpace", lightSpace);
@@ -929,7 +932,7 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
 }
 
 void VegetationSystem::drawTrees(const FrameContext& c) {
-    if (!treeEnabled || treeCount == 0) return;
+    if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     glDisable(GL_CULL_FACE);
     m_tree.bind();
     m_tree.setMat4("uViewProj", c.viewProj);
@@ -977,7 +980,7 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
 
 void VegetationSystem::drawTreeBillboards(const FrameContext& c,
                                           const glm::vec3& camRight) {
-    if (!treeEnabled || treeCount == 0) return;
+    if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     glDisable(GL_CULL_FACE);
     m_billboard.bind();
     m_billboard.setMat4("uViewProj", c.viewProj);
@@ -1442,7 +1445,7 @@ void VegetationSystem::eraseFlower(glm::vec2 c, float radius) {
 }
 
 void VegetationSystem::drawFlowers(const FrameContext& c) {
-    if (!flowerEnabled || flowerCount <= 0) return;
+    if (!terrainPresent || !flowerEnabled || flowerCount <= 0) return;
     glDisable(GL_CULL_FACE);
     m_flower.bind();
     m_flower.setMat4("uViewProj", c.viewProj);

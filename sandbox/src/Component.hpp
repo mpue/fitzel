@@ -12,7 +12,9 @@
 #include <nlohmann/json_fwd.hpp>
 
 #include <fitzel/asset/AssetId.hpp>
+#include <fitzel/world/Terrain.hpp>   // TerrainSettings, held by TerrainComponent
 
+#include "EditMesh.hpp"               // EditMesh, held by MeshComponent
 #include "Property.hpp"
 #include "ScriptParam.hpp"
 
@@ -1339,6 +1341,75 @@ public:
     }
     const char* typeId() const override { return "player_start"; }
     const char* displayName() const override { return "Player Start"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Mesh (an editable shape, modelled in the editor) -----
+// Turns an entity's geometry from "one of the four primitives" into a polygon
+// mesh the author shapes in place -- extrude a face, scale one, push one in.
+// Attached to a Box entity, it takes over what that entity draws, and everything
+// else about the entity (its transform, its material, its pick box, its
+// collider) goes on working as before: the box's half-extents are kept equal to
+// the mesh's own bounds after every edit, so the AABB never lies about the shape
+// inside it.
+//
+// The geometry lives here, on the entity, as plain vertex/face data -- which is
+// what makes an edit undoable for free (Entity is a copied value and the undo
+// stack snapshots it) and what puts the shape in the scene file rather than in
+// some asset beside it. The GPU copy lives in an EditMeshCache, keyed by
+// `revision`, because a GL mesh is move-only and an Entity must stay copyable.
+class MeshComponent : public ComponentBase {
+public:
+    EditMesh      mesh     = EditMesh::box(glm::vec3(0.5f));
+    std::uint64_t revision = editmesh::nextRevision(); // bump on every edit
+
+    // Take a fresh stamp: every mutation ends with this, and it is what tells the
+    // GPU cache its copy is out of date.
+    void touch() { revision = editmesh::nextRevision(); }
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<MeshComponent>(*this);
+    }
+    const char* typeId() const override { return "mesh"; }
+    const char* displayName() const override { return "Mesh"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> none; return none; // shaped in the viewport
+    }
+    // Geometry is not a property list: vertices and faces go out as two compact
+    // blobs, the same way the terrain's sculpt cells do.
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
+// --- Built-in component: Terrain (the scene's ground) -------------------------
+// The terrain is an OBJECT in the scene, not a backdrop that is always there: a
+// scene has ground because someone put this component in it, and deleting it
+// leaves a scene with genuinely no ground (every height query answers 0 -- see
+// fitzel::setTerrainPresent). Scenes authored before terrain was an entity are
+// migrated on load from their stored terrain settings, so their world survives.
+//
+// One per scene: the field is global by construction (world-space noise streamed
+// around the viewer), so this component says what the terrain IS, and the
+// entity's own transform does not place it. A second one is ignored -- the first
+// active one in the scene wins.
+//
+// The palette and texture layers (TerrainLook) are NOT here: they are the
+// terrain's *material*, shared with the vegetation/water look, and stay in the
+// scene's settings block where the rest of the world's look lives.
+class TerrainComponent : public ComponentBase {
+public:
+    // The generator itself. Held as the engine's own settings struct rather than
+    // copied field by field, so handing it to the streamer is one assignment and
+    // a new generator knob is one entry in properties() away from being authored,
+    // saved and undone.
+    fitzel::TerrainSettings settings;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<TerrainComponent>(*this);
+    }
+    const char* typeId() const override { return "terrain"; }
+    const char* displayName() const override { return "Terrain"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
 };

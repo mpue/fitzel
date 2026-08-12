@@ -83,6 +83,13 @@ struct PanelState {
     std::function<void()>      publishSculpt; // republish the snapshot after clearing
     fitzel::TerrainPaintField& paint;         // painted layer weights
     std::function<void()>      publishPaint;
+
+    // The terrain is an entity now (a Terrain component), so a scene may have
+    // none -- and then this panel has nothing to edit. `hasTerrain` says whether
+    // the scene has ground; `addTerrain` puts one in (undoable), which is the
+    // only thing the panel offers while there is none.
+    bool                       hasTerrain = true;
+    std::function<void()>      addTerrain;
 };
 
 void drawPanel(const PanelState& s);

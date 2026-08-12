@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -91,6 +92,19 @@ public:
     // made gliders judder on every slope.
     bool surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY,
                          float maxY = 1.0e9f) const;
+
+    // The raised edge resolved into the two numbers everything downstream wants:
+    // how far out it reaches across the section, and how high it climbs. Derived
+    // in one place so the mesh, the height query, the bridge decks and the graded
+    // corridor cannot disagree about where the road stops.
+    float edgeReach() const {
+        return edgeWidth * std::cos(glm::radians(glm::clamp(edgeAngle, 0.0f, 90.0f)));
+    }
+    float edgeRise() const {
+        return edgeWidth * std::sin(glm::radians(glm::clamp(edgeAngle, 0.0f, 90.0f)));
+    }
+    // Half the full drivable section: carriageway plus the lip beside it.
+    float surfaceHalf() const { return width * 0.5f + edgeReach(); }
 
     // Swap the surface texture (by file name; resolved against the scanned
     // texture dirs, see refreshTextures).
@@ -293,6 +307,18 @@ public:
     float                    width     = 5.0f;
     float                    texTile   = 8.0f; // world metres per texture tile
     float                    fadeWidth = 0.0f; // metres of edge alpha-fade (0 = off)
+    // Raised edges: a lip that runs along both sides of the carriageway, so a
+    // craft drifting wide is turned back down instead of sailing off the track.
+    // Part of the road's own section rather than a side object, because a wall
+    // you can drive up is surface, not scenery: it collides, the hover query
+    // reads its height, and it banks with the road.
+    //
+    // `edgeWidth` is the band's width MEASURED ALONG THE SLOPE, so the angle can
+    // go all the way to 90 (a vertical wall that high) without the geometry
+    // blowing up on the way there. 0 = no lip, which is what every road saved
+    // before this loads as.
+    float                    edgeWidth = 0.0f;  // metres up the slope (0 = none)
+    float                    edgeAngle = 35.0f; // degrees from the carriageway
     float                    rainRings = 1.0f; // drop-impact ring strength (0 = off)
     float                    grade     = 0.55f; // 0..1 longitudinal smoothing (flatter road)
     float                    shoulder  = 3.0f; // metres of terrain blend beyond the edge

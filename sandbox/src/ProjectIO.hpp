@@ -61,6 +61,11 @@ struct Context {
     // tunable registry is built (later than the Context is constructed).
     std::function<void(nlohmann::json&)>&       writeSettings;
     std::function<void(const nlohmann::json&)>& readSettings;
+    // Called once at the end of every scene load, after readSettings and after the
+    // entity id counter is settled (so it may create entities). Scene migrations
+    // live here: state that used to be stored outside the entity list and is now
+    // an entity gets built from what the file did store.
+    std::function<void()>&                      afterSceneLoad;
 };
 
 // Editor prefs (last location + recent projects), persisted to prefsPath.

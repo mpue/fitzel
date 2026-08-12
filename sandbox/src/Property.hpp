@@ -11,7 +11,9 @@
 // of the object the field lives in (an Entity* or a Component*), and the kind
 // says how to interpret the returned field pointer.
 
-enum class PropKind { Text, Float, Vec3, Color, Bool, EnumInt };
+// Int is a plain whole number (min/max/slider like Float); EnumInt is an int
+// chosen from `enumLabels`.
+enum class PropKind { Text, Float, Vec3, Color, Bool, EnumInt, Int };
 
 struct Property {
     std::string label;                    // inspector label

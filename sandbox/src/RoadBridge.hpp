@@ -53,10 +53,14 @@ std::vector<Span> plan(const std::vector<glm::vec2>& center, std::vector<float>&
 
 // Append the deck (slab, parapets, end caps) and piers for every span to `md`.
 // `prof` is the road surface the deck hangs under; `ground` is where the piers
-// land. Winding matches the rest of the engine (CCW = front face).
+// land; `bank` is the road's cross-fall per sample, in degrees, which the deck
+// ROLLS WITH -- the ribbon is lofted banked, so a deck built level would leave
+// the carriageway tilting out of its own parapets. The piers stay upright
+// regardless. Winding matches the rest of the engine (CCW = front face).
 void build(const std::vector<glm::vec2>& center, const std::vector<float>& prof,
-           const std::vector<float>& ground, const std::vector<Span>& spans,
-           float roadWidth, const Params& p, fitzel::MeshData& md);
+           const std::vector<float>& ground, const std::vector<float>& bank,
+           const std::vector<Span>& spans, float roadWidth, const Params& p,
+           fitzel::MeshData& md);
 
 #ifndef FITZEL_PLAYER
 // The deck-styling sliders of the Roads panel. Returns true when something changed
