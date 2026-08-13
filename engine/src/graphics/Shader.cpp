@@ -53,14 +53,19 @@ Shader::~Shader() {
 }
 
 Shader::Shader(Shader&& other) noexcept
-    : m_program(std::exchange(other.m_program, 0)) {}
+    : m_program(std::exchange(other.m_program, 0)),
+      m_uniforms(std::move(other.m_uniforms)) {
+    other.m_uniforms.clear(); // locations belong to the program, which moved
+}
 
 Shader& Shader::operator=(Shader&& other) noexcept {
     if (this != &other) {
         if (m_program) {
             glDeleteProgram(m_program);
         }
-        m_program = std::exchange(other.m_program, 0);
+        m_program  = std::exchange(other.m_program, 0);
+        m_uniforms = std::move(other.m_uniforms);
+        other.m_uniforms.clear();
     }
     return *this;
 }
@@ -115,9 +120,18 @@ void Shader::unbind() {
 }
 
 int Shader::uniformLocation(std::string_view name) const {
+    if (const auto it = m_uniforms.find(name); it != m_uniforms.end()) {
+        return it->second;
+    }
     // glGetUniformLocation needs a null-terminated string.
     const std::string n(name);
-    return glGetUniformLocation(m_program, n.c_str());
+    const int loc = glGetUniformLocation(m_program, n.c_str());
+    // Misses (-1) are cached too. Half the uniforms the renderer sets are
+    // deliberately absent from any given shader -- the point-light block on a
+    // grass shader, say -- and those are exactly the ones that would otherwise
+    // pay the driver lookup on every draw, forever.
+    m_uniforms.emplace(n, loc);
+    return loc;
 }
 
 void Shader::setBool(std::string_view name, bool value) const {

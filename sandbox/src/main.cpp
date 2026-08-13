@@ -10611,35 +10611,64 @@ int main(int argc, char** argv) {
                     });
             }
 
-            // 1) Reflection: sky + scene mirrored across the water plane,
-            //    clipping everything below the surface.
-            const glm::mat4 mirror =
-                glm::translate(glm::mat4(1.0f), {0.0f, 2.0f * waterLevel, 0.0f}) *
-                glm::scale(glm::mat4(1.0f), {1.0f, -1.0f, 1.0f});
-            const glm::mat4 reflView = view * mirror;
-            const glm::vec3 reflEye{camPos.x, 2.0f * waterLevel - camPos.y, camPos.z};
+            // Is the water plane in shot at all? Both passes below push the
+            // ENTIRE scene through renderScene a second and third time, purely
+            // to feed the water surface -- so on a track that never comes near
+            // water, or in the sandbox preset that parks the level at -1000,
+            // two thirds of the frame's draw submission went into a surface
+            // nobody can see.
+            //
+            // The plane is treated as infinite: if every corner of the view
+            // frustum lands on the same side of it, it cannot be on screen.
+            // Terrain occlusion is deliberately ignored -- that would want an
+            // occlusion query, and erring that way only costs a pass that could
+            // have been skipped, never a missing reflection.
+            const bool waterVisible = [&] {
+                const glm::mat4 invVP = glm::inverse(mainVP);
+                bool above = false, below = false;
+                for (int i = 0; i < 8; ++i) {
+                    const glm::vec4 h =
+                        invVP * glm::vec4((i & 1) ? 1.0f : -1.0f,
+                                          (i & 2) ? 1.0f : -1.0f,
+                                          (i & 4) ? 1.0f : -1.0f, 1.0f);
+                    if (std::abs(h.w) < 1e-6f) return true; // degenerate: don't gamble
+                    ((h.y / h.w > waterLevel) ? above : below) = true;
+                    if (above && below) return true;        // frustum straddles it
+                }
+                return false;
+            }();
 
-            // Reflection/refraction render LINEAR (tonemap=false) so the water
-            // shader can sample and tonemap them once at the end.
-            reflectRT.bind();
-            glClear(GL_DEPTH_BUFFER_BIT);
-            drawBackground(glm::inverse(proj * reflView), reflEye, false);
-            glCullFace(GL_FRONT); // mirroring flips winding
-            renderer.renderScene(reflView, proj, reflEye,
-                                 glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
-            glCullFace(GL_BACK);
-            {   // trees mirror in the water (reflected view/eye)
-                veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, weather,
-                                               light, fog));
+            if (waterVisible) {
+                // 1) Reflection: sky + scene mirrored across the water plane,
+                //    clipping everything below the surface.
+                const glm::mat4 mirror =
+                    glm::translate(glm::mat4(1.0f), {0.0f, 2.0f * waterLevel, 0.0f}) *
+                    glm::scale(glm::mat4(1.0f), {1.0f, -1.0f, 1.0f});
+                const glm::mat4 reflView = view * mirror;
+                const glm::vec3 reflEye{camPos.x, 2.0f * waterLevel - camPos.y, camPos.z};
+
+                // Reflection/refraction render LINEAR (tonemap=false) so the water
+                // shader can sample and tonemap them once at the end.
+                reflectRT.bind();
+                glClear(GL_DEPTH_BUFFER_BIT);
+                drawBackground(glm::inverse(proj * reflView), reflEye, false);
+                glCullFace(GL_FRONT); // mirroring flips winding
+                renderer.renderScene(reflView, proj, reflEye,
+                                     glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
+                glCullFace(GL_BACK);
+                {   // trees mirror in the water (reflected view/eye)
+                    veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, weather,
+                                                   light, fog));
+                }
+
+                // 2) Refraction: scene only, clipping above water (deep-water clear).
+                refractRT.bind();
+                glClearColor(waterColor.r * 0.5f, waterColor.g * 0.5f,
+                             waterColor.b * 0.5f, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                renderer.renderScene(view, proj, camPos,
+                                     glm::vec4(0, -1, 0, waterLevel + 0.1f), false);
             }
-
-            // 2) Refraction: scene only, clipping above water (deep-water clear).
-            refractRT.bind();
-            glClearColor(waterColor.r * 0.5f, waterColor.g * 0.5f,
-                         waterColor.b * 0.5f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            renderer.renderScene(view, proj, camPos,
-                                 glm::vec4(0, -1, 0, waterLevel + 0.1f), false);
 
             // 3) Main pass: sky + full scene rendered LINEAR into the HDR buffer
             //    (tonemapping happens in the composite pass).
@@ -10675,44 +10704,49 @@ int main(int argc, char** argv) {
             veg.drawBirds(mainVP, now, camPos);
 
             // 4) The water surface: a large quad following the camera, sampling
-            //    the reflection/refraction targets with Fresnel + ripples.
-            glm::mat4 waterModel =
-                glm::translate(glm::mat4(1.0f), {camPos.x, waterLevel, camPos.z});
-            waterModel = glm::scale(waterModel, glm::vec3(1400.0f, 1.0f, 1400.0f));
+            //    the reflection/refraction targets with Fresnel + ripples. Drawn
+            //    only when those targets were filled this frame -- otherwise it
+            //    would mirror whatever the camera was looking at last time it
+            //    saw water.
+            if (waterVisible) {
+                glm::mat4 waterModel =
+                    glm::translate(glm::mat4(1.0f), {camPos.x, waterLevel, camPos.z});
+                waterModel = glm::scale(waterModel, glm::vec3(1400.0f, 1.0f, 1400.0f));
 
-            water.bind();
-            water.setMat4("uModel", waterModel);
-            water.setMat4("uViewProj", mainVP);
-            water.setVec3("uCameraPos", camPos);
-            water.setVec3("uLightDir", light.direction);
-            water.setVec3("uLightColor", light.color);
-            water.setFloat("uTime", static_cast<float>(now));
-            water.setVec3("uWaterColor", waterColor);
-            water.setFloat("uWaveStrength", waveStrength);
-            water.setFloat("uWaveScale", waveScale);
-            water.setFloat("uReflectivity", waterReflectivity);
-            water.setFloat("uClarity", waterClarity);
-            water.setFloat("uIor", waterIor);
-            water.setFloat("uWaveHeight", effWaveH);
-            water.setFloat("uChoppy", effWaveC);
-            water.setVec3("uAmbient", light.ambient);
-            water.setVec3("uFogColor", fog.color);
-            water.setVec3("uFogSunColor", fog.sunColor);
-            water.setFloat("uFogDensity", fog.density);
-            water.setFloat("uFogHeightFalloff", fog.heightFalloff);
-            water.setFloat("uFogHeight", fog.height);
-            water.setFloat("uExposure", exposure);
-            water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
-            water.setInt("uReflection", 0);
-            water.setInt("uRefraction", 1);
-            water.setInt("uRefractionDepth", 2);
-            water.setFloat("uNear", camera.nearPlane());
-            water.setFloat("uFar", camera.farPlane());
-            water.setFloat("uFoamWidth", foamWidth);
-            reflectRT.bindColorTexture(0);
-            refractRT.bindColorTexture(1);
-            refractRT.bindDepthTexture(2);
-            waterMesh.draw();
+                water.bind();
+                water.setMat4("uModel", waterModel);
+                water.setMat4("uViewProj", mainVP);
+                water.setVec3("uCameraPos", camPos);
+                water.setVec3("uLightDir", light.direction);
+                water.setVec3("uLightColor", light.color);
+                water.setFloat("uTime", static_cast<float>(now));
+                water.setVec3("uWaterColor", waterColor);
+                water.setFloat("uWaveStrength", waveStrength);
+                water.setFloat("uWaveScale", waveScale);
+                water.setFloat("uReflectivity", waterReflectivity);
+                water.setFloat("uClarity", waterClarity);
+                water.setFloat("uIor", waterIor);
+                water.setFloat("uWaveHeight", effWaveH);
+                water.setFloat("uChoppy", effWaveC);
+                water.setVec3("uAmbient", light.ambient);
+                water.setVec3("uFogColor", fog.color);
+                water.setVec3("uFogSunColor", fog.sunColor);
+                water.setFloat("uFogDensity", fog.density);
+                water.setFloat("uFogHeightFalloff", fog.heightFalloff);
+                water.setFloat("uFogHeight", fog.height);
+                water.setFloat("uExposure", exposure);
+                water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
+                water.setInt("uReflection", 0);
+                water.setInt("uRefraction", 1);
+                water.setInt("uRefractionDepth", 2);
+                water.setFloat("uNear", camera.nearPlane());
+                water.setFloat("uFar", camera.farPlane());
+                water.setFloat("uFoamWidth", foamWidth);
+                reflectRT.bindColorTexture(0);
+                refractRT.bindColorTexture(1);
+                refractRT.bindDepthTexture(2);
+                waterMesh.draw();
+            }
 
             // --- Rain streaks (storm) + boat foam, into the HDR buffer --------
             rain.draw(gctx);

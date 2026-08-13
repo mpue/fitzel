@@ -83,6 +83,11 @@ public:
     static constexpr int kIrradianceUnit = 16;
     static constexpr int kPrefilterUnit  = 17;
 
+    // Cube-face resolution of the dynamic environment probe.
+    static constexpr int kDefaultEnvProbeRes = 256;
+    static constexpr int kMinEnvProbeRes     = 64;
+    static constexpr int kMaxEnvProbeRes     = 1024;
+
     explicit Renderer(int shadowResolution = 2048, int cascades = 4);
 
     void setViewport(int width, int height);
@@ -123,9 +128,25 @@ public:
     // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
     // submit()/prepareShadows() and before the lit passes so those passes sample
     // a fresh probe. The probe is bound automatically in renderScene().
+    //
+    // Cost is amortized: one cube face per call, so a sweep takes six frames.
+    // The first sweep after construction or a resolution change is done in one
+    // go, because until a cube has been filled once there is nothing sensible to
+    // sample. `pos` is only read at the start of a sweep -- it usually tracks
+    // the camera, and letting it drift mid-sweep would seam the cube.
     using SkyDrawer = std::function<void(const glm::mat4& invViewProj,
                                          const glm::vec3& eye)>;
     void prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky);
+
+    // Cube-face resolution of that probe. Setting it reallocates both cubes (the
+    // old contents are gone -- the next capture fills them, and until then the
+    // lit shader's guard treats an unwritten probe as black), so call it when the
+    // setting changes, not per frame. Needs a current GL context. Clamped to
+    // [kMinEnvProbeRes, kMaxEnvProbeRes] and rounded down to a power of two, both
+    // because the mip chain wants one and because a probe is a quality dial, not
+    // a free-form number.
+    void setEnvProbeResolution(int res);
+    int  envProbeResolution() const { return m_envA.resolution(); }
 
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 
@@ -171,8 +192,17 @@ private:
     // Environment probe, ping-ponged: lit passes sample m_envRead (last frame's
     // capture) while prepareEnvProbe() renders into m_envWrite, then they swap.
     // Double-buffering avoids sampling the cubemap that is the current target.
-    CubeRenderTarget  m_envA{128};
-    CubeRenderTarget  m_envB{128};
+    // 256 a side by default: at 128 a reflected building is a handful of texels
+    // and a wet road shows coloured mush. The cost of raising it is fill, not
+    // draw calls -- the same six scene passes either way -- so it buys more than
+    // it costs until the faces get big.
+    CubeRenderTarget  m_envA{kDefaultEnvProbeRes};
+    CubeRenderTarget  m_envB{kDefaultEnvProbeRes};
+    // Where the running sweep is: which face goes next, the position it started
+    // from, and whether a complete cube exists yet to sample.
+    int               m_envFace   = 0;
+    glm::vec3         m_envSweepPos{0.0f};
+    bool              m_envPrimed = false;
     CubeRenderTarget* m_envRead  = &m_envA;
     CubeRenderTarget* m_envWrite = &m_envB;
     std::vector<Renderable> m_queue;
