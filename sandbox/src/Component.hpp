@@ -152,6 +152,45 @@ public:
     }
 };
 
+// --- Built-in component: Missile Pickup (fly over it to arm the launcher) -----
+// Missiles are not issued, they are found: the launcher starts a race empty and
+// every round on the rail was flown over on the track. Attach this to the pickup
+// model and lay them down the course -- the racing line and the armed line stop
+// being the same line, which is the whole point of the mechanic.
+//
+// Taking one deactivates the entity rather than destroying it, so it can come
+// back `respawn` seconds later for the next lap (0 = gone for the rest of the
+// race). `cooldown` is transient runtime state like the Trigger's `fired`, and
+// resets for free when Play stops and the scene is restored from its backup.
+//
+// A pickup is NOT consumed by a full rack: flying over one with no room left
+// leaves it standing for the lap where it is worth something.
+class MissilePickupComponent : public ComponentBase {
+public:
+    int         count   = 1;    // rounds awarded (capped by the launcher's rack)
+    float       radius  = 4.0f; // how close the craft must pass (metres)
+    float       respawn = 15.0f;// seconds until it returns (0 = never)
+    // Pickup cue: a Sound asset filename, chosen from the project's assets in
+    // the Inspector rather than typed, exactly like the Collectible's and the
+    // Boost Pad's. Empty = silent.
+    std::string sound;
+
+    float cooldown = 0.0f;      // runtime: seconds left before it returns
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<MissilePickupComponent>(*this);
+    }
+    const char* typeId() const override { return "missile_pickup"; }
+    const char* displayName() const override { return "Missile Pickup"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        // Warhead red, so a pickup is never mistaken for a gold collectible or a
+        // cyan trigger at a glance while laying out a course.
+        g.sphere(c, radius, {1.0f, 0.35f, 0.2f, 0.9f});
+    }
+};
+
 // --- Built-in component: Trigger (a zone that fires an event on entry) --------
 // Data-authored, no scripting: while playing, when the player enters within
 // `radius` the trigger shows `message` on the HUD and/or plays `sound`. `once`

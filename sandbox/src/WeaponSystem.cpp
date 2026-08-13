@@ -284,7 +284,7 @@ WeaponSystem::WeaponSystem(fitzel::Shader& lit) : m_lit(&lit) {
     m_bracket = buildBracket();
     m_sphere  = buildSphere();
     m_shard   = buildShard();
-    m_ammo    = ammoMax;
+    m_ammo    = std::clamp(ammoStart, 0, std::max(1, ammoMax));
 }
 
 float WeaponSystem::rnd() {
@@ -326,11 +326,20 @@ void WeaponSystem::reset() {
     m_seekBlip = m_lockFlash = m_denyFlash = m_hitFlash = 0.0f;
     m_seekAnnounced = -1;
     m_pulse = 0.0f;
-    m_ammo   = std::max(1, ammoMax);
+    m_ammo   = std::clamp(ammoStart, 0, std::max(1, ammoMax));
     m_reload = 0.0f;
     m_fireT  = 0.0f;
     m_haveMark = false;
     m_prevFire = m_prevCycle = false;
+}
+
+int WeaponSystem::addAmmo(int rounds) {
+    if (rounds <= 0) return 0;
+    const int cap   = std::max(1, ammoMax);
+    const int taken = std::min(rounds, cap - m_ammo);
+    if (taken <= 0) return 0;   // rack full: the caller leaves the pickup standing
+    m_ammo += taken;
+    return taken;
 }
 
 // --- Acquisition ------------------------------------------------------------
@@ -646,8 +655,10 @@ void WeaponSystem::update(const Frame& f, const std::vector<Racer>& racers) {
     m_pulse = m_locked ? std::fmod(m_pulse + dt * 1.25f, 1.0f) : 0.0f;
 
     // Reload: one round at a time, so a rack is a resource rather than a tap.
-    if (m_ammo < std::max(1, ammoMax)) {
-        m_reload += dt / std::max(reloadTime, 0.2f);
+    // Off by default -- rounds come from pickups on the track, and a launcher
+    // that refills itself by waiting would make flying over them pointless.
+    if (reloadTime > 0.0f && m_ammo < std::max(1, ammoMax)) {
+        m_reload += dt / reloadTime;
         if (m_reload >= 1.0f) { m_reload = 0.0f; ++m_ammo; }
     } else {
         m_reload = 0.0f;
@@ -1260,7 +1271,15 @@ void WeaponSystem::settingsPanel(const SoundPicker& soundPicker) {
     }
     if (ImGui::TreeNodeEx("Launcher", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::SliderInt("Rack size", &ammoMax, 1, 12);
-        ImGui::SliderFloat("Reload", &reloadTime, 0.5f, 20.0f, "%.1f s");
+        ImGui::SliderInt("Start rounds", &ammoStart, 0, 12);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("What the rack holds when a race starts.\n"
+                              "0 = every round has to be picked up on the track.");
+        ImGui::SliderFloat("Reload", &reloadTime, 0.0f, 20.0f, "%.1f s");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Self-reload. 0 = off: rounds come only from\n"
+                              "Missile Pickups, which is what makes them worth\n"
+                              "a detour.");
         ImGui::SliderFloat("Fire delay", &fireDelay, 0.05f, 2.0f, "%.2f s");
         ImGui::TreePop();
     }

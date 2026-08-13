@@ -5250,6 +5250,21 @@ int main(int argc, char** argv) {
                             if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
                                 e.localRotation += sp->axis * sp->speed * dt;
 
+                // Missile pickups counting back to their respawn. Deliberately
+                // OUTSIDE the activeInHierarchy loop below: a taken pickup
+                // deactivates itself, and a deactivated entity is skipped there,
+                // so ticking it in that loop would freeze its timer and it would
+                // never come back.
+                for (Entity& e : entities) {
+                    auto* mp = e.components.get<MissilePickupComponent>();
+                    if (!mp || mp->cooldown <= 0.0f) continue;
+                    mp->cooldown -= dt;
+                    if (mp->cooldown <= 0.0f) {
+                        mp->cooldown = 0.0f;
+                        e.active     = true; // back on the track for the next lap
+                    }
+                }
+
                 // Player-proximity behaviours (Collectible, Trigger). A mid-body
                 // reference point keeps low objects reachable. While flying the
                 // glider (or driving), the "player" is the CRAFT, not the chase
@@ -5270,6 +5285,24 @@ int main(int argc, char** argv) {
                                 host.score += static_cast<int>(std::lround(col->points));
                                 if (!col->sound.empty()) host.playSound(col->sound);
                                 pendingDestroy.push_back(e.id);
+                            }
+                        }
+                        // Missile pickup: on reach, put rounds on the rail and
+                        // take the pickup off the track for `respawn` seconds.
+                        // Deactivated rather than destroyed, so it can come back
+                        // for the next lap; with respawn 0 it stays gone for the
+                        // rest of the race.
+                        //
+                        // A full rack takes nothing and leaves the pickup
+                        // standing -- flying over one with no room is not how a
+                        // player should lose it.
+                        if (auto* mp = e.components.get<MissilePickupComponent>()) {
+                            if (mp->cooldown <= 0.0f &&
+                                glm::distance(playerC, e.center) <= mp->radius &&
+                                weapons.addAmmo(mp->count) > 0) {
+                                if (!mp->sound.empty()) host.playSound(mp->sound);
+                                mp->cooldown = mp->respawn;
+                                e.active     = false;
                             }
                         }
                         // Trigger: on entry (edge), set the HUD message / play the
@@ -8754,6 +8787,13 @@ int main(int argc, char** argv) {
                                 for (const Property& pr : col->props())
                                     if (pr.key != "sound") drawProperty(pr, col);
                                 soundPickerCombo("Sound", col->sound);
+                            } else if (auto* mp = dynamic_cast<MissilePickupComponent*>(c)) {
+                                // Same deal as the Collectible: rounds, radius and
+                                // respawn from metadata, the pickup cue chosen from
+                                // the Sound assets rather than typed.
+                                for (const Property& pr : mp->props())
+                                    if (pr.key != "sound") drawProperty(pr, mp);
+                                soundPickerCombo("Sound", mp->sound);
                             } else if (auto* pa = dynamic_cast<ParticleComponent*>(c)) {
                                 // Everything from metadata except the sprite, which
                                 // gets a Texture picker instead of a raw filename.

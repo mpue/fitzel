@@ -177,6 +177,33 @@ const std::vector<Property>& CollectibleComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& MissilePickupComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property count;
+        count.label = "Rounds"; count.key = "count"; count.kind = PropKind::Int;
+        count.min = 1.0f; count.max = 12.0f; count.speed = 1.0f;
+        count.field = [](void* o) -> void* { return &static_cast<MissilePickupComponent*>(o)->count; };
+        p.push_back(std::move(count));
+        Property radius;
+        radius.label = "Pickup radius"; radius.key = "radius"; radius.kind = PropKind::Float;
+        radius.slider = true; radius.min = 0.5f; radius.max = 15.0f; radius.fmt = "%.1f m";
+        radius.field = [](void* o) -> void* { return &static_cast<MissilePickupComponent*>(o)->radius; };
+        p.push_back(std::move(radius));
+        Property respawn;
+        respawn.label = "Respawn"; respawn.key = "respawn"; respawn.kind = PropKind::Float;
+        respawn.slider = true; respawn.min = 0.0f; respawn.max = 90.0f; respawn.fmt = "%.0f s";
+        respawn.field = [](void* o) -> void* { return &static_cast<MissilePickupComponent*>(o)->respawn; };
+        p.push_back(std::move(respawn));
+        Property sound;
+        sound.label = "Sound"; sound.key = "sound"; sound.kind = PropKind::Text;
+        sound.field = [](void* o) -> void* { return &static_cast<MissilePickupComponent*>(o)->sound; };
+        p.push_back(std::move(sound));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& TriggerComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -1308,6 +1335,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
         components::registerType({"collectible", "Collectible",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
+        components::registerType({"missile_pickup", "Missile Pickup",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<MissilePickupComponent>()); }});
         components::registerType({"trigger", "Trigger",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerComponent>()); }});
         components::registerType({"scene_trigger", "Scene Trigger",

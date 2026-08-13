@@ -113,9 +113,14 @@ public:
     // back to plain text boxes.
     void settingsPanel(const SoundPicker& soundPicker = {});
 
-    // Play start/stop and race restart: nothing in the air, nothing locked, a
-    // full rack.
+    // Play start/stop and race restart: nothing in the air, nothing locked, and
+    // the rack back to `ammoStart`.
     void reset();
+
+    // Put rounds on the rail (a pickup was flown over). Returns how many were
+    // actually taken, which is 0 when the rack is already full -- the caller
+    // uses that to leave the pickup standing instead of spending it on nothing.
+    int addAmmo(int rounds);
 
     // Hits collected during the last update(). Cleared at the top of each one,
     // so the caller reads them right after updating.
@@ -140,7 +145,14 @@ public:
     float lockHold    = 0.8f;    // seconds a solid lock survives off-cone
     // Launcher
     int   ammoMax     = 4;
-    float reloadTime  = 5.0f;    // seconds to put one back on the rail
+    // What the rack holds at the start of a race. 0 means every round has to be
+    // found on the track (see MissilePickupComponent), which is what makes the
+    // pickups worth a detour.
+    int   ammoStart   = 0;
+    // Seconds to put one back on the rail on its own. 0 (the default) switches
+    // self-reloading OFF entirely: with pickups feeding the launcher, a rack
+    // that refills by waiting would make flying over them pointless.
+    float reloadTime  = 0.0f;
     float fireDelay   = 0.5f;    // seconds between launches
     // Missile
     float missileSpeed = 135.0f; // top speed (m/s)
