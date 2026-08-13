@@ -58,6 +58,13 @@ struct Fog {
     float     height        = 0.0f;
 };
 
+// A submitted object's bounds in world space. Cached for a frame so the shadow
+// passes, which ask about the same object up to twenty-four times (six cube
+// faces times four shadowed lights), do not retransform eight corners each time.
+struct WorldAabb {
+    glm::vec3 lo{0.0f}, hi{0.0f};
+};
+
 // A high-level renderer that drives cascaded shadow mapping and a forward lit
 // pass. The app submits (mesh, material, model) tuples between begin() and
 // end(); the renderer renders all cascades, then the lit scene, feeding the
@@ -187,6 +194,10 @@ private:
     CascadedShadowMap m_csm;
     Shader            m_depthShader;
     Shader            m_cubeDistShader;             // point-shadow distance pass
+    // World bounds of m_queue, rebuilt at the start of each shadow pass.
+    void buildCullBounds();
+    std::vector<WorldAabb> m_cullBounds;
+
     std::vector<CubeShadowMap> m_pointShadows;      // one per shadowed point light
     int               m_shadowedCount = 0;
     // Environment probe, ping-ponged: lit passes sample m_envRead (last frame's

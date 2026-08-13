@@ -104,33 +104,52 @@ std::array<glm::vec4, 6> frustumPlanes(const glm::mat4& m) {
     return planes;
 }
 
-// Test a world-space AABB (transformed from a local AABB by `model`) against
-// the frustum. Conservative (false positives possible, never false negatives).
-bool aabbVisible(const std::array<glm::vec4, 6>& planes, const glm::mat4& model,
-                 const glm::vec3& localMin, const glm::vec3& localMax) {
-    // Transform the 8 corners to world space and take their AABB.
-    glm::vec3 lo(1e30f), hi(-1e30f);
+WorldAabb worldAabb(const glm::mat4& model, const glm::vec3& localMin,
+                    const glm::vec3& localMax) {
+    WorldAabb b{glm::vec3(1e30f), glm::vec3(-1e30f)};
     for (int i = 0; i < 8; ++i) {
         const glm::vec3 corner{
             (i & 1) ? localMax.x : localMin.x,
             (i & 2) ? localMax.y : localMin.y,
             (i & 4) ? localMax.z : localMin.z};
         const glm::vec3 w = glm::vec3(model * glm::vec4(corner, 1.0f));
-        lo = glm::min(lo, w);
-        hi = glm::max(hi, w);
+        b.lo = glm::min(b.lo, w);
+        b.hi = glm::max(b.hi, w);
     }
+    return b;
+}
 
-    for (const glm::vec4& plane : planes) {
+// Test a world-space AABB against the first `count` frustum planes.
+// Conservative (false positives possible, never false negatives).
+//
+// `count` exists for the shadow cascades: culling a shadow pass against all six
+// planes is wrong, because an object BEHIND the light's box still casts into it.
+// Testing only the four side planes keeps everything that could reach the
+// cascade laterally, however far up or down the light direction it sits.
+bool aabbVisible(const std::array<glm::vec4, 6>& planes, const WorldAabb& b,
+                 int count = 6) {
+    for (int i = 0; i < count; ++i) {
+        const glm::vec4& plane = planes[i];
         // Positive vertex: the AABB corner farthest along the plane normal.
         const glm::vec3 pv{
-            plane.x >= 0.0f ? hi.x : lo.x,
-            plane.y >= 0.0f ? hi.y : lo.y,
-            plane.z >= 0.0f ? hi.z : lo.z};
+            plane.x >= 0.0f ? b.hi.x : b.lo.x,
+            plane.y >= 0.0f ? b.hi.y : b.lo.y,
+            plane.z >= 0.0f ? b.hi.z : b.lo.z};
         if (glm::dot(glm::vec3(plane), pv) + plane.w < 0.0f) {
             return false; // fully outside this plane
         }
     }
     return true;
+}
+
+// Does the box come within `radius` of `centre`? Used to drop objects that are
+// out of a point light's reach: the cube only stores distances out to its range,
+// so anything beyond that lies behind everything the light actually lit and
+// cannot shadow any of it.
+bool aabbNearPoint(const WorldAabb& b, const glm::vec3& centre, float radius) {
+    const glm::vec3 closest = glm::clamp(centre, b.lo, b.hi);
+    const glm::vec3 d       = closest - centre;
+    return glm::dot(d, d) <= radius * radius;
 }
 
 } // namespace
@@ -162,21 +181,39 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
                        opacity, forceTransparent});
 }
 
+void Renderer::buildCullBounds() {
+    m_cullBounds.clear();
+    m_cullBounds.reserve(m_queue.size());
+    for (const auto& r : m_queue) {
+        m_cullBounds.push_back(
+            worldAabb(r.model, r.mesh->boundsMin(), r.mesh->boundsMax()));
+    }
+}
+
 void Renderer::prepareShadows(const ShadowCaster& extra) {
     if (!m_camera) return;
 
     m_csm.update(*m_camera, m_aspect, m_light.direction);
 
+    buildCullBounds();
+
     const int cascades = m_csm.cascadeCount();
     for (int i = 0; i < cascades; ++i) {
         m_csm.beginCascade(i);
         m_depthShader.bind();
-        m_depthShader.setMat4("uLightSpace", m_csm.lightMatrices()[i]);
-        for (const auto& r : m_queue) {
-            m_depthShader.setMat4("uModel", r.model);
-            r.mesh->draw();
+        const glm::mat4& lightSpace = m_csm.lightMatrices()[i];
+        m_depthShader.setMat4("uLightSpace", lightSpace);
+        // Only the four SIDE planes (see aabbVisible): a caster sitting outside
+        // the box along the light direction still throws a shadow into it, and
+        // culling it on near/far would delete that shadow. Sideways is safe --
+        // nothing beside the box can reach into it with the light parallel.
+        const std::array<glm::vec4, 6> planes = frustumPlanes(lightSpace);
+        for (std::size_t k = 0; k < m_queue.size(); ++k) {
+            if (!aabbVisible(planes, m_cullBounds[k], /*count=*/4)) continue;
+            m_depthShader.setMat4("uModel", m_queue[k].model);
+            m_queue[k].mesh->draw();
         }
-        if (extra) extra(m_csm.lightMatrices()[i]);
+        if (extra) extra(lightSpace);
     }
     m_csm.end(m_vpWidth, m_vpHeight);
 }
@@ -198,6 +235,8 @@ void Renderer::preparePointShadows() {
     const glm::vec3* dirs = CubeShadowMap::faceDirs();
     const glm::vec3* ups  = CubeShadowMap::faceUps();
 
+    buildCullBounds();
+
     glDisable(GL_CLIP_DISTANCE0);
     glEnable(GL_DEPTH_TEST);
     // Cull front faces so single-sided ground doesn't self-shadow (only closed
@@ -215,8 +254,19 @@ void Renderer::preparePointShadows() {
             m_pointShadows[k].beginFace(f);
             const glm::mat4 vp = pr * glm::lookAt(l.position, l.position + dirs[f], ups[f]);
             m_cubeDistShader.setMat4("uVP", vp);
-            for (const auto& r : m_queue) {
+            // Two tests, cheapest first. Out of the light's reach drops the
+            // object for all six faces; the frustum then keeps only the face it
+            // actually falls in. Together these are what stop a missile blast
+            // with a twenty-metre range from redrawing a city block two dozen
+            // times. Unlike the cascades this may cull on all six planes: the
+            // six faces tile the whole sphere, so anything dropped here is drawn
+            // by one of the others.
+            const std::array<glm::vec4, 6> planes = frustumPlanes(vp);
+            for (std::size_t q = 0; q < m_queue.size(); ++q) {
+                const Renderable& r = m_queue[q];
                 if (!r.castsPointShadow) continue; // e.g. the ground
+                if (!aabbNearPoint(m_cullBounds[q], l.position, far)) continue;
+                if (!aabbVisible(planes, m_cullBounds[q])) continue;
                 m_cubeDistShader.setMat4("uModel", r.model);
                 r.mesh->draw();
             }
@@ -314,8 +364,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     glEnable(GL_CLIP_DISTANCE0);
 
     auto drawOne = [&](const Renderable& r) {
-        if (!aabbVisible(planes, r.model,
-                         r.mesh->boundsMin(), r.mesh->boundsMax())) {
+        if (!aabbVisible(planes, worldAabb(r.model, r.mesh->boundsMin(),
+                                           r.mesh->boundsMax()))) {
             ++m_lastCulled;
             return;
         }
