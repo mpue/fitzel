@@ -343,6 +343,18 @@ int main(int argc, char** argv) {
 #endif
         Camera camera({0.0f, 10.0f, 30.0f}, -90.0f, -5.0f);
         camera.moveSpeed = 20.0f;
+        // Player two's eye, for split screen. A second camera rather than a
+        // second copy of the frame: the world is drawn twice from two
+        // viewpoints, and everything else about the frame -- sun, weather,
+        // shadows, the probe -- is shared, which is what keeps a second view
+        // affordable at all.
+        Camera camera2({0.0f, 10.0f, 30.0f}, -90.0f, -5.0f);
+        camera2.moveSpeed = 20.0f;
+        // Split the viewport vertically into two panes. Vertical because the
+        // target is a 3440x1440 ultrawide: two 1720x1440 panes are close to
+        // square, where a horizontal split would give two 3440x720 letterbox
+        // slots nobody can fly in.
+        bool splitScreen = false;
 
         // Content roots: prefer a `content/` next to the exe (a portable/exported
         // build ships its assets there), else the compile-time dev tree.
@@ -8118,6 +8130,13 @@ int main(int argc, char** argv) {
                                       "with speed. 0 = off. (No effect on the free camera.)");
                 ui::sectionText("Anti-aliasing");
                 ImGui::Checkbox("FXAA", &fxaaEnabled);
+                ui::sectionText("Split screen");
+                ImGui::Checkbox("Two panes", &splitScreen);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Draw the world twice, side by side, one pane\n"
+                                      "per player. The whole frame costs roughly\n"
+                                      "double -- watch the profiler before counting\n"
+                                      "on it.");
             }
             ImGui::End(); }
 
@@ -10236,10 +10255,21 @@ int main(int argc, char** argv) {
             // framebuffer, which would recreate the render targets at 0x0 --
             // an incomplete FBO -- and make `aspect` NaN.
             const int   fbW = std::max(1, viewW), fbH = std::max(1, viewH);
-            const float aspect = static_cast<float>(fbW) / static_cast<float>(fbH);
+            // Split screen draws the world once per pane, so everything sized
+            // per-render -- the HDR buffer, the post chain, the projection --
+            // follows the PANE, not the window. Only the final blit knows about
+            // the full width, because that is the one image both panes land in.
+            const int   views = splitScreen ? 2 : 1;
+            const int   paneW = std::max(1, fbW / views);
+            const float aspect = static_cast<float>(paneW) / static_cast<float>(fbH);
             const glm::mat4 proj = camera.projectionMatrix(aspect);
 
-            renderer.setViewport(fbW, fbH);
+            renderer.setViewport(paneW, fbH);
+            // Shadow cascades are fitted to player one's frustum and shared by
+            // both panes: they are built once per frame, before either pane is
+            // drawn. Good enough while the two are racing the same stretch of
+            // track; a player who drives far away from the other gets cascades
+            // sized for someone else's view.
             renderer.begin(camera, aspect, light);
 
             for (const TerrainChunk* chunk : streamer.visibleChunks()) {
@@ -10731,10 +10761,6 @@ int main(int argc, char** argv) {
             prof::addSince("shadows", fzShadowMark);
             const long long fzSceneMark = prof::mark();
 
-            const glm::vec3& camPos = camera.position();
-            const glm::mat4  view   = camera.viewMatrix();
-            const glm::mat4  mainVP = proj * view;
-
             // Fullscreen sky + volumetric clouds for a given view.
             auto drawSky = [&](const glm::mat4& invViewProj, const glm::vec3& eye,
                                bool tonemap) {
@@ -10812,7 +10838,9 @@ int main(int argc, char** argv) {
                 // Capture at the first reflective object if there is one (best
                 // parallax there); otherwise around the camera, so reflective
                 // terrain / not-yet-placed materials still get a sensible probe.
-                glm::vec3 probePos = camPos;
+                // Player one's eye: the probe is captured once and shared by
+                // both panes, like the shadows above.
+                glm::vec3 probePos = camera.position();
                 for (const Entity& b : entities) {
                     const auto* mc = b.components.get<MaterialComponent>();
                     if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
@@ -10826,6 +10854,21 @@ int main(int argc, char** argv) {
                         drawBackground(ivp, eye, false);
                     });
             }
+
+            // === Per-pane rendering ===========================================
+            // Everything above this point is the frame's shared work: shadow
+            // cascades, the environment probe, the terrain material. Everything
+            // below is drawn once per player, into render targets sized to one
+            // pane, and blitted into its half of the final image.
+            //
+            // The water mirror sits inside the loop rather than above it because
+            // a reflection is a function of where the eye is: shared between two
+            // panes it would mirror player one's view into player two's water.
+            for (int vi = 0; vi < views; ++vi) {
+            const Camera&    vcam   = (vi == 0) ? camera : camera2;
+            const glm::vec3  camPos = vcam.position();
+            const glm::mat4  view   = vcam.viewMatrix();
+            const glm::mat4  mainVP = proj * view;
 
             // Is the water plane in shot at all? Both passes below push the
             // ENTIRE scene through renderScene a second and third time, purely
@@ -10888,15 +10931,22 @@ int main(int argc, char** argv) {
 
             // 3) Main pass: sky + full scene rendered LINEAR into the HDR buffer
             //    (tonemapping happens in the composite pass).
-            if (hdrRT.width() != fbW || hdrRT.height() != fbH) {
-                hdrRT  = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA16F, true);
-                ssaoRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
-                ssaoBlurRT = RenderTarget(std::max(1, fbW / 2), std::max(1, fbH / 2));
-                viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
-                postRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
-                mbRT   = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
-                rebuildBloom(fbW, fbH);
+            // Sized to ONE pane: both players are drawn through the same set of
+            // targets, one after the other, so a second view costs no extra
+            // video memory -- only the time to fill them twice.
+            if (hdrRT.width() != paneW || hdrRT.height() != fbH) {
+                hdrRT  = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA16F, true);
+                ssaoRT = RenderTarget(std::max(1, paneW / 2), std::max(1, fbH / 2));
+                ssaoBlurRT = RenderTarget(std::max(1, paneW / 2), std::max(1, fbH / 2));
+                postRT = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA8);
+                mbRT   = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA8);
+                rebuildBloom(paneW, fbH);
             }
+            // The one target that stays FULL width: it is the finished image
+            // both panes are blitted into (and what the editor shows in its
+            // viewport panel).
+            if (viewportRT.width() != fbW || viewportRT.height() != fbH)
+                viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
             hdrRT.bind();
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             drawBackground(glm::inverse(mainVP), camPos, false);
@@ -10914,7 +10964,7 @@ int main(int argc, char** argv) {
 
             // Trees (instanced, per-material) + distant billboards into the HDR.
             veg.drawTrees(gctx);
-            veg.drawTreeBillboards(gctx, camera.right());
+            veg.drawTreeBillboards(gctx, vcam.right());
 
             // Birds: a flock wheeling above the camera, two-sided into the HDR.
             veg.drawBirds(mainVP, now, camPos);
@@ -11143,16 +11193,46 @@ int main(int argc, char** argv) {
             } else {
                 viewportRT.bind();
             }
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            // Clear only on the first pane: the second one must not wipe the
+            // image the first just landed.
+            if (vi == 0) glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            // This pane's half of the target. The passes above each bound their
+            // own target and set the viewport with it, so this is the only place
+            // that has to place anything by hand.
+            {
+                int dstW = fbW, dstH = fbH;
+                if (presentMode) window.framebufferSize(dstW, dstH);
+                const int pw = std::max(1, dstW / views);
+                glViewport(vi * pw, 0, pw, dstH);
+            }
             fxaa.bind();
             fxaaSrc->bindColorTexture(0);
             fxaa.setInt("uImage", 0);
-            fxaa.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
+            // The source is one pane, not the window.
+            fxaa.setVec2("uTexel", {1.0f / paneW, 1.0f / fbH});
             fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);
             fsQuad.draw();
             glDepthMask(GL_TRUE);
             glEnable(GL_DEPTH_TEST);
             glEnable(GL_CULL_FACE);
+            } // per-pane loop
+
+            // Back to the whole image. Everything after this -- the editor grid,
+            // the HUD, ImGui -- addresses the full target, and would otherwise
+            // be squeezed into whichever half was drawn last.
+            {
+                int fullW = fbW, fullH = fbH;
+                if (presentMode) window.framebufferSize(fullW, fullH);
+                glViewport(0, 0, fullW, fullH);
+            }
+
+            // Player one's view, for the overlays drawn on top of the finished
+            // image (editor grid, HUD). They are still whole-image things, so
+            // with two panes up they follow the left one; giving each pane its
+            // own HUD is a later step, and the grid is an editor aid that will
+            // not be looking at a split screen in the first place.
+            const glm::vec3 camPos = camera.position();
+            const glm::mat4 mainVP = proj * camera.viewMatrix();
 
 #ifndef FITZEL_PLAYER
             // --- The construction grid, onto the finished image ---------------
