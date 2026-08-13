@@ -530,6 +530,54 @@ void drawPanel(const PanelState& s) {
                               "Only shows while it is actually raining AND the\n"
                               "surface is wet -- turn the storm up to judge it.");
 
+        // The road's own wetness, weather or no weather. Same shader path as the
+        // rain's, so what this shows at 1.0 is exactly what a downpour shows.
+        ImGui::SliderFloat("Wetness", &s.road.wetness, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How wet the carriageway looks with NO rain: darker\n"
+                              "tarmac and a sharper sheen, the higher it goes.\n"
+                              "Rain adds on top (the wetter of the two wins), so\n"
+                              "this is a floor, not an override. 0 = weather only.");
+
+        ImGui::SliderFloat("Wet reflection", &s.road.wetReflect, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How much the wet road mirrors its surroundings.\n"
+                              "0 = only the sun's sheen (and no cubemap capture,\n"
+                              "so it costs nothing); above that the scene around\n"
+                              "the road is reflected -- and the frame pays for a\n"
+                              "probe render whenever the road is wet, rain included.");
+
+        // Where that wetness stands. Any greyscale image works as the mask, so
+        // the picker is the wide list (the same one the glow map uses).
+        const std::string wetLabel = s.road.wetMap.empty() ? "(none)" : s.road.wetMap;
+        if (ImGui::BeginCombo("Wet map", wetLabel.c_str())) {
+            if (ImGui::Selectable("(none)", s.road.wetMap.empty()))
+                s.road.setWetMap(std::string());
+            for (const std::string& f : s.road.emisFiles)
+                if (ImGui::Selectable(f.c_str(), s.road.wetMap == f))
+                    s.road.setWetMap(f);
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Greyscale mask for the wetness: black stays dry,\n"
+                              "white gets the full sheen. road_puddles.png is a\n"
+                              "seamless one to start from (road_wet_grain.png is\n"
+                              "the finer variant). Without one the whole road is\n"
+                              "equally wet, which reflects like plastic.");
+        // Both are pure shader parameters -- no rebuild, like the fade above.
+        ImGui::BeginDisabled(s.road.wetMap.empty());
+        ImGui::SliderFloat("Puddle size", &s.road.wetTile, 3.0f, 150.0f, "%.0f m");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Metres of road one tile of the map covers.\n"
+                              "Small = frequent patches, large = long wet and\n"
+                              "dry stretches.");
+        ImGui::SliderFloat("Puddle depth", &s.road.wetVar, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How much of the map to believe. 0 = even sheen\n"
+                              "(as if there were no map), 1 = the dry parts of\n"
+                              "the mask go fully matte.");
+        ImGui::EndDisabled();
+
         // Surface texture picker (any diffuse texture in textures/). Picking one
         // brings its matching normal map along, so the common case needs no second
         // trip to the combo below -- but the combo is there to override or clear it.

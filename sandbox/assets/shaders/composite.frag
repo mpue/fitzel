@@ -158,6 +158,13 @@ void main() {
 
     vec3 col = hdr + bloom * uBloom + rays * uRays + flare * (0.6 * uRays + 0.4);
 
+    // Last line of defence before the tonemap. ACES divides one polynomial by
+    // another, so an Inf coming in leaves as NaN and clamp() cannot rescue it --
+    // the pixel ends up black. Everything upstream is clamped now; this makes
+    // sure a future bright pass cannot reintroduce the same black blocks.
+    col = min(col, vec3(50000.0));
+    if (any(isnan(col))) col = vec3(0.0);
+
     col = aces(col * uExposure);
     col = pow(col, vec3(1.0 / 2.2));
     col = colorGrade(col);

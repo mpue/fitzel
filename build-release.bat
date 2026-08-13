@@ -110,8 +110,11 @@ if defined PYEXE (
 REM --- Bauen -----------------------------------------------------------------
 REM  Hinweis: laeuft das Spiel/der Editor noch, ist bin\sandbox.exe gesperrt
 REM  und der Linker meldet LNK1104 -- dann zuerst die laufende Instanz schliessen.
-echo Baue sandbox + player ^(Release^)...
-"%CMAKE%" --build build\release --target sandbox player
+REM  shadercheck kommt mit: das Harness ist nur etwas wert, wenn es zum aktuellen
+REM  Stand der Shader passt -- gebaut wird es in Sekunden, und genau daran ist es
+REM  beim letzten Mal gestorben, dass es niemand mitgebaut hat.
+echo Baue sandbox + player + shadercheck ^(Release^)...
+"%CMAKE%" --build build\release --target sandbox player shadercheck
 if %errorlevel% neq 0 (
     echo [Fehler] Build fehlgeschlagen ^(laeuft die exe noch?^).
     exit /b 1

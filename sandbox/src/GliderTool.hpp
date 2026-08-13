@@ -18,9 +18,16 @@ namespace gliderui {
 // Returns a short human-readable report.
 std::string autoSetup(Document& doc, int rootId);
 
+// A "pick a sound asset" combo, supplied by the caller (the picker walks the
+// project's asset database, which lives in main). Label + the field it edits.
+using SoundPicker = std::function<void(const char*, std::string&)>;
+
 // Inspector body for a GliderComponent on `root`: the tuning properties, grouped
-// (Flight / Hover / Attitude / Follow camera), plus the drive hint.
-void inspector(GliderComponent& gc, Entity& root, Document& doc);
+// (Flight / Boost / Energy / Hover / Attitude / Follow camera), plus the drive
+// hint. `soundPicker` renders the crash/alarm sound fields; pass {} to fall back
+// to plain text fields.
+void inspector(GliderComponent& gc, Entity& root, Document& doc,
+               const SoundPicker& soundPicker = {});
 
 // The "Scene gliders" section of the Glider panel: lists every glider entity and
 // runs `makeGlider(entityId)` (autoSetup wrapped undoably by main) on the current

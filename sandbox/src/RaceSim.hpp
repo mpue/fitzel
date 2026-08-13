@@ -71,6 +71,19 @@ struct RaceState {
     bool  boostActive   = false;   // held AND actually spending (HUD + speed FX)
     float boostIdle     = 0.0f;    // seconds since it last spent anything
     float boostDryFlash = 0.0f;    // counts down after running the tank dry (HUD)
+    // --- Energy (the hull) -----------------------------------------------
+    // Collisions cost energy; it recharges on its own after a pause; at zero the
+    // run is over (energyOut) and the HUD asks the end-of-race question. Refilled
+    // at every race start, exactly like the boost tank.
+    float energy         = 100.0f; // what is left of the hull
+    float energyCapacity = 100.0f; // what a full one holds (mirrored for the HUD)
+    float energyIdle     = 0.0f;   // seconds since the last hit (arms the regen)
+    float energyHitFlash = 0.0f;   // counts down after a hit (HUD flash)
+    float energyLastHit  = 0.0f;   // energy the last hit cost (HUD)
+    float energyWarnT    = 0.0f;   // counts down to the alarm's next repeat
+    bool  energyLow      = false;  // under the warning threshold (HUD pulse)
+    bool  energyOut      = false;  // hull gone: the run is lost
+
     // Off-track rescue: the last spot the glider was safely on the road, to pop
     // it back onto after it falls off (e.g. off a bridge).
     glm::vec3 respawnPos{0.0f};

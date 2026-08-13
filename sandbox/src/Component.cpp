@@ -578,6 +578,27 @@ const std::vector<Property>& GliderComponent::properties() {
         addFloat("Boost delay",  "boostDelay",    &GliderComponent::boostDelay,     0.0f,  10.0f, "%.2f s");
         addFloat("Boost thrust", "boostThrust",   &GliderComponent::boostThrust,    0.0f, 200.0f, "%.0f m/s2");
         addFloat("Boost top-up", "boostTopSpeed", &GliderComponent::boostTopSpeed,  0.0f, 120.0f, "%.0f m/s");
+        // Energy / hull (grouped under an "Energy" header at "energyCapacity").
+        // The two sound filenames are Text props the Inspector turns into Sound
+        // pickers, the same way a boost pad's punch is handled.
+        addFloat("Energy tank",  "energyCapacity", &GliderComponent::energyCapacity, 10.0f, 500.0f, "%.0f");
+        addFloat("Energy regen", "energyRegen",    &GliderComponent::energyRegen,     0.0f,  50.0f, "%.1f /s");
+        addFloat("Regen delay",  "energyDelay",    &GliderComponent::energyDelay,     0.0f,  15.0f, "%.2f s");
+        addFloat("Warn at",      "energyWarnAt",   &GliderComponent::energyWarnAt,    0.0f,   0.5f, "%.2f");
+        addFloat("Hull radius",  "hullRadius",     &GliderComponent::hullRadius,      0.2f,  10.0f, "%.2f m");
+        addFloat("Crash damage", "crashDamage",    &GliderComponent::crashDamage,     0.0f,  10.0f, "%.2f /m/s");
+        addFloat("Crash floor",  "crashMinSpeed",  &GliderComponent::crashMinSpeed,   0.0f,  30.0f, "%.1f m/s");
+        addFloat("Crash bounce", "crashBounce",    &GliderComponent::crashBounce,     0.0f,   1.0f, "%.2f");
+        addFloat("Hit volume",   "soundHitGain",   &GliderComponent::soundHitGain,    0.0f,   2.0f, "%.2f");
+        addFloat("Alarm volume", "soundWarnGain",  &GliderComponent::soundWarnGain,   0.0f,   2.0f, "%.2f");
+        Property sh;
+        sh.label = "Hit sound"; sh.key = "soundHit"; sh.kind = PropKind::Text;
+        sh.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->soundHit; };
+        p.push_back(std::move(sh));
+        Property sw;
+        sw.label = "Alarm sound"; sw.key = "soundWarn"; sw.kind = PropKind::Text;
+        sw.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->soundWarn; };
+        p.push_back(std::move(sw));
         // Hover (grouped under a "Hover" header at "rideHeight" -- see gliderui::inspector)
         addFloat("Ride height",  "rideHeight",     &GliderComponent::rideHeight,     0.2f, 12.0f, "%.2f m");
         addFloat("Hover spring", "hoverStiffness", &GliderComponent::hoverStiffness, 0.5f, 20.0f, "%.1f");

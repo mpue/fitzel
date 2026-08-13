@@ -479,6 +479,30 @@ public:
     float boostDelay    = 1.2f;   // seconds after release before it starts refilling
     float boostThrust   = 55.0f;  // extra forward acceleration while boosting (m/s^2)
     float boostTopSpeed = 30.0f;  // m/s of speed cap ABOVE maxSpeed while boosting
+    // --- Energy (the hull) ---------------------------------------------------
+    // The craft flies on a shield: every collision costs energy, and at zero the
+    // run is over. It recharges on its own, but only after a pause and slowly
+    // enough that a clean line is worth flying -- an energy bar that refills
+    // instantly is just a hit counter with extra steps.
+    //
+    // Damage is charged on the CLOSING speed at the moment of contact, not on
+    // the craft's own speed: brushing a wall at a shallow angle at 300 km/h has
+    // to cost less than driving into it head-on, or the only safe way to fly is
+    // slowly, which is the wrong lesson for a racer to teach.
+    float energyCapacity = 100.0f; // full hull (the HUD bar's 100%)
+    float energyRegen    = 3.5f;   // energy per second once recharging
+    float energyDelay    = 2.5f;   // seconds after a hit before it recharges
+    float energyWarnAt   = 0.10f;  // fraction that fires the low-energy alarm
+    float hullRadius     = 1.6f;   // collision radius around the body centre (m)
+    float crashDamage    = 1.3f;   // energy per m/s of impact above the threshold
+    float crashMinSpeed  = 4.0f;   // impacts slower than this are a free nudge
+    float crashBounce    = 0.35f;  // how much of the impact speed comes back
+    // Collision SFX: the hull thud, and the alarm at the warning threshold
+    // (which repeats while the energy stays low). Empty = silent.
+    std::string soundHit  = "impact.wav";
+    std::string soundWarn = "energy_low.wav";
+    float       soundHitGain  = 1.0f;
+    float       soundWarnGain = 1.0f;
     // Hover
     float rideHeight     = 1.6f; // body-centre height held above the ground (m)
     float hoverStiffness = 6.0f; // spring pulling back to rideHeight (1/s)

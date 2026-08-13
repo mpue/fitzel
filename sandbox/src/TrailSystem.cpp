@@ -1,5 +1,6 @@
 #include "TrailSystem.hpp"
 
+#include <cmath>
 #include <cstddef>
 
 #include <fitzel/graphics/Shader.hpp>
@@ -48,6 +49,50 @@ void TrailSystem::update(float dt, const glm::vec3& camPos) {
         // whose half-width tapers with each end's age. Emitted double-sided so
         // backface culling can't hide it whichever way the strip runs.
         t.verts.clear();
+
+        // A perpendicular to `d` that depends only on `d`: continuous as the
+        // segment turns, and never the zero vector. The axis furthest from `d`
+        // is the one that survives the cross product with room to spare.
+        auto perpOf = [](const glm::vec3& d) {
+            const glm::vec3 up = std::abs(d.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f)
+                                                      : glm::vec3(1.0f, 0.0f, 0.0f);
+            return glm::normalize(glm::cross(d, up));
+        };
+        // Which way the ribbon opens at `p`. Facing the camera where that means
+        // something, easing to the fixed perpendicular above where it does not.
+        //
+        // cross(dir, toCam) has length sin(angle between them), so looking ALONG
+        // a segment drives it to zero -- and normalising a near-zero vector
+        // returns whatever round-off happened to be in it, a direction that
+        // swings right around the segment from one frame to the next. The ribbon
+        // then strobes and sweeps across the screen, which is exactly what the
+        // trail of the craft AHEAD of you does: that is the one trail you are
+        // permanently looking straight down. The old guard could not catch it --
+        // it compared against a fixed 1e-5, while the cross product is scaled by
+        // the distance to the camera, so at fifty metres a hopelessly ill-
+        // conditioned frame still measured well above the threshold.
+        auto sideAt = [&](const glm::vec3& p, const glm::vec3& dir) {
+            glm::vec3 toCam = camPos - p;
+            const float d = glm::length(toCam);
+            const glm::vec3 stable0 = perpOf(dir);
+            if (d < 1e-4f) return stable0;
+            toCam /= d;
+            glm::vec3 cs = glm::cross(dir, toCam);
+            const float sinA = glm::length(cs);   // 0 = dead in line with the view
+            if (sinA < 1e-4f) return stable0;
+            cs /= sinA;
+            // Take the fixed perpendicular on the same side as the camera-facing
+            // one, or blending the two would cancel them out instead of easing
+            // between them.
+            const glm::vec3 stable = glm::dot(stable0, cs) < 0.0f ? -stable0 : stable0;
+            // Eased, not switched: a hard swap at a threshold is its own visible
+            // pop. Below ~3 degrees it is entirely the stable frame, above ~17
+            // entirely camera-facing.
+            const glm::vec3 mixed = glm::mix(stable, cs,
+                                             glm::smoothstep(0.06f, 0.30f, sinA));
+            const float ml = glm::length(mixed);
+            return ml > 1e-4f ? mixed / ml : stable;
+        };
         auto vtx = [&](const glm::vec3& p, const glm::vec3& nn) {
             fitzel::Vertex v;
             v.position = p; v.normal = nn; v.uv = glm::vec2(0.0f);
@@ -61,10 +106,12 @@ void TrailSystem::update(float dt, const glm::vec3& camPos) {
             if (glm::length(seg) < 1e-5f) continue;
             const glm::vec3 dir = glm::normalize(seg);
             const glm::vec3 ca = camPos - a.pos, cb = camPos - b.pos;
-            glm::vec3 sa = glm::cross(dir, ca);
-            glm::vec3 sb = glm::cross(dir, cb);
-            sa = glm::length(sa) > 1e-5f ? glm::normalize(sa) : glm::vec3(1, 0, 0);
-            sb = glm::length(sb) > 1e-5f ? glm::normalize(sb) : glm::vec3(1, 0, 0);
+            const glm::vec3 sa = sideAt(a.pos, dir);
+            glm::vec3 sb = sideAt(b.pos, dir);
+            // Both ends of one quad have to open the same way. They are computed
+            // independently, and near the ill-conditioned case they can land on
+            // opposite sides -- which ties the quad into a bow tie.
+            if (glm::dot(sa, sb) < 0.0f) sb = -sb;
             const float wa = halfW(a.age), wb = halfW(b.age);
             const glm::vec3 aL = a.pos - sa * wa, aR = a.pos + sa * wa;
             const glm::vec3 bL = b.pos - sb * wb, bR = b.pos + sb * wb;

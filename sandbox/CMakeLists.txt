@@ -37,6 +37,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ParticleSystem.cpp
     src/SkidSystem.cpp
     src/TrailSystem.cpp
+    # Lock-on missiles: gameplay, so the shipped player needs it too (the
+    # settings panel inside it is simply never called there).
+    src/WeaponSystem.cpp
     src/CarAudio.cpp
     src/GliderAudio.cpp
     src/UiOverlay.cpp
@@ -103,6 +106,15 @@ foreach(tgt sandbox player)
     endif()
 
 endforeach()
+
+# The shader check (sandbox/tools/shadercheck.cpp): compiles every shader in
+# assets/shaders against a real GL context and exits non-zero if the driver
+# rejects one. A console program on purpose -- the editor is /SUBSYSTEM:WINDOWS
+# in Release and has nowhere to print a compile error to, which is exactly how a
+# broken shader ends up silently doing nothing. Run it after editing a shader:
+#   build\release\bin\shadercheck.exe sandbox\assets\shaders
+add_executable(shadercheck tools/shadercheck.cpp)
+target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_33)
 
 # Shader assets + Lua scripts next to the executable, so relative paths resolve at
 # runtime. This is a real build step keyed on the asset files themselves, not a

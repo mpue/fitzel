@@ -35,6 +35,15 @@ vec3 prefilter(vec3 c) {
 
 vec3 tap(vec2 uv) {
     vec3 c = texture(uSrc, uv).rgb;
+    // A single non-finite texel poisons everything downstream: prefilter() below
+    // divides by the luminance (Inf/Inf = NaN), every coarser level averages that
+    // NaN outward, the composite's tonemap turns it into black, and the god rays
+    // read the same pyramid -- so one bad pixel becomes a block of black around
+    // whatever was bright. The scene shader clamps its own output, but this is
+    // the pass that would spread anything that still got through (an overflowed
+    // half float from any other source), so it stops here too.
+    if (any(isnan(c)) || any(isinf(c))) c = vec3(0.0);
+    c = min(c, vec3(50000.0));
     return (uFirstPass == 1) ? prefilter(c) : c;
 }
 

@@ -127,6 +127,16 @@ public:
     // builds a frame from screen-space derivatives (see applyNormalMap).
     void setNormal(const std::string& file);
 
+    // Swap the wetness map: a greyscale image saying where the water stands
+    // (black dry, white fully wet). Any image will do -- it is read as a mask,
+    // not as colour -- so it is picked from the same wide list as the glow map.
+    // Pass "" for none, which puts the surface back to an even sheen.
+    void setWetMap(const std::string& file);
+    // Push the wetness map + its tiling onto the surface and bridge materials.
+    // Called every frame for the same reason applyEmission is: the tiling is
+    // derived from width/texTile/wetTile, all of which the panel edits live.
+    void applyWetness();
+
     // A stretch of road the user has asked to be carried on a bridge, named by the
     // two control points at its ends (indices into roadPts, either order). Points
     // move and vanish under the editor, so these are validated on every build --
@@ -320,6 +330,34 @@ public:
     float                    edgeWidth = 0.0f;  // metres up the slope (0 = none)
     float                    edgeAngle = 35.0f; // degrees from the carriageway
     float                    rainRings = 1.0f; // drop-impact ring strength (0 = off)
+    // The road's OWN wetness, independent of the weather: a permanently slick,
+    // reflective carriageway under a clear sky, which is a look a track is
+    // authored to have rather than something the rain happens to do to it. It
+    // sets a FLOOR under the weather's value (the two take the higher of the
+    // pair), so rain can still add to a dry-looking road and can never wash a
+    // deliberately wet one back to matte. 0 (what every road saved before this
+    // loads as) leaves the surface entirely at the weather's mercy, as before.
+    //
+    // One number, not two: in the shader wetness darkens the tarmac and sharpens
+    // its highlight together (see lit.frag's rainWet), which is what makes it
+    // read as wet rather than as varnished, and splitting the pair would mean
+    // splitting that.
+    float                    wetness   = 0.0f; // 0 = dry (weather only) .. 1 = soaked
+    // Where that wetness actually stands. A road is never evenly wet -- water
+    // pools where the camber lets it -- and an evenly mirrored carriageway reads
+    // as plastic no matter how good the reflection is. `wetMap` names a greyscale
+    // image (black dry, white wet), `wetTile` how many metres of road one tile of
+    // it covers, and `wetVar` how much of it to believe. wetVar 0 (the default,
+    // and what every road saved before this loads as) is the even sheen as before.
+    std::string              wetMap;            // display name, "" = none
+    float                    wetTile   = 26.0f; // metres per repeat, both ways
+    float                    wetVar    = 0.0f;  // 0 = even .. 1 = fully map-driven
+    // How much a wet carriageway mirrors its surroundings through the scene
+    // probe. Its own knob because it is the expensive half of the look: above 0
+    // the frame pays for a cubemap capture whenever the road is wet (rain
+    // included), so this is the switch to reach for when the frame rate matters
+    // more than the puddles.
+    float                    wetReflect = 0.45f; // 0 = sun sheen only .. 1 = mirror
     float                    grade     = 0.55f; // 0..1 longitudinal smoothing (flatter road)
     float                    shoulder  = 3.0f; // metres of terrain blend beyond the edge
     bool                     needsBuild = false; // roadPts/width/grade changed since Build
@@ -420,9 +458,14 @@ private:
     std::vector<std::string> m_normPaths; // full paths, parallel to normFiles
     std::vector<std::string> m_emisPaths; // full paths, parallel to emisFiles
 
+    // A display name from any of the scanned lists -> its full path on disk,
+    // falling back to the content dir for a name that is no longer there.
+    std::string resolveTexPath(const std::string& name) const;
+
     std::shared_ptr<fitzel::Texture> m_tex;     // kept alive while the material binds it
     std::shared_ptr<fitzel::Texture> m_normTex;
     std::shared_ptr<fitzel::Texture> m_emisTex;
+    std::shared_ptr<fitzel::Texture> m_wetTex;
     fitzel::Material         m_mat;
     fitzel::Mesh             m_mesh;
     int                      m_verts = 0;

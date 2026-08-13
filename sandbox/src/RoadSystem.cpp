@@ -169,6 +169,10 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                .set("uTint", glm::vec3(1.0f));
     m_bridgeTex = m_assetDb.loadTexture(m_texDir + "/cracked_concrete_02_diff_4k.jpg");
     if (m_bridgeTex) m_bridgeMat.setTexture("uTexture", *m_bridgeTex, 0);
+
+    // Same reasoning as applyEmission above: no puddle map yet, but both
+    // materials say so themselves rather than inheriting it from a neighbour.
+    applyWetness();
 }
 
 void RoadSystem::refreshTextures(const std::string& projectDir) {
@@ -196,19 +200,27 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
 
     auto add = [&](const std::filesystem::path& p) {
         const std::string name = p.filename().string();
-        // A file is one or the other: isRoadAlbedo already rejects "_nor".
-        if (isRoadNormal(name)) {
-            if (!seenNorm.insert(name).second) return;
+        const std::string ext = p.extension().string();
+        const bool decodable = (ext == ".png" || ext == ".jpg" ||
+                                ext == ".jpeg" || ext == ".tga");
+        // Normal maps: EVERY image the loader can decode, not just the ones whose
+        // name carries a known token. Packs name them anything -- "..._n.png",
+        // "bump.png", "surface-normalmap.png" -- and a picker that silently drops
+        // what it doesn't recognise leaves the author staring at a list that is
+        // missing the exact file they can see on disk, with nothing to say why.
+        // isRoadNormal still earns its keep below: it decides what is ALSO a
+        // surface or a glow map, and it drives the automatic partner lookup in
+        // normalFor(), which is where guessing belongs.
+        if (decodable && seenNorm.insert(name).second) {
             normFiles.push_back(name);
             m_normPaths.push_back(p.generic_string());
-            return;
         }
+        // A file marked as a normal map is not offered as a surface or a glow.
+        if (isRoadNormal(name)) return;
         // Any other image can serve as a glow map -- a hand-painted stripe, a
         // "_mask", a whole neon pattern -- so this list is deliberately wider
         // than the surface list, which only wants tileable colour maps.
-        const std::string ext = p.extension().string();
-        if ((ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".tga") &&
-            seenEmis.insert(name).second) {
+        if (decodable && seenEmis.insert(name).second) {
             emisFiles.push_back(name);
             m_emisPaths.push_back(p.generic_string());
         }
@@ -319,6 +331,51 @@ void RoadSystem::setEmission(const std::string& file) {
         m_mat.setTexture("uEmissionMap", *m_emisTex, 3);
     }
     applyEmission();
+}
+
+std::string RoadSystem::resolveTexPath(const std::string& name) const {
+    const std::vector<std::string>* names[] = {&texFiles, &normFiles, &emisFiles};
+    const std::vector<std::string>* paths[] = {&m_texPaths, &m_normPaths, &m_emisPaths};
+    for (int l = 0; l < 3; ++l)
+        for (std::size_t i = 0; i < names[l]->size() && i < paths[l]->size(); ++i)
+            if ((*names[l])[i] == name) return (*paths[l])[i];
+    return m_texDir + "/" + name;
+}
+
+void RoadSystem::setWetMap(const std::string& file) {
+    wetMap = file;
+    if (file.empty()) {
+        m_wetTex.reset();
+        applyWetness();
+        return;
+    }
+    if (auto t = m_assetDb.loadTexture(resolveTexPath(file))) {
+        m_wetTex = t;
+        // Unit 4: 0 is the surface, 1 its normal, 2 the env probe, 3 the glow
+        // map, 7 the shadow array. (3..6 are terrain units, and the terrain is a
+        // different material -- units only have to be unique within one draw.)
+        m_mat.setTexture("uWetMap", *m_wetTex, 4);
+        m_bridgeMat.setTexture("uWetMap", *m_wetTex, 4);
+    }
+    applyWetness();
+}
+
+void RoadSystem::applyWetness() {
+    const int   has = m_wetTex ? 1 : 0;
+    const float var = std::clamp(wetVar, 0.0f, 1.0f);
+    // The ribbon's UVs run 0..width/texTile across and metres/texTile along (see
+    // loft), so one factor undoes the asphalt's tiling and re-tiles in metres --
+    // the same scale both ways, which keeps a puddle round instead of smeared
+    // down the road.
+    const float s = (wetTile > 1e-4f) ? texTile / wetTile : 1.0f;
+    // uWetReflect is written HERE and nowhere else: the renderer's baseline
+    // clears it for every other draw, so the carriageway is the only thing in the
+    // scene that mirrors when it is wet.
+    const float refl = std::clamp(wetReflect, 0.0f, 1.0f);
+    m_mat.set("uHasWetMap", has).set("uWetVar", var)
+         .set("uWetMapScale", glm::vec2(s, s)).set("uWetReflect", refl);
+    m_bridgeMat.set("uHasWetMap", has).set("uWetVar", var)
+               .set("uWetMapScale", glm::vec2(s, s)).set("uWetReflect", refl);
 }
 
 void RoadSystem::applyEmission() {
@@ -492,6 +549,11 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"texTile",   texTile},
         {"fadeWidth", fadeWidth},
         {"rainRings", rainRings},
+        {"wetness",   wetness},
+        {"wetMap",    wetMap},
+        {"wetTile",   wetTile},
+        {"wetVar",    wetVar},
+        {"wetReflect", wetReflect},
         {"grade",     grade},
         {"shoulder",  shoulder},
         // The surface goes by name, not index: the texture list is rebuilt from
@@ -559,6 +621,13 @@ void RoadSystem::load(const nlohmann::json& j) {
     texTile   = j.value("texTile",   8.0f);
     fadeWidth = j.value("fadeWidth", 0.0f);
     rainRings = j.value("rainRings", 1.0f);
+    // 0 for a road saved before its own wetness existed: dry unless it rains.
+    wetness   = j.value("wetness",   0.0f);
+    // ...and an even sheen for one saved before the puddle map existed.
+    wetTile   = j.value("wetTile",   26.0f);
+    wetVar    = j.value("wetVar",     0.0f);
+    wetReflect = j.value("wetReflect", 0.45f);
+    setWetMap(j.value("wetMap", std::string())); // loads it + applies the uniforms
     grade     = j.value("grade",     0.55f);
     shoulder  = j.value("shoulder",  3.0f);
 

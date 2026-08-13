@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <unordered_map>
+#include <unordered_set>
 
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
@@ -100,6 +102,161 @@ bool roadSnap(RoadSystem& road, const glm::vec3& p,
     lateral = std::sqrt(bestD2);
     yawOut  = std::atan2(bestDir.x, bestDir.y);
     return true;
+}
+
+// --- Collisions -------------------------------------------------------------
+// What the glider can crash into. The scene already answers this, and it answers
+// it in one place: a Physics component means "this has a collider in Play".
+// Guessing from the geometry instead -- every box and model is a wall unless
+// something on it says otherwise -- gets the arch of a checkpoint gate wrong,
+// and a gate that destroys the craft flying through it is worse than a hundred
+// props it flies past. So the rule is the author's, not this module's: no
+// Physics, no collision. A scene that wants a wall to hurt gives the wall a
+// collider, which it needs anyway for everything else that drives into it.
+bool isSolidObstacle(const Entity& e) {
+    if (!e.activeInHierarchy) return false;
+    const ComponentList& c = e.components;
+    // The other racers are craft, not scenery: they are solid on their own terms
+    // (kinematic, so they carry no Physics component and never will).
+    if (c.get<OpponentComponent>()) return true;
+    if (!c.get<PhysicsComponent>()) return false;
+    // ...and a few things stay non-solid even with a collider on them: a ramp IS
+    // a slope to be climbed (the hover model carries the craft up it), an Empty
+    // has no geometry, and the terrain is the ground the craft flies over.
+    if (e.type == EntityType::Ramp || e.type == EntityType::Empty) return false;
+    return !(c.get<TerrainComponent>() || c.get<GliderComponent>());
+}
+
+// Does this entity carry something that says "fly through me"? Same list the
+// blacklist above rejects, minus the scenery-ish entries -- it is used to find
+// the GATE PREFABS below, not to judge a single object.
+bool isPassMarker(const Entity& e) {
+    const ComponentList& c = e.components;
+    return c.get<CheckpointComponent>()  || c.get<FinishLineComponent>() ||
+           c.get<BoostPadComponent>()    || c.get<TriggerComponent>()    ||
+           c.get<SceneTriggerComponent>()|| c.get<CollectibleComponent>() ||
+           c.get<TriggerSoundComponent>()|| c.get<PlayerStartComponent>() ||
+           c.get<CraftEntryComponent>()  || c.get<TrackEntryComponent>() ||
+           c.get<ShowroomComponent>();
+}
+
+// Every entity that belongs to a gate, arch or pad prefab -- hierarchy included.
+//
+// A checkpoint is not one object. It is a prefab: an Empty called "Trigger"
+// carrying the CheckpointComponent, next to a Model called "Door" carrying the
+// arch, side by side under one root. The component sits on the trigger, so
+// skipping only the entity that carries it leaves the arch itself standing
+// across the road as a solid wall -- and then flying through a checkpoint, which
+// is the one thing a lap requires, is what destroys the craft.
+//
+// The family is taken as the marker's PARENT and everything under it, not the
+// topmost ancestor: a checkpoint parented high up in a scene would otherwise
+// switch off collisions for the whole scene.
+void collectPassThrough(const std::vector<Entity>& ents,
+                        std::unordered_set<int>& out) {
+    std::unordered_map<int, int> parentOf;  // id -> parent id (no O(n) find per hop)
+    parentOf.reserve(ents.size() * 2);
+    for (const Entity& e : ents) parentOf[e.id] = e.parent;
+
+    std::unordered_set<int> groups;         // the gate prefabs' root ids
+    for (const Entity& e : ents)
+        if (isPassMarker(e))
+            groups.insert(e.parent >= 0 && parentOf.count(e.parent) ? e.parent : e.id);
+    if (groups.empty()) return;
+
+    for (const Entity& e : ents) {
+        int id = e.id;
+        for (int guard = 0; id >= 0 && guard < 64; ++guard) {
+            if (groups.count(id)) { out.insert(e.id); break; }
+            const auto it = parentOf.find(id);
+            if (it == parentOf.end()) break;
+            id = it->second;
+        }
+    }
+}
+
+// Is `e` the driven craft itself, or one of the things hanging off it (its
+// thrusters, its wings, its exhaust emitters)? A craft cannot crash into its
+// own children, and they follow it exactly, so they would collide every frame.
+bool partOfCraft(Document& doc, const Entity& e, int craftId) {
+    if (craftId < 0) return false;
+    int p = e.id;
+    for (int guard = 0; p >= 0 && guard < 64; ++guard) {
+        if (p == craftId) return true;
+        const Entity* pe = doc.find(p);
+        if (!pe) break;
+        p = pe->parent;
+    }
+    return false;
+}
+
+// Does the craft's hull touch this object's box? The answer is horizontal only:
+// the craft hovers, so a contact can only push it sideways -- a vertical push
+// would just wrestle the hover spring for the same metre.
+//
+// The height test is what decides whether an object is an obstacle at all.
+// Anything whose top sits below the craft is something it flies OVER (a kerb, a
+// ramp, the blocks a track is built from -- the hover model climbs those, and
+// turning them into walls would break every block-built track); anything whose
+// bottom is above it is flown UNDER (a bridge deck, a gantry). Only what spans
+// the craft's own height can be crashed into. `anyHeight` skips that test for
+// another RACER, whose hull is as flat as the player's and would otherwise never
+// register.
+bool hullHitsBox(const Entity& e, const glm::vec3& p, float r, float headY,
+                 bool anyHeight, glm::vec3& normal, float& depth) {
+    const glm::quat q = glm::quat(glm::radians(e.rotation));
+    const glm::mat3 m = glm::mat3_cast(q);
+    // The turned box's vertical half-extent in world space.
+    const float hy = std::abs(m[0].y) * e.half.x + std::abs(m[1].y) * e.half.y +
+                     std::abs(m[2].y) * e.half.z;
+    if (anyHeight) {
+        if (std::abs(e.center.y - p.y) > hy + 2.5f) return false;
+    } else if (e.center.y + hy < headY || e.center.y - hy > headY) {
+        return false;
+    }
+    const glm::vec3 l = glm::conjugate(q) * (p - e.center);
+    const float px = (e.half.x + r) - std::abs(l.x);
+    const float pz = (e.half.z + r) - std::abs(l.z);
+    if (px <= 0.0f || pz <= 0.0f) return false;
+    // Out through the face the craft came in by: the axis it is least deep into.
+    glm::vec3 nl(0.0f);
+    if (px < pz) { nl.x = l.x >= 0.0f ? 1.0f : -1.0f; depth = px; }
+    else         { nl.z = l.z >= 0.0f ? 1.0f : -1.0f; depth = pz; }
+    normal   = q * nl;
+    normal.y = 0.0f;
+    const float len = glm::length(normal);
+    if (len < 1e-4f) return false;
+    normal /= len;
+    return true;
+}
+
+// Resolve one contact: bounce the velocity off the surface and charge the hull
+// for it. The cost is the CLOSING speed along the contact normal, not the
+// craft's own speed -- brushing a wall at a shallow angle flat out has to cost
+// less than driving into it head-on, or the only safe way to fly is slowly,
+// which is the wrong thing for a racer to teach. Sliding along a wall therefore
+// costs nothing after the first touch, which is exactly right.
+void applyImpact(RaceState& st, const GliderComponent& gc, glm::vec3& velH,
+                 const glm::vec3& n, const RaceEnv& env) {
+    const float into = -glm::dot(velH, n);   // closing speed along the normal
+    if (into <= 0.0f) return;                // already leaving: not a fresh hit
+    velH += n * into * (1.0f + glm::clamp(gc.crashBounce, 0.0f, 1.0f));
+    st.gliderVel.x = velH.x;
+    st.gliderVel.z = velH.z;
+    st.gliderOverspeed = 0.0f;               // a crash ends the boost run
+    if (into < gc.crashMinSpeed) return;     // a nudge, not a crash
+    const float dmg = (into - gc.crashMinSpeed) * glm::max(gc.crashDamage, 0.0f);
+    if (dmg <= 0.0f) return;
+    st.energy        = glm::max(0.0f, st.energy - dmg);
+    st.energyIdle    = 0.0f;                 // ...and the recharge waits again
+    st.energyLastHit = dmg;
+    st.energyHitFlash = 0.7f;
+    // Harder hits sound deeper: one sample, pitched by what it cost.
+    if (!gc.soundHit.empty() && env.playCue) {
+        const float sev = glm::clamp(dmg / glm::max(st.energyCapacity * 0.3f, 1.0f),
+                                     0.0f, 1.0f);
+        env.playCue(gc.soundHit, gc.soundHitGain, glm::mix(1.15f, 0.75f, sev));
+    }
 }
 } // namespace
 
@@ -274,6 +431,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     // tank reads as a longer bar rather than the same bar with coarser steps.
     st.boostSegments = glm::clamp(
         static_cast<int>(std::lround(st.boostCapacity / 10.0f)), 4, 20);
+    // Same for the hull's energy, so the inspector's tank size shows up live.
+    st.energyCapacity = glm::max(gc->energyCapacity, 1.0f);
+    st.energy         = glm::min(st.energy, st.energyCapacity);
 
     // Race over: the craft flies itself away on a victory lap. Take the controls
     // off the player and cruise at full throttle, but STEER ALONG THE ROAD (the
@@ -297,6 +457,14 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         }
     }
 
+    // Hull gone: the run is lost. The controls go dead and the craft coasts to a
+    // stop (see the extra drag in the step below) while the HUD puts up the board.
+    // After the victory-lap block, so a craft that has already taken the flag
+    // cannot be flown by a wreck.
+    if (st.energyOut) {
+        throttle = 0.0f; steerIn = 0.0f; kBrake = false; boostHeld = false;
+    }
+
     // Ready/Set/Go: hold the craft still until GO, then start the race clock (so
     // the timer and the opponents begin exactly at GO -- no one jumps the start).
     // The countdown ticks once per frame; sub-ms precision here is irrelevant.
@@ -311,9 +479,12 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             // Ignore the immediate first crossing as the craft drives off the
             // start line.
             st.raceActive = true; st.raceFinished = false;
-            // Everyone leaves the grid with a full tank.
+            // Everyone leaves the grid with a full tank -- and a full hull.
             st.boostCharge = st.boostCapacity;
             st.boostIdle   = 0.0f;
+            st.energy      = st.energyCapacity;
+            st.energyOut   = false; st.energyLow = false;
+            st.energyIdle  = 0.0f;  st.energyHitFlash = 0.0f;
             st.raceClock = st.lapClock = 0.0f; st.raceLap = 0;
             st.lastLap = st.bestLap = 0.0f; st.cpPassed.clear();
             st.raceLaps = 0;
@@ -389,6 +560,36 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             // would be worse than not rescuing it.
             const bool haveRoadY =
                 env.road.centerlineY().size() == env.road.centerline().size();
+
+            // --- The track's own wall ---------------------------------------
+            // A road with raised edges is a road with barriers: riding up the lip
+            // is still flying (that is what the lip is for), but running out over
+            // the top of it is a crash, and the hull pays for it. Only where there
+            // IS an edge -- a road without one has no wall to hit, and the rescue
+            // below owns that case. Resolved once a frame rather than per fixed
+            // step because it is a standing condition, not an event, and the
+            // nearest-centreline query behind it is not cheap.
+            //
+            // The two guards keep this to craft that are actually against the
+            // barrier: on the road's own deck (not thirty metres below it in an
+            // underpass), and only just past the line (a craft already far out has
+            // left the track, which is the rescue's business, not the wall's).
+            if (st.loopIndex < 0 && !st.energyOut && env.road.edgeWidth > 0.01f &&
+                onRoadDeck && st.gliderPos.y > surfY - 4.0f &&
+                st.gliderPos.y < surfY + 10.0f) {
+                const float lim = glm::max(halfW - gc->hullRadius, 1.0f);
+                glm::vec2 inward = snapXZ - glm::vec2(st.gliderPos.x, st.gliderPos.z);
+                if (lateral > lim && lateral < lim + 6.0f &&
+                    glm::length(inward) > 1e-4f) {
+                    inward = glm::normalize(inward);
+                    const glm::vec3 n(inward.x, 0.0f, inward.y);
+                    st.gliderPos += n * (lateral - lim);
+                    glm::vec3 velW(st.gliderVel.x, 0.0f, st.gliderVel.z);
+                    applyImpact(st, *gc, velW, n, env);
+                    lateral = lim;   // it is back inside: the rescue sees that
+                }
+            }
+
             if (onRoadDeck && lateral < halfW + 4.0f && st.gliderPos.y > surfY - 4.0f) {
                 // safely on the road here: remember it as the rescue point
                 st.respawnPos = glm::vec3(snapXZ.x, surfY + gc->rideHeight, snapXZ.y);
@@ -406,6 +607,13 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             }
         }
     }
+
+    // The gate prefabs, resolved once a frame: a checkpoint's arch is a sibling
+    // of the trigger that carries the component, so the collision sweep below
+    // cannot tell it from a wall without being told. Built here rather than in
+    // the step loop -- the hierarchy does not change between two fixed steps.
+    std::unordered_set<int> passThrough;
+    collectPassThrough(env.entities, passThrough);
 
     // Advance simSteps fixed ticks. Integration and every step-bound event
     // (heading, velocity, boost pads, gate/checkpoint/lap logic, hover,
@@ -493,7 +701,8 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         // Frozen on the grid counts as not spending: a pilot leaning on the
         // button through "Ready, Set..." would otherwise reach GO with nothing
         // left, which punishes exactly the wrong instinct.
-        const bool spending = boostHeld && !frozen && st.boostCharge > 0.0f;
+        const bool spending = boostHeld && !frozen && !st.energyOut &&
+                              st.boostCharge > 0.0f;
         if (spending) {
             st.boostCharge = glm::max(0.0f,
                                       st.boostCharge - gc->boostDrain * env.kSimH);
@@ -521,6 +730,48 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         // boost is *felt*, not just seen. Retriggers only on a fresh entry.
         if (onBoostPad && !st.gliderWasOnPad && hitPad) env.playBoostPunch(*hitPad);
         st.gliderWasOnPad = onBoostPad;
+
+        // --- Energy: recharge, alarm, and running out ------------------------
+        // Rates on the fixed clock, for the same reason the boost tank is: a
+        // hull that recharged on the render clock would heal faster on a slow
+        // machine. The pause before it starts (energyDelay) is what makes a
+        // clean line worth flying -- without it, a crash is free as long as the
+        // next corner is far enough away.
+        if (st.energyHitFlash > 0.0f)
+            st.energyHitFlash = glm::max(0.0f, st.energyHitFlash - env.kSimH);
+        if (!st.energyOut) {
+            st.energyIdle += env.kSimH;
+            if (st.energyIdle >= glm::max(gc->energyDelay, 0.0f))
+                st.energy = glm::min(st.energyCapacity,
+                                     st.energy + gc->energyRegen * env.kSimH);
+        }
+        // The low-energy alarm: once on crossing the threshold, then repeating
+        // while it stays there. An alarm that sounds once is a notification; a
+        // pilot who cannot look at the bar mid-corner needs it to keep nagging.
+        const float frac = st.energy / glm::max(st.energyCapacity, 1.0f);
+        const bool  low  = !st.energyOut &&
+                           frac <= glm::clamp(gc->energyWarnAt, 0.0f, 1.0f);
+        if (low && !st.energyLow) st.energyWarnT = 0.0f;   // sound it immediately
+        st.energyLow = low;
+        if (low) {
+            st.energyWarnT -= env.kSimH;
+            if (st.energyWarnT <= 0.0f) {
+                st.energyWarnT = 2.5f;
+                if (!gc->soundWarn.empty() && env.playCue)
+                    env.playCue(gc->soundWarn, gc->soundWarnGain, 1.0f);
+            }
+        } else {
+            st.energyWarnT = 0.0f;
+        }
+        // Out of energy: the run is lost from here. One last low thud off the
+        // hit sample marks it, and the HUD takes over.
+        if (!st.energyOut && st.energy <= 0.0f) {
+            st.energyOut  = true;
+            st.energyLow  = false;
+            st.boostActive = false;
+            if (!gc->soundHit.empty() && env.playCue)
+                env.playCue(gc->soundHit, gc->soundHitGain, 0.6f);
+        }
 
         // Gate trigger shared by checkpoints and the finish line. The gate has
         // its OWN size (w x h x d) and orientation (the entity rotation plus a
@@ -691,11 +942,48 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             continue;   // the flat sim does not get a say while on a loop
         }
 
+        // A wreck coasts: no thrust reaches it, so the only thing left is drag
+        // heavy enough that it comes to rest instead of gliding off into the
+        // scenery while the board is up.
+        if (st.energyOut) velH *= glm::max(0.0f, 1.0f - 2.2f * env.kSimH);
+
         const float hs = glm::length(velH);
         if (hs > effMax) velH *= effMax / hs;
         st.gliderVel.x = velH.x; st.gliderVel.z = velH.z;
         st.gliderPos.x += st.gliderVel.x * env.kSimH;
         st.gliderPos.z += st.gliderVel.z * env.kSimH;
+
+        // --- Crashing into the scenery ---------------------------------------
+        // Tested against the pose just integrated, so what is resolved here is
+        // the overlap the craft actually flew into -- and on the fixed clock,
+        // which is also what stops a fast craft tunnelling through a thin wall
+        // between two frames. Other racers count too (a nudge is free, a
+        // T-bone is not); everything else is judged by isSolidObstacle.
+        if (!frozen && !st.energyOut) {
+            const float headY = st.gliderPos.y + gc->rideHeight * 0.5f;
+            for (const Entity& oe : env.entities) {
+                // Bounding-sphere rejection first, and deliberately: it costs a
+                // few multiplies, while everything behind it (a blacklist of
+                // twenty dynamic_casts, a turned-box test, a walk up the parent
+                // chain) is expensive per entity -- and this runs over the whole
+                // scene on every fixed step.
+                const glm::vec3 d = oe.center - st.gliderPos;
+                const float reach = glm::length(oe.half) + gc->hullRadius + 2.5f;
+                if (glm::dot(d, d) > reach * reach) continue;
+                if (passThrough.count(oe.id)) continue;   // part of a gate/pad prefab
+                if (!isSolidObstacle(oe)) continue;
+                if (partOfCraft(env.document, oe, env.driveGliderId)) continue;
+                const bool racer = oe.components.get<OpponentComponent>() != nullptr;
+                glm::vec3 n(0.0f);
+                float     depth = 0.0f;
+                if (!hullHitsBox(oe, st.gliderPos, gc->hullRadius, headY, racer,
+                                 n, depth))
+                    continue;
+                st.gliderPos += n * depth;      // out of the object it is inside
+                applyImpact(st, *gc, velH, n, env);
+                if (st.energy <= 0.0f) break;   // the loss is settled above
+            }
+        }
 
         // Hover: a spring-damper holds the body centre a ride height above the
         // ground under it; gravity takes over when launched well above the band
@@ -727,7 +1015,7 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         // the top of it while driving underneath.
         st.loopUp  = glm::vec3(0.0f, 1.0f, 0.0f);
         st.loopFwd = glm::vec3(std::sin(st.gliderYaw), 0.0f, std::cos(st.gliderYaw));
-        if (!frozen && !st.raceFinished && st.loopExitFlash <= 0.0f)
+        if (!frozen && !st.raceFinished && !st.energyOut && st.loopExitFlash <= 0.0f)
             for (std::size_t li = 0; li < lps.size(); ++li) {
                 float arc = 0.0f, lat = 0.0f, hgt = 0.0f;
                 if (!roadloop::locate(lps[li], st.gliderPos, halfW, arc, lat, hgt))

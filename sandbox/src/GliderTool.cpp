@@ -42,16 +42,30 @@ std::string autoSetup(Document& doc, int rootId) {
     return msg;
 }
 
-void inspector(GliderComponent& gc, Entity& /*root*/, Document& /*doc*/) {
+void inspector(GliderComponent& gc, Entity& /*root*/, Document& /*doc*/,
+               const SoundPicker& soundPicker) {
     bool hoverHdr = false, attHdr = false, camHdr = false, boostHdr = false;
+    bool nrgHdr = false;
     for (const Property& pr : gc.props()) {
         if (!boostHdr && pr.key == "boostCapacity") {
             ui::sectionText("Boost (A / Left Shift)");
             boostHdr = true;
         }
+        if (!nrgHdr && pr.key == "energyCapacity") {
+            ui::sectionText("Energy (hull)");
+            nrgHdr = true;
+        }
         if (!hoverHdr && pr.key == "rideHeight") { ui::sectionText("Hover");    hoverHdr = true; }
         if (!attHdr   && pr.key == "bankAngle")  { ui::sectionText("Attitude"); attHdr   = true; }
         if (!camHdr   && pr.key.rfind("cam", 0) == 0) { ui::sectionText("Follow camera"); camHdr = true; }
+        // The two SFX filenames are chosen from the project's sounds, not typed
+        // -- same rule as every other sound field in the editor. Without a picker
+        // to hand (no caller supplied one) they fall back to their text field.
+        if (soundPicker && (pr.key == "soundHit" || pr.key == "soundWarn")) {
+            soundPicker(pr.label.c_str(),
+                        pr.key == "soundHit" ? gc.soundHit : gc.soundWarn);
+            continue;
+        }
         drawProperty(pr, &gc);
     }
     ImGui::TextDisabled("Press G in the viewport to fly.");

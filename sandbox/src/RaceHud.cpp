@@ -193,6 +193,99 @@ void drawSpeed(const Ctx& g, const racesim::RaceState& st) {
     drawBoostBar(g, st, bx0, bx1, ay + h - 13.0f * g.S);
 }
 
+// --- Energy: the hull bar, bottom centre ------------------------------------
+// A single continuous bar, not the boost gauge's blocks: energy is not spent in
+// decisions, it is taken away, and what a pilot needs from it is "how much is
+// left" as one length. Bottom centre because that is where the eye already is
+// (it sits right under the craft), and because the number matters most at the
+// moment there is no time to look anywhere else.
+//
+// It carries three states, all readable from the corner of an eye: the fill's
+// colour walks green -> gold -> red as it drains, a hit slams a white flash
+// across the whole bar with what it cost written beside it, and below the
+// warning threshold the whole panel pulses and says so in words.
+void drawEnergy(const Ctx& g, const racesim::RaceState& st) {
+    const float cap  = std::max(st.energyCapacity, 1.0f);
+    const float frac = std::clamp(st.energy / cap, 0.0f, 1.0f);
+    const float w = 360.0f * g.S, h = 76.0f * g.S;
+    // Centred -- but never on top of the speed block in a narrow (docked-editor)
+    // viewport, and never off the right edge either.
+    const float left = g.x0 + g.pad + 262.0f * g.S;
+    const float ax = std::min(std::max(g.cx - w * 0.5f, left), g.x1 - g.pad - w);
+    const float ay = g.y1 - g.pad - h;
+
+    // Colour: the bar tells the story before any number is read.
+    const ImU32 lit = st.energyOut ? kRed
+                    : frac > 0.5f  ? kGreen
+                    : frac > 0.25f ? kGold
+                                   : kRed;
+    // Low: the panel breathes. Empty: it stops breathing and stays red.
+    const float pulse = st.energyLow ? 0.62f + 0.38f * std::sin(g.time * 7.0f) : 1.0f;
+    const float flash = std::clamp(st.energyHitFlash / 0.7f, 0.0f, 1.0f);
+
+    g.panel(ax, ay, ax + w, ay + h, kInk, lit);
+    if (flash > 0.01f)   // the hit itself: a wash of red over the whole panel
+        g.dl->AddRectFilled(ImVec2(ax, ay), ImVec2(ax + w, ay + h),
+                            fade(IM_COL32(255, 70, 60, 90), flash), 5.0f * g.S);
+
+    const float ix = ax + 16.0f * g.S, rx = ax + w - 16.0f * g.S;
+    g.label(ix, ay + 9.0f * g.S,
+            st.energyLow ? fade(kRed, pulse) : kDim, "ENERGY");
+    char num[16];
+    std::snprintf(num, sizeof(num), "%.0f%%", frac * 100.0f);
+    g.textR(rx, ay + 7.0f * g.S, g.fBody, fade(lit, pulse), num);
+
+    // The bar. The unfilled part stays visible as a dark track, so the gauge
+    // reads as "how much of the hull is left", not as a shrinking stripe.
+    const float by0 = ay + 32.0f * g.S, by1 = by0 + 14.0f * g.S;
+    g.dl->AddRectFilled(ImVec2(ix, by0), ImVec2(rx, by1),
+                        IM_COL32(255, 255, 255, 26), 3.0f * g.S);
+    if (frac > 0.002f)
+        g.dl->AddRectFilled(ImVec2(ix, by0), ImVec2(ix + (rx - ix) * frac, by1),
+                            fade(lit, pulse), 3.0f * g.S);
+    // Quarter ticks: a length is easier to judge against marks than on its own.
+    for (int i = 1; i < 4; ++i) {
+        const float tx = ix + (rx - ix) * (i * 0.25f);
+        g.dl->AddLine(ImVec2(tx, by0), ImVec2(tx, by1),
+                      IM_COL32(0, 0, 0, 110), 1.0f);
+    }
+    if (flash > 0.01f)   // ...and a white edge on the fill as it is knocked back
+        g.dl->AddRect(ImVec2(ix, by0), ImVec2(rx, by1),
+                      fade(IM_COL32(255, 255, 255, 255), flash), 3.0f * g.S, 0, 2.0f);
+
+    // Bottom line: the standing state on the left, the last hit on the right for
+    // as long as its flash lasts.
+    const float ly = by1 + 4.0f * g.S;
+    if (st.energyOut)
+        g.text(ix, ly, g.fSmall, kRed, "HULL DOWN");
+    else if (st.energyLow)
+        g.text(ix, ly, g.fSmall, fade(kRed, pulse), "ENERGY LOW");
+    else
+        g.text(ix, ly, g.fSmall, kDim, "HULL");
+    if (flash > 0.01f && st.energyLastHit > 0.0f) {
+        char d[24];
+        std::snprintf(d, sizeof(d), "-%.0f", st.energyLastHit);
+        g.textR(rx, ly, g.fSmall, fade(kRed, flash), d);
+    }
+}
+
+// The crash itself, on the whole view: a red rim that flares on impact and
+// fades. A bar alone is a thing to be read; a pilot has to FEEL the hit while
+// looking at the corner they are about to miss.
+void drawHitFlash(const Ctx& g, const racesim::RaceState& st) {
+    const float a = std::clamp(st.energyHitFlash / 0.7f, 0.0f, 1.0f);
+    if (a <= 0.01f) return;
+    const float t = std::min((g.x1 - g.x0), (g.y1 - g.y0)) * 0.09f;
+    // Four soft bands rather than one border: a rim reads as damage, a rectangle
+    // outline reads as a selection.
+    const ImU32 c0 = fade(IM_COL32(255, 60, 50, 150), a * a);
+    const ImU32 c1 = IM_COL32(255, 60, 50, 0);
+    g.dl->AddRectFilledMultiColor(ImVec2(g.x0, g.y0), ImVec2(g.x0 + t, g.y1), c0, c1, c1, c0);
+    g.dl->AddRectFilledMultiColor(ImVec2(g.x1 - t, g.y0), ImVec2(g.x1, g.y1), c1, c0, c0, c1);
+    g.dl->AddRectFilledMultiColor(ImVec2(g.x0, g.y0), ImVec2(g.x1, g.y0 + t), c0, c0, c1, c1);
+    g.dl->AddRectFilledMultiColor(ImVec2(g.x0, g.y1 - t), ImVec2(g.x1, g.y1), c1, c1, c0, c0);
+}
+
 // --- Lap + times, and the position badge under it ---------------------------
 void drawLapBlock(const Ctx& g, const racesim::RaceState& st, float topInset) {
     const float w = 268.0f * g.S;
@@ -382,12 +475,20 @@ EndAction drawResults(const Ctx& g, const racesim::RaceState& st,
     const float ay = g.y0 + (g.y1 - g.y0) * 0.5f - (h + extra) * 0.5f;
     g.panel(ax, ay, ax + w, ay + h, kInkDeep, kGold);
 
-    g.label(ax + 18.0f * g.S, ay + 12.0f * g.S, kDim, "RACE OVER");
-    const std::string win = st.winnerName.empty() ? std::string("--") : st.winnerName;
+    // Losing the hull is its own ending, and it has to say so plainly: the board
+    // is otherwise the same one that comes up after a clean race, and a pilot who
+    // reads "RACE OVER" learns nothing about why they are looking at it.
+    const bool lost = st.energyOut;
+    g.label(ax + 18.0f * g.S, ay + 12.0f * g.S, lost ? kRed : kDim,
+            lost ? "OUT OF ENERGY" : "RACE OVER");
+    const std::string win = lost ? std::string("HULL DESTROYED")
+                          : st.winnerName.empty() ? std::string("--")
+                                                  : st.winnerName;
     g.text(ax + 18.0f * g.S, ay + 26.0f * g.S, g.fBig,
-           st.winnerIsPlayer ? kGold : kText, win.c_str());
-    g.textR(ax + w - 18.0f * g.S, ay + 30.0f * g.S, g.fSmall, kDim, "WINNER");
-    if (st.winnerTime > 0.0f)
+           lost ? kRed : (st.winnerIsPlayer ? kGold : kText), win.c_str());
+    g.textR(ax + w - 18.0f * g.S, ay + 30.0f * g.S, g.fSmall, kDim,
+            lost ? "RETIRED" : "WINNER");
+    if (!lost && st.winnerTime > 0.0f)
         g.textR(ax + w - 18.0f * g.S, ay + 30.0f * g.S + g.fSmall * 1.4f, g.fSmall,
                 kGreen, fmtTime(st.winnerTime).c_str());
     g.dl->AddLine(ImVec2(ax + 18.0f * g.S, ay + head - 10.0f * g.S),
@@ -486,16 +587,19 @@ EndAction draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
     g.fHuge  = 86.0f * g.S;
     g.time   = static_cast<float>(ImGui::GetTime());
 
-    // The speed readout belongs to the craft, not the race: it shows whenever a
-    // glider is flown, race or not.
+    // The speed readout and the energy bar belong to the craft, not the race:
+    // they show whenever a glider is flown, race or not. Losing the hull is not
+    // a race event either -- it ends a practice run just as it ends a race.
     drawSpeed(g, st);
+    drawEnergy(g, st);
+    drawHitFlash(g, st);
 
     const bool inRace = st.raceHasLine || st.raceActive || st.raceFinished ||
                         !st.standings.empty();
-    if (!inRace) return EndAction::None;
+    if (!inRace && !st.energyOut) return EndAction::None;
 
     EndAction act = EndAction::None;
-    const bool over = st.raceFinished || st.raceOver;
+    const bool over = st.raceFinished || st.raceOver || st.energyOut;
     if (over) {
         act = drawResults(g, st, prompt, in);
     } else {

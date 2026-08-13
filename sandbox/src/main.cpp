@@ -82,6 +82,7 @@
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
+#include "WeaponSystem.hpp"
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
@@ -644,6 +645,10 @@ int main(int argc, char** argv) {
         // The horizon-based AO samples along screen-space directions it derives
         // itself, so there is no sample kernel to upload any more.
         float ssaoStrength = 0.7f;
+        // Cube-face size of the reflection probe, mirrored here so it can be a
+        // scene setting; the renderer owns the actual cubes (see
+        // setEnvProbeResolution, which reallocates them).
+        int   envProbeRes  = fitzel::Renderer::kDefaultEnvProbeRes;
         float ssaoRadius   = 1.5f;
         float ssaoBias     = 0.15f; // radians: horizons below this don't occlude
         float ssaoPower    = 1.6f;
@@ -769,6 +774,11 @@ int main(int argc, char** argv) {
         RoadSystem road(lit, assetDb, streamer, texDir);
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
+        // Lock-on missiles for the flown glider. Owns its own targeting, flight,
+        // effects and HUD (WeaponSystem.cpp); the loop below only hands it the
+        // field and applies the hits it reports. Its cue/ground callbacks are
+        // wired further down, where those helpers exist.
+        WeaponSystem weapons(lit);
         bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
@@ -2605,6 +2615,7 @@ int main(int argc, char** argv) {
         addF("ssaoRadius", ssaoRadius);        addF("ssaoBias", ssaoBias);
         addF("bloomThreshold", bloomThreshold); addF("bloomKnee", bloomKnee);
         addF("cascadeSplit", renderer.shadows().splitLambda);
+        addI("envProbeRes", envProbeRes);
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
@@ -2792,6 +2803,11 @@ int main(int argc, char** argv) {
             uiSettings.islandCenterZ = 0.0f;
             uiSettings.islandShape   = 0.0f;
             for (const Setting& s : tunables) s.read(j);
+            // The probe size is the one setting that owns GPU memory: push it
+            // through, or the scene's value sits in the variable while the
+            // renderer keeps the cubes it already had.
+            renderer.setEnvProbeResolution(envProbeRes);
+            envProbeRes = renderer.envProbeResolution(); // as clamped/rounded
             // Does this file keep its terrain in an entity? (Consumed and reset by
             // afterSceneLoadFn, which migrates the ones that don't.)
             sceneStoredTerrainEntity = j.value("terrainEntity", false);
@@ -3416,6 +3432,13 @@ int main(int argc, char** argv) {
             gliderBank = gliderPitch = 0.0f;
             gliderOverspeed = 0.0f;
             gliderWasOnPad  = false; // a pad under the start line still punches
+            // A fresh craft flies with a full hull: taking the controls is a new
+            // run, so a wreck from the last one must not still be smoking.
+            race.energyCapacity = glm::max(gc->energyCapacity, 1.0f);
+            race.energy         = race.energyCapacity;
+            race.energyOut      = false; race.energyLow      = false;
+            race.energyIdle     = 0.0f;  race.energyHitFlash = 0.0f;
+            race.energyLastHit  = 0.0f;  race.energyWarnT    = 0.0f;
         };
         auto endGliderDrive = [&] {
             if (!gliderDriveActive) return;
@@ -3654,6 +3677,14 @@ int main(int argc, char** argv) {
         auto playBoostPunch = [&](const BoostPadComponent& bp){
             playCue(bp.sound, bp.soundGain, bp.soundPitch);
         };
+        // The missiles' two hooks into the app: the same cue voice pool as every
+        // other race SFX, and the glider's own ground query -- so a missile that
+        // misses ploughs into the same surface the craft flies over, bridges and
+        // placed blocks included.
+        weapons.playCue = playCue;
+        weapons.groundHeight = [&](float x, float z, float yMax) {
+            return gliderGround(x, z, yMax);
+        };
         // Looping ambient voices for TriggerSound zones (entity id -> Sound),
         // created lazily in Play and cleared on stop. Sound is move-only.
         std::unordered_map<int, Sound> zoneSounds;
@@ -3807,6 +3838,12 @@ int main(int argc, char** argv) {
             race.standings.clear(); race.winnerName.clear();
             race.winnerIsPlayer = false; race.winnerTime = 0.0f;
             race.playerPlace = 0; race.raceOver = false; race.oppWasActive = false;
+            // ...and a full hull: Play always starts on a craft that can still fly
+            // (the tank itself is re-read from the glider when one is taken).
+            race.energy = race.energyCapacity;
+            race.energyOut = false; race.energyLow = false;
+            race.energyIdle = 0.0f; race.energyHitFlash = 0.0f;
+            race.energyLastHit = 0.0f; race.energyWarnT = 0.0f;
             endPrompt = racehud::EndPrompt{}; // no stale end-of-race question
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
@@ -3895,6 +3932,7 @@ int main(int argc, char** argv) {
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
             particles.clear(); // ...nor a cloud of smoke from the last run
+            weapons.reset();   // ...nor a missile still in the air, or a lock
             physicsBody.clear();
             for (Entity& e : entities) {
                 const auto* pc = e.components.get<PhysicsComponent>();
@@ -4024,6 +4062,7 @@ int main(int argc, char** argv) {
             gliderDriveActive = false; gliderBackup.clear(); // Play restore owns the transform
             skids.clear();          // drop skid marks so they don't linger in the editor
             trails.clear();         // and the contrails
+            weapons.reset();        // and anything the launcher still had in the air
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
             physicsBody.clear();
@@ -5393,6 +5432,67 @@ int main(int argc, char** argv) {
                             trails.emit(te.id, te.center);
                 }
                 trails.update(dt, camera.position());
+
+                // --- Lock-on missiles ---------------------------------------
+                // The weapon itself lives in WeaponSystem: acquisition, flight,
+                // effects, HUD, and even which button fires. What belongs HERE
+                // is the only part it cannot know -- who counts as a rival in
+                // this scene, and what a hit does to one. For an AI racer that
+                // is a spin and a lost half-second, not a health bar: it flies
+                // the slip-up the opponent sim already knows how to fly, so a
+                // missile reads as having thrown the rival off its line.
+                {
+                    WeaponSystem::Frame wf;
+                    wf.dt    = dt;
+                    wf.armed = gliderMode && driveGliderId >= 0;
+                    // Nothing leaves the rail on the grid or after the flag:
+                    // the countdown holds the field still, and a finished race
+                    // flies itself home.
+                    wf.mayFire = raceCountdown <= 0.0f && !raceFinished &&
+                                 !race.energyOut;
+                    wf.pos = gliderPos;
+                    // Riding a loop the craft has a full 3D frame; everywhere
+                    // else its heading is the yaw the flight sim integrates.
+                    wf.fwd = race.loopIndex >= 0
+                                 ? race.loopFwd
+                                 : glm::vec3(std::sin(gliderYaw), 0.0f, std::cos(gliderYaw));
+                    wf.up  = race.loopIndex >= 0 ? race.loopUp
+                                                 : glm::vec3(0.0f, 1.0f, 0.0f);
+                    wf.vel    = gliderVel;
+                    wf.camPos = camera.position();
+                    wf.input  = &input;
+
+                    std::vector<WeaponSystem::Racer> field;
+                    for (const Entity& te : entities) {
+                        if (!te.activeInHierarchy || te.id == driveGliderId) continue;
+                        if (!te.components.get<OpponentComponent>()) continue;
+                        WeaponSystem::Racer r;
+                        r.id     = te.id;
+                        r.pos    = te.center;
+                        r.radius = glm::max(glm::max(te.half.x, te.half.z), 1.0f);
+                        r.name   = te.name;
+                        field.push_back(std::move(r));
+                    }
+                    weapons.update(wf, field);
+
+                    for (const WeaponSystem::Hit& h : weapons.hits()) {
+                        Entity* he = document.find(h.targetId);
+                        auto* op = he ? he->components.get<OpponentComponent>() : nullptr;
+                        if (!op) continue;
+                        op->curSpeed *= glm::mix(0.90f, 0.40f, h.damage);
+                        op->mistakeT  = glm::max(op->mistakeT, 0.6f + 1.5f * h.damage);
+                        op->mistakeCd = glm::max(op->mistakeCd, 3.0f); // no double punish
+                        // Shoved across the track the way it was hit. laneCur is
+                        // eased back toward the racing line every tick, so this
+                        // is a lurch, not a permanent detour.
+                        const float yr = glm::radians(he->rotation.y);
+                        const glm::vec3 fr(std::sin(yr), 0.0f, std::cos(yr));
+                        const glm::vec3 sr = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fr);
+                        const float push =
+                            glm::dot(sr, glm::vec3(h.dir.x, 0.0f, h.dir.z));
+                        op->laneCur += glm::clamp(push, -1.0f, 1.0f) * 2.6f * h.damage;
+                    }
+                }
 
                 // Door: ease toward open/closed (open set by a DoorOpener), swing
                 // or slide from the captured closed pose. A kinematic collider
@@ -7947,6 +8047,32 @@ int main(int argc, char** argv) {
                                       "Raise it if flat surfaces look dirty, lower it\n"
                                       "for more contact shading in creases.");
                 ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
+                // Reflection probe: the cubemap a wet road (and any reflective
+                // material) mirrors. Applied on pick rather than per frame --
+                // changing it reallocates both cubes.
+                {
+                    ui::sectionText("Reflections");
+                    const int sizes[] = {128, 256, 512, 1024};
+                    char cur[16];
+                    std::snprintf(cur, sizeof(cur), "%d", envProbeRes);
+                    if (ImGui::BeginCombo("Probe resolution", cur)) {
+                        for (int s : sizes) {
+                            char lbl[16];
+                            std::snprintf(lbl, sizeof(lbl), "%d", s);
+                            if (ImGui::Selectable(lbl, s == envProbeRes)) {
+                                envProbeRes = s;
+                                renderer.setEnvProbeResolution(s);
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Cube-face size of the environment probe: how\n"
+                                          "sharp reflections are on a wet road or a\n"
+                                          "reflective material. Six scene passes either\n"
+                                          "way -- raising it costs fill, not draw calls --\n"
+                                          "but 1024 is 64x the pixels of 128.");
+                }
                 ui::sectionText("Depth of field");
                 ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
                 ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
@@ -8913,7 +9039,12 @@ int main(int argc, char** argv) {
                                 vehicleui::inspector(*vh, be, document);
                             } else if (auto* gl = dynamic_cast<GliderComponent*>(c)) {
                                 // Grouped flight tuning + drive hint (see GliderTool).
-                                gliderui::inspector(*gl, be, document);
+                                // The crash/alarm samples get the same Sound picker
+                                // every other sound field in the editor uses.
+                                gliderui::inspector(*gl, be, document,
+                                                    [&](const char* lbl, std::string& f) {
+                                                        soundPickerCombo(lbl, f);
+                                                    });
                             } else {
                                 for (const Property& pr : c->props()) drawProperty(pr, c);
                             }
@@ -9890,6 +10021,9 @@ int main(int argc, char** argv) {
                 ImGui::ColorEdit3("Trail colour", &trails.color.x);
                 ImGui::EndDisabled();
 
+                ui::sectionText("Missiles");
+                weapons.settingsPanel(soundPickerCombo);
+
                 // Scene vehicles: hook a model into the vehicle system with one
                 // click. The auto-setup edit goes through the undo history.
                 auto makeDrivable = [&](int rootId) -> std::string {
@@ -10072,11 +10206,27 @@ int main(int argc, char** argv) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
             }
 
+            // What the carriageway (and its bridge decks and loops) is wet with:
+            // the weather's puddles or the road's own authored sheen, whichever is
+            // wetter. Only the road's surfaces read this -- the terrain, the craft
+            // and every other material stay on the weather's value alone, which is
+            // the whole point of the road having its own.
+            const float surfaceWet = glm::max(roadWetness,
+                                              glm::clamp(road.wetness, 0.0f, 1.0f));
+            // Wet enough, and asked to mirror at all: this is what makes the road
+            // sample the probe -- and therefore what makes the probe worth
+            // capturing (see step 0 below) and the road worth keeping out of it.
+            const bool wetMirror = surfaceWet > 0.02f && road.wetReflect > 0.001f;
+
             // The committed road mesh only changes on Build (see the Roads panel);
             // editing shows a live preview instead (drawn in the viewport overlay).
             if (road.enabled && road.verts() > 0) {
                 road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
-                road.material().set("uWetness", roadWetness);   // rain-wet sheen
+                // Wet sheen: the wetter of the weather and the road's own setting.
+                // The road's is a floor, not an override -- an authored-wet track
+                // stays wet in the sun, and rain can still soak a dry one further.
+                // (The loop meshes below share this material, so they follow.)
+                road.material().set("uWetness", surfaceWet);
                 // Drop impacts: rings while it is actually coming down, not while the
                 // tarmac is merely still wet -- so they stop with the rain, not with
                 // the puddles. Every other material gets 0 from the Renderer's
@@ -10098,20 +10248,29 @@ int main(int argc, char** argv) {
                 // spanning the carriageway. Re-applied per frame because it is
                 // derived from width/texTile, which the panel edits live.
                 road.applyEmission();
+                // Puddles: map + tiling, live-edited in the panel like the glow.
+                road.applyWetness();
+                // Flagged reflective while it is wet, which keeps it OUT of the
+                // probe capture. Left in, the carriageway is drawn into the cube
+                // it is about to sample -- last frame's reflection reflected
+                // again, every frame, and any garbage in it (a probe face that
+                // was never rendered) never washes out.
                 renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false,
-                                false, 1.0f, /*forceTransparent=*/roadFades);
+                                /*reflective=*/wetMirror, 1.0f,
+                                /*forceTransparent=*/roadFades);
             }
 
             // Bridge decks, built by the same Build as the road they carry. Unlike
             // the ribbon these cast shadows: there is ground under them to fall on.
             if (road.enabled && road.hasBridges()) {
                 road.bridgeMaterial().set("uWaterLevel", waterLevel);
-                road.bridgeMaterial().set("uWetness", roadWetness);
+                // A deck is carriageway: it takes the road's own wetness too.
+                road.bridgeMaterial().set("uWetness", surfaceWet);
                 // A deck is carriageway too: rain hits it like the rest of the road.
                 road.bridgeMaterial().set("uRainRings", ringAmount);
                 road.bridgeMaterial().set("uTime", static_cast<float>(now));
                 renderer.submit(road.bridgeMesh(), road.bridgeMaterial(),
-                                glm::mat4(1.0f));
+                                glm::mat4(1.0f), true, /*reflective=*/wetMirror);
             }
 
             // Vertical loops. Drawn with the road's OWN surface material -- a loop
@@ -10119,11 +10278,15 @@ int main(int argc, char** argv) {
             // geometry cannot live in a ribbon that has one height per ground
             // position (see RoadLoop.hpp).
             if (road.enabled && road.hasLoops())
-                renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f));
+                renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f),
+                                true, /*reflective=*/wetMirror);
 
             // Tyre skid marks accumulated while driving (alpha-blended, on ground).
             skids.render(renderer);
             trails.render(renderer);
+            // Missiles, their trails, the blasts, and the marker cage around
+            // whichever rival is locked.
+            weapons.render(renderer);
 
             // Rain wets the (primitive) test car too. Set every frame so the shared
             // lit program never inherits another material's wetness.
@@ -10508,6 +10671,12 @@ int main(int argc, char** argv) {
             debugoverlay::draw(&showPerf);
             prof::addSince("ui + submit", fzUiMark);
 
+            // Missile motors and detonations are lights too -- a blast that does
+            // not light the corner it goes off in reads as a decal pasted over
+            // the scene. Appended last so authored scene lights keep priority
+            // when the renderer's budget runs out.
+            weapons.collectLights(pointLights);
+
             const long long fzShadowMark = prof::mark();
             renderer.setPointLights(pointLights);
             renderer.setSpotLights(spotLights);
@@ -10592,6 +10761,13 @@ int main(int argc, char** argv) {
             bool wantProbe = false;
             for (const MaterialDef& md : materials)
                 if (md.reflectivity > 0.0f) { wantProbe = true; break; }
+            // A wet carriageway mirrors the world through the same probe (see
+            // lit.frag: uWetReflect raises the surface's reflectance), so it has
+            // to ask for one too -- otherwise it samples a stale cube, or one
+            // that was never rendered at all. This is what makes rain and the
+            // road's Wet-reflection slider cost a cubemap render; with that
+            // slider at 0, or a dry road, nothing here is paid for.
+            wantProbe = wantProbe || (wetMirror && road.enabled && road.verts() > 0);
             if (wantProbe) {
                 // Capture at the first reflective object if there is one (best
                 // parallax there); otherwise around the camera, so reflective
@@ -11045,6 +11221,10 @@ int main(int argc, char** argv) {
                 // classification) lives in RaceHud.cpp and reads the race state
                 // directly. `topInset` keeps it clear of the script's HUD line.
                 if (gliderMode) {
+                    // The weapon's own HUD first: the reticle sits on the world,
+                    // so the race panels (which own the screen corners) draw over
+                    // it rather than under it.
+                    weapons.drawHud(dl, vmin, vsize, mainVP);
                     const racehud::EndAction act =
                         racehud::draw(dl, vmin, vsize, race,
                                       host.hud.empty() ? 0.0f : fs * 1.5f,

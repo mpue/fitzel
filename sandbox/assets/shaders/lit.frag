@@ -168,6 +168,14 @@ uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 uniform float     uWetness;        // rain wetness 0..1 (sky-facing gets dark+glossy)
 uniform float     uRainRings;      // drop-impact rings 0..1 (0 = off; the road sets it)
 uniform float     uTime;           // seconds, for the rings' clock
+// Wetness variation: a greyscale map that says where the water stands. Only the
+// road sets these; every other draw gets uHasWetMap = 0 from the renderer's
+// baseline, so a shared program cannot leak the road's puddles onto a wall.
+uniform sampler2D uWetMap;
+uniform int       uHasWetMap;      // 1 = modulate the wetness by uWetMap
+uniform vec2      uWetMapScale;    // ribbon UV -> map UV (tiles it in metres)
+uniform float     uWetVar;         // 0 = even sheen .. 1 = fully map-driven
+uniform float     uWetReflect;     // how much wetness mirrors the env probe (0 = off)
 
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
@@ -526,6 +534,15 @@ void main() {
     // Rain wetness: sky-exposed (up-facing) surfaces darken and turn glossy while
     // it rains. Gated by the up-facing normal so walls/undersides stay dry.
     float rainWet = uWetness * clamp(N.y * 1.3, 0.0, 1.0);
+    // ...but a road is never evenly wet. Water pools where the camber lets it and
+    // runs off everywhere else, so a uniformly mirrored carriageway reads as
+    // plastic however good the reflection is. A greyscale map breaks it up:
+    // black is dry, white keeps the full wetness, and uWetVar says how much of
+    // the difference to believe (0 = the old even sheen, unchanged).
+    if (uHasWetMap == 1 && uWetVar > 0.0) {
+        float puddle = texture(uWetMap, vUV * uWetMapScale).r;
+        rainWet *= mix(1.0, puddle, clamp(uWetVar, 0.0, 1.0));
+    }
     albedo *= mix(1.0, 0.6, rainWet);
 
     vec3 L = normalize(uLightDir);
@@ -622,14 +639,45 @@ void main() {
         color += uSpotColor[i] * (albedo * dp + sp) * att * cone;
     }
 
+    // A wet surface is a mirror in its own right: water fills the pores of the
+    // tarmac and what is left is a smooth film, which is why a wet road shows the
+    // city back and a dry one only shows the sun. So wetness feeds the same probe
+    // path an authored reflective material uses -- but only upward, so a mirror
+    // stays a mirror in the rain instead of being dulled by it.
+    //
+    // uWetReflect gates it, and every draw gets 0 from the renderer's baseline:
+    // ONLY the road turns this on. Driving it from uWetness alone made every
+    // surface in the scene mirror as soon as it rained -- the terrain, the props,
+    // the car -- which is not what a wet road looks like, and which fed the probe
+    // its own output frame after frame.
+    //
+    // Capped well short of 1: water reflects a few percent head-on and only turns
+    // properly mirror-like at grazing angles, which the Fresnel term below already
+    // does. Pushed higher, a wet road reads as polished chrome.
+    float refl  = uReflectivity;
+    float rough = uRoughness;
+    float wetRefl = rainWet * clamp(uWetReflect, 0.0, 1.0);
+    if (wetRefl > refl) {
+        refl  = wetRefl;
+        rough = mix(0.5, 0.06, rainWet); // damp = smeared, soaked = sharp
+    }
+
     // Environment reflection: sample the dynamic scene probe along the reflection
-    // vector and blend in by a Fresnel term. uReflectivity raises the base
-    // reflectance F0 (0 -> dielectric 4%, 1 -> full mirror); uRoughness selects a
-    // blurrier mip. Reflection happens before fog so distant mirrors haze too.
-    if (uReflectivity > 0.0) {
+    // vector and blend in by a Fresnel term. `refl` raises the base reflectance
+    // F0 (0 -> dielectric 4%, 1 -> full mirror); `rough` selects a blurrier mip.
+    // Reflection happens before fog so distant mirrors haze too.
+    if (refl > 0.0) {
         vec3  Rv   = reflect(-V, N);
-        vec3  env  = textureLod(uEnvProbe, Rv, uRoughness * uEnvMaxLod).rgb;
-        float F0   = mix(0.04, 1.0, uReflectivity);
+        vec3  env  = textureLod(uEnvProbe, Rv, rough * uEnvMaxLod).rgb;
+        // The probe is an HDR cube that may never have been rendered this run,
+        // and a reflective surface drawn INTO it samples the previous capture --
+        // so one NaN or Inf in it feeds itself and spreads. Bloom then divides by
+        // the luminance and hands the whole pyramid NaN, which is what turns the
+        // screen into blocks of black. Sanitise on read: it costs nothing and it
+        // is the only place this can be contained.
+        if (any(isnan(env)) || any(isinf(env))) env = vec3(0.0);
+        env = min(env, vec3(64.0));   // a reflection is never brighter than this
+        float F0   = mix(0.04, 1.0, refl);
         float NoV  = max(dot(N, V), 0.0);
         float fres = F0 + (1.0 - F0) * pow(1.0 - NoV, 5.0);
         color = mix(color, env, clamp(fres, 0.0, 1.0));
@@ -644,6 +692,16 @@ void main() {
     color += emissive;
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
+
+    // Nothing leaves here that the target cannot hold. The scene renders into an
+    // RGBA16F buffer, and a half float stops at 65504: one pixel above that is
+    // stored as +Inf, bloom's bright pass then divides that Inf by its own
+    // luminance, and the NaN which comes out spreads across every level of the
+    // pyramid -- which is exactly what paints blocks of black around anything
+    // bright enough (a strong glow, a reflection of one). Clamped at the one
+    // point where every contribution has been added up.
+    color = min(color, vec3(50000.0));
+    if (any(isnan(color))) color = vec3(0.0);
 
     // Output alpha. Glass modulates it by a Fresnel term: nearly clear when
     // viewed head-on, rising to opaque at grazing angles so the reflective rim
