@@ -6,7 +6,7 @@
 #include <unordered_set>
 #include <vector>
 
-namespace fitzel { class Input; class Camera; class TerrainStreamer; }
+namespace fitzel { class Input; class TerrainStreamer; }
 class Document;
 class RoadSystem;
 class BoostPadComponent;
@@ -31,8 +31,7 @@ struct RaceState {
     float wheelSpin  = 0.0f;   // rolling angle (radians)
     float steerAngle = 0.0f;   // front-wheel steer (radians)
 
-    // --- Chase camera + fixed-timestep clock ----------------------------
-    glm::vec3 camChase{0.0f};  // smoothed chase-camera position
+    // --- Fixed-timestep clock -------------------------------------------
     float simAccum = 0.0f;     // fixed-timestep accumulator
 
     // --- Glider (hover racer) -------------------------------------------
@@ -154,15 +153,44 @@ struct RaceState {
 // reference, the frame's timing, the driven-entity ids, and the four scene-graph
 // / FX helpers main owns as lambdas (passed as callbacks so this module needs no
 // access to main's captured state).
+// One player's controls for this frame, already resolved from whatever device
+// drives them.
+//
+// The sim used to read the keyboard and the pad itself, which quietly assumed
+// there was exactly one player: two craft would have answered to the same W and
+// the same stick. Resolving the device OUTSIDE means split screen is a matter of
+// filling this twice -- pad for one, keys for the other -- and the flight model
+// never learns that more than one player exists.
+struct RaceControls {
+    float throttle = 0.0f;  // -1 = reverse .. +1 = full ahead
+    float steer    = 0.0f;  // -1 = left .. +1 = right (before invertSteer)
+    bool  brake    = false;
+    bool  boost    = false; // held, not tapped
+};
+
 struct RaceEnv {
     fitzel::Input&    input;
-    fitzel::Camera&   camera;
+    // No camera. The sim moves the CRAFT and nothing else; where anyone watches
+    // it from is the business of that craft's own camera entity (CameraSystem).
+    // It used to take a fitzel::Camera& and set its position and angles from
+    // inside the flight model, which quietly meant there could only ever be one
+    // eye in the world -- the same shape of mistake as reading the keyboard in
+    // here, and the reason a second view had to be threaded through everything.
+    // What this player is asking the craft to do. Filled by the caller; the sim
+    // does not touch the keyboard for flight control.
+    RaceControls      controls;
     Document&         document;
     std::vector<Entity>& entities;
     fitzel::TerrainStreamer& streamer;
     RoadSystem&              road;
     int   driveVehicleId;
     int   driveGliderId;
+    // Split screen's second craft, or -1. Not a thing the flight model reads:
+    // it is here so the AI knows which craft is spoken for. A craft flown by
+    // player two may well carry an Opponent component (that is how a two-craft
+    // track is usually authored), and one steered by a player AND by the spline
+    // at the same time fights itself.
+    int   playerGliderId2 = -1;
     const std::vector<Entity>& driveBackup;
     float dt;        // real (clamped) frame time
     float kSimH;     // fixed sim step (s)
@@ -178,7 +206,14 @@ struct RaceEnv {
 
     std::function<void(Entity&, const glm::vec3&, const glm::vec3&, const glm::mat4*)> setWorld;
     std::function<glm::mat4(const Entity&)>       parentWorldMat;
-    std::function<float(float, float, float)>      gliderGround;
+    // Ground under (x, z) below `yMax`, IGNORING entity `ignoreId` and its
+    // children. The ignore is a parameter rather than something the callback
+    // knows by itself: a craft must not stand on its own model, and with two
+    // players there are two different craft that must not -- a query that knew
+    // only about player one's had player two hovering on top of itself, climbing
+    // by its own height every frame, and taking the other craft with it once its
+    // roof passed overhead.
+    std::function<float(float, float, float, int)>  gliderGround;
     std::function<void(const BoostPadComponent&)>  playBoostPunch;
     // One-shot race cue by Sound-asset filename, with gain and pitch: the
     // Ready/Set/Go samples off the start/finish line and a checkpoint's gate

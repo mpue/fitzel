@@ -123,7 +123,7 @@ bool isRace(const std::vector<Entity>& entities) {
 }
 
 int lineUp(std::vector<Entity>& entities, const RoadSystem& road,
-           int playerCraftId, bool applyParticipation) {
+           int playerCraftId, bool applyParticipation, int playerCraftId2) {
     glm::vec3 linePos(0.0f);
     const FinishLineComponent* fl = findLine(entities, &linePos);
     if (!fl) return 0;
@@ -139,27 +139,48 @@ int lineUp(std::vector<Entity>& entities, const RoadSystem& road,
     for (Entity& e : entities) {
         auto* op = e.components.get<OpponentComponent>();
         if (!op) continue;
+        // Player two's craft is flown, not driven by the AI: out of the field,
+        // and never deactivated by a tick meant for opponents. It is placed
+        // below, beside player one.
+        if (playerCraftId2 >= 0 && e.id == playerCraftId2) {
+            if (applyParticipation) e.active = true;
+            continue;
+        }
         const bool in = race && op->entered;
         if (applyParticipation) e.active = in;
         if (in) field.push_back(&e);
     }
 
-    Entity* player = nullptr;
-    if (playerCraftId >= 0)
+    auto findCraft = [&](int id) -> Entity* {
+        if (id < 0) return nullptr;
         for (Entity& e : entities)
-            if (e.id == playerCraftId) { player = &e; break; }
+            if (e.id == id) return &e;
+        return nullptr;
+    };
+    Entity* player  = findCraft(playerCraftId);
+    Entity* player2 = findCraft(playerCraftId2);
+    if (player2 == player) player2 = nullptr;   // one craft cannot seat both
 
     // Pole or the back. Starting last is the arcade default -- a race you begin
     // at the front is a time trial with scenery -- but a scene can say otherwise.
-    const int total = static_cast<int>(field.size()) + (player ? 1 : 0);
+    const int total = static_cast<int>(field.size()) + (player ? 1 : 0) +
+                      (player2 ? 1 : 0);
     const int playerSlot = (!player)          ? -1
                          : fl->playerPole     ? 0
                                               : total - 1;
+    // Beside player one: the next slot up the grid from theirs, which is the
+    // other half of the same row (slots run in pairs, see slotOf). Clamped into
+    // the grid so a one-craft field cannot send it to slot -1.
+    const int player2Slot = (!player2) ? -1
+                          : (!player)  ? 0
+                          : glm::clamp(fl->playerPole ? playerSlot + 1
+                                                      : playerSlot - 1,
+                                       0, std::max(total - 1, 0));
 
     int placed = 0;
     int slot = 0;
     auto nextSlot = [&]() {
-        while (slot == playerSlot) ++slot;
+        while (slot == playerSlot || slot == player2Slot) ++slot;
         return slot++;
     };
 
@@ -180,14 +201,17 @@ int lineUp(std::vector<Entity>& entities, const RoadSystem& road,
         ++placed;
     }
 
-    if (player) {
+    auto placePlayer = [&](Entity* e, int s) {
+        if (!e || s < 0) return;
         float back = 0.0f, lane = 0.0f;
-        slotOf(*fl, playerSlot, back, lane);
-        const auto* gc = player->components.get<GliderComponent>();
-        place(*player, r, lineDist - back, lane, gc ? gc->rideHeight : 1.6f,
+        slotOf(*fl, s, back, lane);
+        const auto* gc = e->components.get<GliderComponent>();
+        place(*e, r, lineDist - back, lane, gc ? gc->rideHeight : 1.6f,
               gc ? gc->forward : 0);
         ++placed;
-    }
+    };
+    placePlayer(player,  playerSlot);
+    placePlayer(player2, player2Slot);
     return placed;
 }
 

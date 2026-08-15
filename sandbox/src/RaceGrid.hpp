@@ -34,10 +34,17 @@ enum Mode { Race = 0, TimeTrial = 1 };
 // editor's preview passes false and only moves things, so a look at the grid
 // cannot quietly deactivate half the scene and then save it.
 //
+// `playerCraftId2` is split screen's second player (-1 when there is only one).
+// It gets the slot NEXT to player one rather than a place in the field: two
+// people at one machine start beside each other or the pane that shows the
+// slower one is a picture of an empty track. A craft flown by player two is not
+// an AI racer even if it carries an Opponent component -- it is taken out of the
+// field here and left active, whatever its tick says.
+//
 // Returns the number of craft placed, or 0 when the scene has no start/finish
 // line or no built road to measure along (there is nothing to line up against).
 int lineUp(std::vector<Entity>& entities, const RoadSystem& road,
-           int playerCraftId, bool applyParticipation);
+           int playerCraftId, bool applyParticipation, int playerCraftId2 = -1);
 
 // Is this scene a race (as opposed to a time trial)? False when it has no
 // start/finish line at all.

@@ -293,11 +293,6 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
 
     const float maxSteer = glm::radians(dvc ? dvc->maxSteerDeg : 32.0f);
     const float steerSpd = dvc ? dvc->steerSpeed   : 7.0f;
-    const float camDist  = dvc ? dvc->camDistance  : 7.0f;
-    const float camH     = dvc ? dvc->camHeight    : 3.2f;
-    const float camSide  = dvc ? dvc->camSide      : 0.0f;
-    const float camLook  = dvc ? dvc->camLookHeight: 1.2f;
-    const float camStiff = dvc ? dvc->camStiffness : 4.0f;
 
     // *0 hold the pose just BEFORE the final substep (== the current pose when
     // no substep runs), so the render interpolates across the last step by
@@ -308,10 +303,9 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
     float     carYaw0    = st.carYaw;
     float     steerAng0  = st.steerAngle;
     float     wheelSpin0 = st.wheelSpin;
-    glm::vec3 camChase0  = st.camChase;
     for (int s = 0; s < env.simSteps; ++s) {
         carPos0 = st.carPos; carYaw0 = st.carYaw; steerAng0 = st.steerAngle;
-        wheelSpin0 = st.wheelSpin; camChase0 = st.camChase;
+        wheelSpin0 = st.wheelSpin;
         st.steerAngle += (steerIn * maxSteer - st.steerAngle) * std::min(1.0f, env.kSimH * steerSpd);
         st.carSpeed += throttle * 14.0f * env.kSimH;                 // accelerate
         if (kBrake) st.carSpeed -= glm::sign(st.carSpeed) * 26.0f * env.kSimH;
@@ -324,12 +318,6 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
         st.carPos   += fwdS * st.carSpeed * env.kSimH;
         st.carPos.y  = env.streamer.heightAt(st.carPos.x, st.carPos.z);
         st.wheelSpin += (st.carSpeed / wr) * env.kSimH;
-        // Chase camera eased in the same fixed step so its follow is as smooth
-        // as the craft it interpolates alongside.
-        const glm::vec3 rightS  = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwdS));
-        const glm::vec3 wantedS = st.carPos - fwdS * camDist + rightS * camSide +
-                                  glm::vec3(0.0f, camH, 0.0f);
-        st.camChase += (wantedS - st.camChase) * std::min(1.0f, env.kSimH * camStiff);
     }
 
     // Render pose: blend pre-/post-step state. All of these are continuous
@@ -338,7 +326,6 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
     const float     rYaw   = glm::mix(carYaw0,    st.carYaw,    env.simAlpha);
     const float     rSteer = glm::mix(steerAng0,  st.steerAngle,env.simAlpha);
     const float     rSpin  = glm::mix(wheelSpin0, st.wheelSpin, env.simAlpha);
-    const glm::vec3 rCam   = glm::mix(camChase0,  st.camChase,  env.simAlpha);
 
     // Feed the engine sound from the arcade sim's speed/throttle.
     st.engineDriving  = true;
@@ -374,15 +361,12 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
         }
     }
 
-    // Chase camera: aim from the interpolated cam position at the craft (behind
-    // and above, looking ahead).
+    // The camera is not this function's business any more: the car's own camera
+    // entity follows it (see CameraSystem). What stays is what the RENDERER
+    // needs about the car itself -- the anchor the radial speed blur is centred
+    // on, which is a property of the craft, not of the eye.
     st.blurAnchorWorld = rPos; st.blurAnchorValid = true; // keep the car sharp
     st.blurSpeed01 = glm::clamp(std::abs(st.carSpeed) / 28.0f, 0.0f, 1.2f);
-    env.camera.setPosition(rCam);
-    const glm::vec3 d = glm::normalize(
-        (rPos + glm::vec3(0.0f, camLook, 0.0f)) - rCam);
-    env.camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
-    env.camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
 }
 
 void updateGlider(RaceState& st, const RaceEnv& env) {
@@ -395,31 +379,18 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     auto*   gc = dg ? dg->components.get<GliderComponent>() : nullptr;
     if (!dg || !gc) return;
 
-    const bool kW = env.input.isKeyDown(GLFW_KEY_W);
-    const bool kS = env.input.isKeyDown(GLFW_KEY_S);
-    const bool kA = env.input.isKeyDown(GLFW_KEY_A);
-    const bool kD = env.input.isKeyDown(GLFW_KEY_D);
-    bool  kBrake  = env.input.isKeyDown(GLFW_KEY_SPACE);
-    float throttle = (kW ? 1.0f : 0.0f) - (kS ? 1.0f : 0.0f);
-    float steerIn  = (kD ? 1.0f : 0.0f) - (kA ? 1.0f : 0.0f); // right +
-    // Gamepad: RT accelerate / LT reverse, left stick steers, B brakes.
-    if (env.input.hasGamepad()) {
-        throttle = glm::clamp(throttle
-            + env.input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
-            - env.input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER), -1.0f, 1.0f);
-        steerIn = glm::clamp(
-            steerIn + env.input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X), -1.0f, 1.0f);
-        if (env.input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) kBrake = true;
-    }
+    // Controls arrive resolved (see RaceControls): which device produced them is
+    // the caller's business, which is what lets two players fly at once.
+    float throttle = env.controls.throttle;
+    float steerIn  = env.controls.steer; // right +
+    bool  kBrake   = env.controls.brake;
     if (gc->invertSteer) steerIn = -steerIn; // flip left/right
 
-    // Manual boost: held, not tapped. Read here with the rest of the input; what
-    // it costs and what it does is settled inside the fixed step below, because
-    // both are rates and a rate integrated on the render clock would make the
-    // tank last longer on a fast machine than on a slow one.
-    bool boostHeld = env.input.isKeyDown(GLFW_KEY_LEFT_SHIFT);
-    if (env.input.hasGamepad() && env.input.gamepadButton(GLFW_GAMEPAD_BUTTON_A))
-        boostHeld = true;
+    // Manual boost: held, not tapped. What it costs and what it does is settled
+    // inside the fixed step below, because both are rates and a rate integrated
+    // on the render clock would make the tank last longer on a fast machine than
+    // on a slow one.
+    bool boostHeld = env.controls.boost;
     // The HUD's end-of-race prompt also answers to A, and the victory lap flies
     // itself -- so a finished race must not read the button as thrust.
     if (st.raceFinished) boostHeld = false;
@@ -625,11 +596,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     float     gliderYaw0   = st.gliderYaw;
     float     gliderBank0  = st.gliderBank;
     float     gliderPitch0 = st.gliderPitch;
-    glm::vec3 camChase0    = st.camChase;
     for (int s = 0; s < env.simSteps; ++s) {
         gliderPos0 = st.gliderPos; gliderYaw0 = st.gliderYaw;
         gliderBank0 = st.gliderBank; gliderPitch0 = st.gliderPitch;
-        camChase0 = st.camChase;
         // Heading: steer right increases yaw (fwd rotates +Z -> +X).
         st.gliderYaw += glm::radians(gc->turnRate) * steerIn * env.kSimH;
         const glm::vec3 fwd(std::sin(st.gliderYaw), 0.0f, std::cos(st.gliderYaw));
@@ -912,15 +881,6 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             // through the inversion instead of flipping at the top.
             st.gliderPitch = -glm::degrees(fr.pitch);
 
-            // Chase camera in the LOOP's frame: behind along the tangent and out
-            // along the surface normal, so it rolls with the craft. Left in world
-            // up it would watch the craft go inverted from overhead, which reads
-            // as the track moving rather than the craft.
-            const glm::vec3 wantL = st.gliderPos - fr.tangent * gc->camDistance +
-                                    fr.normal * gc->camHeight;
-            st.camChase += (wantL - st.camChase) *
-                           std::min(1.0f, env.kSimH * gc->camStiffness);
-
             const bool ranOut = st.loopArc >= lp.length || st.loopArc <= 0.0f;
             if (ranOut || hold < 0.0f || st.loopSpeed < 1.0f) {
                 st.loopIndex = -1;
@@ -989,7 +949,8 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         // ground under it; gravity takes over when launched well above the band
         // (flying off a ledge), and it never sinks through the surface.
         const float ground = env.gliderGround(st.gliderPos.x, st.gliderPos.z,
-                                               st.gliderPos.y + gc->rideHeight);
+                                              st.gliderPos.y + gc->rideHeight,
+                                              env.driveGliderId);
         const float restY = ground + gc->rideHeight;
         const float gap   = restY - st.gliderPos.y; // >0: below rest
         st.gliderVel.y += (gap * gc->hoverStiffness - st.gliderVel.y * gc->hoverDamp) * env.kSimH;
@@ -1030,11 +991,6 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 st.loopSpeed = glm::length(glm::vec2(v.x, v.z));
                 break;
             }
-
-        // Chase camera eased on the fixed clock (same knobs as car).
-        const glm::vec3 wantedC = st.gliderPos - fwd * gc->camDistance +
-                                  right * gc->camSide + glm::vec3(0.0f, gc->camHeight, 0.0f);
-        st.camChase += (wantedC - st.camChase) * std::min(1.0f, env.kSimH * gc->camStiffness);
     }
 
     // Render pose: blend pre-/post-step state (continuous values -> plain lerp).
@@ -1042,7 +998,6 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     const float     rYaw   = glm::mix(gliderYaw0,   st.gliderYaw,   env.simAlpha);
     const float     rBank  = glm::mix(gliderBank0,  st.gliderBank,  env.simAlpha);
     const float     rPitch = glm::mix(gliderPitch0, st.gliderPitch, env.simAlpha);
-    const glm::vec3 rCam   = glm::mix(camChase0,    st.camChase,    env.simAlpha);
 
     // Feed the jet-thruster sound: airspeed + throttle load.
     const float airspeed = glm::length(glm::vec2(st.gliderVel.x, st.gliderVel.z));
@@ -1060,26 +1015,12 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                  dg->parent >= 0 ? &pw : nullptr);
 
     // The craft is what the camera follows: anchor the radial speed blur to it
-    // (stays sharp) and drive its length by airspeed.
+    // (stays sharp) and drive its length by airspeed. This is about the CRAFT,
+    // which is why it stays here now that the eye has moved out -- the camera
+    // itself is the craft's own camera entity's business (see CameraSystem).
     st.blurAnchorWorld = rPos; st.blurAnchorValid = true;
     st.blurSpeed01 = glm::clamp(airspeed / glm::max(gc->maxSpeed, 1.0f),
                                 0.0f, 1.4f);
-
-    // Chase camera aims from the interpolated cam position at the craft.
-    env.camera.setPosition(rCam);
-    if (st.loopIndex >= 0) {
-        // On a loop the camera takes its basis outright: the tangent passes
-        // through vertical (where yaw stops meaning anything) and the craft ends
-        // up inverted (which yaw/pitch has no roll to express). Aim at the craft,
-        // roll with the surface.
-        const glm::vec3 dc = (rPos + st.loopUp * gc->camLookHeight) - rCam;
-        env.camera.setBasis(dc, st.loopUp);
-    } else {
-        const glm::vec3 dc = glm::normalize(
-            (rPos + glm::vec3(0.0f, gc->camLookHeight, 0.0f)) - rCam);
-        env.camera.setYaw(glm::degrees(std::atan2(dc.z, dc.x)));
-        env.camera.setPitch(glm::degrees(std::asin(glm::clamp(dc.y, -1.0f, 1.0f))));
-    }
 }
 
 void updateOpponents(RaceState& st, const RaceEnv& env) {
@@ -1196,6 +1137,12 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         // by deactivating the entity so the sim reads the same in the editor,
         // where nothing has been deactivated.
         if (!op->entered || !e.activeInHierarchy) continue;
+        // Flown by player two: a human has the controls, so the spline lets go.
+        // Checked here rather than by clearing the opponent's `entered` tick --
+        // that is authored state, it is what the start grid reads, and turning
+        // it off would delete the craft from the field the next time the race
+        // lines up.
+        if (env.playerGliderId2 >= 0 && e.id == env.playerGliderId2) continue;
         if (!op->started) {
             // Seed dist from where the marker was placed (projected onto the road);
             // startDistance then staggers the grid.

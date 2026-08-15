@@ -55,8 +55,17 @@ void Camera::updateVectors() {
     front.z = std::sin(yawR) * std::cos(pitchR);
 
     m_front = glm::normalize(front);
-    m_right = glm::normalize(glm::cross(m_front, m_worldUp));
-    m_up    = glm::normalize(glm::cross(m_right, m_front));
+    // Straight up or straight down is a pole: front is parallel to world up, the
+    // cross product is the zero vector, and normalizing it yields NaN -- which
+    // spreads through the view matrix into every pass that frame and paints the
+    // screen white. A chase camera aimed at the craft it sits directly under
+    // gets there on its own, so the camera has to survive it: keep the previous
+    // right vector, which still points sideways and is what the pitch was
+    // swinging around anyway.
+    const glm::vec3 r  = glm::cross(m_front, m_worldUp);
+    const float     rl = glm::length(r);
+    if (rl > 1e-6f) m_right = r / rl;
+    m_up = glm::normalize(glm::cross(m_right, m_front));
 }
 
 } // namespace fitzel

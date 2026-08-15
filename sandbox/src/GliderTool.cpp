@@ -25,26 +25,27 @@ std::string autoSetup(Document& doc, int rootId) {
         gc = root->components.get<GliderComponent>();
     }
 
-    // Seed the hover height so the craft floats just clear of its own body, and
-    // scale the camera stand-off to the craft size. Tuned values survive a re-run.
-    if (fresh) {
-        gc->rideHeight   = glm::clamp(root->half.y * 1.4f, 0.4f, 6.0f);
-        const float span = glm::max(root->half.x, root->half.z);
-        gc->camDistance  = glm::clamp(span * 5.0f, 4.0f, 24.0f);
-        gc->camHeight    = glm::clamp(span * 2.0f, 1.5f, 10.0f);
-        gc->camLookHeight = glm::clamp(root->half.y, 0.5f, 4.0f);
-    }
+    // Seed the hover height so the craft floats just clear of its own body.
+    // Tuned values survive a re-run.
+    //
+    // Nothing about a camera here any more: a craft's view is a camera entity
+    // parented to it, and this tool makes a CRAFT. Add a Camera object, drop it
+    // on the craft in the hierarchy, set it to Follow -- where you park it is
+    // where the view sits.
+    if (fresh)
+        gc->rideHeight = glm::clamp(root->half.y * 1.4f, 0.4f, 6.0f);
 
     char msg[192];
     std::snprintf(msg, sizeof(msg),
-                  "Glider ready on '%s'. Ride height %.2f m. Press G to fly.",
+                  "Glider ready on '%s'. Ride height %.2f m. Add a Camera child "
+                  "for the view, then press G to fly.",
                   root->name.c_str(), gc->rideHeight);
     return msg;
 }
 
 void inspector(GliderComponent& gc, Entity& /*root*/, Document& /*doc*/,
                const SoundPicker& soundPicker) {
-    bool hoverHdr = false, attHdr = false, camHdr = false, boostHdr = false;
+    bool hoverHdr = false, attHdr = false, boostHdr = false;
     bool nrgHdr = false;
     for (const Property& pr : gc.props()) {
         if (!boostHdr && pr.key == "boostCapacity") {
@@ -57,7 +58,6 @@ void inspector(GliderComponent& gc, Entity& /*root*/, Document& /*doc*/,
         }
         if (!hoverHdr && pr.key == "rideHeight") { ui::sectionText("Hover");    hoverHdr = true; }
         if (!attHdr   && pr.key == "bankAngle")  { ui::sectionText("Attitude"); attHdr   = true; }
-        if (!camHdr   && pr.key.rfind("cam", 0) == 0) { ui::sectionText("Follow camera"); camHdr = true; }
         // The two SFX filenames are chosen from the project's sounds, not typed
         // -- same rule as every other sound field in the editor. Without a picker
         // to hand (no caller supplied one) they fall back to their text field.

@@ -407,6 +407,28 @@ const std::vector<Property>& AudioSourceComponent::properties() {
 const std::vector<Property>& CameraComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
+        Property mode;
+        mode.label = "Mode"; mode.key = "mode"; mode.kind = PropKind::EnumInt;
+        mode.enumLabels = {"Static", "Follow parent"};
+        mode.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->mode; };
+        p.push_back(std::move(mode));
+        // Only a follow camera has anything to catch up with; on a static one
+        // these two would be knobs that do nothing.
+        const auto follows = [](const void* o) {
+            return static_cast<const CameraComponent*>(o)->mode == CameraComponent::Follow;
+        };
+        Property look;
+        look.label = "Look height"; look.key = "lookHeight"; look.kind = PropKind::Float;
+        look.slider = true; look.min = -5.0f; look.max = 10.0f; look.fmt = "%.2f m";
+        look.visible = follows;
+        look.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->lookHeight; };
+        p.push_back(std::move(look));
+        Property stiff;
+        stiff.label = "Stiffness"; stiff.key = "stiffness"; stiff.kind = PropKind::Float;
+        stiff.slider = true; stiff.min = 0.5f; stiff.max = 30.0f; stiff.fmt = "%.1f /s";
+        stiff.visible = follows;
+        stiff.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->stiffness; };
+        p.push_back(std::move(stiff));
         Property fov;
         fov.label = "FOV"; fov.key = "fov"; fov.kind = PropKind::Float;
         fov.slider = true; fov.min = 20.0f; fov.max = 120.0f; fov.fmt = "%.0f deg";
@@ -554,11 +576,6 @@ const std::vector<Property>& VehicleComponent::properties() {
         addFloat("Spray size",   "spraySize",   &VehicleComponent::spraySize,   true, 0.2f,  5.0f,  "%.2f");
         // Follow-camera tuning (kept last so the inspector can group them under
         // a "Follow camera" header -- see vehicleui::inspector).
-        addFloat("Cam distance",   "camDistance",   &VehicleComponent::camDistance,   true, 1.0f, 100.0f, "%.1f m");
-        addFloat("Cam height",     "camHeight",     &VehicleComponent::camHeight,     true, 0.0f, 40.0f,  "%.1f m");
-        addFloat("Cam side",       "camSide",       &VehicleComponent::camSide,       true, -30.0f, 30.0f,"%.1f m");
-        addFloat("Cam look height","camLookHeight", &VehicleComponent::camLookHeight, true, 0.0f, 10.0f,  "%.1f m");
-        addFloat("Cam stiffness",  "camStiffness",  &VehicleComponent::camStiffness,  true, 0.5f, 20.0f,  "%.1f");
         return p;
     }();
     return props;
@@ -641,11 +658,6 @@ const std::vector<Property>& GliderComponent::properties() {
         fwd.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->forward; };
         p.push_back(std::move(fwd));
         // Follow camera (kept last so the inspector groups them under a header)
-        addFloat("Cam distance",   "camDistance",   &GliderComponent::camDistance,   1.0f, 100.0f, "%.1f m");
-        addFloat("Cam height",     "camHeight",     &GliderComponent::camHeight,     0.0f, 40.0f,  "%.1f m");
-        addFloat("Cam side",       "camSide",       &GliderComponent::camSide,      -30.0f, 30.0f, "%.1f m");
-        addFloat("Cam look height","camLookHeight", &GliderComponent::camLookHeight, 0.0f, 10.0f,  "%.1f m");
-        addFloat("Cam stiffness",  "camStiffness",  &GliderComponent::camStiffness,  0.5f, 20.0f,  "%.1f");
         return p;
     }();
     return props;

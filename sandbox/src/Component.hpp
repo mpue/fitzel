@@ -24,6 +24,12 @@
 // rendering dependency. Colours are RGBA in 0..1.
 struct GizmoDraw {
     virtual ~GizmoDraw() = default;
+    // Where the drawn entity's parent stands, when it has one. Filled by the
+    // caller, which is the only place that can know it -- onGizmo is handed a
+    // transform, not a scene. A component whose MEANING involves its parent
+    // (a follow camera aims at it) cannot draw itself honestly without this.
+    glm::vec3 parentCenter{0.0f};
+    bool      hasParent = false;
     virtual void line(const glm::vec3& a, const glm::vec3& b, const glm::vec4& col) = 0;
     // A `radius` circle centred at `c`, in the plane whose normal is `axis`.
     virtual void circle(const glm::vec3& c, float radius,
@@ -466,12 +472,8 @@ public:
     float     sprayHeight = 1.0f;             // spray kick-up strength
     float     spraySize   = 1.0f;             // spray droplet size scale
 
-    // Follow (chase) camera while driving: how the view trails the vehicle.
-    float camDistance   = 7.0f;               // m behind the vehicle
-    float camHeight     = 3.2f;               // m above the vehicle
-    float camSide       = 0.0f;               // m sideways (+ = vehicle's right)
-    float camLookHeight = 1.2f;               // look-at point height above it
-    float camStiffness  = 4.0f;               // follow rate (higher = snappier)
+    // No follow-camera knobs here any more -- see GliderComponent: the view is a
+    // camera entity parented to the vehicle, not five numbers on the vehicle.
 
     int wheelId[4] = {-1, -1, -1, -1};        // wheel child entity ids: FL FR RL RR
 
@@ -552,12 +554,10 @@ public:
     float pitchFollow = 0.6f;    // nose tips with climb/descent (0..1)
     float levelRate   = 5.0f;    // how fast bank/pitch settle (1/s)
     int   forward     = 0;       // model nose: 0 = +Z, 1 = -Z (matches Vehicle)
-    // Follow camera (same knobs as VehicleComponent, so the feel is identical)
-    float camDistance   = 9.0f;
-    float camHeight     = 3.6f;
-    float camSide       = 0.0f;
-    float camLookHeight = 1.4f;
-    float camStiffness  = 5.0f;
+    // No follow-camera knobs here any more. A craft's camera is an ENTITY hung
+    // on it with a CameraComponent -- where it sits is that entity's position,
+    // which you drag in the viewport instead of typing three offsets. A craft
+    // without such a child simply has no view of its own.
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<GliderComponent>(*this);
@@ -1134,8 +1134,27 @@ public:
 // runtime with CameraSwitcher. The gizmo draws a frustum so you can aim it.
 class CameraComponent : public ComponentBase {
 public:
+    // What kind of eye this is. Static stands where it is put (a cutscene angle,
+    // a fixed trackside shot); Follow trails the object it hangs on.
+    enum Mode { Static = 0, Follow = 1 };
+
+    int   mode          = Static;
     float fov           = 60.0f; // vertical field of view (degrees)
     bool  activeOnStart = false; // this camera is the view when Play starts
+
+    // --- Follow ---------------------------------------------------------------
+    // WHOSE camera this is, the hierarchy already answers: a follow camera trails
+    // its PARENT. There is nothing to pick and nothing to get out of sync, and a
+    // second craft carrying a camera child is a second view without anyone being
+    // asked which craft belongs to whom.
+    //
+    // WHERE it sits is the entity's own local position: drag the camera to where
+    // you want it and that IS the chase offset. It is applied in the parent's
+    // HEADING frame only -- yaw, not bank or pitch -- so a craft rolling into a
+    // corner turns under a camera that stays level instead of taking the horizon
+    // with it. Which leaves exactly two things a position cannot express:
+    float lookHeight = 1.4f;  // aim this far above the followed object's centre
+    float stiffness  = 5.0f;  // how fast it catches up (1/s; higher = snappier)
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<CameraComponent>(*this);
@@ -1145,9 +1164,34 @@ public:
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
     void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
-        const glm::vec3 fwd = rot * glm::vec3(0.0f, 0.0f, -1.0f);
-        const glm::vec3 up  = rot * glm::vec3(0.0f, 1.0f, 0.0f);
-        const glm::vec3 rt  = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec3 fwd = rot * glm::vec3(0.0f, 0.0f, -1.0f);
+        glm::vec3 up  = rot * glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::vec3 rt  = rot * glm::vec3(1.0f, 0.0f, 0.0f);
+        // A follow camera does NOT look where it is turned -- it aims at the
+        // object it hangs on, `lookHeight` above the centre (see CameraSystem).
+        // Drawing the frustum along its own rotation would be a lie, and it is
+        // the lie that hides the mistake this gizmo exists to catch: a camera
+        // parked in FRONT of the craft, watching it come at the viewer. Aimed
+        // properly, a camera on the wrong side is obvious at a glance.
+        if (mode == Follow && g.hasParent) {
+            const glm::vec3 aim = g.parentCenter + glm::vec3(0.0f, lookHeight, 0.0f);
+            const glm::vec3 d   = aim - c;
+            if (glm::length(d) > 1e-4f) {
+                fwd = glm::normalize(d);
+                const glm::vec3 wUp{0.0f, 1.0f, 0.0f};
+                glm::vec3 r = glm::cross(fwd, wUp);
+                // Straight down at its own parent: no sideways to be had, so
+                // keep the authored basis rather than normalizing a zero vector.
+                if (glm::length(r) > 1e-4f) {
+                    rt = glm::normalize(r);
+                    up = glm::cross(rt, fwd);
+                }
+            }
+            // The tether: which object this camera belongs to, drawn as the line
+            // it is. In a hierarchy of thirty entities that is the fastest way to
+            // see whose eye you have selected.
+            g.line(c, aim, {0.5f, 0.85f, 1.0f, 0.35f});
+        }
         const float D = 2.0f;                                   // frustum depth
         const float h = D * glm::tan(glm::radians(fov) * 0.5f); // half height at D
         const float w = h * 1.5f;                               // ~16:9-ish

@@ -77,6 +77,7 @@
 #include "RoadSystem.hpp"
 #include "RaceSim.hpp"
 #include "RaceGrid.hpp"
+#include "CameraSystem.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "RoadPanel.hpp"
@@ -350,6 +351,13 @@ int main(int argc, char** argv) {
         // affordable at all.
         Camera camera2({0.0f, 10.0f, 30.0f}, -90.0f, -5.0f);
         camera2.moveSpeed = 20.0f;
+        // The scene's own cameras. These two above are the VIEWS -- what the two
+        // panes are drawn from; where they stand is decided by the camera
+        // entities this resolves.
+        camerasys::CameraSystem cams;
+        // Did player two's eye resolve this frame? The second pane follows this,
+        // not the checkbox: a pane with no camera behind it is worse than none.
+        bool haveView2 = false;
         // Split the viewport vertically into two panes. Vertical because the
         // target is a 3440x1440 ultrawide: two 1720x1440 panes are close to
         // square, where a horizontal split would give two 3440x720 letterbox
@@ -971,7 +979,6 @@ int main(int argc, char** argv) {
         bool  carInWater     = false;  // chassis was submerged last frame (splash edge)
         float carWaterSub    = 0.0f;   // 0..1 chassis submersion this frame (audio/FX)
         bool  boatMode       = false;  // vehicle floats deep enough -> motorboat controls
-        glm::vec3& camChase  = race.camChase;   // smoothed chase-camera position
         float&     simAccum  = race.simAccum;   // fixed-timestep accumulator
         // --- Glider (Wipeout-style hover racer) drive state -------------------
         // Arcade in BOTH editor and Play (no Jolt body). gliderMode is the master
@@ -981,6 +988,12 @@ int main(int argc, char** argv) {
         bool  prevG            = false;
         int   driveGliderId    = -1;
         bool  gliderDriveActive = false;
+        // Player two, for split screen: a second craft with its own flight state
+        // and its own eye (camera2). Picked automatically from the craft already
+        // in the scene when the second pane opens -- laying out a two-player
+        // track should not mean assigning seats by hand.
+        int   driveGliderId2   = -1;
+        racesim::RaceState race2;
         std::vector<Entity> gliderBackup;
         glm::vec3& gliderPos   = race.gliderPos;   // body-centre world position
         float&     gliderYaw   = race.gliderYaw;   // heading (radians)
@@ -1019,7 +1032,6 @@ int main(int argc, char** argv) {
             carYaw    = glm::radians(90.0f - camera.yaw()); // align with view heading
             carSpeed  = 0.0f;
             carPlaced = true;
-            camChase  = camera.position();
         };
 
         // --- Scene entities: placeable objects (box / ramp / cylinder / light) ---
@@ -3375,7 +3387,6 @@ int main(int argc, char** argv) {
             } else if (!carPlaced) {
                 placeCar();
             }
-            camChase = camera.position();
         };
 
         // --- Glider drive (arcade hover, editor + Play) -----------------------
@@ -3384,11 +3395,37 @@ int main(int argc, char** argv) {
         // `yMax` -- so the craft floats over a track built from placed geometry
         // (rotation is ignored, like game.raycast). The flown craft (and its
         // children) are excluded so it never hovers on top of itself.
-        auto gliderGround = [&](float x, float z, float yMax) -> float {
+        // Scratch for the ground query below: the scene's racers, rebuilt per
+        // call. A member rather than a local so a query on the sim's hot path
+        // does not allocate on every fixed step.
+        std::vector<int> racerRoots;
+        // `ignoreId` is the craft doing the asking (-1 = nobody): its own model,
+        // and anything hanging off it, is not the ground it hovers over. Passed
+        // in rather than read from driveGliderId here, because with two players
+        // there are two answers and this lambda serves both.
+        auto gliderGround = [&](float x, float z, float yMax, int ignoreId) -> float {
             float h = streamer.heightAt(x, z);
+            // No racer is ground. A craft is something you race past or crash
+            // into, never a surface to hover over -- and treating one as ground
+            // is unstable in both directions: two craft side by side on the grid
+            // overlap in plan view, so each stands on the other's roof, lifts it,
+            // and gets lifted in turn. That is the hopping. The rule covers every
+            // racer rather than just the two seats, because a craft riding up an
+            // opponent's tail is the same nonsense with one player.
+            racerRoots.clear();
+            for (const Entity& e : entities)
+                if (e.components.get<GliderComponent>() ||
+                    e.components.get<OpponentComponent>())
+                    racerRoots.push_back(e.id);
+            const auto isRacerPart = [&](const Entity& e) {
+                for (int id : racerRoots)
+                    if (e.id == id || e.parent == id) return true;
+                return false;
+            };
             for (const Entity& e : entities) {
                 if (!e.activeInHierarchy) continue;
-                if (e.id == driveGliderId || e.parent == driveGliderId) continue;
+                if (ignoreId >= 0 && (e.id == ignoreId || e.parent == ignoreId)) continue;
+                if (isRacerPart(e)) continue;
                 if (e.type != EntityType::Box && e.type != EntityType::Ramp &&
                     e.type != EntityType::Cylinder && e.type != EntityType::Sphere &&
                     e.type != EntityType::Model)
@@ -3427,30 +3464,50 @@ int main(int argc, char** argv) {
         };
         // Start flying `id`: snapshot its transform (restored on exit) and seed the
         // flight state at its current pose, lifted to the hover rest height.
-        auto beginGliderDrive = [&](int id) {
+        // Seat a flight state in a craft: put it where the craft stands, at ride
+        // height over the ground, facing the way it is turned, at rest and with
+        // a full hull.
+        //
+        // Split out because player two needs exactly this and nothing else -- it
+        // takes over a craft that is already in the scene, so it wants the same
+        // seating without the backup/ownership half of beginGliderDrive. A state
+        // that skips it starts at the world origin, which teleports the craft
+        // there and sends its camera along.
+        auto seatGliderState = [&](racesim::RaceState& st, int id) {
             Entity* e = document.find(id);
             auto* gc = e ? e->components.get<GliderComponent>() : nullptr;
-            if (!gc) return;
+            if (!gc) return false;
+            st.gliderPos = e->center;
+            // Ignoring the craft being seated: without that it is stood on its
+            // own roof before it has flown a metre.
+            st.gliderPos.y = gliderGround(e->center.x, e->center.z,
+                                          e->center.y + 1000.0f, id) + gc->rideHeight;
+            st.gliderYaw = glm::radians(e->rotation.y) +
+                           (gc->forward == 1 ? glm::pi<float>() : 0.0f);
+            st.gliderVel = glm::vec3(0.0f);
+            st.gliderBank = st.gliderPitch = 0.0f;
+            st.gliderOverspeed = 0.0f;
+            st.gliderWasOnPad  = false; // a pad under the start line still punches
+            // Nothing to do about the camera here: the craft's camera entity
+            // stands itself up the first frame it is seen (see CameraSystem).
+            st.loopIndex = -1;  // not on a loop
+            // A fresh craft flies with a full hull: taking the controls is a new
+            // run, so a wreck from the last one must not still be smoking.
+            st.energyCapacity = glm::max(gc->energyCapacity, 1.0f);
+            st.energy         = st.energyCapacity;
+            st.energyOut      = false; st.energyLow      = false;
+            st.energyIdle     = 0.0f;  st.energyHitFlash = 0.0f;
+            st.energyLastHit  = 0.0f;  st.energyWarnT    = 0.0f;
+            return true;
+        };
+        auto beginGliderDrive = [&](int id) {
+            Entity* e = document.find(id);
+            if (!e || !e->components.get<GliderComponent>()) return;
             gliderBackup.clear();
             gliderBackup.push_back(*e);
             driveGliderId     = id;
             gliderDriveActive = true;
-            gliderPos = e->center;
-            gliderPos.y = gliderGround(e->center.x, e->center.z, e->center.y + 1000.0f)
-                          + gc->rideHeight;
-            gliderYaw = glm::radians(e->rotation.y) +
-                        (gc->forward == 1 ? glm::pi<float>() : 0.0f);
-            gliderVel = glm::vec3(0.0f);
-            gliderBank = gliderPitch = 0.0f;
-            gliderOverspeed = 0.0f;
-            gliderWasOnPad  = false; // a pad under the start line still punches
-            // A fresh craft flies with a full hull: taking the controls is a new
-            // run, so a wreck from the last one must not still be smoking.
-            race.energyCapacity = glm::max(gc->energyCapacity, 1.0f);
-            race.energy         = race.energyCapacity;
-            race.energyOut      = false; race.energyLow      = false;
-            race.energyIdle     = 0.0f;  race.energyHitFlash = 0.0f;
-            race.energyLastHit  = 0.0f;  race.energyWarnT    = 0.0f;
+            seatGliderState(race, id);
         };
         auto endGliderDrive = [&] {
             if (!gliderDriveActive) return;
@@ -3462,6 +3519,26 @@ int main(int argc, char** argv) {
             gliderBackup.clear();
             gliderDriveActive = false;
             driveGliderId     = -1;
+            driveGliderId2    = -1;   // player two hands its craft back too
+        };
+        // Which craft player two flies, given the one player one has: the first
+        // other glider in the scene. A two-player track is laid out with two
+        // craft on it, so asking which is whose would be a dialog with one
+        // sensible answer.
+        //
+        // A craft the AI is not already racing comes first; an entered opponent
+        // is taken only if it is the only one left. Its tick is LEFT ALONE --
+        // the sim skips it because RaceEnv names it (see playerGliderId2), which
+        // keeps the authored field intact for the next start.
+        auto pickPlayerTwo = [&](int excludeId) {
+            for (int pass = 0; pass < 2; ++pass)
+                for (Entity& ge : entities) {
+                    if (ge.id == excludeId || !ge.activeInHierarchy) continue;
+                    if (!ge.components.get<GliderComponent>()) continue;
+                    if (pass == 0 && ge.components.get<OpponentComponent>()) continue;
+                    return ge.id;
+                }
+            return -1;
         };
         // Enter glider mode (G key / Glider-panel checkbox): fly the nearest glider
         // entity. Arcade in both editor and Play, so no physics body is created.
@@ -3469,14 +3546,31 @@ int main(int argc, char** argv) {
             fpsMode = false;
             input.setCursorLocked(false);
             const int g = findNearestGlider();
+            // Player two is chosen HERE, before the grid is drawn up, because the
+            // grid has to give it a slot: a craft nobody lines up stays parked
+            // wherever the scene author left it, which in a finished track is in
+            // the paddock behind the stands -- with a camera inside the scenery.
+            race2 = racesim::RaceState{};
+            driveGliderId2 = (splitScreen && g >= 0) ? pickPlayerTwo(g) : -1;
             // Line the field up BEFORE taking the controls: an opponent seeds its
             // race distance from where it stands, and the drive reads the craft's
             // position, so the grid has to exist first or everyone starts from
             // wherever they were parked.
             if (g >= 0 && playMode)
-                racegrid::lineUp(entities, road, g, /*applyParticipation=*/true);
+                racegrid::lineUp(entities, road, g, /*applyParticipation=*/true,
+                                 driveGliderId2);
             if (g >= 0) beginGliderDrive(g);
             else        gliderMode = false; // nothing to fly
+            // Seat player two only once the grid has moved its craft: the state
+            // copies the pose, so seating it first would seat it in the paddock.
+            // Its craft joins the drive's snapshot, so leaving glider mode puts
+            // it back where player one's craft goes back to -- otherwise flying
+            // it around the editor would quietly rewrite the scene.
+            if (gliderMode && driveGliderId2 >= 0) {
+                seatGliderState(race2, driveGliderId2);
+                if (Entity* e2 = document.find(driveGliderId2))
+                    gliderBackup.push_back(*e2);
+            }
             // In Play, start a race with a Ready/Set/Go countdown when the scene
             // is a race (has opponents or a start/finish line) -- craft + opponents
             // are held frozen until GO so nobody jumps the start.
@@ -3489,7 +3583,6 @@ int main(int argc, char** argv) {
                 goFlash = 0.0f;
                 endPrompt = racehud::EndPrompt{};
             }
-            camChase = camera.position();
         };
 
         // Play-mode camera state. Declared ahead of the script bridge because
@@ -3695,7 +3788,9 @@ int main(int argc, char** argv) {
         // placed blocks included.
         weapons.playCue = playCue;
         weapons.groundHeight = [&](float x, float z, float yMax) {
-            return gliderGround(x, z, yMax);
+            // A missile is nobody's craft: nothing is exempt from the ground it
+            // can hit, the launching craft included.
+            return gliderGround(x, z, yMax, -1);
         };
         // Looping ambient voices for TriggerSound zones (entity id -> Sound),
         // created lazily in Play and cleared on stop. Sound is move-only.
@@ -3945,6 +4040,10 @@ int main(int argc, char** argv) {
             trails.clear(); // ...nor stale contrails
             particles.clear(); // ...nor a cloud of smoke from the last run
             weapons.reset();   // ...nor a missile still in the air, or a lock
+            // Player two starts from scratch too, and gets re-seated: the craft
+            // it flew belongs to the scene that is being restarted.
+            race2 = racesim::RaceState{};
+            driveGliderId2 = -1;
             physicsBody.clear();
             for (Entity& e : entities) {
                 const auto* pc = e.components.get<PhysicsComponent>();
@@ -4192,6 +4291,64 @@ int main(int argc, char** argv) {
             while (simAccum >= kSimH && simSteps < 5) { simAccum -= kSimH; ++simSteps; }
             if (simSteps == 5) simAccum = 0.0f;   // dropped backlog: a hitch slows time
             const float simAlpha = simAccum / kSimH; // in [0,1): pose blend to render
+
+            // Resolve the scene's cameras and point the view at the right one.
+            //
+            // Called at the END of whatever moved the scene this frame -- the
+            // play tick when there is one, the control chain otherwise -- so the
+            // eye follows where things ended up rather than trailing a frame.
+            //
+            // WHICH camera is the view: a Camera entity a CameraSwitcher or a
+            // script has cut to wins outright; otherwise it is the camera hanging
+            // on the craft being driven, because that is what "the camera belongs
+            // to the object it hangs on" means from the viewer's side. A craft
+            // without one leaves the free camera where it is, which is the honest
+            // answer -- better than inventing an eye nobody placed.
+            auto applyViewCamera = [&] {
+                cams.update(entities, dt);
+                // The camera child of `owner`, or -1. First one wins; a craft with
+                // two is an authoring mistake, not a mode.
+                const auto childCam = [&](int owner) {
+                    if (owner < 0) return -1;
+                    for (const Entity& e : entities)
+                        if (e.parent == owner && e.activeInHierarchy &&
+                            e.components.get<CameraComponent>())
+                            return e.id;
+                    return -1;
+                };
+                const int driven = gliderMode ? driveGliderId
+                                 : vehicleMode ? driveVehicleId : -1;
+                int viewId = activeCam;
+                if (viewId < 0) viewId = childCam(driven);
+                camerasys::Pose p;
+                if (viewId >= 0 && cams.pose(viewId, p)) {
+                    camera.setPosition(p.position);
+                    camera.setBasis(p.front, p.up);
+                    camera.setFov(p.fov);
+                } else {
+                    activeCam = -1;              // target vanished -> free camera
+                    camera.setFov(playCamFov);
+                }
+                // Player two's eye, same rule one craft over. Split screen is now
+                // just a second camera entity being asked for its pose.
+                //
+                // haveView2 is what the renderer splits on -- NOT the checkbox.
+                // A second pane is only worth having if something can be seen
+                // through it: no second craft, or a craft with no camera on it,
+                // and the frame stays whole rather than handing half the screen
+                // to an eye standing wherever it was last left.
+                haveView2 = false;
+                if (splitScreen && driveGliderId2 >= 0) {
+                    const int id2 = childCam(driveGliderId2);
+                    camerasys::Pose p2;
+                    if (id2 >= 0 && cams.pose(id2, p2)) {
+                        camera2.setPosition(p2.position);
+                        camera2.setBasis(p2.front, p2.up);
+                        camera2.setFov(p2.fov);
+                        haveView2 = true;
+                    }
+                }
+            };
 
             // Hot reload: pick up on-disk asset edits ~twice a second. Textures
             // and models reload in place (existing handles update automatically);
@@ -4477,9 +4634,46 @@ int main(int argc, char** argv) {
             // Bundle the loop state the arcade racing sim reads, once per frame
             // (used by the car/glider dispatch here and the opponents update far
             // below). Member order must match racesim::RaceEnv.
+            // One player's controls, resolved from the device that seat uses.
+            // Seat 0 flies with the pad if one is plugged in, and WASD either
+            // way; seat 1 is on the arrow keys. Two seats at one machine, which
+            // is what "split screen" means here -- see RaceControls.
+            auto controlsFor = [&](int seat) {
+                racesim::RaceControls c;
+                if (seat == 0) {
+                    c.throttle = (input.isKeyDown(GLFW_KEY_W) ? 1.0f : 0.0f)
+                               - (input.isKeyDown(GLFW_KEY_S) ? 1.0f : 0.0f);
+                    c.steer    = (input.isKeyDown(GLFW_KEY_D) ? 1.0f : 0.0f)
+                               - (input.isKeyDown(GLFW_KEY_A) ? 1.0f : 0.0f);
+                    c.brake    = input.isKeyDown(GLFW_KEY_SPACE);
+                    c.boost    = input.isKeyDown(GLFW_KEY_LEFT_SHIFT);
+                    // Pad: RT accelerate / LT reverse, left stick steers, B
+                    // brakes, A boosts.
+                    if (input.hasGamepad()) {
+                        c.throttle = glm::clamp(c.throttle
+                            + input.gamepadTrigger(GLFW_GAMEPAD_AXIS_RIGHT_TRIGGER)
+                            - input.gamepadTrigger(GLFW_GAMEPAD_AXIS_LEFT_TRIGGER),
+                            -1.0f, 1.0f);
+                        c.steer = glm::clamp(
+                            c.steer + input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X),
+                            -1.0f, 1.0f);
+                        if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_B)) c.brake = true;
+                        if (input.gamepadButton(GLFW_GAMEPAD_BUTTON_A)) c.boost = true;
+                    }
+                } else {
+                    c.throttle = (input.isKeyDown(GLFW_KEY_UP)    ? 1.0f : 0.0f)
+                               - (input.isKeyDown(GLFW_KEY_DOWN)  ? 1.0f : 0.0f);
+                    c.steer    = (input.isKeyDown(GLFW_KEY_RIGHT) ? 1.0f : 0.0f)
+                               - (input.isKeyDown(GLFW_KEY_LEFT)  ? 1.0f : 0.0f);
+                    c.brake    = input.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+                    c.boost    = input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+                }
+                return c;
+            };
+
             racesim::RaceEnv raceEnv{
-                input, camera, document, entities, streamer, road,
-                driveVehicleId, driveGliderId, driveBackup,
+                input, controlsFor(0), document, entities, streamer, road,
+                driveVehicleId, driveGliderId, driveGliderId2, driveBackup,
                 dt, kSimH, simAlpha, simSteps,
                 (gliderMode ? gliderPos : carPos),               // player world pos
                 (gliderMode ? gliderSpeedMps : engineSpeedMps),  // player speed
@@ -4719,26 +4913,9 @@ int main(int argc, char** argv) {
                     carInWater = false;
                 }
 
-                // Follow-cam tuning from the driven vehicle's component (built-in
-                // default car has none -> the fallback values).
-                {
-                    Entity* dv = (driveVehicleId >= 0) ? document.find(driveVehicleId)
-                                                       : nullptr;
-                    auto*   dvc = dv ? dv->components.get<VehicleComponent>() : nullptr;
-                    const float camDist  = dvc ? dvc->camDistance   : 7.0f;
-                    const float camH     = dvc ? dvc->camHeight     : 3.2f;
-                    const float camSide  = dvc ? dvc->camSide       : 0.0f;
-                    const float camLook  = dvc ? dvc->camLookHeight : 1.2f;
-                    const float camStiff = dvc ? dvc->camStiffness  : 4.0f;
-                    const glm::vec3 target = cp + glm::vec3(0.0f, camLook, 0.0f);
-                    const glm::vec3 wanted = cp - fwd * camDist + right * camSide +
-                                             glm::vec3(0.0f, camH, 0.0f);
-                    camChase += (wanted - camChase) * std::min(1.0f, dt * camStiff);
-                    camera.setPosition(camChase);
-                    const glm::vec3 dcam = glm::normalize(target - camChase);
-                    camera.setYaw(glm::degrees(std::atan2(dcam.z, dcam.x)));
-                    camera.setPitch(glm::degrees(std::asin(glm::clamp(dcam.y, -1.0f, 1.0f))));
-                }
+                // (The chase camera used to be computed here, a third time, from
+                // a third copy of the same five knobs. It is the vehicle's own
+                // camera entity now -- see CameraSystem.)
             } else if (vehicleMode) {
                 // Arcade car: fixed-step bicycle-model sim + interpolated chase
                 // camera. (racesim::updateArcadeCar in RaceSim.cpp.)
@@ -4748,6 +4925,47 @@ int main(int argc, char** argv) {
                 // gate/checkpoint/lap logic, hover spring, interpolated chase cam.
                 // (racesim::updateGlider in RaceSim.cpp.)
                 racesim::updateGlider(race, raceEnv);
+
+                // Player two flies the same sim with its own state, its own
+                // controls and its own eye. Seat it in the first other craft in
+                // the scene: a two-player track is laid out with two craft on
+                // it, and asking which is whose before flying is a dialog nobody
+                // wants. Released when the second pane closes, so the craft goes
+                // back to being scenery (or an opponent).
+                if (splitScreen) {
+                    // The pane was opened mid-race (or the craft was deleted):
+                    // seat player two in whatever is free. It takes over the
+                    // craft WHERE IT STANDS -- the grid is long behind everyone
+                    // by now, and hauling a craft to the line mid-lap would be a
+                    // stranger thing to watch than a second player joining from
+                    // the pit lane. Line both up by restarting the race.
+                    if (driveGliderId2 < 0 || !document.find(driveGliderId2)) {
+                        driveGliderId2 = pickPlayerTwo(driveGliderId);
+                        // Seat the state where the craft actually stands. Without
+                        // this the fresh RaceState starts at the origin and drags
+                        // both the craft and its camera there.
+                        if (driveGliderId2 >= 0) {
+                            race2 = racesim::RaceState{};
+                            seatGliderState(race2, driveGliderId2);
+                            if (Entity* e2 = document.find(driveGliderId2))
+                                gliderBackup.push_back(*e2);  // restored on exit
+                        }
+                    }
+                    if (driveGliderId2 >= 0) {
+                        racesim::RaceEnv env2{
+                            input, controlsFor(1), document, entities,
+                            streamer, road,
+                            -1, driveGliderId2, driveGliderId, driveBackup,
+                            dt, kSimH, simAlpha, simSteps,
+                            race2.gliderPos, race2.gliderSpeedMps, true,
+                            setWorld, parentWorldMat, gliderGround, playBoostPunch,
+                            playCue,
+                        };
+                        racesim::updateGlider(race2, env2);
+                    }
+                } else {
+                    driveGliderId2 = -1;
+                }
             } else if (fpsMode) {
                 // Mouse look is always active; movement is on the ground plane.
                 const glm::vec2 d = input.mouseDelta();
@@ -5695,24 +5913,16 @@ int main(int argc, char** argv) {
                 for (int b  : mouseQ) mousePrev[b] = input.isMouseButtonDown(b) ? 1 : 0;
                 keyQ.clear(); mouseQ.clear();
 
-                // Active camera: render the view from the chosen Camera entity
-                // (overriding the player camera). Done after control so this frame
-                // renders from it; player motion becomes relative to this view.
-                const Entity* ce = activeCam >= 0 ? document.find(activeCam) : nullptr;
-                const CameraComponent* cc = ce ? ce->components.get<CameraComponent>()
-                                               : nullptr;
-                if (cc) {
-                    const glm::vec3 fwd = glm::normalize(
-                        glm::quat(glm::radians(ce->rotation)) * glm::vec3(0, 0, -1));
-                    camera.setPosition(ce->center);
-                    camera.setYaw(glm::degrees(std::atan2(fwd.z, fwd.x)));
-                    camera.setPitch(glm::degrees(std::asin(glm::clamp(fwd.y, -1.0f, 1.0f))));
-                    camera.setFov(cc->fov);
-                } else {
-                    activeCam = -1;                 // target vanished -> player view
-                    camera.setFov(playCamFov);      // restore the player FOV
-                }
+                // The scene's cameras, resolved after everything that moved this
+                // tick -- the sim, the movers, the opponents, the scripts. Done
+                // here so the frame renders from where things ENDED UP, and so a
+                // script that cut to another camera a few lines ago is obeyed
+                // this frame rather than the next.
+                applyViewCamera();
             }
+            // Same outside Play: a craft can be flown in the editor too, and its
+            // camera has to follow there or a test flight is done blind.
+            if (!playMode) applyViewCamera();
 
             // Deferred scene load a SceneTrigger asked for this frame. Done here,
             // outside the play tick, so the entity list is swapped between frames --
@@ -5823,9 +6033,6 @@ int main(int argc, char** argv) {
                     // circuit wants a different camera from an open one), and
                     // every circuit here tunes it separately. Without this, the
                     // showroom's podium craft silently reframes every race.
-                    bool  haveSlotCam = false;
-                    float slotCamDist = 0.0f, slotCamH = 0.0f, slotCamSide = 0.0f;
-                    float slotCamLook = 0.0f, slotCamStiff = 0.0f;
                     for (const Entity& e : entities)
                         if (const auto* sg = e.components.get<GliderComponent>()) {
                             slot = e.id; pos = e.center;
@@ -5833,12 +6040,6 @@ int main(int argc, char** argv) {
                             // other way round (the Glider's own "Model nose").
                             headingFrom(glm::vec3(worldOf(e)[2]) *
                                         (sg->forward == 1 ? -1.0f : 1.0f));
-                            haveSlotCam  = true;
-                            slotCamDist  = sg->camDistance;
-                            slotCamH     = sg->camHeight;
-                            slotCamSide  = sg->camSide;
-                            slotCamLook  = sg->camLookHeight;
-                            slotCamStiff = sg->camStiffness;
                             break;
                         }
                     // No craft on the grid: line up on the start/finish gate
@@ -5880,17 +6081,6 @@ int main(int argc, char** argv) {
                     if (rootId >= 0)
                         if (Entity* re = document.find(rootId))
                             if (auto* rg = re->components.get<GliderComponent>()) {
-                                // Hand the circuit's camera tuning to the craft
-                                // that replaced its grid slot. Only the camera
-                                // block -- thrust, grip and handling stay the
-                                // chosen craft's own.
-                                if (haveSlotCam) {
-                                    rg->camDistance   = slotCamDist;
-                                    rg->camHeight     = slotCamH;
-                                    rg->camSide       = slotCamSide;
-                                    rg->camLookHeight = slotCamLook;
-                                    rg->camStiffness  = slotCamStiff;
-                                }
                                 // Point it down the track, level. The offset
                                 // mirrors beginGliderDrive's own reading of
                                 // rotation.y, so the flight heading comes out as
@@ -5905,6 +6095,25 @@ int main(int argc, char** argv) {
                                     re->rotation      = re->localRotation;
                                 }
                             }
+                    // The circuit's camera goes with the seat, not with the model
+                    // that happened to be standing in it: hand the grid slot's
+                    // camera child to the craft that replaced it. A track frames
+                    // its own racing (a tunnel circuit wants a closer eye than an
+                    // open one), and the slot craft is about to be deactivated
+                    // with its camera inside it. A chosen craft that brings its
+                    // own camera keeps it -- then the author has said what they
+                    // want and nobody should overrule it.
+                    if (rootId >= 0 && slot >= 0) {
+                        const auto childCam = [&](int parentId) {
+                            for (Entity& e : entities)
+                                if (e.parent == parentId &&
+                                    e.components.get<CameraComponent>())
+                                    return &e;
+                            return static_cast<Entity*>(nullptr);
+                        };
+                        if (!childCam(rootId))
+                            if (Entity* sc = childCam(slot)) sc->parent = rootId;
+                    }
                     resolveHierarchy();
 
                     // The circuit is run over the laps its card promised.
@@ -5919,9 +6128,15 @@ int main(int argc, char** argv) {
                         fpsMode = false;
                         input.setCursorLocked(false);
                         gliderMode = true;
+                        // Player two gets its craft and its grid slot here too,
+                        // for the same reason as in enterGliderMode: a craft
+                        // nobody lines up starts in the paddock.
+                        race2 = racesim::RaceState{};
+                        driveGliderId2 = splitScreen ? pickPlayerTwo(rootId) : -1;
                         racegrid::lineUp(entities, road, rootId,
-                                         /*applyParticipation=*/true);
+                                         /*applyParticipation=*/true, driveGliderId2);
                         beginGliderDrive(rootId);
+                        if (driveGliderId2 >= 0) seatGliderState(race2, driveGliderId2);
                         bool hasRace = false;
                         for (const Entity& e : entities)
                             if (e.components.get<OpponentComponent>() ||
@@ -5931,11 +6146,10 @@ int main(int argc, char** argv) {
                         raceCountdown = hasRace ? 3.0f : 0.0f;
                         goFlash   = 0.0f;
                         endPrompt = racehud::EndPrompt{};
-                        // Seed the chase camera AT the craft, not at wherever the
-                        // camera happens to sit (the showroom just handed it back
-                        // to the editor's own position, which can be a mile off).
-                        // Otherwise the race opens on a swoop in from nowhere.
-                        camChase  = gliderPos;
+                        // The craft's camera stands itself up on its first frame
+                        // (CameraSystem), so the race no longer opens on a swoop
+                        // in from wherever the showroom left the editor's eye.
+                        cams.reset();
                     } else {
                         host.hud = "Could not place the craft on the grid.";
                     }
@@ -7776,6 +7990,11 @@ int main(int argc, char** argv) {
                         VpGizmo gz;
                         gz.dl = dl; gz.vp = vp; gz.org = rmin;
                         gz.vw = static_cast<float>(viewW); gz.vh = static_cast<float>(viewH);
+                        if (b.parent >= 0)
+                            if (const Entity* pe = document.find(b.parent)) {
+                                gz.parentCenter = pe->center;
+                                gz.hasParent    = true;
+                            }
                         for (const auto& comp : b.components.items)
                             comp->onGizmo(gz, b.center, glm::quat(glm::radians(b.rotation)));
                     }
@@ -10259,7 +10478,10 @@ int main(int argc, char** argv) {
             // per-render -- the HDR buffer, the post chain, the projection --
             // follows the PANE, not the window. Only the final blit knows about
             // the full width, because that is the one image both panes land in.
-            const int   views = splitScreen ? 2 : 1;
+            // Two panes only when there is a second eye to fill one (see
+            // haveView2): the checkbox asks for split screen, the scene decides
+            // whether it can deliver it.
+            const int   views = haveView2 ? 2 : 1;
             const int   paneW = std::max(1, fbW / views);
             const float aspect = static_cast<float>(paneW) / static_cast<float>(fbH);
             const glm::mat4 proj = camera.projectionMatrix(aspect);
@@ -10868,6 +11090,11 @@ int main(int argc, char** argv) {
             const Camera&    vcam   = (vi == 0) ? camera : camera2;
             const glm::vec3  camPos = vcam.position();
             const glm::mat4  view   = vcam.viewMatrix();
+            // Each pane projects with ITS OWN camera: field of view is a property
+            // of the camera entity now, so two players can be looking through
+            // different lenses. (The outer `proj` stays what the shared work --
+            // shadow fitting, the probe -- was sized against.)
+            const glm::mat4  proj   = vcam.projectionMatrix(aspect);
             const glm::mat4  mainVP = proj * view;
 
             // Is the water plane in shot at all? Both passes below push the
