@@ -372,10 +372,8 @@ void WeaponSystem::updateLock(const Frame& f, const std::vector<Racer>& racers) 
     // Manual step to another craft in the cone (T / pad Y). Tremor-friendly on
     // purpose: the seeker picks for you and this is a single tap to say "no,
     // that one" -- there is no aiming to be done with it.
-    if (f.input) {
-        bool cycle = f.input->isKeyDown(GLFW_KEY_T);
-        if (f.input->hasGamepad() && f.input->gamepadButton(GLFW_GAMEPAD_BUTTON_Y))
-            cycle = true;
+    {
+        const bool cycle = f.cycleTarget;
         if (cycle && !m_prevCycle && inCone.size() > 1) {
             std::sort(inCone.begin(), inCone.end());
             auto it = std::find(inCone.begin(), inCone.end(), m_trackId);
@@ -672,10 +670,8 @@ void WeaponSystem::update(const Frame& f, const std::vector<Racer>& racers) {
     }
 
     // Trigger. Edge-detected in here so main owns no weapon state at all.
-    if (f.input && f.armed) {
-        bool wants = f.input->isKeyDown(GLFW_KEY_F);
-        if (f.input->hasGamepad() && f.input->gamepadButton(GLFW_GAMEPAD_BUTTON_X))
-            wants = true;
+    if (f.armed) {
+        const bool wants = f.fire;
         if (wants && !m_prevFire) {
             if (!f.mayFire) {
                 // On the grid or past the flag: silently ignored, no scolding.

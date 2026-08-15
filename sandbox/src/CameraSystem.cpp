@@ -51,19 +51,45 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
         const Entity* target = findById(entities, e.parent);
         if (!target) continue;
 
-        // The offset is the camera's own local position, applied in the parent's
-        // HEADING frame: yaw only, deliberately. Taking the parent's full
-        // orientation would roll the camera with a banking craft and pitch it
-        // with a diving one, which is a ride, not a view.
+        // WHICH FRAME THE OFFSET IS APPLIED IN depends on how far the followed
+        // object is from level, and it has to, because the two ends of that
+        // range want opposite things.
+        //
+        // Level flying: the HEADING frame, yaw only. Rolling the camera with a
+        // banking craft is a ride, not a view, and pitching it with every dip of
+        // the nose makes the horizon seasick.
+        //
+        // Round a vertical loop: the craft's OWN frame. "Behind, in yaw" stops
+        // meaning anything once the craft points straight up, and at the top it
+        // is inverted -- a camera left level watches its craft go over from
+        // outside, which reads as the track moving rather than the craft. This
+        // is what the flight model used to do with the loop's surface normal;
+        // the craft's transform carries the same information, so the loop does
+        // not have to be a special case out here.
+        //
+        // Between the two: one blend factor for the offset frame, the up vector
+        // and the look-at point, so they can never disagree. It stays at 0 until
+        // the craft is past ~53 degrees off level -- normal banking is well
+        // inside that, so nothing changes for ordinary racing.
+        const glm::vec3 wUp{0.0f, 1.0f, 0.0f};
+        const glm::quat q(glm::radians(target->rotation));
+        const glm::vec3 craftUp = glm::normalize(q * wUp);
+        const float level = glm::dot(craftUp, wUp);   // 1 level, 0 vertical, -1 inverted
+        const float roll  = 1.0f - glm::smoothstep(0.0f, 0.6f, level);
+
         const float yaw = glm::radians(target->rotation.y);
         const glm::vec3 off = e.localCenter;
-        const glm::vec3 wanted =
-            target->center +
-            glm::vec3(off.x * std::cos(yaw) + off.z * std::sin(yaw),
-                      off.y,
-                      -off.x * std::sin(yaw) + off.z * std::cos(yaw));
-        const glm::vec3 aim = target->center +
-                              glm::vec3(0.0f, cc->lookHeight, 0.0f);
+        const glm::vec3 offFlat(off.x * std::cos(yaw) + off.z * std::sin(yaw),
+                                off.y,
+                                -off.x * std::sin(yaw) + off.z * std::cos(yaw));
+        const glm::vec3 offFull = q * off;
+        const glm::vec3 wanted  = target->center + glm::mix(offFlat, offFull, roll);
+
+        // Up, and the point aimed at, in the same blended frame -- on a loop the
+        // craft's "above" is out along the track's surface, not toward the sky.
+        glm::vec3 up = glm::mix(wUp, craftUp, roll);
+        up = (glm::length(up) > 1e-4f) ? glm::normalize(up) : wUp;
+        const glm::vec3 aim = target->center + up * cc->lookHeight;
 
         Chase& ch = m_chase[e.id];
         if (!ch.seeded) {
@@ -90,11 +116,7 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
 
         p.position = ch.eye;
         p.front    = ch.front;
-        // Level with the world, not with the craft. A camera that follows a
-        // craft round a vertical loop wants the craft's own up instead -- that
-        // is the sim's `loopUp`, which does not exist out here yet; until it
-        // does, a loop is the one manoeuvre this gets wrong.
-        p.up = glm::vec3(0.0f, 1.0f, 0.0f);
+        p.up       = up;
         m_pose[e.id] = p;
     }
 

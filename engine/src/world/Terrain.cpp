@@ -570,6 +570,12 @@ bool TerrainStreamer::inRange(glm::ivec2 c, glm::ivec2 center) const {
            std::abs(c.y - center.y) <= m_radius;
 }
 
+bool TerrainStreamer::inRangeOfAny(glm::ivec2 c) const {
+    for (const glm::ivec2& centre : m_centers)
+        if (inRange(c, centre)) return true;
+    return false;
+}
+
 void TerrainStreamer::workerLoop() {
     for (;;) {
         Job job;
@@ -589,11 +595,30 @@ void TerrainStreamer::workerLoop() {
 }
 
 int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
+    return update(std::vector<glm::vec3>{cameraPos}, maxUploads);
+}
+
+int TerrainStreamer::update(const std::vector<glm::vec3>& viewers, int maxUploads) {
     // No terrain object in the scene: nothing to stream. setEnabled(false) already
     // dropped the chunks, and results from jobs still in flight are discarded as
     // stale the moment streaming resumes (rebuild bumped the generation).
     if (!m_enabled) return 0;
-    const glm::ivec2 center = chunkCoordOf(cameraPos);
+    // The viewers' chunk coordinates, without duplicates: two players on the
+    // same stretch of track share a ring, and queueing it twice would just make
+    // the job set bigger for nothing.
+    std::vector<glm::ivec2> centers;
+    centers.reserve(viewers.size());
+    for (const glm::vec3& v : viewers) {
+        const glm::ivec2 c = chunkCoordOf(v);
+        bool seen = false;
+        for (const glm::ivec2& o : centers) if (o == c) { seen = true; break; }
+        if (!seen) centers.push_back(c);
+    }
+    if (centers.empty()) return 0;
+    // The resident set follows the viewers, so it has to be current before
+    // anything below decides what is in range.
+    const bool centersMoved = (centers != m_centers);
+    m_centers = std::move(centers);
 
     // 1) Upload finished chunks (render thread). Bounded per frame.
     int uploaded = 0;
@@ -608,7 +633,7 @@ int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
     for (Result& r : ready) {
         const std::int64_t k = key(r.coord);
         m_pending.erase(k);
-        const bool stale = (r.generation != m_generation) || !inRange(r.coord, center);
+        const bool stale = (r.generation != m_generation) || !inRangeOfAny(r.coord);
         if (!stale) {
             // insert_or_assign so a sculpt rebuild swaps the mesh in place (the
             // old one kept rendering until now -> no hole). The replaced Mesh's
@@ -622,24 +647,24 @@ int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
 
     bool changed = uploaded > 0;
 
-    // 2) When the camera changes chunk (or after a rebuild), refresh the desired
-    //    set: drop far chunks and queue any missing ones.
-    if (center != m_center || m_dirty) {
-        m_center = center;
+    // 2) When a viewer changes chunk (or after a rebuild), refresh the desired
+    //    set: drop chunks no viewer can still see, and queue any missing ones.
+    if (centersMoved || m_dirty) {
         m_dirty  = false;
         changed  = true;
 
         for (auto it = m_chunks.begin(); it != m_chunks.end();) {
-            if (!inRange(it->second.coord(), center)) {
+            if (!inRangeOfAny(it->second.coord())) {
                 m_chunkEdit.erase(key(it->second.coord()));
                 it = m_chunks.erase(it);
             } else ++it;
         }
 
         std::vector<Job> newJobs;
+        for (const glm::ivec2& centre : m_centers)
         for (int dz = -m_radius; dz <= m_radius; ++dz) {
             for (int dx = -m_radius; dx <= m_radius; ++dx) {
-                const glm::ivec2 c{center.x + dx, center.y + dz};
+                const glm::ivec2 c{centre.x + dx, centre.y + dz};
                 const std::int64_t k = key(c);
                 if (m_chunks.find(k) == m_chunks.end() &&
                     m_pending.find(k) == m_pending.end()) {
@@ -666,7 +691,7 @@ int TerrainStreamer::update(const glm::vec3& cameraPos, int maxUploads) {
             const auto ce = m_chunkEdit.find(k);
             const bool loaded  = m_chunks.find(k) != m_chunks.end();
             const bool current = ce != m_chunkEdit.end() && ce->second >= m_editVersion;
-            if (!inRange(c, center) || (current && loaded)) {
+            if (!inRangeOfAny(c) || (current && loaded)) {
                 it = m_editDirty.erase(it);          // done or gone out of range
                 continue;
             }

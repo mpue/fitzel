@@ -190,6 +190,21 @@ void Renderer::buildCullBounds() {
     }
 }
 
+void Renderer::prepareShadowsFor(const Camera& camera, float aspect,
+                                 const ShadowCaster& extra) {
+    // Swap the eye the cascades are cut to, run the pass, put it back. The
+    // queue is untouched -- what changes is only which frustum the cascade
+    // boxes are fitted around, so both panes cast from the same submitted
+    // scene without it having to be built twice.
+    const Camera* prevCam = m_camera;
+    const float   prevAsp = m_aspect;
+    m_camera = &camera;
+    m_aspect = aspect;
+    prepareShadows(extra);
+    m_camera = prevCam;
+    m_aspect = prevAsp;
+}
+
 void Renderer::prepareShadows(const ShadowCaster& extra) {
     if (!m_camera) return;
 

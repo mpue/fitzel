@@ -49,9 +49,58 @@ struct PointLight;
 // what a hit costs (main knocks the AI off its line and drops its speed). The
 // system has no idea what an opponent is, which is what keeps it reusable for
 // whatever else ends up flying.
-class WeaponSystem {
+// The AUTHORED weapon: everything a designer tunes, and nothing about what is
+// currently in the air. It sits in its own type -- and WeaponSystem derives from
+// it -- so a second launcher can take the same settings in one assignment that
+// cannot go stale when a field is added. Split screen is why: two players fly
+// two launchers, but there is only ONE weapon in the scene, and a settings panel
+// that tuned player one's missiles alone would be a trap.
+struct WeaponSettings {
+    bool  enabled     = true;
+    // Seeker
+    float lockAngle   = 26.0f;   // half-angle of the cone ahead of the nose (deg)
+    float lockRange   = 340.0f;  // how far it can see (m)
+    float lockTime    = 0.85f;   // seconds of tracking before the lock is solid
+    float lockHold    = 0.8f;    // seconds a solid lock survives off-cone
+    // Launcher
+    int   ammoMax     = 4;
+    // What the rack holds at the start of a race. 0 means every round has to be
+    // found on the track (see MissilePickupComponent), which is what makes the
+    // pickups worth a detour.
+    int   ammoStart   = 0;
+    // Seconds to put one back on the rail on its own. 0 (the default) switches
+    // self-reloading OFF entirely: with pickups feeding the launcher, a rack
+    // that refills by waiting would make flying over them pointless.
+    float reloadTime  = 0.0f;
+    float fireDelay   = 0.5f;    // seconds between launches
+    // Missile
+    float missileSpeed = 135.0f; // top speed (m/s)
+    float missileAccel = 150.0f; // how hard it gets there (m/s^2)
+    float missileTurn  = 150.0f; // seeker authority (deg/s)
+    float missileLife  = 9.0f;   // seconds of fuel
+    float armTime      = 0.32f;  // launch arc before the seeker takes over (s)
+    float fuseRadius   = 3.2f;   // proximity fuse, on top of the hull radius (m)
+    float blastRadius  = 9.0f;   // how far the detonation reaches (m)
+    // SFX (Sound-asset filenames; missing files are silently skipped). Every one
+    // of them is scaled by `soundGain`, so the whole weapon can be turned down
+    // (or off) without hunting through five fields.
+    float       soundGain = 1.0f;
+    std::string soundSeek = "missile_seek.wav";
+    std::string soundLock = "missile_lock.wav";
+    std::string soundFire = "missile_launch.wav";
+    std::string soundHit  = "missile_hit.wav";
+    std::string soundDeny = "missile_deny.wav";
+};
+
+class WeaponSystem : public WeaponSettings {
 public:
     explicit WeaponSystem(fitzel::Shader& lit);
+
+    // Take another launcher's authored settings, leaving this one's live state
+    // (its lock, its rack, its missiles in the air) alone.
+    void adoptSettings(const WeaponSettings& s) {
+        static_cast<WeaponSettings&>(*this) = s;
+    }
 
     // One craft the seeker can see. Built by the caller from whatever it
     // considers a rival; velocity is derived in here from frame to frame, so a
@@ -75,7 +124,14 @@ public:
         glm::vec3 up{0.0f, 1.0f, 0.0f};
         glm::vec3 vel{0.0f};
         glm::vec3 camPos{0.0f};
-        const fitzel::Input* input = nullptr; // null = no firing this frame
+        // The two buttons, already resolved from whatever device this seat is
+        // on. Held, not tapped -- the edge is detected in here, so the caller
+        // owns no weapon state. They arrive resolved for the same reason the
+        // flight controls do: which key fires is a property of the SEAT, and a
+        // launcher that read the keyboard itself would have both players firing
+        // with the same finger.
+        bool fire        = false;   // launch at the locked target
+        bool cycleTarget = false;   // step to another craft in the cone
     };
 
     // One craft caught by a detonation. `dir` is the missile's travel direction,
@@ -136,41 +192,7 @@ public:
     // as the glider's own ground query. Unset = missiles ignore the ground.
     std::function<float(float, float, float)> groundHeight;
 
-    // --- Tunables ------------------------------------------------------------
-    bool  enabled     = true;
-    // Seeker
-    float lockAngle   = 26.0f;   // half-angle of the cone ahead of the nose (deg)
-    float lockRange   = 340.0f;  // how far it can see (m)
-    float lockTime    = 0.85f;   // seconds of tracking before the lock is solid
-    float lockHold    = 0.8f;    // seconds a solid lock survives off-cone
-    // Launcher
-    int   ammoMax     = 4;
-    // What the rack holds at the start of a race. 0 means every round has to be
-    // found on the track (see MissilePickupComponent), which is what makes the
-    // pickups worth a detour.
-    int   ammoStart   = 0;
-    // Seconds to put one back on the rail on its own. 0 (the default) switches
-    // self-reloading OFF entirely: with pickups feeding the launcher, a rack
-    // that refills by waiting would make flying over them pointless.
-    float reloadTime  = 0.0f;
-    float fireDelay   = 0.5f;    // seconds between launches
-    // Missile
-    float missileSpeed = 135.0f; // top speed (m/s)
-    float missileAccel = 150.0f; // how hard it gets there (m/s^2)
-    float missileTurn  = 150.0f; // seeker authority (deg/s)
-    float missileLife  = 9.0f;   // seconds of fuel
-    float armTime      = 0.32f;  // launch arc before the seeker takes over (s)
-    float fuseRadius   = 3.2f;   // proximity fuse, on top of the hull radius (m)
-    float blastRadius  = 9.0f;   // how far the detonation reaches (m)
-    // SFX (Sound-asset filenames; missing files are silently skipped). Every one
-    // of them is scaled by `soundGain`, so the whole weapon can be turned down
-    // (or off) without hunting through five fields.
-    float       soundGain = 1.0f;
-    std::string soundSeek = "missile_seek.wav";
-    std::string soundLock = "missile_lock.wav";
-    std::string soundFire = "missile_launch.wav";
-    std::string soundHit  = "missile_hit.wav";
-    std::string soundDeny = "missile_deny.wav";
+    // (The tunables live in WeaponSettings, which this derives from -- see there.)
 
     // --- What the HUD and the caller can ask about the lock ------------------
     int   lockedTarget() const { return m_locked ? m_trackId : -1; }

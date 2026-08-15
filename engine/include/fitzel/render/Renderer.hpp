@@ -163,6 +163,16 @@ public:
     // matrix, so the app can add its own casters (e.g. instanced trees).
     using ShadowCaster = std::function<void(const glm::mat4& lightSpace)>;
     void prepareShadows(const ShadowCaster& extra = {});
+
+    // The same, fitted to a DIFFERENT eye than the one begin() was given, and
+    // without disturbing the submitted queue. For split screen: cascades are cut
+    // to a view frustum, so a second player looking somewhere else needs its own
+    // set -- fitting both panes to player one's frustum leaves the second one
+    // with shadows that fade out a few metres ahead, or none at all once the two
+    // are far apart. It costs a second cascade pass over the queue, which is why
+    // it is a separate call and not the default.
+    void prepareShadowsFor(const Camera& camera, float aspect,
+                           const ShadowCaster& extra = {});
     // Render the submitted opaque queue with an explicit view/projection,
     // eye position and world-space clip plane into the currently bound target
     // (does not clear). Pass kNoClip to disable clipping.

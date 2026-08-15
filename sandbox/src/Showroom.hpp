@@ -44,6 +44,13 @@ struct Launch {
     std::string scene;            // circuit scene stem
     int         craftId = -1;     // entity id of the chosen craft (its subtree)
     std::string craftName;
+    // The second seat, when the start screen was set to two players: -1 means a
+    // single-player race and the caller draws one pane. Both players pick from
+    // the same catalogue, so this is another craft out of the same scene -- and
+    // it may be the SAME craft as player one's, which is a legitimate choice
+    // (two of the same machine) and costs the caller nothing extra.
+    int         craftId2 = -1;
+    std::string craftName2;
     int         laps    = 0;      // laps the circuit asks for (0 = the scene's own)
 };
 
@@ -121,7 +128,24 @@ private:
 
     // Which row the keyboard is on. Left/right moves within a row, up/down
     // between rows -- two axes, no modifier keys, nothing small to hit.
-    enum class Row { Craft = 0, Track = 1, Start = 2 };
+    //
+    // Players comes first because it decides whether Craft2 exists at all: with
+    // one player that row is skipped entirely rather than shown disabled, so the
+    // screen never asks a question that has no meaning.
+    enum class Row { Players = 0, Craft = 1, Craft2 = 2, Track = 3, Start = 4 };
+
+    // The seat the craft carousel is currently picking for -- Craft2's row means
+    // player two. One carousel, not two: the choice is the same catalogue and the
+    // same gesture, and two of them side by side would halve the space a craft
+    // has to be looked at in.
+    int  seatRow() const { return m_row == Row::Craft2 ? 1 : 0; }
+    int& craftSelFor(int seat) { return seat == 1 ? m_craftSel2 : m_craftSel; }
+    int  craftSelFor(int seat) const { return seat == 1 ? m_craftSel2 : m_craftSel; }
+    // The craft standing on the podium: whichever seat is being chosen for.
+    int  stageSel() const { return craftSelFor(seatRow()); }
+    // Walk to the next/previous row, skipping what this configuration has no use
+    // for (the second seat when there is only one player).
+    void moveRow(int dir);
 
     void moveCraft(int dir);
     void moveTrack(int dir);
@@ -151,8 +175,13 @@ private:
     std::vector<Craft> m_craft;
     std::vector<Track> m_tracks;
     int  m_craftSel = 0, m_trackSel = 0;
+    // How many seats this race is started with, and player two's pick. Chosen on
+    // the screen rather than authored on the component: whether two people are
+    // sitting there is not a property of the scene.
+    int  m_players  = 1;
+    int  m_craftSel2 = 0;
     int  m_prevCraft = -1;       // craft leaving the stage during a swap
-    Row  m_row = Row::Craft;
+    Row  m_row = Row::Players;
 
     // --- Effect clocks ------------------------------------------------------
     float m_time    = 0.0f;   // seconds the showroom has been up (idle animation)

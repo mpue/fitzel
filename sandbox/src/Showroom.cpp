@@ -350,8 +350,12 @@ void Showroom::begin(const std::vector<Entity>& entities,
     m_camHomeFov   = camera.fov();
 
     m_craftSel = m_trackSel = 0;
+    m_players  = 1;
+    // Player two starts on a different machine where there is one, so a two-
+    // player race does not open with both seats on the same craft by accident.
+    m_craftSel2 = m_craft.size() > 1 ? 1 : 0;
     m_prevCraft = -1;
-    m_row      = Row::Craft;
+    m_row      = Row::Players;
     m_time = m_intro = m_swap = m_trackFx = m_launch = 0.0f;
     m_launching = false;
     m_wantBack  = false;
@@ -398,11 +402,21 @@ void Showroom::cue(const std::string& snd, float pitch) {
     m_cues.push_back(Cue{snd, m_sndGain, pitch});
 }
 
+void Showroom::moveRow(int dir) {
+    int r = static_cast<int>(m_row) + dir;
+    // The second seat's row is not there to be landed on with one player: step
+    // over it in whichever direction the move was going.
+    if (r == static_cast<int>(Row::Craft2) && m_players < 2) r += dir;
+    m_row = static_cast<Row>(std::clamp(r, 0, static_cast<int>(Row::Start)));
+}
+
 void Showroom::moveCraft(int dir) {
     if (m_craft.size() < 2) return;
-    m_prevCraft = m_craftSel;
+    const int seat = seatRow();
+    int&      sel  = craftSelFor(seat);
+    m_prevCraft = sel;
     const int n = static_cast<int>(m_craft.size());
-    m_craftSel = (m_craftSel + dir % n + n) % n;
+    sel = (sel + dir % n + n) % n;
     m_swap = 1.0f;
     m_orbitVel += -dir * 130.0f;   // the camera swings with the change
     cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
@@ -435,20 +449,27 @@ void Showroom::update(std::vector<Entity>& entities, fitzel::Camera& camera,
         m_launch = std::min(1.0f, m_launch + dt * 1.25f);
     } else {
         // --- Navigation -----------------------------------------------------
-        if (in.up)   { m_row = static_cast<Row>(std::max(0, static_cast<int>(m_row) - 1));
-                       cue(m_sndMove, 0.92f); }
-        if (in.down) { m_row = static_cast<Row>(std::min(2, static_cast<int>(m_row) + 1));
-                       cue(m_sndMove, 0.92f); }
+        if (in.up)   { moveRow(-1); cue(m_sndMove, 0.92f); }
+        if (in.down) { moveRow(+1); cue(m_sndMove, 0.92f); }
         if (in.left || in.right) {
             const int d = in.right ? 1 : -1;
-            if (m_row == Row::Craft) moveCraft(d);
+            if (m_row == Row::Players) {
+                // One player or two. Left is one, right is two -- an axis, not a
+                // toggle, so holding a direction cannot flip it back and forth.
+                const int want = d > 0 ? 2 : 1;
+                if (want != m_players) {
+                    m_players = want;
+                    cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
+                }
+            }
+            else if (m_row == Row::Craft || m_row == Row::Craft2) moveCraft(d);
             else                     moveTrack(d); // the START row still browses circuits
         }
         // Confirm walks forward through the rows and commits on the last one, so
         // the whole screen can be answered with one button held in one hand.
         if (in.confirm) {
             if (m_row != Row::Start) {
-                m_row = static_cast<Row>(static_cast<int>(m_row) + 1);
+                moveRow(+1);
                 cue(m_sndMove, 1.0f);
             } else if (!m_craft.empty() && !m_tracks.empty()) {
                 m_launching = true;
@@ -460,8 +481,10 @@ void Showroom::update(std::vector<Entity>& entities, fitzel::Camera& camera,
     }
 
     // --- Stat bars ease toward the chosen craft ----------------------------
-    if (m_craftSel >= 0 && m_craftSel < static_cast<int>(m_craft.size())) {
-        const Craft& c = m_craft[m_craftSel];
+    // ...of the seat being chosen for, so switching to player two's row shows
+    // player two's machine rather than a readout for someone else's.
+    if (stageSel() >= 0 && stageSel() < static_cast<int>(m_craft.size())) {
+        const Craft& c = m_craft[stageSel()];
         const float want[4] = {c.speed, c.accel, c.grip, c.agility};
         for (int i = 0; i < 4; ++i) {
             // Staggered rates: the bars arrive one after another rather than as a
@@ -488,7 +511,7 @@ void Showroom::update(std::vector<Entity>& entities, fitzel::Camera& camera,
     // --- The craft on stage -------------------------------------------------
     m_spin += (m_spinSpeed + 260.0f * launchE) * dt;
     const float bob = std::sin(m_time * 1.35f) * m_bob;
-    const int   sel = m_craftSel;
+    const int   sel = stageSel();
     const bool  ring = m_ringRadius > 0.01f && m_craft.size() > 1;
     if (ring) {
         // Carousel: the ring turns to bring the chosen craft to the front. The
@@ -688,13 +711,18 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
     const float panelX = g.x0 + pad - (1.0f - intro) * 90.0f * g.S;
     float panelY = g.cy - 150.0f * g.S;
     if (haveCraft) {
-        const Craft& c = m_craft[m_craftSel];
+        const Craft& c = m_craft[stageSel()];
         const float lift = easeOut(1.0f - m_swap);     // the block settles in on a swap
         const float ca   = A * (0.25f + 0.75f * lift);
         const float yoff = (1.0f - lift) * 26.0f * g.S;
 
-        g.spaced(panelX, panelY - 26.0f * g.S + yoff, g.fTiny,
-                 fade(kDim, ca), "CRAFT", 0.5f);
+        // Whose craft this is. With one player the label is just "CRAFT"; with
+        // two it has to name the seat, because the same carousel picks for both
+        // and nothing else on screen would say which one is being changed.
+        g.spaced(panelX, panelY - 26.0f * g.S + yoff, g.fTiny, fade(kDim, ca),
+                 m_players < 2 ? "CRAFT"
+                               : (seatRow() == 1 ? "PLAYER 2  CRAFT"
+                                                 : "PLAYER 1  CRAFT"), 0.5f);
         // The name, with a brief digital stutter as it arrives.
         {
             const float jitter = m_swap > 0.55f
@@ -737,7 +765,7 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
         const float dotR = 6.0f * g.S, dotGap = 22.0f * g.S;
         for (std::size_t i = 0; i < m_craft.size(); ++i) {
             const ImVec2 dc(panelX + dotR + i * dotGap, y);
-            const bool on = static_cast<int>(i) == m_craftSel;
+            const bool on = static_cast<int>(i) == stageSel();
             dl->AddCircleFilled(dc, on ? dotR : dotR * 0.55f,
                                 on ? g.accent(A) : fade(kDim, A * 0.55f), 20);
             if (on) dl->AddCircle(dc, dotR * 2.0f, g.accent(A * 0.45f), 24, 1.5f * g.S);
@@ -745,11 +773,14 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
             if (g.mouse && std::abs(m.x - dc.x) < dotGap * 0.5f &&
                 std::abs(m.y - dc.y) < dotGap * 0.5f &&
                 ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !on) {
-                m_prevCraft = m_craftSel;
-                m_orbitVel += (static_cast<int>(i) < m_craftSel ? 130.0f : -130.0f);
-                m_craftSel  = static_cast<int>(i);
+                int& sel = craftSelFor(seatRow());
+                m_prevCraft = sel;
+                m_orbitVel += (static_cast<int>(i) < sel ? 130.0f : -130.0f);
+                sel         = static_cast<int>(i);
                 m_swap      = 1.0f;
-                m_row       = Row::Craft;
+                // Picking a craft with the mouse lands on that seat's row, so
+                // the keyboard carries on from where the hand left off.
+                if (m_row != Row::Craft2) m_row = Row::Craft;
                 cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
             }
         }
@@ -762,7 +793,7 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
     if (m_craft.size() > 1) {
         const float chY = py - vsize.y * 0.06f;
         const float chS = 30.0f * g.S;
-        const bool armed = m_row == Row::Craft;
+        const bool armed = m_row == Row::Craft || m_row == Row::Craft2;
         if (chevron(g, px - vsize.x * 0.26f, chY, chS, -1, A, armed)) { moveCraft(-1); m_row = Row::Craft; }
         if (chevron(g, px + vsize.x * 0.26f, chY, chS,  1, A, armed)) { moveCraft( 1); m_row = Row::Craft; }
     }
@@ -856,6 +887,45 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
                     m_tracks[m_trackSel].blurb.c_str());
     }
 
+    // --- Seats: one player or two -------------------------------------------
+    // Two big targets rather than a checkbox, and hovering picks -- the same
+    // rule the rest of this screen follows. It sits directly above START
+    // because it is the question that changes what START does: with two, the
+    // race opens split, and player two's craft row appears above.
+    {
+        const float bw = 190.0f * g.S, bh = 44.0f * g.S, gap = 14.0f * g.S;
+        const float ay = g.y1 - 152.0f * g.S;
+        const float ax = g.cx - bw - gap * 0.5f;
+        const float pulse = 0.5f + 0.5f * std::sin(m_time * 3.4f);
+        const bool armed = m_row == Row::Players;
+        for (int i = 0; i < 2; ++i) {
+            const float bx = ax + static_cast<float>(i) * (bw + gap);
+            const bool  on = (m_players == i + 1);
+            int hov = 0;
+            const bool clicked =
+                bigButton(g, bx, ay, bx + bw, ay + bh,
+                          i == 0 ? "1 PLAYER" : "2 PLAYERS",
+                          on, A * (on ? 1.0f : 0.55f), &hov, armed ? pulse : 0.0f);
+            if (hov) m_row = Row::Players;
+            if (clicked && !on) {
+                m_players = i + 1;
+                cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
+            }
+        }
+        // What the second seat flies, spelled out here rather than only on its
+        // own row: the choice is made on one carousel, so this is the one place
+        // both picks can be read at once.
+        if (m_players > 1 && haveCraft) {
+            char line[128];
+            std::snprintf(line, sizeof(line), "P1  %s          P2  %s",
+                          m_craft[m_craftSel].title.c_str(),
+                          m_craft[std::clamp(m_craftSel2, 0,
+                                             static_cast<int>(m_craft.size()) - 1)]
+                              .title.c_str());
+            g.textC(g.cx, ay + bh + 8.0f * g.S, g.fTiny, fade(kDim, A * 0.9f), line);
+        }
+    }
+
     // --- START --------------------------------------------------------------
     {
         const float bw = 320.0f * g.S, bh = 62.0f * g.S;
@@ -915,6 +985,11 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
             if (haveCraft) {
                 out.craftId   = m_craft[m_craftSel].id;
                 out.craftName = m_craft[m_craftSel].title;
+                if (m_players > 1 && m_craftSel2 >= 0 &&
+                    m_craftSel2 < static_cast<int>(m_craft.size())) {
+                    out.craftId2   = m_craft[m_craftSel2].id;
+                    out.craftName2 = m_craft[m_craftSel2].title;
+                }
             }
             out.laps = m_tracks.empty() ? 0 : m_tracks[m_trackSel].laps;
         }

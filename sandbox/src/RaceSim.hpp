@@ -34,6 +34,21 @@ struct RaceState {
     // --- Fixed-timestep clock -------------------------------------------
     float simAccum = 0.0f;     // fixed-timestep accumulator
 
+    // The pose one fixed step ago, for the render interpolation -- and it has to
+    // PERSIST ACROSS FRAMES, which is the whole point of keeping it here rather
+    // than in a local.
+    //
+    // At 120 Hz there are plenty of frames in which no step falls at all. Taken
+    // fresh each frame, the "previous" pose is then the current one, the craft
+    // renders at the far end of its last step and stands still for that frame --
+    // while everything drawn on the render clock (the chase camera) keeps
+    // moving. Relative to the camera the craft slides backwards, once per
+    // skipped step, which is exactly what it looks like.
+    glm::vec3 prevPos{0.0f};
+    float     prevYaw = 0.0f, prevBank = 0.0f, prevPitch = 0.0f;
+    float     prevSteer = 0.0f, prevSpin = 0.0f;   // car only
+    bool      prevValid = false;   // false = nothing to interpolate from yet
+
     // --- Glider (hover racer) -------------------------------------------
     glm::vec3 gliderPos{0.0f}; // body-centre world position
     float gliderYaw   = 0.0f;  // heading (radians)
@@ -127,6 +142,11 @@ struct RaceState {
     int   playerPlace = 0;             // 1-based, 0 = not in the field
     bool  raceOver    = false;         // every racer has taken the flag
     std::string winnerName;            // first over the last lap's line
+    // Who that was, as an identity rather than a name: -2 = nobody yet, -1 =
+    // player one, otherwise the winning craft's entity id. Split screen needs it
+    // -- "did I win" has a different answer per seat, and answering it by
+    // comparing finish times or names would be guessing.
+    int   winnerId       = -2;
     bool  winnerIsPlayer = false;
     float winnerTime     = 0.0f;
     bool  oppWasActive   = false;      // edge-detect the race start (re-seeds the field)
@@ -229,8 +249,21 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env);
 // logic, hover spring, banked attitude, interpolated chase cam.
 void updateGlider(RaceState& st, const RaceEnv& env);
 
+// Charge a hull for damage that did not come from flying into something -- a
+// missile. Same bookkeeping a crash does: the recharge pause starts over and the
+// HUD flashes, so where the damage came from does not change how it reads on the
+// bar. The run ending at zero is left to the sim's own step, which is the single
+// place that decides it.
+void applyDamage(RaceState& st, float dmg);
+
 // AI opponents: kinematic racers that lap the road centreline, slowing for
 // corners (corner speed = sqrt(grip / curvature)) and banking into them.
-void updateOpponents(RaceState& st, const RaceEnv& env);
+//
+// This also builds the STANDINGS, which is why split screen reaches in here:
+// `st2`, when given, is the second player's state. It joins the field as a
+// racer, and gets the finished order written back into it -- with the two
+// players' roles swapped, so each one reads "YOU" in its own pane and sees the
+// other by name. Null for a single-player race, and then nothing changes.
+void updateOpponents(RaceState& st, const RaceEnv& env, RaceState* st2 = nullptr);
 
 } // namespace racesim

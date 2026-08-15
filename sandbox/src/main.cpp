@@ -799,6 +799,12 @@ int main(int argc, char** argv) {
         // field and applies the hits it reports. Its cue/ground callbacks are
         // wired further down, where those helpers exist.
         WeaponSystem weapons(lit);
+        // Player two's launcher: a second RUNTIME state -- its own lock, its own
+        // rack, its own missiles in the air -- of the same authored weapon. The
+        // settings panel edits `weapons`, and this one adopts them each frame
+        // (see WeaponSettings), so there is exactly one weapon in the scene and
+        // two people shooting it.
+        WeaponSystem weapons2(lit);
         bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
@@ -3051,6 +3057,11 @@ int main(int argc, char** argv) {
         // End-of-race question ("race again / start screen"): the HUD draws and
         // answers it, main owns the state, the key edges and the two actions.
         racehud::EndPrompt endPrompt;
+        // Player two's board. Its own state because the HUD keeps the "board
+        // acknowledged" flag in here and the two players finish at different
+        // times; sharing it would let one player's classification dismiss the
+        // other's. It is never asked the question -- see the draw call.
+        racehud::EndPrompt endPrompt2;
         bool prevEndPrev = false, prevEndNext = false, prevEndFire = false;
         bool pendingStartScreen = false; // deferred: leave the race (see below)
 
@@ -3068,6 +3079,11 @@ int main(int argc, char** argv) {
         // makes, without the file.
         nlohmann::json pendingCraftJson;
         std::string    pendingCraftName;
+        // The second seat's craft, when the start screen was set to two players.
+        // Carried the same way and for the same reason: the scene it will race in
+        // is not loaded yet, so the choice travels as data, not as an entity.
+        nlohmann::json pendingCraftJson2;
+        std::string    pendingCraftName2;
         int            pendingCraftLaps = 0;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
@@ -3491,6 +3507,10 @@ int main(int argc, char** argv) {
             // Nothing to do about the camera here: the craft's camera entity
             // stands itself up the first frame it is seen (see CameraSystem).
             st.loopIndex = -1;  // not on a loop
+            // Nothing to interpolate from: this pose was placed, not flown, and
+            // blending out of wherever the craft last was would drag it across
+            // the map for a frame.
+            st.prevValid = false;
             // A fresh craft flies with a full hull: taking the controls is a new
             // run, so a wreck from the last one must not still be smoking.
             st.energyCapacity = glm::max(gc->energyCapacity, 1.0f);
@@ -3582,6 +3602,13 @@ int main(int argc, char** argv) {
                 raceCountdown = hasRace ? 3.0f : 0.0f;
                 goFlash = 0.0f;
                 endPrompt = racehud::EndPrompt{};
+                // Player two counts down with everyone else. Its own state runs
+                // its own clock, so without this it leaves while the other is
+                // still watching "Ready" -- and the whole point of holding the
+                // grid is that nobody can jump the start.
+                race2.raceCountdown = raceCountdown;
+                race2.goFlash = 0.0f;
+                endPrompt2 = racehud::EndPrompt{};
             }
         };
 
@@ -3792,6 +3819,8 @@ int main(int argc, char** argv) {
             // can hit, the launching craft included.
             return gliderGround(x, z, yMax, -1);
         };
+        weapons2.playCue      = weapons.playCue;
+        weapons2.groundHeight = weapons.groundHeight;
         // Looping ambient voices for TriggerSound zones (entity id -> Sound),
         // created lazily in Play and cleared on stop. Sound is move-only.
         std::unordered_map<int, Sound> zoneSounds;
@@ -4040,6 +4069,7 @@ int main(int argc, char** argv) {
             trails.clear(); // ...nor stale contrails
             particles.clear(); // ...nor a cloud of smoke from the last run
             weapons.reset();   // ...nor a missile still in the air, or a lock
+            weapons2.reset();  // ...for either seat
             // Player two starts from scratch too, and gets re-seated: the craft
             // it flew belongs to the scene that is being restarted.
             race2 = racesim::RaceState{};
@@ -4174,6 +4204,7 @@ int main(int argc, char** argv) {
             skids.clear();          // drop skid marks so they don't linger in the editor
             trails.clear();         // and the contrails
             weapons.reset();        // and anything the launcher still had in the air
+            weapons2.reset();
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
             physicsBody.clear();
@@ -5221,7 +5252,15 @@ int main(int argc, char** argv) {
                 std::max(250.0f, viewRadius * streamer.settings().chunkSize * 1.7f));
 
             // Stream terrain chunks around the camera.
-            streamer.update(camera.position());
+            // Terrain follows every eye that is drawn this frame, not just the
+            // first: with two panes up, one ring around player one leaves player
+            // two flying over a hole the moment the two are a few hundred metres
+            // apart.
+            {
+                std::vector<glm::vec3> viewers{camera.position()};
+                if (haveView2) viewers.push_back(camera2.position());
+                streamer.update(viewers);
+            }
 
             // When the road settles (not mid-drag), regrow vegetation so it
             // clears off the new road; debounced to avoid thrashing while editing.
@@ -5527,9 +5566,17 @@ int main(int argc, char** argv) {
                         // standing -- flying over one with no room is not how a
                         // player should lose it.
                         if (auto* mp = e.components.get<MissilePickupComponent>()) {
-                            if (mp->cooldown <= 0.0f &&
-                                glm::distance(playerC, e.center) <= mp->radius &&
-                                weapons.addAmmo(mp->count) > 0) {
+                            // Whoever gets there first. Player two flies over the
+                            // same rounds, and a pickup that only ever fed seat
+                            // one would make half the track pointless to it.
+                            const bool p1 = mp->cooldown <= 0.0f &&
+                                            glm::distance(playerC, e.center) <= mp->radius &&
+                                            weapons.addAmmo(mp->count) > 0;
+                            const bool p2 = !p1 && mp->cooldown <= 0.0f &&
+                                            driveGliderId2 >= 0 &&
+                                            glm::distance(race2.gliderPos, e.center) <= mp->radius &&
+                                            weapons2.addAmmo(mp->count) > 0;
+                            if (p1 || p2) {
                                 if (!mp->sound.empty()) host.playSound(mp->sound);
                                 mp->cooldown = mp->respawn;
                                 e.active     = false;
@@ -5679,7 +5726,11 @@ int main(int argc, char** argv) {
 
                 // Opponents: AI racers lapping the road centreline, slowing for
                 // corners and banking into them. (racesim::updateOpponents.)
-                racesim::updateOpponents(race, raceEnv);
+                // Player two joins the field when there is one, so both panes
+                // show one running order instead of player one's list and an
+                // empty box next to it.
+                racesim::updateOpponents(race, raceEnv,
+                                         driveGliderId2 >= 0 ? &race2 : nullptr);
 
                 // Vapour contrails behind every racer -- the driven craft (keyed by
                 // its entity id) and each opponent (at its just-placed centre). The
@@ -5690,8 +5741,14 @@ int main(int argc, char** argv) {
                         const int pid = gliderMode ? driveGliderId : driveVehicleId;
                         if (pid >= 0) trails.emit(pid, gliderMode ? gliderPos : carPos);
                     }
+                    // Player two draws one too, from the flown position rather
+                    // than the entity centre -- that is the interpolated pose,
+                    // so its ribbon is laid down as smoothly as player one's.
+                    if (driveGliderId2 >= 0)
+                        trails.emit(driveGliderId2, race2.gliderPos);
                     for (Entity& te : entities)
-                        if (te.activeInHierarchy && te.components.get<OpponentComponent>())
+                        if (te.activeInHierarchy && te.id != driveGliderId2 &&
+                            te.components.get<OpponentComponent>())
                             trails.emit(te.id, te.center);
                 }
                 trails.update(dt, camera.position());
@@ -5705,6 +5762,9 @@ int main(int argc, char** argv) {
                 // the slip-up the opponent sim already knows how to fly, so a
                 // missile reads as having thrown the rival off its line.
                 {
+                    // Player two shoots the same authored weapon from its own
+                    // launcher, so the panel keeps tuning one thing.
+                    weapons2.adoptSettings(weapons);
                     WeaponSystem::Frame wf;
                     wf.dt    = dt;
                     wf.armed = gliderMode && driveGliderId >= 0;
@@ -5723,37 +5783,99 @@ int main(int argc, char** argv) {
                                                  : glm::vec3(0.0f, 1.0f, 0.0f);
                     wf.vel    = gliderVel;
                     wf.camPos = camera.position();
-                    wf.input  = &input;
+                    // Seat one's buttons: F / pad X fires, T / pad Y steps the
+                    // target. Resolved here, like the flight controls, so the
+                    // two seats cannot end up sharing a trigger finger.
+                    wf.fire = input.isKeyDown(GLFW_KEY_F) ||
+                              (input.hasGamepad() &&
+                               input.gamepadButton(GLFW_GAMEPAD_BUTTON_X));
+                    wf.cycleTarget = input.isKeyDown(GLFW_KEY_T) ||
+                                     (input.hasGamepad() &&
+                                      input.gamepadButton(GLFW_GAMEPAD_BUTTON_Y));
 
-                    std::vector<WeaponSystem::Racer> field;
-                    for (const Entity& te : entities) {
-                        if (!te.activeInHierarchy || te.id == driveGliderId) continue;
-                        if (!te.components.get<OpponentComponent>()) continue;
-                        WeaponSystem::Racer r;
-                        r.id     = te.id;
-                        r.pos    = te.center;
-                        r.radius = glm::max(glm::max(te.half.x, te.half.z), 1.0f);
-                        r.name   = te.name;
-                        field.push_back(std::move(r));
-                    }
-                    weapons.update(wf, field);
+                    // Who a shooter may lock onto: every AI racer, plus the OTHER
+                    // player's craft. A two-player race in which the missiles
+                    // only ever go to the computer would be missing the point.
+                    auto fieldFor = [&](int shooterId, int rivalId) {
+                        std::vector<WeaponSystem::Racer> field;
+                        for (const Entity& te : entities) {
+                            if (!te.activeInHierarchy || te.id == shooterId) continue;
+                            const bool rival =
+                                te.components.get<OpponentComponent>() != nullptr ||
+                                (rivalId >= 0 && te.id == rivalId);
+                            if (!rival) continue;
+                            WeaponSystem::Racer r;
+                            r.id     = te.id;
+                            r.pos    = te.center;
+                            r.radius = glm::max(glm::max(te.half.x, te.half.z), 1.0f);
+                            r.name   = te.name;
+                            field.push_back(std::move(r));
+                        }
+                        return field;
+                    };
+                    weapons.update(wf, fieldFor(driveGliderId, driveGliderId2));
 
-                    for (const WeaponSystem::Hit& h : weapons.hits()) {
-                        Entity* he = document.find(h.targetId);
-                        auto* op = he ? he->components.get<OpponentComponent>() : nullptr;
-                        if (!op) continue;
-                        op->curSpeed *= glm::mix(0.90f, 0.40f, h.damage);
-                        op->mistakeT  = glm::max(op->mistakeT, 0.6f + 1.5f * h.damage);
-                        op->mistakeCd = glm::max(op->mistakeCd, 3.0f); // no double punish
-                        // Shoved across the track the way it was hit. laneCur is
-                        // eased back toward the racing line every tick, so this
-                        // is a lurch, not a permanent detour.
-                        const float yr = glm::radians(he->rotation.y);
-                        const glm::vec3 fr(std::sin(yr), 0.0f, std::cos(yr));
-                        const glm::vec3 sr = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fr);
-                        const float push =
-                            glm::dot(sr, glm::vec3(h.dir.x, 0.0f, h.dir.z));
-                        op->laneCur += glm::clamp(push, -1.0f, 1.0f) * 2.6f * h.damage;
+                    // What a hit costs depends on WHO took it, which is the part
+                    // the weapon cannot know. An AI racer loses its line (it
+                    // flies the slip-up the opponent sim already knows); a human
+                    // loses hull, on the same bookkeeping a crash uses, and gets
+                    // shoved the way the missile was travelling.
+                    auto applyHits = [&](const WeaponSystem& w) {
+                        for (const WeaponSystem::Hit& h : w.hits()) {
+                            racesim::RaceState* victim =
+                                (h.targetId == driveGliderId)  ? &race
+                              : (h.targetId == driveGliderId2) ? &race2 : nullptr;
+                            if (victim) {
+                                // A direct hit takes about a third of a full
+                                // hull: enough that being shot at matters, far
+                                // enough from lethal that one missile cannot end
+                                // someone's race outright.
+                                racesim::applyDamage(
+                                    *victim, victim->energyCapacity * 0.35f * h.damage);
+                                victim->gliderVel +=
+                                    glm::vec3(h.dir.x, 0.0f, h.dir.z) * (12.0f * h.damage);
+                                continue;
+                            }
+                            Entity* he = document.find(h.targetId);
+                            auto* op = he ? he->components.get<OpponentComponent>() : nullptr;
+                            if (!op) continue;
+                            op->curSpeed *= glm::mix(0.90f, 0.40f, h.damage);
+                            op->mistakeT  = glm::max(op->mistakeT, 0.6f + 1.5f * h.damage);
+                            op->mistakeCd = glm::max(op->mistakeCd, 3.0f); // no double punish
+                            // Shoved across the track the way it was hit. laneCur is
+                            // eased back toward the racing line every tick, so this
+                            // is a lurch, not a permanent detour.
+                            const float yr = glm::radians(he->rotation.y);
+                            const glm::vec3 fr(std::sin(yr), 0.0f, std::cos(yr));
+                            const glm::vec3 sr = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fr);
+                            const float push =
+                                glm::dot(sr, glm::vec3(h.dir.x, 0.0f, h.dir.z));
+                            op->laneCur += glm::clamp(push, -1.0f, 1.0f) * 2.6f * h.damage;
+                        }
+                    };
+                    applyHits(weapons);
+
+                    // Seat two, same weapon, its own launcher and its own eye.
+                    // Its buttons sit next to the arrow keys it flies with.
+                    if (driveGliderId2 >= 0) {
+                        WeaponSystem::Frame wf2;
+                        wf2.dt    = dt;
+                        wf2.armed = true;
+                        wf2.mayFire = race2.raceCountdown <= 0.0f &&
+                                      !race2.raceFinished && !race2.energyOut;
+                        wf2.pos = race2.gliderPos;
+                        wf2.fwd = race2.loopIndex >= 0
+                                      ? race2.loopFwd
+                                      : glm::vec3(std::sin(race2.gliderYaw), 0.0f,
+                                                  std::cos(race2.gliderYaw));
+                        wf2.up  = race2.loopIndex >= 0 ? race2.loopUp
+                                                       : glm::vec3(0.0f, 1.0f, 0.0f);
+                        wf2.vel    = race2.gliderVel;
+                        wf2.camPos = camera2.position();
+                        wf2.fire        = input.isKeyDown(GLFW_KEY_PERIOD);
+                        wf2.cycleTarget = input.isKeyDown(GLFW_KEY_COMMA);
+                        weapons2.update(wf2, fieldFor(driveGliderId2, driveGliderId));
+                        applyHits(weapons2);
                     }
                 }
 
@@ -5985,6 +6107,8 @@ int main(int argc, char** argv) {
             if (!pendingCraftJson.empty()) {
                 const nlohmann::json craftJson = std::move(pendingCraftJson);
                 pendingCraftJson = nlohmann::json();
+                const nlohmann::json craftJson2 = std::move(pendingCraftJson2);
+                pendingCraftJson2 = nlohmann::json();
                 const int laps = pendingCraftLaps;
                 pendingCraftLaps = 0;
                 if (playMode) {
@@ -6095,6 +6219,32 @@ int main(int argc, char** argv) {
                                     re->rotation      = re->localRotation;
                                 }
                             }
+                    // Player two's craft, from the same catalogue and by the same
+                    // route. It is spawned on top of player one's slot on
+                    // purpose: the grid below gives it the place beside it, and
+                    // standing them both on the slot first means neither depends
+                    // on the scene having authored a second one.
+                    int rootId2 = -1;
+                    if (!craftJson2.empty()) {
+                        prefab::Prefab p2;
+                        p2.name = pendingCraftName2;
+                        p2.guid = fitzel::AssetId::generate();
+                        for (const auto& ej : craftJson2)
+                            p2.entities.push_back(projectio::readEntityJson(pio, ej));
+                        std::vector<Entity> spawn2 =
+                            prefab::instantiate(p2, entityCounter, pos, 0.0f);
+                        rootId2 = spawn2.empty() ? -1 : spawn2.front().id;
+                        for (Entity& e : spawn2) entities.push_back(std::move(e));
+                        if (rootId2 >= 0 && haveHeading)
+                            if (Entity* re2 = document.find(rootId2))
+                                if (auto* rg2 = re2->components.get<GliderComponent>()) {
+                                    const float rotY = glm::degrees(headRad) -
+                                                       (rg2->forward == 1 ? 180.0f : 0.0f);
+                                    re2->localRotation = glm::vec3(0.0f, rotY, 0.0f);
+                                    re2->rotation      = re2->localRotation;
+                                }
+                    }
+
                     // The circuit's camera goes with the seat, not with the model
                     // that happened to be standing in it: hand the grid slot's
                     // camera child to the craft that replaced it. A track frames
@@ -6113,6 +6263,20 @@ int main(int argc, char** argv) {
                         };
                         if (!childCam(rootId))
                             if (Entity* sc = childCam(slot)) sc->parent = rootId;
+                        // Player two needs an eye of its own, and there is only
+                        // one camera to hand: copy player one's onto its craft.
+                        // Without this the second pane has nothing to draw from
+                        // and the screen quietly stays whole -- which would look
+                        // like the start screen's two-player choice being
+                        // ignored.
+                        if (rootId2 >= 0 && !childCam(rootId2))
+                            if (const Entity* src = childCam(rootId)) {
+                                Entity cam2 = *src;          // components deep-copy
+                                cam2.id     = entityCounter++;
+                                cam2.parent = rootId2;
+                                cam2.name   = src->name + " P2";
+                                entities.push_back(std::move(cam2));
+                            }
                     }
                     resolveHierarchy();
 
@@ -6132,7 +6296,11 @@ int main(int argc, char** argv) {
                         // for the same reason as in enterGliderMode: a craft
                         // nobody lines up starts in the paddock.
                         race2 = racesim::RaceState{};
-                        driveGliderId2 = splitScreen ? pickPlayerTwo(rootId) : -1;
+                        // The craft the start screen chose for the second seat
+                        // wins over the automatic pick: someone answered that
+                        // question by hand a moment ago.
+                        driveGliderId2 = (rootId2 >= 0) ? rootId2
+                                       : (splitScreen ? pickPlayerTwo(rootId) : -1);
                         racegrid::lineUp(entities, road, rootId,
                                          /*applyParticipation=*/true, driveGliderId2);
                         beginGliderDrive(rootId);
@@ -6146,6 +6314,9 @@ int main(int argc, char** argv) {
                         raceCountdown = hasRace ? 3.0f : 0.0f;
                         goFlash   = 0.0f;
                         endPrompt = racehud::EndPrompt{};
+                        race2.raceCountdown = raceCountdown;  // held on the grid too
+                        race2.goFlash = 0.0f;
+                        endPrompt2 = racehud::EndPrompt{};
                         // The craft's camera stands itself up on its first frame
                         // (CameraSystem), so the race no longer opens on a swoop
                         // in from wherever the showroom left the editor's eye.
@@ -10579,6 +10750,7 @@ int main(int argc, char** argv) {
             // Missiles, their trails, the blasts, and the marker cage around
             // whichever rival is locked.
             weapons.render(renderer);
+            weapons2.render(renderer);   // player two's are in the same world
 
             // Rain wets the (primitive) test car too. Set every frame so the shared
             // lit program never inherits another material's wetness.
@@ -10968,6 +11140,7 @@ int main(int argc, char** argv) {
             // the scene. Appended last so authored scene lights keep priority
             // when the renderer's budget runs out.
             weapons.collectLights(pointLights);
+            weapons2.collectLights(pointLights);
 
             const long long fzShadowMark = prof::mark();
             renderer.setPointLights(pointLights);
@@ -10979,6 +11152,10 @@ int main(int argc, char** argv) {
             auto treeShadowCaster = [&](const glm::mat4& lightSpace) {
                 veg.drawTreeShadow(lightSpace, now, weather);
             };
+            // Cascades for player one. With two panes up the second pane fits
+            // its own set inside the loop below -- shadows are cut to a view
+            // frustum, so they cannot be shared between two people looking at
+            // different places.
             renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
             prof::addSince("shadows", fzShadowMark);
             const long long fzSceneMark = prof::mark();
@@ -11096,6 +11273,13 @@ int main(int argc, char** argv) {
             // shadow fitting, the probe -- was sized against.)
             const glm::mat4  proj   = vcam.projectionMatrix(aspect);
             const glm::mat4  mainVP = proj * view;
+
+            // This pane's shadow cascades. Pane 0 already has them from the
+            // shared pass above; the second pane re-fits them to its own eye,
+            // which costs one more cascade pass over the same queue. Everything
+            // this pane draws afterwards -- the water passes included -- samples
+            // what is bound here, so it has to happen before any of it.
+            if (vi > 0) renderer.prepareShadowsFor(vcam, aspect, treeShadowCaster);
 
             // Is the water plane in shot at all? Both passes below push the
             // ENTIRE scene through renderScene a second and third time, purely
@@ -11390,11 +11574,16 @@ int main(int argc, char** argv) {
             // speed: the world streaks outward past a sharp craft. Only while a
             // chase cam is active and moving; free camera = no blur.
             RenderTarget* fxaaSrc = &postRT;
-            const float blurAmount = motionBlurStrength * blurSpeed01 * 0.35f;
-            if (blurAnchorValid && blurAmount > 0.002f) {
+            // Whose speed streaks THIS pane: the craft this pane is following.
+            // Read from player one for both, the right-hand view blurs by how
+            // fast the left-hand player is going, around a point that is not
+            // even in shot.
+            const racesim::RaceState& blurSt = (vi == 0) ? race : race2;
+            const float blurAmount = motionBlurStrength * blurSt.blurSpeed01 * 0.35f;
+            if (blurSt.blurAnchorValid && blurAmount > 0.002f) {
                 // The craft's screen position is the streak focus (stays sharp).
                 glm::vec2 center(0.5f, 0.5f);
-                const glm::vec4 cc = mainVP * glm::vec4(blurAnchorWorld, 1.0f);
+                const glm::vec4 cc = mainVP * glm::vec4(blurSt.blurAnchorWorld, 1.0f);
                 if (cc.w > 1e-4f) center = glm::vec2(cc) / cc.w * 0.5f + 0.5f;
 
                 mbRT.bind();
@@ -11568,14 +11757,42 @@ int main(int argc, char** argv) {
                 // classification) lives in RaceHud.cpp and reads the race state
                 // directly. `topInset` keeps it clear of the script's HUD line.
                 if (gliderMode) {
+                    // Each player's instruments go in that player's pane. The HUD
+                    // was already written to take a rect and one RaceState, so a
+                    // second one is a second call -- what it must NOT be is one
+                    // HUD across the whole image, which is player one's lap and
+                    // player one's energy stretched over a view that is half
+                    // somebody else's.
+                    const ImVec2 hmin  = vmin;
+                    const ImVec2 hsize = haveView2
+                        ? ImVec2(vsize.x * 0.5f, vsize.y) : vsize;
                     // The weapon's own HUD first: the reticle sits on the world,
                     // so the race panels (which own the screen corners) draw over
-                    // it rather than under it.
-                    weapons.drawHud(dl, vmin, vsize, mainVP);
+                    // it rather than under it. Weapons belong to player one for
+                    // now, so it stays in player one's pane.
+                    weapons.drawHud(dl, hmin, hsize, mainVP);
                     const racehud::EndAction act =
-                        racehud::draw(dl, vmin, vsize, race,
+                        racehud::draw(dl, hmin, hsize, race,
                                       host.hud.empty() ? 0.0f : fs * 1.5f,
                                       endPrompt, endIn);
+                    // Player two's instruments, in the right-hand pane, from its
+                    // own race state. It gets no menu input: the end-of-race
+                    // question is one decision about one scene, and two people
+                    // answering it from two panes is a race condition with a
+                    // steering wheel. Player one answers; this only reports.
+                    if (haveView2) {
+                        const ImVec2 h2min(vmin.x + vsize.x * 0.5f, vmin.y);
+                        // Player two's reticle and lock brackets belong to its
+                        // own launcher and its own view -- the world markers
+                        // billboard toward camera2, so they are drawn with that
+                        // pane's view-projection.
+                        weapons2.drawHud(dl, h2min, hsize,
+                                         camera2.projectionMatrix(
+                                             hsize.x / glm::max(hsize.y, 1.0f)) *
+                                         camera2.viewMatrix());
+                        racehud::draw(dl, h2min, hsize, race2, 0.0f,
+                                      endPrompt2, racehud::EndInput{});
+                    }
                     // Both answers are deferred to the top of the next frame --
                     // they tear down and rebuild the scene, which must not happen
                     // underneath the draw call that asked the question.
@@ -11634,20 +11851,32 @@ int main(int argc, char** argv) {
                         resolveHierarchy();
                         pendingCraftJson = nlohmann::json();
                         pendingCraftName = go.craftName;
+                        pendingCraftName2 = go.craftName2;
                         pendingCraftLaps = go.laps;
-                        if (go.craftId >= 0)
-                            if (auto p = prefab::fromSubtree(entities, go.craftId,
-                                                             go.craftName)) {
-                                const auto modelGuidOf = [&](int mid) -> std::string {
-                                    LoadedModel* lm = models.byId(mid);
-                                    return (lm && lm->assetId.valid())
-                                               ? lm->assetId.toString() : std::string();
-                                };
-                                nlohmann::json ents = nlohmann::json::array();
-                                for (const Entity& pe : p->entities)
-                                    ents.push_back(projectio::writeEntityJson(pe, modelGuidOf));
-                                pendingCraftJson = std::move(ents);
-                            }
+                        pendingCraftJson2 = nlohmann::json();
+                        const auto modelGuidOf = [&](int mid) -> std::string {
+                            LoadedModel* lm = models.byId(mid);
+                            return (lm && lm->assetId.valid())
+                                       ? lm->assetId.toString() : std::string();
+                        };
+                        // Both seats' picks travel the same way. They may well be
+                        // the same craft twice -- two of the same machine is a
+                        // legitimate race -- so each is captured on its own.
+                        const auto capture = [&](int id, const std::string& name,
+                                                 nlohmann::json& out) {
+                            if (id < 0) return;
+                            auto p = prefab::fromSubtree(entities, id, name);
+                            if (!p) return;
+                            nlohmann::json ents = nlohmann::json::array();
+                            for (const Entity& pe : p->entities)
+                                ents.push_back(projectio::writeEntityJson(pe, modelGuidOf));
+                            out = std::move(ents);
+                        };
+                        capture(go.craftId,  go.craftName,  pendingCraftJson);
+                        capture(go.craftId2, go.craftName2, pendingCraftJson2);
+                        // Two seats chosen on the start screen IS the split: the
+                        // pane count follows from someone being in the second one.
+                        splitScreen = go.craftId2 >= 0;
                         // Deferred, like every other scene change: the entity
                         // list is swapped between frames, never underneath the
                         // draw call that asked for it.

@@ -224,6 +224,13 @@ public:
     // Returns the number uploaded.
     int update(const glm::vec3& cameraPos, int maxUploads = 4);
 
+    // The same for SEVERAL viewers at once: a ring around each, and a chunk is
+    // kept while it is in range of any of them. Split screen needs this -- the
+    // resident set is one ring around one point, so calling the single-viewer
+    // form twice a frame would have each call throw away what the other just
+    // loaded, and both players would drive through a hole.
+    int update(const std::vector<glm::vec3>& viewers, int maxUploads = 4);
+
     // Discard everything and regenerate (e.g. after settings changed).
     void rebuild();
 
@@ -272,13 +279,16 @@ private:
     static glm::ivec2   coordOf(std::int64_t k);
     glm::ivec2 chunkCoordOf(const glm::vec3& pos) const;
     bool       inRange(glm::ivec2 c, glm::ivec2 center) const;
+    // In range of ANY current viewer -- what decides whether a chunk is kept.
+    bool       inRangeOfAny(glm::ivec2 c) const;
     void       refreshVisible();
     void       workerLoop();
 
     TerrainSettings m_settings;
     int             m_radius;
     bool            m_enabled = true;
-    glm::ivec2      m_center{INT32_MAX, INT32_MAX};
+    // One ring centre per viewer. Normally one; two while a split screen is up.
+    std::vector<glm::ivec2> m_centers;
     bool            m_dirty = true;
     std::uint64_t   m_generation = 0;
 

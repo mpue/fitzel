@@ -260,6 +260,14 @@ void applyImpact(RaceState& st, const GliderComponent& gc, glm::vec3& velH,
 }
 } // namespace
 
+void applyDamage(RaceState& st, float dmg) {
+    if (dmg <= 0.0f) return;
+    st.energy         = glm::max(0.0f, st.energy - dmg);
+    st.energyIdle     = 0.0f;      // the recharge waits again
+    st.energyLastHit  = dmg;
+    st.energyHitFlash = 0.7f;
+}
+
 void updateArcadeCar(RaceState& st, const RaceEnv& env) {
     // Arcade car: throttle + steering, drag, bicycle-model heading. When a scene
     // vehicle is being test-driven, its component supplies the geometry and the
@@ -299,13 +307,16 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
     // simAlpha -- the standard fixed-timestep interpolation. Snapshotting once
     // before the loop would blend across the whole (often 2-step) frame and snap
     // the craft backward.
-    glm::vec3 carPos0    = st.carPos;
-    float     carYaw0    = st.carYaw;
-    float     steerAng0  = st.steerAngle;
-    float     wheelSpin0 = st.wheelSpin;
+    // Persistent, not per-frame: see RaceState::prevPos -- a frame with no step
+    // must still interpolate across the last one.
+    if (!st.prevValid) {
+        st.prevPos = st.carPos; st.prevYaw = st.carYaw;
+        st.prevSteer = st.steerAngle; st.prevSpin = st.wheelSpin;
+        st.prevValid = true;
+    }
     for (int s = 0; s < env.simSteps; ++s) {
-        carPos0 = st.carPos; carYaw0 = st.carYaw; steerAng0 = st.steerAngle;
-        wheelSpin0 = st.wheelSpin;
+        st.prevPos = st.carPos; st.prevYaw = st.carYaw;
+        st.prevSteer = st.steerAngle; st.prevSpin = st.wheelSpin;
         st.steerAngle += (steerIn * maxSteer - st.steerAngle) * std::min(1.0f, env.kSimH * steerSpd);
         st.carSpeed += throttle * 14.0f * env.kSimH;                 // accelerate
         if (kBrake) st.carSpeed -= glm::sign(st.carSpeed) * 26.0f * env.kSimH;
@@ -322,10 +333,10 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
 
     // Render pose: blend pre-/post-step state. All of these are continuous
     // accumulators (no angle wrap within a frame), so a plain lerp is exact.
-    const glm::vec3 rPos   = glm::mix(carPos0,    st.carPos,    env.simAlpha);
-    const float     rYaw   = glm::mix(carYaw0,    st.carYaw,    env.simAlpha);
-    const float     rSteer = glm::mix(steerAng0,  st.steerAngle,env.simAlpha);
-    const float     rSpin  = glm::mix(wheelSpin0, st.wheelSpin, env.simAlpha);
+    const glm::vec3 rPos   = glm::mix(st.prevPos,   st.carPos,    env.simAlpha);
+    const float     rYaw   = glm::mix(st.prevYaw,   st.carYaw,    env.simAlpha);
+    const float     rSteer = glm::mix(st.prevSteer, st.steerAngle,env.simAlpha);
+    const float     rSpin  = glm::mix(st.prevSpin,  st.wheelSpin, env.simAlpha);
 
     // Feed the engine sound from the arcade sim's speed/throttle.
     st.engineDriving  = true;
@@ -588,17 +599,22 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
 
     // Advance simSteps fixed ticks. Integration and every step-bound event
     // (heading, velocity, boost pads, gate/checkpoint/lap logic, hover,
-    // attitude, chase-cam easing) run on the fixed clock; fixed steps also stop
-    // a fast craft tunnelling a gate. The *0 snapshots hold the pose just BEFORE
-    // the final substep (== current pose if no step runs) so the render
-    // interpolates across the last step by simAlpha.
-    glm::vec3 gliderPos0   = st.gliderPos;
-    float     gliderYaw0   = st.gliderYaw;
-    float     gliderBank0  = st.gliderBank;
-    float     gliderPitch0 = st.gliderPitch;
+    // attitude) run on the fixed clock; fixed steps also stop a fast craft
+    // tunnelling a gate.
+    //
+    // The snapshot of the pose before the last step lives in the STATE, not in a
+    // local: on a frame where no step falls it must still hold the previous
+    // step's pose, so the render keeps interpolating across that step as
+    // simAlpha grows. Reset per frame instead, the craft freezes for that frame
+    // while the camera keeps moving -- see RaceState::prevPos.
+    if (!st.prevValid) {
+        st.prevPos = st.gliderPos; st.prevYaw = st.gliderYaw;
+        st.prevBank = st.gliderBank; st.prevPitch = st.gliderPitch;
+        st.prevValid = true;
+    }
     for (int s = 0; s < env.simSteps; ++s) {
-        gliderPos0 = st.gliderPos; gliderYaw0 = st.gliderYaw;
-        gliderBank0 = st.gliderBank; gliderPitch0 = st.gliderPitch;
+        st.prevPos = st.gliderPos; st.prevYaw = st.gliderYaw;
+        st.prevBank = st.gliderBank; st.prevPitch = st.gliderPitch;
         // Heading: steer right increases yaw (fwd rotates +Z -> +X).
         st.gliderYaw += glm::radians(gc->turnRate) * steerIn * env.kSimH;
         const glm::vec3 fwd(std::sin(st.gliderYaw), 0.0f, std::cos(st.gliderYaw));
@@ -897,7 +913,7 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 // the craft a whole extra revolution. The pre-step snapshot moves
                 // with it, or the render would lerp across the fold for a frame.
                 st.gliderPitch = std::remainder(st.gliderPitch, 360.0f);
-                gliderPitch0   = st.gliderPitch;
+                st.prevPitch   = st.gliderPitch;
             }
             continue;   // the flat sim does not get a say while on a loop
         }
@@ -994,10 +1010,10 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     }
 
     // Render pose: blend pre-/post-step state (continuous values -> plain lerp).
-    const glm::vec3 rPos   = glm::mix(gliderPos0,   st.gliderPos,   env.simAlpha);
-    const float     rYaw   = glm::mix(gliderYaw0,   st.gliderYaw,   env.simAlpha);
-    const float     rBank  = glm::mix(gliderBank0,  st.gliderBank,  env.simAlpha);
-    const float     rPitch = glm::mix(gliderPitch0, st.gliderPitch, env.simAlpha);
+    const glm::vec3 rPos   = glm::mix(st.prevPos,   st.gliderPos,   env.simAlpha);
+    const float     rYaw   = glm::mix(st.prevYaw,   st.gliderYaw,   env.simAlpha);
+    const float     rBank  = glm::mix(st.prevBank,  st.gliderBank,  env.simAlpha);
+    const float     rPitch = glm::mix(st.prevPitch, st.gliderPitch, env.simAlpha);
 
     // Feed the jet-thruster sound: airspeed + throttle load.
     const float airspeed = glm::length(glm::vec2(st.gliderVel.x, st.gliderVel.z));
@@ -1023,7 +1039,7 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                                 0.0f, 1.4f);
 }
 
-void updateOpponents(RaceState& st, const RaceEnv& env) {
+void updateOpponents(RaceState& st, const RaceEnv& env, RaceState* st2) {
     // Opponents: AI racers that travel along the built road centreline (world XZ
     // polyline + terrain height), facing along the road and banking into corners.
     // Kinematic; a closed track loops, an open road stops at the end. Snaps onto
@@ -1484,6 +1500,10 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         s.totalTime = op->finishT;
         st.standings.push_back(std::move(s));
     }
+    // The two humans go in the same way, told apart by entity id: player one
+    // carries -1 (it has no craft of its own as far as the field is concerned),
+    // player two the craft it flies. That id is what lets the list be handed to
+    // the other pane below with the roles swapped.
     if (haveP) {
         RaceState::Standing s;
         s.id       = -1;
@@ -1495,6 +1515,20 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
         s.lastLap  = st.lastLap;
         s.finished = st.raceFinished;
         s.totalTime = st.raceClock;
+        st.standings.push_back(std::move(s));
+    }
+    if (st2) {
+        const Entity* e2 = env.document.find(env.playerGliderId2);
+        RaceState::Standing s;
+        s.id       = env.playerGliderId2;
+        s.name     = (e2 && !e2->name.empty()) ? e2->name : "Player 2";
+        s.lap      = st2->raceLap;
+        s.progress = static_cast<float>(st2->raceLap) * total +
+                     lapPos(projDist(glm::vec2(st2->gliderPos.x, st2->gliderPos.z)));
+        s.bestLap  = st2->bestLap;
+        s.lastLap  = st2->lastLap;
+        s.finished = st2->raceFinished;
+        s.totalTime = st2->raceClock;
         st.standings.push_back(std::move(s));
     }
     // Finishers rank ahead of anyone still running, by the time they took.
@@ -1517,11 +1551,44 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
                 if (oppEnts[oi]->id == s.id) { oppComps[oi]->place = static_cast<int>(i) + 1; break; }
     }
 
-    // Winner: the first racer over the last lap's line. The player's finish is
-    // resolved in updateGlider earlier this frame, so check it first.
+    // The same order, seen from the other seat. Both panes show one field, but
+    // each player is "YOU" in their own and a named rival in the other's --
+    // which is a property of the READER, not of the race, so it is done by
+    // copying the finished list and swapping the two humans' roles rather than
+    // by ranking anything twice.
+    if (st2) {
+        st2->standings = st.standings;
+        st2->playerPlace = 0;
+        const Entity* e1 = env.document.find(env.driveGliderId);
+        for (std::size_t i = 0; i < st2->standings.size(); ++i) {
+            RaceState::Standing& s = st2->standings[i];
+            if (s.id == env.playerGliderId2) {          // player two reads itself
+                s.isPlayer = true;
+                s.name     = "YOU";
+                st2->playerPlace = static_cast<int>(i) + 1;
+            } else if (s.id == -1) {                    // ...and player one by name
+                s.isPlayer = false;
+                s.name = (e1 && !e1->name.empty()) ? e1->name : "Player 1";
+            }
+        }
+        st2->raceOver = st.raceOver;
+    }
+
+    // Winner: the first racer over the last lap's line. Both players' finishes
+    // are resolved in updateGlider earlier this frame, so they are checked
+    // before the field. If the two cross on the SAME frame player one takes it;
+    // splitting a tie finer than the fixed step would be pretending to a
+    // precision the race does not have.
     if (st.winnerName.empty()) {
+        const Entity* e2 = st2 ? env.document.find(env.playerGliderId2) : nullptr;
         if (haveP && st.raceFinished) {
             st.winnerName = "YOU"; st.winnerIsPlayer = true; st.winnerTime = st.raceClock;
+            st.winnerId = -1;
+        } else if (st2 && st2->raceFinished) {
+            st.winnerName = (e2 && !e2->name.empty()) ? e2->name : "Player 2";
+            st.winnerIsPlayer = false;         // ...from player one's seat
+            st.winnerTime = st2->raceClock;
+            st.winnerId = env.playerGliderId2;
         } else {
             const OpponentComponent* first = nullptr; const Entity* firstE = nullptr;
             for (std::size_t oi = 0; oi < oppComps.size(); ++oi)
@@ -1533,8 +1600,17 @@ void updateOpponents(RaceState& st, const RaceEnv& env) {
                                                       : ("Racer " + std::to_string(firstE->id));
                 st.winnerIsPlayer = false;
                 st.winnerTime = first->finishT;
+                st.winnerId = firstE->id;
             }
         }
+    }
+    // The result, read from the other seat: same winner, but "did I win" is a
+    // different question over there -- and one the id answers outright.
+    if (st2) {
+        st2->winnerId       = st.winnerId;
+        st2->winnerTime     = st.winnerTime;
+        st2->winnerIsPlayer = (st.winnerId == env.playerGliderId2);
+        st2->winnerName     = st2->winnerIsPlayer ? "YOU" : st.winnerName;
     }
 }
 
