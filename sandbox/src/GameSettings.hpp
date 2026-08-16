@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "LoadingScreen.hpp"
+
 // Per-project "game" settings: the handful of knobs that describe the shipped
 // game rather than the scene being edited -- the exe name, the splash image, the
 // scene the game boots into, and which scenes an export bundles. They live in a
@@ -22,6 +24,12 @@ struct Settings {
     // whose art sits in an open folder is a shipped game whose art is already
     // copied. Off is for debugging an export.
     bool packContent = true;
+
+    // How the loading screen looks -- the picture the game sits on while a level
+    // streams in. It lives here rather than in the scene because it belongs to
+    // the GAME, not to any one level: the screen shown BETWEEN two scenes cannot
+    // sensibly be owned by either of them.
+    loadingscreen::Style loading;
 };
 
 // Read <projectFolder>/game.json. Missing file / parse error -> a default Settings

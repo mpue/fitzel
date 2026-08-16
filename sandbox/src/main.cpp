@@ -73,6 +73,7 @@
 #include "TerrainPanel.hpp"
 #include "FolderDialog.hpp"
 #include "GameSettingsPanel.hpp"
+#include "LoadingScreen.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
 #include "RaceSim.hpp"
@@ -385,69 +386,19 @@ int main(int argc, char** argv) {
         const std::string modelDir = localContent ? contentRoot + "/models"
                                                    : std::string(FITZEL_MODEL_DIR);
 
-        // Splash art behind the startup progress bar. Not flipped, so it draws
-        // upright through the ImGui draw list's default UVs. An invalid texture
-        // (file missing) just falls back to the plain dark loading screen.
-        Texture splash = Texture::fromFile("assets/splash.png",
-                                           /*flipVertically=*/false);
-
-        // Startup loading screen: render one frame with the splash and a progress
-        // bar. Called between the (synchronous, GL-bound) asset loads so the
-        // window shows what it is doing instead of staying black while everything
-        // loads.
+        // The loading screen: the picture the game sits on whenever it is not
+        // drawing a world -- at startup here, and between levels below. Its look
+        // is per project (game.json), so the editor and an unconfigured project
+        // get exactly what they had before: the engine splash with a bar on it.
+        loadingscreen::Screen loading;
+        if (playerMode) {
+            loading.setProjectFolder(bootProject);
+            loading.setStyle(game::load(bootProject).loading);
+        }
+        // One frame of it, between the synchronous GL-bound loads below, so the
+        // window shows what it is doing instead of staying black while it works.
         auto showProgress = [&](float frac, const char* label) {
-            window.pollEvents();
-            int w = 0, h = 0;
-            window.framebufferSize(w, h);
-            glViewport(0, 0, w, h);
-            glClearColor(0.04f, 0.05f, 0.06f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            gui.beginFrame();
-            const ImGuiViewport* vp = ImGui::GetMainViewport();
-            // Drawn at its native pixel size, centred -- upscaling a 1024px image
-            // to a maximized window only makes it blurry. Only shrink (aspect
-            // preserved) if the window is smaller than the art.
-            float barBottom = vp->Pos.y + vp->Size.y - 32.0f;
-            if (splash.isValid()) {
-                const float s = std::min({1.0f,
-                                          vp->Size.x / float(splash.width()),
-                                          vp->Size.y / float(splash.height())});
-                const ImVec2 sz(splash.width() * s, splash.height() * s);
-                const ImVec2 p0(vp->Pos.x + (vp->Size.x - sz.x) * 0.5f,
-                                vp->Pos.y + (vp->Size.y - sz.y) * 0.5f);
-                ImGui::GetBackgroundDrawList()->AddImage(
-                    (ImTextureID)(intptr_t)splash.id(), p0,
-                    ImVec2(p0.x + sz.x, p0.y + sz.y));
-                // Bar sits just under the art, unless that would push it off the
-                // bottom edge (window barely taller than the image).
-                barBottom = std::min(barBottom, p0.y + sz.y + 44.0f);
-            }
-            // Progress strip under/over the art.
-            ImGui::SetNextWindowPos(
-                ImVec2(vp->Pos.x + vp->Size.x * 0.5f, barBottom),
-                ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-            ImGui::SetNextWindowSize(
-                ImVec2(std::min(560.0f, vp->Size.x * 0.6f), 0.0f));
-            ImGuiWindowFlags flags =
-                ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse;
-            if (splash.isValid()) flags |= ImGuiWindowFlags_NoBackground;
-            ImGui::Begin("##loading", nullptr, flags);
-            if (!splash.isValid()) {
-                ImGui::Text("Fitzel");
-                ImGui::Spacing();
-            }
-            ImGui::TextUnformatted(label);
-            ImGui::ProgressBar(frac, ImVec2(-1.0f, 0.0f));
-            // Version under the bar, right-aligned and dimmed: useful on a bug
-            // report screenshot, quiet enough to ignore otherwise.
-            const float vw = ImGui::CalcTextSize(fitzel::kVersionFull).x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() +
-                                 ImGui::GetContentRegionAvail().x - vw);
-            ImGui::TextDisabled("%s", fitzel::kVersionFull);
-            ImGui::End();
-            gui.endFrame();
-            window.swapBuffers();
+            loading.frame(window, gui, frac, label);
         };
         showProgress(0.02f, "Starting up...");
 
@@ -1625,13 +1576,13 @@ int main(int argc, char** argv) {
         // Rescan road-surface textures and tree assets to include the project being
         // opened before the scene loads (loadScene restores the saved surface/trees
         // by name, so the project's files must already be in the lists by then).
-        auto openProjectFolder    = [&](const std::string& f){ road.refreshTextures(f); veg.refreshTreeAssets(f); const bool ok = projectio::openProjectFolder(pio, f); history.clear(); prefabCache.clear(); return ok; };
         auto newProject           = [&](){ projectio::newProject(pio); history.clear(); prefabCache.clear(); road.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
 
         // Non-blocking editor loads: kick off an incremental scene load, then step
-        // it each frame (below) so the UI keeps drawing with a progress bar. Player
-        // boot + scene triggers still use the synchronous openProjectFolder/
-        // loadSceneFile above -- they need the scene complete before continuing.
+        // it each frame (below) so the UI keeps drawing with a progress bar. The
+        // player's boot and a scene trigger drive the same loader, but drain it in
+        // one go behind the loading screen (openProjectShowing / loadSceneShowing
+        // below) -- they need the scene complete before continuing.
         projectio::SceneLoad sceneLoad;
         auto openProjectAsync = [&](const std::string& f){
             road.refreshTextures(f); veg.refreshTreeAssets(f);
@@ -1650,6 +1601,60 @@ int main(int argc, char** argv) {
         auto newSceneInProject    = [&](const std::string& f, const std::string& n){ auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
         auto renameScene          = [&](const std::string& p, const std::string& n){ return projectio::renameScene(pio, p, n); };
         auto deleteSceneFile      = [&](const std::string& p){ return projectio::deleteSceneFile(p); };
+
+        // A level change, with the loading screen up.
+        //
+        // It blocks -- the caller wants the new scene complete before it does
+        // anything else -- but blocking is not the same as going dark: the
+        // incremental loader is stepped by hand here and a frame of loading
+        // screen painted between the steps. Loading it in ONE call is what left
+        // the window unredrawn long enough for the desktop to paint its own white
+        // rectangle over it, which is the thing this replaces.
+        //
+        // The style is re-read from the project each time rather than cached: it
+        // is one small JSON, and reading it here means editing the screen in the
+        // dialog shows up on the very next level change instead of after a
+        // restart.
+        auto loadSceneShowing = [&](const std::string& path, const std::string& what) {
+            const std::string folder =
+                std::filesystem::path(path).parent_path().generic_string();
+            loading.setProjectFolder(folder);
+            loading.setStyle(game::load(folder).loading);
+
+            projectio::SceneLoad ld; // local: the editor's own sceneLoad is not ours
+            if (!projectio::beginLoadScene(pio, ld, path)) return false;
+            history.clear();
+            prefabCache.clear();
+            loading.frame(window, gui, 0.0f, "Loading " + what + "...");
+            while (!ld.done) {
+                // A bigger slice than the editor's 8 ms: nothing else is drawing,
+                // so time spent painting more loading frames is time the level is
+                // not loading.
+                projectio::stepLoad(pio, ld, 24.0);
+                loading.frame(window, gui, ld.progress, ld.label);
+            }
+            return ld.ok;
+        };
+        // Opening the whole project the same way, for the player's boot: mounts
+        // and materials first, then the scene streamed in with the bar moving.
+        // This is the longest wait the game ever has, and the one that used to be
+        // spent staring at an unpainted window.
+        auto openProjectShowing = [&](const std::string& folder) {
+            road.refreshTextures(folder);
+            veg.refreshTreeAssets(folder);
+            loading.setProjectFolder(folder);
+            loading.setStyle(game::load(folder).loading);
+
+            projectio::SceneLoad ld;
+            if (!projectio::beginOpenProject(pio, ld, folder)) return false;
+            history.clear();
+            prefabCache.clear();
+            while (!ld.done) {
+                projectio::stepLoad(pio, ld, 24.0);
+                loading.frame(window, gui, ld.progress, ld.label);
+            }
+            return ld.ok;
+        };
 
         // World transform (translate*rotate, ImGuizmo Euler convention) of an
         // entity's cached world center/rotation. Scale is not part of the
@@ -4192,19 +4197,19 @@ int main(int argc, char** argv) {
         showProgress(0.95f, "Generating world...");
         streamer.update(camera.position()); // kick off the initial terrain ring
         showProgress(1.0f, "Ready");
-        splash = Texture{}; // loading done -- give the splash's VRAM back
+        loading.release(); // up and running -- give the backdrop's VRAM back
 
         // Player build: load the game project, hide the editor, go fullscreen and
         // start playing immediately. Esc quits (handled in the input loop).
         if (playerMode) {
-            if (openProjectFolder(bootProject)) {
+            if (openProjectShowing(bootProject)) {
                 // Boot into the configured start scene (materials/mounts already
-                // set up by openProjectFolder); empty keeps the default scene.
+                // set up by the open above); empty keeps the default scene.
                 if (!bootScene.empty()) {
                     const std::string scenePath =
                         bootProject + "/" + bootScene + ".fitzel";
                     if (fitzel::vfs::exists(scenePath))
-                        projectio::loadSceneFile(pio, scenePath);
+                        loadSceneShowing(scenePath, bootScene);
                 }
                 if (bootFullscreen) {
                     GLFWwindow* w = window.nativeHandle();
@@ -6057,7 +6062,7 @@ int main(int argc, char** argv) {
                 if (fitzel::vfs::exists(target.generic_string())) {
                     const bool wasPlaying = playMode;
                     if (playMode) stopPlay();
-                    if (loadSceneFile(target.generic_string()) && wasPlaying)
+                    if (loadSceneShowing(target.generic_string(), want) && wasPlaying)
                         startPlay();
                 } else {
                     host.hud = "Scene not found: " + want;

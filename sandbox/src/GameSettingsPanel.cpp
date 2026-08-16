@@ -17,6 +17,126 @@ bool listed(const std::vector<std::string>& v, const std::string& s) {
     return std::find(v.begin(), v.end(), s) != v.end();
 }
 
+// Copy a picked image into the project (the export bundles the project folder
+// whole) and return the bare file name to store in the settings. Empty if the
+// copy failed.
+std::string adoptImage(const std::string& picked, const std::string& projectFolder) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const std::string base = fs::path(picked).filename().string();
+    const fs::path    dst  = fs::path(projectFolder) / base;
+    if (fs::weakly_canonical(picked, ec) != fs::weakly_canonical(dst, ec))
+        fs::copy_file(picked, dst, fs::copy_options::overwrite_existing, ec);
+    return ec ? std::string{} : base;
+}
+
+// The loading screen section, preview first.
+//
+// The preview is drawn by the SAME painter the game uses, into a box instead of
+// a window -- so what is being configured is the thing itself, not a description
+// of it. That matters more here than anywhere else in this dialog: the screen it
+// configures is one nobody can see while they are making it, since by the time
+// it shows up the editor is gone.
+void drawLoadingSection(game::Settings& s, const std::string& projectFolder) {
+    if (!ImGui::CollapsingHeader("Loading screen", ImGuiTreeNodeFlags_DefaultOpen))
+        return;
+
+    // Lives across frames: it owns the decoded background, and re-decoding a 4K
+    // image every frame would turn this dialog into a slideshow.
+    static loadingscreen::Screen preview;
+    static float                 demo = 0.0f;
+    demo += ImGui::GetIO().DeltaTime * 0.35f;
+    if (demo > 1.15f) demo = 0.0f;
+
+    preview.setProjectFolder(projectFolder);
+    preview.setStyle(s.loading);
+
+    const float  w  = ImGui::GetContentRegionAvail().x;
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 sz(w, w * 9.0f / 16.0f);
+    preview.drawInto(ImGui::GetWindowDrawList(), p0, sz, std::min(demo, 1.0f),
+                     "Building entities...");
+    ImGui::GetWindowDrawList()->AddRect(p0, ImVec2(p0.x + sz.x, p0.y + sz.y),
+                                        ImGui::GetColorU32(ImGuiCol_Border));
+    ImGui::Dummy(sz);
+    ui::hint("Live preview -- the same drawing the game does, at 16:9.");
+    ImGui::Spacing();
+
+    loadingscreen::Style& L = s.loading;
+
+    // --- Background ----------------------------------------------------------
+    ui::sectionText("Background");
+    ImGui::TextUnformatted(L.background.empty() ? "(the splash image)"
+                                                : L.background.c_str());
+    if (ImGui::Button("Browse...##loadbg")) {
+        std::string picked;
+        if (ed::pickFile(picked, projectFolder, "Images",
+                         "*.png;*.jpg;*.jpeg;*.bmp;*.tga")) {
+            const std::string base = adoptImage(picked, projectFolder);
+            if (!base.empty()) L.background = base;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Use splash##loadbg")) L.background.clear();
+    ui::hint("Blank uses the splash image, so one picture can do both jobs.");
+
+    int fit = static_cast<int>(L.fit);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::Combo("##fit", &fit, "Fit inside\0Fill the screen\0Stretch\0"))
+        L.fit = static_cast<loadingscreen::Fit>(fit);
+    ui::hint("Fit inside letterboxes and never enlarges past the image's own\n"
+             "size; Fill crops the overflow; Stretch ignores the aspect.");
+    ImGui::ColorEdit3("Frame colour", &L.back.x, ImGuiColorEditFlags_NoInputs);
+    ImGui::Spacing();
+
+    // --- Headline ------------------------------------------------------------
+    ui::sectionText("Headline");
+    // The text buffer is seeded from the setting whenever the two have drifted
+    // apart and nothing is being typed -- not just on the frame the modal opens.
+    // With this section collapsed on that frame, an "opening" seed never happens,
+    // and an unseeded buffer would write its stale text back over the setting.
+    static char titleBuf[96];
+    if (!ImGui::IsAnyItemActive() && L.title != titleBuf)
+        std::snprintf(titleBuf, sizeof titleBuf, "%s", L.title.c_str());
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##loadTitle", "(no headline)", titleBuf,
+                             sizeof titleBuf);
+    L.title = titleBuf;
+    ImGui::SliderFloat("Size##title", &L.titleScale, 1.0f, 6.0f, "%.1fx");
+    ImGui::ColorEdit3("Text colour", &L.textColor.x, ImGuiColorEditFlags_NoInputs);
+    ImGui::Spacing();
+
+    // --- Progress bar --------------------------------------------------------
+    ui::sectionText("Progress bar");
+    int at = static_cast<int>(L.barAt);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::Combo("##barAt", &at, "Bottom\0Middle\0Top\0"))
+        L.barAt = static_cast<loadingscreen::BarAt>(at);
+    ImGui::SliderFloat("Distance##bar", &L.barInset, 0.0f, 240.0f, "%.0f px");
+    // Percent as an int: a slider showing "0.55" for "just over half the
+    // screen" is a number nobody is thinking in.
+    int widthPct = static_cast<int>(L.barWidth * 100.0f + 0.5f);
+    if (ImGui::SliderInt("Width##bar", &widthPct, 15, 100, "%d%%"))
+        L.barWidth = widthPct / 100.0f;
+    ImGui::SliderFloat("Height##bar", &L.barHeight, 4.0f, 48.0f, "%.0f px");
+    ImGui::SliderFloat("Rounding##bar", &L.barRound, 0.0f, 24.0f, "%.0f px");
+    ImGui::ColorEdit3("Fill##bar", &L.barColor.x, ImGuiColorEditFlags_NoInputs);
+    ImGui::SameLine();
+    ImGui::ColorEdit3("Track##bar", &L.barBack.x, ImGuiColorEditFlags_NoInputs);
+    ImGui::Spacing();
+
+    // --- What else is written ------------------------------------------------
+    ui::sectionText("Show");
+    ImGui::Checkbox("Step name", &L.showLabel);
+    ImGui::SameLine();
+    ImGui::Checkbox("Percent", &L.showPercent);
+    ImGui::SameLine();
+    ImGui::Checkbox("Version", &L.showVersion);
+    ui::hint("The step name is what the loader is doing right now; the version\n"
+             "is small and dim, and worth its space on a bug report screenshot.");
+    ImGui::Spacing();
+}
+
 } // namespace
 
 bool drawSettingsModal(const char* popupId, Settings& s,
@@ -66,6 +186,8 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     if (ImGui::Button("Use default")) s.splash.clear();
     ui::hint("Shown while the game loads. PNG/JPG; blank uses the engine splash.");
     ImGui::Spacing();
+
+    drawLoadingSection(s, projectFolder);
 
     // --- Start scene ---------------------------------------------------------
     ui::sectionText("Start scene");

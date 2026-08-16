@@ -14,6 +14,10 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ScriptBridge.cpp
     src/ProjectIO.cpp
     src/GameSettings.cpp
+    # The loading screen is RUNTIME: the shipped player is where a level
+    # change would otherwise show a frozen window. Only the dialog that
+    # configures it is editor-only.
+    src/LoadingScreen.cpp
     src/PropertyMeta.cpp
     src/Component.cpp
     src/PrefabSystem.cpp
