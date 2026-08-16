@@ -1,13 +1,13 @@
 #include "fitzel/graphics/Shader.hpp"
 
 #include <cstdio>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <utility>
 
 #include <glad/gl.h>
 #include <glm/gtc/type_ptr.hpp>
+
+#include "fitzel/asset/Vfs.hpp"
 
 namespace fitzel {
 
@@ -34,14 +34,12 @@ std::uint32_t compileStage(GLenum type, std::string_view source) {
 }
 
 std::string readFile(const std::string& path) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
+    // Through the VFS: in an exported game the shaders live inside the archive
+    // like everything else, and a missing shader is a black screen either way.
+    std::string src = vfs::readText(path);
+    if (src.empty())
         std::fprintf(stderr, "[Fitzel] failed to open shader file: %s\n", path.c_str());
-        return {};
-    }
-    std::ostringstream ss;
-    ss << file.rdbuf();
-    return ss.str();
+    return src;
 }
 
 } // namespace

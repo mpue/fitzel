@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <glad/gl.h>
 #include <glm/glm.hpp>
@@ -12,6 +13,8 @@
 
 #include <stb_image.h>
 #include <tinyexr.h>
+
+#include "fitzel/asset/Vfs.hpp"
 
 namespace fitzel {
 
@@ -125,10 +128,19 @@ float* loadEquirect(const std::string& path, int& w, int& h) {
     std::string ext = dot == std::string::npos ? "" : path.substr(dot);
     for (char& c : ext) c = static_cast<char>(::tolower(c));
 
+    // Bytes first: a packed build has the panorama inside the archive, where
+    // neither stb nor tinyexr can open a path.
+    const std::vector<std::uint8_t> bytes = vfs::read(path);
+    if (bytes.empty()) {
+        std::fprintf(stderr, "[Fitzel] cannot read panorama '%s'\n", path.c_str());
+        return nullptr;
+    }
+
     if (ext == ".exr") {
         float* rgba = nullptr;
         const char* err = nullptr;
-        if (LoadEXR(&rgba, &w, &h, path.c_str(), &err) != TINYEXR_SUCCESS) {
+        if (LoadEXRFromMemory(&rgba, &w, &h, bytes.data(), bytes.size(), &err) !=
+            TINYEXR_SUCCESS) {
             std::fprintf(stderr, "[Fitzel] EXR load failed '%s': %s\n",
                          path.c_str(), err ? err : "?");
             if (err) FreeEXRErrorMessage(err);
@@ -149,7 +161,8 @@ float* loadEquirect(const std::string& path, int& w, int& h) {
 
     stbi_set_flip_vertically_on_load(1);     // .hdr panoramas are bottom-up for us
     int n = 0;
-    float* d = stbi_loadf(path.c_str(), &w, &h, &n, 3);
+    float* d = stbi_loadf_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                      &w, &h, &n, 3);
     stbi_set_flip_vertically_on_load(0);
     if (!d) std::fprintf(stderr, "[Fitzel] HDR load failed '%s'\n", path.c_str());
     return d;

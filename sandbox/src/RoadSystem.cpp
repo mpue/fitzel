@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/asset/Vfs.hpp>
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/world/Terrain.hpp>
 
@@ -229,16 +230,16 @@ void RoadSystem::refreshTextures(const std::string& projectDir) {
         m_texPaths.push_back(p.generic_string());
     };
 
-    // Built-in content textures (flat scan, as before).
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec))
-        add(e.path());
+    // Built-in content textures (flat scan, as before). Through the VFS, so an
+    // exported game lists what the archive holds -- the scene stores a texture by
+    // NAME, and a name nothing resolves to is a road without a surface.
+    for (const std::string& f : fitzel::vfs::listFiles(m_texDir, false))
+        add(std::filesystem::path(f));
     // Project-local textures (recursive), so surfaces dropped into the open
     // project show up too. Names already present in content are kept (not shadowed).
-    if (!projectDir.empty() && std::filesystem::is_directory(projectDir, ec))
-        for (const auto& e :
-             std::filesystem::recursive_directory_iterator(projectDir, ec))
-            if (!e.is_directory()) add(e.path());
+    if (!projectDir.empty())
+        for (const std::string& f : fitzel::vfs::listFiles(projectDir, true))
+            add(std::filesystem::path(f));
 
     // Sort display names and keep the parallel path lists aligned.
     auto sortPair = [](std::vector<std::string>& names, std::vector<std::string>& paths) {

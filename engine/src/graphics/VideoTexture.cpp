@@ -3,10 +3,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <fstream>
 
 #include <stb_image.h>
 
+#include "fitzel/asset/Vfs.hpp"
 #include "fitzel/graphics/Texture.hpp"
 
 namespace fitzel {
@@ -47,16 +47,15 @@ std::shared_ptr<VideoTexture> VideoTexture::open(const std::string& path) {
         return std::shared_ptr<VideoTexture>{};
     };
 
-    std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) return fail("no such file");
-    const std::streamoff size = f.tellg();
-    if (size < static_cast<std::streamoff>(kHeaderSize)) return fail("truncated");
-    f.seekg(0);
+    // The whole clip in one read -- .fvid is a pile of JPEG frames that gets
+    // decoded on demand, and through the VFS it comes either from disk or out of
+    // the mounted archive.
+    std::vector<std::uint8_t> bytes = vfs::read(path);
+    if (bytes.empty()) return fail("no such file");
+    if (bytes.size() < kHeaderSize) return fail("truncated");
 
     auto v = std::make_shared<VideoTexture>();
-    v->m_bytes.resize(static_cast<std::size_t>(size));
-    if (!f.read(reinterpret_cast<char*>(v->m_bytes.data()), size))
-        return fail("read failed");
+    v->m_bytes = std::move(bytes);
 
     const unsigned char* h = v->m_bytes.data();
     if (std::memcmp(h, kMagic, 4) != 0)          return fail("not an .fvid");

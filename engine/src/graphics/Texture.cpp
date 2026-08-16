@@ -10,9 +10,21 @@
 #include <stb_image.h>
 #include <tinyexr.h>
 
+#include "fitzel/asset/Vfs.hpp"
+
 namespace fitzel {
 
 namespace {
+
+// Every decode here starts from bytes rather than a path: in an exported game
+// the file has no path, it is a range inside the mounted archive. Loose files
+// come back through the same call (vfs::read falls through to disk).
+std::vector<std::uint8_t> readBytes(const std::string& path) {
+    std::vector<std::uint8_t> bytes = vfs::read(path);
+    if (bytes.empty())
+        std::fprintf(stderr, "[Fitzel] cannot read '%s'\n", path.c_str());
+    return bytes;
+}
 
 // Anisotropic filtering level to use, or 0 where the driver has no such thing.
 // Trilinear alone picks one mip from the *largest* UV derivative, so a surface
@@ -194,12 +206,16 @@ bool Texture::update(const unsigned char* pixels, int width, int height,
 }
 
 Texture Texture::fromFile(const std::string& path, bool flipVertically) {
+    const std::vector<std::uint8_t> bytes = readBytes(path);
+    if (bytes.empty()) return Texture{};
+
     // OpenEXR (e.g. PBR normal maps): load via tinyexr, convert to 8-bit RGB.
     if (endsWithExr(path)) {
         float* rgba = nullptr;
         int w = 0, h = 0;
         const char* err = nullptr;
-        if (LoadEXR(&rgba, &w, &h, path.c_str(), &err) != TINYEXR_SUCCESS) {
+        if (LoadEXRFromMemory(&rgba, &w, &h, bytes.data(), bytes.size(), &err) !=
+            TINYEXR_SUCCESS) {
             std::fprintf(stderr, "[Fitzel] failed to load EXR '%s': %s\n",
                          path.c_str(), err ? err : "unknown error");
             if (err) FreeEXRErrorMessage(err);
@@ -224,7 +240,9 @@ Texture Texture::fromFile(const std::string& path, bool flipVertically) {
     stbi_set_flip_vertically_on_load(flipVertically ? 1 : 0);
 
     int width = 0, height = 0, channels = 0;
-    unsigned char* data = stbi_load(path.c_str(), &width, &height, &channels, 0);
+    unsigned char* data =
+        stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                              &width, &height, &channels, 0);
     if (!data) {
         std::fprintf(stderr, "[Fitzel] failed to load texture '%s': %s\n",
                      path.c_str(), stbi_failure_reason());
@@ -261,10 +279,13 @@ ImagePixels Texture::decodeThumbnail(const std::string& path, int maxDim) {
     ImagePixels img;
     std::vector<unsigned char>& buf = img.pixels;
     int w = 0, h = 0, ch = 0;
+    const std::vector<std::uint8_t> bytes = vfs::read(path);
+    if (bytes.empty()) return {};
     if (endsWithExr(path)) {
         float* rgba = nullptr;
         const char* err = nullptr;
-        if (LoadEXR(&rgba, &w, &h, path.c_str(), &err) != TINYEXR_SUCCESS) {
+        if (LoadEXRFromMemory(&rgba, &w, &h, bytes.data(), bytes.size(), &err) !=
+            TINYEXR_SUCCESS) {
             if (err) FreeEXRErrorMessage(err);
             return {};
         }
@@ -277,7 +298,8 @@ ImagePixels Texture::decodeThumbnail(const std::string& path, int maxDim) {
         std::free(rgba);
     } else {
         stbi_set_flip_vertically_on_load_thread(0);
-        unsigned char* data = stbi_load(path.c_str(), &w, &h, &ch, 0);
+        unsigned char* data = stbi_load_from_memory(
+            bytes.data(), static_cast<int>(bytes.size()), &w, &h, &ch, 0);
         if (!data) return {};
         buf.assign(data, data + static_cast<std::size_t>(w) * h * ch);
         stbi_image_free(data);

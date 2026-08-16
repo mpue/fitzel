@@ -20,3 +20,5 @@
 #include "fitzel/asset/AssetId.hpp"
 #include "fitzel/asset/AssetTypes.hpp"
 #include "fitzel/asset/AssetDatabase.hpp"
+#include "fitzel/asset/Pak.hpp"
+#include "fitzel/asset/Vfs.hpp"

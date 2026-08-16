@@ -13,7 +13,22 @@ extern "C" {
 #include <lualib.h>
 }
 
+#include <fitzel/asset/Vfs.hpp>
+
 namespace {
+
+// Load a Lua chunk through the VFS rather than the filesystem, so scripts inside
+// an exported game's archive run like loose ones. The "@" prefix keeps Lua's
+// error messages pointing at a file name instead of dumping the source.
+int loadLuaChunk(lua_State* L, const std::string& path) {
+    const std::string src = fitzel::vfs::readText(path);
+    if (src.empty()) {
+        lua_pushfstring(L, "cannot open %s", path.c_str());
+        return LUA_ERRFILE;
+    }
+    const std::string chunk = "@" + path;
+    return luaL_loadbuffer(L, src.data(), src.size(), chunk.c_str());
+}
 
 void setNum(lua_State* L, const char* k, float v) {
     lua_pushnumber(L, v);
@@ -894,7 +909,7 @@ void ScriptSystem::readEntityTable(Entity& e) {
 
 bool ScriptSystem::loadFor(const Entity& e, const std::string& path) {
     lua_State* L = m_lua;
-    if (luaL_loadfile(L, path.c_str()) != LUA_OK) {
+    if (loadLuaChunk(L, path) != LUA_OK) {
         fail(e.id, lua_tostring(L, -1));
         lua_pop(L, 1);
         return false;
@@ -1056,7 +1071,7 @@ std::vector<ScriptParam> ScriptSystem::scanParams(const std::string& path,
     lua_setmetatable(L, -2);
     lua_setglobal(L, "game");
 
-    if (luaL_loadfile(L, path.c_str()) != LUA_OK) {
+    if (loadLuaChunk(L, path) != LUA_OK) {
         if (err) *err = lua_tostring(L, -1);
         lua_close(L);
         return out;

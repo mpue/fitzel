@@ -15,6 +15,8 @@
 
 #include <fitzel/Version.hpp>
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/asset/Pak.hpp>
+#include <fitzel/asset/Vfs.hpp>
 
 #include "GameSettings.hpp"
 #include "PropertyMeta.hpp"
@@ -135,11 +137,11 @@ std::string matsDirIn(const std::string& folder) { return folder + "/materials";
 std::string sceneFileIn(const std::string& folder) {
     const std::string stem = std::filesystem::path(folder).filename().string();
     const std::string preferred = folder + "/" + stem + ".fitzel";
-    std::error_code ec;
-    if (std::filesystem::exists(preferred, ec)) return preferred;
-    for (const auto& de : std::filesystem::directory_iterator(folder, ec))
-        if (de.path().extension() == ".fitzel")
-            return de.path().generic_string();
+    // Through the VFS: in an exported game the project folder is a set of
+    // archive entries, not a directory anyone can iterate.
+    if (fitzel::vfs::exists(preferred)) return preferred;
+    for (const std::string& f : fitzel::vfs::listFiles(folder, false))
+        if (std::filesystem::path(f).extension() == ".fitzel") return f;
     return preferred;
 }
 
@@ -280,17 +282,18 @@ void writeProjectMaterials(const Context& ctx, const std::string& matsDir) {
 
 void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
     ctx.materials.clear();
-    std::error_code ec;
-    for (const auto& de : std::filesystem::directory_iterator(matsDir, ec)) {
-        if (de.path().extension().string() != ".fmat") continue;
-        std::ifstream f(de.path());
-        if (!f) continue;
+    for (const std::string& file : fitzel::vfs::listFiles(matsDir, false)) {
+        const std::filesystem::path de(file);
+        if (de.extension().string() != ".fmat") continue;
+        const std::string body = fitzel::vfs::readText(file);
+        if (body.empty()) continue;
         nlohmann::json m;
-        try { f >> m; } catch (const nlohmann::json::exception&) { continue; }
+        try { m = nlohmann::json::parse(body); }
+        catch (const nlohmann::json::exception&) { continue; }
         MaterialDef md;
-        md.assetId = ctx.assetDb.idForPath(de.path().string());
+        md.assetId = ctx.assetDb.idForPath(file);
         if (!md.assetId.valid()) md.assetId = AssetId::generate();
-        md.name         = m.value("name", de.path().stem().string());
+        md.name         = m.value("name", de.stem().string());
         md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
         md.tint         = readVec3Json(m.value("tint", nlohmann::json{}), md.tint);
         md.reflectivity = m.value("reflectivity", md.reflectivity);
@@ -446,10 +449,8 @@ static void finalizeSceneLoad(Context& ctx, int maxId) {
 static bool startSceneLoad(Context& ctx, SceneLoad& load, const std::string& path) {
     load = SceneLoad{};
     load.scenePath = path;
-    std::ifstream f(path);
-    if (!f) { load.done = true; return false; }
-    std::stringstream buf; buf << f.rdbuf();
-    const std::string content = buf.str();
+    const std::string content = fitzel::vfs::readText(path);
+    if (content.empty()) { load.done = true; return false; }
     const std::size_t firstCh = content.find_first_not_of(" \t\r\n");
     const bool isJson = firstCh != std::string::npos && content[firstCh] == '{';
 
@@ -515,8 +516,9 @@ void stepLoad(Context& ctx, SceneLoad& load, double budgetMs) {
 
 bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder) {
     const std::string scene = sceneFileIn(folder);
-    std::error_code ec;
-    if (!std::filesystem::exists(scene, ec)) { load = SceneLoad{}; load.done = true; return false; }
+    // vfs, not the filesystem: in a packed game the scene is an archive entry and
+    // fs::exists says no to every one of them.
+    if (!fitzel::vfs::exists(scene)) { load = SceneLoad{}; load.done = true; return false; }
     ctx.assetDb.mountProject(folder);
     ctx.assetDb.refresh();
     loadProjectMaterials(ctx, matsDirIn(folder));
@@ -527,8 +529,7 @@ bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder) 
 }
 
 bool beginLoadScene(Context& ctx, SceneLoad& load, const std::string& scenePath) {
-    std::error_code ec;
-    if (scenePath.empty() || !std::filesystem::exists(scenePath, ec)) {
+    if (scenePath.empty() || !fitzel::vfs::exists(scenePath)) {
         load = SceneLoad{}; load.done = true; return false;
     }
     return startSceneLoad(ctx, load, scenePath);
@@ -784,20 +785,47 @@ void exportGame(Context& ctx, const std::string& outDir) {
                           fs::copy_options::overwrite_existing, ec);
     }
 
+    // Everything the game reads goes into one encrypted archive, and the folders
+    // it came from are removed. That is the whole content protection: what ships
+    // is an exe, a boot game.json and a blob -- not a browsable art library.
+    // The player mounts the archive at startup and reads through it; with the
+    // switch off the same export ships as loose folders.
+    std::string packed;
+    if (gs.packContent) {
+        const fs::path archive = out / "game.fpak";
+        fs::remove(archive, ec); // never fold a previous export's archive in
+        const fitzel::pak::WriteResult r = fitzel::pak::write(
+            out, archive, [](const std::string& rel) {
+                // Only the three content roots. The exe, the boot game.json and
+                // the archive itself have to stay readable on disk.
+                return !(rel.rfind("content/", 0) == 0 ||
+                         rel.rfind("project/", 0) == 0 ||
+                         rel.rfind("assets/", 0) == 0);
+            });
+        if (!r.ok) {
+            ctx.exportStatus = "Packing failed: " + r.error;
+            std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
+            return;
+        }
+        std::error_code rec;
+        for (const char* dir : {"content", "project", "assets"})
+            fs::remove_all(out / dir, rec);
+        packed = " (" + std::to_string(r.files) + " files packed)";
+    }
+
     nlohmann::json gj;
     gj["project"]    = "project";
     gj["fullscreen"] = true;
     gj["startScene"] = gs.startScene; // "" => player uses the default scene
     std::ofstream(out / "game.json") << gj.dump(2);
     ctx.exportStatus = ec ? ("Export finished with warnings: " + ec.message())
-                          : ("Exported to " + out.generic_string());
+                          : ("Exported to " + out.generic_string() + packed);
     std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
 }
 
 bool openProjectFolder(Context& ctx, const std::string& folder) {
     const std::string scene = sceneFileIn(folder);
-    std::error_code ec;
-    if (!std::filesystem::exists(scene, ec)) return false;
+    if (!fitzel::vfs::exists(scene)) return false;
     ctx.assetDb.mountProject(folder);
     ctx.assetDb.refresh();
     loadProjectMaterials(ctx, matsDirIn(folder));
@@ -831,17 +859,16 @@ std::vector<std::pair<std::string, std::string>>
 listScenesIn(const std::string& folder) {
     std::vector<std::pair<std::string, std::string>> out;
     if (folder.empty()) return out;
-    std::error_code ec;
-    for (const auto& de : std::filesystem::directory_iterator(folder, ec))
-        if (de.path().extension() == ".fitzel")
-            out.push_back({de.path().stem().string(), de.path().generic_string()});
+    for (const std::string& f : fitzel::vfs::listFiles(folder, false)) {
+        const std::filesystem::path p(f);
+        if (p.extension() == ".fitzel") out.push_back({p.stem().string(), f});
+    }
     std::sort(out.begin(), out.end());
     return out;
 }
 
 bool loadSceneFile(Context& ctx, const std::string& scenePath) {
-    std::error_code ec;
-    if (scenePath.empty() || !std::filesystem::exists(scenePath, ec)) return false;
+    if (scenePath.empty() || !fitzel::vfs::exists(scenePath)) return false;
     if (!loadScene(ctx, scenePath)) return false;
     ctx.currentProject = scenePath;
     return true;

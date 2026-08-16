@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/asset/Vfs.hpp>
 
 #include "Component.hpp"
 #include "Document.hpp"
@@ -210,8 +211,7 @@ void install(ScriptHost& host, Deps deps) {
             if (const AssetDatabase::Entry* e = db.entry(gid))
                 path = e->absPath.generic_string();
         } else { // not an asset: accept a plain path, so ad-hoc files still load
-            std::error_code ec;
-            if (std::filesystem::exists(asset, ec)) path = asset;
+            if (fitzel::vfs::exists(asset)) path = asset;
         }
         if (path.empty()) return -1;
         return models.import(path, db, doc.materials());

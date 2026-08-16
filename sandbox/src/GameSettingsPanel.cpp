@@ -112,6 +112,11 @@ bool drawSettingsModal(const char* popupId, Settings& s,
              "whole content library. Sounds and prefabs are always kept, and .lua\n"
              "scripts are scanned for asset names. Off = copy everything (safe).");
 
+    ImGui::Checkbox("Pack content into an encrypted archive", &s.packContent);
+    ui::hint("Bundle content/, project/ and assets/ into one encrypted game.fpak\n"
+             "next to the exe, so the models, textures and sounds are not lying\n"
+             "in open folders. Off ships loose files (useful to debug an export).");
+
     ImGui::Spacing();
     ImGui::Separator();
 

@@ -299,6 +299,17 @@ int main(int argc, char** argv) {
                     std::filesystem::current_path(exePath.parent_path(), ec);
             }
         }
+        // An exported game ships one encrypted archive next to the exe instead of
+        // loose content/, project/ and assets/ folders. Mounted here, before
+        // anything is read, so every load after this point -- textures, models,
+        // sounds, shaders, scenes, scripts -- resolves against it. With no
+        // archive present (dev runs, the editor) nothing changes: the VFS falls
+        // straight through to disk.
+        {
+            std::error_code ec;
+            if (std::filesystem::exists("game.fpak", ec))
+                fitzel::vfs::mount("game.fpak", std::filesystem::current_path(ec));
+        }
         // Exported/player build: a game.json next to the exe boots straight into
         // the game with the editor hidden. `--play <projectFolder>` does the same.
         std::string bootProject;
@@ -367,8 +378,7 @@ int main(int argc, char** argv) {
 
         // Content roots: prefer a `content/` next to the exe (a portable/exported
         // build ships its assets there), else the compile-time dev tree.
-        const bool localContent = std::filesystem::exists("content") &&
-                                  std::filesystem::is_directory("content");
+        const bool localContent = fitzel::vfs::isDirectory("content");
         const std::string contentRoot = localContent
             ? std::filesystem::absolute("content").generic_string()
             : std::string(FITZEL_CONTENT_DIR);
@@ -3733,8 +3743,7 @@ int main(int argc, char** argv) {
                 const std::string projSnd =
                     (std::filesystem::path(currentProject).parent_path() /
                      "content" / "sounds" / n).generic_string();
-                std::error_code ec;
-                if (std::filesystem::exists(projSnd, ec)) return projSnd;
+                if (fitzel::vfs::exists(projSnd)) return projSnd;
             }
             return soundDir + "/" + n;
         };
@@ -4194,7 +4203,7 @@ int main(int argc, char** argv) {
                 if (!bootScene.empty()) {
                     const std::string scenePath =
                         bootProject + "/" + bootScene + ".fitzel";
-                    if (std::filesystem::exists(scenePath))
+                    if (fitzel::vfs::exists(scenePath))
                         projectio::loadSceneFile(pio, scenePath);
                 }
                 if (bootFullscreen) {
@@ -6040,11 +6049,12 @@ int main(int argc, char** argv) {
                 const std::filesystem::path target = folder / (pendingSceneLoad + ".fitzel");
                 const std::string want = pendingSceneLoad;
                 pendingSceneLoad.clear();
-                std::error_code ec;
                 std::fprintf(stderr, "[navdbg] sceneload want='%s' cur='%s' target='%s'\n",
                              want.c_str(), currentProject.c_str(),
                              target.generic_string().c_str());
-                if (std::filesystem::exists(target, ec)) {
+                // Through the VFS: a level change in a packed game asks for a
+                // scene that exists only inside the archive.
+                if (fitzel::vfs::exists(target.generic_string())) {
                     const bool wasPlaying = playMode;
                     if (playMode) stopPlay();
                     if (loadSceneFile(target.generic_string()) && wasPlaying)

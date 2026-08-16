@@ -10,6 +10,7 @@
 
 #include <fitzel/Version.hpp>
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/asset/Vfs.hpp>
 
 #include "Component.hpp"
 
@@ -112,10 +113,11 @@ bool save(const projectio::Context& ctx, Prefab& p, const std::string& dir) {
 }
 
 std::optional<Prefab> load(projectio::Context& ctx, const std::string& path) {
-    std::ifstream f(path);
-    if (!f) return std::nullopt;
+    const std::string body = fitzel::vfs::readText(path);
+    if (body.empty()) return std::nullopt;
     nlohmann::json j;
-    try { f >> j; } catch (const nlohmann::json::exception&) { return std::nullopt; }
+    try { j = nlohmann::json::parse(body); }
+    catch (const nlohmann::json::exception&) { return std::nullopt; }
     if (!j.contains("prefab") || !j["prefab"].is_object()) return std::nullopt;
     const nlohmann::json& pj = j["prefab"];
 
@@ -132,23 +134,20 @@ std::optional<Prefab> load(projectio::Context& ctx, const std::string& path) {
 
 std::vector<std::pair<std::string, std::string>> list(const std::string& dir) {
     std::vector<std::pair<std::string, std::string>> out;
-    std::error_code ec;
-    for (const auto& de : std::filesystem::directory_iterator(dir, ec)) {
-        if (!de.is_regular_file()) continue;
-        if (de.path().extension() != ".fprefab") continue;
+    for (const std::string& file : fitzel::vfs::listFiles(dir, false)) {
+        const std::filesystem::path de(file);
+        if (de.extension() != ".fprefab") continue;
         // Prefer the display name stored inside the (small) file; fall back to the
         // filename stem if it can't be read.
-        std::string name = de.path().stem().string();
-        std::ifstream f(de.path());
-        if (f) {
-            nlohmann::json j;
+        std::string name = de.stem().string();
+        if (const std::string body = fitzel::vfs::readText(file); !body.empty()) {
             try {
-                f >> j;
+                const nlohmann::json j = nlohmann::json::parse(body);
                 if (j.contains("prefab") && j["prefab"].is_object())
                     name = j["prefab"].value("name", name);
             } catch (const nlohmann::json::exception&) {}
         }
-        out.push_back({name, de.path().generic_string()});
+        out.push_back({name, de.generic_string()});
     }
     std::sort(out.begin(), out.end());
     return out;

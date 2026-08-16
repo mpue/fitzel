@@ -122,6 +122,14 @@ endforeach()
 add_executable(shadercheck tools/shadercheck.cpp)
 target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_33)
 
+# The archive tool (sandbox/tools/fpak.cpp): packs, lists and verifies the
+# encrypted .fpak archives an export ships. Same pak/vfs code the player runs, so
+# "fpak verify" answers the only question that matters before shipping one --
+# does every file read back exactly as it went in.
+#   build/release/bin/fpak.exe verify game.fpak <staging dir>
+add_executable(fpak tools/fpak.cpp)
+target_link_libraries(fpak PRIVATE fitzel)
+
 # Shader assets + Lua scripts next to the executable, so relative paths resolve at
 # runtime. This is a real build step keyed on the asset files themselves, not a
 # POST_BUILD hook on the executables: a POST_BUILD only runs when the exe relinks,

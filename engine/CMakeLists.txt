@@ -25,6 +25,8 @@ add_library(fitzel STATIC
     src/asset/AssetId.cpp
     src/asset/AssetTypes.cpp
     src/asset/AssetDatabase.cpp
+    src/asset/Pak.cpp
+    src/asset/Vfs.cpp
     src/physics/Physics.cpp
 )
 

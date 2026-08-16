@@ -8,6 +8,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "fitzel/asset/Vfs.hpp"
 #include "fitzel/graphics/Texture.hpp"
 #include "fitzel/world/Model.hpp"
 
@@ -114,11 +115,12 @@ std::string AssetDatabase::relKey(const fs::path& absPath, int sourceIndex) cons
 void AssetDatabase::loadOrCreateMeta(Entry& e) {
     const fs::path metaPath = metaPathFor(e.absPath);
 
-    if (std::ifstream in{metaPath}) {
+    if (const std::string body = vfs::readText(metaPath.generic_string());
+        !body.empty()) {
         json j;
         bool parsed = false;
         try {
-            in >> j;
+            j      = json::parse(body);
             parsed = true;
         } catch (const json::exception&) {
             parsed = false; // corrupt sidecar -> regenerate
@@ -137,6 +139,17 @@ void AssetDatabase::loadOrCreateMeta(Entry& e) {
 
     // No usable sidecar: mint an id and write one.
     e.id = AssetId::generate();
+    // ...except in a packed build, where there is nowhere to write and a minted
+    // id is worse than useless: it is fresh on every launch, so every scene
+    // reference to this asset dangles. The sidecars are packed with the content
+    // precisely so the ids survive the export -- one missing means the export
+    // dropped it, and that is worth saying out loud.
+    if (vfs::packed()) {
+        std::fprintf(stderr, "[Fitzel] no .meta for '%s' in the archive -- "
+                             "references to it will not resolve\n",
+                     e.relPath.c_str());
+        return;
+    }
     json j;
     j["guid"] = e.id.toString();
     j["type"] = assetTypeName(e.type);
@@ -186,19 +199,16 @@ void AssetDatabase::refresh() {
 
     for (int si = 0; si < static_cast<int>(m_sources.size()); ++si) {
         const Source& src = m_sources[si];
-        std::error_code ec;
-        if (!fs::exists(src.root, ec)) {
+        if (!vfs::isDirectory(src.root.generic_string())) {
             std::fprintf(stderr, "[Fitzel] %s asset source '%s' root '%s' missing\n",
                          sourceKindName(src.kind), src.name.c_str(),
                          src.root.string().c_str());
             continue;
         }
-        for (fs::recursive_directory_iterator it(src.root, ec), end; it != end;
-             it.increment(ec)) {
-            if (ec) break;
-            const fs::directory_entry& de = *it;
-            if (!de.is_regular_file(ec)) continue;
-            const fs::path& p = de.path();
+        // Through the VFS, so a packed build enumerates the archive's index
+        // instead of a content/ folder that isn't there.
+        for (const std::string& f : vfs::listFiles(src.root.generic_string(), true)) {
+            const fs::path p(f);
             if (p.extension() == ".meta") continue; // sidecars are not assets
             importFile(p, si);
         }
@@ -209,10 +219,11 @@ AssetId AssetDatabase::idForPath(const fs::path& path) {
     // Resolve relative paths against each source root until one contains it.
     fs::path abs = path;
     if (!abs.is_absolute()) {
-        for (const Source& s : m_sources) {
-            std::error_code ec;
-            if (fs::exists(s.root / path, ec)) { abs = s.root / path; break; }
-        }
+        for (const Source& s : m_sources)
+            if (vfs::exists((s.root / path).generic_string())) {
+                abs = s.root / path;
+                break;
+            }
         if (!abs.is_absolute()) abs = path; // fall through; may still be invalid
     }
     abs = canonicalPath(abs);
@@ -221,8 +232,7 @@ AssetId AssetDatabase::idForPath(const fs::path& path) {
         return it->second;
 
     const int si = sourceIndexForPath(abs);
-    std::error_code ec;
-    if (si >= 0 && fs::exists(abs, ec)) return importFile(abs, si);
+    if (si >= 0 && vfs::exists(abs.generic_string())) return importFile(abs, si);
     return {};
 }
 
@@ -315,6 +325,9 @@ void AssetDatabase::reloadInPlace(const Entry& e) {
 
 std::vector<AssetChange> AssetDatabase::pollChanges() {
     std::vector<AssetChange> changes;
+    // A mounted archive cannot change under us, and walking its index a couple of
+    // times a second to establish that would be pure waste.
+    if (vfs::packed()) return changes;
     std::error_code ec;
     std::unordered_set<std::string> seen; // absolute keys present on disk now
 

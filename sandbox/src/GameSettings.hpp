@@ -17,6 +17,11 @@ struct Settings {
     std::string startScene;                 // scene stem the game boots into ("" = default scene)
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
     bool trimAssets = false;                 // export only assets the project references
+    // Bundle content/, project/ and assets/ into one encrypted game.fpak next to
+    // the exe instead of shipping them as folders. On by default: a shipped game
+    // whose art sits in an open folder is a shipped game whose art is already
+    // copied. Off is for debugging an export.
+    bool packContent = true;
 };
 
 // Read <projectFolder>/game.json. Missing file / parse error -> a default Settings

@@ -30,14 +30,137 @@
 #pragma warning(pop)
 #endif
 
+#include <assimp/DefaultIOSystem.h>
+#include <assimp/IOStream.hpp>
+#include <assimp/IOSystem.hpp>
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
+#include "fitzel/asset/Vfs.hpp"
+
 namespace fitzel {
 
 namespace {
+
+// --- Reading model files through the VFS ------------------------------------
+// Both importers here open files by path, and in an exported game there are no
+// paths -- the model is a range inside the mounted archive. Each gets the one
+// hook it offers for that: assimp an IOSystem, cgltf a read callback. Plugging
+// in at that level covers the companion files too (a .gltf's .bin, a Collada
+// file's includes), which a "load the main file from memory" call would not.
+
+// An archive entry handed to assimp: the bytes are already decrypted and in
+// memory, this only walks a cursor over them.
+class VfsIOStream : public Assimp::IOStream {
+public:
+    explicit VfsIOStream(std::vector<std::uint8_t> data) : m_data(std::move(data)) {}
+
+    std::size_t Read(void* buffer, std::size_t size, std::size_t count) override {
+        if (size == 0) return 0;
+        const std::size_t left = (m_data.size() - m_pos) / size;
+        const std::size_t take = std::min(count, left);
+        std::memcpy(buffer, m_data.data() + m_pos, take * size);
+        m_pos += take * size;
+        return take;
+    }
+    std::size_t Write(const void*, std::size_t, std::size_t) override { return 0; }
+    aiReturn    Seek(std::size_t offset, aiOrigin origin) override {
+        std::size_t base = 0;
+        if (origin == aiOrigin_CUR)      base = m_pos;
+        else if (origin == aiOrigin_END) base = m_data.size();
+        if (base + offset > m_data.size()) return AI_FAILURE;
+        m_pos = base + offset;
+        return AI_SUCCESS;
+    }
+    std::size_t Tell() const override     { return m_pos; }
+    std::size_t FileSize() const override { return m_data.size(); }
+    void        Flush() override {}
+
+private:
+    std::vector<std::uint8_t> m_data;
+    std::size_t               m_pos = 0;
+};
+
+class VfsIOSystem : public Assimp::IOSystem {
+public:
+    bool Exists(const char* file) const override { return vfs::exists(file); }
+    char getOsSeparator() const override { return '/'; }
+
+    Assimp::IOStream* Open(const char* file, const char* mode) override {
+        // Writing is not something an importer does, and an archive cannot take
+        // it anyway.
+        if (mode && (std::strchr(mode, 'w') || std::strchr(mode, 'a'))) return nullptr;
+        std::vector<std::uint8_t> bytes = vfs::read(file);
+        if (bytes.empty()) return nullptr;
+        return new VfsIOStream(std::move(bytes));
+    }
+    void Close(Assimp::IOStream* stream) override { delete stream; }
+};
+
+// Point an importer at the VFS. One call at every ReadFile site, so nothing has
+// to remember whether this build is packed.
+void useVfs(Assimp::Importer& imp) {
+    imp.SetIOHandler(new VfsIOSystem()); // the importer takes ownership
+}
+
+// cgltf's file hook: same idea, and it carries the external .bin along with it.
+//
+// The allocator has to be null-checked. cgltf_parse_file calls the read hook
+// BEFORE it fills in its default allocators, so on the very first call
+// mem->alloc_func is whatever the caller left in the options -- null, unless the
+// caller set one. cgltf's own default reader checks; ours has to as well, or the
+// first model loaded jumps to address zero.
+cgltf_result cgltfRead(const cgltf_memory_options* mem, const cgltf_file_options*,
+                       const char* path, cgltf_size* size, void** data) {
+    const std::vector<std::uint8_t> bytes = vfs::read(path);
+    if (bytes.empty()) return cgltf_result_file_not_found;
+    void* buf = mem && mem->alloc_func ? mem->alloc_func(mem->user_data, bytes.size())
+                                       : std::malloc(bytes.size());
+    if (!buf) return cgltf_result_out_of_memory;
+    std::memcpy(buf, bytes.data(), bytes.size());
+    *size = bytes.size();
+    *data = buf;
+    return cgltf_result_success;
+}
+
+void cgltfRelease(const cgltf_memory_options* mem, const cgltf_file_options*,
+                  void* data) {
+    if (mem && mem->free_func) mem->free_func(mem->user_data, data);
+    else                       std::free(data);
+}
+
+// glTF options with the VFS hooked in. cgltf fills the default allocator in
+// itself when the fields are left null, and reads every buffer through `file`.
+cgltf_options gltfOptions() {
+    cgltf_options o{};
+    o.file.read    = cgltfRead;
+    o.file.release = cgltfRelease;
+    return o;
+}
+
+// Read an image file (a model's external texture) into RGBA. Bytes come from the
+// VFS; stb decodes them from memory either way.
+unsigned char* decodeImageFile(const std::string& file, int& w, int& h, int& ch) {
+    const std::vector<std::uint8_t> bytes = vfs::read(file);
+    if (bytes.empty()) return nullptr;
+    return stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()),
+                                 &w, &h, &ch, 4);
+}
+
+// Regular files directly in `dir`, from the archive when this build is packed
+// and from disk otherwise. Absolute paths, as the callers pass around.
+std::vector<std::string> filesIn(const std::filesystem::path& dir) {
+    if (vfs::packed()) return vfs::listFiles(dir.generic_string(), false);
+    std::vector<std::string> out;
+    std::error_code          ec;
+    for (const auto& f : std::filesystem::directory_iterator(dir, ec)) {
+        if (ec) break;
+        if (f.is_regular_file(ec)) out.push_back(f.path().generic_string());
+    }
+    return out;
+}
 
 // Store decoded RGBA pixels into an output buffer + dimensions.
 void storePixels(unsigned char* px, int w, int h,
@@ -111,7 +234,7 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     cgltf_decode_uri(&uri[0]);
     const std::string file = (std::filesystem::path(baseDir) / uri.c_str())
                                  .generic_string();
-    storePixels(stbi_load(file.c_str(), &w, &h, &ch, 4), w, h, outPix, outW, outH);
+    storePixels(decodeImageFile(file, w, h, ch), w, h, outPix, outW, outH);
 }
 
 } // namespace
@@ -119,8 +242,8 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
 ModelData loadGltf(const std::string& path) {
     ModelData out;
 
-    cgltf_options options{};
-    cgltf_data*   data = nullptr;
+    cgltf_options options = gltfOptions();
+    cgltf_data*   data    = nullptr;
     if (cgltf_parse_file(&options, path.c_str(), &data) != cgltf_result_success) {
         std::fprintf(stderr, "[Fitzel] failed to parse glTF '%s'\n", path.c_str());
         return out;
@@ -423,17 +546,18 @@ std::string findTextureFile(const std::string& baseDir, const std::string& ref) 
     const std::string base = fs::path(r).filename().string();
     if (base.empty()) return {};
 
-    if (fs::path(r).is_absolute() && fs::exists(r, ec)) return r;
+    // Existence goes through the VFS: in a packed build the file the model names
+    // is an archive entry, and fs::exists would say no to every one of them.
+    if (fs::path(r).is_absolute() && vfs::exists(r)) return r;
     fs::path p = fs::path(baseDir) / r;                 // as given, relative
-    if (fs::exists(p, ec)) return p.generic_string();
+    if (vfs::exists(p.generic_string())) return p.generic_string();
     p = fs::path(baseDir) / base;                       // bare name in model dir
-    if (fs::exists(p, ec)) return p.generic_string();
+    if (vfs::exists(p.generic_string())) return p.generic_string();
     // Bare name in sibling dirs of the model dir, then in sub dirs of it.
     for (const fs::path& dir : {fs::path(baseDir).parent_path(), fs::path(baseDir)})
-        for (const auto& d : fs::directory_iterator(dir, ec)) {
-            if (!d.is_directory(ec)) continue;
-            fs::path cand = d.path() / base;
-            if (fs::exists(cand, ec)) return cand.generic_string();
+        for (const std::string& sub : vfs::listDirs(dir.generic_string())) {
+            const fs::path cand = dir / sub / base;
+            if (vfs::exists(cand.generic_string())) return cand.generic_string();
         }
     return {};
 }
@@ -459,9 +583,9 @@ void loadAiTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType ty
     }
     stbi_set_flip_vertically_on_load(0);
     int w = 0, h = 0, ch = 0;
-    // Separate statement: see loadTextureFileRGBA -- passing stbi_load() and w/h
-    // to storePixels() in one call reads w/h before stbi_load() sets them.
-    unsigned char* px = stbi_load(file.c_str(), &w, &h, &ch, 4);
+    // Separate statement: see loadTextureFileRGBA -- passing the decode and w/h
+    // to storePixels() in one call reads w/h before the decode sets them.
+    unsigned char* px = decodeImageFile(file, w, h, ch);
     storePixels(px, w, h, outPix, outW, outH);
 }
 
@@ -471,10 +595,10 @@ void loadTextureFileRGBA(const std::string& file, std::vector<std::uint8_t>& out
     if (file.empty()) return;
     stbi_set_flip_vertically_on_load(0);
     int w = 0, h = 0, ch = 0;
-    // Load into its own variable first: passing stbi_load() as an argument
+    // Load into its own variable first: passing the decode as an argument
     // *alongside* w/h reads w/h before the call populates them (argument
     // evaluation order is unspecified), yielding a 0x0 image on MSVC.
-    unsigned char* px = stbi_load(file.c_str(), &w, &h, &ch, 4);
+    unsigned char* px = decodeImageFile(file, w, h, ch);
     storePixels(px, w, h, outPix, outW, outH);
 }
 
@@ -551,11 +675,18 @@ std::vector<std::filesystem::path> gatherCandidateImages(const std::string& base
         up / "Materials", up / "Maps", up2 / "Textures", up2 / "Materials",
     };
     std::vector<fs::path> imgs;
-    for (const fs::path& d : dirs) {
-        if (!fs::is_directory(d, ec)) continue;
-        for (const auto& f : fs::directory_iterator(d, ec))
-            if (f.is_regular_file(ec) && isImageExt(f.path().extension().string()))
-                imgs.push_back(f.path());
+    for (const fs::path& d : dirs)
+        for (const std::string& f : filesIn(d))
+            if (isImageExt(fs::path(f).extension().string())) imgs.emplace_back(f);
+
+    if (imgs.empty() && vfs::packed()) {
+        // Packed: the archive knows its whole subtree in one call, so the bounded
+        // directory walk below has nothing to walk.
+        for (const std::string& f : vfs::listFiles((up.empty() ? b : up).generic_string(),
+                                                   true)) {
+            if (imgs.size() >= 4000) break;
+            if (isImageExt(fs::path(f).extension().string())) imgs.emplace_back(f);
+        }
     }
     if (imgs.empty()) { // nothing in the usual places -> sweep the asset root
         std::vector<fs::path> stack{ up.empty() ? b : up };
@@ -965,6 +1096,7 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
 ModelData loadCollada(const std::string& path, bool flipV) {
     ModelData out;
     Assimp::Importer imp;
+    useVfs(imp);
     const aiScene* scene = imp.ReadFile(
         path, aiProcess_Triangulate | aiProcess_GenSmoothNormals |
               aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality);
@@ -989,6 +1121,7 @@ ModelData loadCollada(const std::string& path, bool flipV) {
 ModelData loadSkinnedModel(const std::string& path, bool flipV) {
     ModelData out;
     Assimp::Importer imp;
+    useVfs(imp);
     // Collapse FBX pivots. Left on (assimp's default), every node is split into a
     // "<name>_$AssimpFbx$_PreRotation / _Rotation / _Translation / ..." chain, with
     // the exporter's axis conversion sitting on one synthetic node while the clip's
@@ -1046,6 +1179,7 @@ ModelData loadSkinnedModel(const std::string& path, bool flipV) {
 std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV) {
     std::vector<ModelNode> out;
     Assimp::Importer imp;
+    useVfs(imp);
     const aiScene* scene = imp.ReadFile(
         path, aiProcess_Triangulate | aiProcess_GenSmoothNormals |
               aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality);
@@ -1065,6 +1199,7 @@ std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV) {
 std::vector<UnityTexMatch> previewUnityTextures(const std::string& path) {
     std::vector<UnityTexMatch> out;
     Assimp::Importer imp;
+    useVfs(imp);
     const aiScene* scene = imp.ReadFile(path, aiProcess_Triangulate);
     if (!scene) {
         std::fprintf(stderr, "[Fitzel] Unity preview: cannot read '%s': %s\n",

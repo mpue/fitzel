@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include <fitzel/scene/Camera.hpp>
+#include <fitzel/asset/Vfs.hpp>
 #include <fitzel/world/Model.hpp>
 #include <fitzel/world/Terrain.hpp>
 
@@ -514,18 +515,20 @@ void VegetationSystem::scanTreeAssets() {
         m_texPaths.push_back(p.generic_string());
     };
 
-    // Built-in content dirs (flat scan, as before).
-    std::error_code ec;
-    for (const auto& e : std::filesystem::directory_iterator(m_modelDir, ec))
-        if (e.is_regular_file()) addModel(e.path());
-    for (const auto& e : std::filesystem::directory_iterator(m_texDir, ec))
-        if (e.is_regular_file()) addTex(e.path());
+    // Built-in content dirs (flat scan, as before). Through the VFS: a species
+    // names its model and texture, and in an exported game those names have to
+    // resolve against the archive.
+    for (const std::string& f : fitzel::vfs::listFiles(m_modelDir, false))
+        addModel(std::filesystem::path(f));
+    for (const std::string& f : fitzel::vfs::listFiles(m_texDir, false))
+        addTex(std::filesystem::path(f));
     // Project-local assets (recursive), so a model dropped into the open project
     // is selectable as a species. Names already in content are kept (not shadowed).
-    if (!m_projectDir.empty() && std::filesystem::is_directory(m_projectDir, ec))
-        for (const auto& e :
-             std::filesystem::recursive_directory_iterator(m_projectDir, ec))
-            if (!e.is_directory()) { addModel(e.path()); addTex(e.path()); }
+    if (!m_projectDir.empty())
+        for (const std::string& f : fitzel::vfs::listFiles(m_projectDir, true)) {
+            addModel(std::filesystem::path(f));
+            addTex(std::filesystem::path(f));
+        }
 
     // Sort display names, keeping the parallel path lists aligned.
     auto sortPair = [](std::vector<std::string>& names, std::vector<std::string>& paths) {
