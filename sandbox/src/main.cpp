@@ -3057,6 +3057,27 @@ int main(int argc, char** argv) {
         int            pendingRaceField   = -1;   // -1 = the field as authored
         float          pendingRaceSkill   = 1.0f; // pace multiplier
         float          pendingRaceCatchup = 1.0f; // rubber-band multiplier
+        // --- The launch, kept for as long as the race lasts -------------------
+        // The pending values above are consumed the moment the craft arrives on
+        // the grid, which is right: they are a message, and a message is read
+        // once. But a restart ("Race again", the overlay's Restart) rewinds the
+        // circuit to Play's snapshot -- and that snapshot was taken BEFORE the
+        // chosen craft was spawned, so it does not contain it. Without a copy,
+        // the second run of a circuit is flown in whatever glider the scene
+        // itself parks on the grid: the start screen's answer would hold for one
+        // race and then quietly expire.
+        //
+        // So the launch is kept here for the whole session on that circuit and
+        // re-sent on every restart. Cleared when a scene is loaded (a level
+        // change, or going back to the start screen), because the craft belongs
+        // to the race it was chosen for, not to whatever is loaded next.
+        nlohmann::json sessionCraftJson, sessionCraftJson2;
+        std::string    sessionCraftName, sessionCraftName2;
+        int            sessionCraftLaps   = 0;
+        int            sessionRaceMode    = -1;
+        int            sessionRaceField   = -1;
+        float          sessionRaceSkill   = 1.0f;
+        float          sessionRaceCatchup = 1.0f;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
@@ -6028,7 +6049,27 @@ int main(int argc, char** argv) {
             // touching the file, so unsaved editor edits survive it.
             if (pendingRestart) {
                 pendingRestart = false;
-                if (playMode) { stopPlay(); startPlay(); }
+                if (playMode) {
+                    stopPlay(); startPlay();
+                    // The race was launched from the start screen: send its craft
+                    // (and the rest of its setup) in again. The snapshot Play just
+                    // restored is the circuit as it sits on disk -- the chosen
+                    // craft was never part of it -- so a restart that did not do
+                    // this would put the player back in the scene's own glider.
+                    // The arrival block a few lines below picks these up in the
+                    // same frame, exactly as it does after a launch.
+                    if (!sessionCraftJson.empty()) {
+                        pendingCraftJson   = sessionCraftJson;
+                        pendingCraftName   = sessionCraftName;
+                        pendingCraftJson2  = sessionCraftJson2;
+                        pendingCraftName2  = sessionCraftName2;
+                        pendingCraftLaps   = sessionCraftLaps;
+                        pendingRaceMode    = sessionRaceMode;
+                        pendingRaceField   = sessionRaceField;
+                        pendingRaceSkill   = sessionRaceSkill;
+                        pendingRaceCatchup = sessionRaceCatchup;
+                    }
+                }
             }
 
             // "Back to the start screen" from the end-of-race question. The start
@@ -6054,6 +6095,16 @@ int main(int argc, char** argv) {
                 const std::filesystem::path target = folder / (pendingSceneLoad + ".fitzel");
                 const std::string want = pendingSceneLoad;
                 pendingSceneLoad.clear();
+                // A different scene is a different session: the craft the start
+                // screen chose was chosen for the circuit being left, so it is
+                // not re-sent into the next one. (A launch fills this back in
+                // when its craft arrives, a few lines below, in this same frame.)
+                sessionCraftJson = nlohmann::json();
+                sessionCraftJson2 = nlohmann::json();
+                sessionCraftName.clear(); sessionCraftName2.clear();
+                sessionCraftLaps   = 0;
+                sessionRaceMode    = -1;   sessionRaceField   = -1;
+                sessionRaceSkill   = 1.0f; sessionRaceCatchup = 1.0f;
                 std::fprintf(stderr, "[navdbg] sceneload want='%s' cur='%s' target='%s'\n",
                              want.c_str(), currentProject.c_str(),
                              target.generic_string().c_str());
@@ -6090,6 +6141,19 @@ int main(int argc, char** argv) {
                 pendingRaceMode  = -1;   pendingRaceField   = -1;
                 pendingRaceSkill = 1.0f; pendingRaceCatchup = 1.0f;
                 if (playMode) {
+                    // Keep the whole launch for this circuit, so a restart can be
+                    // flown in the craft that was chosen rather than in the one
+                    // the scene parks on the grid (see pendingRestart above).
+                    sessionCraftJson   = craftJson;
+                    sessionCraftName   = pendingCraftName;
+                    sessionCraftJson2  = craftJson2;
+                    sessionCraftName2  = pendingCraftName2;
+                    sessionCraftLaps   = laps;
+                    sessionRaceMode    = raceMode;
+                    sessionRaceField   = raceField;
+                    sessionRaceSkill   = raceSkill;
+                    sessionRaceCatchup = raceCatchup;
+
                     // The circuit may be flagged "start in glider mode", in which
                     // case startPlay already put us in its own craft. Let that go
                     // first (restoring its transform) -- the showroom's choice is
