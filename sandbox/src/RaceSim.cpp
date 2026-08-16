@@ -481,7 +481,13 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             for (const Entity& fe : env.entities)
                 if (const auto* fl = fe.components.get<FinishLineComponent>())
                     { st.raceLaps = static_cast<int>(std::lround(fl->laps)); break; }
-            st.finishWasOver = true; st.finishArm = 1.0f;
+            // Pretending the line was already under us makes the NEXT rising edge
+            // the opening pass -- and covers a grid that stands on the line, since
+            // a craft already inside the gate has to leave it before it can enter
+            // again. A time guard on top of that only swallowed the opening pass
+            // of anyone who reached the line quickly (a front-row start is ~1 s
+            // away from it), so the arm stays open.
+            st.finishWasOver = true; st.finishArm = 0.0f;
             // The grid stands behind the line, so the run up to it is not a lap:
             // the next crossing opens lap 1 (see lapBegun).
             st.lapBegun = false;
@@ -828,11 +834,33 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         if (st.raceCountdown <= 0.0f && overFinish && !st.finishWasOver &&
             st.finishArm <= 0.0f && !st.raceFinished) {
             st.finishArm = 2.0f; // no legit re-cross within 2 s
+            auto completeLap = [&]() {
+                st.lastLap = st.lapClock;
+                if (st.bestLap <= 0.0f || st.lastLap < st.bestLap) st.bestLap = st.lastLap;
+                st.lapClock = 0.0f;
+                st.lapBegun = true;
+                ++st.raceLap;
+                st.cpPassed.clear(); // fresh set for the next lap
+                if (st.raceLaps > 0 && st.raceLap >= st.raceLaps) st.raceFinished = true;
+            };
+            // A full set of checkpoints is PROOF a lap was flown, whatever the
+            // bookkeeping thinks about which pass this is, so it is asked first.
+            const bool cpDone = static_cast<int>(st.cpPassed.size()) >= st.cpTotal;
             if (!st.raceActive) {
                 st.raceActive = true; st.raceClock = st.lapClock = 0.0f;
                 st.raceLap = 0; st.raceLaps = lineLaps;
                 st.lastLap = st.bestLap = 0.0f; st.cpPassed.clear();
                 st.lapBegun = true;
+            } else if (st.cpTotal > 0 && cpDone) {
+                // Every gate crossed and now the line: a lap, even if the opening
+                // pass off the grid was never seen (a pole start clears the line
+                // inside the re-arm window, and then `lapBegun` is still false a
+                // whole lap later). Reading that as "this opens lap 1" is what put
+                // a pilot who drove the same lap as everyone else a full lap down
+                // in the standings, with no way to ever get it back: the AI counts
+                // its laps by distance travelled, and only the human's counter
+                // hung back.
+                completeLap();
             } else if (!st.lapBegun) {
                 // First pass after GO: the craft has just driven up from the grid
                 // BEHIND the line, so this opens lap 1 rather than completing one.
@@ -844,13 +872,8 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 st.lapBegun = true;
                 st.lapClock = 0.0f;
                 st.cpPassed.clear();
-            } else if (static_cast<int>(st.cpPassed.size()) >= st.cpTotal) {
-                st.lastLap = st.lapClock;
-                if (st.bestLap <= 0.0f || st.lastLap < st.bestLap) st.bestLap = st.lastLap;
-                st.lapClock = 0.0f;
-                ++st.raceLap;
-                st.cpPassed.clear(); // fresh set for the next lap
-                if (st.raceLaps > 0 && st.raceLap >= st.raceLaps) st.raceFinished = true;
+            } else if (cpDone) {
+                completeLap();   // a track with no checkpoints: the line is the lap
             } else {
                 st.raceMissedFlash = 2.5f; // crossed the line a checkpoint short
             }
