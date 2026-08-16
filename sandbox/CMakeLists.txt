@@ -157,8 +157,16 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/images/splash.png
             $<TARGET_FILE_DIR:sandbox>/assets/splash.png
+    # Third-party licence notices, next to the exe rather than inside assets/:
+    # assets/ is packed into the encrypted archive on export, and a notice
+    # nobody can open is not a notice. "Export Game" copies this file into the
+    # exported folder for the same reason.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
+            $<TARGET_FILE_DIR:sandbox>/third-party-licenses.md
     COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_ASSET_STAMP}
     DEPENDS ${FITZEL_SANDBOX_ASSETS} ${CMAKE_SOURCE_DIR}/images/splash.png
+            ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
     COMMENT "Copying sandbox assets")
 add_custom_target(sandbox_assets ALL DEPENDS ${FITZEL_ASSET_STAMP})
 # Both executables share one bin/ dir, so one copy serves both.

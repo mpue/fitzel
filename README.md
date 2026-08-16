@@ -218,3 +218,30 @@ Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.
 Natural next steps: triplanar terrain texturing with real albedo maps, a
 material/texture asset system, model loading (glTF/OBJ), and a scene graph.
+
+## Licences
+
+Every third-party component the engine links is permissive -- MIT, BSD-3-Clause,
+zlib, Boost or MIT-0 -- so a game built with it can be closed-source and sold,
+and nothing here places a condition on your own code. What those licences DO
+require is that their copyright notices travel with the binary, which is what
+[docs/third-party-licenses.md](docs/third-party-licenses.md) is for: the editor
+build drops it next to the executable and "Export Game" copies it into the
+exported folder.
+
+That file is generated, never typed -- versions are read back out of
+`cmake/Dependencies.cmake` and every licence text is copied verbatim from the
+fetched sources, so it cannot drift away from what is actually built:
+
+```
+python tools/collect-licenses.py
+```
+
+Re-run it after bumping a dependency; it refuses to write a file for a
+dependency it has never been told about.
+
+The art, audio and models a game is made of are a separate question with a
+separate answer, and this file says nothing about them. FFmpeg is not linked and
+not shipped: the video importer runs whatever `ffmpeg` the machine has (see
+`VideoImport.cpp`), which keeps its LGPL/GPL terms out of both the engine and
+the exported game.

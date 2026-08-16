@@ -744,6 +744,22 @@ void exportGame(Context& ctx, const std::string& outDir) {
     fs::copy_file(player, out / (game + ".exe"),
                   fs::copy_options::overwrite_existing, ec);
     fs::copy(exeDir / "assets", out / "assets", rec, ec);
+    // The third-party licence notices, as a loose file beside the exe. Every
+    // library in the engine is permissive, and permissive still means their
+    // copyright notice travels with the binary -- so this ships whether or not
+    // anyone remembers it. Not inside the archive: a notice that needs the game
+    // to open it is not a notice.
+    {
+        std::error_code lec;
+        const fs::path notices = exeDir / "third-party-licenses.md";
+        if (fs::exists(notices, lec))
+            fs::copy_file(notices, out / "third-party-licenses.md",
+                          fs::copy_options::overwrite_existing, lec);
+        else
+            std::fprintf(stderr, "[Fitzel] third-party-licenses.md is missing "
+                                 "next to the editor -- the export ships "
+                                 "without its licence notices\n");
+    }
 
     // The boot scene: the configured start scene, else the project's default
     // (<project>.fitzel). Always bundled, whatever the export-scene selection is.
