@@ -19,7 +19,7 @@ struct Entity;
 // craft + circuit pickers over the rendered image, and reports back which
 // combination the player launched. It never loads anything itself -- the caller
 // owns scenes, prefabs and the race, and this module only answers "this craft, on
-// that circuit, now".
+// that circuit, over this distance, against this field, now".
 //
 // The catalog is built from the scene, so authoring a start screen is placing
 // objects and filling in fields -- there is nothing to drag into position, which
@@ -52,6 +52,22 @@ struct Launch {
     int         craftId2 = -1;
     std::string craftName2;
     int         laps    = 0;      // laps the circuit asks for (0 = the scene's own)
+
+    // --- What kind of race this is -----------------------------------------
+    // The answers the screen gives about the RACE rather than about the craft.
+    // Each one is an override the caller lays over the circuit once it is
+    // loaded, and each has a value that means "leave the scene alone" -- so a
+    // start screen nobody touched changes nothing, and a circuit stays the
+    // session its author built. They are applied AFTER Play has snapshotted the
+    // scene, which is what keeps a race run at ELITE against two rivals out of
+    // the .fitzel on disk.
+    int   mode      = -1;    // -1 = the circuit's own, 0 = race, 1 = time trial
+    // -1 = the field as authored, else AT MOST that many rivals: the start
+    // screen can only take craft out of the field a circuit was built with, it
+    // has no way to add ones the scene does not contain.
+    int   opponents = -1;
+    float aiSkill   = 1.0f;  // pace multiplier on the field (1 = as authored)
+    float aiCatchup = 1.0f;  // rubber-band multiplier (how hard the field holds on)
 };
 
 // One sound the showroom wants played: a Sound-asset filename plus its gain,
@@ -129,10 +145,18 @@ private:
     // Which row the keyboard is on. Left/right moves within a row, up/down
     // between rows -- two axes, no modifier keys, nothing small to hit.
     //
-    // Players comes first because it decides whether Craft2 exists at all: with
-    // one player that row is skipped entirely rather than shown disabled, so the
-    // screen never asks a question that has no meaning.
-    enum class Row { Players = 0, Craft = 1, Craft2 = 2, Track = 3, Start = 4 };
+    // The order is the order things are DRAWN in, top-left to bottom-right: the
+    // two seats' craft down the left, the circuit across the bottom, the race
+    // setup down the right, then START. Walking the rows walks the screen; a nav
+    // order that disagreed with the layout would have the eye jumping about to
+    // find what the last key press moved.
+    //
+    // Craft2 is skipped entirely with one player rather than shown disabled, so
+    // the screen never asks a question that has no meaning -- the same rule the
+    // field and its skill follow in a time trial.
+    enum class Row { Craft   = 0, Craft2 = 1, Track = 2,
+                     Players = 3, Laps   = 4, Mode  = 5, Field = 6, Skill = 7,
+                     Start   = 8 };
 
     // The seat the craft carousel is currently picking for -- Craft2's row means
     // player two. One carousel, not two: the choice is the same catalogue and the
@@ -144,8 +168,17 @@ private:
     // The craft standing on the podium: whichever seat is being chosen for.
     int  stageSel() const { return craftSelFor(seatRow()); }
     // Walk to the next/previous row, skipping what this configuration has no use
-    // for (the second seat when there is only one player).
+    // for (the second seat when there is only one player, the field and its
+    // skill in a time trial).
     void moveRow(int dir);
+    // Can this row be answered as things stand? An unusable row is stepped over
+    // rather than drawn greyed out -- the screen never asks a question that has
+    // no meaning, which is the same rule the second seat already followed.
+    bool rowUsable(Row r) const;
+    // Left/right on one of the race-setup rows. Clamped rather than wrapped: a
+    // list of numbers has two ends, and wrapping would turn one step past "20
+    // laps" into the circuit's own count.
+    void moveSetup(int dir);
 
     void moveCraft(int dir);
     void moveTrack(int dir);
@@ -182,6 +215,18 @@ private:
     int  m_craftSel2 = 0;
     int  m_prevCraft = -1;       // craft leaving the stage during a swap
     Row  m_row = Row::Players;
+
+    // --- Race setup ---------------------------------------------------------
+    // Indices into the choice tables in the .cpp, so the screen holds a pick
+    // rather than a value and the tables stay the one place a list is written
+    // down. They are NOT reset by begin(): coming back from a race, the screen
+    // opens on the same answers it was left with, because somebody who just ran
+    // a circuit is most likely about to run it again.
+    int  m_lapSel   = 0;   // 0 = the circuit's own lap count
+    int  m_modeSel  = 0;   // 0 = race, 1 = time trial
+    int  m_fieldSel = 0;   // 0 = the field as authored
+    int  m_skillSel = 1;   // PRO: the field exactly as it was tuned
+    bool m_hadSession = false;  // begin() has run before (the picks above stand)
 
     // --- Effect clocks ------------------------------------------------------
     float m_time    = 0.0f;   // seconds the showroom has been up (idle animation)

@@ -242,6 +242,29 @@ void pips(const Ctx& g, float x, float y, float size, float value, float alpha) 
     }
 }
 
+// --- Race setup: the choice tables ------------------------------------------
+// The lists the setup rows step through, written down once. Every one of them
+// opens on the answer that changes nothing -- the circuit's own lap count, the
+// field its author entered, the pace they tuned -- so the screen can be walked
+// past without quietly turning a race into something else.
+const int kLaps[]  = {0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
+const int kField[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+
+// A skill step moves the whole field together: how fast it runs, how hard it
+// gets there, and how stubbornly it hangs on to the player. `pace` scales speed
+// and the forces behind it; `catchup` scales the rubber band, so a rookie field
+// lets a lead grow while an elite one refuses to be dropped.
+struct SkillStep { const char* name; float pace; float catchup; };
+const SkillStep kSkill[] = {
+    {"ROOKIE", 0.86f, 0.55f},
+    {"PRO",    1.00f, 1.00f},
+    {"ACE",    1.12f, 1.25f},
+    {"ELITE",  1.24f, 1.45f},
+};
+
+template <typename T, std::size_t N>
+constexpr int countOf(const T (&)[N]) { return static_cast<int>(N); }
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -349,18 +372,39 @@ void Showroom::begin(const std::vector<Entity>& entities,
     m_camHomePitch = camera.pitch();
     m_camHomeFov   = camera.fov();
 
-    m_craftSel = m_trackSel = 0;
-    m_players  = 1;
-    // Player two starts on a different machine where there is one, so a two-
-    // player race does not open with both seats on the same craft by accident.
-    m_craftSel2 = m_craft.size() > 1 ? 1 : 0;
+    // The last answers stand. Walking back into the showroom after a race -- the
+    // most ordinary thing that happens here -- must not mean picking the same
+    // craft, the same circuit and the same four setup rows again; that is the
+    // kind of repetition the tremor-friendly goal rules out just as firmly as a
+    // small drag target does. Everything is clamped rather than trusted: the
+    // catalogue is rebuilt from the scene each time and may be a different size.
+    const int nc = static_cast<int>(m_craft.size());
+    const int nt = static_cast<int>(m_tracks.size());
+    if (!m_hadSession) {
+        m_craftSel = m_trackSel = 0;
+        m_players  = 1;
+        // Player two starts on a different machine where there is one, so a two-
+        // player race does not open with both seats on the same craft by accident.
+        m_craftSel2 = nc > 1 ? 1 : 0;
+        m_hadSession = true;
+    }
+    m_craftSel  = std::clamp(m_craftSel,  0, std::max(0, nc - 1));
+    m_craftSel2 = std::clamp(m_craftSel2, 0, std::max(0, nc - 1));
+    m_trackSel  = std::clamp(m_trackSel,  0, std::max(0, nt - 1));
+    m_lapSel    = std::clamp(m_lapSel,   0, countOf(kLaps)  - 1);
+    m_fieldSel  = std::clamp(m_fieldSel, 0, countOf(kField) - 1);
+    m_skillSel  = std::clamp(m_skillSel, 0, countOf(kSkill) - 1);
+    m_modeSel   = std::clamp(m_modeSel,  0, 1);
     m_prevCraft = -1;
-    m_row      = Row::Players;
+    m_row      = Row::Craft;
     m_time = m_intro = m_swap = m_trackFx = m_launch = 0.0f;
     m_launching = false;
     m_wantBack  = false;
     m_orbit = 40.0f; m_orbitVel = 0.0f; m_spin = 0.0f;
-    m_ringPos = 0.0f; m_stripPos = 0.0f;
+    // Seeded to the restored picks, not to zero: the carousel and the strip open
+    // ON the chosen craft and circuit instead of sliding across to them.
+    m_ringPos = static_cast<float>(m_craftSel);
+    m_stripPos = static_cast<float>(m_trackSel);
     for (float& b : m_bar) b = 0.0f;
     m_active = true;
 }
@@ -402,12 +446,49 @@ void Showroom::cue(const std::string& snd, float pitch) {
     m_cues.push_back(Cue{snd, m_sndGain, pitch});
 }
 
+bool Showroom::rowUsable(Row r) const {
+    if (r == Row::Craft2)                    return m_players > 1;
+    if (r == Row::Field || r == Row::Skill)  return m_modeSel == 0;
+    return true;
+}
+
 void Showroom::moveRow(int dir) {
-    int r = static_cast<int>(m_row) + dir;
-    // The second seat's row is not there to be landed on with one player: step
-    // over it in whichever direction the move was going.
-    if (r == static_cast<int>(Row::Craft2) && m_players < 2) r += dir;
-    m_row = static_cast<Row>(std::clamp(r, 0, static_cast<int>(Row::Start)));
+    const int last = static_cast<int>(Row::Start);
+    int r = std::clamp(static_cast<int>(m_row) + dir, 0, last);
+    // Rows this configuration has no use for are stepped over in whichever
+    // direction the move was going -- the second seat with one player, the field
+    // and its skill in a time trial. The walk always terminates because the two
+    // ends (Players and START) can always be answered.
+    while (r > 0 && r < last && !rowUsable(static_cast<Row>(r))) r += dir;
+    m_row = static_cast<Row>(std::clamp(r, 0, last));
+}
+
+void Showroom::moveSetup(int dir) {
+    // The seat count is a setup question like the others, but it is not an index
+    // into a table -- it is the number itself, and it decides whether the screen
+    // has a second craft row at all.
+    if (m_row == Row::Players) {
+        // An axis, not a toggle: left is one seat, right is two. A hand that
+        // repeats a direction cannot flip it back and forth.
+        const int want = std::clamp(m_players + dir, 1, 2);
+        if (want == m_players) return;
+        m_players = want;
+        cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
+        return;
+    }
+    int*      sel = nullptr;
+    int       n   = 0;
+    switch (m_row) {
+        case Row::Laps:  sel = &m_lapSel;   n = countOf(kLaps);  break;
+        case Row::Mode:  sel = &m_modeSel;  n = 2;               break;
+        case Row::Field: sel = &m_fieldSel; n = countOf(kField); break;
+        case Row::Skill: sel = &m_skillSel; n = countOf(kSkill); break;
+        default: return;
+    }
+    const int want = std::clamp(*sel + dir, 0, n - 1);
+    if (want == *sel) return;               // already at that end: no sound, no move
+    *sel = want;
+    cue(m_sndMove, 1.12f);
 }
 
 void Showroom::moveCraft(int dir) {
@@ -453,17 +534,12 @@ void Showroom::update(std::vector<Entity>& entities, fitzel::Camera& camera,
         if (in.down) { moveRow(+1); cue(m_sndMove, 0.92f); }
         if (in.left || in.right) {
             const int d = in.right ? 1 : -1;
-            if (m_row == Row::Players) {
-                // One player or two. Left is one, right is two -- an axis, not a
-                // toggle, so holding a direction cannot flip it back and forth.
-                const int want = d > 0 ? 2 : 1;
-                if (want != m_players) {
-                    m_players = want;
-                    cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
-                }
-            }
-            else if (m_row == Row::Craft || m_row == Row::Craft2) moveCraft(d);
-            else                     moveTrack(d); // the START row still browses circuits
+            if (m_row == Row::Craft || m_row == Row::Craft2) moveCraft(d);
+            // The START row still browses circuits: the last thing looked at
+            // before committing is usually the track, and a step there should
+            // not mean walking back up the screen.
+            else if (m_row == Row::Track || m_row == Row::Start) moveTrack(d);
+            else                                                 moveSetup(d);
         }
         // Confirm walks forward through the rows and commits on the last one, so
         // the whole screen can be answered with one button held in one hand.
@@ -709,7 +785,11 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
     const bool haveCraft = !m_craft.empty();
     const float panelW = std::min(vsize.x * 0.34f, 420.0f * g.S);
     const float panelX = g.x0 + pad - (1.0f - intro) * 90.0f * g.S;
-    float panelY = g.cy - 150.0f * g.S;
+    // Lifted well above centre: the block below it (whose craft is whose) and the
+    // circuit strip below THAT each need a band of their own. Everything on this
+    // screen used to be measured from the bottom edge independently, which is how
+    // the seat buttons came to be drawn straight through the circuit cards.
+    float panelY = g.cy - 210.0f * g.S;
     if (haveCraft) {
         const Craft& c = m_craft[stageSel()];
         const float lift = easeOut(1.0f - m_swap);     // the block settles in on a swap
@@ -719,7 +799,11 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
         // Whose craft this is. With one player the label is just "CRAFT"; with
         // two it has to name the seat, because the same carousel picks for both
         // and nothing else on screen would say which one is being changed.
-        g.spaced(panelX, panelY - 26.0f * g.S + yoff, g.fTiny, fade(kDim, ca),
+        // In the accent, not in the dim, once it names a seat: with two players
+        // this line is the answer to "whose craft am I looking at", and that is
+        // not a caption -- it changes under you as you move between the rows.
+        g.spaced(panelX, panelY - 26.0f * g.S + yoff, g.fTiny,
+                 m_players < 2 ? fade(kDim, ca) : g.accent(ca),
                  m_players < 2 ? "CRAFT"
                                : (seatRow() == 1 ? "PLAYER 2  CRAFT"
                                                  : "PLAYER 1  CRAFT"), 0.5f);
@@ -784,18 +868,148 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
                 cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
             }
         }
+
+        // --- Whose craft is whose -------------------------------------------
+        // Both seats, side by side, always readable. One carousel makes both
+        // picks, so without this the screen could only ever say which craft is
+        // ON STAGE -- and that answer moves between the players as the rows do.
+        // Each plate carries its own craft's accent, which is the same colour
+        // that machine paints the whole frame in when it is the one being
+        // looked at, so the tie between seat and machine is made twice.
+        //
+        // Only with two players: one seat needs no label saying it is the one.
+        if (m_players > 1) {
+            const float sy   = panelY + 320.0f * g.S;
+            const float sh   = 48.0f * g.S;
+            const float sgap = 10.0f * g.S;
+            const float sw   = (panelW - sgap) * 0.5f;
+            for (int seat = 0; seat < 2; ++seat) {
+                const float ax = panelX + seat * (sw + sgap), bx = ax + sw;
+                const Craft& sc =
+                    m_craft[std::clamp(craftSelFor(seat), 0,
+                                       static_cast<int>(m_craft.size()) - 1)];
+                const Row  row  = seat == 1 ? Row::Craft2 : Row::Craft;
+                const ImVec2 mp = ImGui::GetIO().MousePos;
+                const bool over = g.mouse && mp.x >= ax && mp.x <= bx &&
+                                  mp.y >= sy && mp.y <= sy + sh;
+                if (over && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) m_row = row;
+                const bool lit = over || m_row == row;
+                const ImU32 col = rgba(sc.accent, A);
+                const float r = 7.0f * g.S;
+                dl->AddRectFilled(ImVec2(ax, sy), ImVec2(bx, sy + sh),
+                                  lit ? rgba(sc.accent, 0.20f * A) : fade(kInk, A), r);
+                dl->AddRect(ImVec2(ax, sy), ImVec2(bx, sy + sh),
+                            lit ? col : fade(kEdge, A), r, 0, lit ? 2.4f * g.S : 1.0f);
+                // The seat's own colour bar down its left edge, and the badge.
+                dl->AddRectFilled(ImVec2(ax, sy), ImVec2(ax + 4.0f * g.S, sy + sh),
+                                  col, r, ImDrawFlags_RoundCornersLeft);
+                g.text(ax + 14.0f * g.S, sy + sh * 0.5f - g.fBody * 0.62f, g.fBody,
+                       col, seat == 1 ? "P2" : "P1");
+                // The name is clipped rather than shrunk: two plates side by side
+                // are narrow, and a name that quietly got smaller would be one
+                // more thing to read carefully.
+                dl->PushClipRect(ImVec2(ax + 48.0f * g.S, sy),
+                                 ImVec2(bx - 6.0f * g.S, sy + sh), true);
+                g.text(ax + 48.0f * g.S, sy + sh * 0.5f - g.fSmall * 0.62f, g.fSmall,
+                       lit ? fade(kText, A) : fade(kDim, A), sc.title.c_str());
+                dl->PopClipRect();
+            }
+        }
     } else {
         g.textC(g.cx, g.cy, g.fBody, fade(kDim, A),
                 "This showroom has no craft -- add a Glider to the scene.");
     }
 
+    // --- Race setup (right) -------------------------------------------------
+    // What kind of race this is, opposite the craft that is going to run it.
+    // These are questions about the SESSION rather than about the circuit, which
+    // is why they are asked here and not authored on the scene: the same track
+    // is a five-lap sprint against a full field one evening and a lone time
+    // trial the next, and neither answer should mean opening the editor.
+    //
+    // Every row is a value between two chevrons, hovering arms it and left/right
+    // steps it -- one gesture, repeated down the column, with nothing small to
+    // hit. How many people are playing is the first of them: it is a question
+    // about the session, not about a craft, and asking it down here is what took
+    // its two buttons off the bottom edge, where they were being drawn straight
+    // over the circuit cards.
+    bool overSetup = false;
+    {
+        const float sw   = std::min(vsize.x * 0.26f, 340.0f * g.S);
+        const float sx1  = g.x1 - pad + (1.0f - intro) * 90.0f * g.S;
+        const float sx0  = sx1 - sw;
+        const float rowH = 46.0f * g.S, rowGap = 5.0f * g.S;
+        float sy = g.y0 + vsize.y * 0.17f;
+        g.spaced(sx0, sy - 26.0f * g.S, g.fTiny, fade(kDim, A), "RACE SETUP", 0.5f);
+
+        char buf[64];
+        struct Line { Row row; const char* label; std::string value; };
+        std::vector<Line> lines;
+        lines.push_back({Row::Players, "SEATS",
+                         m_players > 1 ? "2 PLAYERS" : "1 PLAYER"});
+        if (kLaps[m_lapSel] > 0)
+            std::snprintf(buf, sizeof(buf), "%d LAPS", kLaps[m_lapSel]);
+        else if (!m_tracks.empty() && m_tracks[m_trackSel].laps > 0)
+            std::snprintf(buf, sizeof(buf), "CIRCUIT  (%d)", m_tracks[m_trackSel].laps);
+        else
+            std::snprintf(buf, sizeof(buf), "CIRCUIT");
+        lines.push_back({Row::Laps, "DISTANCE", buf});
+        lines.push_back({Row::Mode, "SESSION", m_modeSel == 1 ? "TIME TRIAL" : "RACE"});
+        // The field and how hard it pushes are race-only questions: a time trial
+        // has nobody to ask them about, so they leave the screen entirely rather
+        // than sit there greyed out.
+        if (m_modeSel == 0) {
+            // "UP TO", not a promise: the circuit is not loaded yet, so its
+            // field size is unknown here and this pick can only ever take craft
+            // OUT of the one its author entered. A row that read "8 RIVALS" and
+            // then produced three would be the screen lying about the race.
+            const int f = kField[m_fieldSel];
+            if (f < 0)       std::snprintf(buf, sizeof(buf), "AS AUTHORED");
+            else if (f == 0) std::snprintf(buf, sizeof(buf), "SOLO");
+            else             std::snprintf(buf, sizeof(buf), "UP TO %d", f);
+            lines.push_back({Row::Field, "FIELD", buf});
+            lines.push_back({Row::Skill, "SKILL", kSkill[m_skillSel].name});
+        }
+
+        for (const Line& ln : lines) {
+            const float ry0 = sy, ry1 = sy + rowH;
+            const float ax = sx0 - 14.0f * g.S, bx = sx1 + 14.0f * g.S;
+            const ImVec2 mp = ImGui::GetIO().MousePos;
+            const bool over = g.mouse && mp.x >= ax && mp.x <= bx &&
+                              mp.y >= ry0 - 4.0f * g.S && mp.y <= ry1;
+            if (over) { overSetup = true; m_row = ln.row; }
+            const bool lit = over || m_row == ln.row;
+            panel(g, ax, ry0 - 4.0f * g.S, bx, ry1, A * (lit ? 0.9f : 0.32f));
+            g.spaced(sx0 + 24.0f * g.S, ry0 + 4.0f * g.S, g.fTiny,
+                     fade(kDim, A * 0.9f), ln.label, 0.42f);
+            g.textC((sx0 + sx1) * 0.5f, ry0 + g.fTiny * 1.9f, g.fBody,
+                    lit ? g.accent(A) : fade(kText, A * 0.9f), ln.value.c_str());
+            const float chY = ry0 + rowH * 0.58f, chS = 16.0f * g.S;
+            if (chevron(g, sx0 + 4.0f * g.S, chY, chS, -1, A, lit)) {
+                m_row = ln.row; moveSetup(-1);
+            }
+            if (chevron(g, sx1 - 4.0f * g.S, chY, chS, 1, A, lit)) {
+                m_row = ln.row; moveSetup(1);
+            }
+            sy = ry1 + rowGap;
+        }
+    }
+
     // --- Craft chevrons, flanking the stage ---------------------------------
     if (m_craft.size() > 1) {
-        const float chY = py - vsize.y * 0.06f;
+        // Level with the podium and pulled in toward it: high and wide, they
+        // reached into the setup column on the right, and two controls sharing a
+        // square is how a screen ends up feeling untrustworthy to click.
+        const float chY = py - vsize.y * 0.02f;
         const float chS = 30.0f * g.S;
         const bool armed = m_row == Row::Craft || m_row == Row::Craft2;
-        if (chevron(g, px - vsize.x * 0.26f, chY, chS, -1, A, armed)) { moveCraft(-1); m_row = Row::Craft; }
-        if (chevron(g, px + vsize.x * 0.26f, chY, chS,  1, A, armed)) { moveCraft( 1); m_row = Row::Craft; }
+        // The setup panel wins any square both of them claim (they can overlap in
+        // a short, wide viewport): the pointer is over exactly one control, and
+        // it is the one drawn under it.
+        if (!overSetup) {
+            if (chevron(g, px - vsize.x * 0.24f, chY, chS, -1, A, armed)) { moveCraft(-1); m_row = Row::Craft; }
+            if (chevron(g, px + vsize.x * 0.24f, chY, chS,  1, A, armed)) { moveCraft( 1); m_row = Row::Craft; }
+        }
     }
 
     // --- Circuit strip ------------------------------------------------------
@@ -887,45 +1101,6 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
                     m_tracks[m_trackSel].blurb.c_str());
     }
 
-    // --- Seats: one player or two -------------------------------------------
-    // Two big targets rather than a checkbox, and hovering picks -- the same
-    // rule the rest of this screen follows. It sits directly above START
-    // because it is the question that changes what START does: with two, the
-    // race opens split, and player two's craft row appears above.
-    {
-        const float bw = 190.0f * g.S, bh = 44.0f * g.S, gap = 14.0f * g.S;
-        const float ay = g.y1 - 152.0f * g.S;
-        const float ax = g.cx - bw - gap * 0.5f;
-        const float pulse = 0.5f + 0.5f * std::sin(m_time * 3.4f);
-        const bool armed = m_row == Row::Players;
-        for (int i = 0; i < 2; ++i) {
-            const float bx = ax + static_cast<float>(i) * (bw + gap);
-            const bool  on = (m_players == i + 1);
-            int hov = 0;
-            const bool clicked =
-                bigButton(g, bx, ay, bx + bw, ay + bh,
-                          i == 0 ? "1 PLAYER" : "2 PLAYERS",
-                          on, A * (on ? 1.0f : 0.55f), &hov, armed ? pulse : 0.0f);
-            if (hov) m_row = Row::Players;
-            if (clicked && !on) {
-                m_players = i + 1;
-                cue(m_sndSelect.empty() ? m_sndMove : m_sndSelect, 1.0f);
-            }
-        }
-        // What the second seat flies, spelled out here rather than only on its
-        // own row: the choice is made on one carousel, so this is the one place
-        // both picks can be read at once.
-        if (m_players > 1 && haveCraft) {
-            char line[128];
-            std::snprintf(line, sizeof(line), "P1  %s          P2  %s",
-                          m_craft[m_craftSel].title.c_str(),
-                          m_craft[std::clamp(m_craftSel2, 0,
-                                             static_cast<int>(m_craft.size()) - 1)]
-                              .title.c_str());
-            g.textC(g.cx, ay + bh + 8.0f * g.S, g.fTiny, fade(kDim, A * 0.9f), line);
-        }
-    }
-
     // --- START --------------------------------------------------------------
     {
         const float bw = 320.0f * g.S, bh = 62.0f * g.S;
@@ -991,7 +1166,16 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
                     out.craftName2 = m_craft[m_craftSel2].title;
                 }
             }
-            out.laps = m_tracks.empty() ? 0 : m_tracks[m_trackSel].laps;
+            // The setup rows, as overrides. The distance falls back to the
+            // circuit's own card when the row is left on CIRCUIT, which is what
+            // the screen said it would do.
+            out.laps = kLaps[m_lapSel] > 0
+                           ? kLaps[m_lapSel]
+                           : (m_tracks.empty() ? 0 : m_tracks[m_trackSel].laps);
+            out.mode      = m_modeSel;
+            out.opponents = m_modeSel == 0 ? kField[m_fieldSel] : -1;
+            out.aiSkill   = kSkill[m_skillSel].pace;
+            out.aiCatchup = kSkill[m_skillSel].catchup;
         }
         return out;
     }

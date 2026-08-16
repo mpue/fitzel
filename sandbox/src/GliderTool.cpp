@@ -1,5 +1,7 @@
 #include "GliderTool.hpp"
 
+#include "SoundList.hpp"
+
 #include <cstdio>
 #include <memory>
 
@@ -58,12 +60,51 @@ void inspector(GliderComponent& gc, Entity& /*root*/, Document& /*doc*/,
         }
         if (!hoverHdr && pr.key == "rideHeight") { ui::sectionText("Hover");    hoverHdr = true; }
         if (!attHdr   && pr.key == "bankAngle")  { ui::sectionText("Attitude"); attHdr   = true; }
-        // The two SFX filenames are chosen from the project's sounds, not typed
-        // -- same rule as every other sound field in the editor. Without a picker
-        // to hand (no caller supplied one) they fall back to their text field.
-        if (soundPicker && (pr.key == "soundHit" || pr.key == "soundWarn")) {
+        // The SFX filenames are chosen from the project's sounds, not typed --
+        // same rule as every other sound field in the editor. Without a picker to
+        // hand (no caller supplied one) they fall back to their text field.
+        if (soundPicker && (pr.key == "soundWarn" || pr.key == "soundBoost")) {
             soundPicker(pr.label.c_str(),
-                        pr.key == "soundHit" ? gc.soundHit : gc.soundWarn);
+                        pr.key == "soundBoost" ? gc.soundBoost : gc.soundWarn);
+            continue;
+        }
+        // The hull thud is a LIST: a row per sample, each row the same picker,
+        // one button to add another and one to drop it. The field underneath is
+        // still a single comma-separated string (SoundList.hpp) -- nobody types
+        // the commas, and nothing has to be dragged or hit precisely, which is
+        // the rule this editor is built on.
+        if (soundPicker && pr.key == "soundHit") {
+            std::vector<std::string> hits = soundlist::split(gc.soundHit);
+            bool changed = false;
+            int  drop    = -1;
+            for (std::size_t i = 0; i < hits.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                char label[64];
+                std::snprintf(label, sizeof(label), "%s %d", pr.label.c_str(),
+                              static_cast<int>(i) + 1);
+                std::string one = hits[i];
+                soundPicker(label, one);
+                if (one != hits[i]) { hits[i] = one; changed = true; }
+                ImGui::SameLine();
+                if (ImGui::Button("Remove")) drop = static_cast<int>(i);
+                ImGui::PopID();
+            }
+            if (drop >= 0) {
+                hits.erase(hits.begin() + drop);
+                changed = true;
+            }
+            if (ImGui::Button("Add hit sound")) {
+                // Seeded with a copy of the last one rather than a blank: an
+                // empty row would be dropped by the join the same frame it was
+                // added and the button would look broken. The new row is then
+                // changed with its own picker, which is one gesture either way.
+                hits.push_back(hits.empty() ? std::string("impact.wav") : hits.back());
+                changed = true;
+            }
+            if (changed) gc.soundHit = soundlist::join(hits);
+            ImGui::TextDisabled(hits.size() > 1
+                                    ? "One of these is played at random on every impact."
+                                    : "Add more and one is picked at random per impact.");
             continue;
         }
         drawProperty(pr, &gc);

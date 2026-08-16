@@ -622,6 +622,11 @@ const std::vector<Property>& GliderComponent::properties() {
         addFloat("Boost delay",  "boostDelay",    &GliderComponent::boostDelay,     0.0f,  10.0f, "%.2f s");
         addFloat("Boost thrust", "boostThrust",   &GliderComponent::boostThrust,    0.0f, 200.0f, "%.0f m/s2");
         addFloat("Boost top-up", "boostTopSpeed", &GliderComponent::boostTopSpeed,  0.0f, 120.0f, "%.0f m/s");
+        addFloat("Boost volume", "soundBoostGain", &GliderComponent::soundBoostGain, 0.0f,   2.0f, "%.2f");
+        Property sb;
+        sb.label = "Boost sound"; sb.key = "soundBoost"; sb.kind = PropKind::Text;
+        sb.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->soundBoost; };
+        p.push_back(std::move(sb));
         // Energy / hull (grouped under an "Energy" header at "energyCapacity").
         // The two sound filenames are Text props the Inspector turns into Sound
         // pickers, the same way a boost pad's punch is handled.

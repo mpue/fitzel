@@ -1,5 +1,7 @@
 #include "RaceSim.hpp"
 
+#include "SoundList.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -251,11 +253,17 @@ void applyImpact(RaceState& st, const GliderComponent& gc, glm::vec3& velH,
     st.energyIdle    = 0.0f;                 // ...and the recharge waits again
     st.energyLastHit = dmg;
     st.energyHitFlash = 0.7f;
-    // Harder hits sound deeper: one sample, pitched by what it cost.
-    if (!gc.soundHit.empty() && env.playCue) {
-        const float sev = glm::clamp(dmg / glm::max(st.energyCapacity * 0.3f, 1.0f),
-                                     0.0f, 1.0f);
-        env.playCue(gc.soundHit, gc.soundHitGain, glm::mix(1.15f, 0.75f, sev));
+    // Harder hits sound deeper, and which sample it is comes off the craft's
+    // list -- the same thud every single time reads as a UI beep within three
+    // crashes, however good the sample is. A craft naming one sound still gets
+    // that one (see SoundList.hpp).
+    if (env.playCue) {
+        const std::string snd = soundlist::pick(gc.soundHit);
+        if (!snd.empty()) {
+            const float sev = glm::clamp(dmg / glm::max(st.energyCapacity * 0.3f, 1.0f),
+                                         0.0f, 1.0f);
+            env.playCue(snd, gc.soundHitGain, glm::mix(1.15f, 0.75f, sev));
+        }
     }
 }
 } // namespace
@@ -705,6 +713,17 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 st.boostCharge = glm::min(st.boostCapacity,
                                           st.boostCharge + gc->boostRegen * env.kSimH);
         }
+        // The ignition, once per press. Gated on `spending`, which is what makes
+        // it answer the only question worth asking here: is this press actually
+        // going to boost? An empty tank, the grid freeze and a dead hull all
+        // fail it, and all three stay silent rather than promising a push that
+        // is not coming. Off the BUTTON's edge, not off `spending`, so holding
+        // it down cannot make the craft narrate its own empty tank.
+        if (spending && !st.boostWasHeld && env.playCue) {
+            const std::string snd = soundlist::pick(gc->soundBoost);
+            if (!snd.empty()) env.playCue(snd, gc->soundBoostGain, 1.0f);
+        }
+        st.boostWasHeld = boostHeld;
         st.boostActive = spending;
         if (st.boostDryFlash > 0.0f)
             st.boostDryFlash = glm::max(0.0f, st.boostDryFlash - env.kSimH);
@@ -754,8 +773,10 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             st.energyOut  = true;
             st.energyLow  = false;
             st.boostActive = false;
-            if (!gc->soundHit.empty() && env.playCue)
-                env.playCue(gc->soundHit, gc->soundHitGain, 0.6f);
+            if (env.playCue) {
+                const std::string snd = soundlist::pick(gc->soundHit);
+                if (!snd.empty()) env.playCue(snd, gc->soundHitGain, 0.6f);
+            }
         }
 
         // Gate trigger shared by checkpoints and the finish line. The gate has

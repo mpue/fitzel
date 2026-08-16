@@ -520,6 +520,13 @@ public:
     float boostDelay    = 1.2f;   // seconds after release before it starts refilling
     float boostThrust   = 55.0f;  // extra forward acceleration while boosting (m/s^2)
     float boostTopSpeed = 30.0f;  // m/s of speed cap ABOVE maxSpeed while boosting
+    // The ignition, played once when the pilot switches the boost ON -- and only
+    // when there is something in the tank to switch on. A press on an empty tank
+    // stays silent on purpose: a sound that fired anyway would promise a push
+    // that is not coming, and the empty tank is already told on the HUD. Empty =
+    // silent, and it takes a comma-separated list like the hull thud does.
+    std::string soundBoost;
+    float       soundBoostGain = 1.0f;
     // --- Energy (the hull) ---------------------------------------------------
     // The craft flies on a shield: every collision costs energy, and at zero the
     // run is over. It recharges on its own, but only after a pause and slowly
@@ -540,6 +547,13 @@ public:
     float crashBounce    = 0.35f;  // how much of the impact speed comes back
     // Collision SFX: the hull thud, and the alarm at the warning threshold
     // (which repeats while the energy stays low). Empty = silent.
+    //
+    // The hull thud takes SEVERAL samples, comma-separated ("thud_a.wav,
+    // thud_b.wav"), and one of them is picked per impact -- a single crash sound
+    // stops being heard as a crash after the third one. One name is a list of
+    // one, so a craft that names a single sound is unchanged. The inspector
+    // draws it as rows of sound pickers; see SoundList.hpp for why it is a
+    // string rather than a vector.
     std::string soundHit  = "impact.wav";
     std::string soundWarn = "energy_low.wav";
     float       soundHitGain  = 1.0f;

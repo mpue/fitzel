@@ -78,6 +78,7 @@
 #include "RaceSim.hpp"
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
+#include "PostChain.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "RoadPanel.hpp"
@@ -570,80 +571,27 @@ int main(int argc, char** argv) {
         };
         Mesh fsQuad = Mesh::create(fsVerts, {0, 1, 2, 0, 2, 3});
 
-        // HDR scene buffer + post-processing (bloom, god rays, lens flare, tonemap).
-        Shader composite = Shader::fromFiles("assets/shaders/sky.vert",
-                                             "assets/shaders/composite.frag");
-        if (!composite.isValid()) {
-            std::fprintf(stderr, "Failed to load composite shader\n");
-            return 1;
-        }
+        // HDR scene buffer + the post chain (SSAO, bloom, tonemap, speed blur,
+        // FXAA). The chain owns its shaders and its intermediate targets -- see
+        // PostChain.hpp for why that ownership is the whole point of it.
+        PostChain post;
+        if (!post.init()) return 1;
         int hdrW = 0, hdrH = 0;
         window.framebufferSize(hdrW, hdrH);
         RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F, /*depthTex=*/true);
+        // The post chain's knobs stay HERE, not on the chain: they are edited by
+        // the Sky & atmosphere and Colour grade panels, saved with the project,
+        // and driven by the weather -- all of which is main's business. The chain
+        // is handed them per frame.
         float bloomIntensity = 0.35f;
         float rayIntensity   = 0.5f;
-
-        // Bloom pyramid: threshold + progressive 13-tap downsample, then a tent
-        // upsample that adds each level back. Replaces a single 5x5 tap grid at a
-        // 9-texel stride, which under-sampled small bright features (emissive
-        // materials above all) into a moire that crawled with the camera.
-        Shader bloomDown = Shader::fromFiles("assets/shaders/sky.vert",
-                                             "assets/shaders/bloomdown.frag");
-        Shader bloomUp   = Shader::fromFiles("assets/shaders/sky.vert",
-                                             "assets/shaders/bloomup.frag");
-        if (!bloomDown.isValid() || !bloomUp.isValid()) {
-            std::fprintf(stderr, "Failed to load bloom shaders\n");
-            return 1;
-        }
-        // [0] is half res, each level halves again. Levels stop before they get
-        // degenerate, so a small viewport simply gets a shorter pyramid.
-        std::vector<RenderTarget> bloomRT;
-        auto rebuildBloom = [&bloomRT](int w, int h) {
-            bloomRT.clear();
-            int lw = std::max(1, w / 2), lh = std::max(1, h / 2);
-            for (int i = 0; i < 5 && lw >= 8 && lh >= 8; ++i) {
-                bloomRT.emplace_back(lw, lh, RenderTarget::Format::RGBA16F);
-                lw = std::max(1, lw / 2);
-                lh = std::max(1, lh / 2);
-            }
-        };
-        rebuildBloom(hdrW, hdrH);
         float bloomThreshold = 1.0f;  // luminance where the glow starts
         float bloomKnee      = 0.5f;  // soft-knee width below it
-
-        // SSAO (half-res), reconstructing position/normal from the HDR depth,
-        // plus a depth-aware blur that resolves its dither without smearing AO
-        // across silhouettes (which the old in-composite box blur did).
-        Shader ssao = Shader::fromFiles("assets/shaders/sky.vert",
-                                        "assets/shaders/ssao.frag");
-        if (!ssao.isValid()) { std::fprintf(stderr, "Failed to load ssao shader\n"); return 1; }
-        Shader ssaoBlur = Shader::fromFiles("assets/shaders/sky.vert",
-                                            "assets/shaders/ssaoblur.frag");
-        if (!ssaoBlur.isValid()) {
-            std::fprintf(stderr, "Failed to load ssao blur shader\n"); return 1;
-        }
-        RenderTarget ssaoRT(hdrW / 2, hdrH / 2);
-        RenderTarget ssaoBlurRT(hdrW / 2, hdrH / 2);
 
         // The final composited image lives in this target and is shown as the
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
         // panel's content region, so the scene renders at the viewport's pixels.
         RenderTarget viewportRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
-        // FXAA reads this LDR composite result and writes the anti-aliased image
-        // to the viewport texture (or screen). Toggle via fxaaEnabled.
-        Shader fxaa = Shader::fromFiles("assets/shaders/sky.vert",
-                                        "assets/shaders/fxaa.frag");
-        if (!fxaa.isValid()) { std::fprintf(stderr, "Failed to load fxaa shader\n"); return 1; }
-        RenderTarget postRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
-        // Camera motion blur: a full-screen pass between composite and FXAA. A
-        // radial speed blur streaking outward from the followed craft (mbRT holds
-        // its output); see the pass below.
-        Shader motionBlur = Shader::fromFiles("assets/shaders/sky.vert",
-                                              "assets/shaders/motionblur.frag");
-        if (!motionBlur.isValid()) {
-            std::fprintf(stderr, "Failed to load motion blur shader\n"); return 1;
-        }
-        RenderTarget mbRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
         // Chase-cam speed blur: the world point the camera follows (the driven
         // car/glider) is the streak focus, and its speed drives the streak length,
         // so the craft stays sharp while the surroundings smear past it.
@@ -3085,6 +3033,15 @@ int main(int argc, char** argv) {
         nlohmann::json pendingCraftJson2;
         std::string    pendingCraftName2;
         int            pendingCraftLaps = 0;
+        // The rest of the start screen's race setup, travelling with the craft
+        // for the same reason it does: the circuit is loaded a frame or two
+        // later, and these are overrides laid over it once it is there. The
+        // "leave the scene alone" values (-1, 1.0) are what a start screen
+        // nobody touched hands over.
+        int            pendingRaceMode    = -1;   // -1 = the circuit's own
+        int            pendingRaceField   = -1;   // -1 = the field as authored
+        float          pendingRaceSkill   = 1.0f; // pace multiplier
+        float          pendingRaceCatchup = 1.0f; // rubber-band multiplier
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
@@ -6111,6 +6068,12 @@ int main(int argc, char** argv) {
                 pendingCraftJson2 = nlohmann::json();
                 const int laps = pendingCraftLaps;
                 pendingCraftLaps = 0;
+                const int   raceMode    = pendingRaceMode;
+                const int   raceField   = pendingRaceField;
+                const float raceSkill   = pendingRaceSkill;
+                const float raceCatchup = pendingRaceCatchup;
+                pendingRaceMode  = -1;   pendingRaceField   = -1;
+                pendingRaceSkill = 1.0f; pendingRaceCatchup = 1.0f;
                 if (playMode) {
                     // The circuit may be flagged "start in glider mode", in which
                     // case startPlay already put us in its own craft. Let that go
@@ -6285,6 +6248,51 @@ int main(int argc, char** argv) {
                         for (Entity& e : entities)
                             if (auto* fl = e.components.get<FinishLineComponent>())
                                 fl->laps = static_cast<float>(laps);
+                    // ...and as the kind of session the start screen asked for.
+                    // Race or time trial lives on the start/finish line, so that
+                    // is where the override goes; racegrid reads it a few lines
+                    // below when it lines the grid up, and a time trial sits the
+                    // whole field out by itself.
+                    if (raceMode >= 0)
+                        for (Entity& e : entities)
+                            if (auto* fl = e.components.get<FinishLineComponent>())
+                                fl->mode = raceMode;
+                    // The field: how many of the circuit's rivals take part, and
+                    // how hard they push. Everything here happens AFTER
+                    // startPlay's snapshot, so a race run against two rookies
+                    // never reaches the circuit's .fitzel on disk.
+                    if (raceField >= 0 || raceSkill != 1.0f || raceCatchup != 1.0f) {
+                        int kept = 0;
+                        for (Entity& e : entities) {
+                            auto* op = e.components.get<OpponentComponent>();
+                            if (!op) continue;
+                            // The craft in the seats are not rivals. Player two's
+                            // often carries an Opponent component (that is how a
+                            // two-craft track is authored), and trimming the grid
+                            // must neither count it nor hand it the AI's pace.
+                            if (e.id == rootId || e.id == rootId2) continue;
+                            if (raceField >= 0 && op->entered) {
+                                // Scene order decides who stays -- the same order
+                                // racegrid builds the grid in -- so a smaller
+                                // field is the front of the one the author
+                                // entered rather than a random cut of it.
+                                if (kept < raceField) ++kept;
+                                else                  op->entered = false;
+                            }
+                            if (!op->entered) continue;
+                            // Grip goes as the SQUARE of the pace step, because a
+                            // corner is taken at sqrt(grip / curvature): scaled
+                            // linearly, a skill step would mean less in the bends
+                            // than on the straights -- and the bends are where a
+                            // field is actually decided.
+                            op->speed *= raceSkill;
+                            op->accel *= raceSkill;
+                            op->brake *= raceSkill;
+                            op->grip  *= raceSkill * raceSkill;
+                            op->catchup =
+                                std::clamp(op->catchup * raceCatchup, 0.0f, 1.0f);
+                        }
+                    }
 
                     if (rootId >= 0) {
                         // Fly THIS craft, not "the nearest glider": the grid slot
@@ -11345,14 +11353,9 @@ int main(int argc, char** argv) {
             // Sized to ONE pane: both players are drawn through the same set of
             // targets, one after the other, so a second view costs no extra
             // video memory -- only the time to fill them twice.
-            if (hdrRT.width() != paneW || hdrRT.height() != fbH) {
-                hdrRT  = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA16F, true);
-                ssaoRT = RenderTarget(std::max(1, paneW / 2), std::max(1, fbH / 2));
-                ssaoBlurRT = RenderTarget(std::max(1, paneW / 2), std::max(1, fbH / 2));
-                postRT = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA8);
-                mbRT   = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA8);
-                rebuildBloom(paneW, fbH);
-            }
+            if (hdrRT.width() != paneW || hdrRT.height() != fbH)
+                hdrRT = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA16F, true);
+            post.resize(paneW, fbH);   // no-op unless the pane actually changed
             // The one target that stays FULL width: it is the finished image
             // both panes are blitted into (and what the editor shows in its
             // viewport panel).
@@ -11440,164 +11443,34 @@ int main(int argc, char** argv) {
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
 
-            // --- Post-processing passes (all fullscreen, no depth, no blending
-            //     unless a pass asks for it). SSAO -> its denoise -> the bloom
-            //     pyramid; the composite below consumes both. ------------------
-            glDisable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
-            glDisable(GL_CULL_FACE);
-            glDisable(GL_BLEND);
-
-            // --- SSAO: occlusion from the HDR depth buffer (half-res) ---
-            ssaoRT.bind();
-            glClear(GL_COLOR_BUFFER_BIT);
-            ssao.bind();
-            hdrRT.bindDepthTexture(0);
-            ssao.setInt("uDepth", 0);
-            ssao.setMat4("uProjection", proj);
-            ssao.setMat4("uInvProjection", glm::inverse(proj));
-            ssao.setFloat("uRadius", ssaoRadius);
-            ssao.setFloat("uBias", ssaoBias);
-            ssao.setFloat("uPower", ssaoPower);
-            // Distance fade: depth precision toward the horizon isn't worth an AO
-            // term, and the far field reads better hazy than dirty.
-            ssao.setFloat("uFadeStart", 60.0f);
-            ssao.setFloat("uFadeEnd", 160.0f);
-            fsQuad.draw();
-
-            // --- SSAO denoise: depth-aware blur, so the dither resolves without
-            //     dragging occlusion across silhouettes ----------------------
-            ssaoBlurRT.bind();
-            glClear(GL_COLOR_BUFFER_BIT);
-            ssaoBlur.bind();
-            ssaoRT.bindColorTexture(0);   ssaoBlur.setInt("uAO", 0);
-            hdrRT.bindDepthTexture(1);    ssaoBlur.setInt("uDepth", 1);
-            ssaoBlur.setVec2("uTexel", {1.0f / ssaoRT.width(), 1.0f / ssaoRT.height()});
-            ssaoBlur.setFloat("uNear", camera.nearPlane());
-            ssaoBlur.setFloat("uFar", camera.farPlane());
-            ssaoBlur.setFloat("uDepthSigma", 0.4f);
-            fsQuad.draw();
-
-            // --- Bloom pyramid: threshold + downsample, then tent-upsample the
-            //     levels back on top of each other (additive) ----------------
-            for (std::size_t i = 0; i < bloomRT.size(); ++i) {
-                bloomRT[i].bind();
-                glClear(GL_COLOR_BUFFER_BIT);
-                bloomDown.bind();
-                if (i == 0) {
-                    hdrRT.bindColorTexture(0);
-                    bloomDown.setVec2("uSrcTexel", {1.0f / fbW, 1.0f / fbH});
-                } else {
-                    bloomRT[i - 1].bindColorTexture(0);
-                    bloomDown.setVec2("uSrcTexel",
-                                      {1.0f / bloomRT[i - 1].width(),
-                                       1.0f / bloomRT[i - 1].height()});
-                }
-                bloomDown.setInt("uSrc", 0);
-                bloomDown.setInt("uFirstPass", i == 0 ? 1 : 0);
-                bloomDown.setFloat("uThreshold", bloomThreshold);
-                bloomDown.setFloat("uKnee", bloomKnee);
-                fsQuad.draw();
-            }
-            if (bloomRT.size() > 1) {
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_ONE, GL_ONE); // each level adds onto the larger one
-                bloomUp.bind();
-                bloomUp.setInt("uSrc", 0);
-                bloomUp.setFloat("uRadius", 1.0f);
-                for (std::size_t i = bloomRT.size(); i-- > 1;) {
-                    bloomRT[i - 1].bind();
-                    bloomRT[i].bindColorTexture(0);
-                    bloomUp.setVec2("uSrcTexel",
-                                    {1.0f / bloomRT[i].width(), 1.0f / bloomRT[i].height()});
-                    fsQuad.draw();
-                }
-                glDisable(GL_BLEND);
-            }
-
-            // --- Composite: bloom + god rays + lens flare + tonemap ------
-            // Project the sun to screen space for the rays/flare.
-            const glm::vec4 sunClip = mainVP * glm::vec4(camPos + sunDir * 3000.0f, 1.0f);
-            glm::vec2 sunUV(0.5f);
-            float sunOnScreen = 0.0f;
-            if (sunClip.w > 1e-4f) {
-                sunUV = glm::vec2(sunClip) / sunClip.w * 0.5f + 0.5f;
-                if (sunUV.x > -0.3f && sunUV.x < 1.3f &&
-                    sunUV.y > -0.3f && sunUV.y < 1.3f && sunDir.y > -0.05f) {
-                    sunOnScreen = 1.0f;
-                }
-            }
-
-            // Composite into an LDR buffer; FXAA then filters it to the target.
-            postRT.bind();
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            glDisable(GL_DEPTH_TEST);
-            glDepthMask(GL_FALSE);
-            glDisable(GL_CULL_FACE);
-            composite.bind();
-            hdrRT.bindColorTexture(0);
-            composite.setInt("uHdr", 0);
-            hdrRT.bindDepthTexture(1);
-            composite.setInt("uDepth", 1);
-            composite.setFloat("uNear", camera.nearPlane());
-            composite.setFloat("uFar", camera.farPlane());
-            composite.setFloat("uFocusNear", dofNear);
-            composite.setFloat("uFocusFar", dofFar);
-            composite.setFloat("uDofMax", dofMax);
-            ssaoBlurRT.bindColorTexture(2);
-            composite.setInt("uAO", 2);
-            composite.setFloat("uAoStrength", ssaoStrength);
-            // The bloom pyramid's top level: already thresholded and blurred, so
-            // the composite only samples it (for the glow and the god rays).
-            if (!bloomRT.empty()) bloomRT[0].bindColorTexture(3);
-            composite.setInt("uBloomTex", 3);
-            composite.setVec2("uTexel", {1.0f / fbW, 1.0f / fbH});
-            composite.setFloat("uAspect", aspect);
-            composite.setFloat("uExposure", exposure);
-            composite.setVec2("uSunUV", sunUV);
-            composite.setFloat("uSunOnScreen", sunOnScreen);
-            composite.setVec3("uSunColor", sunCol);
-            composite.setFloat("uBloom", bloomIntensity);
-            composite.setFloat("uRays", rayIntensity);
-            composite.setFloat("uHueShift", hueShift);
-            composite.setFloat("uSaturation", saturation);
-            composite.setFloat("uValue", valueGain);
-            composite.setFloat("uWarmth", warmth);
-            composite.setFloat("uContrast", contrast);
-            fsQuad.draw();
-
-            // --- Camera motion blur: streak the composite along per-pixel screen
-            //     velocity (this VP vs last frame's, by depth reprojection). FXAA
-            //     then reads this instead of postRT. Skipped when off (strength 0)
-            //     or on the very first frame (prevMainVP not primed yet). --------
-            // Radial speed blur, centred on the followed craft and driven by its
-            // speed: the world streaks outward past a sharp craft. Only while a
-            // chase cam is active and moving; free camera = no blur.
-            RenderTarget* fxaaSrc = &postRT;
-            // Whose speed streaks THIS pane: the craft this pane is following.
-            // Read from player one for both, the right-hand view blurs by how
-            // fast the left-hand player is going, around a point that is not
-            // even in shot.
-            const racesim::RaceState& blurSt = (vi == 0) ? race : race2;
-            const float blurAmount = motionBlurStrength * blurSt.blurSpeed01 * 0.35f;
-            if (blurSt.blurAnchorValid && blurAmount > 0.002f) {
-                // The craft's screen position is the streak focus (stays sharp).
-                glm::vec2 center(0.5f, 0.5f);
-                const glm::vec4 cc = mainVP * glm::vec4(blurSt.blurAnchorWorld, 1.0f);
-                if (cc.w > 1e-4f) center = glm::vec2(cc) / cc.w * 0.5f + 0.5f;
-
-                mbRT.bind();
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-                motionBlur.bind();
-                postRT.bindColorTexture(0); motionBlur.setInt("uImage", 0);
-                hdrRT.bindDepthTexture(1);  motionBlur.setInt("uDepth", 1);
-                motionBlur.setVec2("uCenter", center);
-                motionBlur.setFloat("uAmount", glm::min(blurAmount, 0.5f));
-                motionBlur.setInt("uSamples", 16);
-                motionBlur.setFloat("uNear", camera.nearPlane());
-                motionBlur.setFloat("uFar", camera.farPlane());
-                fsQuad.draw();
-                fxaaSrc = &mbRT;
+            // --- Post: SSAO, bloom, tonemap, colour grade, speed blur -------
+            // All of it lives in PostChain, which owns the shaders and the
+            // intermediate targets it needs. What this pane has to say is only
+            // what changes per frame and per view.
+            {
+                PostChain::Params pp;
+                pp.proj      = proj;
+                pp.viewProj  = mainVP;
+                pp.camPos    = camPos;
+                pp.nearPlane = vcam.nearPlane();
+                pp.farPlane  = vcam.farPlane();
+                pp.aspect    = aspect;
+                pp.sunDir    = sunDir;
+                pp.sunCol    = sunCol;
+                pp.ssaoRadius = ssaoRadius; pp.ssaoBias = ssaoBias;
+                pp.ssaoPower  = ssaoPower;  pp.ssaoStrength = ssaoStrength;
+                pp.bloomThreshold = bloomThreshold; pp.bloomKnee = bloomKnee;
+                pp.bloomIntensity = bloomIntensity; pp.rayIntensity = rayIntensity;
+                pp.dofNear = dofNear; pp.dofFar = dofFar; pp.dofMax = dofMax;
+                pp.exposure = exposure;
+                pp.hueShift = hueShift; pp.saturation = saturation;
+                pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
+                // Whose speed streaks THIS pane: the craft this pane follows.
+                const racesim::RaceState& blurSt = (vi == 0) ? race : race2;
+                pp.blurStrength     = motionBlurStrength * blurSt.blurSpeed01 * 0.35f;
+                pp.blurAnchor       = blurSt.blurAnchorWorld;
+                pp.blurAnchorValid  = blurSt.blurAnchorValid;
+                post.run(hdrRT, pp, fsQuad);
             }
 
             // --- FXAA: filter the (motion-blurred) composite to the viewport
@@ -11621,16 +11494,7 @@ int main(int argc, char** argv) {
                 const int pw = std::max(1, dstW / views);
                 glViewport(vi * pw, 0, pw, dstH);
             }
-            fxaa.bind();
-            fxaaSrc->bindColorTexture(0);
-            fxaa.setInt("uImage", 0);
-            // The source is one pane, not the window.
-            fxaa.setVec2("uTexel", {1.0f / paneW, 1.0f / fbH});
-            fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);
-            fsQuad.draw();
-            glDepthMask(GL_TRUE);
-            glEnable(GL_DEPTH_TEST);
-            glEnable(GL_CULL_FACE);
+            post.present(fsQuad, fxaaEnabled);
             } // per-pane loop
 
             // Back to the whole image. Everything after this -- the editor grid,
@@ -11853,6 +11717,10 @@ int main(int argc, char** argv) {
                         pendingCraftName = go.craftName;
                         pendingCraftName2 = go.craftName2;
                         pendingCraftLaps = go.laps;
+                        pendingRaceMode    = go.mode;
+                        pendingRaceField   = go.opponents;
+                        pendingRaceSkill   = go.aiSkill;
+                        pendingRaceCatchup = go.aiCatchup;
                         pendingCraftJson2 = nlohmann::json();
                         const auto modelGuidOf = [&](int mid) -> std::string {
                             LoadedModel* lm = models.byId(mid);
@@ -11867,6 +11735,19 @@ int main(int argc, char** argv) {
                             if (id < 0) return;
                             auto p = prefab::fromSubtree(entities, id, name);
                             if (!p) return;
+                            // A craft that was CHOSEN is in the race, whatever
+                            // flag the start screen's scene keeps it under. A
+                            // showroom parks the machines it is not showing by
+                            // deactivating them, and some are saved that way --
+                            // end() has just faithfully put that flag back a few
+                            // lines above, exactly as it should. Carried into the
+                            // circuit unchanged it spawns a craft that is never
+                            // drawn, whose camera child is dead with it, and the
+                            // race opens on an empty track with the player
+                            // nowhere: the same picture as the start screen being
+                            // ignored outright. Only the root -- a child that is
+                            // authored off (an effect, a spare part) stays off.
+                            if (!p->entities.empty()) p->entities.front().active = true;
                             nlohmann::json ents = nlohmann::json::array();
                             for (const Entity& pe : p->entities)
                                 ents.push_back(projectio::writeEntityJson(pe, modelGuidOf));

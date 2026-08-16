@@ -83,6 +83,11 @@ struct RaceState {
     float boostCapacity = 100.0f;  // what a full one holds (mirrored for the HUD)
     int   boostSegments = 10;      // HUD bar divisions, derived from the capacity
     bool  boostActive   = false;   // held AND actually spending (HUD + speed FX)
+    // The button's own state last step, which is NOT the same thing as
+    // boostActive: the ignition sound hangs off the pilot pressing, so that a
+    // tank trickling back over zero under a held button re-ignites in silence
+    // instead of thudding once every boostDelay.
+    bool  boostWasHeld  = false;
     float boostIdle     = 0.0f;    // seconds since it last spent anything
     float boostDryFlash = 0.0f;    // counts down after running the tank dry (HUD)
     // --- Energy (the hull) -----------------------------------------------

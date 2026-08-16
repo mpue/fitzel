@@ -27,6 +27,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # The scene's cameras. Runtime, like everything a saved scene contains: a
     # follow camera is scene data, and the shipped player has to resolve it too.
     src/CameraSystem.cpp
+    # The post chain (SSAO, bloom, tonemap, speed blur, FXAA). Runtime: the
+    # shipped player draws the same frame the editor does.
+    src/PostChain.cpp
     src/RaceHud.cpp
     src/Showroom.cpp
     src/RoadSide.cpp
