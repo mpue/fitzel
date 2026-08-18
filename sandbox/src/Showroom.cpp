@@ -250,17 +250,10 @@ void pips(const Ctx& g, float x, float y, float size, float value, float alpha) 
 const int kLaps[]  = {0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20};
 const int kField[] = {-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
 
-// A skill step moves the whole field together: how fast it runs, how hard it
-// gets there, and how stubbornly it hangs on to the player. `pace` scales speed
-// and the forces behind it; `catchup` scales the rubber band, so a rookie field
-// lets a lead grow while an elite one refuses to be dropped.
-struct SkillStep { const char* name; float pace; float catchup; };
-const SkillStep kSkill[] = {
-    {"ROOKIE", 0.86f, 0.55f},
-    {"PRO",    1.00f, 1.00f},
-    {"ACE",    1.12f, 1.25f},
-    {"ELITE",  1.24f, 1.45f},
-};
+// The SKILL row steps the difficulty ladder, which lives in Difficulty.hpp --
+// not here. It moves more than this screen can sensibly describe (the field's
+// pace and composure AND the player's own margin for error), and it is read by
+// races this screen never launched, so the table belongs where both can see it.
 
 template <typename T, std::size_t N>
 constexpr int countOf(const T (&)[N]) { return static_cast<int>(N); }
@@ -275,6 +268,10 @@ bool Showroom::isShowroomScene(const std::vector<Entity>& entities) {
     for (const Entity& e : entities)
         if (e.active && e.components.get<ShowroomComponent>()) return true;
     return false;
+}
+
+void Showroom::setDifficulty(int lvl) {
+    m_skillSel = std::clamp(lvl, 0, difficulty::kCount - 1);
 }
 
 void Showroom::begin(const std::vector<Entity>& entities,
@@ -393,7 +390,7 @@ void Showroom::begin(const std::vector<Entity>& entities,
     m_trackSel  = std::clamp(m_trackSel,  0, std::max(0, nt - 1));
     m_lapSel    = std::clamp(m_lapSel,   0, countOf(kLaps)  - 1);
     m_fieldSel  = std::clamp(m_fieldSel, 0, countOf(kField) - 1);
-    m_skillSel  = std::clamp(m_skillSel, 0, countOf(kSkill) - 1);
+    m_skillSel  = std::clamp(m_skillSel, 0, difficulty::kCount - 1);
     m_modeSel   = std::clamp(m_modeSel,  0, 1);
     m_prevCraft = -1;
     m_row      = Row::Craft;
@@ -482,7 +479,7 @@ void Showroom::moveSetup(int dir) {
         case Row::Laps:  sel = &m_lapSel;   n = countOf(kLaps);  break;
         case Row::Mode:  sel = &m_modeSel;  n = 2;               break;
         case Row::Field: sel = &m_fieldSel; n = countOf(kField); break;
-        case Row::Skill: sel = &m_skillSel; n = countOf(kSkill); break;
+        case Row::Skill: sel = &m_skillSel; n = difficulty::kCount; break;
         default: return;
     }
     const int want = std::clamp(*sel + dir, 0, n - 1);
@@ -974,7 +971,7 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
             else if (f == 0) std::snprintf(buf, sizeof(buf), "SOLO");
             else             std::snprintf(buf, sizeof(buf), "UP TO %d", f);
             lines.push_back({Row::Field, "FIELD", buf});
-            lines.push_back({Row::Skill, "SKILL", kSkill[m_skillSel].name});
+            lines.push_back({Row::Skill, "SKILL", difficulty::name(m_skillSel)});
         }
 
         for (const Line& ln : lines) {
@@ -1180,8 +1177,7 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
                            : (m_tracks.empty() ? 0 : m_tracks[m_trackSel].laps);
             out.mode      = m_modeSel;
             out.opponents = m_modeSel == 0 ? kField[m_fieldSel] : -1;
-            out.aiSkill   = kSkill[m_skillSel].pace;
-            out.aiCatchup = kSkill[m_skillSel].catchup;
+            out.difficulty = m_skillSel;
         }
         return out;
     }

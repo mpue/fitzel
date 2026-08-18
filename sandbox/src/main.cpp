@@ -82,6 +82,7 @@
 #include "PostChain.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
+#include "Difficulty.hpp"
 #include "GraphicsMenu.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
@@ -730,6 +731,14 @@ int main(int argc, char** argv) {
         // the exe rather than in the project: they say what this PC can manage,
         // which is not something to carry to another one with the game.
         gfxmenu::Settings gfxSet  = gfxmenu::load("graphics.json");
+        // --- Difficulty (owned by Difficulty.hpp) ---------------------------
+        // The player's own, and a separate file from the graphics on purpose:
+        // that one says what the MACHINE can manage, this one says how the
+        // PLAYER wants to be treated. The two would only ever travel together by
+        // accident. Edited by the SKILL row on the start screen, which is why
+        // there is no dialog for it here.
+        static constexpr const char* kDifficultyFile = "difficulty.json";
+        difficulty::Profile gameDifficulty = difficulty::load(kDifficultyFile);
         gfxmenu::Menu     gfxUi;
         gfxmenu::Input    gfxIn;          // rebuilt every frame, read at draw time
         bool prevGfxKey     = false;      // F10 edge
@@ -2414,7 +2423,6 @@ int main(int argc, char** argv) {
         // Presentation mode: borderless fullscreen with the editor UI hidden.
         bool presentMode = false;
         bool prevF11     = false;
-        int  savedWX = 0, savedWY = 0, savedWW = 0, savedWH = 0;
 
         // First-person (walk on terrain) mode.
         bool        fpsMode  = false;
@@ -3162,8 +3170,12 @@ int main(int argc, char** argv) {
         // nobody touched hands over.
         int            pendingRaceMode    = -1;   // -1 = the circuit's own
         int            pendingRaceField   = -1;   // -1 = the field as authored
-        float          pendingRaceSkill   = 1.0f; // pace multiplier
-        float          pendingRaceCatchup = 1.0f; // rubber-band multiplier
+        // The difficulty step the next race runs at. The odd one out among these:
+        // the others default to "leave the scene alone", this one defaults to the
+        // player's own profile, because a race started without going past the
+        // start screen (a level change, Play in the editor) still has a player
+        // with a setting. PRO is simply the step whose every multiplier is 1.
+        int            pendingRaceLevel   = gameDifficulty.level;
         // --- The launch, kept for as long as the race lasts -------------------
         // The pending values above are consumed the moment the craft arrives on
         // the grid, which is right: they are a message, and a message is read
@@ -3183,8 +3195,7 @@ int main(int argc, char** argv) {
         int            sessionCraftLaps   = 0;
         int            sessionRaceMode    = -1;
         int            sessionRaceField   = -1;
-        float          sessionRaceSkill   = 1.0f;
-        float          sessionRaceCatchup = 1.0f;
+        int            sessionRaceLevel   = gameDifficulty.level;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
         // --- Lua script editor (ImGuiColorTextEdit) --------------------------
@@ -4286,6 +4297,11 @@ int main(int argc, char** argv) {
                                  .parent_path().generic_string()))
                         if (sc.first != me) otherScenes.push_back(sc.first);
                 }
+                // The SKILL row opens on what the player last chose, wherever
+                // they chose it -- the profile, not this session. It is the same
+                // row either way, so the screen is the editor for the setting and
+                // the setting is what the screen remembers.
+                showroomUi.setDifficulty(gameDifficulty.level);
                 showroomUi.begin(entities, otherScenes, camera);
             }
         };
@@ -4339,15 +4355,9 @@ int main(int argc, char** argv) {
                     if (fitzel::vfs::exists(scenePath))
                         loadSceneShowing(scenePath, bootScene);
                 }
-                if (bootFullscreen) {
-                    GLFWwindow* w = window.nativeHandle();
-                    glfwGetWindowPos(w, &savedWX, &savedWY);
-                    glfwGetWindowSize(w, &savedWW, &savedWH);
-                    GLFWmonitor* mon = glfwGetPrimaryMonitor();
-                    const GLFWvidmode* vm = glfwGetVideoMode(mon);
-                    glfwSetWindowMonitor(w, mon, 0, 0, vm->width, vm->height,
-                                         vm->refreshRate);
-                }
+                // Borderless, not exclusive: a game nobody can screenshot or
+                // stream is a game nobody can show anyone (see setFullscreen).
+                if (bootFullscreen) window.setFullscreen(true);
                 presentMode = true;
                 startPlay();
             } else {
@@ -4583,16 +4593,7 @@ int main(int argc, char** argv) {
             const bool f11 = input.isKeyDown(GLFW_KEY_F11);
             if (f11 && !prevF11) {
                 presentMode = !presentMode;
-                GLFWwindow* w = window.nativeHandle();
-                if (presentMode) {
-                    glfwGetWindowPos(w, &savedWX, &savedWY);
-                    glfwGetWindowSize(w, &savedWW, &savedWH);
-                    GLFWmonitor* m = glfwGetPrimaryMonitor();
-                    const GLFWvidmode* vm = glfwGetVideoMode(m);
-                    glfwSetWindowMonitor(w, m, 0, 0, vm->width, vm->height, vm->refreshRate);
-                } else {
-                    glfwSetWindowMonitor(w, nullptr, savedWX, savedWY, savedWW, savedWH, 0);
-                }
+                window.setFullscreen(presentMode);
             }
             prevF11 = f11;
 
@@ -4765,8 +4766,7 @@ int main(int argc, char** argv) {
                 if (playerMode)          { window.requestClose(); }
                 else if (presentMode) {
                     presentMode = false;
-                    glfwSetWindowMonitor(window.nativeHandle(), nullptr,
-                                         savedWX, savedWY, savedWW, savedWH, 0);
+                    window.setFullscreen(false);
                 } else if (playMode)     { stopPlay(); }
                 else if (vehicleMode)    { vehicleMode = false; endEditorDrive(); }
                 else if (gliderMode)     { gliderMode = false; endGliderDrive(); }
@@ -5120,6 +5120,14 @@ int main(int argc, char** argv) {
                 // camera. (racesim::updateArcadeCar in RaceSim.cpp.)
                 racesim::updateArcadeCar(race, raceEnv);
             } else if (gliderMode && driveGliderId >= 0) {
+                // The difficulty step's half that belongs to the player -- how
+                // hard a hit bites, how fast the hull heals, how much boost comes
+                // back. Pushed EVERY frame rather than once as the race starts,
+                // because a RaceState is reset down four different paths (a
+                // restart, entering glider mode, seating player two, a launch off
+                // the start screen) and a value written once is one of them away
+                // from being silently dropped. It is three assignments.
+                difficulty::applyToPlayer(race, sessionRaceLevel);
                 // Wipeout-style hover racer: fixed-step flight sim, boost pads,
                 // gate/checkpoint/lap logic, hover spring, interpolated chase cam.
                 // (racesim::updateGlider in RaceSim.cpp.)
@@ -5160,6 +5168,7 @@ int main(int argc, char** argv) {
                             setWorld, parentWorldMat, gliderGround, playBoostPunch,
                             playCue,
                         };
+                        difficulty::applyToPlayer(race2, sessionRaceLevel);
                         racesim::updateGlider(race2, env2);
                     }
                 } else {
@@ -6275,8 +6284,7 @@ int main(int argc, char** argv) {
                         pendingCraftLaps   = sessionCraftLaps;
                         pendingRaceMode    = sessionRaceMode;
                         pendingRaceField   = sessionRaceField;
-                        pendingRaceSkill   = sessionRaceSkill;
-                        pendingRaceCatchup = sessionRaceCatchup;
+                        pendingRaceLevel   = sessionRaceLevel;
                     }
                 }
             }
@@ -6313,7 +6321,7 @@ int main(int argc, char** argv) {
                 sessionCraftName.clear(); sessionCraftName2.clear();
                 sessionCraftLaps   = 0;
                 sessionRaceMode    = -1;   sessionRaceField   = -1;
-                sessionRaceSkill   = 1.0f; sessionRaceCatchup = 1.0f;
+                sessionRaceLevel   = gameDifficulty.level;
                 std::fprintf(stderr, "[navdbg] sceneload want='%s' cur='%s' target='%s'\n",
                              want.c_str(), currentProject.c_str(),
                              target.generic_string().c_str());
@@ -6345,10 +6353,9 @@ int main(int argc, char** argv) {
                 pendingCraftLaps = 0;
                 const int   raceMode    = pendingRaceMode;
                 const int   raceField   = pendingRaceField;
-                const float raceSkill   = pendingRaceSkill;
-                const float raceCatchup = pendingRaceCatchup;
-                pendingRaceMode  = -1;   pendingRaceField   = -1;
-                pendingRaceSkill = 1.0f; pendingRaceCatchup = 1.0f;
+                const int   raceLevel   = pendingRaceLevel;
+                pendingRaceMode  = -1;   pendingRaceField = -1;
+                pendingRaceLevel = gameDifficulty.level;
                 if (playMode) {
                     // Keep the whole launch for this circuit, so a restart can be
                     // flown in the craft that was chosen rather than in the one
@@ -6360,8 +6367,7 @@ int main(int argc, char** argv) {
                     sessionCraftLaps   = laps;
                     sessionRaceMode    = raceMode;
                     sessionRaceField   = raceField;
-                    sessionRaceSkill   = raceSkill;
-                    sessionRaceCatchup = raceCatchup;
+                    sessionRaceLevel   = raceLevel;
 
                     // The circuit may be flagged "start in glider mode", in which
                     // case startPlay already put us in its own craft. Let that go
@@ -6549,38 +6555,30 @@ int main(int argc, char** argv) {
                     // how hard they push. Everything here happens AFTER
                     // startPlay's snapshot, so a race run against two rookies
                     // never reaches the circuit's .fitzel on disk.
-                    if (raceField >= 0 || raceSkill != 1.0f || raceCatchup != 1.0f) {
+                    // The field: how many of the circuit's rivals take part...
+                    if (raceField >= 0) {
                         int kept = 0;
                         for (Entity& e : entities) {
                             auto* op = e.components.get<OpponentComponent>();
-                            if (!op) continue;
+                            if (!op || !op->entered) continue;
                             // The craft in the seats are not rivals. Player two's
                             // often carries an Opponent component (that is how a
                             // two-craft track is authored), and trimming the grid
-                            // must neither count it nor hand it the AI's pace.
+                            // must not count it.
                             if (e.id == rootId || e.id == rootId2) continue;
-                            if (raceField >= 0 && op->entered) {
-                                // Scene order decides who stays -- the same order
-                                // racegrid builds the grid in -- so a smaller
-                                // field is the front of the one the author
-                                // entered rather than a random cut of it.
-                                if (kept < raceField) ++kept;
-                                else                  op->entered = false;
-                            }
-                            if (!op->entered) continue;
-                            // Grip goes as the SQUARE of the pace step, because a
-                            // corner is taken at sqrt(grip / curvature): scaled
-                            // linearly, a skill step would mean less in the bends
-                            // than on the straights -- and the bends are where a
-                            // field is actually decided.
-                            op->speed *= raceSkill;
-                            op->accel *= raceSkill;
-                            op->brake *= raceSkill;
-                            op->grip  *= raceSkill * raceSkill;
-                            op->catchup =
-                                std::clamp(op->catchup * raceCatchup, 0.0f, 1.0f);
+                            // Scene order decides who stays -- the same order
+                            // racegrid builds the grid in -- so a smaller field is
+                            // the front of the one the author entered rather than
+                            // a random cut of it.
+                            if (kept < raceField) ++kept;
+                            else                  op->entered = false;
                         }
                     }
+                    // ...and how hard they push, which is the whole ladder in one
+                    // call (see Difficulty.hpp). Unconditional, unlike the
+                    // overrides above: every race is run at SOME step, and PRO is
+                    // the one that leaves the circuit exactly as it was tuned.
+                    difficulty::applyToField(entities, raceLevel, rootId, rootId2);
 
                     if (rootId >= 0) {
                         // Fly THIS craft, not "the nearest glider": the grid slot
@@ -12189,8 +12187,14 @@ int main(int argc, char** argv) {
                         pendingCraftLaps = go.laps;
                         pendingRaceMode    = go.mode;
                         pendingRaceField   = go.opponents;
-                        pendingRaceSkill   = go.aiSkill;
-                        pendingRaceCatchup = go.aiCatchup;
+                        // The step chosen on the start screen is also the one
+                        // the player keeps: the SKILL row is the profile editor,
+                        // so leaving the screen is what commits it.
+                        pendingRaceLevel   = go.difficulty;
+                        if (gameDifficulty.level != go.difficulty) {
+                            gameDifficulty.level = go.difficulty;
+                            difficulty::save(kDifficultyFile, gameDifficulty);
+                        }
                         pendingCraftJson2 = nlohmann::json();
                         const auto modelGuidOf = [&](int mid) -> std::string {
                             LoadedModel* lm = models.byId(mid);

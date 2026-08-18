@@ -1,5 +1,6 @@
 #include "fitzel/core/Window.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <stdexcept>
 #include <utility>
@@ -26,6 +27,29 @@ void ensureGlfwInitialized() {
             throw std::runtime_error("Failed to initialize GLFW");
         }
     }
+}
+
+// The monitor a window is mostly on: the one whose area contains its centre.
+// GLFW has no such call -- glfwGetPrimaryMonitor is not the same question, and
+// answering it with the primary is how a game on the second screen jumps to the
+// first the moment it goes fullscreen.
+GLFWmonitor* monitorForWindow(GLFWwindow* w) {
+    int wx = 0, wy = 0, ww = 0, wh = 0;
+    glfwGetWindowPos(w, &wx, &wy);
+    glfwGetWindowSize(w, &ww, &wh);
+    const int cx = wx + ww / 2, cy = wy + wh / 2;
+
+    int count = 0;
+    GLFWmonitor** mons = glfwGetMonitors(&count);
+    for (int i = 0; i < count; ++i) {
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(mons[i], &mx, &my);
+        const GLFWvidmode* vm = glfwGetVideoMode(mons[i]);
+        if (!vm) continue;
+        if (cx >= mx && cx < mx + vm->width && cy >= my && cy < my + vm->height)
+            return mons[i];
+    }
+    return glfwGetPrimaryMonitor();   // off every screen (or none): the main one
 }
 
 } // namespace
@@ -107,6 +131,28 @@ void Window::requestClose() {
     if (m_handle) {
         glfwSetWindowShouldClose(m_handle, GLFW_TRUE);
     }
+}
+
+void Window::setFullscreen(bool on) {
+    if (!m_handle || on == m_fullscreen) return;
+    if (on) {
+        glfwGetWindowPos(m_handle, &m_savedX, &m_savedY);
+        glfwGetWindowSize(m_handle, &m_savedW, &m_savedH);
+        GLFWmonitor* mon = monitorForWindow(m_handle);
+        const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
+        if (!vm) return;                       // no video mode: stay windowed
+        int mx = 0, my = 0;
+        glfwGetMonitorPos(mon, &mx, &my);
+        glfwSetWindowAttrib(m_handle, GLFW_DECORATED, GLFW_FALSE);
+        // The null monitor is the whole point: this stays a WINDOW, sized and
+        // placed over the screen, so the desktop compositor keeps seeing it.
+        glfwSetWindowMonitor(m_handle, nullptr, mx, my, vm->width, vm->height, 0);
+    } else {
+        glfwSetWindowMonitor(m_handle, nullptr, m_savedX, m_savedY,
+                             std::max(m_savedW, 320), std::max(m_savedH, 240), 0);
+        glfwSetWindowAttrib(m_handle, GLFW_DECORATED, GLFW_TRUE);
+    }
+    m_fullscreen = on;
 }
 
 void Window::swapBuffers() {

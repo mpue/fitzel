@@ -247,7 +247,8 @@ void applyImpact(RaceState& st, const GliderComponent& gc, glm::vec3& velH,
     st.gliderVel.z = velH.z;
     st.gliderOverspeed = 0.0f;               // a crash ends the boost run
     if (into < gc.crashMinSpeed) return;     // a nudge, not a crash
-    const float dmg = (into - gc.crashMinSpeed) * glm::max(gc.crashDamage, 0.0f);
+    const float dmg = (into - gc.crashMinSpeed) * glm::max(gc.crashDamage, 0.0f)
+                    * glm::max(st.damageScale, 0.0f);
     if (dmg <= 0.0f) return;
     st.energy        = glm::max(0.0f, st.energy - dmg);
     st.energyIdle    = 0.0f;                 // ...and the recharge waits again
@@ -269,6 +270,7 @@ void applyImpact(RaceState& st, const GliderComponent& gc, glm::vec3& velH,
 } // namespace
 
 void applyDamage(RaceState& st, float dmg) {
+    dmg *= glm::max(st.damageScale, 0.0f);   // the difficulty step, as on a crash
     if (dmg <= 0.0f) return;
     st.energy         = glm::max(0.0f, st.energy - dmg);
     st.energyIdle     = 0.0f;      // the recharge waits again
@@ -387,6 +389,11 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
     st.blurAnchorWorld = rPos; st.blurAnchorValid = true; // keep the car sharp
     st.blurSpeed01 = glm::clamp(std::abs(st.carSpeed) / 28.0f, 0.0f, 1.2f);
 }
+
+// How long the craft has to keep reading as off-track before the rescue fetches
+// it back. Long enough that a query blinking for a frame or two costs nothing,
+// short enough that a real fall does not turn into a long drop.
+constexpr float kOffTrackGrace = 0.35f;
 
 void updateGlider(RaceState& st, const RaceEnv& env) {
     // Wipeout-style hover racer: an arcade flight sim (no Jolt). The craft
@@ -591,15 +598,36 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 st.respawnPos = glm::vec3(snapXZ.x, surfY + gc->rideHeight, snapXZ.y);
                 st.respawnYaw = roadYaw;
                 st.haveRespawn = true;
+                st.offTrackT   = 0.0f;
             } else if (st.haveRespawn &&
                        (lateral > halfW + 25.0f ||
                         (onRoadDeck && st.gliderPos.y < surfY - 12.0f) ||
                         (!onRoadDeck && haveRoadY))) {
-                // fallen off the track -> back to the last safe road point
-                st.gliderPos = st.respawnPos;
-                st.gliderYaw = st.respawnYaw;
-                st.gliderVel = glm::vec3(0.0f);
-                st.gliderOverspeed = 0.0f;
+                // Off the track -- but only ACTUALLY off it once it has stayed
+                // that way. Without the wait a single query that finds no road
+                // under the craft (a seam between ribbon sections, a bridge
+                // joint, a tunnel mouth) fires the rescue mid-flight, and since
+                // the breadcrumb is a fraction of a second behind, what the
+                // player sees is the craft twitching backwards for no reason
+                // they can see. A craft that has genuinely left the track is
+                // still off it a third of a second later.
+                st.offTrackT += env.dt;
+                if (st.offTrackT >= kOffTrackGrace) {
+                    st.gliderPos = st.respawnPos;
+                    st.gliderYaw = st.respawnYaw;
+                    st.gliderVel = glm::vec3(0.0f);
+                    st.gliderOverspeed = 0.0f;
+                    st.offTrackT = 0.0f;
+                    // The render blends from the pose one step ago, so without
+                    // this the frame after a rescue draws the craft somewhere
+                    // between where it fell and where it was put -- a streak
+                    // across the map. A teleport has no previous pose: it IS
+                    // where it now is.
+                    st.prevPos  = st.gliderPos;
+                    st.prevYaw  = st.gliderYaw;
+                }
+            } else {
+                st.offTrackT = 0.0f;   // neither safe nor lost: no clock running
             }
         }
     }
@@ -716,8 +744,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         } else {
             st.boostIdle += env.kSimH;
             if (st.boostIdle >= glm::max(gc->boostDelay, 0.0f))
-                st.boostCharge = glm::min(st.boostCapacity,
-                                          st.boostCharge + gc->boostRegen * env.kSimH);
+                st.boostCharge = glm::min(
+                    st.boostCapacity,
+                    st.boostCharge + gc->boostRegen * st.boostScale * env.kSimH);
         }
         // The ignition, once per press. Gated on `spending`, which is what makes
         // it answer the only question worth asking here: is this press actually
@@ -752,8 +781,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         if (!st.energyOut) {
             st.energyIdle += env.kSimH;
             if (st.energyIdle >= glm::max(gc->energyDelay, 0.0f))
-                st.energy = glm::min(st.energyCapacity,
-                                     st.energy + gc->energyRegen * env.kSimH);
+                st.energy = glm::min(
+                    st.energyCapacity,
+                    st.energy + gc->energyRegen * st.healScale * env.kSimH);
         }
         // The low-energy alarm: once on crossing the threshold, then repeating
         // while it stays there. An alarm that sounds once is a notification; a
@@ -1309,7 +1339,12 @@ void updateOpponents(RaceState& st, const RaceEnv& env, RaceState* st2) {
                 op->mistakeCd -= env.dt;
                 if (op->mistakeCd <= 0.0f) {
                     op->mistakeT  = 0.4f + 0.7f * h3;   // slip lasts ~0.4-1.1 s
-                    op->mistakeCd = 8.0f + 14.0f * hash01(e.id, static_cast<int>(op->dist));
+                    // ...and the wait for the next one is where the difficulty
+                    // step lands: an easy field slips OFTENER, which reads as a
+                    // field of drivers, where one that is merely slowed down
+                    // everywhere reads as a handbrake.
+                    op->mistakeCd = (8.0f + 14.0f * hash01(e.id, static_cast<int>(op->dist)))
+                                  * glm::max(op->slipScale, 0.05f);
                 }
             }
             slipping = op->mistakeT > 0.0f;

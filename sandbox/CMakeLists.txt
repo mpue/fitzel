@@ -28,6 +28,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RoadTunnel.cpp
     src/RoadLoop.cpp
     src/RaceSim.cpp
+    src/Difficulty.cpp
     src/RaceGrid.cpp
     # The scene's cameras. Runtime, like everything a saved scene contains: a
     # follow camera is scene data, and the shipped player has to resolve it too.

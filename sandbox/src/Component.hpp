@@ -815,6 +815,11 @@ public:
     float boostHold = 1.5f;// runtime: linger time of the last pad's boost (s)
     float mistakeT = 0.0f; // runtime: time left in the current slip-up (s)
     float mistakeCd = 0.0f;// runtime: countdown to the next slip-up (s)
+    // Runtime, from the difficulty step (see difficulty::applyToField): a
+    // multiplier on the time BETWEEN slip-ups, so a bigger number is a steadier
+    // field. Not saved with the scene -- it says how this RACE is being played,
+    // which is not a property of the circuit.
+    float slipScale = 1.0f;
     bool  laneSeeded = false; // runtime: laneCur seeded to laneOffset on first tick
     bool  started = false; // runtime: dist + curSpeed seeded
 

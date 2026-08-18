@@ -103,8 +103,29 @@ struct RaceState {
     bool  energyLow      = false;  // under the warning threshold (HUD pulse)
     bool  energyOut      = false;  // hull gone: the run is lost
 
+    // --- The player's margin for error (see Difficulty.hpp) ------------------
+    // Set once as a race starts, per seat, and 1 everywhere means the craft
+    // exactly as its author tuned it. This is the half of the difficulty ladder
+    // that is about the player rather than the field: how hard a hit bites, how
+    // fast the hull comes back, how much boost is handed out. It lives on the
+    // state and not in RaceEnv because applyDamage() is called from outside the
+    // sim (a warhead landing), and a hit has to cost the same wherever it came
+    // from.
+    float damageScale = 1.0f;
+    float healScale   = 1.0f;
+    float boostScale  = 1.0f;
+
     // Off-track rescue: the last spot the glider was safely on the road, to pop
     // it back onto after it falls off (e.g. off a bridge).
+    // How long the craft has been judged OFF the track, in seconds. The rescue
+    // waits for this rather than firing on the first frame that says so, because
+    // "am I on the road" is a query that can come back no for a single frame
+    // while the craft is flying perfectly normally -- over a seam between two
+    // ribbon sections, a bridge joint, the mouth of a tunnel -- and a rescue
+    // fired on one such frame is a teleport backwards to the last breadcrumb in
+    // the middle of a clean lap. Falling off a track takes far longer than the
+    // grace below, so nothing that should be rescued stops being rescued.
+    float     offTrackT = 0.0f;
     glm::vec3 respawnPos{0.0f};
     float     respawnYaw  = 0.0f;
     bool      haveRespawn = false;

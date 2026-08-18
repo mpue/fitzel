@@ -6,6 +6,8 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+
+#include "Difficulty.hpp"
 #include <imgui.h>
 
 namespace fitzel { class AssetDatabase; class Camera; class Texture; }
@@ -66,8 +68,12 @@ struct Launch {
     // screen can only take craft out of the field a circuit was built with, it
     // has no way to add ones the scene does not contain.
     int   opponents = -1;
-    float aiSkill   = 1.0f;  // pace multiplier on the field (1 = as authored)
-    float aiCatchup = 1.0f;  // rubber-band multiplier (how hard the field holds on)
+    // The difficulty step this race is run at (an index into the ladder in
+    // Difficulty.hpp). Unlike the overrides above it has no "leave the scene
+    // alone" value, because it is not an override at all: the player always has
+    // one, it comes out of their profile, and PRO is the step that happens to
+    // change nothing.
+    int   difficulty = difficulty::kDefault;
 };
 
 // One sound the showroom wants played: a Sound-asset filename plus its gain,
@@ -87,6 +93,13 @@ public:
     // used as the circuit list when the scene authors no Track Entry -- so the
     // picker is never empty. Snapshots every craft's pose AND the camera, so
     // end() can put both back exactly as they were.
+    // The difficulty row. Seeded from the player's profile before the screen
+    // opens and read back after they leave it, so the ladder is remembered
+    // rather than re-answered: the SKILL row IS the profile editor, which is why
+    // there is no second screen for it.
+    void setDifficulty(int lvl);
+    int  difficultyLevel() const { return m_skillSel; }
+
     void begin(const std::vector<Entity>& entities,
                const std::vector<std::string>& fallbackScenes,
                const fitzel::Camera& camera);
