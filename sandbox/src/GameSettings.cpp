@@ -81,10 +81,15 @@ Settings load(const std::string& projectFolder) {
     catch (const nlohmann::json::exception&) { return s; }
     s.exeName      = j.value("exeName", std::string{});
     s.splash       = j.value("splash", std::string{});
+    s.icon         = j.value("icon", std::string{});
     s.startScene   = j.value("startScene", std::string{});
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
     s.trimAssets   = j.value("trimAssets", false);
     s.packContent  = j.value("packContent", true);
+    s.makeInstaller = j.value("makeInstaller", false);
+    s.productName   = j.value("productName", std::string{});
+    s.version       = j.value("version", std::string("1.0.0"));
+    s.publisher     = j.value("publisher", std::string{});
     s.loading      = readLoading(j.value("loading", nlohmann::json{}));
     return s;
 }
@@ -93,10 +98,15 @@ void save(const std::string& projectFolder, const Settings& s) {
     nlohmann::json j;
     j["exeName"]      = s.exeName;
     j["splash"]       = s.splash;
+    j["icon"]         = s.icon;
     j["startScene"]   = s.startScene;
     j["exportScenes"] = s.exportScenes;
     j["trimAssets"]   = s.trimAssets;
     j["packContent"]  = s.packContent;
+    j["makeInstaller"] = s.makeInstaller;
+    j["productName"]   = s.productName;
+    j["version"]       = s.version;
+    j["publisher"]     = s.publisher;
     j["loading"]      = writeLoading(s.loading);
     std::ofstream f(settingsPath(projectFolder));
     if (f) f << j.dump(2) << '\n';

@@ -219,6 +219,37 @@ Add new subsystems under `engine/src/` and their headers under
 Natural next steps: triplanar terrain texturing with real albedo maps, a
 material/texture asset system, model loading (glTF/OBJ), and a scene graph.
 
+## Shipping a game
+
+"Export Game" writes a folder that runs: the editor-free `player.exe` under the
+game's own name, a boot `game.json`, the licence notices, and -- unless the
+switch is turned off -- one encrypted `game.fpak` holding the content instead of
+browsable folders. What that folder is called, which scenes it carries and what
+the loading screen looks like all come from **Game Settings**, stored per project
+in `game.json` next to the scenes.
+
+Two of those settings are about the thing somebody actually receives:
+
+- **Icon** -- a square PNG. The export scales it to every size Windows asks for
+  (16 to 256), builds the icon in memory and writes it straight into the copied
+  exe's resources with `UpdateResource`. There is no `.ico` to make and no
+  rebuild of the engine: the exe being branded was linked long before, which is
+  the whole reason it is done this way. See `sandbox/src/IconEmbed.cpp`.
+- **Installer** -- generates an [Inno Setup](https://www.innosetup.com) script
+  for the finished folder and compiles it into a single `<name>-setup.exe`
+  beside it, with the same icon, a Start-menu entry and an uninstaller. It
+  installs per-user (`PrivilegesRequired=lowest`), so nobody is asked for admin
+  rights to play a game.
+
+  Inno Setup is a separate free install and is looked up on the machine -- the
+  Game Settings dialog says up front whether it found one. Without it the export
+  still succeeds; only the setup is skipped, and the status line says so. The
+  generated script is kept in `%TEMP%\fitzel-installer\setup.iss` if a failed
+  compile needs reading.
+
+Both steps are deliberately unable to fail an export: an unbranded exe in a
+working folder beats throwing away a ten-minute export over a picture.
+
 ## Licences
 
 Every third-party component the engine links is permissive -- MIT, BSD-3-Clause,

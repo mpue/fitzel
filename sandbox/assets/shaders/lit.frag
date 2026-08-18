@@ -143,6 +143,23 @@ uniform int   uHasEmissionMap;   // 1 = modulate emission by uEmissionMap
 // line down the middle instead of tiling sideways with the asphalt.
 uniform vec2  uEmissionUVScale;
 
+// --- Procedural window grid -------------------------------------------------
+// Lit windows on a facade, hashed straight out of the world position: no texture,
+// no UVs and no extra geometry, which is what lets a generated tower stay at ~30
+// objects while reading as an inhabited building instead of a smooth prism.
+//
+// WORLD SPACE, not vUV, and that is the whole reason this exists as a shader
+// feature rather than a map: the generator's masses are scaled unit boxes whose
+// UVs run 0..1 across a face of any size, so anything driven by them gives one
+// building-sized window per facade instead of a facade full of building-scale
+// windows. World position also lines the rows up across the setbacks of a stack.
+uniform int   uWindowGrid;   // 1 = add window emission on the vertical faces
+uniform vec2  uWindowCell;   // metres per window cell (across, up)
+uniform float uWindowLit;    // fraction of the windows that are lit (0..1)
+uniform float uWindowSeed;   // decorrelates districts that share one material
+uniform vec3  uWindowColor;  // the warm end of the interior light (sRGB)
+uniform float uWindowGlow;   // emission strength of a lit window
+
 // Terrain palette (uColorMode == 1).
 uniform vec3  uColorSand;
 uniform vec3  uColorGrass;
@@ -176,6 +193,11 @@ uniform int       uHasWetMap;      // 1 = modulate the wetness by uWetMap
 uniform vec2      uWetMapScale;    // ribbon UV -> map UV (tiles it in metres)
 uniform float     uWetVar;         // 0 = even sheen .. 1 = fully map-driven
 uniform float     uWetReflect;     // how much wetness mirrors the env probe (0 = off)
+uniform float     uWetShore;       // puddle edge width in map units (small = hard rim)
+// x = ribbon u at the left kerb, y = 1/(u across the carriageway). y = 0 switches
+// the road-shaped pooling (gutter + wheel ruts) off, which is what a bridge deck
+// gets: its UVs are not the ribbon's, so the gutters would land anywhere.
+uniform vec2      uWetLat;
 
 // Procedural micro-detail (uColorMode == 1).
 uniform float uDetailScale;    // frequency of the close-up detail
@@ -284,6 +306,63 @@ float detailFbm(vec2 p) {
         amp *= 0.5;
     }
     return sum;
+}
+
+// --- Window grid ------------------------------------------------------------
+// The emissive contribution of the procedural windows at this fragment, in
+// linear light and already scaled by uWindowGlow. Zero on horizontal faces.
+vec3 windowEmission(vec3 wp, vec3 n) {
+    // Roofs and soffits get none. A horizontal face has no windows, and a grid
+    // running over one is the giveaway the moment a track climbs above the
+    // district -- which in this engine it does.
+    float wall = 1.0 - smoothstep(0.55, 0.75, abs(n.y));
+    if (wall <= 0.0) return vec3(0.0);
+
+    // Run the grid along whichever horizontal axis the wall does NOT face, so
+    // the windows read across it on all four sides of a box.
+    float across = (abs(n.x) > abs(n.z)) ? wp.z : wp.x;
+    vec2  cell   = vec2(across, wp.y) / max(uWindowCell, vec2(0.5));
+    vec2  id     = floor(cell);
+    vec2  f      = fract(cell);
+    // Keep the hash's input small. hash21 is a fract() of a product, so a district
+    // laid out a few thousand metres from the origin hands it numbers big enough
+    // that float precision collapses the pattern into visible bands of identical
+    // windows. Wrapping the cell id repeats the layout every ~1.7 km instead,
+    // which is a repeat nobody is going to catch at 500 km/h.
+    id = mod(id, 512.0);
+    vec2  w      = fwidth(cell) + 1e-5;
+
+    // The pane sits inside the cell; the margin left over is the mullion and the
+    // floor slab, and it is that dark border which makes a window a window.
+    // Edges softened by their own screen-space width: these are hard rectangles
+    // on a facade crossed at 500 km/h, and unfiltered they crawl with sparkle.
+    float pane = smoothstep(0.16 - w.x, 0.16 + w.x, f.x)
+               * (1.0 - smoothstep(0.84 - w.x, 0.84 + w.x, f.x))
+               * smoothstep(0.22 - w.y, 0.22 + w.y, f.y)
+               * (1.0 - smoothstep(0.82 - w.y, 0.82 + w.y, f.y));
+
+    vec3 warm = pow(uWindowColor, vec3(2.2));
+    vec3 cold = vec3(0.55, 0.68, 0.95);   // fluorescent office white
+
+    // Whole floors go dark together now and then (plant rooms, empty storeys):
+    // a per-ROW draw on top of the per-window one, because fully independent
+    // windows read as television static rather than as a building at dusk.
+    float rowLit = step(0.12, hash21(vec2(id.y, uWindowSeed * 7.13)));
+    float lit    = step(hash21(id + uWindowSeed), uWindowLit) * rowLit;
+
+    // Per-window variation in brightness and colour temperature, keyed off the
+    // same cell through different bands of the hash.
+    float v    = hash21(id.yx + uWindowSeed * 3.7);
+    float cool = hash21(id * 1.37 + uWindowSeed * 11.9);
+    vec3  near = mix(warm, cold, cool * 0.55) * (0.45 + 0.85 * v) * lit * pane;
+
+    // Beyond the distance where a cell covers a pixel, stop resolving individual
+    // windows and fade to what the grid integrates to (mean brightness * lit
+    // fraction * pane area * the rows that stayed lit). A distant facade should
+    // be an even glow, and asking for per-window detail there buys only aliasing.
+    vec3  avg = mix(warm, cold, 0.28) * 0.875 * uWindowLit * 0.408 * 0.88;
+    float far = clamp(max(w.x, w.y) * 1.6 - 0.35, 0.0, 1.0);
+    return mix(near, avg, far) * uWindowGlow * wall;
 }
 
 // Triplanar sampling: project the texture along the three world axes and blend
@@ -524,26 +603,74 @@ void main() {
         N = applyNormalMap(N, vWorldPos, vUV, uNormalMap);
     }
 
-    // Drops striking the surface. Before the wetness below, so the rings catch the
-    // wet sheen too -- that glinting is most of what sells them; the geometry never
-    // moves. Gated on the up-facing normal like the wetness itself.
-    if (uRainRings > 0.002)
-        N = rainRings(N, vWorldPos.xz, uRainRings * clamp(N.y * 1.3, 0.0, 1.0),
-                      uTime);
-
-    // Rain wetness: sky-exposed (up-facing) surfaces darken and turn glossy while
-    // it rains. Gated by the up-facing normal so walls/undersides stay dry.
-    float rainWet = uWetness * clamp(N.y * 1.3, 0.0, 1.0);
-    // ...but a road is never evenly wet. Water pools where the camber lets it and
-    // runs off everywhere else, so a uniformly mirrored carriageway reads as
-    // plastic however good the reflection is. A greyscale map breaks it up:
-    // black is dry, white keeps the full wetness, and uWetVar says how much of
-    // the difference to believe (0 = the old even sheen, unchanged).
-    if (uHasWetMap == 1 && uWetVar > 0.0) {
-        float puddle = texture(uWetMap, vUV * uWetMapScale).r;
-        rainWet *= mix(1.0, puddle, clamp(uWetVar, 0.0, 1.0));
+    // Rain wetness, in two parts, because a wet road is two materials at once.
+    // `rainWet` is the film: the sheet of water that darkens everything sky-facing
+    // and gives it a broad sheen. `wetPuddle` is standing water, and that is the
+    // half that mirrors -- water lying in a hollow is FLAT, so it keeps a
+    // reflection together, while the film sits on tarmac grain that shatters one.
+    // Both are gated by the up-facing normal so walls and undersides stay dry.
+    float upFace  = clamp(N.y * 1.3, 0.0, 1.0);
+    float rainWet = uWetness * upFace;
+    float wetMask = 1.0;   // where water STANDS, independent of how hard it rains
+    // Only a surface carrying a wetness map has water standing on it. Everything
+    // else -- terrain, props, a road with no map -- keeps the even sheen it had
+    // before, which is why the puddle-only terms below are all gated on this.
+    bool  wetStands = (uHasWetMap == 1 && uWetVar > 0.0);
+    // A road is never evenly wet: water pools where the camber lets it and runs
+    // off everywhere else, so a uniformly mirrored carriageway reads as plastic
+    // however good the reflection is.
+    if (wetStands) {
+        // The map is read as a HEIGHT FIELD, not as a wetness multiplier: black is
+        // a hollow, white a crown. Water then fills it up to a level the rain
+        // raises, which is what gives a puddle a shoreline instead of a soft grey
+        // smear -- and what makes puddles grow while it keeps raining.
+        //
+        // Two taps at incommensurable scales. The fine one is the shape the eye
+        // reads close up; the coarse one (a quarter of the frequency) is the
+        // large-scale "this stretch drains badly" structure, and it is the only
+        // part that survives mipping far down the road -- which is exactly where
+        // the reflection is most visible and where a single tap averages out to
+        // an even grey, i.e. back to the look this whole map exists to break.
+        float h = texture(uWetMap, vUV * uWetMapScale).r * 0.65
+                + texture(uWetMap, vUV * uWetMapScale * 0.23 + vec2(0.37, 0.11)).r * 0.35;
+        // Where the road itself holds water. Noise alone always reads as a texture
+        // laid over the ribbon; the gutter along both kerbs and the two wheel ruts
+        // are structure that belongs to the road, and they are what stops the
+        // puddles looking printed on.
+        if (uWetLat.y > 0.0) {
+            float lat    = clamp((vUV.x - uWetLat.x) * uWetLat.y, 0.0, 1.0);
+            float gutter = smoothstep(0.14, 0.0, min(lat, 1.0 - lat));
+            float ruts   = exp(-pow((abs(lat - 0.5) - 0.22) * 14.0, 2.0));
+            h -= 0.35 * gutter + 0.20 * ruts;
+        }
+        float level = mix(-0.05, 1.05, uWetness);   // the rain fills the hollows
+        float depth = clamp((level - h) / max(uWetShore, 0.01), 0.0, 1.0);
+        wetMask = mix(1.0, depth, clamp(uWetVar, 0.0, 1.0));
+        // The film thins where the water has drained away, but never as far as the
+        // puddles do: damp tarmac beside a puddle is still damp.
+        rainWet *= mix(1.0, mix(0.45, 1.0, depth), clamp(uWetVar, 0.0, 1.0));
     }
+    float wetPuddle = rainWet * wetMask;
     albedo *= mix(1.0, 0.6, rainWet);
+    if (wetStands) albedo *= mix(1.0, 0.82, wetPuddle); // water on top, darker still
+
+    // Standing water is a surface in its own right: flat, whatever the tarmac
+    // under it does. Pulling the shading normal back towards the geometric one
+    // inside a puddle is what actually sells the variation -- the reflection stays
+    // coherent in the water and breaks up on the grain beside it. Without this a
+    // puddle is only "the same reflection, brighter", which is the plastic look.
+    // Never all the way: even standing water has a little relief.
+    if (wetStands && wetPuddle > 0.0)
+        N = normalize(mix(N, normalize(vNormal), wetPuddle * 0.9));
+
+    // Drops striking the surface -- only where there is water to ring. After the
+    // flattening so the rings sit on the water rather than on the tarmac, and
+    // before the lighting so they catch the sheen: that glinting is most of what
+    // sells them, and the geometry never moves. uRainRings already carries the
+    // rain intensity and the wetness, so the gate here is the standing-water mask
+    // and the up-facing normal, NOT the wetness a second time.
+    if (uRainRings > 0.002)
+        N = rainRings(N, vWorldPos.xz, uRainRings * upFace * wetMask, uTime);
 
     vec3 L = normalize(uLightDir);
     vec3 V = normalize(uViewPos - vWorldPos);
@@ -557,6 +684,9 @@ void main() {
     // Wet surfaces gain a stronger, tighter specular highlight (the sheen).
     specPower = mix(specPower, max(specPower, 0.9), rainWet);
     specExp   = mix(specExp, 160.0, rainWet);
+    // ...and standing water tighter still: a film scatters the sun into a broad
+    // sheen, a puddle throws back a small hard disc of it.
+    if (wetStands) specExp = mix(specExp, 600.0, wetPuddle);
     // Geometric specular anti-aliasing. Where the normal swings a lot *within one
     // pixel* -- distant normal-mapped detail, thin or dense geometry, a grazing
     // road -- a tight highlight is smaller than the pixel and turns into crawling
@@ -656,10 +786,16 @@ void main() {
     // does. Pushed higher, a wet road reads as polished chrome.
     float refl  = uReflectivity;
     float rough = uRoughness;
-    float wetRefl = rainWet * clamp(uWetReflect, 0.0, 1.0);
+    //
+    // Which half of the wetness mirrors matters more than how much of it there is:
+    // the film scatters (blurred and weak), standing water does not (sharp and
+    // strong). Driving both from one scalar was why a puddle used to read as
+    // nothing more than a brighter patch of the same reflection.
+    float wetRefl = clamp(uWetReflect, 0.0, 1.0)
+                  * mix(rainWet * 0.25, wetPuddle, wetMask);
     if (wetRefl > refl) {
         refl  = wetRefl;
-        rough = mix(0.5, 0.06, rainWet); // damp = smeared, soaked = sharp
+        rough = mix(0.55, 0.03, wetPuddle); // film = smeared, puddle = mirror
     }
 
     // Environment reflection: sample the dynamic scene probe along the reflection
@@ -689,6 +825,11 @@ void main() {
     vec3 emissive = pow(uEmission, vec3(2.2)) * uEmissionStrength;
     if (uHasEmissionMap == 1)
         emissive *= pow(texture(uEmissionMap, vUV * uEmissionUVScale).rgb, vec3(2.2));
+    // Windows are ADDED, not multiplied in: they are their own light sources, not
+    // a mask over the material's glow, so a facade can carry both (neon band and
+    // lit storeys). vNormal, not the normal-mapped N -- which wall this is, is a
+    // property of the geometry, not of a bump map.
+    if (uWindowGrid == 1) emissive += windowEmission(vWorldPos, normalize(vNormal));
     color += emissive;
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);

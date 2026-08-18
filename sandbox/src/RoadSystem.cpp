@@ -365,18 +365,35 @@ void RoadSystem::applyWetness() {
     const int   has = m_wetTex ? 1 : 0;
     const float var = std::clamp(wetVar, 0.0f, 1.0f);
     // The ribbon's UVs run 0..width/texTile across and metres/texTile along (see
-    // loft), so one factor undoes the asphalt's tiling and re-tiles in metres --
-    // the same scale both ways, which keeps a puddle round instead of smeared
-    // down the road.
-    const float s = (wetTile > 1e-4f) ? texTile / wetTile : 1.0f;
+    // loft), so one factor undoes the asphalt's tiling and re-tiles in metres.
+    // `wetStretch` then lowers the frequency ALONG the drive only, which is the
+    // shape real puddles have: water runs down the grade and the traffic drags it,
+    // so a patch ends up longer than it is wide. 1 keeps them round.
+    const float s   = (wetTile > 1e-4f) ? texTile / wetTile : 1.0f;
+    const float str = std::max(wetStretch, 0.05f);
+    const glm::vec2 scale(s, s / str);
+    // Where the carriageway sits in the ribbon's u, so the shader can put the
+    // gutter at the kerbs and the ruts under the wheels rather than at whatever u
+    // happens to be. u runs from 0 at the outer edge of the left lip, so the
+    // carriageway starts at edgeReach() metres and spans `width` -- both divided
+    // by texTile, because that is what loft does to every column.
+    const float lipU  = (texTile > 1e-4f) ? edgeReach() / texTile : 0.0f;
+    const float spanU = (width > 1e-4f && texTile > 1e-4f) ? texTile / width : 0.0f;
     // uWetReflect is written HERE and nowhere else: the renderer's baseline
     // clears it for every other draw, so the carriageway is the only thing in the
     // scene that mirrors when it is wet.
     const float refl = std::clamp(wetReflect, 0.0f, 1.0f);
     m_mat.set("uHasWetMap", has).set("uWetVar", var)
-         .set("uWetMapScale", glm::vec2(s, s)).set("uWetReflect", refl);
+         .set("uWetMapScale", scale).set("uWetReflect", refl)
+         .set("uWetShore", std::max(wetShore, 0.01f))
+         .set("uWetLat", glm::vec2(lipU, spanU));
+    // The deck is a different mesh with its own UVs (see roadbridge::build), so it
+    // gets the noise but not the road-shaped pooling: a gutter placed by the
+    // ribbon's u would land somewhere arbitrary on it. y = 0 is that switch.
     m_bridgeMat.set("uHasWetMap", has).set("uWetVar", var)
-               .set("uWetMapScale", glm::vec2(s, s)).set("uWetReflect", refl);
+               .set("uWetMapScale", scale).set("uWetReflect", refl)
+               .set("uWetShore", std::max(wetShore, 0.01f))
+               .set("uWetLat", glm::vec2(0.0f, 0.0f));
 }
 
 void RoadSystem::applyEmission() {
@@ -477,6 +494,8 @@ void RoadSystem::save(nlohmann::json& j) const {
 
     nlohmann::json bridges_ = nlohmann::json::array();
     for (const BridgeSpec& b : bridges) bridges_.push_back({b.a, b.b});
+    nlohmann::json tunnels_ = nlohmann::json::array();
+    for (const BridgeSpec& t : tunnels) tunnels_.push_back({t.a, t.b});
 
     nlohmann::json loops_ = nlohmann::json::array();
     for (const roadloop::Spec& l : loops)
@@ -534,7 +553,8 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"neon", b.neon}, {"collider", b.collider}, {"seed", b.seed},
             {"weathering", b.weathering}, {"grime", b.grime},
             {"clutter", b.clutter}, {"clutterVar", b.clutterVar},
-            {"deadNeon", b.deadNeon},
+            {"deadNeon", b.deadNeon}, {"windowLit", b.windowLit},
+            {"windowColor", {b.windowColor.r, b.windowColor.g, b.windowColor.b}},
         });
     }
 
@@ -554,6 +574,8 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"wetMap",    wetMap},
         {"wetTile",   wetTile},
         {"wetVar",    wetVar},
+        {"wetShore",  wetShore},
+        {"wetStretch", wetStretch},
         {"wetReflect", wetReflect},
         {"grade",     grade},
         {"shoulder",  shoulder},
@@ -569,6 +591,14 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"glowStrength", emissionStrength},
         {"glowTile",     emissionTile},
         {"bridges",   bridges_},
+        {"tunnels",   tunnels_},
+        {"tunnelStyle", {
+            {"clearHeight", tunnelStyle.clearHeight},
+            {"sideClear",   tunnelStyle.sideClear},
+            {"skirt",       tunnelStyle.skirt},
+            {"portal",      tunnelStyle.portal},
+            {"abutment",    tunnelStyle.abutment},
+        }},
         {"loops",     loops_},
         {"bridgeStyle", {
             {"deckThick",   bridgeStyle.deckThick},
@@ -583,6 +613,7 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"cityEnabled", cityEnabled},
         {"cityBudget",  cityBudget},
         {"cityRange",   cityRange},
+        {"cityMinPixels", cityMinPixels},
         {"biomes",      city_},
     };
 }
@@ -627,6 +658,10 @@ void RoadSystem::load(const nlohmann::json& j) {
     // ...and an even sheen for one saved before the puddle map existed.
     wetTile   = j.value("wetTile",   26.0f);
     wetVar    = j.value("wetVar",     0.0f);
+    // Roads saved before the puddles had shores load with the shape the first
+    // version had: a soft edge and no stretch along the drive.
+    wetShore   = j.value("wetShore",   0.18f);
+    wetStretch = j.value("wetStretch", 1.0f);
     wetReflect = j.value("wetReflect", 0.45f);
     setWetMap(j.value("wetMap", std::string())); // loads it + applies the uniforms
     grade     = j.value("grade",     0.55f);
@@ -670,6 +705,21 @@ void RoadSystem::load(const nlohmann::json& j) {
 
     // Bridges are absent from scenes saved before they existed -- those roads
     // simply have none, which is exactly how they were built.
+    tunnels.clear();
+    if (j.contains("tunnels") && j["tunnels"].is_array())
+        for (const auto& t : j["tunnels"])
+            if (t.is_array() && t.size() == 2)
+                tunnels.push_back({t[0].get<int>(), t[1].get<int>()});
+    const roadtunnel::Params td;
+    tunnelStyle = td;
+    if (const auto st = j.find("tunnelStyle"); st != j.end()) {
+        tunnelStyle.clearHeight = st->value("clearHeight", td.clearHeight);
+        tunnelStyle.sideClear   = st->value("sideClear",   td.sideClear);
+        tunnelStyle.skirt       = st->value("skirt",       td.skirt);
+        tunnelStyle.portal      = st->value("portal",      td.portal);
+        tunnelStyle.abutment    = st->value("abutment",    td.abutment);
+    }
+
     bridges.clear();
     if (j.contains("bridges") && j["bridges"].is_array())
         for (const auto& b : j["bridges"])
@@ -729,6 +779,11 @@ void RoadSystem::load(const nlohmann::json& j) {
     cityEnabled = j.value("cityEnabled", true);
     cityBudget  = j.value("cityBudget",  400);
     cityRange   = j.value("cityRange",   1200.0f);
+    // A road saved before the screen-size cull gets it anyway (the struct's own
+    // default, not 0): it exists because honouring cityRange to the metre made
+    // every old scene pay for buildings too small to make out, and leaving those
+    // scenes on the slow path would be shipping the bug with an opt-out.
+    cityMinPixels = j.value("cityMinPixels", 7.0f); // keep in step with the header
     biomes.clear();
     auto vec3Of = [](const nlohmann::json& o, const char* key, glm::vec3 def) {
         const auto it = o.find(key);
@@ -785,6 +840,12 @@ void RoadSystem::load(const nlohmann::json& j) {
             b.clutter      = e.value("clutter", b.clutter);
             b.clutterVar   = e.value("clutterVar", b.clutterVar);
             b.deadNeon     = e.value("deadNeon", b.deadNeon);
+            b.windowLit    = e.value("windowLit", b.windowLit);
+            if (e.contains("windowColor") && e["windowColor"].is_array() &&
+                e["windowColor"].size() == 3)
+                b.windowColor = glm::vec3(e["windowColor"][0].get<float>(),
+                                          e["windowColor"][1].get<float>(),
+                                          e["windowColor"][2].get<float>());
             biomes.push_back(std::move(b));
         }
 }
@@ -1012,20 +1073,26 @@ void RoadSystem::buildLoops(const Layout& lo) {
     for (std::uint32_t i : md.indices) m_collIndices.push_back(base + i);
 }
 
-void RoadSystem::buildBridges(const Layout& lo) {
+void RoadSystem::buildConcrete(const Layout& lo) {
     fitzel::MeshData md;
     // The deck carries the whole section: with raised edges the carriageway is
     // wider than `width`, and a deck built to the bare width would leave the lip
     // hanging over thin air.
     roadbridge::build(lo.center, lo.prof, lo.ground, lo.bank, lo.spans,
                       surfaceHalf() * 2.0f, bridgeStyle, md);
+    // The bores go into the same mesh: same concrete, same material, same collider
+    // merge below. Also built to the full section width, for the mirrored reason a
+    // deck is -- walls set to the bare width would stand on the raised edges.
+    roadtunnel::build(lo.center, lo.prof, lo.bank, lo.bores,
+                      surfaceHalf() * 2.0f, tunnelStyle, md);
     m_bridgeVerts = static_cast<int>(md.vertices.size());
     if (md.indices.empty()) { m_bridgeMesh = fitzel::Mesh(); return; }
     m_bridgeMesh = fitzel::Mesh::create(md);
 
-    // Bridges collide as part of the one static road mesh: the deck because it is
-    // the only ground there is up here, the parapets because they are what keep a
-    // car from driving off the side.
+    // The concrete collides as part of the one static road mesh: a deck because it
+    // is the only ground there is up here, its parapets because they are what keep
+    // a car from driving off the side, and a bore's walls because a tunnel you can
+    // drive out through the side of is a corridor with scenery in it.
     const auto base = static_cast<std::uint32_t>(m_collVerts.size());
     for (const fitzel::Vertex& vtx : md.vertices) m_collVerts.push_back(vtx.position);
     m_collIndices.reserve(m_collIndices.size() + md.indices.size());
@@ -1128,13 +1195,34 @@ RoadSystem::Layout RoadSystem::layout() const {
     // Fly the road along each bridge and work out where the terrain must stop being
     // pulled up to it.
     lo.spans = roadbridge::plan(lo.center, lo.prof, cores, bridgeStyle, lo.gradeW);
+
+    // Then bore the tunnels, by exactly the same bookkeeping.
+    std::vector<roadtunnel::Span> tcores;
+    for (const BridgeSpec& spec : tunnels) {
+        const int p0 = std::min(spec.a, spec.b), p1 = std::max(spec.a, spec.b);
+        if (p0 < 0 || p1 >= pts || p0 == p1) continue;
+        const int sa = ptSample[p0], sb = ptSample[p1];
+        if (sa >= last || sb > last) continue;
+        tcores.push_back({sa, sb});
+    }
+    // AFTER the bridges, and that order decides a stretch asked to be both: the
+    // deck lifts the profile with max(), the bore then holds it down with min(),
+    // so the tunnel wins. Which is the right way round -- a road cannot fly over
+    // a hill it is also driving through, and the hill is the thing that is there.
+    std::vector<float> boreW;
+    lo.bores = roadtunnel::plan(lo.center, lo.prof, tcores, tunnelStyle, boreW);
+    // Both weights ASSIGN, so they have to be combined here rather than chained:
+    // the terrain must stop being graded wherever EITHER structure says so, which
+    // is the elementwise minimum.
+    for (std::size_t i = 0; i < lo.gradeW.size() && i < boreW.size(); ++i)
+        lo.gradeW[i] = std::min(lo.gradeW[i], boreW[i]);
     // Loops ride on the profile the bridges have already settled, so a loop on a
     // bridged stretch leaves from the deck rather than from the gorge below it.
     lo.loops = roadloop::plan(lo.center, lo.prof, ptSample, loops);
     // The chords meet the road at an angle; round those two kinks off so a bridge
     // entrance isn't a bump. A straight chord is a fixed point of this filter, so
     // only the tangents move.
-    if (!lo.spans.empty()) smooth(lo.prof, passesFor(5.0f));
+    if (!lo.spans.empty() || !lo.bores.empty()) smooth(lo.prof, passesFor(5.0f));
     return lo;
 }
 
@@ -1271,7 +1359,7 @@ void RoadSystem::rebuildMesh() {
     for (std::size_t i = 0; i < lo.center.size(); ++i)
         h[i] = lo.prof[i] + 0.06f; // lifted a touch so the ribbon reads above the ground
     loft(lo.center, h, lo.bank);
-    buildBridges(lo);
+    buildConcrete(lo);
     buildLoops(lo);
     rebuildSideObjects();
     rebuildCity();
@@ -1293,7 +1381,7 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     std::vector<float> surf(L.prof.size());
     for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
     loft(L.center, surf, L.bank);
-    buildBridges(L);
+    buildConcrete(L);
     buildLoops(L);
     // Side objects are generated by the caller AFTER it republishes the graded
     // terrain (rebuildSideObjects), so posts drape on the corridor this build

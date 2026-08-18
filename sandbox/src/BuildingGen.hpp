@@ -72,10 +72,33 @@ struct Params {
     int   fins         = 4;        // vertical fins per mass (0 = none)
     float finDepth     = 0.6f;     // m the fins stand proud of the facade
     bool  neon         = true;     // emissive strip on every band + the crown
+    // Lit lines up the corners of every mass. The bands above measure a
+    // building's floors and make it read WIDE; one unbroken vertical line is what
+    // the eye follows all the way up, which is where a tower's height comes from.
+    // A checkbox and not a count, because "which of the four corners" is not a
+    // question anyone wants to answer with a slider.
+    bool  edgeStrips   = true;
+    float edgeWidth    = 0.55f;    // m across each strip
     Crown crown        = Crown::Antenna;
     float crownHeight  = 0.18f;    // crown height as a fraction of the body
     bool  beaconLight  = true;     // a real point light in the beacon (1 per tower)
     bool  collider     = true;     // static physics on the masses (drive into it)
+
+    // --- Windows -------------------------------------------------------------
+    // Lit windows on the facade, drawn procedurally by the lit shader out of the
+    // world position (see MaterialDef::windowGrid). They cost no geometry and no
+    // texture, and they are the single biggest step from "sci-fi monolith" to
+    // "city at dusk": a tower with them reads as inhabited, one without reads as
+    // a smooth prism no matter how good its silhouette is.
+    //
+    // Like the colours, they live on the SHARED palette material, so they are a
+    // district-wide property -- and the row height is not a slider: a window
+    // belongs to a storey, so it comes from `floorHeight`.
+    bool      windows     = true;
+    float     windowWidth = 3.4f;   // m of facade per window (the column pitch)
+    float     windowLit   = 0.55f;  // fraction lit; 0 = a dead, unoccupied tower
+    glm::vec3 windowColor{1.00f, 0.83f, 0.58f};  // warm interior light (sRGB)
+    float     windowGlow  = 2.6f;   // emission strength of a lit window
 
     // --- Wear ----------------------------------------------------------------
     // How run-down the building is. `weathering` acts on the MATERIALS (shared

@@ -180,6 +180,9 @@ void fireAction(const UiElement& e, const UiActionSink& sink) {
         case UiActionKind::Restart:
             if (sink.restart) sink.restart();
             break;
+        case UiActionKind::Graphics:
+            if (sink.graphics) sink.graphics();
+            break;
     }
 }
 
@@ -223,6 +226,7 @@ const char* actionName(UiActionKind a) {
         case UiActionKind::Quit:        return "quit";
         case UiActionKind::Resume:      return "resume";
         case UiActionKind::Restart:     return "restart";
+        case UiActionKind::Graphics:    return "graphics";
     }
     return "none";
 }
@@ -234,6 +238,7 @@ UiActionKind actionKind(const std::string& s) {
     if (s == "quit")        return UiActionKind::Quit;
     if (s == "resume")      return UiActionKind::Resume;
     if (s == "restart")     return UiActionKind::Restart;
+    if (s == "graphics")    return UiActionKind::Graphics;
     return UiActionKind::None;
 }
 } // namespace
@@ -586,9 +591,9 @@ const char* kAnchorLabels[9] = {
     "Bottom-Left", "Bottom-Center", "Bottom-Right",
 };
 const char* kTypeLabels[3]   = {"Text", "Button", "Image"};
-const char* kActionLabels[8] = {"None", "Load scene", "Show message",
+const char* kActionLabels[9] = {"None", "Load scene", "Show message",
                                 "Add score", "Play sound", "Quit",
-                                "Resume", "Restart level"};
+                                "Resume", "Restart level", "Graphics settings"};
 
 // A combo that assigns one of `items` (or "(none)") to a string field.
 void stringCombo(const char* label, std::string& field,

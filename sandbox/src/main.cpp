@@ -82,6 +82,7 @@
 #include "PostChain.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
+#include "GraphicsMenu.hpp"
 #include "RoadPanel.hpp"
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
@@ -453,6 +454,13 @@ int main(int argc, char** argv) {
         TerrainSettings settings;
         TerrainStreamer streamer(settings, /*radius=*/5);
         int             viewRadius = 5; // view distance in chunks
+        // Where the camera stops drawing. Auto keeps it tied to the streamed
+        // terrain, which is the only value that cannot show the world ending:
+        // draw past the last chunk and you are looking at the edge of the ring.
+        // Off the leash it is a straight quality/frame-time trade, so it is a
+        // setting rather than a constant.
+        bool            farPlaneAuto = true;
+        float           farPlaneManual = 900.0f; // metres, when auto is off
         { // lift the camera to stand ~9 units above the terrain at its position
             const glm::vec3 cp = camera.position();
             camera.setPosition({cp.x, streamer.heightAt(cp.x, cp.z) + 9.0f, cp.z});
@@ -578,6 +586,9 @@ int main(int argc, char** argv) {
         // scene setting; the renderer owns the actual cubes (see
         // setEnvProbeResolution, which reallocates them).
         int   envProbeRes  = fitzel::Renderer::kDefaultEnvProbeRes;
+        // Cap on the probe's cube faces per frame. The default buys back most of
+        // the reflection lag at speed; 1 is the old amortized behaviour.
+        int   envProbeFaces = 3;
         float ssaoRadius   = 1.5f;
         float ssaoBias     = 0.15f; // radians: horizons below this don't occlude
         float ssaoPower    = 1.6f;
@@ -714,6 +725,39 @@ int main(int argc, char** argv) {
         // (see WeaponSettings), so there is exactly one weapon in the scene and
         // two people shooting it.
         WeaponSystem weapons2(lit);
+        // --- Graphics settings (owned by GraphicsMenu) ----------------------
+        // The player's own quality choices, kept in a per-MACHINE file next to
+        // the exe rather than in the project: they say what this PC can manage,
+        // which is not something to carry to another one with the game.
+        gfxmenu::Settings gfxSet  = gfxmenu::load("graphics.json");
+        gfxmenu::Menu     gfxUi;
+        gfxmenu::Input    gfxIn;          // rebuilt every frame, read at draw time
+        bool prevGfxKey     = false;      // F10 edge
+        bool gfxOpenRequest = false;      // an authored menu button asked for it
+        bool prevGfxUp = false, prevGfxDown = false, prevGfxLeft = false;
+        bool prevGfxRight = false, prevGfxFire = false;
+        // Everything the menu drives, in one place. `prev` is what tells apply()
+        // which of the expensive follow-ups (re-seeding the grass, the swap
+        // interval) actually have to run -- and passing the settings that are
+        // already in force means "force the lot", which is what startup wants.
+        auto applyGfx = [&](const gfxmenu::Settings& prev) {
+            gfxmenu::Targets t;
+            t.viewRadius    = &viewRadius;
+            t.envProbeRes   = &envProbeRes;
+            t.envProbeFaces = &envProbeFaces;
+            t.fxaa          = &fxaaEnabled;
+            t.grassEnabled  = &veg.grassEnabled;
+            t.flowerEnabled = &veg.flowerEnabled;
+            t.grassDensity  = &veg.grassDensity;
+            t.grassRadius   = &veg.grassRadius;
+            t.flowerDensity = &veg.flowerDensity;
+            t.cityMinPixels = &road.cityMinPixels;
+            t.regrowVegetation = [&] { veg.grassDirty = true; };
+            t.setVSync = [&](bool on) { glfwSwapInterval(on ? 1 : 0); };
+            gfxmenu::apply(gfxSet, prev, renderer, t);
+        };
+        applyGfx(gfxSet);   // the saved choices, before the first frame is drawn
+
         bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
@@ -732,6 +776,16 @@ int main(int argc, char** argv) {
                 keep.push_back(b);
             }
             road.bridges.swap(keep);
+            // Tunnels name their ends the same way, so they need the same
+            // bookkeeping -- see the loop note below.
+            std::vector<RoadSystem::BridgeSpec> keepT;
+            for (RoadSystem::BridgeSpec t : road.tunnels) {
+                if (t.a == k || t.b == k) continue;
+                if (t.a > k) --t.a;
+                if (t.b > k) --t.b;
+                keepT.push_back(t);
+            }
+            road.tunnels.swap(keepT);
             // Loops name their ends the same way a bridge does, so they need the
             // same bookkeeping -- a loop left pointing at a deleted point would
             // silently move to whatever slid into its place.
@@ -772,6 +826,10 @@ int main(int argc, char** argv) {
             for (RoadSystem::BridgeSpec& b : road.bridges) {
                 if (b.a >= at) ++b.a;
                 if (b.b >= at) ++b.b;
+            }
+            for (RoadSystem::BridgeSpec& t : road.tunnels) {
+                if (t.a >= at) ++t.a;
+                if (t.b >= at) ++t.b;
             }
             for (roadloop::Spec& l : road.loops) {
                 if (l.a >= at) ++l.a;
@@ -2448,6 +2506,7 @@ int main(int argc, char** argv) {
             look.layers.clear();
             road.clearPoints();
             road.bridges.clear();
+            road.tunnels.clear();
             road.needsBuild = false;
             roadSel = roadSel2 = -1;
             veg.paintedBlades.clear();
@@ -2587,6 +2646,7 @@ int main(int argc, char** argv) {
                 [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
         };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
+        addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
         addB("startInVehicleMode", startInVehicleMode);
@@ -2608,7 +2668,7 @@ int main(int argc, char** argv) {
         addF("ssaoRadius", ssaoRadius);        addF("ssaoBias", ssaoBias);
         addF("bloomThreshold", bloomThreshold); addF("bloomKnee", bloomKnee);
         addF("cascadeSplit", renderer.shadows().splitLambda);
-        addI("envProbeRes", envProbeRes);
+        addI("envProbeRes", envProbeRes);      addI("envProbeFaces", envProbeFaces);
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
@@ -2770,6 +2830,25 @@ int main(int argc, char** argv) {
             }
             j["modelMaterialOverrides"] = std::move(ov);
 
+            // Which LIBRARY material each of a model's primitives is pointed at.
+            // Saved for the same reason as the overrides above -- a model's own
+            // materials are recreated on every import, so an assignment made in the
+            // inspector would be undone by the next load -- and keyed the same way.
+            // Only primitives pointed AWAY from the model's own material are
+            // written, so an untouched model costs nothing here.
+            nlohmann::json asg = nlohmann::json::object();
+            for (std::size_t mi = 0; mi < models.count(); ++mi) {
+                const LoadedModel* lm = models.at(mi);
+                if (!lm) continue;
+                for (std::size_t p = 0; p < lm->primMaterialId.size(); ++p) {
+                    const int idx = document.materialIndex(lm->primMaterialId[p]);
+                    if (idx < 0 || materials[idx].fromModel) continue;
+                    asg[lm->assetId.toString() + "|" + lm->name + "|" +
+                        std::to_string(p)] = materials[idx].assetId.toString();
+                }
+            }
+            j["modelMaterialAssign"] = std::move(asg);
+
             // The road owns its own scene state (the graded terrain corridor rides
             // along in "terrainEdits" above; the mesh is re-lofted on load).
             road.save(j["road"]);
@@ -2801,6 +2880,8 @@ int main(int argc, char** argv) {
             // renderer keeps the cubes it already had.
             renderer.setEnvProbeResolution(envProbeRes);
             envProbeRes = renderer.envProbeResolution(); // as clamped/rounded
+            renderer.setEnvProbeMaxFaces(envProbeFaces);
+            envProbeFaces = renderer.envProbeMaxFaces();
             // Does this file keep its terrain in an entity? (Consumed and reset by
             // afterSceneLoadFn, which migrates the ones that don't.)
             sceneStoredTerrainEntity = j.value("terrainEntity", false);
@@ -2972,6 +3053,32 @@ int main(int argc, char** argv) {
                                 AssetId::fromString(e["video"].get<std::string>());
                         readSlot("normalMap", md.normalTexId, md.normalTex);
                         readSlot("emissionMap", md.emissionTexId, md.emissionTex);
+                    }
+                }
+            }
+
+            // Re-point the primitives the user reassigned. AFTER the overrides
+            // above, and that order is not incidental: an override belongs to the
+            // model's OWN material, and applying it once a primitive already
+            // pointed elsewhere would stamp the model's colours onto a library
+            // material the rest of the scene shares.
+            if (j.contains("modelMaterialAssign") &&
+                j["modelMaterialAssign"].is_object()) {
+                const auto& asg = j["modelMaterialAssign"];
+                for (std::size_t mi = 0; mi < models.count(); ++mi) {
+                    LoadedModel* lm = models.at(mi);
+                    if (!lm) continue;
+                    for (std::size_t p = 0; p < lm->primMaterialId.size(); ++p) {
+                        const std::string key = lm->assetId.toString() + "|" +
+                                                lm->name + "|" + std::to_string(p);
+                        if (!asg.contains(key) || !asg[key].is_string()) continue;
+                        const AssetId gid =
+                            AssetId::fromString(asg[key].get<std::string>());
+                        // A material that no longer exists -- deleted, or a project
+                        // this model was copied out of -- leaves the primitive on
+                        // the model's own material rather than on nothing at all.
+                        if (gid.valid() && document.materialIndex(gid) >= 0)
+                            lm->primMaterialId[p] = gid;
                     }
                 }
             }
@@ -4585,12 +4692,76 @@ int main(int argc, char** argv) {
                 prevEndPrev = prevB; prevEndNext = nextB; prevEndFire = fireB;
             }
 
+            // --- Graphics menu ------------------------------------------------
+            // F9 anywhere -- editor, Play, the shipped player -- because a machine
+            // that cannot draw the frame has to be fixable from wherever the
+            // player happens to be, including a start screen with no menu of its
+            // own. An authored pause menu reaches the same screen through the
+            // Graphics button action, which is what sets gfxOpenRequest.
+            //
+            // NOT F10, which was the first choice: Windows treats F10 as
+            // "activate the window menu" and DefWindowProc puts the window into
+            // its menu loop on the way past GLFW, which is a good way to have a
+            // screen open on the key and then ignore every key after it.
+            {
+                const bool f9 = input.isKeyDown(GLFW_KEY_F9);
+                if ((f9 && !prevGfxKey) || gfxOpenRequest) {
+                    gfxOpenRequest = false;
+                    gfxUi.setOpen(!gfxUi.open());
+                    // Free the cursor for the menu, and give it back the way it
+                    // was found -- locked only if the game had it locked.
+                    input.setCursorLocked(gfxUi.open() ? false : fpsMode);
+                }
+                prevGfxKey = f9;
+                gfxUi.update(dt);
+            }
+
             const bool escDown = input.isKeyDown(GLFW_KEY_ESCAPE);
+            // The graphics menu's own input, edge-detected here where Escape has
+            // just been read and while `prevEsc` still holds last frame's state.
+            // Keyboard and pad both, for the same reason the scene overlay takes
+            // both: Play locks the cursor and a pad has none.
+            gfxIn = gfxmenu::Input{};
+            if (gfxUi.open()) {
+                const bool pad = input.hasGamepad();
+                const float sx = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_X) : 0.0f;
+                const float sy = pad ? input.gamepadStick(GLFW_GAMEPAD_AXIS_LEFT_Y) : 0.0f;
+                const bool up = input.isKeyDown(GLFW_KEY_UP) ||
+                                (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_UP) ||
+                                         sy < -0.5f));
+                const bool dn = input.isKeyDown(GLFW_KEY_DOWN) ||
+                                (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_DOWN) ||
+                                         sy > 0.5f));
+                const bool lf = input.isKeyDown(GLFW_KEY_LEFT) ||
+                                (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) ||
+                                         sx < -0.5f));
+                const bool rt = input.isKeyDown(GLFW_KEY_RIGHT) ||
+                                (pad && (input.gamepadButton(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT) ||
+                                         sx > 0.5f));
+                const bool fire = input.isKeyDown(GLFW_KEY_ENTER) ||
+                                  (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_A));
+                gfxIn.up      = up   && !prevGfxUp;
+                gfxIn.down    = dn   && !prevGfxDown;
+                gfxIn.left    = lf   && !prevGfxLeft;
+                gfxIn.right   = rt   && !prevGfxRight;
+                gfxIn.confirm = fire && !prevGfxFire;
+                gfxIn.back    = (escDown && !prevEsc) ||
+                                (pad && input.gamepadButton(GLFW_GAMEPAD_BUTTON_B));
+                prevGfxUp = up; prevGfxDown = dn; prevGfxLeft = lf;
+                prevGfxRight = rt; prevGfxFire = fire;
+            } else {
+                prevGfxUp = prevGfxDown = prevGfxLeft = prevGfxRight = false;
+                prevGfxFire = false;
+            }
+
             // A menu on Escape owns the key outright -- that is what stops Escape
             // from dropping the player straight out of the game.
             const bool escIsMenuKey =
                 uiMenuArmed && uiOverlay.toggleKey() == GLFW_KEY_ESCAPE;
-            if (escDown && !prevEsc && !escIsMenuKey) {
+            // ...and the graphics menu owns it while IT is up, for the same
+            // reason: without this the press that closes it would also drop the
+            // player out of the game behind it.
+            if (escDown && !prevEsc && !escIsMenuKey && !gfxUi.open()) {
                 if (playerMode)          { window.requestClose(); }
                 else if (presentMode) {
                     presentMode = false;
@@ -4746,7 +4917,12 @@ int main(int argc, char** argv) {
                     playCue(c.sound, c.gain, c.pitch);
             }
 
-            if (showroomUi.active()) {
+            if (gfxUi.open()) {
+                // The graphics menu owns the frame: no look, no walking, no
+                // driving. (The world keeps ticking, like the scene's own menu --
+                // a settings screen that froze the picture behind it could not
+                // show what the settings do to it.)
+            } else if (showroomUi.active()) {
                 // The picker owns the frame: no look, no walking, no driving.
             } else if (uiMenuOpen) {
                 // The scene's menu is open: it owns mouse and keyboard, so no
@@ -5240,8 +5416,41 @@ int main(int argc, char** argv) {
 
             // View distance: drive the streaming radius and the camera far plane.
             streamer.setRadius(viewRadius);
-            camera.setFarPlane(
-                std::max(250.0f, viewRadius * streamer.settings().chunkSize * 1.7f));
+            {
+                // Auto ties the far plane to the streamed terrain -- 1.7 chunks
+                // past the ring's edge, so the corners of the loaded area are
+                // inside the frustum and nothing pops at the diagonal. Manual is
+                // the same number set by hand, for a track that wants to see a
+                // skyline further out than it wants to stream ground.
+                const float terrainFar =
+                    std::max(250.0f, viewRadius * streamer.settings().chunkSize * 1.7f);
+                // ...but a skyline is precisely what you see PAST the streamed
+                // ground, and the roadside city keeps its own, usually longer
+                // reach (cityRange, Roads panel). Leaving the far plane on the
+                // terrain's number meant the city was cut off long before its own
+                // range ran out -- and the far plane does not fade, it SLICES: a
+                // tower crossing it loses its top mid-air. So auto covers
+                // whichever of the two reaches further, and the city goes back to
+                // being culled by the one knob that is meant to control it.
+                float autoFar = terrainFar;
+                if (road.enabled && road.cityEnabled && !road.district().empty())
+                    autoFar = std::max(autoFar, road.cityRange + 60.0f);
+                autoFar = std::min(autoFar, 5000.0f); // the manual slider's ceiling
+                const float farZ = farPlaneAuto ? autoFar
+                                               : std::max(farPlaneManual, 50.0f);
+                camera.setFarPlane(farZ);
+                // The second pane too. It never got one, so split screen quietly
+                // drew player two against the Camera default while player one used
+                // this -- two different worlds' worth of draw distance side by side.
+                camera2.setFarPlane(farZ);
+                // The cascades are fitted to the camera frustum, so a far plane
+                // pushed out for the skyline would stretch them across ground that
+                // is not even streamed -- the same shadow texels spread over twice
+                // the distance, i.e. every shadow in the scene going soft to shade
+                // a city a kilometre out. Pin the shadowed range to the terrain:
+                // past it there is nothing loaded to receive a shadow anyway.
+                renderer.shadows().shadowDistance = terrainFar;
+            }
 
             // Stream terrain chunks around the camera.
             // Terrain follows every eye that is drawn this frame, not just the
@@ -7485,6 +7694,10 @@ int main(int argc, char** argv) {
                     };
                     for (const RoadSystem::BridgeSpec& b : road.bridges)
                         drawSpan(b.a, b.b, IM_COL32(255, 140, 60, 220), 4.0f);
+                    // Bored stretches in a cooler colour: a road can carry both,
+                    // and one orange for two opposite structures reads as neither.
+                    for (const RoadSystem::BridgeSpec& t : road.tunnels)
+                        drawSpan(t.a, t.b, IM_COL32(90, 190, 255, 220), 4.0f);
                     if (roadSel >= 0 && roadSel2 >= 0 && roadSel != roadSel2)
                         drawSpan(roadSel, roadSel2, IM_COL32(255, 255, 255, 200), 3.0f);
 
@@ -8469,6 +8682,35 @@ int main(int argc, char** argv) {
                 ImGui::SliderInt("View distance", &viewRadius, 2, 9, "%d chunks");
                 ImGui::SameLine();
                 ImGui::Text("(%.0f m)", viewRadius * streamer.settings().chunkSize);
+                // The culling limit. Deliberately next to View distance and the
+                // draw counters above: those three are one dial each on the same
+                // trade, and the counters are the readout you tune against.
+                ImGui::Checkbox("Auto far plane", &farPlaneAuto);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Tie the culling limit to the streamed terrain\n"
+                                      "(1.7 chunks past the ring, so its corners\n"
+                                      "stay inside the frustum) -- and to the\n"
+                                      "roadside city's range, whichever reaches\n"
+                                      "further, so a skyline is never sliced off\n"
+                                      "before its own range runs out. Turn off to\n"
+                                      "set it by hand.");
+                ImGui::BeginDisabled(farPlaneAuto);
+                ImGui::SliderFloat("Far plane", &farPlaneManual, 100.0f, 5000.0f,
+                                   "%.0f m");
+                ImGui::EndDisabled();
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Where the camera stops drawing. Past the\n"
+                                      "streamed terrain you see the ring end;\n"
+                                      "past ~2000 m the depth buffer starts\n"
+                                      "fighting itself in the distance (the near\n"
+                                      "plane is 0.1 m). Set by hand this does NOT\n"
+                                      "follow the city's range, so a city set to\n"
+                                      "reach further than this gets cut off here.\n"
+                                      "Shadows stop at the streamed terrain either\n"
+                                      "way -- pushing this out costs draws, not\n"
+                                      "shadow resolution.");
+                ImGui::SameLine();
+                ImGui::TextDisabled("now %.0f m", camera.farPlane());
                 ImGui::Separator();
                 if (ImGui::Button("Reset layout")) requestDockRebuild = true;
             }
@@ -8594,6 +8836,33 @@ int main(int argc, char** argv) {
                                           "reflective material. Six scene passes either\n"
                                           "way -- raising it costs fill, not draw calls --\n"
                                           "but 1024 is 64x the pixels of 128.");
+                    // How fresh that cube is kept. This is a LATENCY control,
+                    // not a quality one: the probe is filled one face at a
+                    // time, so a cube filled at one face per frame is six to
+                    // twelve frames old when it is sampled -- twenty metres of
+                    // it at racing speed, which reads as the reflection
+                    // dragging behind the car. The rate is only spent when the
+                    // viewpoint actually moves, so raising this costs nothing
+                    // in a parked editor.
+                    const char* faceLbl[] = {"1 face (cheapest)", "2 faces",
+                                             "3 faces", "4 faces", "5 faces",
+                                             "6 faces (no lag)"};
+                    const int fi = glm::clamp(envProbeFaces, 1, 6) - 1;
+                    if (ImGui::BeginCombo("Probe refresh", faceLbl[fi])) {
+                        for (int k = 0; k < 6; ++k)
+                            if (ImGui::Selectable(faceLbl[k], k == fi)) {
+                                envProbeFaces = k + 1;
+                                renderer.setEnvProbeMaxFaces(envProbeFaces);
+                            }
+                        ImGui::EndCombo();
+                    }
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Cube faces the probe may refresh per frame,\n"
+                                          "at most. The actual rate follows how fast the\n"
+                                          "camera moves, so a still scene pays one face\n"
+                                          "whatever this says. Raise it if reflections\n"
+                                          "lag behind at speed; lower it if the probe\n"
+                                          "costs too much (it is six scene passes).");
                 }
                 ui::sectionText("Depth of field");
                 ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
@@ -9277,6 +9546,64 @@ int main(int argc, char** argv) {
                                 if (ImGui::SliderFloat("Scale", &mdl->scale, 0.05f, 20.0f, "%.2f"))
                                     if (LoadedModel* lm = models.byId(mdl->modelId))
                                         be.half = modelHalf(*lm, mdl->scale);
+                                // Which material each part of the model uses, and a
+                                // picker to point it somewhere else. An imported
+                                // model brings its own materials and nothing in the
+                                // editor ever said so: the Materials panel lists
+                                // them among all the others with no clue which mesh
+                                // they belong to, and there was no way to put a part
+                                // on a material of your own at all.
+                                //
+                                // Per MODEL, not per instance: primMaterialId lives
+                                // on the LoadedModel, so this repoints every entity
+                                // instancing it. Said out loud below rather than
+                                // discovered by editing one lamppost and watching
+                                // forty others change.
+                                if (LoadedModel* lm = models.byId(mdl->modelId)) {
+                                    const int nParts =
+                                        static_cast<int>(lm->primMaterialId.size());
+                                    char hdr[64];
+                                    std::snprintf(hdr, sizeof(hdr),
+                                                  "Materials (%d)###modelmats", nParts);
+                                    if (nParts > 0 && ImGui::CollapsingHeader(hdr)) {
+                                        ImGui::TextDisabled(
+                                            "Applies to every instance of this model.");
+                                        for (int pi = 0; pi < nParts; ++pi) {
+                                            const int pm = document.materialIndex(
+                                                lm->primMaterialId[pi]);
+                                            char lbl[48], btn[32];
+                                            std::snprintf(lbl, sizeof(lbl), "Part %d##pm%d",
+                                                          pi + 1, pi);
+                                            std::snprintf(btn, sizeof(btn), "Edit##pmb%d", pi);
+                                            ImGui::SetNextItemWidth(-72.0f);
+                                            if (ImGui::BeginCombo(
+                                                    lbl, pm >= 0 ? materials[pm].name.c_str()
+                                                                 : "(missing)")) {
+                                                for (int i = 0;
+                                                     i < static_cast<int>(materials.size());
+                                                     ++i) {
+                                                    const bool sel = (i == pm);
+                                                    // Names repeat across a library, and
+                                                    // two Selectables sharing a label are
+                                                    // one widget to ImGui -- hence the ##.
+                                                    char it[160];
+                                                    std::snprintf(it, sizeof(it), "%s##pm%d_%d",
+                                                                  materials[i].name.c_str(),
+                                                                  pi, i);
+                                                    if (ImGui::Selectable(it, sel))
+                                                        lm->primMaterialId[pi] =
+                                                            materials[i].assetId;
+                                                    if (sel) ImGui::SetItemDefaultFocus();
+                                                }
+                                                ImGui::EndCombo();
+                                            }
+                                            ImGui::SameLine();
+                                            if (ImGui::SmallButton(btn) && pm >= 0) {
+                                                matSel = pm; showMaterials = true;
+                                            }
+                                        }
+                                    }
+                                }
                             } else if (auto* col = dynamic_cast<CollectibleComponent*>(c)) {
                                 // Points + radius from metadata; Sound is a picker
                                 // over the Sound assets (chosen, not typed).
@@ -10500,6 +10827,10 @@ int main(int argc, char** argv) {
                     ImGui::Checkbox("Enable IBL lighting", &iblEnabled);
                     ImGui::Checkbox("Show HDRI as background", &iblSkybox);
                     ImGui::SliderFloat("Intensity", &iblIntensity, 0.0f, 4.0f);
+                    if (environment.valid())
+                        ImGui::TextDisabled("auto-normalised x%.3g (panoramas differ\n"
+                                            "in absolute brightness by decades)",
+                                            environment.exposureScale());
                     ImGui::EndDisabled();
                     ImGui::TextDisabled("Lights surfaces from the panorama\n"
                                         "(diffuse irradiance + specular).");
@@ -10810,8 +11141,10 @@ int main(int argc, char** argv) {
                                 /*forceTransparent=*/roadFades);
             }
 
-            // Bridge decks, built by the same Build as the road they carry. Unlike
-            // the ribbon these cast shadows: there is ground under them to fall on.
+            // The road's concrete -- bridge decks and tunnel bores, one mesh --
+            // built by the same Build as the road it carries. Unlike the ribbon it
+            // casts shadows: there is ground under a deck for them to fall on, and
+            // a bore wants the hill over it to keep the sun out.
             if (road.enabled && road.hasBridges()) {
                 road.bridgeMaterial().set("uWaterLevel", waterLevel);
                 // A deck is carriageway: it takes the road's own wetness too.
@@ -11002,6 +11335,20 @@ int main(int argc, char** argv) {
                     m.setTexture("uEmissionMap", *md.emissionTex, 3).set("uHasEmissionMap", 1);
                 else
                     m.set("uHasEmissionMap", 0);
+                // Procedural window grid (generated buildings): hashed lit windows
+                // on the vertical faces, world-space so the rows line up across a
+                // stack's setbacks. Written either way -- the shader program is
+                // shared, so a material that leaves it alone inherits the last
+                // building's facade.
+                if (md.windowGrid)
+                    m.set("uWindowGrid", 1)
+                     .set("uWindowCell", md.windowCell)
+                     .set("uWindowLit", md.windowLit)
+                     .set("uWindowSeed", md.windowSeed)
+                     .set("uWindowColor", md.windowColor)
+                     .set("uWindowGlow", md.windowGlow);
+                else
+                    m.set("uWindowGrid", 0);
             }
             std::vector<Material> lightMats;
             lightMats.reserve(entities.size());
@@ -11033,7 +11380,7 @@ int main(int argc, char** argv) {
                     for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
                         const int mi = document.materialIndex(lm->primMaterialId[i]);
                         renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
-                                        materials[mi].reflectivity > 0.0f,
+                                        isMirror(materials[mi]),
                                         materials[mi].opacity,
                                         materials[mi].alphaMode == AlphaMode::Blend);
                     }
@@ -11055,7 +11402,7 @@ int main(int argc, char** argv) {
                     const int   mi = document.materialIndex(mc ? mc->material : AssetId{});
                     renderer.submit(meshCache.mesh(b.id, meshC->revision, meshC->mesh),
                                     gpuMats[mi], mm, true,
-                                    materials[mi].reflectivity > 0.0f,
+                                    isMirror(materials[mi]),
                                     materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend);
                     continue;
@@ -11078,12 +11425,14 @@ int main(int argc, char** argv) {
                        .set("uAlbedo", lcol * 1.5f).set("uReflectivity", 0.0f);
                     renderer.submit(mesh, mat, m, /*castsPointShadow=*/false);
                 } else {
-                    // Assigned library material; reflective solids are excluded
-                    // from the env probe so they don't reflect their own interior.
+                    // Assigned library material; MIRROR-like solids are excluded
+                    // from the env probe so they don't reflect their own interior
+                    // (see isMirror -- glossy surfaces stay in, which is what puts
+                    // the city in a wet road's reflection).
                     const auto* mc = b.components.get<MaterialComponent>();
                     const int mi = document.materialIndex(mc ? mc->material : AssetId{});
                     renderer.submit(mesh, gpuMats[mi], m, true,
-                                    materials[mi].reflectivity > 0.0f,
+                                    isMirror(materials[mi]),
                                     materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
@@ -11108,17 +11457,39 @@ int main(int argc, char** argv) {
             if (road.enabled && road.cityEnabled && !road.district().empty()) {
                 const city::District& dist = road.district();
                 const glm::vec3 eye = camera.position();
+                // Pixels that one metre of height covers at one metre from the
+                // eye, so a chunk's worth on screen is (its height / its distance)
+                // times this. The main camera's framebuffer is the yardstick even
+                // though the queue is shared by every pass: the point is to drop
+                // what nobody would see in the pane they are looking at, and a
+                // reflection or a shadow cast by a four-pixel block is not worth a
+                // draw either.
+                int subW = 0, subH = 0;
+                window.framebufferSize(subW, subH);
+                const float pxPerMetre =
+                    static_cast<float>(subH)
+                    / (2.0f * std::tan(glm::radians(camera.fov()) * 0.5f));
+                const float minPx = std::max(road.cityMinPixels, 0.0f);
                 for (std::size_t i = 0; i < dist.batches.size(); ++i) {
                     const city::Batch& b = dist.batches[i];
                     // Nearest point of the chunk's box to the eye, so a long chunk
                     // is not dropped because its centre happens to be far.
                     const glm::vec3 d = glm::max(glm::max(b.lo - eye, eye - b.hi),
                                                  glm::vec3(0.0f));
-                    if (glm::dot(d, d) > road.cityRange * road.cityRange) continue;
+                    const float d2 = glm::dot(d, d);
+                    if (d2 > road.cityRange * road.cityRange) continue;
+                    // ...and what it is worth on screen at that distance. Only
+                    // past a metre: closer than that the ratio blows up, and
+                    // nothing that near is ever small anyway.
+                    if (minPx > 0.0f && d2 > 1.0f) {
+                        const float px =
+                            (b.hi.y - b.lo.y) * pxPerMetre / std::sqrt(d2);
+                        if (px < minPx) continue;
+                    }
                     const int mi = document.materialIndex(b.material);
                     if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) continue;
                     renderer.submit(road.cityMesh(i), gpuMats[mi], glm::mat4(1.0f),
-                                    true, materials[mi].reflectivity > 0.0f,
+                                    true, isMirror(materials[mi]),
                                     materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
@@ -11137,7 +11508,7 @@ int main(int argc, char** argv) {
                     // for one frame. Skip; next frame gpuMats has it.
                     if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) continue;
                     renderer.submit(lm->meshes[i], gpuMats[mi], mm, true,
-                                    materials[mi].reflectivity > 0.0f,
+                                    isMirror(materials[mi]),
                                     materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
@@ -11312,6 +11683,10 @@ int main(int argc, char** argv) {
             //    cubemap render is not paid for a matte scene.
             bool wantProbe = false;
             for (const MaterialDef& md : materials)
+                // ANY reflectivity, deliberately -- not isMirror(). A glossy
+                // facade samples the probe just like a mirror does; it is only
+                // being kept OUT of the capture, and being the capture point,
+                // that a mirror is special about.
                 if (md.reflectivity > 0.0f) { wantProbe = true; break; }
             // A wet carriageway mirrors the world through the same probe (see
             // lit.frag: uWetReflect raises the surface's reflectance), so it has
@@ -11321,16 +11696,19 @@ int main(int argc, char** argv) {
             // slider at 0, or a dry road, nothing here is paid for.
             wantProbe = wantProbe || (wetMirror && road.enabled && road.verts() > 0);
             if (wantProbe) {
-                // Capture at the first reflective object if there is one (best
+                // Capture at the first MIRROR-like object if there is one (best
                 // parallax there); otherwise around the camera, so reflective
                 // terrain / not-yet-placed materials still get a sensible probe.
+                // Merely glossy surfaces do not count, or the first glazed
+                // building mass in the scene would capture the whole city's
+                // reflections from inside a tower.
                 // Player one's eye: the probe is captured once and shared by
                 // both panes, like the shadows above.
                 glm::vec3 probePos = camera.position();
                 for (const Entity& b : entities) {
                     const auto* mc = b.components.get<MaterialComponent>();
                     if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
-                        materials[document.materialIndex(mc->material)].reflectivity > 0.0f) {
+                        isMirror(materials[document.materialIndex(mc->material)])) {
                         probePos = b.center;
                         break;
                     }
@@ -11536,17 +11914,25 @@ int main(int argc, char** argv) {
                 pp.aspect    = aspect;
                 pp.sunDir    = sunDir;
                 pp.sunCol    = sunCol;
+                // Whose speed streaks THIS pane: the craft this pane follows.
+                const racesim::RaceState& blurSt = (vi == 0) ? race : race2;
+                // The player's graphics choices gate the effects HERE, where they
+                // are consumed, rather than by writing into the values above:
+                // those belong to the scene's author, and switching an effect back
+                // on has to return the look that was authored, not a default.
+                const gfxmenu::PostGate gate = gfxmenu::gatePost(
+                    gfxSet, ssaoStrength, bloomIntensity, rayIntensity, dofMax,
+                    motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
                 pp.ssaoRadius = ssaoRadius; pp.ssaoBias = ssaoBias;
-                pp.ssaoPower  = ssaoPower;  pp.ssaoStrength = ssaoStrength;
+                pp.ssaoPower  = ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
                 pp.bloomThreshold = bloomThreshold; pp.bloomKnee = bloomKnee;
-                pp.bloomIntensity = bloomIntensity; pp.rayIntensity = rayIntensity;
-                pp.dofNear = dofNear; pp.dofFar = dofFar; pp.dofMax = dofMax;
+                pp.bloomIntensity = gate.bloomIntensity;
+                pp.rayIntensity   = gate.rayIntensity;
+                pp.dofNear = dofNear; pp.dofFar = dofFar; pp.dofMax = gate.dofMax;
                 pp.exposure = exposure;
                 pp.hueShift = hueShift; pp.saturation = saturation;
                 pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
-                // Whose speed streaks THIS pane: the craft this pane follows.
-                const racesim::RaceState& blurSt = (vi == 0) ? race : race2;
-                pp.blurStrength     = motionBlurStrength * blurSt.blurSpeed01 * 0.35f;
+                pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
                 pp.blurAnchorValid  = blurSt.blurAnchorValid;
                 post.run(hdrRT, pp, fsQuad);
@@ -11762,6 +12148,11 @@ int main(int argc, char** argv) {
                     // Restart: deferred, so the entity list is swapped between
                     // frames rather than underneath this draw call.
                     sink.restart     = [&](){ pendingRestart = true; };
+                    // Deferred by a frame like every other menu action: the
+                    // overlay is mid-draw here, and opening a screen that covers
+                    // it from inside its own button handler is the one way to
+                    // have two menus believe they own the cursor.
+                    sink.graphics    = [&](){ gfxOpenRequest = true; };
                     // Keyboard / gamepad activation, fired here because this is
                     // where the sink exists. Consumed either way, so a press
                     // can't queue up for the next frame.
@@ -11842,6 +12233,38 @@ int main(int argc, char** argv) {
                         // draw call that asked for it.
                         pendingSceneLoad = go.scene;
                     }
+                }
+            }
+
+            // --- Graphics menu, over everything ------------------------------
+            // Outside the HUD block above on purpose: that one only runs in Play,
+            // and a screen for fitting the game to the machine has to be reachable
+            // wherever the frame rate went wrong -- including the editor.
+            //
+            // It is a scrim over the running picture rather than a screen of its
+            // own because every row changes what is behind it, and a setting
+            // nobody can see move is a setting nobody can judge.
+            if (gfxUi.open()) {
+                ImDrawList* gdl = ImGui::GetForegroundDrawList();
+                ImVec2 gmin, gsize;
+                if (presentMode || viewportRectSize.x < 1.0f) {
+                    gmin  = ImVec2(0.0f, 0.0f);
+                    gsize = ImGui::GetIO().DisplaySize;
+                } else {   // docked editor: the menu belongs to the viewport pane
+                    gmin  = ImVec2(viewportRectMin.x, viewportRectMin.y);
+                    gsize = ImVec2(viewportRectSize.x, viewportRectSize.y);
+                }
+                bool gfxChanged = false;
+                const gfxmenu::Settings before = gfxSet;
+                const bool stay =
+                    gfxUi.draw(gdl, gmin, gsize, gfxSet, gfxIn, &gfxChanged);
+                if (gfxChanged) applyGfx(before);
+                if (!stay) {
+                    // Saved on the way out rather than per keystroke: the file
+                    // records what was settled on, and a row stepped through five
+                    // values is one decision, not five.
+                    gfxmenu::save("graphics.json", gfxSet);
+                    input.setCursorLocked(fpsMode);
                 }
             }
 

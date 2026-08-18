@@ -147,6 +147,12 @@ struct Biome {
     int   clutter    = 6;       // rooftop tanks/vents/ducts per building
     float clutterVar = 0.6f;    // 0 = every roof equally littered, 1 = wildly uneven
     float deadNeon   = 0.30f;   // fraction of buildings whose signage is unlit
+    // Lit windows on the glazing (drawn procedurally by the lit shader, see
+    // buildings::Params). A district-wide property, and one of the strongest
+    // pieces of storytelling the generator has: the same massing reads as a
+    // working downtown at 0.6 and as an evacuated one at 0.05.
+    float windowLit  = 0.55f;   // fraction of windows lit (0 = a dark district)
+    glm::vec3 windowColor{1.00f, 0.83f, 0.58f};  // interior light colour (sRGB)
 
     unsigned  seed = 7;  // reroll for a different city, same rules
 

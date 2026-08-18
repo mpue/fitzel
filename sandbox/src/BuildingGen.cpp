@@ -45,12 +45,16 @@ Params sane(const Params& in) {
     p.bandOverhang = glm::clamp(p.bandOverhang, 0.0f, 4.0f);
     p.fins        = glm::clamp(p.fins, 0, 16);
     p.finDepth    = glm::clamp(p.finDepth, 0.05f, 6.0f);
+    p.edgeWidth   = glm::clamp(p.edgeWidth, 0.08f, 4.0f);
     p.crownHeight = glm::clamp(p.crownHeight, 0.0f, 1.5f);
     p.accentStrength = glm::clamp(p.accentStrength, 0.0f, 12.0f);
     p.palette     = glm::clamp(p.palette, 0, 7);
     p.weathering  = glm::clamp(p.weathering, 0.0f, 1.0f);
     p.grime       = glm::clamp(p.grime, 0.0f, 1.0f);
     p.clutter     = glm::clamp(p.clutter, 0, 60);
+    p.windowWidth = glm::clamp(p.windowWidth, 1.0f, 16.0f);
+    p.windowLit   = glm::clamp(p.windowLit, 0.0f, 1.0f);
+    p.windowGlow  = glm::clamp(p.windowGlow, 0.0f, 12.0f);
     return p;
 }
 
@@ -97,6 +101,29 @@ AssetId ensureMaterial(std::vector<MaterialDef>& mats, const std::string& name,
     md.emissionStrength = emissionStrength;
     mats.push_back(md);
     return md.assetId;
+}
+
+// Stamp the window grid onto the material `id` refers to. Separate from
+// ensureMaterial() because only ONE of the four slots wears windows, and pushing
+// six more arguments through the other three to say "none" reads worse than this.
+void applyWindows(std::vector<MaterialDef>& mats, AssetId id, const Params& p) {
+    for (MaterialDef& m : mats) {
+        if (m.assetId != id) continue;
+        m.windowGrid = p.windows;
+        // Columns from the pitch, rows from the storey height: the rows then land
+        // on the floors the rest of the generator already builds to, so a band or
+        // a setback sits between window rows instead of halfway through one.
+        m.windowCell  = glm::vec2(p.windowWidth, p.floorHeight);
+        m.windowLit   = p.windowLit;
+        // Per SLOT, not per building: the material is shared by every tower on
+        // this palette, and a seed per tower would only fight over one uniform.
+        // Different slots do get different grids, which is what stops district A
+        // and district B from lighting up in the same pattern.
+        m.windowSeed  = 1.0f + static_cast<float>(p.palette) * 13.77f;
+        m.windowColor = p.windowColor;
+        m.windowGlow  = p.windowGlow;
+        return;
+    }
 }
 
 } // namespace
@@ -150,6 +177,7 @@ void applyStyle(Params& p, Style s) {
             p.podiumFloors = 3; p.podiumSpread = 1.5f;
             p.bandEvery = 6; p.bandOverhang = 0.4f;
             p.fins = 4; p.finDepth = 0.6f;
+            p.edgeStrips = true; p.edgeWidth = 0.55f;
             p.crown = Crown::Antenna; p.crownHeight = 0.18f;
             break;
         case Style::NeoTokyo:
@@ -160,6 +188,7 @@ void applyStyle(Params& p, Style s) {
             p.podiumFloors = 2; p.podiumSpread = 1.8f;
             p.bandEvery = 4; p.bandOverhang = 0.5f;
             p.fins = 2; p.finDepth = 0.8f;
+            p.edgeStrips = true; p.edgeWidth = 0.45f;
             p.crown = Crown::Spire; p.crownHeight = 0.22f;
             break;
         case Style::Arcology:
@@ -170,6 +199,7 @@ void applyStyle(Params& p, Style s) {
             p.podiumFloors = 4; p.podiumSpread = 1.35f;
             p.bandEvery = 5; p.bandOverhang = 0.9f;
             p.fins = 8; p.finDepth = 1.2f;
+            p.edgeStrips = true; p.edgeWidth = 1.10f;
             p.crown = Crown::Halo; p.crownHeight = 0.25f;
             break;
         case Style::Needle:
@@ -180,6 +210,7 @@ void applyStyle(Params& p, Style s) {
             p.podiumFloors = 2; p.podiumSpread = 2.4f;
             p.bandEvery = 8; p.bandOverhang = 0.6f;
             p.fins = 3; p.finDepth = 0.5f;
+            p.edgeStrips = true; p.edgeWidth = 0.35f;
             p.crown = Crown::Antenna; p.crownHeight = 0.45f;
             break;
         case Style::Slab:
@@ -190,6 +221,7 @@ void applyStyle(Params& p, Style s) {
             p.podiumFloors = 2; p.podiumSpread = 1.2f;
             p.bandEvery = 3; p.bandOverhang = 0.3f;
             p.fins = 6; p.finDepth = 0.7f;
+            p.edgeStrips = false;
             p.crown = Crown::Slant; p.crownHeight = 0.12f;
             break;
         case Style::Habitat:
@@ -200,6 +232,7 @@ void applyStyle(Params& p, Style s) {
             p.podiumFloors = 3; p.podiumSpread = 1.6f;
             p.bandEvery = 4; p.bandOverhang = 1.0f;
             p.fins = 6; p.finDepth = 1.0f;
+            p.edgeStrips = true; p.edgeWidth = 0.8f;
             p.crown = Crown::Halo; p.crownHeight = 0.3f;
             break;
         case Style::Count:
@@ -240,6 +273,11 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& pIn) {
     pal.base  = ensureMaterial(materials, slot + "Base", soiled(p.baseTint, w),
                                glm::mix(0.05f, 0.0f, wr), glm::mix(0.75f, 1.0f, wg),
                                glm::vec3(0.0f), 1.0f);
+    // Windows go on the GLAZING only. The concrete masses `grime` swaps in stay
+    // blind, and that contrast is the point: a street where some towers are lit
+    // and their neighbours are dark hulks reads as a city, where a street of
+    // uniformly lit towers reads as a texture.
+    applyWindows(materials, pal.glass, p);
     return pal;
 }
 
@@ -455,6 +493,51 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal,
                     "Fin " + std::to_string(i + 1) + "." + std::to_string(j + 1),
                     {wp.x, yc, wp.y}, {thick, hy, p.finDepth * 0.5f},
                     m.yaw + yawTowards(n), pal.frame, false);
+            }
+        }
+    }
+
+    // --- Vertical edge strips ------------------------------------------------
+    // Lit lines up the corners, and the counterpart to the bands: those are
+    // horizontal, they count the floors, and a facade carrying only them reads
+    // as a wide building however tall it is. The vertical line is what the eye
+    // runs up, and it is most of what makes the towers in a racing skyline feel
+    // like they go somewhere.
+    //
+    // Per MASS, like the fins, so a strip jogs inward at each setback and turns
+    // with the twist instead of leaving the facade higher up. The jog is the
+    // honest reading: the corner really does move there.
+    if (p.edgeStrips) {
+        // Unlit, they are still worth having -- a shadowed edge reads as a corner
+        // -- so the strip falls back to the frame material rather than vanishing.
+        const AssetId stripMat = p.neon ? pal.accent : pal.frame;
+        for (std::size_t i = 0; i < masses.size(); ++i) {
+            const Mass& m  = masses[i];
+            const float hy = (m.y1 - m.y0) * 0.5f;
+            const float yc = (m.y0 + m.y1) * 0.5f;
+            const float hw = p.edgeWidth * 0.5f;
+            for (int j = 0; j < 4; ++j) {
+                glm::vec2 pos, n;
+                if (p.shape == Footprint::Round) { // no corners: quarter it instead
+                    const float a = (static_cast<float>(j) / 4.0f) * 2.0f * kPi;
+                    n   = glm::normalize(glm::vec2(std::sin(a), std::cos(a)));
+                    pos = {m.w * 0.5f * std::sin(a), m.d * 0.5f * std::cos(a)};
+                } else {
+                    const float sx = (j == 0 || j == 3) ? 1.0f : -1.0f;
+                    const float sz = (j < 2) ? 1.0f : -1.0f;
+                    pos = {m.w * 0.5f * sx, m.d * 0.5f * sz};
+                    n   = glm::normalize(glm::vec2(sx, sz));
+                }
+                // Pushed out along the corner's own diagonal by most of its half
+                // width: the inner part stays buried in the mass, so the strip
+                // cannot end up coplanar with the facade and z-fight it, and the
+                // outer part is what actually shows as a lit edge.
+                const glm::vec2 lp = pos + n * (hw * 0.8f);
+                const glm::vec2 wp = yawXZ(lp, m.yaw);
+                add(EntityType::Box,
+                    "Edge " + std::to_string(i + 1) + "." + std::to_string(j + 1),
+                    {wp.x, yc, wp.y}, {hw, hy, hw},
+                    m.yaw + yawTowards(n), stripMat, false);
             }
         }
     }

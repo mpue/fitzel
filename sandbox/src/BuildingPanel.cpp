@@ -115,6 +115,16 @@ void drawPanel(const PanelState& s) {
         changed |= stepInt("Fins per mass", c.fins, 0, 16);
         changed |= ImGui::SliderFloat("Fin depth", &c.finDepth, 0.1f, 4.0f, "%.2f m");
         changed |= ImGui::Checkbox("Neon strips", &c.neon);
+        changed |= ImGui::Checkbox("Corner strips", &c.edgeStrips);
+        ImGui::SetItemTooltip("Lit lines up the four corners of every mass. The "
+                              "bands count a building's floors and make it read "
+                              "wide; this is the vertical the eye runs up, and it "
+                              "is most of what makes a tower feel tall. Follows "
+                              "the setbacks and the twist.");
+        ImGui::BeginDisabled(!c.edgeStrips);
+        changed |= ImGui::SliderFloat("Strip width", &c.edgeWidth, 0.1f, 3.0f,
+                                      "%.2f m");
+        ImGui::EndDisabled();
         changed |= enumCombo<Crown, kCrownCount, buildings::crownName>("Crown",
                                                                       c.crown);
         changed |= ImGui::SliderFloat("Crown height", &c.crownHeight, 0.0f, 1.0f,
@@ -126,6 +136,24 @@ void drawPanel(const PanelState& s) {
         ImGui::SetItemTooltip("Static physics on the main masses, so a car or "
                               "glider crashes into the building instead of "
                               "flying through it.");
+
+        ui::sectionText("Windows");
+        changed |= ImGui::Checkbox("Lit windows", &c.windows);
+        ImGui::SetItemTooltip("Procedural lit windows on the glazing. Costs no "
+                              "geometry and no texture -- the shader hashes them "
+                              "out of the world position, so the rows line up "
+                              "across the setbacks of a stack.");
+        ImGui::BeginDisabled(!c.windows);
+        changed |= ImGui::SliderFloat("Window pitch", &c.windowWidth, 1.0f, 12.0f,
+                                      "%.1f m");
+        ImGui::SetItemTooltip("Metres of facade per window. The row height is the "
+                              "floor height -- a window belongs to a storey.");
+        changed |= ImGui::SliderFloat("Lit fraction", &c.windowLit, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("0 = a dead, unoccupied tower. Around 0.5 reads as "
+                              "an evening; 0.9 as an office block on a deadline.");
+        changed |= ImGui::ColorEdit3("Window light", &c.windowColor.x);
+        changed |= ImGui::SliderFloat("Window glow", &c.windowGlow, 0.0f, 8.0f, "%.2f");
+        ImGui::EndDisabled();
 
         ui::sectionText("Wear");
         changed |= ImGui::SliderFloat("Weathering", &c.weathering, 0.0f, 1.0f, "%.2f");

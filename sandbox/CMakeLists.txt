@@ -25,6 +25,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/TiledScatter.cpp
     src/RoadSystem.cpp
     src/RoadBridge.cpp
+    src/RoadTunnel.cpp
     src/RoadLoop.cpp
     src/RaceSim.cpp
     src/RaceGrid.cpp
@@ -34,6 +35,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # The post chain (SSAO, bloom, tonemap, speed blur, FXAA). Runtime: the
     # shipped player draws the same frame the editor does.
     src/PostChain.cpp
+    # The in-game graphics menu. Runtime by definition: fitting the game to
+    # the machine is the shipped player's job, not the editor's.
+    src/GraphicsMenu.cpp
     src/RaceHud.cpp
     src/Showroom.cpp
     src/RoadSide.cpp
@@ -76,6 +80,12 @@ set(SANDBOX_EDITOR_SOURCES
     src/PaintPanel.cpp
     src/FolderDialog.cpp
     src/GameSettingsPanel.cpp
+    # Shipping: the game's icon (a PNG scaled into the exe's resources) and the
+    # setup that wraps a finished export. Editor-only -- the player has no
+    # export menu, and neither the image resizer nor the PE resource writer
+    # would ever run inside a shipped game.
+    src/IconEmbed.cpp
+    src/InstallerBuild.cpp
     src/ScatterTool.cpp
     src/BuildingPanel.cpp
     src/CityPanel.cpp

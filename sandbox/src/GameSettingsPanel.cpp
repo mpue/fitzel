@@ -7,6 +7,7 @@
 #include <imgui.h>
 
 #include "FolderDialog.hpp"
+#include "InstallerBuild.hpp"
 #include "UiStyle.hpp"
 
 namespace game {
@@ -137,6 +138,72 @@ void drawLoadingSection(game::Settings& s, const std::string& projectFolder) {
     ImGui::Spacing();
 }
 
+// The installer section: what gets built next to the export, and who it says the
+// game is from.
+//
+// Whether an Inno Setup compiler exists is checked HERE, while the switch is
+// being flipped -- not at export time. Exporting a real game runs for minutes,
+// and "you needed a tool you do not have" is not an answer anybody should have
+// to wait that long to receive.
+void drawInstallerSection(game::Settings& s) {
+    if (!ImGui::CollapsingHeader("Installer"))
+        return;
+
+    // Finding the compiler walks the registry and the disk, so the answer is
+    // taken once and kept -- this runs on every frame the section is open.
+    static const bool        haveIscc = installer::available();
+    static const std::string isccPath = installer::compilerPath();
+
+    ImGui::Checkbox("Build a setup.exe", &s.makeInstaller);
+    ui::hint("Compiles everything in the export folder into one installer that\n"
+             "copies the game into place and adds it to the Start menu. Slow --\n"
+             "it compresses the whole game -- so leave it off while testing.");
+
+    if (!haveIscc) {
+        ImGui::TextDisabled("Inno Setup was not found on this machine.");
+        ui::hint("The installer is compiled by Inno Setup (free, innosetup.com).\n"
+                 "Without it the export still works; only the setup is skipped.");
+    } else if (s.makeInstaller) {
+        ImGui::TextDisabled("Using %s", isccPath.c_str());
+    }
+
+    if (!s.makeInstaller) { ImGui::Spacing(); return; }
+
+    // Buffers, like the exe name above: re-seeded whenever they have drifted
+    // from the settings and nothing is being typed, so a section that was
+    // collapsed on the frame the modal opened cannot later write its stale text
+    // back over saved values.
+    static char product[96], version[32], publisher[96];
+    if (!ImGui::IsAnyItemActive()) {
+        if (s.productName != product)
+            std::snprintf(product, sizeof product, "%s", s.productName.c_str());
+        if (s.version != version)
+            std::snprintf(version, sizeof version, "%s", s.version.c_str());
+        if (s.publisher != publisher)
+            std::snprintf(publisher, sizeof publisher, "%s", s.publisher.c_str());
+    }
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##product", "(the executable name)", product, sizeof product);
+    s.productName = product;
+    ui::hint("The name in the setup wizard, in the Start menu and in the list of\n"
+             "installed programs. Blank uses the executable name.");
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##version", "1.0.0", version, sizeof version);
+    s.version = version;
+    ui::hint("Shown next to the game in the installed-programs list. Raising it\n"
+             "makes the next setup replace this one instead of installing a\n"
+             "second copy beside it.");
+
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##publisher", "(publisher, optional)", publisher,
+                             sizeof publisher);
+    s.publisher = publisher;
+
+    ImGui::Spacing();
+}
+
 } // namespace
 
 bool drawSettingsModal(const char* popupId, Settings& s,
@@ -185,6 +252,24 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     ImGui::SameLine();
     if (ImGui::Button("Use default")) s.splash.clear();
     ui::hint("Shown while the game loads. PNG/JPG; blank uses the engine splash.");
+    ImGui::Spacing();
+
+    // --- Application icon ----------------------------------------------------
+    ui::sectionText("Icon");
+    ImGui::TextUnformatted(s.icon.empty() ? "(engine default)" : s.icon.c_str());
+    if (ImGui::Button("Browse...##icon")) {
+        std::string picked;
+        if (ed::pickFile(picked, projectFolder, "Images",
+                         "*.png;*.jpg;*.jpeg;*.bmp;*.tga")) {
+            const std::string base = adoptImage(picked, projectFolder);
+            if (!base.empty()) s.icon = base;
+        }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Use default##icon")) s.icon.clear();
+    ui::hint("A square PNG, ideally 256x256 or bigger. The export scales it to\n"
+             "every size Windows asks for and writes it into the .exe itself --\n"
+             "there is no .ico to make, and the setup gets the same picture.");
     ImGui::Spacing();
 
     drawLoadingSection(s, projectFolder);
@@ -238,6 +323,9 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     ui::hint("Bundle content/, project/ and assets/ into one encrypted game.fpak\n"
              "next to the exe, so the models, textures and sounds are not lying\n"
              "in open folders. Off ships loose files (useful to debug an export).");
+
+    ImGui::Spacing();
+    drawInstallerSection(s);
 
     ImGui::Spacing();
     ImGui::Separator();

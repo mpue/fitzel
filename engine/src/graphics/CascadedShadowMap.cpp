@@ -14,19 +14,29 @@
 
 namespace fitzel {
 
-CascadedShadowMap::CascadedShadowMap(int resolution, int cascades)
-    : m_resolution(resolution), m_cascades(std::max(1, cascades)) {
-    glGenTextures(1, &m_depthTex);
-    glBindTexture(GL_TEXTURE_2D_ARRAY, m_depthTex);
+namespace {
+
+// Allocate (or reallocate) the depth array at `res` for `layers` cascades. The
+// border is white on purpose: outside a cascade means "nothing in the way", so a
+// sample that falls off the edge reads as lit rather than as shadowed.
+void allocCascadeArray(unsigned tex, int res, int layers) {
+    glBindTexture(GL_TEXTURE_2D_ARRAY, tex);
     glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_DEPTH_COMPONENT24,
-                 resolution, resolution, m_cascades, 0,
-                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+                 res, res, layers, 0, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
     glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
     const float border[] = {1.0f, 1.0f, 1.0f, 1.0f};
     glTexParameterfv(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_BORDER_COLOR, border);
+}
+
+} // namespace
+
+CascadedShadowMap::CascadedShadowMap(int resolution, int cascades)
+    : m_resolution(std::max(64, resolution)), m_cascades(std::max(1, cascades)) {
+    glGenTextures(1, &m_depthTex);
+    allocCascadeArray(m_depthTex, m_resolution, m_cascades);
 
     glGenFramebuffers(1, &m_fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
@@ -68,7 +78,11 @@ CascadedShadowMap& CascadedShadowMap::operator=(CascadedShadowMap&& o) noexcept 
 void CascadedShadowMap::update(const Camera& camera, float aspect,
                                const glm::vec3& lightDir) {
     const float nearC = camera.nearPlane();
-    const float farC  = camera.farPlane();
+    // The cascades cover the shadowed range, which is the camera's far plane only
+    // while nobody has said otherwise (see shadowDistance).
+    const float farC  = (shadowDistance > 0.0f)
+                            ? std::min(camera.farPlane(), shadowDistance)
+                            : camera.farPlane();
 
     // Practical split scheme: blend logarithmic and uniform distributions.
     float prev = nearC;
@@ -130,6 +144,16 @@ glm::mat4 CascadedShadowMap::fitCascade(const Camera& camera, float aspect,
 
     const glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
     return lightProj * lightView;
+}
+
+void CascadedShadowMap::setResolution(int resolution) {
+    const int res = std::clamp(resolution, 64, 8192);
+    if (res == m_resolution || !m_depthTex) return;
+    m_resolution = res;
+    // Reusing the texture NAME matters: the renderer binds the array to a fixed
+    // unit and the lit shader keeps its sampler, so reallocating the storage
+    // under the same name means nothing downstream has to be told about it.
+    allocCascadeArray(m_depthTex, m_resolution, m_cascades);
 }
 
 void CascadedShadowMap::beginCascade(int index) {

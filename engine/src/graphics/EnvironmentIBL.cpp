@@ -1,5 +1,8 @@
 #include "fitzel/graphics/EnvironmentIBL.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -168,6 +171,68 @@ float* loadEquirect(const std::string& path, int& w, int& h) {
     return d;
 }
 
+// Panoramas store absolute radiance, and files disagree about that scale by
+// orders of magnitude: an overcast sky averages a fraction of one, a clear noon
+// sky tens, and the sun disc of a Radiance .hdr encodes 1e5 and up. Fed in raw,
+// one HDRI lit the scene nicely and the next one blew it out at the very same
+// Intensity -- and any texel above 65504 turns Inf in the RGB16F cubemap, where
+// a single Inf poisons the whole irradiance convolution: the "everything is
+// white" case. So every panorama is rescaled to one common key and clamped.
+constexpr float kTargetKey   = 0.25f;   // solid-angle mean radiance after scaling
+constexpr float kMaxRadiance = 8000.0f; // keeps even the sun finite in RGB16F
+
+float luma(const float* p) {
+    return 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
+}
+
+// Rescales the panorama in place and returns the factor applied.
+float normalizeEquirect(float* px, int w, int h) {
+    // A texel's solid angle shrinks toward the poles, so weight rows by sin(theta).
+    std::vector<float> rowW(static_cast<std::size_t>(h));
+    double wsum = 0.0;
+    for (int y = 0; y < h; ++y) {
+        rowW[y] = std::sin(3.14159265f * (static_cast<float>(y) + 0.5f) / static_cast<float>(h));
+        wsum += static_cast<double>(rowW[y]) * w;
+    }
+    if (wsum <= 0.0) return 1.0f;
+
+    // Pass 1: sanitise (a NaN or a negative texel survives every later stage)
+    // and take the weighted mean luminance.
+    double sum = 0.0;
+    for (int y = 0; y < h; ++y) {
+        double row = 0.0;
+        for (int x = 0; x < w; ++x) {
+            float* p = px + (static_cast<std::size_t>(y) * w + x) * 3;
+            for (int c = 0; c < 3; ++c)
+                if (!std::isfinite(p[c]) || p[c] < 0.0f) p[c] = 0.0f;
+            row += luma(p);
+        }
+        sum += row * rowW[y];
+    }
+    const double mean = sum / wsum;
+    if (!(mean > 0.0)) return 1.0f;   // black panorama: nothing to normalise
+
+    // Pass 2: the same mean without the highlight tail. On a clear-sky HDRI the
+    // sun disc alone carries a large share of the energy, and letting it set the
+    // exposure would dim the sky the eye actually reads.
+    const double cap = mean * 50.0;
+    double capped = 0.0;
+    for (int y = 0; y < h; ++y) {
+        double row = 0.0;
+        for (int x = 0; x < w; ++x)
+            row += std::min(static_cast<double>(
+                       luma(px + (static_cast<std::size_t>(y) * w + x) * 3)), cap);
+        capped += row * rowW[y];
+    }
+    const double key = std::max(capped / wsum, 1e-6);
+
+    const float scale = static_cast<float>(kTargetKey / key);
+    const std::size_t n = static_cast<std::size_t>(w) * h * 3;
+    for (std::size_t i = 0; i < n; ++i)
+        px[i] = std::min(px[i] * scale, kMaxRadiance);
+    return scale;
+}
+
 std::uint32_t makeCube(int size, bool mips) {
     std::uint32_t tex;
     glGenTextures(1, &tex);
@@ -240,6 +305,7 @@ bool EnvironmentIBL::load(const std::string& path) {
     int w = 0, h = 0;
     float* pixels = loadEquirect(path, w, h);
     if (!pixels) return false;
+    m_exposureScale = normalizeEquirect(pixels, w, h);
 
     // Upload the panorama to a float 2D texture.
     std::uint32_t hdr;
@@ -320,7 +386,8 @@ bool EnvironmentIBL::load(const std::string& path) {
     glDeleteTextures(1, &hdr);
 
     m_valid = true;
-    std::printf("[Fitzel] IBL environment loaded: %s (%dx%d)\n", path.c_str(), w, h);
+    std::printf("[Fitzel] IBL environment loaded: %s (%dx%d, normalised x%.4g)\n",
+                path.c_str(), w, h, m_exposureScale);
     return true;
 }
 

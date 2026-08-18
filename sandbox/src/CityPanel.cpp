@@ -175,6 +175,14 @@ bool biomeEditor(const PanelState& s, city::Biome& B, int index) {
     color("Base",   &B.baseTint,    "Biome colour");
     color("Accent", &B.accentColor, "Biome colour");
     drag("Accent glow", &B.accentStrength, 0.02f, 0.0f, 12.0f, "%.2f", "Biome colour");
+    drag("Lit windows", &B.windowLit, 0.005f, 0.0f, 1.0f, "%.2f", "Biome colour");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Fraction of the glazing that is lit from inside.\n"
+                          "Costs no geometry and no texture -- the shader\n"
+                          "hashes the windows out of the world position --\n"
+                          "and it decides whether a district reads as\n"
+                          "working, half-empty or evacuated.");
+    color("Window light", &B.windowColor, "Biome colour");
     check("Neon", &B.neon, "Biome neon");
     check("Solid in Play", &B.collider, "Biome collider");
     if (ImGui::IsItemHovered())
@@ -243,8 +251,20 @@ void drawPanel(const PanelState& s) {
     ImGui::SetNextItemWidth(140.0f);
     ImGui::DragFloat("Draw range", &road.cityRange, 5.0f, 100.0f, 8000.0f, "%.0f m");
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Buildings beyond this are not drawn at all. The one\n"
-                          "knob that trades skyline depth for frame time.");
+        ImGui::SetTooltip("Buildings beyond this are not drawn at all, and the\n"
+                          "camera's far plane follows it so a tower is never\n"
+                          "sliced in half as it crosses. Raise it with the\n"
+                          "detail cull beside it, not on its own -- alone it\n"
+                          "buys depth by paying for every shed out there too.");
+    ImGui::SetNextItemWidth(140.0f);
+    ImGui::DragFloat("Detail cull", &road.cityMinPixels, 0.1f, 0.0f, 40.0f, "%.0f px");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Drop a chunk once it is shorter than this on screen.\n"
+                          "What a long draw range is FOR is the tower still a\n"
+                          "hundred pixels tall a kilometre out; what it costs is\n"
+                          "the row of blocks four pixels tall behind it -- and a\n"
+                          "draw costs the same either way. 0 = distance only\n"
+                          "(and what a scene saved before this loads as).");
 
     // What actually came out, so "why is my street empty" has an answer.
     const city::District& d = road.district();

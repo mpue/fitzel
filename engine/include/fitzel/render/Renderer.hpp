@@ -155,6 +155,14 @@ public:
     void setEnvProbeResolution(int res);
     int  envProbeResolution() const { return m_envA.resolution(); }
 
+    // How many of the probe's six cube faces prepareEnvProbe() may refresh in one
+    // call, at most. 1 is the cheapest and the reason a probe is affordable at
+    // all; 6 means the cube is never more than a frame old. The actual rate is
+    // picked per call from how fast the viewpoint is moving, up to this cap --
+    // see prepareEnvProbe(), which is where the trade is explained.
+    void setEnvProbeMaxFaces(int faces);
+    int  envProbeMaxFaces() const { return m_envMaxFaces; }
+
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 
     // Multi-pass building blocks (for reflection/refraction etc.):
@@ -183,6 +191,13 @@ public:
     // A clip plane that keeps every fragment (effectively no clipping).
     static const glm::vec4 kNoClip;
 
+    // Whether the sun casts at all. Off still CLEARS the cascades -- a cleared
+    // depth map reads as "nothing between here and the sun", so the scene comes
+    // out simply unshadowed rather than black -- and skips the queue replay,
+    // which is the part that costs: four passes over every submitted mesh.
+    void setShadowsEnabled(bool v) { m_shadowsEnabled = v; }
+    bool shadowsEnabled() const    { return m_shadowsEnabled; }
+
     CascadedShadowMap&       shadows()       { return m_csm; }
     const CascadedShadowMap& shadows() const { return m_csm; }
 
@@ -202,6 +217,7 @@ private:
     };
 
     CascadedShadowMap m_csm;
+    bool              m_shadowsEnabled = true;
     Shader            m_depthShader;
     Shader            m_cubeDistShader;             // point-shadow distance pass
     // World bounds of m_queue, rebuilt at the start of each shadow pass.
@@ -222,7 +238,12 @@ private:
     // Where the running sweep is: which face goes next, the position it started
     // from, and whether a complete cube exists yet to sample.
     int               m_envFace   = 0;
+    int               m_envMaxFaces = 3;
     glm::vec3         m_envSweepPos{0.0f};
+    // Where the probe was asked for LAST call, which is how the sweep rate reads
+    // the viewpoint's speed without the renderer having to be told a delta time.
+    glm::vec3         m_envLastPos{0.0f};
+    bool              m_envHasLast = false;
     bool              m_envPrimed = false;
     CubeRenderTarget* m_envRead  = &m_envA;
     CubeRenderTarget* m_envWrite = &m_envB;

@@ -779,6 +779,12 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
         const float ly = ty + g.fSmall * 1.6f;
         dl->AddLine(ImVec2(g.x1 - pad - 300.0f * g.S, ly), ImVec2(g.x1 - pad, ly),
                     fade(kEdge, A), 1.0f);
+        // The graphics settings, under the rule with the other keys. It belongs
+        // on THIS screen more than on any other: the start screen is where a
+        // player sits before the game has had a chance to run badly, and it is
+        // the one place with no menu of its own to hang the setting off.
+        g.textR(g.x1 - pad, ly + g.fSmall * 0.7f, g.fSmall, fade(kDim, A * 0.75f),
+                "F9  GRAPHICS SETTINGS");
     }
 
     // --- Craft panel (left) -------------------------------------------------

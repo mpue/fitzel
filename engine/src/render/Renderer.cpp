@@ -214,7 +214,12 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
 
     const int cascades = m_csm.cascadeCount();
     for (int i = 0; i < cascades; ++i) {
-        m_csm.beginCascade(i);
+        m_csm.beginCascade(i);   // clears to 1.0, i.e. to "unshadowed"
+        // Shadows switched off: the clear above is the whole pass. Leaving the
+        // map cleared rather than unbinding it keeps every sampler, uniform and
+        // shader branch downstream exactly as they are -- the scene is lit as if
+        // nothing casts, and the four replays of the queue are what is saved.
+        if (!m_shadowsEnabled) continue;
         m_depthShader.bind();
         const glm::mat4& lightSpace = m_csm.lightMatrices()[i];
         m_depthShader.setMat4("uLightSpace", lightSpace);
@@ -311,6 +316,10 @@ void Renderer::setEnvProbeResolution(int res) {
     m_envPrimed = false;
 }
 
+void Renderer::setEnvProbeMaxFaces(int faces) {
+    m_envMaxFaces = glm::clamp(faces, 1, 6);
+}
+
 void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
     if (!m_camera) return;
 
@@ -335,7 +344,31 @@ void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
         m_envSweepPos = pos;
         m_envFace     = 0;
     }
-    const int faces = m_envPrimed ? 1 : 6;
+    // How many faces to refresh this call.
+    //
+    // One face per frame is what makes a probe affordable, but it is also a
+    // latency budget, and the budget is bigger than it looks: a face captured
+    // now is not sampled until the sweep completes and the cubes swap, so by the
+    // time the lit passes read it, it is between six and twelve frames old. At
+    // walking pace nobody can see that. At 500 km/h twelve frames is twenty
+    // metres, and a reflection that trails the car by twenty metres is exactly
+    // the reflection visibly dragging behind it.
+    //
+    // So the rate is bought where it is needed: from how far the viewpoint moved
+    // since the last call. Standing in the editor costs one face as before; at
+    // racing speed the sweep finishes in two frames (or one, if the cap allows),
+    // which cuts the lag to a few frames. `moved` is per CALL, not per second,
+    // which is the right measure -- what matters is how stale the cube is in
+    // FRAMES, and a lower frame rate walks further between captures by itself.
+    const float moved  = m_envHasLast ? glm::distance(pos, m_envLastPos) : 0.0f;
+    m_envLastPos = pos;
+    m_envHasLast = true;
+    // ~0.45 m per frame is 100 km/h at 60 Hz; ~2.3 m is 500 km/h. So a city
+    // street buys a second face and racing speed asks for everything the cap
+    // gives it.
+    const int  want  = 1 + static_cast<int>(moved / 0.45f);
+    const int  rate  = glm::clamp(want, 1, glm::clamp(m_envMaxFaces, 1, 6));
+    const int  faces = m_envPrimed ? rate : 6;
 
     const glm::mat4 proj = CubeRenderTarget::faceProjection(0.2f, 4000.0f);
 
@@ -407,6 +440,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uEmissionStrength", 1.0f);
         s->setInt("uHasEmissionMap", 0);
         s->setVec2("uEmissionUVScale", glm::vec2(1.0f)); // baseline: the mesh's own UVs
+        s->setInt("uWindowGrid", 0);              // baseline: no procedural windows
 
         r.material->apply(); // binds shader + material params/textures
 

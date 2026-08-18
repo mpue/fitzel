@@ -32,6 +32,10 @@ public:
 
     int prefilterMipLevels() const { return m_prefilterMips; }
 
+    // Factor the loaded panorama was rescaled by to reach a common brightness
+    // (see normalizeEquirect). 1.0 when nothing is loaded.
+    float exposureScale() const { return m_exposureScale; }
+
 private:
     void buildCubeVao();
     void renderCube() const;      // draws the unit cube (36 verts)
@@ -48,6 +52,7 @@ private:
     std::uint32_t m_irradMap   = 0; // diffuse
     std::uint32_t m_prefilter  = 0; // specular
     int           m_prefilterMips = 5;
+    float         m_exposureScale = 1.0f;
     bool          m_valid = false;
 };
 

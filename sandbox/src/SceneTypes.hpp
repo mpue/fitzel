@@ -121,6 +121,17 @@ struct MaterialDef {
     float       emissionStrength = 1.0f;
     std::shared_ptr<fitzel::Texture> emissionTex;
     fitzel::AssetId emissionTexId;
+    // Procedural window grid: lit windows hashed out of the world position, on
+    // the vertical faces only. This is what turns a generated tower's flat
+    // glazing into an inhabited facade, and it costs no texture and no geometry
+    // -- see the uWindow* uniforms in lit.frag. Off by default: only the
+    // building generator's facade materials switch it on.
+    bool        windowGrid  = false;
+    glm::vec2   windowCell{3.4f, 3.6f};          // metres per window (across, up)
+    float       windowLit   = 0.55f;             // fraction of windows lit
+    float       windowSeed  = 0.0f;              // decorrelates districts
+    glm::vec3   windowColor{1.00f, 0.83f, 0.58f};// warm interior light (sRGB)
+    float       windowGlow  = 2.6f;              // emission strength when lit
     bool        fromModel = false;           // created by a model import
     // The maps the model itself shipped (only filled for `fromModel` materials).
     // The three above are what actually renders; these are kept so an overridden
@@ -130,6 +141,23 @@ struct MaterialDef {
     std::shared_ptr<fitzel::Texture> modelNormalTex;
     std::shared_ptr<fitzel::Texture> modelEmissionTex;
 };
+
+// Reflectivity at and above which a material counts as a MIRROR rather than
+// merely glossy, and the two things that follow from being one: it is kept OUT of
+// the environment probe (a mirror captured from its own position fills the cube
+// with its own interior), and it is where the probe is captured FROM (parallax is
+// only exact at the capture point, so it should be exact at the mirror).
+//
+// This used to be "reflectivity > 0", which was fine while a reflective material
+// meant a chrome ball someone had placed deliberately. The building generator
+// made it wrong: a glazed facade is 0.015..0.40 reflective -- glossy, not a mirror
+// -- so every tower in the city qualified, which deleted the entire skyline from
+// every wet-road reflection AND captured the probe from inside whichever tower
+// happened to come first in the scene.
+inline constexpr float kMirrorReflectivity = 0.5f;
+inline bool isMirror(const MaterialDef& md) {
+    return md.reflectivity >= kMirrorReflectivity;
+}
 
 // An imported glTF/GLB, uploaded to the GPU: one Mesh + Material per material
 // group, sharing a base-colour texture. Model entities reference one by id and

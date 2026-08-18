@@ -21,6 +21,15 @@
 #include "GameSettings.hpp"
 #include "PropertyMeta.hpp"
 
+// Branding the shipped exe and wrapping it in a setup is the editor's job, and
+// only the editor's: the player never exports anything, and dragging an image
+// resizer and a PE resource writer into the shipped binary to support a menu
+// item it does not have would be paying for the tool in every copy of the game.
+#ifndef FITZEL_PLAYER
+#  include "IconEmbed.hpp"
+#  include "InstallerBuild.hpp"
+#endif
+
 using fitzel::AssetId;
 
 namespace projectio {
@@ -33,6 +42,15 @@ nlohmann::json vec3Json(const glm::vec3& v) {
 glm::vec3 readVec3Json(const nlohmann::json& a, glm::vec3 def) {
     if (a.is_array() && a.size() == 3)
         return glm::vec3(a[0].get<float>(), a[1].get<float>(), a[2].get<float>());
+    return def;
+}
+
+nlohmann::json vec2Json(const glm::vec2& v) {
+    return nlohmann::json::array({v.x, v.y});
+}
+glm::vec2 readVec2Json(const nlohmann::json& a, glm::vec2 def) {
+    if (a.is_array() && a.size() == 2)
+        return glm::vec2(a[0].get<float>(), a[1].get<float>());
     return def;
 }
 
@@ -59,6 +77,16 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     m["alphaCutoff"]  = md.alphaCutoff;
     m["emission"]         = vec3Json(md.emission);
     m["emissionStrength"] = md.emissionStrength;
+    // The procedural window grid, written only when it is on: absent reads back
+    // as off, which is what every material that predates it should load as.
+    if (md.windowGrid) {
+        m["windowGrid"]  = true;
+        m["windowCell"]  = vec2Json(md.windowCell);
+        m["windowLit"]   = md.windowLit;
+        m["windowSeed"]  = md.windowSeed;
+        m["windowColor"] = vec3Json(md.windowColor);
+        m["windowGlow"]  = md.windowGlow;
+    }
     if (md.texId.valid())         m["texture"]     = md.texId.toString();
     if (md.videoId.valid())       m["video"]       = md.videoId.toString();
     if (md.normalTexId.valid())   m["normalMap"]   = md.normalTexId.toString();
@@ -305,6 +333,12 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
         md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
         md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
+        md.windowGrid   = m.value("windowGrid", md.windowGrid);
+        md.windowCell   = readVec2Json(m.value("windowCell", nlohmann::json{}), md.windowCell);
+        md.windowLit    = m.value("windowLit", md.windowLit);
+        md.windowSeed   = m.value("windowSeed", md.windowSeed);
+        md.windowColor  = readVec3Json(m.value("windowColor", nlohmann::json{}), md.windowColor);
+        md.windowGlow   = m.value("windowGlow", md.windowGlow);
         if (m.contains("texture")) {
             md.texId = AssetId::fromString(m["texture"].get<std::string>());
             if (md.texId.valid()) md.tex = ctx.assetDb.loadTexture(md.texId);
@@ -348,6 +382,12 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
         md.emission     = readVec3Json(m.value("emission", nlohmann::json{}), md.emission);
         md.emissionStrength = m.value("emissionStrength", md.emissionStrength);
+        md.windowGrid   = m.value("windowGrid", md.windowGrid);
+        md.windowCell   = readVec2Json(m.value("windowCell", nlohmann::json{}), md.windowCell);
+        md.windowLit    = m.value("windowLit", md.windowLit);
+        md.windowSeed   = m.value("windowSeed", md.windowSeed);
+        md.windowColor  = readVec3Json(m.value("windowColor", nlohmann::json{}), md.windowColor);
+        md.windowGlow   = m.value("windowGlow", md.windowGlow);
         if (m.contains("emissionMap")) {
             md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
             if (md.emissionTexId.valid())
@@ -834,8 +874,46 @@ void exportGame(Context& ctx, const std::string& outDir) {
     gj["fullscreen"] = true;
     gj["startScene"] = gs.startScene; // "" => player uses the default scene
     std::ofstream(out / "game.json") << gj.dump(2);
+
+    // Branding, last -- and in this order. The icon goes into the exe before the
+    // setup is built, because the setup packs that exe; doing it the other way
+    // round produces an installer that carefully delivers an unbranded game.
+    //
+    // Neither step can fail the export. An icon that could not be scaled or a
+    // missing setup compiler leaves a folder that runs perfectly well, and
+    // throwing away a ten-minute export over the picture on the exe would be a
+    // worse outcome than shipping it with the default one and saying so.
+    std::string extra;
+#ifndef FITZEL_PLAYER
+    std::vector<unsigned char> ico;
+    if (!gs.icon.empty()) {
+        std::string ierr;
+        ico = icoutil::fromImage((projDir / gs.icon).generic_string(), ierr);
+        if (ico.empty() ||
+            !icoutil::embed((out / (game + ".exe")).generic_string(), ico, ierr)) {
+            extra += " - icon skipped: " + ierr;
+            std::fprintf(stderr, "[Fitzel] icon: %s\n", ierr.c_str());
+        }
+    }
+    if (gs.makeInstaller) {
+        installer::Info info;
+        info.name      = !gs.productName.empty() ? gs.productName : game;
+        info.exeName   = game + ".exe";
+        info.version   = gs.version;
+        info.publisher = gs.publisher;
+        std::string setup, serr;
+        if (installer::build(out.generic_string(), info, ico, setup, serr)) {
+            extra += " - setup: " + setup;
+        } else {
+            extra += " - no setup: " + serr;
+            std::fprintf(stderr, "[Fitzel] installer: %s\n", serr.c_str());
+        }
+    }
+#endif
+
     ctx.exportStatus = ec ? ("Export finished with warnings: " + ec.message())
                           : ("Exported to " + out.generic_string() + packed);
+    ctx.exportStatus += extra;
     std::fprintf(stderr, "[Fitzel] %s\n", ctx.exportStatus.c_str());
 }
 

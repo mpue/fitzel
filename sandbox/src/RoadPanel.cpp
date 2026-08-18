@@ -15,6 +15,7 @@
 #include "UiStyle.hpp"
 
 #include "RoadBridge.hpp"
+#include "RoadTunnel.hpp"
 #include "RoadSide.hpp"
 #include "RoadSystem.hpp"
 #include "UiStyle.hpp"
@@ -92,6 +93,59 @@ bool bridgeSection(const PanelState& s) {
 
     ImGui::Separator();
     rc |= roadbridge::panel(s.road.bridgeStyle);
+    return rc;
+}
+
+// The tunnel list + its style sliders, and the mirror of bridgeSection above: a
+// tunnel names the two control points the user picked, and the road holds its line
+// through the hill between them instead of cutting it away.
+bool tunnelSection(const PanelState& s) {
+    bool rc = false;
+    if (!ui::header("Tunnels")) return rc;
+
+    const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
+    int existing = -1;
+    for (int i = 0; pair && i < static_cast<int>(s.road.tunnels.size()); ++i)
+        if ((s.road.tunnels[i].a == s.sel && s.road.tunnels[i].b == s.sel2) ||
+            (s.road.tunnels[i].a == s.sel2 && s.road.tunnels[i].b == s.sel))
+            existing = i;
+
+    ImGui::BeginDisabled(!pair || existing >= 0);
+    if (ImGui::Button("Create tunnel", ImVec2(-1.0f, 0.0f))) {
+        s.beginEdit();
+        s.road.tunnels.push_back({s.sel, s.sel2});
+        s.endEdit("Create tunnel");
+        showAtOnce(s);
+        rc = true;
+    }
+    ImGui::EndDisabled();
+    if (!pair)
+        ImGui::TextDisabled("Select a handle, then shift+click another");
+    else if (existing >= 0)
+        ImGui::TextDisabled("#%d \xE2\x86\x92 #%d is already a tunnel", s.sel, s.sel2);
+
+    ImGui::PushID("tunnels");   // own ID scope -- see the note in bridgeSection
+    for (int i = 0; i < static_cast<int>(s.road.tunnels.size()); ++i) {
+        ImGui::PushID(i);
+        ImGui::Text("Tunnel #%d \xE2\x86\x92 #%d", s.road.tunnels[i].a,
+                    s.road.tunnels[i].b);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Remove")) {
+            s.beginEdit();
+            s.road.tunnels.erase(s.road.tunnels.begin() + i);
+            s.endEdit("Remove tunnel");
+            showAtOnce(s);
+            rc = true;
+            ImGui::PopID();
+            break; // the list just shifted under us
+        }
+        ImGui::PopID();
+    }
+    ImGui::PopID(); // "tunnels"
+    if (s.road.tunnels.empty()) ImGui::TextDisabled("No tunnels");
+
+    ImGui::Separator();
+    rc |= roadtunnel::panel(s.road.tunnelStyle);
     return rc;
 }
 
@@ -504,6 +558,7 @@ void drawPanel(const PanelState& s) {
 
         ImGui::Separator();
         rc |= bridgeSection(s);
+        rc |= tunnelSection(s);
 
         ImGui::Separator();
         rc |= loopSection(s);
@@ -576,6 +631,19 @@ void drawPanel(const PanelState& s) {
             ImGui::SetTooltip("How much of the map to believe. 0 = even sheen\n"
                               "(as if there were no map), 1 = the dry parts of\n"
                               "the mask go fully matte.");
+        ImGui::SliderFloat("Puddle edge", &s.road.wetShore, 0.02f, 0.60f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How sharp the shoreline is. The map is read as a\n"
+                              "height field that the rain fills up, so a small\n"
+                              "value gives puddles a visible rim (they read as\n"
+                              "water) and a large one fades them out into damp\n"
+                              "tarmac. The wetter it gets, the further they grow.");
+        ImGui::SliderFloat("Puddle stretch", &s.road.wetStretch, 1.0f, 4.0f, "%.1fx");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How far the patches are drawn out along the drive.\n"
+                              "1 = round. Real puddles run downhill and get\n"
+                              "dragged by the traffic, so they are longer than\n"
+                              "they are wide.");
         ImGui::EndDisabled();
 
         // Surface texture picker (any diffuse texture in textures/). Picking one
@@ -684,6 +752,7 @@ void drawPanel(const PanelState& s) {
             s.beginEdit();
             s.road.clearPoints();
             s.road.bridges.clear();
+            s.road.tunnels.clear();
             s.sel = s.sel2 = -1;
             s.endEdit("Clear road");
         }

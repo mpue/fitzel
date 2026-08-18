@@ -44,6 +44,11 @@ public:
 
     int cascadeCount() const { return m_cascades; }
     int resolution()   const { return m_resolution; }
+    // Reallocate the cascade array at a new square resolution. One texture and no
+    // scene work, so it is cheap enough to drive from a settings menu -- and a
+    // no-op when the size already matches, which is what lets a caller push the
+    // current value every frame without tracking whether it changed.
+    void setResolution(int resolution);
 
     const std::vector<glm::mat4>& lightMatrices() const { return m_lightMatrices; }
     // Far view-space distance of each cascade (used for selection in the shader).
@@ -51,6 +56,18 @@ public:
 
     // Blend factor between uniform and logarithmic frustum splitting [0,1].
     float splitLambda = 0.65f;
+    // How far the cascades reach, in metres. 0 = out to the camera's far plane,
+    // which is the old behaviour and the right default for a scene whose far
+    // plane is set by what it can shade.
+    //
+    // It exists because the two distances stopped being the same one: a far plane
+    // pushed out so a distant skyline is not sliced in half would otherwise drag
+    // the cascades out with it, and cascades are a FIXED texture budget spread
+    // over whatever range they are given -- doubling the range halves the
+    // resolution everywhere, so the whole scene's shadows go soft to shade a city
+    // a kilometre away that has nothing under it to receive one. Capping this
+    // keeps the shadowed range where the receivers are.
+    float shadowDistance = 0.0f;
 
 private:
     glm::mat4 fitCascade(const Camera& camera, float aspect,

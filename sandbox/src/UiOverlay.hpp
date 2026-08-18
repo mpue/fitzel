@@ -46,6 +46,7 @@ enum class UiActionKind {
     Quit,        // quit the game / leave play
     Resume,      // close a menu overlay and hand control back to the game
     Restart,     // restart the level from how it stood when Play began
+    Graphics,    // open the in-game graphics menu (see GraphicsMenu.hpp)
 };
 
 // One overlay element. A flat struct (like the scene's other data-authored
@@ -88,6 +89,10 @@ struct UiActionSink {
     std::function<void()>                   quit;
     std::function<void()>                   resume;   // close the menu
     std::function<void()>                   restart;  // replay the level
+    // Open the graphics menu. A pause menu is where a player looks for it, and
+    // the alternative -- telling them about a function key -- is not a way to
+    // ship a setting the game may be unplayable without.
+    std::function<void()>                   graphics;
 };
 
 class UiOverlay {

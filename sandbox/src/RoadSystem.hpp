@@ -18,6 +18,7 @@
 #include "RoadBridge.hpp"
 #include "RoadLoop.hpp"
 #include "RoadSide.hpp"
+#include "RoadTunnel.hpp"
 
 namespace fitzel {
 class Shader;
@@ -137,10 +138,13 @@ public:
     // derived from width/texTile/wetTile, all of which the panel edits live.
     void applyWetness();
 
-    // A stretch of road the user has asked to be carried on a bridge, named by the
-    // two control points at its ends (indices into roadPts, either order). Points
-    // move and vanish under the editor, so these are validated on every build --
-    // and main fixes them up when a point is deleted.
+    // A stretch of road named by the two control points at its ends (indices into
+    // roadPts, either order). Points move and vanish under the editor, so these are
+    // validated on every build -- and main fixes them up when a point is deleted.
+    //
+    // Used for BOTH of the road's structures, because "which stretch" is the same
+    // question for each: `bridges` carries the road over the ground, `tunnels`
+    // takes it through. The two are mirror images down to this type.
     struct BridgeSpec {
         int a, b;
     };
@@ -155,13 +159,15 @@ public:
         std::vector<float>          lifts;
         std::vector<float>          banks;
         std::vector<BridgeSpec>     bridges;
+        std::vector<BridgeSpec>     tunnels;
         std::vector<roadloop::Spec> loops;
         bool                        closed = false;
         std::vector<roadside::Line> sideObjects;
         std::vector<city::Biome>    biomes;
     };
     Shape shape() const {
-        return {roadPts, ptLift, ptBank, bridges, loops, closed, sideLines, biomes};
+        return {roadPts, ptLift, ptBank, bridges, tunnels, loops, closed,
+                sideLines, biomes};
     }
     void  setShape(const Shape& s) {
         roadPts = s.points;
@@ -170,6 +176,7 @@ public:
         ptBank  = s.banks;
         ptBank.resize(roadPts.size(), 0.0f);
         bridges = s.bridges;
+        tunnels = s.tunnels;
         loops   = s.loops;
         closed  = s.closed;
         sideLines = s.sideObjects;
@@ -225,8 +232,13 @@ public:
     fitzel::Material&   material()   { return m_mat; }
     int                 verts() const { return m_verts; }
     bool                built() const { return m_verts > 0; }
-    // The bridge decks, as one concrete mesh (drawn separately from the asphalt
-    // ribbon). Their collision is already merged into collVerts/collIndices.
+    // The road's CONCRETE, as one mesh drawn separately from the asphalt ribbon:
+    // bridge decks and piers, and tunnel bores and portals. Its collision is
+    // already merged into collVerts/collIndices.
+    //
+    // The names still say "bridge" because that is what it carried first and
+    // renaming them through the frame loop buys nothing: hasBridges() really asks
+    // "is there any concrete", and it is true for a road with only a tunnel.
     const fitzel::Mesh& bridgeMesh()     const { return m_bridgeMesh; }
     fitzel::Material&   bridgeMaterial()       { return m_bridgeMat; }
     bool                hasBridges()     const { return m_bridgeVerts > 0; }
@@ -352,6 +364,16 @@ public:
     std::string              wetMap;            // display name, "" = none
     float                    wetTile   = 26.0f; // metres per repeat, both ways
     float                    wetVar    = 0.0f;  // 0 = even .. 1 = fully map-driven
+    // How wide the shore is: the band of map height over which a puddle goes from
+    // dry to full depth. The map is read as a height field the rain fills up to a
+    // level (see lit.frag), so this is what decides whether a puddle has an edge
+    // you can see -- which is most of what tells the eye it is water and not a
+    // stain -- or fades out like a soft grey smear.
+    float                    wetShore  = 0.18f; // 0.02 = hard rim .. 0.6 = smear
+    // Puddles on a carriageway are not round: water runs downhill and traffic
+    // drags it, so a patch is longer than it is wide. This stretches the map
+    // along the drive (1 = round, as the first version always was).
+    float                    wetStretch = 2.5f; // 1 = round .. 4 = long streaks
     // How much a wet carriageway mirrors its surroundings through the scene
     // probe. Its own knob because it is the expensive half of the look: above 0
     // the frame pays for a cubemap capture whenever the road is wet (rain
@@ -380,6 +402,12 @@ public:
     std::vector<BridgeSpec> bridges;
     roadbridge::Params      bridgeStyle; // deck look, shared by all of them
 
+    // Tunnels: the same idea pointed the other way (see RoadTunnel.hpp). A stretch
+    // named here holds its line straight through a hill instead of milling a
+    // cutting into it.
+    std::vector<BridgeSpec> tunnels;
+    roadtunnel::Params      tunnelStyle; // bore look, shared by all of them
+
     // Vertical loops (see RoadLoop.hpp). Saved as rules naming two control
     // points; the geometry is derived on every build, like a bridge deck.
     std::vector<roadloop::Spec> loops;
@@ -400,6 +428,16 @@ public:
     // frustum already; this is the cheap distance pass in front of it, and the one
     // knob that trades skyline depth for frame time.
     float cityRange   = 1200.0f;
+    // ...and the second half of that trade, which is the one that actually pays:
+    // below this many pixels of projected height, a chunk is not submitted at all.
+    // Distance alone is a bad cull for a skyline, because the two things it cannot
+    // tell apart are what a long view distance is FOR (a tower, still a hundred
+    // pixels tall at a kilometre) and what is pure cost at that range (a row of
+    // two-storey blocks, four pixels tall and standing behind the tower anyway).
+    // A draw is a draw either way -- this renderer is bound by how many it issues,
+    // not by their triangles -- so paying by what a chunk is worth on screen buys
+    // most of the range back for free. 0 switches it off.
+    float cityMinPixels = 7.0f;
 
 private:
     // The sampled centreline plus everything derived from the *base* (procedural)
@@ -414,6 +452,7 @@ private:
         std::vector<float>            gradeW; // 1 = grade ground to road, 0 = bridged
         std::vector<float>            bank;   // cross-fall per sample (degrees)
         std::vector<roadbridge::Span> spans;  // sample runs carried by a deck
+        std::vector<roadtunnel::Span> bores;  // sample runs running through a hill
         std::vector<roadloop::Loop>   loops;  // vertical loops on this road
     };
     Layout layout() const;
@@ -442,11 +481,14 @@ private:
     // its per-sample surface heights (already lifted onto the graded profile).
     void loft(const std::vector<glm::vec2>& center, const std::vector<float>& height,
               const std::vector<float>& bank);
-    // Build the deck mesh for `layout`'s spans and merge it into the collider.
+    // Build the road's concrete -- bridge decks and piers, tunnel bores and
+    // portals -- into ONE mesh, and merge it into the collider. They share a mesh
+    // and a material because they are the same cast concrete, and because a deck
+    // and a bore are never both wanted at the same station anyway.
     // Must run after loft(), which owns (and clears) the collider arrays.
-    void buildBridges(const Layout& layout);
+    void buildConcrete(const Layout& layout);
     // Loft the loop carriageways and merge them into the collider. Runs after
-    // loft() and buildBridges(), which own (and clear) the collider arrays.
+    // loft() and buildConcrete(), which own (and clear) the collider arrays.
     void buildLoops(const Layout& layout);
     // Drop every mesh, collider and centreline (a road of fewer than 2 points).
     void clearGeometry();

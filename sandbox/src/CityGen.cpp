@@ -194,7 +194,8 @@ bool Biome::operator==(const Biome& o) const {
            neon == o.neon && collider == o.collider && seed == o.seed &&
            weathering == o.weathering && grime == o.grime &&
            clutter == o.clutter && clutterVar == o.clutterVar &&
-           deadNeon == o.deadNeon;
+           deadNeon == o.deadNeon && windowLit == o.windowLit &&
+           windowColor == o.windowColor;
 }
 
 Biome preset(Preset p) {
@@ -218,6 +219,7 @@ Biome preset(Preset p) {
             b.signChance = 0.30f;
             b.weathering = 0.42f; b.grime = 0.20f;
             b.clutter = 4; b.deadNeon = 0.18f;
+            b.windowLit = 0.62f;
             break;
         case Preset::Canyon:
             // Tall, deep, and hard against both kerbs with almost no daylight
@@ -241,6 +243,7 @@ Biome preset(Preset p) {
             // count.
             b.weathering = 0.66f; b.grime = 0.38f;
             b.clutter = 8; b.deadNeon = 0.28f;
+            b.windowLit = 0.55f;
             break;
         case Preset::Industrial:
             b.name = "Industrial";
@@ -257,6 +260,7 @@ Biome preset(Preset p) {
             // Almost nothing glazed, everything rusted, roofs buried in plant.
             b.weathering = 0.92f; b.grime = 0.80f;
             b.clutter = 14; b.clutterVar = 0.4f; b.deadNeon = 0.6f;
+            b.windowLit = 0.16f; b.windowColor = glm::vec3(0.92f, 0.86f, 0.72f);
             break;
         case Preset::Slums:
             b.name = "Slums";
@@ -276,6 +280,7 @@ Biome preset(Preset p) {
             // the LEAST dead here -- that contrast is the whole look.
             b.weathering = 1.0f; b.grime = 0.85f;
             b.clutter = 12; b.clutterVar = 0.85f; b.deadNeon = 0.30f;
+            b.windowLit = 0.30f; b.windowColor = glm::vec3(1.00f, 0.74f, 0.44f);
             break;
         case Preset::Megablock:
             b.name = "Megablock";
@@ -290,6 +295,7 @@ Biome preset(Preset p) {
             b.accentColor = {0.55f, 0.35f, 1.00f};
             b.weathering = 0.55f; b.grime = 0.45f;
             b.clutter = 10; b.deadNeon = 0.22f;
+            b.windowLit = 0.48f;
             break;
         case Preset::Outskirts:
             b.name = "Outskirts";
@@ -302,6 +308,7 @@ Biome preset(Preset p) {
             b.signChance = 0.1f;
             b.weathering = 0.5f; b.grime = 0.3f;
             b.clutter = 3; b.deadNeon = 0.4f;
+            b.windowLit = 0.34f;
             break;
         case Preset::Count:
             break;
@@ -324,6 +331,8 @@ std::vector<buildings::Palette> ensurePalettes(std::vector<MaterialDef>& materia
         p.baseTint       = b.baseTint;
         p.accentStrength = b.accentStrength;
         p.weathering     = b.weathering;   // drives the reflectivity/roughness pair
+        p.windowLit      = b.windowLit;
+        p.windowColor    = b.windowColor;
         out.push_back(buildings::ensurePalette(materials, p));
     }
     return out;
