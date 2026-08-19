@@ -1206,6 +1206,67 @@ const std::vector<Property>& PhysicsComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& VolumetricFogComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        // A local helper, because this component is twenty fields of the same
+        // three shapes and spelling each one out would bury what is actually
+        // different about them -- the range, which IS the design of the knob.
+        auto addF = [&p](const char* label, const char* key, float FogMedium::*m,
+                         float lo, float hi, const char* fmt = "") {
+            Property q;
+            q.label = label; q.key = key; q.kind = PropKind::Float;
+            q.slider = true; q.min = lo; q.max = hi; q.fmt = fmt;
+            q.field = [m](void* o) -> void* {
+                return &(static_cast<VolumetricFogComponent*>(o)->fog.*m);
+            };
+            p.push_back(std::move(q));
+        };
+        auto addV = [&p](const char* label, const char* key, glm::vec3 FogMedium::*m,
+                         PropKind kind, float speed = 0.1f) {
+            Property q;
+            q.label = label; q.key = key; q.kind = kind; q.speed = speed;
+            q.field = [m](void* o) -> void* {
+                return &(static_cast<VolumetricFogComponent*>(o)->fog.*m);
+            };
+            p.push_back(std::move(q));
+        };
+        auto addB = [&p](const char* label, const char* key, bool FogMedium::*m) {
+            Property q;
+            q.label = label; q.key = key; q.kind = PropKind::Bool;
+            q.field = [m](void* o) -> void* {
+                return &(static_cast<VolumetricFogComponent*>(o)->fog.*m);
+            };
+            p.push_back(std::move(q));
+        };
+
+        addF("Thickness", "density", &FogMedium::density, 0.0f, 0.5f, "%.3f /m");
+        addV("Tint", "color", &FogMedium::color, PropKind::Color);
+        addF("Coverage", "coverage", &FogMedium::coverage, 0.0f, 0.95f);
+        addF("Noise scale", "noiseScale", &FogMedium::noiseScale, 0.002f, 0.20f, "%.3f");
+        addF("Detail", "detail", &FogMedium::detail, 0.0f, 0.95f);
+        addF("Swirl", "warp", &FogMedium::warp, 0.0f, 1.5f);
+        addV("Wind", "wind", &FogMedium::wind, PropKind::Vec3, 0.05f);
+        addF("Edge fade", "edge", &FogMedium::edge, 0.02f, 1.0f);
+        addF("Height falloff", "heightFalloff", &FogMedium::heightFalloff, 0.0f, 3.0f);
+        addF("Forward scatter", "anisotropy", &FogMedium::anisotropy, -0.9f, 0.9f);
+        addF("Sun", "sunIntensity", &FogMedium::sunIntensity, 0.0f, 4.0f);
+        addF("Ambient", "ambientIntensity", &FogMedium::ambientIntensity, 0.0f, 4.0f);
+        addB("Sun shafts", "shafts", &FogMedium::shafts);
+        addB("Self-shadow", "selfShadow", &FogMedium::selfShadow);
+
+        Property steps;
+        steps.label = "Steps"; steps.key = "steps"; steps.kind = PropKind::Int;
+        steps.slider = true; steps.min = 8.0f; steps.max = 128.0f;
+        steps.field = [](void* o) -> void* {
+            return &static_cast<VolumetricFogComponent*>(o)->fog.steps;
+        };
+        p.push_back(std::move(steps));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& PlayerStartComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -1426,6 +1487,8 @@ struct AutoRegister {
             /*addable=*/false});
         components::registerType({"terrain", "Terrain",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TerrainComponent>()); }});
+        components::registerType({"volumetric_fog", "Volumetric Fog",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<VolumetricFogComponent>()); }});
         components::registerType({"sun", "Sun",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SunComponent>()); },
             /*addable=*/false});

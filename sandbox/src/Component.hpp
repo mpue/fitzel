@@ -15,6 +15,7 @@
 #include <fitzel/world/Terrain.hpp>   // TerrainSettings, held by TerrainComponent
 
 #include "EditMesh.hpp"               // EditMesh, held by MeshComponent
+#include "FogMedium.hpp"              // FogMedium, held by VolumetricFogComponent
 #include "Property.hpp"
 #include "ScriptParam.hpp"
 
@@ -1538,6 +1539,37 @@ public:
     const char* displayName() const override { return "Terrain"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Volumetric Fog --------------------------------------
+// A body of mist filling the entity's BOX. Hang it on an Empty, scale that Empty
+// with the gizmo, and the outline you see selected is the volume that gets
+// marched -- which is the whole point of it being a component rather than a
+// scene setting: fog you can put somewhere, several of, each with its own look.
+//
+// It carries no extents of its own on purpose. An entity already has a centre, a
+// rotation and half-extents that the gizmo edits and the viewport draws; giving
+// the component a second set would mean two boxes that can disagree, and the one
+// you could see would be the wrong one.
+class VolumetricFogComponent : public ComponentBase {
+public:
+    // Every knob lives in the shared medium struct, so the component and the
+    // renderer cannot drift apart about what a field means. Seeded for a volume
+    // that is METRES across rather than hundreds of them -- see
+    // placedFogDefaults(), where the three that do not survive the change of
+    // scale are spelled out.
+    FogMedium fog = placedFogDefaults();
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<VolumetricFogComponent>(*this);
+    }
+    const char* typeId() const override { return "volumetric_fog"; }
+    const char* displayName() const override { return "Volumetric Fog"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    // No gizmo: the entity's own selection outline already IS this volume's box,
+    // and a second wireframe on the same eight corners would only be something
+    // to keep in sync.
 };
 
 // --- Built-in component: Sun (the singleton directional light's look) ---------

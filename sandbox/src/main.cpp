@@ -556,6 +556,10 @@ int main(int argc, char** argv) {
         if (!volFog.init())
             std::fprintf(stderr, "Volumetric fog disabled (shader/noise init failed)\n");
         VolumetricFog::Settings volFogSet;
+        // The frame's placed volumes, gathered from the entities carrying a
+        // VolumetricFogComponent. Kept out here rather than built in the render
+        // block so a scene full of mist does not allocate a vector per frame.
+        std::vector<VolumetricFog::Volume> volFogVolumes;
         int hdrW = 0, hdrH = 0;
         window.framebufferSize(hdrW, hdrH);
         RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F, /*depthTex=*/true);
@@ -2704,25 +2708,25 @@ int main(int argc, char** argv) {
         addF("volFogSizeY", volFogSet.size.y);
         addF("volFogSizeZ", volFogSet.size.z);
         addB("volFogFollow", volFogSet.followCamera);
-        addF("volFogEdge", volFogSet.edge);
-        addF("volFogHeightFalloff", volFogSet.heightFalloff);
-        addF("volFogDensity", volFogSet.density);
-        addF("volFogColorR", volFogSet.color.x);
-        addF("volFogColorG", volFogSet.color.y);
-        addF("volFogColorB", volFogSet.color.z);
-        addF("volFogCoverage", volFogSet.coverage);
-        addF("volFogNoiseScale", volFogSet.noiseScale);
-        addF("volFogDetail", volFogSet.detail);
-        addF("volFogWarp", volFogSet.warp);
-        addF("volFogWindX", volFogSet.wind.x);
-        addF("volFogWindY", volFogSet.wind.y);
-        addF("volFogWindZ", volFogSet.wind.z);
-        addF("volFogAnisotropy", volFogSet.anisotropy);
-        addF("volFogSun", volFogSet.sunIntensity);
-        addF("volFogAmbient", volFogSet.ambientIntensity);
-        addB("volFogShafts", volFogSet.shafts);
-        addB("volFogSelfShadow", volFogSet.selfShadow);
-        addI("volFogSteps", volFogSet.steps);
+        addF("volFogEdge", volFogSet.medium.edge);
+        addF("volFogHeightFalloff", volFogSet.medium.heightFalloff);
+        addF("volFogDensity", volFogSet.medium.density);
+        addF("volFogColorR", volFogSet.medium.color.x);
+        addF("volFogColorG", volFogSet.medium.color.y);
+        addF("volFogColorB", volFogSet.medium.color.z);
+        addF("volFogCoverage", volFogSet.medium.coverage);
+        addF("volFogNoiseScale", volFogSet.medium.noiseScale);
+        addF("volFogDetail", volFogSet.medium.detail);
+        addF("volFogWarp", volFogSet.medium.warp);
+        addF("volFogWindX", volFogSet.medium.wind.x);
+        addF("volFogWindY", volFogSet.medium.wind.y);
+        addF("volFogWindZ", volFogSet.medium.wind.z);
+        addF("volFogAnisotropy", volFogSet.medium.anisotropy);
+        addF("volFogSun", volFogSet.medium.sunIntensity);
+        addF("volFogAmbient", volFogSet.medium.ambientIntensity);
+        addB("volFogShafts", volFogSet.medium.shafts);
+        addB("volFogSelfShadow", volFogSet.medium.selfShadow);
+        addI("volFogSteps", volFogSet.medium.steps);
         addI("volFogRes", volFogSet.resScale);
         addF("exposure", exposure);            addF("bloom", bloomIntensity);
         addF("rays", rayIntensity);            addF("ssao", ssaoStrength);
@@ -8911,17 +8915,25 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.02f, "%.4f");
                 ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
 
-                // --- Volumetric fog: the OTHER fog ------------------------
+                // --- Volumetric fog: the world-wide volume ----------------
                 // Folded away by default, and deliberately sitting right under
                 // the two sliders it is not: those are the height haze, which is
-                // everywhere and has no shape. This is a body of mist standing
-                // in one place, and the section says so before the first slider.
-                if (ui::header("Volumetric fog")) {
+                // everywhere and has no shape.
+                //
+                // This one box is the WORLD's air. Mist that belongs somewhere in
+                // particular is not authored here at all -- it is a Volumetric Fog
+                // component on an entity, so it can be placed, scaled and rotated
+                // like anything else in the scene, and there can be many. Both end
+                // up in the same march; the hint says so, because a panel that
+                // does not mention the other way is a panel that hides it.
+                if (ui::header("Volumetric fog (world)")) {
                     ImGui::Checkbox("Enabled##volfog", &volFogSet.enabled);
                     ImGui::SameLine();
                     ImGui::Checkbox("Show volume", &volFogSet.showVolume);
                     ui::hint("The haze above does distance. This does shape:\n"
-                             "banks that drift, holes that pass, sun shafts.");
+                             "banks that drift, holes that pass, sun shafts.\n"
+                             "For mist in ONE place, add a Volumetric Fog\n"
+                             "component to an Empty and scale it instead.");
 
                     ui::sectionText("Volume");
                     ImGui::DragFloat3("Centre", &volFogSet.center.x, 0.5f,
@@ -8943,15 +8955,15 @@ int main(int argc, char** argv) {
                         ImGui::SetTooltip("Ground mist over a whole track without a\n"
                                           "box big enough to cover it: the same steps\n"
                                           "spread over kilometres lose all structure.");
-                    ImGui::SliderFloat("Edge fade", &volFogSet.edge, 0.02f, 1.0f);
+                    ImGui::SliderFloat("Edge fade", &volFogSet.medium.edge, 0.02f, 1.0f);
                     ImGui::SliderFloat("Height falloff##volfog",
-                                       &volFogSet.heightFalloff, 0.0f, 3.0f);
+                                       &volFogSet.medium.heightFalloff, 0.0f, 3.0f);
 
                     ui::sectionText("Medium");
-                    ImGui::SliderFloat("Thickness", &volFogSet.density, 0.0f, 0.5f,
+                    ImGui::SliderFloat("Thickness", &volFogSet.medium.density, 0.0f, 0.5f,
                                        "%.3f /m");
-                    ImGui::ColorEdit3("Tint##volfog", &volFogSet.color.x);
-                    ImGui::SliderFloat("Coverage##volfog", &volFogSet.coverage,
+                    ImGui::ColorEdit3("Tint##volfog", &volFogSet.medium.color.x);
+                    ImGui::SliderFloat("Coverage##volfog", &volFogSet.medium.coverage,
                                        0.0f, 0.95f);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("How much of the volume has fog in it at all.\n"
@@ -8959,34 +8971,36 @@ int main(int argc, char** argv) {
                                           "with clear air between them.");
 
                     ui::sectionText("Noise");
-                    ImGui::SliderFloat("Scale##volfog", &volFogSet.noiseScale,
+                    ImGui::SliderFloat("Scale##volfog", &volFogSet.medium.noiseScale,
                                        0.001f, 0.06f, "%.4f");
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Smaller = bigger banks.");
-                    ImGui::SliderFloat("Detail", &volFogSet.detail, 0.0f, 0.95f);
-                    ImGui::SliderFloat("Swirl", &volFogSet.warp, 0.0f, 1.5f);
-                    ImGui::DragFloat3("Wind##volfog", &volFogSet.wind.x, 0.05f,
+                    ImGui::SliderFloat("Detail", &volFogSet.medium.detail, 0.0f, 0.95f);
+                    ImGui::SliderFloat("Swirl", &volFogSet.medium.warp, 0.0f, 1.5f);
+                    ImGui::DragFloat3("Wind##volfog", &volFogSet.medium.wind.x, 0.05f,
                                       -30.0f, 30.0f, "%.2f m/s");
 
                     ui::sectionText("Light");
-                    ImGui::SliderFloat("Forward scatter", &volFogSet.anisotropy,
+                    ImGui::SliderFloat("Forward scatter", &volFogSet.medium.anisotropy,
                                        -0.9f, 0.9f);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("How much light keeps going the way it came.\n"
                                           "High values put the glow around the sun.");
-                    ImGui::SliderFloat("Sun##volfog", &volFogSet.sunIntensity, 0.0f, 4.0f);
-                    ImGui::SliderFloat("Ambient##volfog", &volFogSet.ambientIntensity,
+                    ImGui::SliderFloat("Sun##volfog", &volFogSet.medium.sunIntensity, 0.0f, 4.0f);
+                    ImGui::SliderFloat("Ambient##volfog", &volFogSet.medium.ambientIntensity,
                                        0.0f, 4.0f);
-                    ImGui::Checkbox("Sun shafts", &volFogSet.shafts);
+                    ImGui::Checkbox("Sun shafts", &volFogSet.medium.shafts);
                     ImGui::SameLine();
-                    ImGui::Checkbox("Self-shadow", &volFogSet.selfShadow);
+                    ImGui::Checkbox("Self-shadow", &volFogSet.medium.selfShadow);
 
                     ui::sectionText("Cost");
-                    ImGui::SliderInt("Steps", &volFogSet.steps, 8, 128);
+                    ImGui::SliderInt("Steps", &volFogSet.medium.steps, 8, 128);
                     ImGui::SliderInt("Resolution", &volFogSet.resScale, 1, 4,
                                      "1/%d of the pane");
                     ui::hint("Steps buy structure along the ray, resolution buys it\n"
-                             "across the screen. Fog is soft, so 1/2 is free money.");
+                             "across the screen. Fog is soft, so 1/2 is free money.\n"
+                             "Resolution is the whole PASS -- every placed volume\n"
+                             "is marched into the same buffer.");
                 }
                 ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
                 ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
@@ -12103,6 +12117,25 @@ int main(int argc, char** argv) {
             // around the sun nor take the frame's exposure.
             {
                 FZ_ZONE("volumetric fog");
+                // Every entity carrying a VolumetricFogComponent is a volume, and
+                // its BOX is the entity's own -- the same transform the gizmo
+                // edits and the selection outline draws, built through the same
+                // composeModel so the three cannot disagree about a rotation.
+                // Deactivating the entity (or an ancestor) puts the mist out,
+                // like it does a light.
+                volFogVolumes.clear();
+                for (const Entity& b : entities) {
+                    if (!b.activeInHierarchy) continue;
+                    const auto* fc = b.components.get<VolumetricFogComponent>();
+                    if (!fc) continue;
+                    VolumetricFog::Volume v;
+                    // half-extents -> full size, because the proxy is a UNIT cube.
+                    v.model  = composeModel(b.center, b.rotation,
+                                            glm::max(b.half * 2.0f, glm::vec3(0.01f)));
+                    v.medium = fc->fog;
+                    volFogVolumes.push_back(v);
+                }
+
                 VolumetricFog::Params vp;
                 vp.viewProj = mainVP;
                 vp.camPos   = camPos;
@@ -12116,7 +12149,7 @@ int main(int argc, char** argv) {
                 // already painting the distance with.
                 vp.sunColor = light.color;
                 vp.ambient  = fog.color;
-                volFog.render(hdrRT, volFogSet, vp, fsQuad,
+                volFog.render(hdrRT, volFogVolumes, volFogSet, vp, fsQuad,
                               renderer.shadowsEnabled() ? &renderer.shadows() : nullptr);
             }
 

@@ -1,6 +1,7 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -8,27 +9,40 @@
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Shader.hpp>
 
+#include "FogMedium.hpp"
+
 namespace fitzel { class CascadedShadowMap; }
 
-// Volumetric fog: a placed body of mist that the scene is marched through.
+// Volumetric fog: placed bodies of mist that the scene is marched through.
 //
 // The engine already has fog -- the exponential height haze in lit.frag, applied
 // per pixel from a closed form. It is cheap and it is the right thing for aerial
 // perspective, but it is global and it has no shape: every surface at the same
 // distance gets the same amount of it, nothing can be foggier than its
 // neighbour, and the sun cannot be blocked on the way in. So there is no valley
-// mist, no bank drifting across the track, and no shaft cutting through a gap.
+// mist, no bank sitting in one archway, and no shaft cutting through a gap.
 //
-// This is the other half. A box of participating medium, its density taken from
+// This is the other half. A BOX of participating medium, its density taken from
 // an animated 3D noise field, marched front to back with the sun sampled through
-// the same cascades the surfaces use. Everything the closed form cannot do lives
-// here -- and everything it does well is still done there, so the two are meant
-// to be used together: haze for the horizon, this for the mist you drive into.
+// the same cascades the surfaces use.
+//
+// It renders a LIST of them, and that list is the point of the design. A fog
+// volume is a thing you PLACE, so most of them come from VolumetricFogComponent
+// on an entity -- hang one on an Empty, scale it with the gizmo, and the box you
+// see selected is the box that gets marched. The scene-wide volume in Settings
+// is one more entry in the same list, for the case a placed box is wrong for:
+// mist over a whole track, which wants to follow the camera rather than stand
+// somewhere.
+//
+// Each volume is drawn as its own PROXY BOX rather than as a fullscreen pass,
+// and that is what makes many small ones affordable: a volume covering a tenth
+// of the screen costs a tenth of the fill. They accumulate into one buffer back
+// to front, so overlapping volumes read as one body of air rather than as
+// whichever was drawn last.
 //
 // IT OWNS ITS OWN RESOURCES, as PostChain does and for the same reason: two
-// shaders, one render target and one baked 3D noise texture that nothing else in
-// the program touches. What a caller has to say is only what changes -- the
-// authored Settings, and where the eye is this frame.
+// shaders, a render target, a proxy cube and one baked 3D noise texture that
+// nothing else in the program touches.
 class VolumetricFog {
 public:
     VolumetricFog() = default;
@@ -37,58 +51,49 @@ public:
     VolumetricFog(const VolumetricFog&)            = delete;
     VolumetricFog& operator=(const VolumetricFog&) = delete;
 
-    // What the scene author sets. Saved with the project, because a mist bank is
-    // part of the world someone built, not a preference of the machine it runs
-    // on -- the machine only gets a say in `steps` and `resScale`.
+    // What the air is made of, shared verbatim by the component and the
+    // scene-wide box -- see FogMedium.hpp for why it lives in a header of its
+    // own rather than in here.
+    using Medium = FogMedium;
+
+    // One box of that medium, in world space. `model` maps the unit cube
+    // (-0.5..0.5 on every axis) onto it, which is how it arrives from an entity:
+    // the same translate*rotate*scale the gizmo and the selection wireframe are
+    // built from, so the box marched and the box drawn cannot disagree.
+    struct Volume {
+        glm::mat4 model{1.0f};
+        Medium    medium;
+    };
+
+    // The scene-wide volume. Saved with the project like the rest of the sky,
+    // and separate from the component because it answers a different question:
+    // not "there is mist HERE" but "the air in this world is thick".
     struct Settings {
         bool enabled = false;
 
-        // --- The volume -----------------------------------------------------
-        // An axis-aligned box, given as a centre and full extents because that is
-        // how it is placed and resized by hand. No rotation: a mist bank has no
-        // visible orientation to get wrong, and a rotated box would cost every
-        // sample a matrix it does not otherwise need.
         glm::vec3 center{0.0f, 15.0f, 0.0f};
         glm::vec3 size{600.0f, 40.0f, 600.0f};
         // Keep the box centred on the eye in X/Z. For ground mist over a whole
         // track, which wants a volume that is everywhere rather than one big
         // enough to be everywhere -- a 4 km box marched in 40 steps is a step
         // every hundred metres, and the structure disappears between them.
-        //
-        // On by default, and that is what makes switching the fog on a single
-        // click: a fixed box has to be found before it can be seen, and a scene
-        // whose world does not happen to sit at the origin would answer the
-        // first click with nothing at all.
-        bool  followCamera = true;
-        float edge          = 0.25f; // outer fraction of each half-extent that fades
-        float heightFalloff = 0.8f;  // how fast it thins toward the top (0 = even)
+        bool followCamera = true;
 
-        // --- The medium -----------------------------------------------------
-        float     density  = 0.08f;   // extinction per metre where the noise is solid
-        glm::vec3 color{0.80f, 0.86f, 0.95f};
-        float     coverage = 0.30f;   // how much of the volume has any fog in it
+        Medium medium;
 
-        // --- The noise ------------------------------------------------------
-        float     noiseScale = 0.010f; // world metres -> noise space (smaller = bigger banks)
-        float     detail     = 0.45f;  // how hard the worley band breaks the shape up
-        float     warp       = 0.35f;  // domain warp: the swirl inside a bank
-        glm::vec3 wind{2.0f, 0.0f, 0.6f}; // metres per second the field drifts
-
-        // --- Lighting -------------------------------------------------------
-        float anisotropy       = 0.55f; // forward scattering: the glow around the sun
-        float sunIntensity     = 1.0f;  // scales Params::sunColor, which is already HDR
-        float ambientIntensity = 1.0f;  // ..and Params::ambient, the sky/haze radiance
-        bool  shafts     = true;  // sample the sun cascades (god rays through the mist)
-        bool  selfShadow = true;  // short march toward the sun (depth inside a bank)
-
-        // --- What it costs ---------------------------------------------------
-        int steps    = 40;  // samples along the ray
+        // What the whole PASS costs, not this volume: one buffer serves every
+        // volume in the frame, so its resolution cannot belong to one of them.
         int resScale = 2;   // 1 = full res, 2 = half, 3 = third, 4 = quarter
 
-        // Editor only: draw the box as a wireframe in the viewport, because a
-        // volume you cannot see is a volume you cannot place.
+        // Editor only: draw the scene-wide box as a wireframe. Component volumes
+        // need no such flag -- selecting the entity already outlines it.
         bool showVolume = false;
     };
+
+    // How many volumes one frame may march. The NEAREST ones win. A cap rather
+    // than a distance fade because what a volume costs is fill, and fill is what
+    // runs out when a level gets mist per archway.
+    static constexpr int kMaxVolumes = 24;
 
     // Where the eye is, and what is lighting the frame. Everything here changes
     // per frame or per pane; nothing here is authored.
@@ -109,37 +114,46 @@ public:
         glm::vec3 ambient{0.3f};
     };
 
-    // Load the shaders and bake the noise. False means a shader failed to
-    // compile; unlike the post chain that is survivable (the frame simply has no
-    // volumetric fog in it), so the caller may carry on -- render() then does
-    // nothing.
+    // Load the shaders, bake the noise, build the proxy cube. False means one of
+    // those failed; unlike the post chain that is survivable (the frame simply
+    // has no volumetric fog in it), so the caller may carry on -- render() then
+    // does nothing.
     bool init();
     bool ready() const { return m_ok; }
 
-    // March the volume for this frame and blend it into `hdr`, which must be the
-    // HDR scene buffer with its depth attached as a texture. Leaves `hdr` bound
-    // and the depth/blend state as it found it.
+    // March every volume and blend the result into `hdr`, which must be the HDR
+    // scene buffer with its depth attached as a texture. `volumes` may arrive in
+    // any order; sorting and the scene-wide volume from `s` happen on a copy
+    // inside, so what the caller passes is left exactly as it was. Leaves `hdr`
+    // bound and the depth/blend state as it found it.
     //
     // Call it AFTER everything that writes depth (scene, water, vegetation,
     // particles) and BEFORE the post chain: the fog is part of the picture bloom
     // blooms and the tonemap tonemaps, not something painted over the finished
     // frame.
-    void render(const fitzel::RenderTarget& hdr, const Settings& s, const Params& p,
-                fitzel::Mesh& fsQuad, const fitzel::CascadedShadowMap* shadows);
+    void render(const fitzel::RenderTarget& hdr, const std::vector<Volume>& volumes,
+                const Settings& s, const Params& p, fitzel::Mesh& fsQuad,
+                const fitzel::CascadedShadowMap* shadows);
 
-    // The box actually marched, which is the authored one unless it follows the
-    // camera. The editor draws its wireframe from this, so what is shown is what
-    // is marched rather than a second guess at it.
+    // The scene-wide box's corners, which are the authored ones unless it
+    // follows the camera. The editor draws its wireframe from this, so what is
+    // shown is what is marched rather than a second guess at it.
     static void worldBox(const Settings& s, const glm::vec3& camPos,
                          glm::vec3& lo, glm::vec3& hi);
 
 private:
     void resize(int w, int h);
+    void drawVolume(const Volume& v, const Params& p, float lightStep);
 
     bool m_ok = false;
     int  m_w = 0, m_h = 0;
 
     fitzel::Shader       m_march, m_upsample;
-    fitzel::RenderTarget m_fogRT{1, 1};   // replaced by the first resize()
-    std::uint32_t        m_noiseTex = 0;  // GL_TEXTURE_3D, baked once in init()
+    fitzel::Mesh         m_box;            // unit proxy cube, one draw per volume
+    fitzel::RenderTarget m_fogRT{1, 1};    // replaced by the first resize()
+    std::uint32_t        m_noiseTex = 0;   // GL_TEXTURE_3D, baked once in init()
+    // The frame's draw list: the caller's volumes plus the scene-wide one,
+    // sorted and capped. A member so a frame with thirty of them still does not
+    // allocate.
+    std::vector<Volume>  m_draw;
 };
