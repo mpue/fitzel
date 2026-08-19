@@ -97,9 +97,13 @@ struct Audio::Impl {
     bool            ok    = false;
 };
 
-Audio::Audio() : m_impl(std::make_unique<Impl>()) {
+Audio::Audio(int outputChannels) : m_impl(std::make_unique<Impl>()) {
     ma_engine_config cfg    = ma_engine_config_init();
     cfg.pResourceManagerVFS = &g_vfs;
+    // See the header: 0 means "whatever the device says", which is how a machine
+    // reporting 7.1 ends up panning the world into speakers nobody owns.
+    cfg.channels            = (outputChannels > 0)
+                                  ? static_cast<ma_uint32>(outputChannels) : 0;
     const ma_result r       = ma_engine_init(&cfg, &m_impl->engine);
     m_impl->ok = (r == MA_SUCCESS);
     if (!m_impl->ok) {
@@ -108,6 +112,16 @@ Audio::Audio() : m_impl(std::make_unique<Impl>()) {
     }
     m_impl->sfxOk = ma_sound_group_init(&m_impl->engine, 0, nullptr, &m_impl->sfx)
                     == MA_SUCCESS;
+    // Printed for the same reason the GL renderer is: it is the one line that
+    // explains a whole class of "it sounds wrong" without anyone having to
+    // guess. The channel count especially -- on a ONE channel output miniaudio
+    // takes a shortcut that skips panning entirely (see its spatializer), so a
+    // mono device silently removes every trace of direction from the world while
+    // leaving distance and Doppler working. That reads as "the spatial audio is
+    // broken" and is in fact "the device is mono".
+    std::printf("[Fitzel] audio %u Hz, %u channel(s)\n",
+                ma_engine_get_sample_rate(&m_impl->engine),
+                ma_engine_get_channels(&m_impl->engine));
 }
 
 Audio::~Audio() {
@@ -125,6 +139,23 @@ void Audio::setMasterVolume(float volume) {
 
 void Audio::setSfxVolume(float volume) {
     if (ok() && m_impl->sfxOk) ma_sound_group_set_volume(&m_impl->sfx, volume);
+}
+
+void Audio::setListener(float px, float py, float pz,
+                        float fx, float fy, float fz,
+                        float ux, float uy, float uz,
+                        float vx, float vy, float vz) {
+    if (!ok()) return;
+    ma_engine_listener_set_position(&m_impl->engine, 0, px, py, pz);
+    ma_engine_listener_set_direction(&m_impl->engine, 0, fx, fy, fz);
+    ma_engine_listener_set_world_up(&m_impl->engine, 0, ux, uy, uz);
+    ma_engine_listener_set_velocity(&m_impl->engine, 0, vx, vy, vz);
+}
+
+void Audio::setSpeedOfSound(float mps) {
+    if (!ok() || ma_engine_get_listener_count(&m_impl->engine) == 0) return;
+    ma_spatializer_listener_set_speed_of_sound(&m_impl->engine.listeners[0],
+                                               mps > 1.0f ? mps : 1.0f);
 }
 
 void Audio::playOneShot(const std::string& path) {
@@ -160,6 +191,11 @@ Sound Sound::fromFile(Audio& audio, const std::string& path, bool loop) {
         return s;
     }
     ma_sound_set_looping(&s.m_impl->sound, loop ? MA_TRUE : MA_FALSE);
+    // miniaudio spatializes by default, and every sound in this engine was
+    // written against a mixer that does not: with the listener and every source
+    // sitting at the origin that happened to sound like plain 2D, but the moment
+    // a listener exists it would not. Off unless a caller asks (setSpatial).
+    ma_sound_set_spatialization_enabled(&s.m_impl->sound, MA_FALSE);
     s.m_impl->valid = true;
     return s;
 }
@@ -183,6 +219,34 @@ void Sound::setVolume(float volume) {
 
 void Sound::setPitch(float pitch) {
     if (isValid()) ma_sound_set_pitch(&m_impl->sound, pitch);
+}
+
+bool Sound::isPlaying() const {
+    return isValid() && ma_sound_is_playing(&m_impl->sound) == MA_TRUE;
+}
+
+void Sound::setSpatial(bool on) {
+    if (isValid())
+        ma_sound_set_spatialization_enabled(&m_impl->sound, on ? MA_TRUE : MA_FALSE);
+}
+
+void Sound::setPosition(float x, float y, float z) {
+    if (isValid()) ma_sound_set_position(&m_impl->sound, x, y, z);
+}
+
+void Sound::setVelocity(float x, float y, float z) {
+    if (isValid()) ma_sound_set_velocity(&m_impl->sound, x, y, z);
+}
+
+void Sound::setAttenuation(float minDist, float maxDist, float rolloff) {
+    if (!isValid()) return;
+    ma_sound_set_min_distance(&m_impl->sound, minDist);
+    ma_sound_set_max_distance(&m_impl->sound, maxDist);
+    ma_sound_set_rolloff(&m_impl->sound, rolloff);
+}
+
+void Sound::setDopplerFactor(float factor) {
+    if (isValid()) ma_sound_set_doppler_factor(&m_impl->sound, factor);
 }
 
 } // namespace fitzel

@@ -36,6 +36,10 @@ set(SANDBOX_RUNTIME_SOURCES
     # The post chain (SSAO, bloom, tonemap, speed blur, FXAA). Runtime: the
     # shipped player draws the same frame the editor does.
     src/PostChain.cpp
+    # Volumetric fog (the marched mist volume, not lit.frag's height haze).
+    # Runtime: a fog bank is part of the world the scene author built, so the
+    # shipped player has to march it too.
+    src/VolumetricFog.cpp
     # The in-game graphics menu. Runtime by definition: fitting the game to
     # the machine is the shipped player's job, not the editor's.
     src/GraphicsMenu.cpp
@@ -55,6 +59,7 @@ set(SANDBOX_RUNTIME_SOURCES
     # Lock-on missiles: gameplay, so the shipped player needs it too (the
     # settings panel inside it is simply never called there).
     src/WeaponSystem.cpp
+    src/WorldAudio.cpp
     src/CarAudio.cpp
     src/GliderAudio.cpp
     src/UiOverlay.cpp
@@ -136,6 +141,16 @@ endforeach()
 #   build\release\bin\shadercheck.exe sandbox\assets\shaders
 add_executable(shadercheck tools/shadercheck.cpp)
 target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_33)
+
+# The spatial-audio check (sandbox/tools/audiocheck.cpp): drives one sound around
+# a stationary listener through the engine's own API, so "I hear no direction"
+# can be pinned on the device, the engine or the game instead of all three at
+# once. Console program for the same reason as above -- it prints the device's
+# channel count, and a ONE channel output is the single most likely reason for a
+# world with no direction in it.
+#   buildeleaseinudiocheck.exe content\sounds\swoosh.wav
+add_executable(audiocheck tools/audiocheck.cpp)
+target_link_libraries(audiocheck PRIVATE fitzel)
 
 # The archive tool (sandbox/tools/fpak.cpp): packs, lists and verifies the
 # encrypted .fpak archives an export ships. Same pak/vfs code the player runs, so

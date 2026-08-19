@@ -494,6 +494,16 @@ halten, exakt senkrecht gimbal-lockt eine Yaw/Pitch-Kamera), `FOV`. Kombiniert
 mit `game.spawnPrefab` (§3.3) lassen sich Gegner/Hindernisse vorausscrollend
 einsetzen.
 
+### `orbit.lua` — Objekt auf einer Kreisbahn
+Skript auf das Objekt legen, Play drücken: es läuft auf einem Kreis um die
+Stelle, an der es beim Start **stand** — man stellt es also auf die Mitte, nicht
+auf die Bahn. `radius` und `speed` sind Inspector-Felder, dazu `startAngle`
+(mehrere Objekte gleichmässig auf einer Bahn verteilen), `clockwise` und
+`faceForward` (Nase in Fahrtrichtung). `speed` ist eine **Bahn**geschwindigkeit
+in m/s, nicht Grad pro Sekunde: ein grösserer Radius macht die Runde länger, nicht
+das Objekt schneller. Weil der Transform lokal ist (§2), kreist ein Objekt mit
+Parent im Raum des Parents und wandert mit ihm mit.
+
 ### `shooter.lua` + `bullet.lua` + `can.lua` — „Dosen schiessen"
 Ein kleines Mini-Game: Skript auf ein beliebiges Objekt legen, Play drücken.
 Linksklick schiesst eine Kugel in Blickrichtung, `R` stellt die Dosenreihe neu auf,

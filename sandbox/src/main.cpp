@@ -80,6 +80,7 @@
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
 #include "PostChain.hpp"
+#include "VolumetricFog.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "Difficulty.hpp"
@@ -88,6 +89,7 @@
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
 #include "WeaponSystem.hpp"
+#include "WorldAudio.hpp"
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
@@ -546,6 +548,14 @@ int main(int argc, char** argv) {
         // PostChain.hpp for why that ownership is the whole point of it.
         PostChain post;
         if (!post.init()) return 1;
+        // Volumetric fog: the marched mist volume. Unlike the post chain this is
+        // survivable -- a frame without it is a frame without fog, not a black
+        // screen -- so a failure here is reported and carried past rather than
+        // taking the program down with it.
+        VolumetricFog volFog;
+        if (!volFog.init())
+            std::fprintf(stderr, "Volumetric fog disabled (shader/noise init failed)\n");
+        VolumetricFog::Settings volFogSet;
         int hdrW = 0, hdrH = 0;
         window.framebufferSize(hdrW, hdrH);
         RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F, /*depthTex=*/true);
@@ -2386,6 +2396,15 @@ int main(int argc, char** argv) {
         carAudio.load(audio, soundDir);
         GliderAudio gliderAudio;
         gliderAudio.load(audio, soundDir);
+        // The world's own noises: rival engines and pass-by swooshes, both
+        // positioned, both Doppler-shifted by the spatializer (see WorldAudio).
+        // Its listener is the eye that renders, so it is fed from the camera and
+        // not from the craft -- a chase view hears from where it watches.
+        WorldAudio worldAudio;
+        worldAudio.load(audio, soundDir);
+        glm::vec3 listenerPrev{0.0f};
+        glm::vec3 listenerVel{0.0f};
+        bool      listenerHasPrev = false;
         float masterVolume = 0.8f;
         bool  muted        = false;
         bool  prevFlashOn  = false;
@@ -2671,6 +2690,40 @@ int main(int argc, char** argv) {
         addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
         addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
         addF("fogDensity", fogDensity);        addF("fogFalloff", fogFalloff);
+        // Volumetric fog. Every knob of it is scene data: where the bank stands,
+        // how thick it is and how its noise moves are things the world's author
+        // decided, so they travel with the world -- only `volFogSteps` and
+        // `volFogRes` are a cost the machine gets a say in, and those are saved
+        // here too because a scene that needs a heavy march should open with the
+        // march its look was tuned against.
+        addB("volFog", volFogSet.enabled);
+        addF("volFogCenterX", volFogSet.center.x);
+        addF("volFogCenterY", volFogSet.center.y);
+        addF("volFogCenterZ", volFogSet.center.z);
+        addF("volFogSizeX", volFogSet.size.x);
+        addF("volFogSizeY", volFogSet.size.y);
+        addF("volFogSizeZ", volFogSet.size.z);
+        addB("volFogFollow", volFogSet.followCamera);
+        addF("volFogEdge", volFogSet.edge);
+        addF("volFogHeightFalloff", volFogSet.heightFalloff);
+        addF("volFogDensity", volFogSet.density);
+        addF("volFogColorR", volFogSet.color.x);
+        addF("volFogColorG", volFogSet.color.y);
+        addF("volFogColorB", volFogSet.color.z);
+        addF("volFogCoverage", volFogSet.coverage);
+        addF("volFogNoiseScale", volFogSet.noiseScale);
+        addF("volFogDetail", volFogSet.detail);
+        addF("volFogWarp", volFogSet.warp);
+        addF("volFogWindX", volFogSet.wind.x);
+        addF("volFogWindY", volFogSet.wind.y);
+        addF("volFogWindZ", volFogSet.wind.z);
+        addF("volFogAnisotropy", volFogSet.anisotropy);
+        addF("volFogSun", volFogSet.sunIntensity);
+        addF("volFogAmbient", volFogSet.ambientIntensity);
+        addB("volFogShafts", volFogSet.shafts);
+        addB("volFogSelfShadow", volFogSet.selfShadow);
+        addI("volFogSteps", volFogSet.steps);
+        addI("volFogRes", volFogSet.resScale);
         addF("exposure", exposure);            addF("bloom", bloomIntensity);
         addF("rays", rayIntensity);            addF("ssao", ssaoStrength);
         addF("ssaoRadius", ssaoRadius);        addF("ssaoBias", ssaoBias);
@@ -5580,6 +5633,32 @@ int main(int argc, char** argv) {
                 gliderAudio.stop();
             }
 
+            // The world around the craft. Only while something is being flown or
+            // driven: in the editor the camera teleports around, and a listener
+            // that teleports produces a Doppler shift of several thousand.
+            if (playMode && (gliderMode || vehicleMode)) {
+                const glm::vec3 lp = camera.position();
+                // Velocity by position delta, smoothed hard. It feeds Doppler
+                // and nothing else, and a single stuttered frame would otherwise
+                // put a siren through the whole mix -- so a spike costs a little
+                // lag rather than a wail. Clamped as well, because a scene load
+                // or a rescue moves the eye a hundred metres in one frame.
+                glm::vec3 raw(0.0f);
+                if (listenerHasPrev && dt > 1e-4f) raw = (lp - listenerPrev) / dt;
+                if (glm::length(raw) > 400.0f) raw = glm::vec3(0.0f);
+                listenerVel += (raw - listenerVel) * std::min(1.0f, dt * 8.0f);
+                listenerPrev    = lp;
+                listenerHasPrev = true;
+                worldAudio.update(dt, lp, camera.front(), camera.up(), listenerVel,
+                                  entities,
+                                  road.enabled ? &road.district() : nullptr,
+                                  driveGliderId, driveGliderId2, mixSfx.gain());
+            } else if (listenerHasPrev) {
+                worldAudio.reset();
+                listenerHasPrev = false;
+                listenerVel     = glm::vec3(0.0f);
+            }
+
             // --- Day/night: advance time, derive sun direction and lighting ---
             if (!timePaused && dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
@@ -8107,6 +8186,45 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Volumetric fog volume: a wireframe box while it is being
+                //     placed -------------------------------------------------
+                // A body of mist has no edges to see, which makes its box the one
+                // thing in the scene you cannot aim at by looking at the result:
+                // turn the density up far enough to find the boundary and you are
+                // no longer looking at the fog you are trying to author. So the
+                // box is drawn, from the same helper the march is fed by -- what
+                // is outlined here IS what is marched, follow-camera included.
+                if (volFogSet.showVolume && !playMode) {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    const ImVec2 org = rmin;
+                    glm::vec3 lo, hi;
+                    VolumetricFog::worldBox(volFogSet, camera.position(), lo, hi);
+
+                    ImVec2 sp[8];
+                    bool   ok[8];
+                    for (int c = 0; c < 8; ++c) {
+                        const glm::vec3 w((c & 1) ? hi.x : lo.x, (c & 2) ? hi.y : lo.y,
+                                          (c & 4) ? hi.z : lo.z);
+                        const glm::vec4 cc = vp * glm::vec4(w, 1.0f);
+                        ok[c] = cc.w > 1e-4f;
+                        if (ok[c]) {
+                            const glm::vec3 n = glm::vec3(cc) / cc.w;
+                            ok[c] = n.z <= 1.0f;
+                            sp[c] = ImVec2(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                           org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                        }
+                    }
+                    static const int kEdges[12][2] = {
+                        {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
+                        {0,4},{1,5},{2,6},{3,7}};
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    const ImU32 col = volFogSet.enabled ? IM_COL32(150, 200, 255, 190)
+                                                        : IM_COL32(150, 200, 255, 80);
+                    for (const auto& e : kEdges)
+                        if (ok[e[0]] && ok[e[1]]) dl->AddLine(sp[e[0]], sp[e[1]], col, 1.5f);
+                }
+
                 // --- Solid blocks: click to select an existing box or place a
                 //     new one on the terrain; Del removes the selected block. ----
                 {   // Viewport interaction: selecting works in both modes; the
@@ -8792,6 +8910,84 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
                 ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.02f, "%.4f");
                 ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
+
+                // --- Volumetric fog: the OTHER fog ------------------------
+                // Folded away by default, and deliberately sitting right under
+                // the two sliders it is not: those are the height haze, which is
+                // everywhere and has no shape. This is a body of mist standing
+                // in one place, and the section says so before the first slider.
+                if (ui::header("Volumetric fog")) {
+                    ImGui::Checkbox("Enabled##volfog", &volFogSet.enabled);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Show volume", &volFogSet.showVolume);
+                    ui::hint("The haze above does distance. This does shape:\n"
+                             "banks that drift, holes that pass, sun shafts.");
+
+                    ui::sectionText("Volume");
+                    ImGui::DragFloat3("Centre", &volFogSet.center.x, 0.5f,
+                                      -20000.0f, 20000.0f, "%.0f m");
+                    ImGui::DragFloat3("Size", &volFogSet.size.x, 0.5f,
+                                      1.0f, 20000.0f, "%.0f m");
+                    // Placing a volume you cannot grab is the awkward part, so
+                    // the two placements anyone actually wants are buttons: put
+                    // it where I am standing, and sit it on the ground under it.
+                    if (ImGui::Button("Centre on camera"))
+                        volFogSet.center = camera.position();
+                    ImGui::SameLine();
+                    if (ImGui::Button("Sit on ground"))
+                        volFogSet.center.y =
+                            streamer.heightAt(volFogSet.center.x, volFogSet.center.z) +
+                            volFogSet.size.y * 0.5f;
+                    ImGui::Checkbox("Follow camera (X/Z)", &volFogSet.followCamera);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Ground mist over a whole track without a\n"
+                                          "box big enough to cover it: the same steps\n"
+                                          "spread over kilometres lose all structure.");
+                    ImGui::SliderFloat("Edge fade", &volFogSet.edge, 0.02f, 1.0f);
+                    ImGui::SliderFloat("Height falloff##volfog",
+                                       &volFogSet.heightFalloff, 0.0f, 3.0f);
+
+                    ui::sectionText("Medium");
+                    ImGui::SliderFloat("Thickness", &volFogSet.density, 0.0f, 0.5f,
+                                       "%.3f /m");
+                    ImGui::ColorEdit3("Tint##volfog", &volFogSet.color.x);
+                    ImGui::SliderFloat("Coverage##volfog", &volFogSet.coverage,
+                                       0.0f, 0.95f);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How much of the volume has fog in it at all.\n"
+                                          "Low = a solid body, high = separate banks\n"
+                                          "with clear air between them.");
+
+                    ui::sectionText("Noise");
+                    ImGui::SliderFloat("Scale##volfog", &volFogSet.noiseScale,
+                                       0.001f, 0.06f, "%.4f");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Smaller = bigger banks.");
+                    ImGui::SliderFloat("Detail", &volFogSet.detail, 0.0f, 0.95f);
+                    ImGui::SliderFloat("Swirl", &volFogSet.warp, 0.0f, 1.5f);
+                    ImGui::DragFloat3("Wind##volfog", &volFogSet.wind.x, 0.05f,
+                                      -30.0f, 30.0f, "%.2f m/s");
+
+                    ui::sectionText("Light");
+                    ImGui::SliderFloat("Forward scatter", &volFogSet.anisotropy,
+                                       -0.9f, 0.9f);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How much light keeps going the way it came.\n"
+                                          "High values put the glow around the sun.");
+                    ImGui::SliderFloat("Sun##volfog", &volFogSet.sunIntensity, 0.0f, 4.0f);
+                    ImGui::SliderFloat("Ambient##volfog", &volFogSet.ambientIntensity,
+                                       0.0f, 4.0f);
+                    ImGui::Checkbox("Sun shafts", &volFogSet.shafts);
+                    ImGui::SameLine();
+                    ImGui::Checkbox("Self-shadow", &volFogSet.selfShadow);
+
+                    ui::sectionText("Cost");
+                    ImGui::SliderInt("Steps", &volFogSet.steps, 8, 128);
+                    ImGui::SliderInt("Resolution", &volFogSet.resScale, 1, 4,
+                                     "1/%d of the pane");
+                    ui::hint("Steps buy structure along the ray, resolution buys it\n"
+                             "across the screen. Fog is soft, so 1/2 is free money.");
+                }
                 ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
                 ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
                 ImGui::SliderFloat("Bloom threshold", &bloomThreshold, 0.2f, 4.0f, "%.2f");
@@ -11897,6 +12093,32 @@ int main(int argc, char** argv) {
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
+
+            // --- Volumetric fog: the marched mist volume, blended into the HDR
+            //     buffer ------------------------------------------------------
+            // Last thing INTO the buffer and before anything that reads it: the
+            // fog stands in front of everything the scene drew (it is a volume
+            // between them and the eye), and it belongs to the picture the
+            // composite tonemaps -- painted on afterwards it would neither bloom
+            // around the sun nor take the frame's exposure.
+            {
+                FZ_ZONE("volumetric fog");
+                VolumetricFog::Params vp;
+                vp.viewProj = mainVP;
+                vp.camPos   = camPos;
+                vp.camFwd   = vcam.front();
+                vp.time     = static_cast<float>(now);
+                vp.sunDir   = sunDir;
+                // The sun's HDR radiance and the haze colour, not the raw tint
+                // and the surface ambient: the mist is lit by the frame's own
+                // light, so it goes out with the sun and takes the horizon's
+                // colour in shadow -- which is the colour the aerial haze is
+                // already painting the distance with.
+                vp.sunColor = light.color;
+                vp.ambient  = fog.color;
+                volFog.render(hdrRT, volFogSet, vp, fsQuad,
+                              renderer.shadowsEnabled() ? &renderer.shadows() : nullptr);
+            }
 
             // --- Post: SSAO, bloom, tonemap, colour grade, speed blur -------
             // All of it lives in PostChain, which owns the shaders and the
