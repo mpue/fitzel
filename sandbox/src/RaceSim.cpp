@@ -20,6 +20,7 @@
 #include "Document.hpp"
 #include "Component.hpp"
 #include "RoadSystem.hpp"
+#include "SandboxMath.hpp"   // attitudeEuler()
 
 namespace racesim {
 
@@ -615,6 +616,7 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
                 if (st.offTrackT >= kOffTrackGrace) {
                     st.gliderPos = st.respawnPos;
                     st.gliderYaw = st.respawnYaw;
+                    st.gliderYawRate = 0.0f;
                     st.gliderVel = glm::vec3(0.0f);
                     st.gliderOverspeed = 0.0f;
                     st.offTrackT = 0.0f;
@@ -657,8 +659,14 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     for (int s = 0; s < env.simSteps; ++s) {
         st.prevPos = st.gliderPos; st.prevYaw = st.gliderYaw;
         st.prevBank = st.gliderBank; st.prevPitch = st.gliderPitch;
-        // Heading: steer right increases yaw (fwd rotates +Z -> +X).
-        st.gliderYaw += glm::radians(gc->turnRate) * steerIn * env.kSimH;
+        // Heading: the stick asks for a yaw RATE and the craft eases onto it, so
+        // it leans into a corner and carries the turn a moment after the stick
+        // comes back instead of pivoting like a turret. Steer right increases yaw
+        // (fwd rotates +Z -> +X).
+        const float wantYawRate = glm::radians(gc->turnRate) * steerIn;
+        st.gliderYawRate += (wantYawRate - st.gliderYawRate) *
+                            glm::clamp(gc->steerResponse * env.kSimH, 0.0f, 1.0f);
+        st.gliderYaw += st.gliderYawRate * env.kSimH;
         const glm::vec3 fwd(std::sin(st.gliderYaw), 0.0f, std::cos(st.gliderYaw));
         const glm::vec3 right = glm::normalize(glm::cross(glm::vec3(0, 1, 0), fwd));
 
@@ -965,6 +973,10 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             // either end, or halfway up -- carries on the way the craft was
             // actually pointing.
             st.gliderYaw   = std::atan2(fr.tangent.x, fr.tangent.z);
+            // The loop drives the heading, so the flat sim's yaw rate has
+            // nothing to say up here -- and leaving it running would hand
+            // the craft back at the exit already turning.
+            st.gliderYawRate = 0.0f;
             st.gliderBank  = 0.0f;
             // Nose-up is negative pitch here (see targetPitch below), and the
             // frame's angle runs 0..2pi without wrapping, so the model rolls right
@@ -1051,7 +1063,14 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
 
         // Attitude (visual): bank into the turn, tip the nose with climb/descent,
         // both eased toward their target.
-        const float targetBank  = -steerIn * gc->bankAngle;
+        // Bank off what the craft is ACTUALLY doing, not off the stick: with the
+        // yaw rate lagging the input, a bank tied to the stick would snap over
+        // before the turn had started and flick back level while it was still
+        // turning. Reading the rate makes the lean the visible half of the
+        // inertia above.
+        const float rateFull = glm::radians(std::max(gc->turnRate, 1.0f));
+        const float targetBank  =
+            -glm::clamp(st.gliderYawRate / rateFull, -1.0f, 1.0f) * gc->bankAngle;
         const float targetPitch = glm::clamp(-st.gliderVel.y * gc->pitchFollow * 2.0f,
                                              -25.0f, 25.0f);
         const float k = std::min(1.0f, env.kSimH * gc->levelRate);
@@ -1101,7 +1120,7 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     const float yawDeg = glm::degrees(rYaw) -
                          (gc->forward == 1 ? 180.0f : 0.0f);
     const glm::mat4 pw = env.parentWorldMat(*dg);
-    env.setWorld(*dg, rPos, glm::vec3(rPitch, yawDeg, rBank),
+    env.setWorld(*dg, rPos, attitudeEuler(yawDeg, rPitch, rBank),
                  dg->parent >= 0 ? &pw : nullptr);
 
     // The craft is what the camera follows: anchor the radial speed blur to it
@@ -1549,7 +1568,7 @@ void updateOpponents(RaceState& st, const RaceEnv& env, RaceState* st2) {
         }
         op->pitchCur += (targetPitch - op->pitchCur) * glm::min(1.0f, env.dt * 5.0f);
         const glm::mat4 pw = env.parentWorldMat(e);
-        env.setWorld(e, wpos, glm::vec3(op->pitchCur, yawDeg, op->bankCur),
+        env.setWorld(e, wpos, attitudeEuler(yawDeg, op->pitchCur, op->bankCur),
                      e.parent >= 0 ? &pw : nullptr);
     }
 

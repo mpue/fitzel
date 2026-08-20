@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <glm/gtc/matrix_transform.hpp>   // glm::rotate
+#include <glm/gtc/quaternion.hpp>
 
 #include "CameraPath.hpp" // catmull() -- the uniform fallback
 
@@ -147,4 +149,48 @@ std::vector<glm::vec2> sampleSpline(const std::vector<glm::vec2>& pts, bool clos
     // point, or the open line's end point).
     if (ptSample) ptSample->push_back(static_cast<int>(line.size()) - 1);
     return line;
+}
+
+glm::vec3 attitudeEuler(float yawDeg, float pitchDeg, float rollDeg) {
+    // Nothing to convert when the craft is level: with no roll the two
+    // conventions agree exactly, so a car, a loop's pitch and every scene saved
+    // before this come through untouched.
+    if (rollDeg == 0.0f) return glm::vec3(pitchDeg, yawDeg, 0.0f);
+
+    // What we want, in the order an aircraft turns: heading, then nose, then
+    // wings. Same order Unity's Euler angles use, for what it is worth.
+    const glm::mat3 want =
+        glm::mat3(glm::rotate(glm::mat4(1.0f), glm::radians(yawDeg),   glm::vec3(0, 1, 0)) *
+                  glm::rotate(glm::mat4(1.0f), glm::radians(pitchDeg), glm::vec3(1, 0, 0)) *
+                  glm::rotate(glm::mat4(1.0f), glm::radians(rollDeg),  glm::vec3(0, 0, 1)));
+
+    // ...expressed in the order the scene composes: Rz(z) * Ry(y) * Rx(x).
+    // glm is column-major, so element [row][col] reads want[col][row].
+    const float r20 = want[0][2];
+    const float ey  = std::asin(std::clamp(-r20, -1.0f, 1.0f));
+    float ex, ez;
+    if (std::abs(r20) < 0.99999f) {
+        ex = std::atan2(want[1][2], want[2][2]);
+        ez = std::atan2(want[0][1], want[0][0]);
+    } else {
+        // Straight up or down: only (roll -+ yaw) is determined, so pick the
+        // solution that puts all of it in the craft's own axis.
+        ez = 0.0f;
+        ex = std::atan2(-want[2][1], want[1][1]);
+    }
+    return glm::vec3(glm::degrees(ex), glm::degrees(ey), glm::degrees(ez));
+}
+
+float sceneHeading(const glm::vec3& eulerDeg) {
+    // glm's quaternion-from-Euler happens to compose in exactly the order the
+    // scene does (Rz * Ry * Rx -- verified against ImGuizmo's Recompose), so this
+    // is the orientation the renderer will actually use.
+    const glm::quat q(glm::radians(eulerDeg));
+    const glm::vec3 nose = q * glm::vec3(0.0f, 0.0f, 1.0f);
+    if (glm::length(glm::vec2(nose.x, nose.z)) > 1e-3f)
+        return std::atan2(nose.x, nose.z);
+    // Pointing straight up or down: read the heading off the wings instead, which
+    // are still level in exactly that case.
+    const glm::vec3 right = q * glm::vec3(1.0f, 0.0f, 0.0f);
+    return std::atan2(-right.z, right.x);
 }

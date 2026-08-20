@@ -46,3 +46,35 @@ glm::vec2 catmullCentripetal(const glm::vec2& p0, const glm::vec2& p1,
 // fence/wall/track paths, so the two can never drift into bending differently.
 std::vector<glm::vec2> sampleSpline(const std::vector<glm::vec2>& pts, bool closed,
                                     std::vector<int>* ptSample = nullptr);
+
+// --- Attitude ----------------------------------------------------------------
+// The entity Euler triple (degrees, X/Y/Z as SceneTypes stores them) that renders
+// as an AIRCRAFT attitude: yaw about world up, pitch about the craft's own right
+// axis, roll about its own nose.
+//
+// It exists because those are not the same thing here. A scene rotation is
+// composed by ImGuizmo as X, then Y, then Z -- which in world terms rolls about
+// the world Z axis LAST. Feed a bank straight into rotation.z and a craft heading
+// north banks correctly, one heading east tips its nose 22 degrees into the sky,
+// and one heading west tips it into the ground. Pitch is unaffected (it is the
+// innermost axis, so it is already the craft's own), and so is a craft that never
+// rolls -- which is why the car was fine and the gliders were not.
+//
+// Near vertical (pitch within a fraction of a degree of straight up or down) yaw
+// and roll stop being separable; the conversion picks the solution with no yaw,
+// which is the standard gimbal-lock fallback and is what a loop's apex hits.
+glm::vec3 attitudeEuler(float yawDeg, float pitchDeg, float rollDeg);
+
+// Which way an entity with this Euler triple points, as a heading in radians in
+// the convention every craft here uses: dir = (sin H, 0, cos H), i.e.
+// atan2(nose.x, nose.z) for a +Z nose.
+//
+// NOT the same as `rotation.y`, and that is the whole reason it exists. The
+// triple is only ever "whatever composes to the wanted orientation" (see
+// attitudeEuler): as soon as an object rolls, the middle component stops being
+// the heading -- a craft flying due east with 22 degrees of bank stores y = 68.
+// Anything that wants a facing must ask the rotation, not one of its numbers.
+//
+// Falls back to the craft's own right axis when the nose is within a whisker of
+// vertical, where a nose direction has no horizontal part to read a heading from.
+float sceneHeading(const glm::vec3& eulerDeg);

@@ -608,6 +608,8 @@ const std::vector<Property>& GliderComponent::properties() {
         addFloat("Max speed",    "maxSpeed",   &GliderComponent::maxSpeed,   5.0f, 200.0f, "%.0f m/s");
         addFloat("Brake",        "brakeForce", &GliderComponent::brakeForce, 2.0f, 120.0f, "%.0f m/s2");
         addFloat("Turn rate",    "turnRate",   &GliderComponent::turnRate,   10.0f, 300.0f,"%.0f deg/s");
+        addFloat("Steer response", "steerResponse", &GliderComponent::steerResponse,
+                 0.5f, 20.0f, "%.1f /s");
         Property inv;
         inv.label = "Invert steering"; inv.key = "invertSteer"; inv.kind = PropKind::Bool;
         inv.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->invertSteer; };

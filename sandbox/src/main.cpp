@@ -3729,9 +3729,12 @@ int main(int argc, char** argv) {
             // own roof before it has flown a metre.
             st.gliderPos.y = gliderGround(e->center.x, e->center.z,
                                           e->center.y + 1000.0f, id) + gc->rideHeight;
-            st.gliderYaw = glm::radians(e->rotation.y) +
+            // Where the nose actually points -- a craft left banked by the
+            // last flight has no heading in its rotation.y (see sceneHeading).
+            st.gliderYaw = sceneHeading(e->rotation) +
                            (gc->forward == 1 ? glm::pi<float>() : 0.0f);
             st.gliderVel = glm::vec3(0.0f);
+            st.gliderYawRate = 0.0f;   // seated, not mid-turn
             st.gliderBank = st.gliderPitch = 0.0f;
             st.gliderOverspeed = 0.0f;
             st.gliderWasOnPad  = false; // a pad under the start line still punches
@@ -6213,7 +6216,7 @@ int main(int argc, char** argv) {
                             // Shoved across the track the way it was hit. laneCur is
                             // eased back toward the racing line every tick, so this
                             // is a lurch, not a permanent detour.
-                            const float yr = glm::radians(he->rotation.y);
+                            const float yr = sceneHeading(he->rotation);
                             const glm::vec3 fr(std::sin(yr), 0.0f, std::cos(yr));
                             const glm::vec3 sr = glm::cross(glm::vec3(0.0f, 1.0f, 0.0f), fr);
                             const float push =

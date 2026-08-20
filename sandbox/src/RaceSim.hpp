@@ -52,6 +52,12 @@ struct RaceState {
     // --- Glider (hover racer) -------------------------------------------
     glm::vec3 gliderPos{0.0f}; // body-centre world position
     float gliderYaw   = 0.0f;  // heading (radians)
+    // How fast the heading is CHANGING (rad/s). State, not a derived value: the
+    // stick asks for a yaw rate and this chases it (see GliderComponent::
+    // steerResponse), which is where the craft's rotational inertia lives -- and
+    // what the bank angle is read off, so the craft leans because it is turning
+    // rather than because a button is held.
+    float gliderYawRate = 0.0f;
     glm::vec3 gliderVel{0.0f}; // world-space velocity (m/s)
     float gliderBank  = 0.0f;  // smoothed roll (deg)
     float gliderPitch = 0.0f;  // smoothed pitch (deg)

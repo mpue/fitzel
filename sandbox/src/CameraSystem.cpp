@@ -7,6 +7,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "Component.hpp"
+#include "SandboxMath.hpp"   // sceneHeading()
 #include "SceneTypes.hpp"
 
 namespace camerasys {
@@ -68,22 +69,36 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
         // not have to be a special case out here.
         //
         // Between the two: one blend factor for the offset frame, the up vector
-        // and the look-at point, so they can never disagree. It stays at 0 until
-        // the craft is past ~53 degrees off level -- normal banking is well
-        // inside that, so nothing changes for ordinary racing.
+        // and the look-at point, so they can never disagree. Geometry alone puts
+        // it at 0 until the craft is past ~53 degrees off level -- normal banking
+        // is well inside that, so nothing changes for ordinary racing.
+        //
+        // `rollWith` then raises a FLOOR under that, for authors who want the
+        // ride rather than the view: at 1 the shot is in the craft's frame the
+        // whole time and banks with it. A floor rather than a replacement,
+        // because the loop case above is not a preference -- it is the only thing
+        // that works when the nose points at the sky.
         const glm::vec3 wUp{0.0f, 1.0f, 0.0f};
         const glm::quat q(glm::radians(target->rotation));
         const glm::vec3 craftUp = glm::normalize(q * wUp);
         const float level = glm::dot(craftUp, wUp);   // 1 level, 0 vertical, -1 inverted
-        const float roll  = 1.0f - glm::smoothstep(0.0f, 0.6f, level);
+        const float roll  = glm::max(1.0f - glm::smoothstep(0.0f, 0.6f, level),
+                                     glm::clamp(cc->rollWith, 0.0f, 1.0f));
 
-        const float yaw = glm::radians(target->rotation.y);
+        // The heading frame, from the rotation itself rather than from
+        // rotation.y. Those are the same number only while the craft is level:
+        // a banking craft's Euler triple spreads the turn across all three
+        // components (see sceneHeading), and reading .y off one swung the chase
+        // shot out sideways every time the craft leaned.
+        const float yaw = sceneHeading(target->rotation);
         const glm::vec3 off = e.localCenter;
         const glm::vec3 offFlat(off.x * std::cos(yaw) + off.z * std::sin(yaw),
                                 off.y,
                                 -off.x * std::sin(yaw) + off.z * std::cos(yaw));
         const glm::vec3 offFull = q * off;
-        const glm::vec3 wanted  = target->center + glm::mix(offFlat, offFull, roll);
+        // Where the eye wants to sit RELATIVE TO THE CRAFT. Kept as an offset
+        // rather than a world point on purpose -- see the easing below.
+        const glm::vec3 desired = glm::mix(offFlat, offFull, roll);
 
         // Up, and the point aimed at, in the same blended frame -- on a loop the
         // craft's "above" is out along the track's surface, not toward the sky.

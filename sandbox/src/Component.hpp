@@ -506,6 +506,16 @@ public:
     float maxSpeed   = 60.0f; // horizontal top speed (m/s)
     float brakeForce = 34.0f; // deceleration on Space (m/s^2)
     float turnRate   = 95.0f; // yaw rate at full steer (deg/s)
+    // How quickly the craft REACHES that yaw rate (1/s). This is the craft's
+    // rotational inertia, and it is what separates a hover racer from a cursor:
+    // below it the stick set the heading directly, so the nose snapped to full
+    // lock the instant the stick moved and stopped dead the instant it came back
+    // -- no lean-in, no carry-through, nothing to catch. Now the stick asks for a
+    // rate and the craft takes time to get there and to give it up again.
+    //
+    // Lower = heavier. 1.5 is a freighter you have to plan corners in, 4 is a
+    // nimble racer, 20 is effectively the old instant behaviour.
+    float steerResponse = 3.0f;
     bool  invertSteer = false;// swap A/D (left stick) so the craft steers the other way
     float grip       = 3.0f;  // how fast sideways drift is killed (1/s; higher = less slide)
     float drag       = 0.4f;  // linear damping (1/s)
