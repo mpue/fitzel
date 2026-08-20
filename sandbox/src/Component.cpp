@@ -429,6 +429,15 @@ const std::vector<Property>& CameraComponent::properties() {
         stiff.visible = follows;
         stiff.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->stiffness; };
         p.push_back(std::move(stiff));
+        Property rollw;
+        rollw.label = "Roll with craft"; rollw.key = "rollWith";
+        rollw.kind = PropKind::Float;
+        rollw.slider = true; rollw.min = 0.0f; rollw.max = 1.0f; rollw.fmt = "%.2f";
+        rollw.visible = follows;
+        rollw.field = [](void* o) -> void* {
+            return &static_cast<CameraComponent*>(o)->rollWith;
+        };
+        p.push_back(std::move(rollw));
         Property fov;
         fov.label = "FOV"; fov.key = "fov"; fov.kind = PropKind::Float;
         fov.slider = true; fov.min = 20.0f; fov.max = 120.0f; fov.fmt = "%.0f deg";

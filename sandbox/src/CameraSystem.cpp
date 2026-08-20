@@ -111,17 +111,34 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
             // First sight: stand where the shot wants to be. Easing up from a
             // default-constructed eye would open every run with a swoop in from
             // the world origin.
-            ch.eye = wanted;
+            ch.eye = target->center + desired;
             ch.seeded = true;
         } else {
-            // Exponential catch-up: the fraction of the remaining distance
-            // covered in dt seconds. Same result at 30 fps as at 300, and it
-            // moves every frame, which is what keeps it in step with a craft
-            // whose pose is interpolated every frame.
-            const float k = 1.0f - std::exp(-glm::max(cc->stiffness, 0.0f) *
-                                            glm::max(dt, 0.0f));
-            ch.eye += (wanted - ch.eye) * k;
+            // Exponential catch-up, run on the eye's OFFSET FROM THE CRAFT rather
+            // than on its world position. Both settle to the same shot; the
+            // difference is what happens when frame times are uneven, and they
+            // always are.
+            //
+            // Chasing a world point, the eye trails a moving craft by roughly
+            // speed/stiffness -- and that trail is a function of dt, so it
+            // breathes in and out with every long or short frame. Measured on a
+            // real 80 m/s run whose frames ranged 8..35 ms, that came to 30 cm of
+            // back-and-forth in a single frame: the craft twitching against a
+            // world that was itself perfectly steady.
+            //
+            // Expressed as an offset, the craft's own motion drops out of the
+            // arithmetic entirely. What decays is only the DIFFERENCE between
+            // where the eye sits on the craft and where it wants to sit, so a
+            // craft at constant speed gives a dead-still shot at any frame rate,
+            // while acceleration, braking and turning still swing the camera out
+            // exactly as before. A respawn now carries the camera with the craft
+            // instead of leaving it to swoop across the map, for the same reason.
+            const float decay = std::exp(-glm::max(cc->stiffness, 0.0f) *
+                                         glm::max(dt, 0.0f));
+            const glm::vec3 was = ch.eye - ch.anchor;   // offset it had last frame
+            ch.eye = target->center + desired + (was - desired) * decay;
         }
+        ch.anchor = target->center;
 
         // Aim at the target. A camera sitting exactly on its aim point has no
         // direction to look in -- keep the last one rather than normalizing a

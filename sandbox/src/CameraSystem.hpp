@@ -81,6 +81,10 @@ private:
     struct Chase {
         glm::vec3 eye{0.0f};
         glm::vec3 front{0.0f, 0.0f, -1.0f};
+        // Where the craft was when `eye` was last written. The easing runs on the
+        // eye's OFFSET FROM THE CRAFT, so it needs the anchor that offset was
+        // measured against -- see the note on the smoothing in CameraSystem.cpp.
+        glm::vec3 anchor{0.0f};
         bool      seeded = false;   // false = snap on the first frame, don't ease
     };
 

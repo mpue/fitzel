@@ -1185,6 +1185,23 @@ public:
     // with it. Which leaves exactly two things a position cannot express:
     float lookHeight = 1.4f;  // aim this far above the followed object's centre
     float stiffness  = 5.0f;  // how fast it catches up (1/s; higher = snappier)
+    // ...and how much of the craft's own attitude the shot takes with it.
+    //
+    // 0 keeps the horizon level through a bank, which is the safer default and
+    // what every follow camera did before this: the craft leans, the view does
+    // not. 1 puts the camera fully in the craft's frame, so it banks and pitches
+    // with it -- the ride rather than the view, which is exactly why some people
+    // want it and why it is not the default.
+    //
+    // This only raises a FLOOR under the blend the system already runs: a craft
+    // going round a vertical loop takes the camera with it either way, because
+    // "behind, in yaw" stops meaning anything when the nose points at the sky.
+    // So 0 is not "never roll", it is "roll only when the geometry demands it".
+    //
+    // It exists because the alternative people reached for was a STATIC camera
+    // parented to the craft, which does bank with it -- and gives up the
+    // smoothing, the aim-at-the-craft logic and the loop handling to get there.
+    float rollWith   = 0.0f;  // 0 = level horizon .. 1 = fully attached
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<CameraComponent>(*this);

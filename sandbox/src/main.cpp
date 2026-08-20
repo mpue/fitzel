@@ -4550,7 +4550,12 @@ int main(int argc, char** argv) {
             // saturating min(1, dt*k) and snaps fully onto the craft -- so the
             // craft slides *backward on screen* for one frame ("jumps back a
             // little"). Capping dt makes a hitch briefly slow time instead.
-            const float  dt  = static_cast<float>(std::min(now - lastTime, 0.05));
+            //
+            // This is THE guard against a runaway sim, and the reason the step
+            // cap below can be generous: however long a frame took, the sims are
+            // never handed more than this much of it.
+            constexpr double kMaxFrameDt = 0.05;   // 20 fps
+            const float  dt  = static_cast<float>(std::min(now - lastTime, kMaxFrameDt));
             lastTime = now;
 
             // Fixed-timestep clock for the arcade sims (car + glider). Their
@@ -4560,11 +4565,46 @@ int main(int argc, char** argv) {
             // (worst in curves, where the motion is lateral on screen). Every
             // other subsystem keeps running at frame dt.
             constexpr float kSimH = 1.0f / 120.0f;
+            // How many ticks one frame may ever need: the clamp above, plus the
+            // sub-tick remainder carried over from the last frame. DERIVED rather
+            // than typed, because the two must not drift apart -- and they had.
+            //
+            // This cap used to be a flat 5, which is 41.7 ms: tighter than the
+            // 50 ms clamp it sits behind, so from ~24 fps down it fired every
+            // frame and threw the leftover away. The craft lost that time; the
+            // camera and the world, running on frame dt, did not -- so the craft
+            // slid backwards on screen and snapped forward again on the next
+            // frame that fitted under the cap. Exactly the symptom the dt clamp
+            // above was added to cure, reintroduced one guard further in, and
+            // worse the lower the frame rate (0.4 m per frame at 30 fps, 3.5 m
+            // at 15, for a craft doing 100 m/s).
+            //
+            // +2, not +1: the division is float arithmetic and lands a hair
+            // under the whole number as often as on it, and the whole point of
+            // deriving this is that it must never come out SHORT.
+            constexpr int kMaxSimSteps =
+                static_cast<int>((kMaxFrameDt + kSimH) / kSimH) + 2;
             simAccum += dt;
             int simSteps = 0;
-            while (simAccum >= kSimH && simSteps < 5) { simAccum -= kSimH; ++simSteps; }
-            if (simSteps == 5) simAccum = 0.0f;   // dropped backlog: a hitch slows time
-            const float simAlpha = simAccum / kSimH; // in [0,1): pose blend to render
+            while (simAccum >= kSimH && simSteps < kMaxSimSteps) {
+                simAccum -= kSimH;
+                ++simSteps;
+            }
+            // Drop a backlog only if there IS one -- i.e. the loop stopped at
+            // the cap with time still queued, not because it had run the queue
+            // dry. Testing the step count instead (as this did) throws away up
+            // to a whole tick of motion on a frame that had already finished
+            // its work, which is the same backward slide by another route.
+            //
+            // Unreachable while the two constants above agree; kept as the
+            // honest last resort if the clamp is ever loosened without this
+            // being rechecked. A hitch then slows time rather than spiralling,
+            // which is right for a hitch and wrong as a routine event -- which
+            // is what it had become.
+            if (simAccum >= kSimH) simAccum = 0.0f;
+            // In [0,1) by construction; clamped because a pose blend outside it
+            // extrapolates, and that is a lurch rather than a smooth frame.
+            const float simAlpha = glm::clamp(simAccum / kSimH, 0.0f, 1.0f);
 
             // Resolve the scene's cameras and point the view at the right one.
             //
