@@ -15,41 +15,14 @@
 #include <fitzel/graphics/Shader.hpp>
 #include <fitzel/world/Terrain.hpp>
 
-#include "CameraPath.hpp" // catmull()
+#include "SandboxMath.hpp" // sampleSpline()
 
 namespace {
-// Spline sampling: aim for a sample every kSampleStep metres so a long sweeping
-// span gets as many samples as it needs to read as a curve instead of a chain of
-// facets, while a short one stays cheap. Clamped at both ends.
+// Roughly the distance between two centreline samples (sampleSpline aims for
+// one every this many metres). Kept here because the corridor smoothing converts
+// a metric sigma into a number of filter passes and needs the sample spacing to
+// do it -- change it there and this must follow.
 constexpr float kSampleStep = 2.0f;
-constexpr int   kMinSub     = 6;
-constexpr int   kMaxSub     = 128;
-
-// Centripetal Catmull-Rom (alpha = 0.5) through b and c. The uniform variant
-// (CameraPath's catmull()) assumes evenly spaced control points; where road
-// points are not -- a tight corner right after a long straight is the usual case
-// -- it overshoots and can loop back on itself. Knot spacing by sqrt(distance)
-// removes that: the curve stays inside the control polygon and corners come out
-// round rather than bulged. Falls back to the uniform form on coincident points.
-glm::vec2 catmullCentripetal(const glm::vec2& p0, const glm::vec2& p1,
-                             const glm::vec2& p2, const glm::vec2& p3, float t) {
-    auto next = [](float ti, const glm::vec2& a, const glm::vec2& b) {
-        return ti + std::sqrt(glm::length(b - a));
-    };
-    const float t0 = 0.0f;
-    const float t1 = next(t0, p0, p1);
-    const float t2 = next(t1, p1, p2);
-    const float t3 = next(t2, p2, p3);
-    if (t1 - t0 < 1e-5f || t2 - t1 < 1e-5f || t3 - t2 < 1e-5f)
-        return catmull(p0, p1, p2, p3, t);
-    const float tt = t1 + t * (t2 - t1);
-    const glm::vec2 a1 = ((t1 - tt) * p0 + (tt - t0) * p1) / (t1 - t0);
-    const glm::vec2 a2 = ((t2 - tt) * p1 + (tt - t1) * p2) / (t2 - t1);
-    const glm::vec2 a3 = ((t3 - tt) * p2 + (tt - t2) * p3) / (t3 - t2);
-    const glm::vec2 b1 = ((t2 - tt) * a1 + (tt - t0) * a2) / (t2 - t0);
-    const glm::vec2 b2 = ((t3 - tt) * a2 + (tt - t1) * a3) / (t3 - t1);
-    return ((t2 - tt) * b1 + (tt - t1) * b2) / (t2 - t1);
-}
 
 // A road surface must be a colour/albedo map. We can't require "diff" in the
 // name (the content folder's PNGs are all support maps and its albedos are .jpg,
@@ -852,50 +825,10 @@ void RoadSystem::load(const nlohmann::json& j) {
 
 std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ(
         std::vector<int>* ptSample) const {
-    std::vector<glm::vec2> center;
-    if (ptSample) ptSample->clear();
-    const int n = static_cast<int>(roadPts.size());
-    if (n < 2) return center;
-    // A closed loop needs >= 3 points to be more than a back-and-forth. When
-    // looping, control points wrap around (modulo n) so the tangents are
-    // continuous across the seam; the extra segment n-1 -> 0 closes the ring.
-    const bool loop = closed && n >= 3;
-    auto pt = [&](int i) -> glm::vec2 {
-        if (loop) return roadPts[((i % n) + n) % n];
-        // Open ends: mirror a phantom point through the endpoint instead of
-        // repeating it. A repeated point has zero knot spacing (degenerate for
-        // the centripetal form) and flattens the first/last span's tangent;
-        // mirroring lets the road leave its end point along the curve it is on.
-        if (i < 0)      return 2.0f * roadPts[0] - roadPts[1];
-        if (i > n - 1)  return 2.0f * roadPts[n - 1] - roadPts[n - 2];
-        return roadPts[i];
-    };
-    const int segs = loop ? n : n - 1;
-    for (int i = 0; i < segs; ++i) {
-        const glm::vec2 p0 = pt(i - 1);
-        const glm::vec2 p1 = pt(i);
-        const glm::vec2 p2 = pt(i + 1);
-        const glm::vec2 p3 = pt(i + 2);
-        // Sample count from this span's own length, so curvature is resolved the
-        // same everywhere regardless of how far apart the user set the points.
-        const int sub = std::clamp(
-            static_cast<int>(std::lround(glm::length(p2 - p1) / kSampleStep)),
-            kMinSub, kMaxSub);
-        // Control point i is the span's first sample -- recorded for the bridge
-        // specs, which name their ends by control-point index.
-        if (ptSample) ptSample->push_back(static_cast<int>(center.size()));
-        // Each span drops its final sample (it repeats the next span's first);
-        // only the very last segment keeps it, to terminate the open line or to
-        // land back on the start point and close the loop.
-        const int last = (i == segs - 1) ? sub : sub - 1;
-        for (int s = 0; s <= last; ++s)
-            center.push_back(catmullCentripetal(p0, p1, p2, p3,
-                                                static_cast<float>(s) / sub));
-    }
-    // The line's final sample closes out the last control point (the loop's
-    // start point, or the open line's end point).
-    if (ptSample) ptSample->push_back(static_cast<int>(center.size()) - 1);
-    return center;
+    // The curve itself lives in SandboxMath (sampleSpline), shared with the
+    // fence/wall/track paths -- one definition of how a spline bends, so a wall
+    // laid alongside a road cannot drift away from it through a corner.
+    return sampleSpline(roadPts, closed, ptSample);
 }
 
 void RoadSystem::loft(const std::vector<glm::vec2>& center,

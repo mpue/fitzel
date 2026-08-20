@@ -46,6 +46,11 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RaceHud.cpp
     src/Showroom.cpp
     src/RoadSide.cpp
+    # Fences, walls and railway track along a spline. Runtime, not editor-only:
+    # a run is derived from its path + rule on load, so the shipped player has to
+    # be able to build it too -- the scene file holds the rule, not the geometry.
+    src/SplineGen.cpp
+    src/SplineSystem.cpp
     # The tower generator and the roadside city are RUNTIME, not editor-only: a
     # district is derived from its biome rules on load, so the shipped player has
     # to be able to build it too -- the scene file holds the rules, not the towers.
@@ -81,6 +86,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/AssetDrop.cpp
     src/VideoImport.cpp
     src/RoadPanel.cpp
+    src/SplinePanel.cpp
+    src/SplineEdit.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp
     src/PaintPanel.cpp
@@ -148,7 +155,7 @@ target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_33)
 # once. Console program for the same reason as above -- it prints the device's
 # channel count, and a ONE channel output is the single most likely reason for a
 # world with no direction in it.
-#   buildeleaseinudiocheck.exe content\sounds\swoosh.wav
+#   build/release/bin/audiocheck.exe content/sounds/swoosh.wav
 add_executable(audiocheck tools/audiocheck.cpp)
 target_link_libraries(audiocheck PRIVATE fitzel)
 

@@ -47,6 +47,7 @@
 #include "Command.hpp"
 #include "PropertyMeta.hpp"
 #include "RoadCommand.hpp"
+#include "SplineCommand.hpp"
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
 #include "VideoLibrary.hpp"
@@ -76,6 +77,7 @@
 #include "LoadingScreen.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
+#include "SplineSystem.hpp"
 #include "RaceSim.hpp"
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
@@ -86,6 +88,8 @@
 #include "Difficulty.hpp"
 #include "GraphicsMenu.hpp"
 #include "RoadPanel.hpp"
+#include "SplinePanel.hpp"
+#include "SplineEdit.hpp"
 #include "SkidSystem.hpp"
 #include "TrailSystem.hpp"
 #include "WeaponSystem.hpp"
@@ -727,6 +731,15 @@ int main(int argc, char** argv) {
         // editor state (shares the LMB) and the roadPickTerrain helper below (used
         // by every viewport brush, not just roads).
         RoadSystem road(lit, assetDb, streamer, texDir);
+        // --- Fences, walls and railway track (owned by SplineSystem) ---------
+        // The same idea as the road, one step lighter: a path plus a rule, with
+        // the geometry derived from the two and never saved. No Build step --
+        // these structures don't touch the terrain, so a path rebuilds the frame
+        // after it changes (see splines.update below).
+        SplineSystem splines;
+        splines.groundAt = [&streamer](float x, float z) {
+            return streamer.heightAt(x, z);
+        };
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
         // Lock-on missiles for the flown glider. Owns its own targeting, flight,
@@ -1079,6 +1092,42 @@ int main(int argc, char** argv) {
             const int n = static_cast<int>(road.roadPts.size());
             if (roadSel  >= n) roadSel  = -1;
             if (roadSel2 >= n) roadSel2 = -1;
+        };
+
+        // --- Spline editor state + undo --------------------------------------
+        // The same three flags the road editor keeps, one level down: which path
+        // is being edited, which of its points is selected, and whether a drag is
+        // in flight. The undo bracket is the road's, with a Snapshot in place of
+        // a Shape.
+        bool splineEditMode   = false;  // owns the LMB (mutually exclusive brushes)
+        bool showSplines      = false;  // the panel's open flag
+        int  splineSel        = -1;     // selected path
+        int  splinePtSel      = -1;     // selected control point of that path
+        bool splineDragging   = false;
+        bool splineDragHeight = false;  // Ctrl held on grab: raise instead of move
+        SplineSystem::Snapshot splineUndoBefore;
+        bool                   splineUndoOpen = false;
+        auto beginSplineEdit = [&]() {
+            if (splineUndoOpen) return; // already inside an interaction
+            splineUndoBefore = splines.snapshot();
+            splineUndoOpen   = true;
+        };
+        auto commitSplineEdit = [&](const char* label) {
+            if (!splineUndoOpen) return;
+            splineUndoOpen = false;
+            auto cmd = std::make_unique<SplineShapeCmd>(splines, splineUndoBefore,
+                                                        splines.snapshot(), label);
+            if (!cmd->trivial()) history.push(std::move(cmd), document);
+        };
+        // An undo can drop the path (or the point) the editor was looking at, and
+        // a phantom selection lights up controls for something you cannot see.
+        auto clampSplineSel = [&]() {
+            if (splineSel >= static_cast<int>(splines.paths.size())) {
+                splineSel = -1; splinePtSel = -1;
+            }
+            if (splineSel >= 0 &&
+                splinePtSel >= static_cast<int>(splines.paths[splineSel].points.size()))
+                splinePtSel = -1;
         };
 
         // --- Scene UI overlay (2D screen-space HUD authored per scene) --------
@@ -2540,6 +2589,8 @@ int main(int argc, char** argv) {
             road.tunnels.clear();
             road.needsBuild = false;
             roadSel = roadSel2 = -1;
+            splines.clear();
+            splineSel = splinePtSel = -1;
             veg.paintedBlades.clear();
             veg.paintedTrees.clear();
             veg.paintedFlowers.clear();
@@ -2918,6 +2969,11 @@ int main(int argc, char** argv) {
             // along in "terrainEdits" above; the mesh is re-lofted on load).
             road.save(j["road"]);
 
+            // Fences, walls and track: paths + rules only. Every metre of geometry
+            // is re-derived on load (see splines.update), exactly as the road's
+            // ribbon is.
+            splines.save(j["splines"]);
+
             // Scene 2D UI overlay (adds its own "uiOverlay" array to the settings).
             uiOverlay.save(j);
 
@@ -3055,6 +3111,13 @@ int main(int argc, char** argv) {
                 road.load(j["road"]);
                 roadSel = roadSel2 = -1;
             }
+            // Splines: absent in scenes saved before they existed, which load as
+            // none rather than as an error (load() clears first either way).
+            if (j.contains("splines") && j["splines"].is_object())
+                splines.load(j["splines"]);
+            else
+                splines.clear();
+            splineSel = splinePtSel = -1;
             // Scene 2D UI overlay: clears itself first, so scenes without the key
             // (older ones, or a fresh scene) load with an empty overlay.
             uiOverlay.load(j);
@@ -4232,6 +4295,17 @@ int main(int argc, char** argv) {
                                                    glm::vec3(0, 1, 0)),
                                     0.0f);
                 }
+            // Fences, walls and track: one static box per short run of path (see
+            // splinegen::Collider). Coarse on purpose -- a car needs the wall to
+            // be there, not to be able to thread the gap between two rails -- and
+            // discarded with the physics world when Play stops, like the road's.
+            for (const SplineSystem::Run& run : splines.runs())
+                for (const splinegen::Collider& col : run.geo.colliders)
+                    physics->addBox(glm::max(col.half, glm::vec3(0.02f)), col.center,
+                                    glm::angleAxis(glm::radians(col.yaw),
+                                                   glm::vec3(0, 1, 0)),
+                                    0.0f);
+
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
             particles.clear(); // ...nor a cloud of smoke from the last run
@@ -4833,6 +4907,7 @@ int main(int argc, char** argv) {
                 // A road point selection is the innermost thing to let go of, so
                 // it clears first -- the bridge pair with it.
                 else if (roadEditMode && roadSel >= 0) { roadSel = roadSel2 = -1; }
+                else if (splineEditMode && splinePtSel >= 0) { splinePtSel = -1; }
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (entitySel >= 0) { entitySel = -1; }
             }
@@ -4868,8 +4943,8 @@ int main(int argc, char** argv) {
                 const bool y = input.isKeyDown(GLFW_KEY_Y);
                 const bool wantUndo = ctrl && z && !shift;
                 const bool wantRedo = ctrl && ((z && shift) || y);
-                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; clampRoadSel(); }
-                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; clampRoadSel(); }
+                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); }
+                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); }
                 prevUndo = wantUndo;
                 prevRedo = wantRedo;
             } else {
@@ -6832,10 +6907,10 @@ int main(int argc, char** argv) {
                     const std::string redoLbl = history.canRedo()
                         ? std::string("Redo ") + history.redoName() : "Redo";
                     if (ImGui::MenuItem(undoLbl.c_str(), "Ctrl+Z", false, history.canUndo())) {
-                        history.undo(document); entitySel = -1; clampRoadSel();
+                        history.undo(document); entitySel = -1; clampRoadSel(); clampSplineSel();
                     }
                     if (ImGui::MenuItem(redoLbl.c_str(), "Ctrl+Y", false, history.canRedo())) {
-                        history.redo(document); entitySel = -1; clampRoadSel();
+                        history.redo(document); entitySel = -1; clampRoadSel(); clampSplineSel();
                     }
                     ImGui::Separator();
                     const bool hasSel = entitySel >= 0 &&
@@ -6890,6 +6965,7 @@ int main(int argc, char** argv) {
                     }
                     if (ImGui::BeginMenu("Track")) {
                         ImGui::MenuItem("Roads",           nullptr, &showRoads);
+                        ImGui::MenuItem("Splines",         nullptr, &showSplines);
                         ImGui::MenuItem("City",            nullptr, &showCity);
                         ImGui::MenuItem("Buildings",       nullptr, &showBuildings);
                         ImGui::Separator();
@@ -6966,7 +7042,7 @@ int main(int argc, char** argv) {
                         showWeather = showSky = showColorGrade = showWater = false;
                         showTerrain = showSculpt = showPaint = false;
                         showVegetation = showScatter = false;
-                        showBuildings = showCity = showRoads = false;
+                        showBuildings = showCity = showRoads = showSplines = false;
                         showCamPath = showUiOverlay = showCursor = false;
                         showVehiclePanel = showGliderPanel = false;
                         showMaterials = showModels = showPrefabs = false;
@@ -7847,6 +7923,42 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Spline handles: the same gesture the road editor uses, for
+                //     fences, walls and track. The tool itself is in SplineEdit.cpp
+                //     -- main only hands it the viewport and the undo bracket.
+                if (splineEditMode) {
+                    // Only one tool may own the left button. The sibling panels
+                    // each switch their rivals off from their own list; rather
+                    // than thread this flag through three more PanelStates, the
+                    // newcomer yields whenever one of them is on.
+                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
+                        sculptMode || paintMode || scatterMode || roadEditMode) {
+                        splineEditMode = false;
+                    } else {
+                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                        splineedit::Context sc{splines, splineSel, splinePtSel,
+                                               splineDragging, splineDragHeight};
+                        sc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
+                        sc.origin      = rmin;
+                        sc.viewW       = static_cast<float>(viewW);
+                        sc.viewH       = static_cast<float>(viewH);
+                        sc.hovered     = viewportHovered;
+                        sc.mouseNdc    = viewportMouseNdc;
+                        sc.mousePos    = mp;
+                        sc.cameraPos   = camera.position();
+                        sc.cameraFront = camera.front();
+                        sc.cameraFov   = camera.fov();
+                        sc.pickTerrain = roadPickTerrain;
+                        sc.groundAt    = [&streamer](float x, float z) {
+                            return streamer.heightAt(x, z);
+                        };
+                        sc.beginEdit = beginSplineEdit;
+                        sc.endEdit   = commitSplineEdit;
+                        sc.editOpen  = [&splineUndoOpen] { return splineUndoOpen; };
+                        splineedit::handle(sc);
+                    }
+                }
+
                 // --- Grass brush: stamp/erase instanced blades under a circular
                 //     3D brush that hugs the terrain. Hold LMB and drag to paint;
                 //     hold Alt (or toggle Erase) to rub grass out. -------------
@@ -8624,7 +8736,8 @@ int main(int argc, char** argv) {
                     // under every waypoint placed in entity edit mode).
                     const bool toolOwnsClick =
                         grassPaintMode || treePaintMode || flowerPaintMode ||
-                        roadEditMode || sculptMode || paintMode || scatterMode;
+                        roadEditMode || sculptMode || paintMode || scatterMode ||
+                        splineEditMode;
                     const ImGuiIO& io = ImGui::GetIO();
                     const bool selMod  = io.KeyCtrl; // Ctrl = modify-selection gesture
                     const bool canPick = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
@@ -9283,8 +9396,24 @@ int main(int argc, char** argv) {
             // hands it the state it may touch (see roadui::PanelState).
             roadui::drawPanel({showRoads, road, roadEditMode, roadSel, roadSel2, assetDb,
                 [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = false; }, // don't fight over LMB
+                         paintMode = scatterMode = splineEditMode = false; }, // don't fight over LMB
                 buildRoad, deleteRoadPoint, beginRoadEdit, commitRoadEdit});
+
+            // Fences, walls and railway track: the paths live in SplineSystem
+            // (saved + undoable on their own timeline), the panel only edits them.
+            // See SplinePanel.cpp.
+            splineui::drawPanel({showSplines, splines, splineEditMode, splineSel,
+                splinePtSel, materials,
+                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
+                         paintMode = scatterMode = roadEditMode = false; },
+                [&](fitzel::AssetId id) {
+                    // Jump to the material the author just pointed an element at,
+                    // so giving it a texture is one click from the picker.
+                    const int mi = document.materialIndex(id);
+                    if (mi >= 0) matSel = mi;
+                    showMaterials = true;
+                },
+                beginSplineEdit, commitSplineEdit});
 
             // Roadside city: the biome rules live on the road (saved + undoable
             // with it), the panel only edits them. See CityPanel.cpp.
@@ -11511,6 +11640,14 @@ int main(int argc, char** argv) {
             //     One GPU material is built per library asset and shared by every
             //     mesh assigned to it; light markers keep their own emissive one.
             //     All frame-local, reserved so pointers stay valid across passes.
+            // Fences, walls and track: regenerate whatever an edit dirtied, HERE
+            // rather than at the edit site, so a path is rebuilt at most once per
+            // frame however many sliders moved -- and before gpuMats is built,
+            // because the generator find-or-creates its palette materials in the
+            // library and a batch drawn with a material that isn't in gpuMats yet
+            // would be skipped for a frame.
+            splines.update(materials);
+
             std::vector<Material> gpuMats;
             gpuMats.reserve(materials.size());
             for (const MaterialDef& md : materials) {
@@ -11755,6 +11892,23 @@ int main(int argc, char** argv) {
                         glm::translate(glm::mat4(1.0f), -lm->center());
                     drawSideModel(lm, mm);
                 }
+
+            // --- Splines (fences, walls, railway track) ------------------------
+            // Derived geometry, merged per material and already in world space --
+            // hence the identity model matrix, exactly like the roadside city
+            // above. Never entities, so they cost no hierarchy row, no undo
+            // snapshot and no line in the scene file.
+            for (const SplineSystem::Run& run : splines.runs()) {
+                for (std::size_t i = 0; i < run.geo.batches.size() &&
+                                        i < run.meshes.size(); ++i) {
+                    const int mi = document.materialIndex(run.geo.batches[i].material);
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) continue;
+                    renderer.submit(run.meshes[i], gpuMats[mi], glm::mat4(1.0f),
+                                    true, isMirror(materials[mi]),
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
+                }
+            }
 
             // Any entity carrying a LightComponent becomes a real light -- decoupled
             // from EntityType, so a box can glow too. Point lights radiate omni;
