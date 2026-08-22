@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 #include "Difficulty.hpp"
+#include "Leaderboard.hpp"
 #include <imgui.h>
 
 namespace fitzel { class AssetDatabase; class Camera; class Texture; }
@@ -133,6 +134,13 @@ public:
     // Sound cues raised since the last call (moves, selections, the launch).
     std::vector<Cue> takeCues() { return std::move(m_cues); }
 
+    // The circuit records, for the BEST TIMES board. A borrowed pointer, not a
+    // copy: the caller owns the table (it is what a finished race is written
+    // into), and a copy taken when the screen opened would be a board that goes
+    // stale the moment somebody races. Null is fine -- the board then says the
+    // circuit has no times, which is the truth.
+    void setRecords(const leaderboard::Table* t) { m_records = t; }
+
 private:
     // One selectable craft, flattened out of the scene at begin().
     struct Craft {
@@ -167,9 +175,14 @@ private:
     // Craft2 is skipped entirely with one player rather than shown disabled, so
     // the screen never asks a question that has no meaning -- the same rule the
     // field and its skill follow in a time trial.
+    //
+    // TIMES sits AFTER Start on purpose. Confirm walks forward and commits on
+    // START, so a row past it is never reached by that walk -- the board is
+    // there for anyone who goes looking, and never in the way of anyone who just
+    // wants to race.
     enum class Row { Craft   = 0, Craft2 = 1, Track = 2,
                      Players = 3, Laps   = 4, Mode  = 5, Field = 6, Skill = 7,
-                     Start   = 8 };
+                     Start   = 8, Times  = 9 };
 
     // The seat the craft carousel is currently picking for -- Craft2's row means
     // player two. One carousel, not two: the choice is the same catalogue and the
@@ -227,6 +240,12 @@ private:
     int  m_players  = 1;
     int  m_craftSel2 = 0;
     int  m_prevCraft = -1;       // craft leaving the stage during a swap
+    // The records board, and which circuit it is showing. Its own index rather
+    // than m_trackSel: paging through the times must not quietly re-answer which
+    // circuit the race is about to be run on.
+    const leaderboard::Table* m_records = nullptr;
+    bool m_timesOpen = false;
+    int  m_timesSel  = 0;
     Row  m_row = Row::Players;
 
     // --- Race setup ---------------------------------------------------------

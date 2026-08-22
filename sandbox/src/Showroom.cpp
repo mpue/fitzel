@@ -116,6 +116,13 @@ struct Ctx {
     }
 };
 
+// The records board: one circuit's rows, and while it is up the biggest thing on
+// the screen. It COVERS the podium rather than sitting beside it -- a table of
+// times is read rather than glanced at, and there is nothing to choose while it
+// is open, so nothing is being hidden that anybody needs at that moment.
+void drawRecords(const struct Ctx& g, float A, const char* title,
+                 const std::vector<leaderboard::Entry>& rows);
+
 // A translucent panel with a hairline edge and an accent bar down its left side.
 void panel(const Ctx& g, float ax, float ay, float bx, float by, float alpha,
            bool accentBar = true) {
@@ -157,6 +164,78 @@ void statBar(const Ctx& g, float x, float y, float w, float h,
 // A large button. Hovering selects it, so the mouse never has to hit anything
 // small or be held steady while clicking -- the same rule the race's end-of-race
 // question follows.
+void drawRecords(const Ctx& g, float A, const char* title,
+                 const std::vector<leaderboard::Entry>& rows) {
+    const float w  = std::min(760.0f * g.S, (g.x1 - g.x0) - 60.0f * g.S);
+    const float rh = 30.0f * g.S;                       // one row
+    const float h  = 116.0f * g.S + rh * leaderboard::kTop + 34.0f * g.S;
+    const float ax = g.cx - w * 0.5f, ay = g.cy - h * 0.5f;
+    const float bx = ax + w,          by = ay + h;
+
+    // Darken everything behind it: the board is a place you go, not a label
+    // laid over the screen you were on.
+    g.dl->AddRectFilled(ImVec2(g.x0, g.y0), ImVec2(g.x1, g.y1),
+                        fade(IM_COL32(4, 6, 10, 210), A));
+    panel(g, ax, ay, bx, by, A);
+
+    const float ix = ax + 26.0f * g.S;
+    float       y  = ay + 20.0f * g.S;
+    g.spaced(ix, y, g.fTiny, fade(kDim, A), "BEST TIMES");
+    y += g.fTiny * 2.2f;
+    g.text(ix, y, g.fBig, fade(kText, A), title);
+    y += g.fBig * 1.5f;
+
+    // Column edges, right-aligned for everything that is a number: times read as
+    // times when their decimal points line up, and as noise when they do not.
+    const float cNum  = ix + 34.0f * g.S;
+    const float cLap  = ix + 190.0f * g.S;
+    const float cTot  = ix + 340.0f * g.S;
+    const float cLaps = ix + 410.0f * g.S;
+    const float cSkil = ix + 530.0f * g.S;
+    const float cDate = bx - 26.0f * g.S;
+
+    g.spaced(ix, y, g.fTiny, fade(kDim, A * 0.85f), "#");
+    g.textR(cLap,  y, g.fTiny, fade(kDim, A * 0.85f), "BEST LAP");
+    g.textR(cTot,  y, g.fTiny, fade(kDim, A * 0.85f), "RACE");
+    g.textR(cLaps, y, g.fTiny, fade(kDim, A * 0.85f), "LAPS");
+    g.text (cSkil - 80.0f * g.S, y, g.fTiny, fade(kDim, A * 0.85f), "SKILL");
+    g.textR(cDate, y, g.fTiny, fade(kDim, A * 0.85f), "DATE");
+    y += g.fTiny * 1.9f;
+    g.dl->AddLine(ImVec2(ix, y), ImVec2(bx - 26.0f * g.S, y), fade(kEdge, A), 1.0f);
+    y += 8.0f * g.S;
+
+    if (rows.empty()) {
+        g.textC(g.cx, y + rh * 2.0f, g.fBody, fade(kDim, A * 0.9f),
+                "No times on this circuit yet.");
+    }
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        const leaderboard::Entry& e = rows[i];
+        const float ry = y + rh * static_cast<float>(i);
+        // The leader's row gets the accent, everything below it plain text: a
+        // table where every line is emphasised has emphasised nothing.
+        const ImU32 col = (i == 0) ? g.accent(A) : fade(kText, A * 0.92f);
+        if (i == 0)
+            g.dl->AddRectFilled(ImVec2(ix - 8.0f * g.S, ry - 4.0f * g.S),
+                                ImVec2(bx - 18.0f * g.S, ry + rh - 6.0f * g.S),
+                                g.accent(0.10f * A), 3.0f * g.S);
+        char num[8];
+        std::snprintf(num, sizeof num, "%d", i + 1);
+        g.textR(cNum, ry, g.fSmall, fade(kDim, A), num);
+        g.textR(cLap, ry, g.fBody,  col, leaderboard::formatTime(e.bestLap).c_str());
+        g.textR(cTot, ry, g.fSmall, fade(kText, A * 0.75f),
+                leaderboard::formatTime(e.total).c_str());
+        char laps[8];
+        std::snprintf(laps, sizeof laps, "%d", e.laps);
+        g.textR(cLaps, ry, g.fSmall, fade(kDim, A), laps);
+        g.text (cSkil - 80.0f * g.S, ry, g.fSmall, fade(kDim, A),
+                difficulty::name(e.level));
+        g.textR(cDate, ry, g.fSmall, fade(kDim, A * 0.8f), e.date.c_str());
+    }
+
+    g.textC(g.cx, by - 30.0f * g.S, g.fTiny, fade(kDim, A * 0.9f),
+            "LEFT / RIGHT   CIRCUIT          ENTER   BACK");
+}
+
 bool bigButton(const Ctx& g, float ax, float ay, float bx, float by,
                const char* label, bool selected, float alpha, int* hovered,
                float pulse) {
@@ -450,13 +529,14 @@ bool Showroom::rowUsable(Row r) const {
 }
 
 void Showroom::moveRow(int dir) {
-    const int last = static_cast<int>(Row::Start);
+    const int last = static_cast<int>(Row::Times);
     int r = std::clamp(static_cast<int>(m_row) + dir, 0, last);
     // Rows this configuration has no use for are stepped over in whichever
     // direction the move was going -- the second seat with one player, the field
     // and its skill in a time trial. The walk always terminates because the two
     // ends (Players and START) can always be answered.
     while (r > 0 && r < last && !rowUsable(static_cast<Row>(r))) r += dir;
+    // Nothing below TIMES, so a walk that ran off the end lands on it.
     m_row = static_cast<Row>(std::clamp(r, 0, last));
 }
 
@@ -525,6 +605,19 @@ void Showroom::update(std::vector<Entity>& entities, fitzel::Camera& camera,
     // screen goes white. Handing over mid-animation would cut it off.
     if (m_launching) {
         m_launch = std::min(1.0f, m_launch + dt * 1.25f);
+    } else if (m_timesOpen) {
+        // The board owns the whole input while it is up. Left/right pages the
+        // circuits; anything that means "done" closes it -- including Esc, which
+        // must not fall through and walk out of the start screen entirely.
+        const int n = static_cast<int>(m_tracks.size());
+        if (n > 0 && (in.left || in.right)) {
+            m_timesSel = (m_timesSel + (in.right ? 1 : n - 1)) % n;
+            cue(m_sndMove, 1.0f);
+        }
+        if (in.confirm || in.back) {
+            m_timesOpen = false;
+            cue(m_sndSelect, 0.9f);
+        }
     } else {
         // --- Navigation -----------------------------------------------------
         if (in.up)   { moveRow(-1); cue(m_sndMove, 0.92f); }
@@ -541,7 +634,14 @@ void Showroom::update(std::vector<Entity>& entities, fitzel::Camera& camera,
         // Confirm walks forward through the rows and commits on the last one, so
         // the whole screen can be answered with one button held in one hand.
         if (in.confirm) {
-            if (m_row != Row::Start) {
+            if (m_row == Row::Times) {
+                // Open on the circuit being looked at, not on whatever the board
+                // was left showing: the question behind the button is almost
+                // always "what is the time to beat on THIS one".
+                m_timesOpen = true;
+                m_timesSel  = m_trackSel;
+                cue(m_sndSelect, 1.0f);
+            } else if (m_row != Row::Start) {
                 moveRow(+1);
                 cue(m_sndMove, 1.0f);
             } else if (!m_craft.empty() && !m_tracks.empty()) {
@@ -680,7 +780,10 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
     g.fBig  = 38.0f * g.S; g.fHuge  = 74.0f * g.S;
     g.t     = m_time;
     g.acc   = accent();
-    g.mouse = !ImGui::GetIO().WantCaptureMouse && !m_launching;
+    // The records board takes the mouse with it: the buttons underneath are
+    // still drawn, and a click that reached one of them through the board would
+    // launch a race the player was only reading a table.
+    g.mouse = !ImGui::GetIO().WantCaptureMouse && !m_launching && !m_timesOpen;
 
     const float pad   = 34.0f * g.S;
     const float intro = easeOut(m_intro);
@@ -1134,6 +1237,39 @@ Launch Showroom::draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
             m_launching = true; m_launch = 0.0f;
             cue(m_sndStart, 1.0f);
         }
+    }
+
+    // --- BEST TIMES ---------------------------------------------------------
+    // Beside START, not under it: the bottom edge is already spoken for, and a
+    // button that shares the eye with the one that commits should not sit in its
+    // path. No pulse and a dimmer face, for the same reason.
+    {
+        const float bw2 = 168.0f * g.S, bh2 = 44.0f * g.S;
+        const float ax2 = g.cx - 160.0f * g.S - bw2 - 16.0f * g.S;
+        const float ay2 = g.y1 - 88.0f * g.S + (62.0f * g.S - bh2) * 0.5f;
+        int hov2 = 0;
+        const bool click2 = bigButton(g, ax2, ay2, ax2 + bw2, ay2 + bh2,
+                                      "BEST TIMES", m_row == Row::Times,
+                                      A * 0.85f, &hov2, 0.0f);
+        if (hov2) m_row = Row::Times;
+        if (click2 && !m_launching) {
+            m_timesOpen = true;
+            m_timesSel  = m_trackSel;
+            cue(m_sndSelect, 1.0f);
+        }
+    }
+
+    // --- The records board, over everything --------------------------------
+    if (m_timesOpen && !m_tracks.empty()) {
+        static const std::vector<leaderboard::Entry> kNoRecords;
+        const int i = std::clamp(m_timesSel, 0,
+                                 static_cast<int>(m_tracks.size()) - 1);
+        const Track&      t     = m_tracks[i];
+        const std::string title = t.title.empty() ? t.scene : t.title;
+        // `intro` rather than the master alpha: the board is never up during a
+        // launch, so it has no business fading with one.
+        drawRecords(g, intro, title.c_str(),
+                    m_records ? leaderboard::rows(*m_records, t.scene) : kNoRecords);
     }
 
     // --- Launch wipe --------------------------------------------------------

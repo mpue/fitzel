@@ -406,8 +406,27 @@ void drawBanners(const Ctx& g, const racesim::RaceState& st, float topInset) {
         y += bh + 8.0f * g.S;
     }
     // Idle hint before the first crossing (only when the scene has a line).
-    if (!st.raceActive && !st.raceFinished && st.raceHasLine && st.raceCountdown <= 0.0f)
+    if (!st.raceActive && !st.raceFinished && st.raceHasLine &&
+        st.raceCountdown <= 0.0f && !st.onGrid)
         g.textC(g.cx, y, g.fBody, IM_COL32(220, 224, 232, 200), "CROSS THE START LINE TO BEGIN");
+}
+
+// The grid hold: lined up, still, waiting to be asked for.
+//
+// Deliberately quiet, and low on the screen. What the moment is FOR is the craft
+// on the grid and the camera going round it; a HUD that competes with that has
+// misunderstood which of the two the player came to look at.
+void drawGridHold(const Ctx& g, const racesim::RaceState& st) {
+    if (!st.onGrid) return;
+    // Fade in over the first second so it does not snap on over the cut.
+    const float a  = std::clamp(st.gridTime, 0.0f, 1.0f);
+    const float cy = g.y0 + (g.y1 - g.y0) * 0.78f;
+    g.textC(g.cx, cy - g.fBig * 1.5f, g.fBig, fade(kGold, a), "ON THE GRID");
+    // A slow pulse under the prompt -- enough to read as "waiting for you"
+    // without turning into something that has to be looked away from.
+    const float pulse = 0.70f + 0.30f * std::sin(st.gridTime * 2.6f);
+    g.textC(g.cx, cy, g.fBody, fade(kText, a * pulse),
+            "PRESS ENTER  /  PAD A  TO START");
 }
 
 // Ready / Set / Go: three lights over one big word, both popping on the change.
@@ -593,6 +612,9 @@ EndAction draw(ImDrawList* dl, const ImVec2& vmin, const ImVec2& vsize,
     drawSpeed(g, st);
     drawEnergy(g, st);
     drawHitFlash(g, st);
+    // Before the early-out below: the grid hold is the one moment where there is
+    // a race to talk about and no race data to draw yet.
+    drawGridHold(g, st);
 
     const bool inRace = st.raceHasLine || st.raceActive || st.raceFinished ||
                         !st.standings.empty();

@@ -153,6 +153,13 @@ struct RaceState {
     float raceCountdown = 0.0f;        // Ready/Set/Go: > 0 holds everyone still
     float goFlash       = 0.0f;        // "GO!" flash once the countdown hits 0
     int   cdPhase       = -1;          // countdown step already announced (0/1/2, -1 = none)
+    // The held moment on the grid, before the countdown. The field stands exactly
+    // as the countdown holds it, but nothing is counting: the camera circles the
+    // player's craft and the race waits to be asked for. Only a launch from the
+    // start screen opens it -- a restart is a second run of something already
+    // introduced, and a time trial has no field to look at.
+    bool  onGrid   = false;
+    float gridTime = 0.0f;             // seconds held there, which is the orbit angle
 
     // --- Standings (the HUD's participant list) --------------------------
     // Rebuilt every frame by updateOpponents from the opponents' race state plus

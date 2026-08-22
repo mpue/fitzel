@@ -87,6 +87,7 @@
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "Difficulty.hpp"
+#include "Leaderboard.hpp"
 #include "GraphicsMenu.hpp"
 #include "RoadPanel.hpp"
 #include "RoadPrefab.hpp"
@@ -480,7 +481,270 @@ void loadWeatherSounds(Audio& audio, const std::string& soundDir,
     out.storm.setVolume(0.0f);  out.storm.play();
 }
 
+// --- Asset pickers ---------------------------------------------------------
+
+// Asset file names of one type, sorted and deduplicated. Sounds and sprites are
+// referenced by NAME rather than by GUID, here and in the scene file, because a
+// filename survives a re-import and reads sensibly to whoever opens the .fitzel.
+std::vector<std::string> assetNamesOfType(AssetDatabase& db, AssetType type) {
+    std::vector<std::string> out;
+    for (const AssetId& id : db.allAssets())
+        if (db.typeForId(id) == type)
+            if (const auto* e = db.entry(id))
+                out.push_back(e->absPath.filename().string());
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+// Inspector combo that assigns one of `names` to a string field. `emptyLabel` is
+// what an unset field shows and what selecting it clears back to.
+//
+// A field naming something that is no longer in the list is called out instead of
+// being drawn like any other setting: a missing asset is the one state the combo
+// itself cannot show, and it looks exactly like a working one until the scene is
+// played.
+void assetPickerCombo(const char* label, std::string& field,
+                      const std::vector<std::string>& names,
+                      const char* emptyLabel, const char* what) {
+    const std::string cur = field.empty() ? emptyLabel : field;
+    if (ImGui::BeginCombo(label, cur.c_str())) {
+        if (ImGui::Selectable(emptyLabel, field.empty())) field.clear();
+        for (const std::string& n : names)
+            if (ImGui::Selectable(n.c_str(), field == n)) field = n;
+        ImGui::EndCombo();
+    }
+    if (!field.empty() && std::find(names.begin(), names.end(), field) == names.end())
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "Missing %s: %s",
+                           what, field.c_str());
+}
+
+// --- The grid orbit --------------------------------------------------------
+// The shot a race is held on until the player starts it: a slow ring around
+// their craft, a little above it, looking down at the nose.
+//
+// Slow on purpose. The subject is not moving, so the only motion in the frame is
+// the camera's own -- and a fast circle around a stationary object reads as a
+// mistake rather than as a held moment.
+constexpr float kGridOrbitRadius = 16.0f;   // metres out from the craft
+constexpr float kGridOrbitHeight = 5.5f;    // metres above it
+constexpr float kGridOrbitRate   = 0.28f;   // rad/s -- about 22 s for a full lap
+constexpr float kGridOrbitFov    = 55.0f;   // a touch tighter than the chase cam
+
 #ifndef FITZEL_PLAYER
+
+// --- Lua code completion ---------------------------------------------------
+
+// The completion popup's state: the matches for the identifier under the cursor
+// (the popup shows while this is non-empty and the editor is focused), the word
+// being completed, and what Esc last did about it.
+struct Completions {
+    std::vector<Completion> items;
+    std::string             prefix;             // the partial word being completed
+    int                     sel  = 0;           // highlighted match
+    bool                    open = false;
+    bool                    gameMember  = false; // completing after "game."
+    bool                    manualClose = false; // Esc: stay closed until
+    std::string             closedPrefix;        // the prefix changes
+};
+
+// Refresh the candidates from the identifier under the cursor. Called each frame
+// after the editor renders, so it sees the latest edit.
+void refreshCompletion(TextEditor& ed, Completions& c) {
+    c.items.clear();
+    const auto        cur  = ed.GetCursorPosition();
+    const std::string line = ed.GetCurrentLineText();
+    const int         tab  = ed.GetTabSize();
+    // Map the tab-expanded cursor column back to a byte index in the line.
+    int idx = 0, col = 0;
+    while (idx < static_cast<int>(line.size()) && col < cur.mColumn) {
+        col += (line[idx] == '\t') ? (tab - (col % tab)) : 1;
+        ++idx;
+    }
+    auto isIdent = [](char ch){
+        return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
+    int start = idx;
+    while (start > 0 && isIdent(line[start - 1])) --start;
+    c.prefix = line.substr(start, idx - start);
+    // "game." member context: a '.' right before the word, and the token before
+    // the dot is exactly "game".
+    c.gameMember = false;
+    if (start > 0 && line[start - 1] == '.') {
+        int ws = start - 1;
+        while (ws > 0 && isIdent(line[ws - 1])) --ws;
+        c.gameMember = (line.substr(ws, (start - 1) - ws) == "game");
+    }
+    if (c.prefix.empty() && !c.gameMember) {
+        c.open = false; c.manualClose = false; return;
+    }
+    // Esc keeps the popup closed until the prefix actually changes.
+    if (c.manualClose) {
+        if (c.prefix == c.closedPrefix) { c.open = false; return; }
+        c.manualClose = false;
+    }
+    auto lower = [](std::string s){
+        for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        return s; };
+    const std::string pfx = lower(c.prefix);
+    auto consider = [&](const Completion* arr, std::size_t count){
+        for (std::size_t i = 0; i < count; ++i)
+            if (lower(arr[i].text).rfind(pfx, 0) == 0) c.items.push_back(arr[i]);
+    };
+    if (c.gameMember)
+        consider(kGameMembers, sizeof(kGameMembers) / sizeof(kGameMembers[0]));
+    else
+        consider(kTopLevel, sizeof(kTopLevel) / sizeof(kTopLevel[0]));
+    // Nothing useful to offer (no match, or the sole match is already typed).
+    if (c.items.empty() || (c.items.size() == 1 && lower(c.items[0].text) == pfx)) {
+        c.open = false; return;
+    }
+    if (c.sel >= static_cast<int>(c.items.size())) c.sel = 0;
+    c.open = true;
+}
+
+// --- The toolbar strip's icons ---------------------------------------------
+// Every button in the strip paints its own picture into the window's draw list.
+// No icon font: nothing extra to ship, nothing to fall back to when a glyph is
+// missing, and a 26 px symbol built from a handful of lines stays sharp where a
+// scaled bitmap would not. It is all pure painting -- draw list, centre, radius,
+// colour -- which is why it lives out here, and why the strip itself is left
+// holding only what a click does.
+namespace icon {
+
+constexpr ImU32 kOn  = IM_COL32(255, 205,  70, 255);  // this tool/shape is active
+constexpr ImU32 kOff = IM_COL32(215, 215, 220, 255);
+constexpr ImU32 kDim = IM_COL32(130, 132, 140, 255);  // offered but not available
+
+// The primitive shapes, drawn as themselves.
+void shape(ImDrawList* dl, EntityType t, ImVec2 c, float r, ImU32 col) {
+    switch (t) {
+        case EntityType::Box:
+            dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0.0f, 0, 2.0f);
+            break;
+        case EntityType::Ramp:
+            dl->AddTriangle({c.x - r, c.y + r}, {c.x + r, c.y + r},
+                            {c.x + r, c.y - r}, col, 2.0f);
+            break;
+        case EntityType::Cylinder:
+            dl->AddRect({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y + r},
+                        col, 4.0f, 0, 2.0f);
+            dl->AddLine({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y - r}, col, 2.0f);
+            break;
+        case EntityType::Sphere:
+            dl->AddCircle(c, r, col, 0, 2.0f);
+            break;
+        case EntityType::Light:
+            dl->AddCircleFilled(c, r * 0.45f, col);
+            for (int a = 0; a < 8; ++a) {
+                const float  ang = a * 0.7853982f;
+                const ImVec2 d(std::cos(ang), std::sin(ang));
+                dl->AddLine({c.x + d.x * r * 0.7f, c.y + d.y * r * 0.7f},
+                            {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
+            }
+            break;
+        case EntityType::Empty:  // small dashed cross = transform node
+            dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.5f);
+            dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.5f);
+            dl->AddCircle(c, r * 0.4f, col, 0, 1.5f);
+            break;
+        default: break;
+    }
+}
+
+// A mouse arrow for Select; the same arrow with a plus next to it for Create.
+void pointer(ImDrawList* dl, bool create, ImVec2 c, float r, ImU32 col) {
+    const ImVec2 a(c.x - r * (create ? 0.9f : 0.45f), c.y - r);
+    dl->AddTriangleFilled(a, {a.x, a.y + r * 1.7f},
+                          {a.x + r * 1.15f, a.y + r * 1.15f}, col);
+    if (create) {
+        const ImVec2 q(c.x + r * 0.6f, c.y - r * 0.3f);
+        dl->AddLine({q.x - r * 0.5f, q.y}, {q.x + r * 0.5f, q.y}, col, 2.0f);
+        dl->AddLine({q.x, q.y - r * 0.5f}, {q.x, q.y + r * 0.5f}, col, 2.0f);
+    }
+}
+
+// A little horizon with a hill on it.
+void terrain(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    dl->AddLine({c.x - r, c.y + r * 0.6f}, {c.x + r, c.y + r * 0.6f}, col, 1.5f);
+    dl->AddTriangle({c.x - r * 0.8f, c.y + r * 0.6f}, {c.x, c.y - r * 0.7f},
+                    {c.x + r * 0.8f, c.y + r * 0.6f}, col, 1.8f);
+}
+
+// The three gizmo operations: a 4-way arrow, a circular arrow, a diagonal
+// between a filled and an open handle.
+void gizmo(ImDrawList* dl, ImGuizmo::OPERATION op, ImVec2 c, float r, ImU32 col) {
+    const float a = 3.5f;
+    if (op == ImGuizmo::TRANSLATE) {
+        dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.6f);
+        dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.6f);
+        dl->AddTriangleFilled({c.x + r, c.y}, {c.x + r - a, c.y - a}, {c.x + r - a, c.y + a}, col);
+        dl->AddTriangleFilled({c.x - r, c.y}, {c.x - r + a, c.y - a}, {c.x - r + a, c.y + a}, col);
+        dl->AddTriangleFilled({c.x, c.y - r}, {c.x - a, c.y - r + a}, {c.x + a, c.y - r + a}, col);
+        dl->AddTriangleFilled({c.x, c.y + r}, {c.x - a, c.y + r - a}, {c.x + a, c.y + r - a}, col);
+    } else if (op == ImGuizmo::ROTATE) {
+        dl->PathArcTo(c, r, 0.6f, 5.4f, 20);
+        dl->PathStroke(col, 0, 1.8f);
+        const ImVec2 e(c.x + std::cos(5.4f) * r, c.y + std::sin(5.4f) * r);
+        const ImVec2 tg(-std::sin(5.4f), std::cos(5.4f));
+        const ImVec2 no(std::cos(5.4f), std::sin(5.4f));
+        dl->AddTriangleFilled({e.x + tg.x * a, e.y + tg.y * a},
+                              {e.x - no.x * a * 0.7f, e.y - no.y * a * 0.7f},
+                              {e.x + no.x * a * 0.7f, e.y + no.y * a * 0.7f}, col);
+    } else {
+        dl->AddLine({c.x - r * 0.7f, c.y + r * 0.7f}, {c.x + r * 0.7f, c.y - r * 0.7f}, col, 1.8f);
+        dl->AddRectFilled({c.x + r * 0.7f - 3, c.y - r * 0.7f - 3},
+                          {c.x + r * 0.7f + 3, c.y - r * 0.7f + 3}, col);
+        dl->AddRect({c.x - r * 0.7f - 3, c.y + r * 0.7f - 3},
+                    {c.x - r * 0.7f + 3, c.y + r * 0.7f + 3}, col, 0.0f, 0, 1.5f);
+    }
+}
+
+// Object box with its own tilted axis = local frame; globe with meridian and
+// equator = world frame.
+void gizmoSpace(ImDrawList* dl, bool local, ImVec2 c, float r, ImU32 col) {
+    if (local) {
+        dl->AddRect({c.x - r * 0.7f, c.y - r * 0.55f},
+                    {c.x + r * 0.35f, c.y + r * 0.7f}, col, 0.0f, 0, 1.6f);
+        dl->AddLine({c.x + r * 0.35f, c.y - r * 0.55f}, {c.x + r, c.y - r}, col, 1.6f);
+    } else {
+        dl->AddCircle(c, r, col, 0, 1.6f);
+        dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.2f);
+        dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.2f);
+        dl->AddBezierQuadratic({c.x, c.y - r}, {c.x - r * 0.9f, c.y},
+                               {c.x, c.y + r}, col, 1.1f);
+        dl->AddBezierQuadratic({c.x, c.y - r}, {c.x + r * 0.9f, c.y},
+                               {c.x, c.y + r}, col, 1.1f);
+    }
+}
+
+// Two edges converging into the distance plus a dashed centre line: a road,
+// readable at 26 px without an icon font.
+void road(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
+    dl->AddLine({c.x - r, c.y + r}, {c.x - r * 0.35f, c.y - r}, col, 1.8f);
+    dl->AddLine({c.x + r, c.y + r}, {c.x + r * 0.35f, c.y - r}, col, 1.8f);
+    dl->AddLine({c.x, c.y + r * 0.9f}, {c.x, c.y + r * 0.2f}, col, 1.4f);
+    dl->AddLine({c.x, c.y - r * 0.2f}, {c.x, c.y - r * 0.8f}, col, 1.4f);
+}
+
+} // namespace icon
+
+// One button in the strip: a blank fixed-size button with a tooltip, whose
+// picture the caller paints afterwards at `center` -- afterwards, so it lands on
+// top of the button rather than under it. A disabled button still draws itself:
+// greyed out is a state worth showing, missing is not.
+bool iconButton(const char* id, ImVec2 size, const char* tip, bool disabled,
+                ImVec2& center) {
+    ImGui::PushID(id);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::BeginDisabled(disabled);
+    const bool clicked = ImGui::Button("##b", size);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    center = ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f);
+    ImGui::PopID();
+    ImGui::SameLine();
+    return clicked;
+}
 
 // --- The default panel layout ----------------------------------------------
 
@@ -1205,6 +1469,13 @@ int main(int argc, char** argv) {
         // there is no dialog for it here.
         static constexpr const char* kDifficultyFile = "difficulty.json";
         difficulty::Profile gameDifficulty = difficulty::load(kDifficultyFile);
+        // The circuit records, beside the exe for the same reason difficulty.json
+        // is: an exported game's content lives in a read-only archive, and a
+        // record has to be writable the moment after it is driven. Loaded once
+        // and kept -- the start screen reads it, a finished race adds to it.
+        static constexpr const char* kScoresFile = "scores.json";
+        leaderboard::Table raceRecords = leaderboard::load(kScoresFile);
+        bool prevRaceFinished = false;   // edge, so a flag is written once
         gfxmenu::Menu     gfxUi;
         gfxmenu::Input    gfxIn;          // rebuilt every frame, read at draw time
         bool prevGfxKey     = false;      // F10 edge
@@ -3225,6 +3496,16 @@ int main(int argc, char** argv) {
                 [k, &r](nlohmann::json& j){ j[k] = r; },
                 [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
         };
+        // Strings, for the settings that NAME something rather than measure it.
+        // There was no such adder, which is why the environment's HDRI could be
+        // chosen and never saved: the panel had a std::string and the registry
+        // only took numbers, so the one field that said WHICH panorama had
+        // nowhere to go.
+        auto addS = [&](const char* k, std::string& r) {
+            tunables.push_back({k,
+                [k, &r](nlohmann::json& j){ j[k] = r; },
+                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+        };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
         addB("autoWeather", autoWeather);      addF("weather", weather);
@@ -3243,6 +3524,14 @@ int main(int argc, char** argv) {
         addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
         addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
         addF("fogDensity", fogDensity);        addF("fogFalloff", fogFalloff);
+        // Image-based lighting. The panorama travels as its PROJECT-RELATIVE
+        // path, not as a GUID and not as an absolute one: it survives a
+        // re-import, it reads sensibly to whoever opens the .fitzel, and it is
+        // the same string the Environment panel shows. Resolving it back to a
+        // file on disk is afterSceneLoadFn's job (see applyHdri).
+        addS("hdri", hdriLoaded);
+        addB("ibl", iblEnabled);               addB("iblSkybox", iblSkybox);
+        addF("iblIntensity", iblIntensity);
         // Volumetric fog. Every knob of it is scene data: where the bank stands,
         // how thick it is and how its noise moves are things the world's author
         // decided, so they travel with the world -- only `volFogSteps` and
@@ -3720,7 +4009,31 @@ int main(int argc, char** argv) {
         // readSettings has just loaded those parameters into uiSettings, so the
         // migrated terrain is exactly the one the file described. Saving the scene
         // then writes the marker and the world is an entity from there on.
+        // Light the world with the panorama the scene names. The settings carry
+        // the project-relative path; EnvironmentIBL wants a file, so the asset
+        // database is asked to turn one into the other -- which is also what
+        // makes a scene survive the library being moved or re-scanned.
+        //
+        // A name that no longer resolves leaves the environment unlit and says
+        // so, rather than quietly keeping the previous scene's sky: an HDRI that
+        // followed you from the last scene is a lighting bug you go looking for
+        // in the wrong place.
+        auto applyHdri = [&] {
+            if (hdriLoaded.empty()) return;
+            for (const AssetId id : assetDb.allAssets()) {
+                const AssetDatabase::Entry* e = assetDb.entry(id);
+                if (!e || e->relPath != hdriLoaded) continue;
+                if (!environment.load(e->absPath.string()))
+                    std::fprintf(stderr, "[Fitzel] HDRI failed to load: %s\n",
+                                 e->absPath.string().c_str());
+                return;
+            }
+            std::fprintf(stderr, "[Fitzel] scene names an HDRI the asset library "
+                                 "does not have: %s\n", hdriLoaded.c_str());
+        };
+
         afterSceneLoadFn = [&] {
+            applyHdri();
             bool have = false;
             for (const Entity& e : entities)
                 if (e.components.get<TerrainComponent>()) { have = true; break; }
@@ -3773,6 +4086,12 @@ int main(int argc, char** argv) {
         // library, so a live copy's model ids would dangle -- the asset GUIDs in
         // the JSON re-import against the new one. Same round trip a .fprefab
         // makes, without the file.
+        // Did this launch come from the START SCREEN, as opposed to a restart
+        // re-sending the same craft? Only the first gets the grid orbit: a
+        // restart is a second run of a circuit the player has already been
+        // introduced to, and making them sit through the introduction again is
+        // the opposite of what "race again" asks for.
+        bool           pendingFromShowroom = false;
         nlohmann::json pendingCraftJson;
         std::string    pendingCraftName;
         // The second seat's craft, when the start screen was set to two players.
@@ -3825,17 +4144,11 @@ int main(int argc, char** argv) {
         bool        editorDirty = false;  // unsaved changes
         char        newScriptName[64] = "";
         int         newScriptTemplate = 0; // 0 = empty component, 1 = documented
-        // Code-completion popup state for the Lua editor. `compItems` are the
-        // matches for the identifier currently under the cursor; the popup shows
-        // while non-empty and the editor is focused (Tab/Enter accepts, arrows
-        // navigate, Esc dismisses -- see the editor window below).
-        std::vector<Completion> compItems;
-        std::string             compPrefix;   // the partial word being completed
-        int                     compSel  = 0; // highlighted match
-        bool                    compOpen = false;
-        bool                    compGameMember = false; // completing after "game."
-        bool                    compManualClose = false; // Esc: stay closed until
-        std::string             compClosedPrefix;        // the prefix changes
+        // Code-completion popup state for the Lua editor (see Completions): the
+        // popup shows while there are matches and the editor is focused --
+        // Tab/Enter accepts, arrows navigate, Esc dismisses. See the editor
+        // window below.
+        Completions comp;
 #endif // !FITZEL_PLAYER
         // Where entity scripts live: the open project's scripts/ folder, or the
         // bundled scripts/ next to the exe when no project is open (demo scripts).
@@ -3902,117 +4215,17 @@ int main(int argc, char** argv) {
             std::ofstream out(editorPath);
             if (out) { out << luaEditor.GetText(); scripts.reset(); editorDirty = false; }
         };
-        // Refresh the code-completion candidates from the identifier under the
-        // cursor. Fills compPrefix/compItems/compGameMember and toggles compOpen.
-        // Called each frame after the editor renders (so it sees the latest edit).
-        auto recomputeCompletion = [&](){
-            compItems.clear();
-            const auto cur = luaEditor.GetCursorPosition();
-            const std::string line = luaEditor.GetCurrentLineText();
-            const int tab = luaEditor.GetTabSize();
-            // Map the tab-expanded cursor column back to a byte index in the line.
-            int idx = 0, col = 0;
-            while (idx < static_cast<int>(line.size()) && col < cur.mColumn) {
-                col += (line[idx] == '\t') ? (tab - (col % tab)) : 1;
-                ++idx;
-            }
-            auto isIdent = [](char c){
-                return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; };
-            int start = idx;
-            while (start > 0 && isIdent(line[start - 1])) --start;
-            compPrefix = line.substr(start, idx - start);
-            // "game." member context: a '.' right before the word, and the token
-            // before the dot is exactly "game".
-            compGameMember = false;
-            if (start > 0 && line[start - 1] == '.') {
-                int ws = start - 1;
-                while (ws > 0 && isIdent(line[ws - 1])) --ws;
-                compGameMember = (line.substr(ws, (start - 1) - ws) == "game");
-            }
-            if (compPrefix.empty() && !compGameMember) {
-                compOpen = false; compManualClose = false; return;
-            }
-            // Esc keeps the popup closed until the prefix actually changes.
-            if (compManualClose) {
-                if (compPrefix == compClosedPrefix) { compOpen = false; return; }
-                compManualClose = false;
-            }
-            auto lower = [](std::string s){
-                for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                return s; };
-            const std::string pfx = lower(compPrefix);
-            auto consider = [&](const Completion* arr, std::size_t count){
-                for (std::size_t i = 0; i < count; ++i)
-                    if (lower(arr[i].text).rfind(pfx, 0) == 0) compItems.push_back(arr[i]);
-            };
-            if (compGameMember)
-                consider(kGameMembers, sizeof(kGameMembers) / sizeof(kGameMembers[0]));
-            else
-                consider(kTopLevel, sizeof(kTopLevel) / sizeof(kTopLevel[0]));
-            // Nothing useful to offer (no match, or the sole match is already typed).
-            if (compItems.empty() ||
-                (compItems.size() == 1 && lower(compItems[0].text) == pfx)) {
-                compOpen = false; return;
-            }
-            if (compSel >= static_cast<int>(compItems.size())) compSel = 0;
-            compOpen = true;
-        };
 #endif // !FITZEL_PLAYER
-        // Sound assets known to the asset database (engine + project), by bare
-        // filename -- what game.playSound / CollectibleComponent resolve against.
-        // Backs the Collectible sound picker so it's chosen, not typed.
-        auto listSounds = [&](){
-            std::vector<std::string> out;
-            for (const AssetId& id : assetDb.allAssets())
-                if (assetDb.typeForId(id) == AssetType::Sound)
-                    if (const auto* e = assetDb.entry(id))
-                        out.push_back(e->absPath.filename().string());
-            std::sort(out.begin(), out.end());
-            out.erase(std::unique(out.begin(), out.end()), out.end());
-            return out;
-        };
-        // The same two, for Texture assets. Sprites are named rather than held by
-        // GUID for the same reason sounds are: a filename survives a re-import and
-        // reads sensibly in the scene file.
-        auto listTextures = [&](){
-            std::vector<std::string> out;
-            for (const AssetId& id : assetDb.allAssets())
-                if (assetDb.typeForId(id) == AssetType::Texture)
-                    if (const auto* e = assetDb.entry(id))
-                        out.push_back(e->absPath.filename().string());
-            std::sort(out.begin(), out.end());
-            out.erase(std::unique(out.begin(), out.end()), out.end());
-            return out;
-        };
+        // Sounds and sprites known to the asset database (engine + project), by
+        // bare filename -- what game.playSound, CollectibleComponent and the
+        // Inspector's pickers resolve against, so they are chosen and not typed.
+        auto listSounds   = [&]{ return assetNamesOfType(assetDb, AssetType::Sound); };
+        auto listTextures = [&]{ return assetNamesOfType(assetDb, AssetType::Texture); };
         auto texturePickerCombo = [&](const char* label, std::string& field) {
-            const std::vector<std::string> texs = listTextures();
-            const std::string cur = field.empty() ? "(soft dot)" : field;
-            if (ImGui::BeginCombo(label, cur.c_str())) {
-                if (ImGui::Selectable("(soft dot)", field.empty())) field.clear();
-                for (const std::string& t : texs)
-                    if (ImGui::Selectable(t.c_str(), field == t)) field = t;
-                ImGui::EndCombo();
-            }
-            if (!field.empty() &&
-                std::find(texs.begin(), texs.end(), field) == texs.end())
-                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                   "Missing texture: %s", field.c_str());
+            assetPickerCombo(label, field, listTextures(), "(soft dot)", "texture");
         };
-        // Inspector combo that assigns a Sound asset (by filename) to a string
-        // field. Shared by the Collectible and Trigger sound pickers.
         auto soundPickerCombo = [&](const char* label, std::string& field) {
-            const std::vector<std::string> sounds = listSounds();
-            const std::string cur = field.empty() ? "(none)" : field;
-            if (ImGui::BeginCombo(label, cur.c_str())) {
-                if (ImGui::Selectable("(none)", field.empty())) field.clear();
-                for (const std::string& s : sounds)
-                    if (ImGui::Selectable(s.c_str(), field == s)) field = s;
-                ImGui::EndCombo();
-            }
-            if (!field.empty() &&
-                std::find(sounds.begin(), sounds.end(), field) == sounds.end())
-                ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                   "Missing sound: %s", field.c_str());
+            assetPickerCombo(label, field, listSounds(), "(none)", "sound");
         };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
@@ -4702,6 +4915,10 @@ int main(int argc, char** argv) {
             race.lapBegun = true;  // no countdown yet: a crossing starts the race
             cpPassed.clear(); cpTotal = 0; raceMissedFlash = 0.0f;
             raceCountdown = goFlash = 0.0f;
+            // ...and off the grid. Play arms the hold itself when a launch
+            // arrives; inheriting a held one from the last race would open with a
+            // craft nobody can fly and a prompt for a race nobody started.
+            race.onGrid = false; race.gridTime = 0.0f;
             // ...and an empty field: standings/winner are rebuilt from GO.
             race.standings.clear(); race.winnerName.clear();
             race.winnerIsPlayer = false; race.winnerTime = 0.0f;
@@ -4935,6 +5152,7 @@ int main(int argc, char** argv) {
                 // row either way, so the screen is the editor for the setting and
                 // the setting is what the screen remembers.
                 showroomUi.setDifficulty(gameDifficulty.level);
+                showroomUi.setRecords(&raceRecords);
                 showroomUi.begin(entities, otherScenes, camera);
             }
         };
@@ -5219,6 +5437,23 @@ int main(int argc, char** argv) {
                 // through it: no second craft, or a craft with no camera on it,
                 // and the frame stays whole rather than handing half the screen
                 // to an eye standing wherever it was last left.
+                // The grid orbit overrides whichever camera the scene would
+                // otherwise be seen through. For these few seconds the subject is
+                // the craft standing on the grid, and a chase camera sitting
+                // behind a stationary object is a picture of nothing.
+                if (race.onGrid && driven >= 0) {
+                    if (const Entity* pc = document.find(driven)) {
+                        const glm::vec3 at  = pc->center + glm::vec3(0.0f, 1.2f, 0.0f);
+                        const float     ang = race.gridTime * kGridOrbitRate;
+                        const glm::vec3 eye =
+                            at + glm::vec3(std::cos(ang) * kGridOrbitRadius,
+                                           kGridOrbitHeight,
+                                           std::sin(ang) * kGridOrbitRadius);
+                        camera.setPosition(eye);
+                        camera.setBasis(glm::normalize(at - eye), glm::vec3(0.0f, 1.0f, 0.0f));
+                        camera.setFov(kGridOrbitFov);
+                    }
+                }
                 haveView2 = false;
                 if (splitScreen && driveGliderId2 >= 0) {
                     const int id2 = childCam(driveGliderId2);
@@ -5433,6 +5668,19 @@ int main(int argc, char** argv) {
                 endIn.next    = nextB && !prevEndNext;
                 endIn.confirm = fireB && !prevEndFire;
                 prevEndPrev = prevB; prevEndNext = nextB; prevEndFire = fireB;
+            }
+
+            // The grid orbit ends when the player says so, on the same button as
+            // the end-of-race question: this game has only ever asked anyone to
+            // press one key to get on with it, and it should stay one key.
+            if (race.onGrid && endIn.confirm) {
+                race.onGrid = race2.onGrid = false;
+                raceCountdown = race2.raceCountdown = 3.0f;
+                goFlash = race2.goFlash = 0.0f;
+                // The chase camera picks up from where the craft is, not from
+                // where the orbit left the eye -- otherwise READY opens on a
+                // swoop in from the side of the track.
+                cams.reset();
             }
 
             // --- Graphics menu ------------------------------------------------
@@ -6754,8 +7002,8 @@ int main(int argc, char** argv) {
                     // Nothing leaves the rail on the grid or after the flag:
                     // the countdown holds the field still, and a finished race
                     // flies itself home.
-                    wf.mayFire = raceCountdown <= 0.0f && !raceFinished &&
-                                 !race.energyOut;
+                    wf.mayFire = !race.onGrid && raceCountdown <= 0.0f &&
+                                 !raceFinished && !race.energyOut;
                     wf.pos = gliderPos;
                     // Riding a loop the craft has a full 3D frame; everywhere
                     // else its heading is the yaw the flight sim integrates.
@@ -6844,7 +7092,7 @@ int main(int argc, char** argv) {
                         WeaponSystem::Frame wf2;
                         wf2.dt    = dt;
                         wf2.armed = true;
-                        wf2.mayFire = race2.raceCountdown <= 0.0f &&
+                        wf2.mayFire = !race2.onGrid && race2.raceCountdown <= 0.0f &&
                                       !race2.raceFinished && !race2.energyOut;
                         wf2.pos = race2.gliderPos;
                         wf2.fwd = race2.loopIndex >= 0
@@ -7018,6 +7266,29 @@ int main(int argc, char** argv) {
                 for (int b  : mouseQ) mousePrev[b] = input.isMouseButtonDown(b) ? 1 : 0;
                 keyQ.clear(); mouseQ.clear();
 
+                // A finished race goes into the circuit records. Edge-detected
+                // on raceFinished so the flag writes one row rather than one per
+                // frame of the slowing-down lap -- and taken HERE rather than
+                // off the classification board, because a player who closes the
+                // game on the results screen has still driven the time.
+                //
+                // Ordered by best lap (see leaderboard::Entry): that is the one
+                // figure in a row that means the same thing whatever distance it
+                // was set over. The total is kept beside it.
+                if (race.raceFinished && !prevRaceFinished && !currentProject.empty()) {
+                    leaderboard::Entry rec;
+                    rec.bestLap = race.bestLap;
+                    rec.total   = race.raceClock;
+                    rec.laps    = race.raceLaps;
+                    rec.level   = sessionRaceLevel;
+                    rec.date    = leaderboard::today();
+                    const std::string track =
+                        std::filesystem::path(currentProject).stem().string();
+                    if (leaderboard::record(raceRecords, track, rec) > 0)
+                        leaderboard::save(kScoresFile, raceRecords);
+                }
+                prevRaceFinished = race.raceFinished;
+
                 // The scene's cameras, resolved after everything that moved this
                 // tick -- the sim, the movers, the opponents, the scripts. Done
                 // here so the frame renders from where things ENDED UP, and so a
@@ -7050,6 +7321,7 @@ int main(int argc, char** argv) {
                     // The arrival block a few lines below picks these up in the
                     // same frame, exactly as it does after a launch.
                     if (!sessionCraftJson.empty()) {
+                        pendingFromShowroom = false;   // a restart, not an arrival
                         pendingCraftJson   = sessionCraftJson;
                         pendingCraftName   = sessionCraftName;
                         pendingCraftJson2  = sessionCraftJson2;
@@ -7124,6 +7396,8 @@ int main(int argc, char** argv) {
                 pendingCraftJson2 = nlohmann::json();
                 const int laps = pendingCraftLaps;
                 pendingCraftLaps = 0;
+                const bool fromShowroom = pendingFromShowroom;
+                pendingFromShowroom = false;
                 const int   raceMode    = pendingRaceMode;
                 const int   raceField   = pendingRaceField;
                 const int   raceLevel   = pendingRaceLevel;
@@ -7378,9 +7652,21 @@ int main(int argc, char** argv) {
                                 e.components.get<FinishLineComponent>()) {
                                 hasRace = true; break;
                             }
-                        raceCountdown = hasRace ? 3.0f : 0.0f;
+                        // Arrived from the start screen: hold the whole field
+                        // here, lined up and still, and circle the craft until
+                        // the player asks for the race (see RaceState::onGrid).
+                        // Only a real race -- a time trial has no field to look
+                        // at, and there is nothing to introduce.
+                        const bool holdOnGrid = fromShowroom && hasRace &&
+                                                racegrid::isRace(entities);
+                        race.onGrid   = holdOnGrid;
+                        race.gridTime = 0.0f;
+                        raceCountdown = (hasRace && !holdOnGrid) ? 3.0f : 0.0f;
                         goFlash   = 0.0f;
                         endPrompt = racehud::EndPrompt{};
+                        // Player two waits with player one and leaves with them.
+                        race2.onGrid   = holdOnGrid;
+                        race2.gridTime = 0.0f;
                         race2.raceCountdown = raceCountdown;  // held on the grid too
                         race2.goFlash = 0.0f;
                         endPrompt2 = racehud::EndPrompt{};
@@ -7439,8 +7725,8 @@ int main(int argc, char** argv) {
             //     A viewport side bar reserves space at the top of the work area,
             //     so the dockspace below shifts down automatically. It starts
             //     with the Select/Create pair (what a viewport click does), then
-            //     the shapes: each button draws its own shape (no icon font) and
-            //     clicking it makes that type the active one.
+            //     the shapes: clicking one makes that type the active one. The
+            //     pictures themselves are painted by icon:: -- see there.
             {
                 ImGuiViewport* tvp = ImGui::GetMainViewport();
                 const float bh   = 26.0f;
@@ -7451,52 +7737,35 @@ int main(int argc, char** argv) {
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration);
                 if (barOpen) {
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    ImDrawList*  dl = ImGui::GetWindowDrawList();
                     const ImVec2 bs(bh, bh);
-                    auto shapeBtn = [&](EntityType t, const char* tip) {
-                        ImGui::PushID(static_cast<int>(t) + 1);
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##s", bs);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 8.0f;
-                        const ImU32 col = (entityNewType == t)
-                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
-                        switch (t) {
-                            case EntityType::Box:
-                                dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0.0f, 0, 2.0f);
-                                break;
-                            case EntityType::Ramp:
-                                dl->AddTriangle({c.x - r, c.y + r}, {c.x + r, c.y + r},
-                                                {c.x + r, c.y - r}, col, 2.0f);
-                                break;
-                            case EntityType::Cylinder:
-                                dl->AddRect({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y + r},
-                                            col, 4.0f, 0, 2.0f);
-                                dl->AddLine({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y - r}, col, 2.0f);
-                                break;
-                            case EntityType::Sphere:
-                                dl->AddCircle(c, r, col, 0, 2.0f);
-                                break;
-                            case EntityType::Light:
-                                dl->AddCircleFilled(c, r * 0.45f, col);
-                                for (int a = 0; a < 8; ++a) {
-                                    const float ang = a * 0.7853982f;
-                                    const ImVec2 d(std::cos(ang), std::sin(ang));
-                                    dl->AddLine({c.x + d.x * r * 0.7f, c.y + d.y * r * 0.7f},
-                                                {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
-                                }
-                                break;
-                            case EntityType::Empty: // small dashed cross = transform node
-                                dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.5f);
-                                dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.5f);
-                                dl->AddCircle(c, r * 0.4f, col, 0, 1.5f);
-                                break;
-                            default: break;
-                        }
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked) {
+                    const float  r  = 8.0f;
+                    ImVec2       c;
+                    auto gap = [&]{ ImGui::Dummy(ImVec2(10.0f, 1.0f)); ImGui::SameLine(); };
+
+                    // --- Select / Create ---------------------------------
+                    // The pair that decides what a left-click on empty ground
+                    // does. Select is the default and the harmless one: it can
+                    // only pick and deselect. Create is the one that drops
+                    // objects, and you have to ask for it -- otherwise every
+                    // stray click while looking around litters the scene with
+                    // boxes. Esc steps back out of Create.
+                    auto modeToggle = [&](bool create, const char* tip) {
+                        const bool hit = iconButton(create ? "modeCreate" : "modeSelect",
+                                                    bs, tip, false, c);
+                        icon::pointer(dl, create, c, r,
+                                      placeMode == create ? icon::kOn : icon::kOff);
+                        if (hit) placeMode = create;
+                    };
+                    modeToggle(false, "Select -- a click picks objects and never creates one (Esc)");
+                    modeToggle(true,  "Create -- a click on empty ground drops the chosen shape");
+                    gap();
+
+                    auto shapeBtn = [&](EntityType t, const char* id, const char* tip) {
+                        const bool hit = iconButton(id, bs, tip, false, c);
+                        icon::shape(dl, t, c, r,
+                                    entityNewType == t ? icon::kOn : icon::kOff);
+                        if (hit) {
                             entityNewType = t;
                             // In Select mode the button itself is the create
                             // action, so it drops one in front of the camera. In
@@ -7509,179 +7778,63 @@ int main(int argc, char** argv) {
                             }
                         }
                     };
-                    // --- Select / Create ---------------------------------
-                    // The pair that decides what a left-click on empty ground
-                    // does. Select is the default and the harmless one: it can
-                    // only pick and deselect. Create is the one that drops
-                    // objects, and you have to ask for it -- otherwise every
-                    // stray click while looking around litters the scene with
-                    // boxes. Esc steps back out of Create.
-                    auto modeToggle = [&](bool create, const char* tip) {
-                        ImGui::PushID(create ? "modeCreate" : "modeSelect");
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##mode", bs);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 8.0f;
-                        const ImU32 col = (placeMode == create)
-                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
-                        // A mouse arrow for Select; the same arrow with a plus
-                        // next to it for Create.
-                        const ImVec2 a(c.x - r * (create ? 0.9f : 0.45f), c.y - r);
-                        dl->AddTriangleFilled(a, {a.x, a.y + r * 1.7f},
-                                              {a.x + r * 1.15f, a.y + r * 1.15f}, col);
-                        if (create) {
-                            const ImVec2 q(c.x + r * 0.6f, c.y - r * 0.3f);
-                            dl->AddLine({q.x - r * 0.5f, q.y}, {q.x + r * 0.5f, q.y}, col, 2.0f);
-                            dl->AddLine({q.x, q.y - r * 0.5f}, {q.x, q.y + r * 0.5f}, col, 2.0f);
-                        }
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked) placeMode = create;
-                    };
-                    modeToggle(false, "Select -- a click picks objects and never creates one (Esc)");
-                    modeToggle(true,  "Create -- a click on empty ground drops the chosen shape");
-                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
-                    ImGui::SameLine();
+                    shapeBtn(EntityType::Box,      "shapeBox",      "Box");
+                    shapeBtn(EntityType::Ramp,     "shapeRamp",     "Ramp");
+                    shapeBtn(EntityType::Cylinder, "shapeCylinder", "Cylinder");
+                    shapeBtn(EntityType::Sphere,   "shapeSphere",   "Sphere");
+                    shapeBtn(EntityType::Light,    "shapeLight",    "Light");
+                    shapeBtn(EntityType::Empty,    "shapeEmpty",
+                             "Empty (transform-only grouping node)");
 
-                    shapeBtn(EntityType::Box, "Box");
-                    shapeBtn(EntityType::Ramp, "Ramp");
-                    shapeBtn(EntityType::Cylinder, "Cylinder");
-                    shapeBtn(EntityType::Sphere, "Sphere");
-                    shapeBtn(EntityType::Light, "Light");
-                    shapeBtn(EntityType::Empty, "Empty (transform-only grouping node)");
                     // Terrain: an object like any other, so it is added like any
                     // other. Not a shapeBtn -- it is a component on an Empty, not
                     // an entity type -- and disabled once the scene has ground,
                     // since a scene has one terrain.
-                    {
-                        ImGui::PushID("terrainAdd");
-                        ImGui::BeginDisabled(terrainOn);
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##t", bs);
-                        ImGui::EndDisabled();
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip(terrainOn ? "Terrain (the scene already has one)"
-                                                        : "Terrain (adds ground to the scene)");
-                        // A little horizon with a hill on it.
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 8.0f;
-                        const ImU32 col = terrainOn ? IM_COL32(130, 132, 140, 255)
-                                                    : IM_COL32(215, 215, 220, 255);
-                        dl->AddLine({c.x - r, c.y + r * 0.6f}, {c.x + r, c.y + r * 0.6f}, col, 1.5f);
-                        dl->AddTriangle({c.x - r * 0.8f, c.y + r * 0.6f}, {c.x, c.y - r * 0.7f},
-                                        {c.x + r * 0.8f, c.y + r * 0.6f}, col, 1.8f);
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked) addTerrainEntity();
-                    }
+                    if (iconButton("terrainAdd", bs,
+                                   terrainOn ? "Terrain (the scene already has one)"
+                                             : "Terrain (adds ground to the scene)",
+                                   terrainOn, c))
+                        addTerrainEntity();
+                    icon::terrain(dl, c, r, terrainOn ? icon::kDim : icon::kOff);
 
                     // Gap, then the transform-gizmo modes (Q/W/E).
-                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
-                    ImGui::SameLine();
-                    auto modeBtn = [&](ImGuizmo::OPERATION op, const char* tip) {
-                        ImGui::PushID(100 + static_cast<int>(op));
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##m", bs);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 8.0f, a = 3.5f;
-                        const ImU32 col = (gizmoOp == op)
-                            ? IM_COL32(255, 205, 70, 255) : IM_COL32(215, 215, 220, 255);
-                        if (op == ImGuizmo::TRANSLATE) {          // 4-way arrow
-                            dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.6f);
-                            dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.6f);
-                            dl->AddTriangleFilled({c.x + r, c.y}, {c.x + r - a, c.y - a}, {c.x + r - a, c.y + a}, col);
-                            dl->AddTriangleFilled({c.x - r, c.y}, {c.x - r + a, c.y - a}, {c.x - r + a, c.y + a}, col);
-                            dl->AddTriangleFilled({c.x, c.y - r}, {c.x - a, c.y - r + a}, {c.x + a, c.y - r + a}, col);
-                            dl->AddTriangleFilled({c.x, c.y + r}, {c.x - a, c.y + r - a}, {c.x + a, c.y + r - a}, col);
-                        } else if (op == ImGuizmo::ROTATE) {      // circular arrow
-                            dl->PathArcTo(c, r, 0.6f, 5.4f, 20);
-                            dl->PathStroke(col, 0, 1.8f);
-                            const ImVec2 e(c.x + std::cos(5.4f) * r, c.y + std::sin(5.4f) * r);
-                            const ImVec2 tg(-std::sin(5.4f), std::cos(5.4f));
-                            const ImVec2 no(std::cos(5.4f), std::sin(5.4f));
-                            dl->AddTriangleFilled({e.x + tg.x * a, e.y + tg.y * a},
-                                                  {e.x - no.x * a * 0.7f, e.y - no.y * a * 0.7f},
-                                                  {e.x + no.x * a * 0.7f, e.y + no.y * a * 0.7f}, col);
-                        } else {                                  // scale: diagonal + boxes
-                            dl->AddLine({c.x - r * 0.7f, c.y + r * 0.7f}, {c.x + r * 0.7f, c.y - r * 0.7f}, col, 1.8f);
-                            dl->AddRectFilled({c.x + r * 0.7f - 3, c.y - r * 0.7f - 3},
-                                              {c.x + r * 0.7f + 3, c.y - r * 0.7f + 3}, col);
-                            dl->AddRect({c.x - r * 0.7f - 3, c.y + r * 0.7f - 3},
-                                        {c.x - r * 0.7f + 3, c.y + r * 0.7f + 3}, col, 0.0f, 0, 1.5f);
-                        }
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked) gizmoOp = op;
+                    gap();
+                    auto modeBtn = [&](ImGuizmo::OPERATION op, const char* id,
+                                       const char* tip) {
+                        const bool hit = iconButton(id, bs, tip, false, c);
+                        icon::gizmo(dl, op, c, r, gizmoOp == op ? icon::kOn : icon::kOff);
+                        if (hit) gizmoOp = op;
                     };
-                    modeBtn(ImGuizmo::TRANSLATE, "Move (Q)");
-                    modeBtn(ImGuizmo::ROTATE, "Rotate (W)");
-                    modeBtn(ImGuizmo::SCALE, "Scale (E)");
+                    modeBtn(ImGuizmo::TRANSLATE, "gizmoMove",   "Move (Q)");
+                    modeBtn(ImGuizmo::ROTATE,    "gizmoRotate", "Rotate (W)");
+                    modeBtn(ImGuizmo::SCALE,     "gizmoScale",  "Scale (E)");
 
                     // Gap, then the gizmo reference-frame toggle (local vs world).
-                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
-                    ImGui::SameLine();
+                    gap();
                     {
                         const bool isLocal = (gizmoMode == ImGuizmo::LOCAL);
-                        ImGui::PushID("gizmoSpace");
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##sp", bs);
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("Gizmo space: %s  (X to toggle)",
-                                              isLocal ? "Local" : "World");
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 8.0f;
-                        const ImU32 col = IM_COL32(255, 205, 70, 255);
-                        if (isLocal) {
-                            // Object box with its own tilted axis = local frame.
-                            dl->AddRect({c.x - r * 0.7f, c.y - r * 0.55f},
-                                        {c.x + r * 0.35f, c.y + r * 0.7f}, col, 0.0f, 0, 1.6f);
-                            dl->AddLine({c.x + r * 0.35f, c.y - r * 0.55f},
-                                        {c.x + r, c.y - r}, col, 1.6f);
-                        } else {
-                            // Globe with meridian/equator = world (global) frame.
-                            dl->AddCircle(c, r, col, 0, 1.6f);
-                            dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.2f);
-                            dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.2f);
-                            dl->AddBezierQuadratic({c.x, c.y - r}, {c.x - r * 0.9f, c.y},
-                                                   {c.x, c.y + r}, col, 1.1f);
-                            dl->AddBezierQuadratic({c.x, c.y - r}, {c.x + r * 0.9f, c.y},
-                                                   {c.x, c.y + r}, col, 1.1f);
-                        }
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked)
-                            gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+                        char tip[64];
+                        std::snprintf(tip, sizeof tip, "Gizmo space: %s  (X to toggle)",
+                                      isLocal ? "Local" : "World");
+                        const bool hit = iconButton("gizmoSpace", bs, tip, false, c);
+                        icon::gizmoSpace(dl, isLocal, c, r, icon::kOn);
+                        if (hit) gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
                     }
 
                     // Gap, then the road editor: a toggle, not a one-shot action
                     // like the buttons before it, so it stays lit while it owns
                     // the left mouse button in the viewport.
-                    ImGui::Dummy(ImVec2(10.0f, 1.0f));
-                    ImGui::SameLine();
+                    gap();
                     {
-                        ImGui::PushID("roadTool");
-                        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        const bool clicked = ImGui::Button("##road", bs);
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("Road editor%s\n"
-                                              "Click ground = add point, drag = move,\n"
-                                              "Ctrl+drag = raise/lower, Del = delete.",
-                                              roadEditMode ? " (on)" : "");
-                        const ImVec2 c(p0.x + bs.x * 0.5f, p0.y + bs.y * 0.5f);
-                        const float r = 8.0f;
-                        const ImU32 col = roadEditMode ? IM_COL32(255, 205, 70, 255)
-                                                       : IM_COL32(215, 215, 220, 255);
-                        // Two edges converging into the distance + a dashed centre
-                        // line: a road, readable at 26 px without an icon font.
-                        dl->AddLine({c.x - r, c.y + r}, {c.x - r * 0.35f, c.y - r}, col, 1.8f);
-                        dl->AddLine({c.x + r, c.y + r}, {c.x + r * 0.35f, c.y - r}, col, 1.8f);
-                        dl->AddLine({c.x, c.y + r * 0.9f}, {c.x, c.y + r * 0.2f}, col, 1.4f);
-                        dl->AddLine({c.x, c.y - r * 0.2f}, {c.x, c.y - r * 0.8f}, col, 1.4f);
-                        ImGui::PopID();
-                        ImGui::SameLine();
-                        if (clicked) {
+                        char tip[160];
+                        std::snprintf(tip, sizeof tip,
+                                      "Road editor%s\n"
+                                      "Click ground = add point, drag = move,\n"
+                                      "Ctrl+drag = raise/lower, Del = delete.",
+                                      roadEditMode ? " (on)" : "");
+                        const bool hit = iconButton("roadTool", bs, tip, false, c);
+                        icon::road(dl, c, r, roadEditMode ? icon::kOn : icon::kOff);
+                        if (hit) {
                             roadEditMode = !roadEditMode;
                             if (roadEditMode) {
                                 // Same hand-off the panel's Edit mode checkbox
@@ -11379,17 +11532,17 @@ int main(int argc, char** argv) {
                     // on the exact frame we act on a key, so typing is unaffected.
                     ImFont* mono = gui.monoFont();
                     bool acceptComp = false, suppressKb = false;
-                    if (compOpen && winFocused && !compItems.empty()) {
-                        const int n = static_cast<int>(compItems.size());
+                    if (comp.open && winFocused && !comp.items.empty()) {
+                        const int n = static_cast<int>(comp.items.size());
                         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
-                            compSel = (compSel + 1) % n; suppressKb = true;
+                            comp.sel = (comp.sel + 1) % n; suppressKb = true;
                         } else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
-                            compSel = (compSel - 1 + n) % n; suppressKb = true;
+                            comp.sel = (comp.sel - 1 + n) % n; suppressKb = true;
                         } else if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
                             acceptComp = true; suppressKb = true;
                         } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                            compOpen = false; suppressKb = true;
-                            compManualClose = true; compClosedPrefix = compPrefix;
+                            comp.open = false; suppressKb = true;
+                            comp.manualClose = true; comp.closedPrefix = comp.prefix;
                         }
                     }
 
@@ -11407,21 +11560,21 @@ int main(int argc, char** argv) {
 
                     // Accept the highlighted match: insert the identifier's tail
                     // after the already-typed prefix.
-                    if (acceptComp && compSel >= 0 && compSel < static_cast<int>(compItems.size())) {
-                        const std::string full = compItems[compSel].text;
-                        if (full.size() > compPrefix.size())
-                            luaEditor.InsertText(full.substr(compPrefix.size()));
-                        compOpen = false; editorDirty = true;
+                    if (acceptComp && comp.sel >= 0 && comp.sel < static_cast<int>(comp.items.size())) {
+                        const std::string full = comp.items[comp.sel].text;
+                        if (full.size() > comp.prefix.size())
+                            luaEditor.InsertText(full.substr(comp.prefix.size()));
+                        comp.open = false; editorDirty = true;
                     }
 
                     // Recompute candidates from the new cursor/text (skip on the
                     // frame we suppressed the editor, so navigation/dismiss stick).
-                    if (!winFocused) compOpen = false;
-                    else if (!suppressKb) recomputeCompletion();
+                    if (!winFocused) comp.open = false;
+                    else if (!suppressKb) refreshCompletion(luaEditor, comp);
 
                     // Completion popup, best-effort anchored under the caret and
                     // clamped inside the editor rect.
-                    if (compOpen && !compItems.empty()) {
+                    if (comp.open && !comp.items.empty()) {
                         const auto cur = luaEditor.GetCursorPosition();
                         ImVec2 at(edMin.x + charW * (6.0f + cur.mColumn),
                                   edMin.y + lineH * (cur.mLine + 1));
@@ -11438,19 +11591,19 @@ int main(int argc, char** argv) {
                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing |
                                 ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_AlwaysAutoResize |
                                 ImGuiWindowFlags_NoSavedSettings)) {
-                            for (int i = 0; i < static_cast<int>(compItems.size()); ++i) {
-                                const bool sel = (i == compSel);
+                            for (int i = 0; i < static_cast<int>(comp.items.size()); ++i) {
+                                const bool sel = (i == comp.sel);
                                 if (mono) ImGui::PushFont(mono);
-                                if (ImGui::Selectable(compItems[i].text, sel)) {
-                                    const std::string full = compItems[i].text;
-                                    if (full.size() > compPrefix.size())
-                                        luaEditor.InsertText(full.substr(compPrefix.size()));
-                                    compOpen = false; editorDirty = true;
+                                if (ImGui::Selectable(comp.items[i].text, sel)) {
+                                    const std::string full = comp.items[i].text;
+                                    if (full.size() > comp.prefix.size())
+                                        luaEditor.InsertText(full.substr(comp.prefix.size()));
+                                    comp.open = false; editorDirty = true;
                                 }
                                 if (mono) ImGui::PopFont();
-                                if (compItems[i].hint && compItems[i].hint[0]) {
+                                if (comp.items[i].hint && comp.items[i].hint[0]) {
                                     ImGui::SameLine();
-                                    ImGui::TextDisabled("%s", compItems[i].hint);
+                                    ImGui::TextDisabled("%s", comp.items[i].hint);
                                 }
                                 if (sel) ImGui::SetScrollHereY();
                             }
@@ -13032,6 +13185,7 @@ int main(int argc, char** argv) {
                         };
                         capture(go.craftId,  go.craftName,  pendingCraftJson);
                         capture(go.craftId2, go.craftName2, pendingCraftJson2);
+                        pendingFromShowroom = true;   // this one gets the orbit
                         // Two seats chosen on the start screen IS the split: the
                         // pane count follows from someone being in the second one.
                         splitScreen = go.craftId2 >= 0;

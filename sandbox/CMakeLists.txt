@@ -14,6 +14,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/ScriptBridge.cpp
     src/ProjectIO.cpp
     src/GameSettings.cpp
+    # The circuit records. Runtime, not editor-only: the shipped player is where
+    # a race is actually driven, and a record written nowhere is not a record.
+    src/Leaderboard.cpp
     # The loading screen is RUNTIME: the shipped player is where a level
     # change would otherwise show a frozen window. Only the dialog that
     # configures it is editor-only.

@@ -466,8 +466,17 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     // Ready/Set/Go: hold the craft still until GO, then start the race clock (so
     // the timer and the opponents begin exactly at GO -- no one jumps the start).
     // The countdown ticks once per frame; sub-ms precision here is irrelevant.
-    const bool frozen = st.raceCountdown > 0.0f;
-    if (frozen) {
+    //
+    // The grid hold ahead of it (st.onGrid) holds the craft the same way and is
+    // the same `frozen` to everything downstream -- it simply has no clock. That
+    // is the whole difference between the two: one ends when it runs out, the
+    // other when the player says so.
+    const bool frozen = st.onGrid || st.raceCountdown > 0.0f;
+    if (st.onGrid) {
+        st.gridTime += env.dt;
+        throttle = 0.0f; steerIn = 0.0f; kBrake = false;
+        st.gliderVel = glm::vec3(0.0f);
+    } else if (st.raceCountdown > 0.0f) {
         st.raceCountdown = glm::max(0.0f, st.raceCountdown - env.dt);
         throttle = 0.0f; steerIn = 0.0f; kBrake = false;
         st.gliderVel = glm::vec3(0.0f);
@@ -1219,7 +1228,9 @@ void updateOpponents(RaceState& st, const RaceEnv& env, RaceState* st2) {
 
     const float halfW   = glm::max(env.road.width * 0.5f, 0.5f);
     const float laneMax = glm::max(halfW - 1.2f, 0.0f); // keep clear of the road edge
-    const bool  frozen  = st.raceCountdown > 0.0f;
+    // The opponents wait out the grid hold with the player: a field that creeps
+    // off while the camera is still circling it is not a starting grid.
+    const bool  frozen  = st.onGrid || st.raceCountdown > 0.0f;
 
     // The human racer, projected onto the road, as one more racer for the
     // rubber-band and overtaking logic (only when a craft is actually driven).
