@@ -174,6 +174,22 @@ add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/PropertyMeta.cpp)
 target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# The icon check (sandbox/tools/iconcheck.cpp): runs a picture through the exact
+# path "Export Game" uses -- build the .ico, patch a COPY of player.exe, then read
+# the resources back the way the shell does. The exported icon is written into an
+# already-linked exe, so nothing in the build can catch a resource directory
+# Windows declines to read; the export reports success either way and the file
+# shows the default sheet. Exits non-zero if Windows will not use the icon.
+#   build/release/bin/iconcheck.exe [image] [exe]
+add_executable(iconcheck tools/iconcheck.cpp src/IconEmbed.cpp)
+# stb_headers for the decode/resize IconEmbed does (the IMPLEMENTATION TU is in
+# the engine, so the symbols arrive with fitzel); shell32 for ExtractIconEx,
+# which is how the check asks the question the way Explorer asks it.
+target_link_libraries(iconcheck PRIVATE fitzel stb_headers)
+if(WIN32)
+    target_link_libraries(iconcheck PRIVATE shell32)
+endif()
+
 # The archive tool (sandbox/tools/fpak.cpp): packs, lists and verifies the
 # encrypted .fpak archives an export ships. Same pak/vfs code the player runs, so
 # "fpak verify" answers the only question that matters before shipping one --

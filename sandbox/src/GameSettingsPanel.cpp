@@ -215,14 +215,32 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     const ImVec2 center = ImGui::GetMainViewport()->GetCenter();
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(420.0f, 0.0f), ImVec2(720.0f, 900.0f));
-    if (!ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    // What the settings looked like when the dialog opened, so a dismissal can
+    // put them back. Without this, Cancel (and Esc, and a click outside) keeps
+    // every edit in memory and merely skips the write -- which leaves the dialog
+    // and game.json disagreeing, and the export reads the FILE. That is a
+    // setting you watched yourself make and that never reached the exe.
+    static Settings    opened;
+    static bool        wasOpen = false;
+    static bool        saved   = false;
+    static std::string iconErr;
+
+    if (!ImGui::BeginPopupModal(popupId, nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (wasOpen && !saved) s = opened;
+        wasOpen = false;
+        saved   = false;
         return false;
+    }
 
     // The single free-text field (exe name) is mirrored into a char buffer, synced
     // from `s` on the frame the modal opens so re-opening always shows saved state.
     static char exeBuf[64];
-    if (ImGui::IsWindowAppearing())
+    if (ImGui::IsWindowAppearing()) {
         std::snprintf(exeBuf, sizeof exeBuf, "%s", s.exeName.c_str());
+        opened = s;
+        iconErr.clear();
+    }
+    wasOpen = true;
 
     // --- Executable name -----------------------------------------------------
     ui::sectionText("Executable");
@@ -256,20 +274,41 @@ bool drawSettingsModal(const char* popupId, Settings& s,
 
     // --- Application icon ----------------------------------------------------
     ui::sectionText("Icon");
-    ImGui::TextUnformatted(s.icon.empty() ? "(engine default)" : s.icon.c_str());
+    const ImVec4 kWarn(1.0f, 0.45f, 0.35f, 1.0f);
+    if (s.icon.empty()) {
+        ImGui::TextUnformatted("(engine default)");
+    } else {
+        ImGui::TextUnformatted(s.icon.c_str());
+        // Whether the picture is actually THERE, not merely named. A settings
+        // file pointing at a file that has since been renamed or deleted looks
+        // exactly like a configured icon here, and today only the export finds
+        // out -- one dialog too late to do anything about it.
+        std::error_code iec;
+        if (!fs::exists(fs::path(projectFolder) / s.icon, iec)) {
+            ImGui::SameLine();
+            ImGui::TextColored(kWarn, "-- file missing from the project!");
+        }
+    }
     if (ImGui::Button("Browse...##icon")) {
+        iconErr.clear();
         std::string picked;
         if (ed::pickFile(picked, projectFolder, "Images",
                          "*.png;*.jpg;*.jpeg;*.bmp;*.tga")) {
             const std::string base = adoptImage(picked, projectFolder);
+            // A failed copy used to leave the field exactly as it was, which
+            // reads as "the click did nothing" -- and the next thing to mention
+            // it at all is an exported exe wearing the Windows default.
             if (!base.empty()) s.icon = base;
+            else iconErr = "could not copy that file into the project folder";
         }
     }
     ImGui::SameLine();
-    if (ImGui::Button("Use default##icon")) s.icon.clear();
+    if (ImGui::Button("Use default##icon")) { s.icon.clear(); iconErr.clear(); }
+    if (!iconErr.empty()) ImGui::TextColored(kWarn, "%s", iconErr.c_str());
     ui::hint("A square PNG, ideally 256x256 or bigger. The export scales it to\n"
              "every size Windows asks for and writes it into the .exe itself --\n"
-             "there is no .ico to make, and the setup gets the same picture.");
+             "there is no .ico to make, and the setup gets the same picture.\n"
+             "It only reaches an export once this dialog is closed with Save.");
     ImGui::Spacing();
 
     drawLoadingSection(s, projectFolder);
@@ -332,11 +371,12 @@ bool drawSettingsModal(const char* popupId, Settings& s,
 
     if (ImGui::Button("Save", ImVec2(120.0f, 0.0f))) {
         applied = true;
+        saved   = true;   // keeps the dismissal above from undoing the edits
         ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-        ImGui::CloseCurrentPopup();
+        ImGui::CloseCurrentPopup();   // `opened` is restored on the next frame
 
     ImGui::EndPopup();
     return applied;

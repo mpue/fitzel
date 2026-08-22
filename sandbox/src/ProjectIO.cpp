@@ -886,13 +886,29 @@ void exportGame(Context& ctx, const std::string& outDir) {
     std::string extra;
 #ifndef FITZEL_PLAYER
     std::vector<unsigned char> ico;
-    if (!gs.icon.empty()) {
-        std::string ierr;
-        ico = icoutil::fromImage((projDir / gs.icon).generic_string(), ierr);
-        if (ico.empty() ||
-            !icoutil::embed((out / (game + ".exe")).generic_string(), ico, ierr)) {
+    // Reported in EVERY case, including the boring one. Saying nothing when no
+    // icon is set makes "I forgot to press Save" and "the icon does not work"
+    // produce byte-identical output -- a finished export and an exe wearing the
+    // Windows default -- with nothing to tell them apart afterwards short of
+    // opening game.json by hand.
+    const fs::path exportedExe = out / (game + ".exe");
+    if (gs.icon.empty()) {
+        extra += " - no icon set (Game Settings > Icon, then Save)";
+        std::fprintf(stderr, "[Fitzel] icon: none set in %s -- the exe keeps the "
+                             "Windows default\n",
+                     (projDir / "game.json").generic_string().c_str());
+    } else {
+        std::string    ierr;
+        const fs::path iconSrc = projDir / gs.icon;
+        ico = icoutil::fromImage(iconSrc.generic_string(), ierr);
+        if (ico.empty() || !icoutil::embed(exportedExe.generic_string(), ico, ierr)) {
             extra += " - icon skipped: " + ierr;
             std::fprintf(stderr, "[Fitzel] icon: %s\n", ierr.c_str());
+        } else {
+            extra += " - icon: " + gs.icon;
+            std::fprintf(stderr, "[Fitzel] icon: %s -> %s\n",
+                         iconSrc.generic_string().c_str(),
+                         exportedExe.generic_string().c_str());
         }
     }
     if (gs.makeInstaller) {
