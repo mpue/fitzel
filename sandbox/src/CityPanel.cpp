@@ -281,9 +281,10 @@ void drawPanel(const PanelState& s) {
         // it is what the Budget slider actually trades against.
         ui::hint("%.0fk vertices, about %.0f MB on the GPU.", d.verts / 1000.0f,
                  d.verts * 52.0 / (1024.0 * 1024.0));
-        if (d.skippedSlope > 0 || d.skippedTight > 0)
-            ui::hint("Skipped: %d too steep, %d on a bend tighter than the plot.",
-                     d.skippedSlope, d.skippedTight);
+        if (d.skippedSlope > 0 || d.skippedTight > 0 || d.skippedRoad > 0)
+            ui::hint("Skipped: %d too steep, %d on a bend tighter than the plot,\n"
+                     "%d that would have stood in the road.",
+                     d.skippedSlope, d.skippedTight, d.skippedRoad);
         if (d.budgetHit)
             ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
                                "Budget reached -- the run stops short.");

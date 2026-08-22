@@ -15,6 +15,7 @@
 #include "UiStyle.hpp"
 
 #include "RoadBridge.hpp"
+#include "RoadPrefab.hpp"
 #include "RoadTunnel.hpp"
 #include "RoadSide.hpp"
 #include "RoadSystem.hpp"
@@ -236,6 +237,13 @@ void sideSection(const PanelState& s) {
     if (ImGui::Button("+ Curb")) add(roadside::Kind::Curb);
     ImGui::SameLine();
     if (ImGui::Button("+ Post")) add(roadside::Kind::Post);
+    ImGui::SameLine();
+    if (ImGui::Button("+ On road")) add(roadside::Kind::OnRoad);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Objects ON the carriageway, every N metres -- cones,\n"
+                          "blocks, arrows. Offset is measured from the middle of\n"
+                          "the road, and they stand on the asphalt (or the bridge\n"
+                          "deck), not on the ground beneath it.");
 
     if (s.road.sideLines.empty()) {
         ImGui::TextDisabled("None. Add a rail, curb or posts.");
@@ -314,6 +322,21 @@ void sideSection(const PanelState& s) {
             }
         }
 
+        // On the road vs. beside it. A toggle rather than a fixed property of the
+        // Kind, so a rail can be pulled onto the carriageway (and a cone line
+        // pushed off it) without deleting the rule and re-picking its model.
+        if (ImGui::Checkbox("On the road", &L.onRoad)) {
+            L.onRoad = !L.onRoad;
+            s.beginEdit(); L.onRoad = !L.onRoad; s.endEdit("Side on road");
+            changed = true;
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("On: stands on the carriageway. Offset is measured from\n"
+                              "the middle of the road and the height comes from the\n"
+                              "road surface (bridge decks and banking included).\n"
+                              "Off: stands beside the road. Offset is measured beyond\n"
+                              "the edge and the height comes from the ground.");
+
         // Metric knobs. DragFloat so a value is typeable (Parkinson-friendly) --
         // click to type, drag to sweep. Bracket the whole drag for undo.
         auto drag = [&](const char* label, float* v, float speed, float lo, float hi,
@@ -324,26 +347,46 @@ void sideSection(const PanelState& s) {
         };
         drag("Offset",  &L.offset,  0.02f, 0.0f, 20.0f, "%.2f m", "Side offset");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Distance beyond the road edge (added to the half-width).");
+            ImGui::SetTooltip(L.onRoad
+                ? "Distance from the middle of the road: 0 = dead centre, half\n"
+                  "the road width = out at the edge. Which way it goes is the\n"
+                  "Side above; Both mirrors it into two tracks."
+                : "Distance beyond the road edge (added to the half-width).");
+        if (L.onRoad) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(edge at %.2f m)", s.road.width * 0.5f);
+        }
         drag("Spacing", &L.spacing, 0.05f, 0.25f, 60.0f, "%.2f m", "Side spacing");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Metres between copies. For a continuous rail/curb,\n"
                               "match this to the model's length.");
+        drag("Rotation", &L.yaw, 1.0f, -180.0f, 180.0f, "%+.0f deg", "Side rotation");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Extra turn about the upright axis, on top of the road's\n"
+                              "heading: 0 = the model faces along the road, 90 = across\n"
+                              "it. The whole run turns together.");
         drag("Scale",   &L.scale,   0.01f, 0.05f, 20.0f, "%.2f x", "Side scale");
-        drag("Lift",    &L.lift,    0.02f, -5.0f, 10.0f, "%+.2f m", "Side lift");
+        drag("Height",  &L.lift,    0.02f, -5.0f, 10.0f, "%+.2f m", "Side height");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Raise the model above the ground it stands on\n"
-                              "(a guard-rail beam rides up on its posts).");
+            ImGui::SetTooltip(L.onRoad
+                ? "Raise the model above the road surface it stands on\n"
+                  "(negative sinks it into the asphalt)."
+                : "Raise the model above the ground it stands on\n"
+                  "(a guard-rail beam rides up on its posts).");
 
-        // Face-toward-road only matters for a one-sided profile on Both/Alternate.
-        if (ImGui::Checkbox("Face the road", &L.faceRoad)) {
-            L.faceRoad = !L.faceRoad;
-            s.beginEdit(); L.faceRoad = !L.faceRoad; s.endEdit("Side facing");
-            changed = true;
+        // Face-toward-road only matters for a one-sided profile on Both/Alternate,
+        // and means nothing in the middle of the carriageway -- so it is hidden
+        // there rather than left as a switch that turns a cone backwards.
+        if (!L.onRoad) {
+            if (ImGui::Checkbox("Face the road", &L.faceRoad)) {
+                L.faceRoad = !L.faceRoad;
+                s.beginEdit(); L.faceRoad = !L.faceRoad; s.endEdit("Side facing");
+                changed = true;
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Flip the far side 180 so a one-sided model (rail\n"
+                                  "beam, curb face) keeps its front toward the road.");
         }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Flip the far side 180 so a one-sided model (rail\n"
-                              "beam, curb face) keeps its front toward the road.");
 
         // Knockable: a dynamic body in Play, so the car sends it flying. Off = a
         // solid barrier (rails/curbs). Its mass tunes how easily it shifts.
@@ -369,6 +412,91 @@ void sideSection(const PanelState& s) {
     ImGui::PopID(); // "sideobjects"
 
     if (changed) s.road.rebuildSideObjects();
+}
+
+// Prefabs along the road: the same placement rule as a side object, but what it
+// leaves behind is REAL entities -- one prefab instance per station, in a single
+// undoable step. That is the whole difference, and the section says so: a prefab
+// is an entity subtree, and its scripts, lights and physics only mean anything as
+// scene objects, so this stamps once instead of deriving. The placements stay put
+// when the road later moves.
+void prefabSection(const PanelState& s) {
+    if (!ui::header("Prefabs along the road")) return;
+    roadprefab::Settings& c = s.prefabCfg;
+
+    // Prefab picker. The folder is only scanned while the combo is open.
+    const std::string preview = c.name.empty() ? "(pick a prefab)" : c.name;
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##prefab", preview.c_str())) {
+        const auto items = s.listPrefabs ? s.listPrefabs()
+                                         : std::vector<std::pair<std::string, std::string>>();
+        for (const auto& it : items) {
+            const bool sel = (it.second == c.path);
+            if (ImGui::Selectable((it.first + "##" + it.second).c_str(), sel)) {
+                c.path = it.second;
+                c.name = it.first;
+            }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        if (items.empty())
+            ImGui::TextDisabled("(no prefabs in this project yet)");
+        ImGui::EndCombo();
+    }
+
+    ImGui::Checkbox("On the road", &c.onRoad);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: stands on the carriageway, Offset measured from the\n"
+                          "middle of the road, height taken from the road surface.\n"
+                          "Off: stands beside the road, Offset measured beyond the\n"
+                          "edge, height taken from the ground.");
+    {
+        const char* items = "Left\0Right\0Both\0Alternate\0";
+        ImGui::Combo("Side##prefab", &c.side, items);
+    }
+    ImGui::DragFloat("Offset##prefab",  &c.offset,  0.02f, 0.0f, 20.0f, "%.2f m");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(c.onRoad
+            ? "Distance from the middle of the road (the edge is at %.2f m)."
+            : "Distance beyond the road edge.", s.road.width * 0.5f);
+    ImGui::DragFloat("Spacing##prefab", &c.spacing, 0.05f, 0.5f, 200.0f, "%.2f m");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Metres between copies. Watch the count below before\n"
+                          "you place -- a tight spacing on a long road is a lot\n"
+                          "of objects.");
+    ImGui::DragFloat("Rotation##prefab", &c.yaw, 1.0f, -180.0f, 180.0f, "%+.0f deg");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Extra turn about the upright axis, on top of the road's\n"
+                          "heading: 0 = along the road, 90 = across it.");
+    ImGui::DragFloat("Scale##prefab",   &c.scale,   0.01f, 0.05f, 20.0f, "%.2f x");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Uniform scale for the whole prefab: child offsets, box\n"
+                          "sizes and model scales all grow together.");
+    ImGui::DragFloat("Height##prefab",  &c.lift,    0.02f, -5.0f, 20.0f, "%+.2f m");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Raise the prefab's root above the surface it lands on.\n"
+                          "A prefab has no model base to sit on -- its own layout\n"
+                          "decides that -- so this is how you settle it.");
+
+    // What the button would do, before it does it: the real placement walk, so
+    // the count cannot disagree with the result.
+    const int n = static_cast<int>(s.road.placeLine(roadprefab::asLine(c)).size());
+    const bool ready = !c.path.empty() && n > 0;
+    if (s.road.verts() == 0)
+        ImGui::TextDisabled("Build the road first -- placements follow a built centreline.");
+    else if (c.path.empty())
+        ImGui::TextDisabled("Pick a prefab to place.");
+    else
+        ImGui::Text("Places %d %s", n, n == 1 ? "copy" : "copies");
+
+    ImGui::BeginDisabled(!ready || !s.placePrefabs);
+    if (ImGui::Button("Place along the road", ImVec2(-1.0f, 0.0f))) s.placePrefabs();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Instantiates the prefab at every station as real,\n"
+                          "selectable objects, grouped under \"Road prefabs\" and\n"
+                          "undoable in one step. Unlike the side objects above they\n"
+                          "do NOT follow the road afterwards -- move the road and\n"
+                          "they stay where they were put.");
 }
 
 // The road.txt scratch save/load. Predates scenes carrying roads and is kept as a
@@ -569,6 +697,9 @@ void drawPanel(const PanelState& s) {
         // the terrain-grading rebuild `rc` tracks -- so they stay out of it.
         ImGui::Separator();
         sideSection(s);
+
+        ImGui::Separator();
+        prefabSection(s);
 
         // Edge fade is a pure shader effect (alpha taper at the ribbon edges) -- it
         // needs no rebuild, so it's deliberately kept out of `rc`.

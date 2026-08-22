@@ -268,6 +268,12 @@ public:
     // no terrain regrade, no ribbon reloft). A no-op until the road has been built
     // once -- side objects follow a committed centreline. Call after editing a line.
     void rebuildSideObjects();
+    // Where one placement rule would put its objects on the CURRENT centreline,
+    // without adding it to the road: the same walk rebuildSideObjects does (same
+    // profile, same terrain drape), handed out so a tool can stamp something else
+    // -- prefab instances, say -- exactly where a derived line would have sat.
+    // Empty until the road has been built once.
+    std::vector<roadside::Instance> placeLine(const roadside::Line& line) const;
 
     // --- Roadside city (see CityGen.hpp) -------------------------------------
     // Same deal as the side objects, one level up: `biomes` are the saved rules,

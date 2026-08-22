@@ -1,6 +1,11 @@
 #pragma once
 
 #include <functional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "RoadPrefab.hpp"
 
 class RoadSystem;
 namespace fitzel { class AssetDatabase; }
@@ -31,6 +36,18 @@ struct PanelState {
     std::function<void()> build;
     // Erase a control point, fixing up the bridges that name points by index.
     std::function<void(int)> removePoint;
+
+    // --- Prefabs along the road (see RoadPrefab.hpp) -------------------------
+    // Tool settings, not scene data: they live in main and are not saved with the
+    // road, because what they produce is ordinary entities that carry their own
+    // state once stamped.
+    roadprefab::Settings& prefabCfg;
+    // The open project's prefabs as (name, path). A folder scan, so the panel
+    // calls it only while the picker is open -- never every frame.
+    std::function<std::vector<std::pair<std::string, std::string>>()> listPrefabs;
+    // Stamp the configured prefab along the road as one undoable step. main owns
+    // the scene, the id counter and the history, so it does the placing.
+    std::function<void()> placePrefabs;
 
     // Undo bracket for the edits the panel makes itself (bridges, Clear, the
     // height field, the loop toggle). Call beginEdit() before touching the road

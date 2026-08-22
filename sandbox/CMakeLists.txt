@@ -100,6 +100,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/IconEmbed.cpp
     src/InstallerBuild.cpp
     src/ScatterTool.cpp
+    # Stamping prefabs along a road. Editor-only: it turns a road + a rule into
+    # ordinary entities once, and the shipped player only ever loads the result.
+    src/RoadPrefab.cpp
     src/BuildingPanel.cpp
     src/CityPanel.cpp
     src/VehicleTool.cpp
@@ -158,6 +161,18 @@ target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_33)
 #   build/release/bin/audiocheck.exe content/sounds/swoosh.wav
 add_executable(audiocheck tools/audiocheck.cpp)
 target_link_libraries(audiocheck PRIVATE fitzel)
+
+# The city check (sandbox/tools/citycheck.cpp): generates a district over a
+# straight, a sweeper and a hairpin and measures how far the worst SOLID piece
+# reaches past the kerb. A tower overhanging the road is a wall you hit at speed
+# on a stretch that looked clear, and neither the editor nor the panel's
+# placed/skipped counters can show it -- from the generator's side those lots
+# built fine. Exits non-zero if anything solid crosses the kerb.
+#   build/release/bin/citycheck.exe
+add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                         src/PropertyMeta.cpp)
+target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # The archive tool (sandbox/tools/fpak.cpp): packs, lists and verifies the
 # encrypted .fpak archives an export ships. Same pak/vfs code the player runs, so

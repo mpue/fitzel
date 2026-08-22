@@ -1,5 +1,7 @@
 #include "UiStyle.hpp"
 
+#include <cctype>
+#include <cfloat>
 #include <cstdarg>
 
 namespace ui {
@@ -50,6 +52,27 @@ void hint(const char* fmt, ...) {
     va_end(args);
     ImGui::PopStyleColor();
     ImGui::PopFont();
+}
+
+bool icontains(const char* hay, const char* needle) {
+    if (!needle || !*needle) return true;
+    if (!hay) return false;
+    for (const char* h = hay; *h; ++h) {
+        const char* a = h;
+        const char* b = needle;
+        while (*a && *b &&
+               std::tolower(static_cast<unsigned char>(*a)) ==
+               std::tolower(static_cast<unsigned char>(*b))) { ++a; ++b; }
+        if (!*b) return true;
+    }
+    return false;
+}
+
+bool searchBox(const char* id, char* buf, std::size_t cap, const char* placeholder) {
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint(id, placeholder, buf, cap,
+                             ImGuiInputTextFlags_EscapeClearsAll);
+    return buf[0] != 0;
 }
 
 } // namespace ui

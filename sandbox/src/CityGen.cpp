@@ -16,6 +16,20 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 
+// --- Keeping out of the road ------------------------------------------------
+// How much daylight a facade is guaranteed past the kerb. Deliberately small:
+// this is a floor for lots that asked for LESS (a canyon wall stands on the
+// kerb on purpose), not a margin added to everyone.
+constexpr float kKerbClear = 1.5f;
+// The most a lot may be shoved back before it is written off instead. Past this
+// the building is no longer on the frontage it was planned for, and a gap reads
+// better than a tower parked in the back garden.
+constexpr float kMaxPush = 30.0f;
+// Vertical separation at which a stretch of road stops being this district's
+// problem: an underpass below it or a flyover above its ground floors. Roughly
+// one storey plus the deck, so a tunnel mouth keeps its frontage.
+constexpr float kUnderpass = 8.0f;
+
 // --- Deterministic noise ----------------------------------------------------
 // Everything random here is hashed from a position (a lot index, a station),
 // never drawn from a running generator. That is the difference between a city
@@ -126,6 +140,127 @@ Curve makeCurve(const std::vector<glm::vec2>& center, const std::vector<float>& 
 // Left of travel in XZ. Same convention as roadside::generate, so "Left" means
 // the same edge in both panels: the LEFT side is at -perp, the RIGHT at +perp.
 glm::vec2 perpOf(glm::vec2 dir) { return {dir.y, -dir.x}; }
+
+// --- How close is the road, really? -----------------------------------------
+// Parcelling works in arc length and offsets, and that is the right frame for
+// laying out frontage -- but it cannot answer "is this lot standing in the
+// road", for three separate reasons, all of which put solid geometry in the
+// carriageway:
+//
+//   * A building is STRAIGHT and the road is not. At a bend the ends of a flat
+//     frontage cut the corner its middle keeps clear -- by 1.6 m for a 28 m
+//     frontage on a 60 m radius, and by fifteen for a 90 m megablock.
+//   * Curvature is sampled at ONE station and clamped at the road's ends, so a
+//     wide lot that spans a bend, or sits at the last control point, is planned
+//     against a curvature it does not actually have. That is what put a 89 m
+//     podium a foot from the centreline in the check.
+//   * A road can come back past its own district -- a hairpin, a figure of
+//     eight, a crossing. Station 120 and station 900 can be forty metres apart
+//     in the world and nine hundred apart in arc length, and no amount of
+//     offset arithmetic will notice.
+//
+// So measure it instead of predicting it: a uniform grid over the centreline
+// segments, and a nearest-distance query. Built once per district, and the cells
+// keep it to the handful of segments that could possibly be near.
+struct RoadGrid {
+    float                         cell = 32.0f;
+    glm::vec2                     lo{0.0f};
+    int                           nx = 1, nz = 1;
+    std::vector<std::vector<int>> bin;   // segment i spans p[i-1]..p[i]
+
+    void build(const Curve& cv, float cellSize) {
+        cell = std::max(cellSize, 8.0f);
+        glm::vec2 hi = cv.p.front();
+        lo = cv.p.front();
+        for (const glm::vec2& q : cv.p) { lo = glm::min(lo, q); hi = glm::max(hi, q); }
+        lo -= glm::vec2(cell);
+        hi += glm::vec2(cell);
+        nx = std::max(1, static_cast<int>((hi.x - lo.x) / cell) + 1);
+        nz = std::max(1, static_cast<int>((hi.y - lo.y) / cell) + 1);
+        // A pathological road (a hundred kilometres of switchbacks) would make
+        // this table huge; cap it and let the cells get coarser instead.
+        while (static_cast<std::int64_t>(nx) * nz > 400000) {
+            cell *= 2.0f;
+            nx = std::max(1, nx / 2); nz = std::max(1, nz / 2);
+        }
+        bin.assign(static_cast<std::size_t>(nx) * nz, {});
+        for (std::size_t i = 1; i < cv.p.size(); ++i) {
+            const glm::vec2 a = cv.p[i - 1], b = cv.p[i];
+            const int x0 = ix(std::min(a.x, b.x)), x1 = ix(std::max(a.x, b.x));
+            const int z0 = iz(std::min(a.y, b.y)), z1 = iz(std::max(a.y, b.y));
+            for (int z = z0; z <= z1; ++z)
+                for (int x = x0; x <= x1; ++x)
+                    bin[static_cast<std::size_t>(z) * nx + x].push_back(
+                        static_cast<int>(i));
+        }
+    }
+
+    int ix(float x) const {
+        return glm::clamp(static_cast<int>((x - lo.x) / cell), 0, nx - 1);
+    }
+    int iz(float z) const {
+        return glm::clamp(static_cast<int>((z - lo.y) / cell), 0, nz - 1);
+    }
+
+    // Distance from `q` to the nearest carriageway, capped at `maxR` (which is
+    // also what comes back when nothing is in range -- callers only ever ask
+    // "closer than X").
+    //
+    // `refY` and `vert` are what keep an underpass an underpass: a stretch of
+    // road running eight metres below the district, or a flyover above its
+    // roofs, is not something a building on this level can block, and rejecting
+    // lots for it would strip the frontage off every tunnel mouth in the city.
+    float clearance(const Curve& cv, glm::vec2 q, float refY, float vert,
+                    float maxR) const {
+        float best = maxR;
+        const int x0 = ix(q.x - maxR), x1 = ix(q.x + maxR);
+        const int z0 = iz(q.y - maxR), z1 = iz(q.y + maxR);
+        for (int z = z0; z <= z1; ++z) {
+            for (int x = x0; x <= x1; ++x) {
+                for (int i : bin[static_cast<std::size_t>(z) * nx + x]) {
+                    const glm::vec2 a = cv.p[i - 1], b = cv.p[i];
+                    const glm::vec2 ab = b - a;
+                    const float l2 = glm::dot(ab, ab);
+                    const float t  = (l2 > 1e-6f)
+                                         ? glm::clamp(glm::dot(q - a, ab) / l2, 0.0f, 1.0f)
+                                         : 0.0f;
+                    const float d = glm::length(q - (a + ab * t));
+                    if (d >= best) continue;
+                    const float segY = cv.y[i - 1] + (cv.y[i] - cv.y[i - 1]) * t;
+                    if (std::abs(segY - refY) > vert) continue;  // under or over
+                    best = d;
+                }
+            }
+        }
+        return best;
+    }
+};
+
+// How much of a footprint's outline to test. The corners alone are not enough:
+// a road crossing back over a district can pass through the middle of a long
+// facade without coming near either end of it.
+void footprintSamples(glm::vec2 pos, glm::vec2 dir, glm::vec2 perp, float sgn,
+                      float width, float depth, bool frontOnly,
+                      std::vector<glm::vec2>& out) {
+    out.clear();
+    const glm::vec2 hx = dir * (width * 0.5f);
+    const glm::vec2 front = pos - perp * (sgn * depth * 0.5f);
+    const glm::vec2 back  = pos + perp * (sgn * depth * 0.5f);
+    const int n = std::max(2, static_cast<int>(width / 6.0f) + 1);
+    for (int i = 0; i <= n; ++i) {
+        const float t = static_cast<float>(i) / n * 2.0f - 1.0f;
+        out.push_back(front + hx * t);
+        if (!frontOnly) out.push_back(back + hx * t);
+    }
+    if (!frontOnly) {   // the two flanks
+        const int m = std::max(1, static_cast<int>(depth / 6.0f));
+        for (int i = 1; i < m; ++i) {
+            const float t = static_cast<float>(i) / m;
+            out.push_back(front + (back - front) * t + hx);
+            out.push_back(front + (back - front) * t - hx);
+        }
+    }
+}
 
 // The biome that owns arc-length station `q`: the first ENABLED one whose range
 // contains it. -1 for bare road. Order decides overlaps, deliberately -- see the
@@ -501,6 +636,13 @@ District generate(const std::vector<glm::vec2>& center,
 
     auto ground = [&](float x, float z) { return groundAt ? groundAt(x, z) : 0.0f; };
 
+    // The road as something a footprint can be measured against. Cells sized off
+    // the carriageway: bigger and every query walks half the road, smaller and
+    // the table is mostly empty.
+    RoadGrid grid;
+    grid.build(cv, std::max(4.0f * halfWidth, 24.0f));
+    std::vector<glm::vec2> scratch;
+
     // Both sides are walked independently: a canyon is two frontages that happen
     // to face each other, not one alternating run. Doing it this way also means
     // "Left only" costs exactly half, with no special case.
@@ -543,13 +685,26 @@ District generate(const std::vector<glm::vec2>& center,
             // decides how DEEP the building actually is: a slab fills a fraction
             // of its plot, a cross-plan arcology all of it. The facade has to sit
             // at `setback` whatever that works out to, so the building is centred
-            // on its own depth -- centring it on the plot's would push a shallow
+            // on its own footprint -- centring it on the plot's would push a shallow
             // style back off the street and open a canyon wall into a boulevard.
             buildings::Params bp;
             const buildings::Style style = pickStyle(B, hashU(h0 ^ 0x77U));
             buildings::applyStyle(bp, style);
             const float aspect     = bp.depth / std::max(bp.width, 1e-3f);
             const int   styleFloor = bp.floors;
+            // What actually stands on the pavement is the PODIUM, and it is
+            // buildings::podiumSpread times the shaft it carries -- 1.2x under a
+            // slab, 2.4x under a needle -- centred on the same point. Sizing the
+            // plot off the shaft alone is what put a three-storey collider block
+            // in the carriageway: a 26 m shaft at 1.5 spread has a 39 m base, so
+            // 6.5 m of it overhangs at the front, which no setback a canyon would
+            // use (2..4 m) can absorb. So the SPREAD footprint is the parcel and
+            // the shaft is divided down to sit inside it. That also stops podiums
+            // barging sideways into their neighbours and into the cross streets,
+            // and it is what a tower on a plinth looks like anyway.
+            const float spread = (bp.podiumFloors > 0)
+                                     ? glm::clamp(bp.podiumSpread, 1.0f, 4.0f)
+                                     : 1.0f;
             const float bodyDepth  = glm::clamp(frontage * aspect, 5.0f, lotDepth);
 
             // --- Cross streets ----------------------------------------------
@@ -596,8 +751,72 @@ District generate(const std::vector<glm::vec2>& center,
             glm::vec2 c, dir; float roadY;
             cv.at(q + frontage * 0.5f, c, dir, roadY);
             const glm::vec2 perp = perpOf(dir);
-            const glm::vec2 pos  = c + perp * (sgn * (halfWidth + setback + bodyDepth * 0.5f));
             const float yawDeg   = glm::degrees(std::atan2(dir.x, dir.y)) + faceTurn;
+
+            // --- Keep out of the carriageway ----------------------------------
+            // Everything above is arc length and offsets, which lays out frontage
+            // correctly and cannot tell whether the result is standing in the
+            // road (see RoadGrid). So measure the finished footprint against the
+            // actual centreline and push it back until its facade clears the
+            // kerb -- the flat-chord bite at a bend, the last lot on a road whose
+            // curvature has been clamped to zero, all of it, without predicting
+            // any of them. The wall frays back at a tight bend instead of leaning
+            // into it, which is what one looks like anyway.
+            float front = halfWidth + setback;
+            // A lot is never pulled IN, only pushed out: a facade that wants to
+            // stand on the kerb (setback 0, which is what a canyon is) must be
+            // allowed to, so the target is its own intended offset, not a
+            // uniform margin.
+            const float want = halfWidth + std::min(setback, kKerbClear);
+            glm::vec2 pos = c + perp * (sgn * (front + bodyDepth * 0.5f));
+            bool blocked = false;
+            {
+                std::vector<glm::vec2>& smp = scratch;
+                for (int pass = 0; pass < 4; ++pass) {
+                    // The height to compare a stretch of road against is the one
+                    // this building will STAND at, which is not the carriageway's
+                    // where the two part company -- and where they part company is
+                    // exactly where it matters. A lot beside a road in a cutting
+                    // sits up on the terrain, so it clears its own carriageway by
+                    // the depth of the cutting while standing squarely on whatever
+                    // else runs past at ground level. Comparing against the road's
+                    // own height there says "sixteen metres below me, not my
+                    // problem" about the wrong road. Same rule as baseY below.
+                    const float refY = std::max(ground(pos.x, pos.y),
+                                                roadY - std::max(B.maxDrop, 0.0f));
+                    footprintSamples(pos, dir, perp, sgn, frontage, bodyDepth, true, smp);
+                    float nearest = 1e9f;
+                    for (const glm::vec2& sp : smp)
+                        nearest = std::min(nearest,
+                                           grid.clearance(cv, sp, refY, kUnderpass,
+                                                          want + kMaxPush + 1.0f));
+                    if (nearest >= want) break;
+                    const float push = want - nearest;
+                    if (front - (halfWidth + setback) + push > kMaxPush) {
+                        blocked = true;   // a bend tighter than the lot is wide
+                        break;
+                    }
+                    front += push;
+                    pos = c + perp * (sgn * (front + bodyDepth * 0.5f));
+                }
+                // The flanks and the back get a look too, but never a push --
+                // pushing away from one branch of a crossing road drives the lot
+                // into the other. If the whole footprint isn't clear by now, this
+                // plot simply isn't buildable.
+                if (!blocked) {
+                    const float refY = std::max(ground(pos.x, pos.y),
+                                                roadY - std::max(B.maxDrop, 0.0f));
+                    footprintSamples(pos, dir, perp, sgn, frontage, bodyDepth, false, smp);
+                    for (const glm::vec2& sp : smp)
+                        if (grid.clearance(cv, sp, refY, kUnderpass, halfWidth + 1.0f) <
+                            halfWidth + kKerbClear * 0.5f) { blocked = true; break; }
+                }
+            }
+            if (blocked) {
+                ++out.skippedRoad;
+                q += advance;
+                continue;
+            }
 
             // Ground fit: the four footprint corners decide whether the plot is
             // buildable at all, and the lowest one is where the building sits --
@@ -650,8 +869,11 @@ District generate(const std::vector<glm::vec2>& center,
             bp.floorHeight = B.floorHeight;
             // The parcel: the frontage is given, the depth is the style's aspect
             // capped at the plot (or an Arcology would swallow its neighbours).
-            bp.width = frontage;
-            bp.depth = bodyDepth;
+            // The shaft gets the parcel divided by the podium's spread, so that
+            // the podium -- the piece that meets the street and carries the
+            // collider -- comes out at exactly frontage x bodyDepth.
+            bp.width = frontage / spread;
+            bp.depth = bodyDepth / spread;
             bp.twist = B.twist * sym(hashU(h0 ^ 0xc1U));
             bp.seed  = h0 | 1U;
             bp.sink  = std::max(0.4f, (gHi - gLo) * 0.6f); // bury the high corner
@@ -724,7 +946,10 @@ District generate(const std::vector<glm::vec2>& center,
                     lo = glm::min(lo, pc.center - m);
                     hi = glm::max(hi, pc.center + m);
                 };
-                const float faceZ = -bp.depth * 0.5f;
+                // The parcel's front, not the shaft's: the shaft sits back behind
+                // its own podium now, and a blade hung there is a blade over the
+                // pavement instead of over the road.
+                const float faceZ = -bodyDepth * 0.5f;
                 place({0.0f, sy, faceZ - reach * 0.5f},
                       {bladeW * 0.5f, bladeW * 0.9f, reach * 0.5f});
                 place({0.0f, sy * 0.55f, faceZ - 0.2f},

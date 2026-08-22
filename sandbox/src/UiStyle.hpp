@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+
 #include <imgui.h>
 
 // Small presentation helpers shared by every editor panel. The theme itself
@@ -31,5 +33,19 @@ void title(const char* fmt, ...) IM_FMTARGS(1);
 // Secondary text: dimmed and a touch smaller, for hints, units and counts that
 // should be readable without competing with the controls they describe.
 void hint(const char* fmt, ...) IM_FMTARGS(1);
+
+// Case-insensitive substring test, the one every list filter in the editor uses.
+// An empty (or null) needle matches everything, so a search box nobody has typed
+// in hides nothing.
+bool icontains(const char* hay, const char* needle);
+
+// A full-width search field for filtering the list that follows. `buf` is the
+// caller's filter text (it keeps it between frames); `cap` its size. Returns
+// true while a filter is actually in force, so the caller can say what it hid.
+// Clearing it is one click on the x, which matters more here than saving the
+// widget: retyping a name to get the full list back is exactly the kind of
+// fiddly the editor tries not to ask for.
+bool searchBox(const char* id, char* buf, std::size_t cap,
+               const char* placeholder = "Search...");
 
 } // namespace ui

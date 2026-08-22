@@ -227,10 +227,17 @@ struct District {
 
     // What the panel reports, so "why is my street empty" has an answer that
     // isn't guesswork: parcels rejected for slope, for overlap on a tight inside
-    // curve, and whether the budget cut the run short.
+    // curve, for standing in the carriageway, and whether the budget cut the run
+    // short.
     int  placed       = 0;
     int  skippedSlope = 0;
     int  skippedTight = 0;
+    // Lots dropped because the finished footprint could not be cleared of the
+    // carriageway -- a bend tighter than the frontage is wide, or a road that
+    // comes back past its own district. Counted apart from skippedTight because
+    // it means something different to the user: skippedTight is "the plot folded
+    // through itself", this is "the road was in the way".
+    int  skippedRoad  = 0;
     bool budgetHit    = false;
     int  parts        = 0;   // pieces that went into the merge (before it)
     int  verts        = 0;   // vertices across every batch

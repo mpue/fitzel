@@ -481,6 +481,7 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"kind",     static_cast<int>(l.kind)},
             {"model",    l.model},
             {"side",     l.side},
+            {"onRoad",   l.onRoad},
             {"offset",   l.offset},
             {"spacing",  l.spacing},
             {"lift",     l.lift},
@@ -734,6 +735,7 @@ void RoadSystem::load(const nlohmann::json& j) {
             l.enabled  = e.value("enabled",  l.enabled);
             l.model    = e.value("model",    std::string());
             l.side     = e.value("side",     l.side);
+            l.onRoad   = e.value("onRoad",   l.onRoad);
             l.offset   = e.value("offset",   l.offset);
             l.spacing  = e.value("spacing",  l.spacing);
             l.lift     = e.value("lift",     l.lift);
@@ -1235,15 +1237,23 @@ void RoadSystem::clearGeometry() {
     m_sideBatches.clear();
 }
 
+std::vector<roadside::Instance> RoadSystem::placeLine(const roadside::Line& line) const {
+    if (m_centerline.size() < 2) return {}; // placements follow a committed road
+    // Drape on the current terrain (which holds the graded corridor), so a post
+    // stands on the ground the road actually sits on. An on-road line instead
+    // stands on the carriageway, so it also gets the road's own profile (deck
+    // height + cross-fall per sample) -- draping it on the terrain would bury it
+    // in the asphalt and drop it off every bridge.
+    auto ground = [this](float x, float z) { return m_streamer.heightAt(x, z); };
+    return roadside::generate(line, m_centerline, width * 0.5f, ground,
+                              m_centerlineY, m_centerlineBank);
+}
+
 void RoadSystem::rebuildSideObjects() {
     m_sideBatches.clear();
     if (m_centerline.size() < 2) return; // side objects follow a committed road
-    // Drape on the current terrain (which holds the graded corridor), so a post
-    // stands on the ground the road actually sits on.
-    auto ground = [this](float x, float z) { return m_streamer.heightAt(x, z); };
-    const float half = width * 0.5f;
     for (const roadside::Line& line : sideLines) {
-        auto inst = roadside::generate(line, m_centerline, half, ground);
+        auto inst = placeLine(line);
         if (inst.empty()) continue;
         m_sideBatches.push_back({line.model, line.scale, line.knockable,
                                  line.mass, std::move(inst)});
