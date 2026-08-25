@@ -3,9 +3,13 @@
 // The sky is the one thing in this engine nobody can look at while working on
 // it. In the editor it is behind the panels, above the default camera's pitch,
 // under the fog and washed flat by the tonemapper; you cannot get a plain look
-// at a cumulus without first building a scene to stand in. So every change to
-// sky.frag has been made by reasoning about noise functions and then hoping --
-// and "the clouds look wrong" is not a thing reasoning is good at.
+// at it without first building a scene to stand in.
+//
+// SCOPE: everything ABOVE the cumulus -- the gradient, the sun, the stars and
+// the ice at ten kilometres. The low cloud left sky.frag (it is baked geometry
+// now, see CloudShape.hpp) and has its own tool, cloudcheck. Splitting them is
+// not tidiness: one cloud filling the frame is the view that shows whether a
+// bulge is right, and a whole-sky shot never was.
 //
 // This renders sky.vert/sky.frag through the same fullscreen quad the engine
 // uses, into an offscreen buffer, with the camera pointed where the clouds
@@ -72,7 +76,6 @@ struct Shot {
     float sunHours;      // time of day, the same 0..24 the editor slider uses
     float pitchDeg;      // where the camera looks: up into the layer, or along it
     float yawDeg;        // relative to the sun: 0 = straight at it
-    float coverage;      // the panel's 0..1, not the shader's threshold
     float cirrus;
     float contrails;
 };
@@ -140,22 +143,15 @@ int main(int argc, char** argv) {
     glViewport(0, 0, kW, kH);
 
     const Shot shots[] = {
-        // Midday, looking up into the layer: this is the one that shows whether
-        // a cumulus has bulges and a flat base, or is a smear.
-        {"cumulus_noon",     12.0f,  14.0f, 140.0f, 0.55f, 0.0f, 0.0f},
-        // The same field with the sun behind it -- the silver lining case.
-        {"cumulus_backlit",  12.0f,  12.0f,  25.0f, 0.55f, 0.0f, 0.0f},
-        // Low sun along the layer: the shot a race actually opens on.
-        {"cumulus_evening",  17.2f,   8.0f,  40.0f, 0.45f, 0.0f, 0.0f},
-        // Cirrus on its own, high and thin, with nothing below it.
-        {"cirrus_noon",      12.0f,  38.0f, 120.0f, 0.00f, 0.55f, 0.0f},
-        {"cirrus_evening",   17.2f,  30.0f,  35.0f, 0.00f, 0.65f, 0.0f},
+        // The gradient and the sun, with nothing in the way.
+        {"clear_noon",       12.0f,  20.0f, 120.0f, 0.00f, 0.0f},
+        {"clear_evening",    17.4f,  10.0f,  25.0f, 0.00f, 0.0f},
+        {"clear_night",       1.0f,  35.0f,  90.0f, 0.00f, 0.0f},
+        // Cirrus on its own, high and thin.
+        {"cirrus_noon",      12.0f,  38.0f, 120.0f, 0.55f, 0.0f},
+        {"cirrus_evening",   17.2f,  30.0f,  35.0f, 0.65f, 0.0f},
         // Contrails on their own, so the straightness can be judged.
-        {"contrails",        11.0f,  45.0f, 100.0f, 0.00f, 0.15f, 0.9f},
-        // Everything at once, which is what the sky is meant to look like.
-        {"all",              15.5f,  18.0f,  60.0f, 0.50f, 0.45f, 0.55f},
-        // Overcast, to check the tops build rather than the layer just thickening.
-        {"overcast",         12.0f,  14.0f, 130.0f, 0.95f, 0.20f, 0.0f},
+        {"contrails",        11.0f,  45.0f, 100.0f, 0.15f, 0.9f},
     };
 
     std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
@@ -194,14 +190,6 @@ int main(int argc, char** argv) {
         v3("uSunDir", sunDir);
         v3("uSunColor", sunCol);
         f("uTime", 12.0f);
-        // The same mapping main.cpp applies: the panel's coverage is an amount,
-        // the shader's is a threshold, and they run opposite ways.
-        f("uCoverage", glm::mix(0.86f, 0.46f, s.coverage));
-        f("uCloudDensity", 1.0f);
-        f("uCloudScale", 0.0009f);
-        f("uCloudSpeed", 5.0f);
-        f("uCloudBottom", 700.0f);
-        f("uCloudTop", 2400.0f);
         f("uCirrus", s.cirrus);
         f("uCirrusHeight", 1400.0f);
         f("uCirrusSpeed", 2.5f);

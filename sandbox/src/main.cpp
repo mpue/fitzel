@@ -82,6 +82,7 @@
 #include "RaceSim.hpp"
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
+#include "CloudField.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
 #include "RaceHud.hpp"
@@ -1262,6 +1263,19 @@ int main(int argc, char** argv) {
         VolumetricFog volFog;
         if (!volFog.init())
             std::fprintf(stderr, "Volumetric fog disabled (shader/noise init failed)\n");
+        // The low cloud (see CloudField.hpp). Survivable in the same way the fog
+        // is: a frame without clouds is a frame with a clear sky, not a black
+        // screen, so a failure is reported and carried past.
+        clouds::CloudField cloudField;
+        if (!cloudField.init())
+            std::fprintf(stderr, "Clouds disabled (shader init failed)\n");
+        // Baking is a couple of hundred milliseconds, so it does NOT run per
+        // frame: `cloudsDirty` is set by whatever changed a rule and consumed
+        // once the user has stopped dragging (see the sky panel). Without that
+        // gate a slider drag would rebake sixty times a second.
+        bool cloudsDirty = true;
+        // What the current volumes were built from, so a change can be spotted.
+        clouds::Settings cloudBaked;
         VolumetricFog::Settings volFogSet;
         // The frame's placed volumes, gathered from the entities carrying a
         // VolumetricFogComponent. Kept out here rather than built in the render
@@ -1320,18 +1334,11 @@ int main(int argc, char** argv) {
         float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
         bool  timePaused = true;   // freeze the time of day where it is
 
-        // Cloud controls.
-        float cloudCoverage = 0.5f;
-        float cloudDensity  = 1.0f;
-        // A cumulus is at least as TALL as it is wide. The old 140..320 slab was
-        // 180 m thick under 400 m features, so every cloud came out a pancake --
-        // and a field of pancakes seen from underneath is a textured ceiling,
-        // which is exactly what it looked like. Base and top now stand roughly
-        // where real ones do, and the feature size grew to match.
-        float cloudScale    = 0.0009f;
-        float cloudSpeed    = 5.0f;
-        float cloudBottom   = 700.0f;
-        float cloudTop      = 2400.0f;
+        // The low cloud, as RULES rather than as noise parameters (see
+        // CloudField.hpp). What the scene stores is this struct; the volumes and
+        // the placements are baked from it, exactly as the road's side objects
+        // and the roadside city are derived from theirs.
+        clouds::Settings cloudSet;
 
         // The high layer (see sky.frag): ice, well above the cumulus and well
         // above the weather -- which is why none of this is touched by the storm
@@ -3558,9 +3565,23 @@ int main(int argc, char** argv) {
         addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
         addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
-        addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
-        addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
-        addF("cloudBottom", cloudBottom);      addF("cloudTop", cloudTop);
+        // The cloud rules. New keys throughout: the old ones (coverage,
+        // cloudScale, cloudBottom, cloudTop) described a noise field that no
+        // longer exists, and reusing their names would load a number that used
+        // to mean "metres per billow" into something that now means "how many
+        // clouds". An old scene simply arrives with the defaults, which is the
+        // honest outcome -- its sky was not expressible in this system anyway.
+        addB("cloudEnabled", cloudSet.enabled);
+        addI("cloudSeed", cloudSet.seed);      addI("cloudCount", cloudSet.count);
+        addF("cloudBase", cloudSet.baseHeight);
+        addF("cloudJitter", cloudSet.baseJitter);
+        addF("cloudSpread", cloudSet.spread);
+        addF("cloudSizeMin", cloudSet.sizeMin);
+        addF("cloudSizeMax", cloudSet.sizeMax);
+        addF("cloudDensity", cloudSet.density);
+        addF("cloudHumilis", cloudSet.wHumilis);
+        addF("cloudMediocris", cloudSet.wMediocris);
+        addF("cloudCongestus", cloudSet.wCongestus);
         addF("cirrus", cirrusAmount);          addF("cirrusHeight", cirrusHeight);
         addF("cirrusWind", cirrusSpeed);
         // NOT "contrails": that name belongs to the vehicle trail toggle a few
@@ -6614,10 +6635,16 @@ int main(int argc, char** argv) {
             }
             weather = glm::clamp(weather, 0.0f, 1.0f);
 
-            const float effCoverage  = glm::mix(cloudCoverage, 0.97f, weather);
-            const float effDensity   = glm::mix(cloudDensity, 2.7f, weather);
-            const float effWind      = glm::mix(cloudSpeed, 26.0f, weather);
-            const float effCloudBot  = glm::mix(cloudBottom, 80.0f, weather);
+            // What the storm does to the cloud. Only the DENSITY, because that is
+            // the one thing that can change without rebaking -- it is a uniform,
+            // while the count, the spread and the sizes are geometry that costs
+            // a couple of hundred milliseconds to rebuild.
+            //
+            // So a front here darkens and thickens the cumulus; it does not close
+            // the sky over. An overcast lid is stratocumulus, a different species
+            // with a different rule set (connected sheets, not detached heaps),
+            // and it is deliberately not in this system yet.
+            const float effCloudDensity = glm::mix(cloudSet.density, 2.4f, weather);
             const float effWaveH     = glm::mix(waveHeight, 2.4f, weather);
             const float effWaveC     = glm::mix(waveChoppy, 0.95f, weather);
             const float effFog       = fogDensity + weather * 0.011f;
@@ -9818,19 +9845,80 @@ int main(int argc, char** argv) {
                 ImGui::SameLine();
                 ImGui::Checkbox("Pause", &timePaused);
                 ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
-                ImGui::SliderFloat("Coverage",    &cloudCoverage, 0.0f, 1.0f);
-                ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
-                ImGui::SliderFloat("Cloud scale", &cloudScale, 0.0003f, 0.005f, "%.4f");
-                ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
-                ImGui::SliderFloat("Cloud base",  &cloudBottom, 100.0f, 3000.0f, "%.0f m");
-                ImGui::SliderFloat("Cloud top",   &cloudTop, 300.0f, 7000.0f, "%.0f m");
-                ui::hint("Base, top and scale decide whether the sky reads as\n"
-                         "weather or as a ceiling. A cumulus is at least as\n"
-                         "TALL as it is wide, so a thin slab under wide\n"
-                         "features can only ever be a textured lid -- scale\n"
-                         "sets that width, and LOWER means bigger clouds.\n"
-                         "Coverage does two jobs: how much sky is taken, and\n"
-                         "how far the tops build into it.");
+                // --- Cumulus ------------------------------------------------
+                // Rules, not noise parameters. Everything here except Density
+                // and the enable needs the library and the placements rebuilt,
+                // which is why the rebake is deferred until the drag ends (see
+                // where cloudsDirty is consumed).
+                ImGui::Checkbox("Clouds", &cloudSet.enabled);
+                ImGui::BeginDisabled(!cloudSet.enabled);
+                ImGui::SliderInt("Count", &cloudSet.count, 0, 400);
+                ui::hint("How many clouds are hung. Costs less than it looks:\n"
+                         "a cloud is only paid for where it covers the screen,\n"
+                         "and most of a full sky is small and far away.");
+                ImGui::SliderFloat("Cloud base", &cloudSet.baseHeight,
+                                   200.0f, 4000.0f, "%.0f m");
+                ui::hint("The condensation level -- the altitude every base sits\n"
+                         "at. One altitude for all of them is not a shortcut: air\n"
+                         "rising off the same ground condenses at the same height,\n"
+                         "which is why a real cumulus field looks like it is\n"
+                         "standing on a sheet of glass.");
+                ImGui::SliderFloat("Size", &cloudSet.sizeMin, 150.0f, 3000.0f,
+                                   "%.0f m min");
+                ImGui::SliderFloat("##sizemax", &cloudSet.sizeMax, 150.0f, 4000.0f,
+                                   "%.0f m max");
+                ui::hint("How wide the clouds are. Having small and large in the\n"
+                         "same sky is most of what gives it depth -- one size\n"
+                         "reads as wallpaper.");
+                ImGui::SliderFloat("Spread", &cloudSet.spread, 2000.0f, 60000.0f,
+                                   "%.0f m");
+                ui::hint("How far the field reaches. It has to get to the horizon,\n"
+                         "or the weather visibly stops in mid-air.");
+                ImGui::SliderFloat("Density", &cloudSet.density, 0.1f, 3.0f, "%.2f");
+                ui::hint("How thick the cloud is optically: darker bases and\n"
+                         "harder shadows as it rises. Takes effect at once -- it\n"
+                         "is the one setting here that needs no rebuild.");
+
+                // The species mix. Three weights rather than a single "type"
+                // slider, because a real sky has more than one kind in it at once
+                // and the interesting skies are the mixed ones.
+                ImGui::TextDisabled("Species mix");
+                ImGui::SliderFloat("Humilis", &cloudSet.wHumilis, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Mediocris", &cloudSet.wMediocris, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Congestus", &cloudSet.wCongestus, 0.0f, 1.0f, "%.2f");
+                ui::hint("Flat fair-weather puffs, proper heaps, and towers.\n"
+                         "Weights, so what matters is their ratio.");
+
+                ImGui::SliderInt("Seed", &cloudSet.seed, 1, 9999);
+                ImGui::SameLine();
+                if (ImGui::Button("Shuffle")) {
+                    cloudSet.seed = 1 + (cloudSet.seed * 1103515245 + 12345) % 9999;
+                    cloudsDirty = true;
+                }
+                // Say what the system is actually doing, and when it is doing
+                // nothing, say WHY. A sky that comes up empty has several
+                // possible causes -- the shaders did not build, the HDRI is
+                // being shown instead, the placement found no room -- and from
+                // the outside they all look identical: no clouds, and every
+                // slider apparently dead. Guessing between them from a screenshot
+                // is exactly the loop this line exists to cut.
+                if (!cloudField.ready()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f),
+                                       "Shaders failed to build -- see the console");
+                } else if (iblSkybox && environment.valid()) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f),
+                                       "Hidden: the HDRI panorama is the sky");
+                    ui::hint("A panorama already has its own clouds painted into\n"
+                             "it, so ours are left out rather than hung in front\n"
+                             "of them. Turn off the HDRI background in the\n"
+                             "Environment panel to see these.");
+                } else {
+                    ImGui::TextDisabled("%d placed, %.1f MB",
+                                        static_cast<int>(cloudField.instances().size()),
+                                        static_cast<double>(cloudField.atlasBytes()) /
+                                            (1024.0 * 1024.0));
+                }
+                ImGui::EndDisabled();
 
                 // --- The high layer -----------------------------------------
                 // Its own section because it is its own weather. Cirrus sits
@@ -12860,9 +12948,24 @@ int main(int argc, char** argv) {
             // different places.
             renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
             prof::addSince("shadows", fzShadowMark);
+            // Rebake when a rule changed -- but only once the user has let go.
+            // A slider drag would otherwise rebuild the library on every frame of
+            // it, and the library is a couple of hundred milliseconds. Comparing
+            // against what was last baked also covers scene loads and undo
+            // without either of them having to know this system exists.
+            if (cloudField.ready() &&
+                (cloudsDirty || cloudSet.needsRebake(cloudBaked)) &&
+                !ImGui::IsAnyItemActive()) {
+                cloudField.bake(cloudSet);
+                cloudBaked  = cloudSet;
+                cloudsDirty = false;
+            }
+
             const long long fzSceneMark = prof::mark();
 
-            // Fullscreen sky + volumetric clouds for a given view.
+            // Fullscreen sky for a given view: gradient, sun, stars, and the
+            // cirrus ten kilometres up. The low cloud is its own pass, drawn over
+            // this one (see drawBackground).
             auto drawSky = [&](const glm::mat4& invViewProj, const glm::vec3& eye,
                                bool tonemap) {
                 glDisable(GL_DEPTH_TEST);
@@ -12874,12 +12977,6 @@ int main(int argc, char** argv) {
                 sky.setVec3("uSunDir", light.direction);
                 sky.setVec3("uSunColor", light.color);
                 sky.setFloat("uTime", static_cast<float>(now));
-                sky.setFloat("uCoverage", glm::mix(0.86f, 0.46f, effCoverage));
-                sky.setFloat("uCloudDensity", effDensity);
-                sky.setFloat("uCloudScale", cloudScale);
-                sky.setFloat("uCloudSpeed", effWind);
-                sky.setFloat("uCloudBottom", effCloudBot);
-                sky.setFloat("uCloudTop", cloudTop);
                 sky.setFloat("uCirrus", cirrusAmount);
                 sky.setFloat("uCirrusHeight", cirrusHeight);
                 sky.setFloat("uCirrusSpeed", cirrusSpeed);
@@ -12894,12 +12991,59 @@ int main(int argc, char** argv) {
 
             // Background: the HDRI panorama when it is the active sky, else the
             // procedural sky. Same signature as drawSky so it drops in everywhere.
+            // Draw the cumulus for a view. Folded in here rather than called
+            // beside each drawBackground, so every path that draws a sky gets the
+            // clouds with it: the main pass, the water reflection, and the six
+            // faces of the environment probe -- which is what puts clouds in a wet
+            // road's reflection instead of an empty blue.
+            //
+            // No depth test is needed and none is wanted: this runs BEFORE the
+            // scene, so the terrain and everything on it is drawn over the clouds
+            // afterwards with its own depth test. That is the whole holdout, for
+            // free, and it is correct as long as nothing in the world gets up to
+            // the condensation level -- which nothing here does.
+            auto drawClouds = [&](const glm::mat4& invViewProj, const glm::vec3& eye,
+                                  bool tonemap) {
+                if (!cloudField.valid() || !cloudSet.enabled) return;
+                // Aerial perspective for the CLOUDS, which is not the scene's fog
+                // scaled down -- it is a different quantity with a different
+                // range, and treating it as the same one erased them completely.
+                //
+                // The scene's density (~0.0023/m) is tuned for ground haze, where
+                // "far" is a kilometre or two. A cloud is eight to thirty
+                // kilometres out, and exp(-8000 * 0.0023) is 1e-8: every cloud in
+                // the sky came out at an alpha of nothing, drawn perfectly and
+                // invisibly. The layer also sits at 1350 m, above almost all of
+                // the height fog it was being charged for.
+                //
+                // So: its own coefficient, set by how far the field has to stay
+                // visible (at 30 km this leaves about 40%), with weather thickening
+                // it rather than the ground value driving it.
+                const float cloudHaze = 2.5e-5f + weather * 5.0e-5f;
+                // light.color and light.ambient are passed AS THEY ARE, and both
+                // of those were got wrong first time round in the same way: by
+                // assuming this pass had to prepare them.
+                //
+                // light.color already carries the 3.4x HDR scale, the day fade
+                // AND lightDim (see where it is built) -- multiplying by lightDim
+                // again dimmed the clouds twice in a storm. light.ambient is
+                // already LINEAR -- the lit shader takes it straight -- so
+                // raising it to 2.2 darkened the fill by about ten times, which
+                // is most of the light on the shaded side of a cumulus.
+                cloudField.render(glm::inverse(invViewProj), eye, light.direction,
+                                  light.color, light.ambient,
+                                  cloudHaze, exposure, tonemap);
+            };
+
             auto drawBackground = [&](const glm::mat4& invViewProj,
                                       const glm::vec3& eye, bool tonemap) {
                 if (!(iblSkybox && environment.valid())) {
                     drawSky(invViewProj, eye, tonemap);
+                    drawClouds(invViewProj, eye, tonemap);
                     return;
                 }
+                // An HDRI panorama IS the sky, clouds and all -- adding ours on
+                // top would hang a second weather system in front of the first.
                 glDisable(GL_DEPTH_TEST);
                 glDepthMask(GL_FALSE);
                 glDisable(GL_CULL_FACE);
