@@ -43,6 +43,7 @@ public:
                m_before.closed  == m_after.closed &&
                m_before.sideObjects == m_after.sideObjects &&
                m_before.biomes      == m_after.biomes &&
+               m_before.decalRules  == m_after.decalRules &&
                m_before.loops   == m_after.loops  &&
                m_before.bridges.size() == m_after.bridges.size() &&
                std::equal(m_before.bridges.begin(), m_before.bridges.end(),

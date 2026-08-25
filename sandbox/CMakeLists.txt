@@ -30,6 +30,10 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RoadBridge.cpp
     src/RoadTunnel.cpp
     src/RoadLoop.cpp
+    # Decals on the carriageway. Runtime, like the side objects: the scene
+    # file holds the rules and the patches are lofted from them on load, so
+    # the shipped player has to be able to build them too.
+    src/RoadDecal.cpp
     src/RaceSim.cpp
     src/Difficulty.cpp
     src/RaceGrid.cpp
@@ -176,6 +180,16 @@ add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                          src/PropertyMeta.cpp)
 target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# The sky look (sandbox/tools/skycheck.cpp): renders sky.vert/sky.frag on its own
+# into an offscreen buffer, from a camera pointed where the clouds actually are,
+# and writes the frames out as PNGs. Not a test -- nothing passes or fails. The
+# sky is the one thing in the engine nobody can get a plain look at while working
+# on it (behind the panels, above the default pitch, under the fog), so every
+# change to it was previously made by reasoning about noise and hoping.
+#   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
+add_executable(skycheck tools/skycheck.cpp)
+target_link_libraries(skycheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
 
 # The icon check (sandbox/tools/iconcheck.cpp): runs a picture through the exact
 # path "Export Game" uses -- build the .ico, patch a COPY of player.exe, then read

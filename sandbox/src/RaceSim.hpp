@@ -80,6 +80,11 @@ struct RaceState {
     // a Euler yaw cannot describe being upside down at the top of a turn.
     glm::vec3 loopFwd{0.0f, 0.0f, 1.0f}, loopUp{0.0f, 1.0f, 0.0f};
     float loopExitFlash = 0.0f; // counts down after being thrown off (HUD/FX)
+    // Seconds before a loop may be mounted again. Leaving one puts the craft AT
+    // one of its ends, still travelling into it, which is exactly what the mount
+    // test looks for -- so without this a clean exit was re-mounted on the very
+    // next step and the craft went round for ever.
+    float loopCooldown = 0.0f;
 
     // --- Manual boost (gamepad A / Left Shift) ---------------------------
     // A tank the pilot spends, as opposed to the boost PADS above, which the

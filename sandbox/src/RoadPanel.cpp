@@ -1,5 +1,6 @@
 #include "RoadPanel.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -15,6 +16,7 @@
 #include "UiStyle.hpp"
 
 #include "RoadBridge.hpp"
+#include "RoadDecal.hpp"
 #include "RoadPrefab.hpp"
 #include "RoadTunnel.hpp"
 #include "RoadSide.hpp"
@@ -156,18 +158,30 @@ bool tunnelSection(const PanelState& s) {
 // stretch it applies to.
 bool loopSection(const PanelState& s) {
     bool rc = false;
-    if (!ui::header("Loops")) return rc;
 
-    ui::hint("A loop curls the road up, over and back down. How far it travels\n"
-             "while it turns is the distance between the two points, so stretch\n"
-             "it by dragging them; the radius sets how tall it stands.");
-
+    // Which loop the current selection names -- worked out BEFORE the header,
+    // because picking a loop's crown in the viewport selects its two points, and
+    // landing on a collapsed section would make that click look like it missed.
+    // Only on the frame the selection changes, so the section can still be shut.
     const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
     int existing = -1;
     for (int i = 0; pair && i < static_cast<int>(s.road.loops.size()); ++i)
         if ((s.road.loops[i].a == s.sel && s.road.loops[i].b == s.sel2) ||
             (s.road.loops[i].a == s.sel2 && s.road.loops[i].b == s.sel))
             existing = i;
+    static int lastPair[2] = {-2, -2};
+    const bool picked = (s.sel != lastPair[0] || s.sel2 != lastPair[1]);
+    lastPair[0] = s.sel; lastPair[1] = s.sel2;
+    if (picked && existing >= 0) ImGui::SetNextItemOpen(true);
+
+    if (!ui::header("Loops")) return rc;
+
+    ui::hint("A loop curls the road up, over and back down. How far it travels\n"
+             "while it turns is the distance between the two points; the radius\n"
+             "sets how tall it stands. A long, low turn sways out sideways on the\n"
+             "way up and back the other way coming down, so its two halves pass\n"
+             "beside each other instead of through each other.\n"
+             "In the viewport: click a loop's crown to select it.");
 
     ImGui::BeginDisabled(!pair || existing >= 0);
     if (ImGui::Button("Create loop", ImVec2(-1.0f, 0.0f))) {
@@ -188,7 +202,16 @@ bool loopSection(const PanelState& s) {
     ImGui::PushID("loops");   // own ID scope -- see the note in bridgeSection
     for (int i = 0; i < static_cast<int>(s.road.loops.size()); ++i) {
         ImGui::PushID(i);
+        // The row for the loop the viewport has selected is coloured and scrolled
+        // to, so "I clicked that one" and "this is the radius I am about to
+        // change" are the same statement.
+        const bool here = (i == existing);
+        if (here) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.82f, 0.24f, 1.0f));
+            if (picked) ImGui::SetScrollHereY(0.5f);
+        }
         ImGui::Text("Loop #%d \xE2\x86\x92 #%d", s.road.loops[i].a, s.road.loops[i].b);
+        if (here) ImGui::PopStyleColor();
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) {
             s.beginEdit();
@@ -206,10 +229,12 @@ bool loopSection(const PanelState& s) {
         if (ImGui::IsItemActivated())            s.beginEdit();
         if (ImGui::IsItemDeactivatedAfterEdit()) { s.endEdit("Loop radius"); showAtOnce(s); }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The turn stands twice this tall. It also sets how\n"
-                              "fast you have to arrive: holding the top needs\n"
-                              "v^2 > gravity * radius, so a bigger loop is a\n"
-                              "faster one to commit to.");
+            ImGui::SetTooltip("The turn stands twice this tall. Too small for the\n"
+                              "stretch it is on and it stops turning over at all\n"
+                              "-- a hump, not a loop. It also sets how fast you\n"
+                              "have to arrive: holding the top needs v^2 >\n"
+                              "gravity * radius, so a bigger loop is a faster one\n"
+                              "to commit to.");
         ImGui::PopID();
     }
     ImGui::PopID(); // "loops"
@@ -420,6 +445,220 @@ void sideSection(const PanelState& s) {
 // is an entity subtree, and its scripts, lights and physics only mean anything as
 // scene objects, so this stamps once instead of deriving. The placements stay put
 // when the road later moves.
+// Decals: images laid on the carriageway (see RoadDecal.hpp). Same shape as the
+// side objects above -- a list of rules, each derived into geometry rather than
+// authored -- and edited the same way, so the two read alike. A live change
+// re-derives the patches at once; rebuildDecals is a few hundred vertices.
+//
+// Everything here is a number you can type. That is not a style choice: landing a
+// start line ON the start line by dragging a gizmo across a viewport needs a
+// steadier hand than this editor is allowed to assume, and "62 metres along, 0
+// across" is a placement anybody can hit.
+void decalSection(const PanelState& s) {
+    if (!ui::header("Decals", ImGuiTreeNodeFlags_DefaultOpen)) return;
+
+    auto add = [&](roaddecal::Blend b) {
+        s.beginEdit();
+        roaddecal::Decal d = roaddecal::preset(b);
+        // Drop it where the road can actually show it: the middle of what is
+        // built, rather than at metre zero on top of whatever is already there.
+        d.dist = s.road.roadLength() * 0.5f;
+        s.road.decals.push_back(d);
+        s.endEdit("Add decal");
+        s.road.rebuildDecals();
+    };
+    if (ImGui::Button("+ Marking")) add(roaddecal::Blend::Cutout);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A painted marking -- arrow, number, start box, logo.\n"
+                          "The image's transparent parts are cut away, so it sits\n"
+                          "in the ordinary opaque pass and costs nothing extra.");
+    ImGui::SameLine();
+    if (ImGui::Button("+ Stain")) add(roaddecal::Blend::Blend);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A translucent patch -- oil, scorch, wet smear, soft\n"
+                          "shadow. The image is blended over the tarmac, so the\n"
+                          "asphalt still shows through it.");
+    ImGui::SameLine();
+    if (ImGui::Button("+ Patch")) add(roaddecal::Blend::Opaque);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A solid surface swap -- concrete apron, repaved\n"
+                          "stretch, full start grid. The whole rectangle is\n"
+                          "painted; the image's alpha is ignored.");
+
+    if (s.road.decals.empty()) {
+        ImGui::TextDisabled("None. Add a marking, stain or patch.");
+        return;
+    }
+    const float roadLen = s.road.roadLength();
+    if (s.road.verts() == 0 || roadLen <= 0.0f)
+        ImGui::TextDisabled("Build the road to see them placed.");
+    else
+        ImGui::TextDisabled("Road is %.0f m long.", roadLen);
+
+    bool changed = false; // re-derive the patches this frame (live preview)
+
+    ImGui::PushID("decals");        // own ID scope -- see the note in bridgeSection
+    for (int i = 0; i < static_cast<int>(s.road.decals.size()); ++i) {
+        roaddecal::Decal& d = s.road.decals[i];
+        ImGui::PushID(i);
+        ImGui::Separator();
+
+        // Enable + what it is + delete, on one line. The image's own file name is
+        // the label once there is one: with half a dozen decals on a track, "the
+        // one called startgrid.png" is how the author thinks of them.
+        if (ImGui::Checkbox("##en", &d.enabled)) {
+            d.enabled = !d.enabled;               // snapshot the pre-toggle state
+            s.beginEdit();
+            d.enabled = !d.enabled;
+            s.endEdit("Toggle decal");
+            changed = true;
+        }
+        ImGui::SameLine();
+        ImGui::TextUnformatted(d.texture.empty() ? roaddecal::blendName(d.blend)
+                                                 : d.texture.c_str());
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.0f);
+        if (ImGui::SmallButton("X")) {
+            s.beginEdit();
+            s.road.decals.erase(s.road.decals.begin() + i);
+            s.endEdit("Remove decal");
+            ImGui::PopID();
+            changed = true;
+            break; // the list shifted under us
+        }
+
+        // The image: the WIDE list -- every image the scan could decode, minus the
+        // normal maps -- because a decal is any picture at all rather than a
+        // tileable surface. Same list, and the same reasoning, as the glow map.
+        const std::string preview = d.texture.empty() ? "(pick an image)" : d.texture;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##image", preview.c_str())) {
+            for (const std::string& f : s.road.emisFiles)
+                if (ImGui::Selectable(f.c_str(), d.texture == f)) {
+                    const std::string old = d.texture;
+                    d.texture = old;               // snapshot pre-change
+                    s.beginEdit();
+                    d.texture = f;
+                    s.endEdit("Decal image");
+                    changed = true;
+                }
+            if (s.road.emisFiles.empty())
+                ImGui::TextDisabled("No images found (drop a .png in the project)");
+            ImGui::EndCombo();
+        }
+
+        // Mode. Combo gives no before-value, so snapshot around it by hand.
+        {
+            int mode = static_cast<int>(d.blend);
+            const char* items = "Cut out\0Blended\0Opaque\0";
+            if (ImGui::Combo("Mode", &mode, items)) {
+                const auto nw = static_cast<roaddecal::Blend>(mode);
+                s.beginEdit();
+                d.blend = nw;
+                s.endEdit("Decal mode");
+                changed = true;
+            }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("What the image's transparency means.\n"
+                              "Cut out: painted or not, nothing in between --\n"
+                              "  drawn with the opaque scene, never sorts wrongly.\n"
+                              "Blended: the tarmac shows through -- the only mode\n"
+                              "  where Opacity does anything, and the only one\n"
+                              "  that pays for back-to-front sorting.\n"
+                              "Opaque: the whole rectangle is painted.");
+
+        // Every knob is a DragFloat: click to type an exact value, drag to sweep.
+        // The whole drag is one undo step (see the side-object section).
+        auto drag = [&](const char* label, float* v, float speed, float lo, float hi,
+                        const char* fmt, const char* undoLabel) {
+            if (ImGui::DragFloat(label, v, speed, lo, hi, fmt)) changed = true;
+            if (ImGui::IsItemActivated())            s.beginEdit();
+            if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit(undoLabel);
+        };
+
+        drag("Along",  &d.dist,   0.25f, 0.0f, std::max(roadLen, 1.0f), "%.1f m",
+             "Decal position");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Metres from the start of the road to the middle of\n"
+                              "the decal, measured along the centreline.");
+        drag("Across", &d.offset, 0.05f, -40.0f, 40.0f, "%+.2f m", "Decal offset");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Metres right of the middle of the road (negative =\n"
+                              "left). The carriageway edge is at %.2f m.",
+                              s.road.width * 0.5f);
+        drag("Length", &d.length, 0.05f, 0.1f, 200.0f, "%.2f m", "Decal length");
+        drag("Width",  &d.width,  0.05f, 0.1f, 200.0f, "%.2f m", "Decal width");
+        drag("Turn",   &d.spin,   1.0f, -180.0f, 180.0f, "%+.0f deg", "Decal turn");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Turn the image on the road: 0 = the top of the\n"
+                              "picture points the way the road goes, 180 = it\n"
+                              "faces oncoming traffic, 90 = it lies across.\n"
+                              "The patch stays glued to the surface either way.");
+
+        // Repeats: an int, because "three start boxes" is a count, not a sweep.
+        if (ImGui::DragInt("Copies", &d.repeat, 0.1f, 1, 512)) changed = true;
+        if (ImGui::IsItemActivated())            s.beginEdit();
+        if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Decal copies");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How many, each one further along the road. A dashed\n"
+                              "centre line, a run of chevrons, a column of start\n"
+                              "boxes -- one rule instead of twenty decals.");
+        if (d.repeat > 1) {
+            drag("Every", &d.spacing, 0.1f, 0.0f, 200.0f, "%.2f m", "Decal spacing");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Metres between copies, centre to centre.\n"
+                                  "0 = one length, i.e. butt-jointed.");
+        }
+
+        // One knob per mode, and only the one that does anything there: an
+        // Opacity slider on a cut-out decal is a control that moves and changes
+        // nothing, which is worse than no control at all.
+        if (d.blend == roaddecal::Blend::Blend) {
+            drag("Opacity", &d.opacity, 0.01f, 0.0f, 1.0f, "%.2f", "Decal opacity");
+        } else if (d.blend == roaddecal::Blend::Cutout) {
+            drag("Cut at", &d.cutoff, 0.01f, 0.0f, 1.0f, "%.2f", "Decal cutoff");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Image alpha below this is thrown away. Raise it\n"
+                                  "if a soft-edged image leaves a halo, lower it if\n"
+                                  "thin strokes break up.");
+        }
+
+        if (ImGui::ColorEdit3("Tint", &d.tint.x, ImGuiColorEditFlags_NoInputs))
+            changed = true;
+        if (ImGui::IsItemActivated())            s.beginEdit();
+        if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Decal tint");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Multiplies the image. White leaves it alone; this is\n"
+                              "how one white arrow becomes a whole set of coloured\n"
+                              "ones without a second file.");
+
+        drag("Glow", &d.glowStrength, 0.02f, 0.0f, 8.0f, "%.2f", "Decal glow");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Light the image's own painted texels after the scene\n"
+                              "is lit, so the marking stays bright at night -- what\n"
+                              "makes a boost pad read as a lit strip. 0 = ordinary\n"
+                              "paint.");
+        if (d.glowStrength > 0.0f) {
+            if (ImGui::ColorEdit3("Glow colour", &d.glow.x,
+                                  ImGuiColorEditFlags_NoInputs))
+                changed = true;
+            if (ImGui::IsItemActivated())            s.beginEdit();
+            if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Decal glow colour");
+        }
+
+        drag("Lift", &d.lift, 0.005f, 0.0f, 0.5f, "%.3f m", "Decal lift");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Height above the asphalt. Raise it if the decal\n"
+                              "flickers against the road at a distance; too much\n"
+                              "and it reads as a sticker hovering over the track.");
+
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+
+    if (changed) s.road.rebuildDecals();
+}
+
 void prefabSection(const PanelState& s) {
     if (!ui::header("Prefabs along the road")) return;
     roadprefab::Settings& c = s.prefabCfg;
@@ -697,6 +936,10 @@ void drawPanel(const PanelState& s) {
         // the terrain-grading rebuild `rc` tracks -- so they stay out of it.
         ImGui::Separator();
         sideSection(s);
+
+        // Decals re-derive themselves the same way, and are equally out of `rc`.
+        ImGui::Separator();
+        decalSection(s);
 
         ImGui::Separator();
         prefabSection(s);

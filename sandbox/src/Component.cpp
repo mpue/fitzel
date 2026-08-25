@@ -782,6 +782,20 @@ const std::vector<Property>& BoostPadComponent::properties() {
         hd.slider = true; hd.min = 0.1f; hd.max = 6.0f; hd.fmt = "%.1f s";
         hd.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->hold; };
         p.push_back(std::move(hd));
+        // Size. DragFloat, not a slider: a strip is usually a length you know
+        // ("the last twenty metres of the straight"), and typing it beats hunting
+        // for it. 0 falls back to the object's box, so the field reads as an
+        // override rather than as a value that must be filled in.
+        Property pl;
+        pl.label = "Pad length"; pl.key = "padLength"; pl.kind = PropKind::Float;
+        pl.min = 0.0f; pl.max = 400.0f; pl.speed = 0.1f; pl.fmt = "%.2f m";
+        pl.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->padLength; };
+        p.push_back(std::move(pl));
+        Property pw;
+        pw.label = "Pad width"; pw.key = "padWidth"; pw.kind = PropKind::Float;
+        pw.min = 0.0f; pw.max = 400.0f; pw.speed = 0.1f; pw.fmt = "%.2f m";
+        pw.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->padWidth; };
+        p.push_back(std::move(pw));
         Property pd;
         pd.label = "Boost along pad"; pd.key = "usePadDir"; pd.kind = PropKind::Bool;
         pd.field = [](void* o) -> void* { return &static_cast<BoostPadComponent*>(o)->usePadDir; };

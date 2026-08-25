@@ -707,10 +707,21 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             if (!pe.activeInHierarchy) continue;
             const auto* bp = pe.components.get<BoostPadComponent>();
             if (!bp) continue;
-            if (st.gliderPos.x < pe.center.x - pe.half.x ||
-                st.gliderPos.x > pe.center.x + pe.half.x) continue;
-            if (st.gliderPos.z < pe.center.z - pe.half.z ||
-                st.gliderPos.z > pe.center.z + pe.half.z) continue;
+            // Where the pad's edges are. A pad given a size is measured in its
+            // OWN frame -- the craft's offset is rotated into it first -- so a
+            // strip laid across a corner keeps the length it was given instead of
+            // being flattened into the world-axis box that encloses it. A pad
+            // without one is tested against that box, exactly as before.
+            bool padRotated = false;
+            const glm::vec2 padHalf = bp->triggerHalf(pe.half, padRotated);
+            glm::vec2 rel(st.gliderPos.x - pe.center.x, st.gliderPos.z - pe.center.z);
+            if (padRotated) {
+                const float yaw = glm::radians(pe.rotation.y);
+                const float cy = std::cos(yaw), sy = std::sin(yaw);
+                // Inverse of the entity's yaw: world offset -> pad-local (x, z).
+                rel = glm::vec2(rel.x * cy - rel.y * sy, rel.x * sy + rel.y * cy);
+            }
+            if (std::abs(rel.x) > padHalf.x || std::abs(rel.y) > padHalf.y) continue;
             // Generous vertical window: the craft hovers rideHeight above the
             // pad, and may still be rising onto it.
             const float padTop = pe.center.y + pe.half.y;
@@ -932,6 +943,8 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         const std::vector<roadloop::Loop>& lps = env.road.loopGeometry();
         if (st.loopExitFlash > 0.0f)
             st.loopExitFlash = glm::max(0.0f, st.loopExitFlash - env.kSimH);
+        if (st.loopCooldown > 0.0f)
+            st.loopCooldown = glm::max(0.0f, st.loopCooldown - env.kSimH);
 
         if (st.loopIndex >= 0 && st.loopIndex < static_cast<int>(lps.size())) {
             // --- Riding a vertical loop -----------------------------------
@@ -981,7 +994,35 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             // Keep the flat sim's heading in step, so leaving the loop -- at
             // either end, or halfway up -- carries on the way the craft was
             // actually pointing.
-            st.gliderYaw   = std::atan2(fr.tangent.x, fr.tangent.z);
+            //
+            // NOT the tangent's compass bearing, which is what this used to take.
+            // The pitch below already carries the whole turn (it runs unwrapped to
+            // -360), so a heading that ALSO followed the tangent through the
+            // inversion counted the same rotation twice: over the top the two
+            // cancelled into a craft flying nose-FORWARD while travelling
+            // backwards. It only looked survivable because the tangent's compass
+            // bearing flips instantly, at the one instant the craft points straight
+            // up and a yaw is invisible. Give the turn a sway across the road and
+            // the flip becomes a sweep -- and the craft spins on its own axis all
+            // the way round, taking the chase camera with it.
+            //
+            // What a heading wants is the tangent with the pitch-over taken back
+            // out: rotate it about the frame's own side axis until it lies flat
+            // again. That is `ahead * |horizontal part| + acrossRoad * sideways
+            // part` -- always forwards along the turn, never flipping, and it still
+            // carries the sway, so the nose follows the weave the craft is really
+            // flying.
+            {
+                const glm::vec3 wUp(0.0f, 1.0f, 0.0f);
+                const glm::vec3 across = glm::normalize(glm::cross(wUp, fr.ahead));
+                const float tf = glm::dot(fr.tangent, fr.ahead);
+                const float tu = fr.tangent.y;
+                const float ts = glm::dot(fr.tangent, across);
+                const glm::vec3 head = fr.ahead * std::sqrt(tf * tf + tu * tu) +
+                                       across * ts;
+                if (glm::length(head) > 1e-3f)
+                    st.gliderYaw = std::atan2(head.x, head.z);
+            }
             // The loop drives the heading, so the flat sim's yaw rate has
             // nothing to say up here -- and leaving it running would hand
             // the craft back at the exit already turning.
@@ -995,6 +1036,7 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
             const bool ranOut = st.loopArc >= lp.length || st.loopArc <= 0.0f;
             if (ranOut || hold < 0.0f || st.loopSpeed < 1.0f) {
                 st.loopIndex = -1;
+                st.loopCooldown = 0.8f;                // no instant re-entry
                 if (!ranOut) st.loopExitFlash = 1.2f;  // thrown off mid-turn
                 // Hand the craft back to the flight sim carrying the velocity it
                 // had, so being thrown off the top is a real fall and finishing
@@ -1094,12 +1136,22 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
         // the top of it while driving underneath.
         st.loopUp  = glm::vec3(0.0f, 1.0f, 0.0f);
         st.loopFwd = glm::vec3(std::sin(st.gliderYaw), 0.0f, std::cos(st.gliderYaw));
-        if (!frozen && !st.raceFinished && !st.energyOut && st.loopExitFlash <= 0.0f)
+        if (!frozen && !st.raceFinished && !st.energyOut && st.loopExitFlash <= 0.0f &&
+            st.loopCooldown <= 0.0f)
             for (std::size_t li = 0; li < lps.size(); ++li) {
+                if (lps[li].frames.empty()) continue;
                 float arc = 0.0f, lat = 0.0f, hgt = 0.0f;
                 if (!roadloop::locate(lps[li], st.gliderPos, halfW, arc, lat, hgt))
                     continue;
-                if (arc > 8.0f && arc < lps[li].length - 8.0f) continue; // not at an end
+                // At the MOUTH -- measured from the entry itself, not from "some
+                // end of the arc". The old arc test also accepted the far end and
+                // then set the arc to 0, which teleported a craft that had merely
+                // driven up to where the turn comes back down all the way back to
+                // where it leaves: a loop that grabbed you at its exit and spat you
+                // in at its entrance.
+                if (arc > 8.0f &&
+                    glm::distance(st.gliderPos, lps[li].frames.front().pos) > 12.0f)
+                    continue;
                 const roadloop::Frame lf = roadloop::at(lps[li], arc);
                 const glm::vec3 v = st.gliderVel;
                 if (glm::dot(glm::vec3(v.x, 0.0f, v.z), lf.tangent) <= 0.0f) continue;
@@ -1287,14 +1339,18 @@ void updateOpponents(RaceState& st, const RaceEnv& env, RaceState* st2) {
         if (!pe.activeInHierarchy) continue;
         const auto* bp = pe.components.get<BoostPadComponent>();
         if (!bp) continue;
+        bool padRotated = false;
+        const glm::vec2 padHalf = bp->triggerHalf(pe.half, padRotated);
         Pad pad{ glm::vec2(pe.center.x, pe.center.z),
-                 glm::vec2(pe.half.x, pe.half.z), bp->boostSpeed, bp->hold,
+                 padHalf, bp->boostSpeed, bp->hold,
                  0.0f, 0.0f, 0.0f };
         pad.dist = projDist(pad.c);
         glm::vec2 pp, pd; sampleAt(pad.dist, pp, pd);
         pad.lane   = glm::dot(pad.c - pp, glm::vec2(pd.y, -pd.x));
-        // The AABB is axis-aligned, so its worst-case reach sideways is the
-        // smaller half-extent -- a conservative "how close must I be to touch it".
+        // Worst-case reach sideways is the smaller half-extent -- a conservative
+        // "how close must I be to touch it". It stays conservative for a sized
+        // pad, whose rectangle may be turned away from the racing line: the
+        // smaller half is the most it can be missing by.
         pad.radius = glm::max(glm::min(pad.h.x, pad.h.y), 0.1f);
         pads.push_back(pad);
     }

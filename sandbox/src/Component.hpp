@@ -740,8 +740,8 @@ public:
 // the pad; `usePadDir` boosts along the pad's own forward (+Z) instead of the
 // craft's heading (aim the pad down the track for a directional boost). The
 // gizmo draws chevrons in the boost direction. Only affects gliders (the arcade
-// hover sim); the trigger area is the entity's own box, so a wide thin box reads
-// as a boost strip.
+// hover sim). By default the trigger area is the entity's own box, so a wide thin
+// box reads as a boost strip; `padLength`/`padWidth` below take that over.
 class BoostPadComponent : public ComponentBase {
 public:
     float boostSpeed = 95.0f;  // speed cap while boosting (m/s; may exceed glider max)
@@ -749,6 +749,34 @@ public:
     float hold       = 1.5f;   // seconds the extra speed lingers after leaving
     bool  usePadDir  = false;  // push along the pad's +Z instead of the craft's heading
     bool  reverse    = false;  // flip the boost direction (+Z <-> -Z / forward <-> back)
+
+    // How big the strip is, in metres: `padLength` along the pad's own forward
+    // (+Z), `padWidth` across it. 0 -- the default, and what every pad saved
+    // before this loads as -- means "the object's own box", which is how a pad
+    // has always been sized, so an existing track is untouched.
+    //
+    // Set them and the boost stops being the size of whatever the pad is DRAWN
+    // as. That matters in three places the object's box gets wrong: a strip
+    // painted on the road as a decal has no box to inherit at all; stretching a
+    // model to lengthen the boost distorts the model; and a mesh that happens to
+    // carry a tall fin or a wide base hands the trigger a footprint nobody asked
+    // for. A sized pad is also measured in the pad's OWN frame, which its
+    // axis-aligned box cannot be: a 20 m strip laid diagonally across a corner is
+    // twenty metres long, not a fourteen-metre square.
+    float padLength = 0.0f;   // metres along +Z (0 = the object's box)
+    float padWidth  = 0.0f;   // metres across   (0 = the object's box)
+
+    // The trigger's half-extents in the pad's own frame -- x across, z along --
+    // resolved from those two settings and the entity's world box. Derived in one
+    // place so the player's "am I on a pad" and the AI's "is there a pad ahead"
+    // cannot disagree about how big a pad is. `rotated` says the caller must test
+    // in the pad's frame; without a size there is nothing to turn and the world
+    // box answers, exactly as it always did.
+    glm::vec2 triggerHalf(const glm::vec3& entityHalf, bool& rotated) const {
+        rotated = padLength > 1e-3f || padWidth > 1e-3f;
+        return {padWidth  > 1e-3f ? padWidth  * 0.5f : entityHalf.x,
+                padLength > 1e-3f ? padLength * 0.5f : entityHalf.z};
+    }
     // Punch SFX played once the instant a craft mounts the pad, so the boost lands
     // as a felt "kick". A Sound asset filename (chosen in the Inspector; empty =
     // silent), with its own gain and a pitch that defaults low for a deep thump.
@@ -767,11 +795,34 @@ public:
         const glm::vec3 fwd  = rot * glm::vec3(0.0f, 0.0f, reverse ? -1.0f : 1.0f);
         const glm::vec3 side = rot * glm::vec3(1.0f, 0.0f, 0.0f);
         const glm::vec4 col{0.3f, 0.9f, 1.0f, 0.95f}; // cyan boost chevrons
+
+        // A sized pad draws its own outline, and the chevrons are laid out to fill
+        // it. Without that the gizmo is the same three arrows whatever the numbers
+        // say, and a size you cannot see is a size you cannot set: the outline IS
+        // the readout. An unsized pad keeps the old fixed chevrons -- its area is
+        // the object, which is already drawn.
+        const bool sized  = padLength > 1e-3f || padWidth > 1e-3f;
+        const float halfL = padLength > 1e-3f ? padLength * 0.5f : 1.2f;
+        const float halfW = padWidth  > 1e-3f ? padWidth  * 0.5f : 0.7f;
+        if (sized) {
+            // The forward axis, not the boost direction: `reverse` turns the
+            // arrows round, but the rectangle it stands in does not move.
+            const glm::vec3 ax = rot * glm::vec3(0.0f, 0.0f, 1.0f);
+            const glm::vec3 corner[4] = {
+                c + ax * halfL + side * halfW, c + ax * halfL - side * halfW,
+                c - ax * halfL - side * halfW, c - ax * halfL + side * halfW,
+            };
+            for (int i = 0; i < 4; ++i) g.line(corner[i], corner[(i + 1) % 4], col);
+        }
+
+        // Three chevrons spread over the pad's length, each as wide as the pad.
+        const float tipW = halfW * 0.9f;
         for (int i = 0; i < 3; ++i) {
-            const glm::vec3 base = c + fwd * (static_cast<float>(i) * 0.8f - 0.8f);
-            const glm::vec3 tip  = base + fwd * 0.9f;
-            g.line(base + side * 0.7f, tip, col);
-            g.line(base - side * 0.7f, tip, col);
+            const float t = (static_cast<float>(i) - 1.0f) * (halfL * 0.55f);
+            const glm::vec3 base = c + fwd * (t - halfL * 0.25f);
+            const glm::vec3 tip  = base + fwd * (halfL * 0.45f);
+            g.line(base + side * tipW, tip, col);
+            g.line(base - side * tipW, tip, col);
         }
     }
 };

@@ -493,6 +493,29 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"mass",     l.mass},
         });
 
+    // Decals. One object per rule; the patches they produce are derived and never
+    // written, exactly like the side objects above.
+    nlohmann::json decals_ = nlohmann::json::array();
+    for (const roaddecal::Decal& d : decals)
+        decals_.push_back({
+            {"enabled", d.enabled},
+            {"texture", d.texture},
+            {"dist",    d.dist},
+            {"offset",  d.offset},
+            {"length",  d.length},
+            {"width",   d.width},
+            {"repeat",  d.repeat},
+            {"spacing", d.spacing},
+            {"spin",    d.spin},
+            {"blend",   static_cast<int>(d.blend)},
+            {"opacity", d.opacity},
+            {"cutoff",  d.cutoff},
+            {"tint",    {d.tint.r, d.tint.g, d.tint.b}},
+            {"glow",    {d.glow.r, d.glow.g, d.glow.b}},
+            {"glowStrength", d.glowStrength},
+            {"lift",    d.lift},
+        });
+
     // City biomes. One object per biome; the buildings they produce are derived
     // and never written -- the whole point of CityGen (a four-hundred-tower
     // district costs these few hundred bytes in the scene file).
@@ -584,6 +607,7 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"abutment",    bridgeStyle.abutment},
         }},
         {"sideObjects", side_},
+        {"decals",      decals_},
         {"cityEnabled", cityEnabled},
         {"cityBudget",  cityBudget},
         {"cityRange",   cityRange},
@@ -748,6 +772,36 @@ void RoadSystem::load(const nlohmann::json& j) {
             sideLines.push_back(std::move(l));
         }
 
+    // Decals. Absent in scenes saved before they existed -> none, which is how
+    // those roads looked. Every field falls back to a default Decal's.
+    decals.clear();
+    if (const auto dc = j.find("decals"); dc != j.end() && dc->is_array())
+        for (const auto& e : *dc) {
+            roaddecal::Decal d;
+            d.enabled = e.value("enabled", d.enabled);
+            d.texture = e.value("texture", std::string());
+            d.dist    = e.value("dist",    d.dist);
+            d.offset  = e.value("offset",  d.offset);
+            d.length  = e.value("length",  d.length);
+            d.width   = e.value("width",   d.width);
+            d.repeat  = e.value("repeat",  d.repeat);
+            d.spacing = e.value("spacing", d.spacing);
+            d.spin    = e.value("spin",    d.spin);
+            d.blend   = static_cast<roaddecal::Blend>(
+                e.value("blend", static_cast<int>(d.blend)));
+            d.opacity = e.value("opacity", d.opacity);
+            d.cutoff  = e.value("cutoff",  d.cutoff);
+            if (const auto t = e.find("tint"); t != e.end() && t->is_array() && t->size() == 3)
+                d.tint = glm::vec3((*t)[0].get<float>(), (*t)[1].get<float>(),
+                                   (*t)[2].get<float>());
+            if (const auto g = e.find("glow"); g != e.end() && g->is_array() && g->size() == 3)
+                d.glow = glm::vec3((*g)[0].get<float>(), (*g)[1].get<float>(),
+                                   (*g)[2].get<float>());
+            d.glowStrength = e.value("glowStrength", d.glowStrength);
+            d.lift         = e.value("lift",         d.lift);
+            decals.push_back(std::move(d));
+        }
+
     // City biomes. Absent in scenes saved before they existed -> no city, which
     // is how those tracks looked. Every field falls back to a default Biome's, so
     // a blob from a leaner build still loads as something buildable.
@@ -835,7 +889,8 @@ std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ(
 
 void RoadSystem::loft(const std::vector<glm::vec2>& center,
                       const std::vector<float>& height,
-                      const std::vector<float>& bank) {
+                      const std::vector<float>& bank,
+                      const std::vector<roadloop::Loop>& loops) {
     fitzel::MeshData md;
     m_centerline = center; // flat centre for vegetation masking
     m_centerlineY = height; // road surface height per sample (deck top over bridges)
@@ -921,6 +976,20 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     float mOff = 0.0f;          // metres already wrapped away
     std::vector<bool> link;     // link[k]: is there a quad between rung k and k+1?
 
+    // Stations a loop stands in place of. The turn advances exactly the distance
+    // between its two control points while it goes round, so the ground it covers
+    // is not road the loop happens to fly over -- it is the same stretch of road,
+    // stood on end. Leaving the ribbon in as well drew a flat carriageway running
+    // straight through the middle of the turn, which is what made a loop read as a
+    // hoop parked beside the road. The centreline itself is untouched: the grading,
+    // the lap timing, the roadside instancing and the rivals all still follow it.
+    auto standsOnEnd = [&](std::size_t i) {
+        const int k = static_cast<int>(i);
+        for (const roadloop::Loop& lp : loops)
+            if (lp.sa >= 0 && k >= lp.sa && k < lp.sb) return true;
+        return false;
+    };
+
     // One rung = the whole section placed at this station. The normals are no
     // longer a constant up: a banked section leans, and a ribbon that leans while
     // claiming to face straight up is lit as if it were flat -- the one thing that
@@ -957,14 +1026,15 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
         // section's "up", rolled by the same angle.
         const glm::vec3 nrm(side.x * sb, cb, side.y * sb);
 
+        const bool linkNext = (i + 1 < center.size()) && !standsOnEnd(i);
         float v = (vlen - mOff) / texTile;
         if (vlen - mOff >= wrapDist && i + 1 < center.size()) {
             pushRung(C, sideDir, nrm, v, /*linkNext=*/false); // closes the running strip
             mOff += wrapDist;
             v     = (vlen - mOff) / texTile;
-            pushRung(C, sideDir, nrm, v, /*linkNext=*/true);  // ...and restarts it here
+            pushRung(C, sideDir, nrm, v, linkNext);           // ...and restarts it here
         } else {
-            pushRung(C, sideDir, nrm, v, i + 1 < center.size());
+            pushRung(C, sideDir, nrm, v, linkNext);
         }
     }
     // Two triangles per linked rung pair per column pair, wound CCW-from-above
@@ -1153,7 +1223,7 @@ RoadSystem::Layout RoadSystem::layout() const {
         lo.gradeW[i] = std::min(lo.gradeW[i], boreW[i]);
     // Loops ride on the profile the bridges have already settled, so a loop on a
     // bridged stretch leaves from the deck rather than from the gorge below it.
-    lo.loops = roadloop::plan(lo.center, lo.prof, ptSample, loops);
+    lo.loops = roadloop::plan(lo.center, lo.prof, ptSample, loops, width);
     // The chords meet the road at an angle; round those two kinks off so a bridge
     // entrance isn't a bump. A straight chord is a fixed point of this filter, so
     // only the tangents move.
@@ -1260,6 +1330,72 @@ void RoadSystem::rebuildSideObjects() {
     }
 }
 
+void RoadSystem::rebuildDecals() {
+    m_decalBatches.clear();
+    if (m_centerline.size() < 2) return; // decals follow a committed road
+    fitzel::Shader* lit = m_mat.shader();
+    if (!lit) return;
+
+    // The images this pass actually uses, which becomes the cache afterwards:
+    // an image nobody names any more is released, one that is still named is
+    // carried over rather than re-decoded.
+    std::unordered_map<std::string, std::shared_ptr<fitzel::Texture>> keep;
+
+    for (const roaddecal::Decal& d : decals) {
+        fitzel::MeshData md = roaddecal::generate(d, m_centerline, m_centerlineY,
+                                                  m_centerlineBank);
+        if (md.vertices.empty()) continue;
+        std::shared_ptr<fitzel::Texture> tex;
+        if (const auto it = m_decalTex.find(d.texture); it != m_decalTex.end())
+            tex = it->second;
+        else
+            tex = m_assetDb.loadTexture(resolveTexPath(d.texture));
+        if (!tex) continue;   // the image is gone: draw nothing, not a white patch
+        keep[d.texture] = tex;
+
+        DecalBatch b{fitzel::Mesh::create(md), fitzel::Material(*lit), std::move(tex),
+                     d.blend == roaddecal::Blend::Blend,
+                     std::clamp(d.opacity, 0.0f, 1.0f)};
+
+        // Every uniform the decal depends on is written HERE, including the ones
+        // it wants at their default: the lit program is shared, so a uniform a
+        // material never writes keeps whatever the previous draw left in it (the
+        // Renderer's baseline covers some of these, but not uColorMode, uTint or
+        // uAlphaCutoff -- and a decal that inherited the road's tint or the
+        // terrain's colour mode would be a mystery to debug).
+        b.mat.set("uColorMode", 2)
+             .set("uTint", d.tint)
+             .set("uRoadFade", 0.0f)      // the ribbon's edge fade is not ours
+             .set("uHasNormalMap", 0)
+             .set("uAlphaCutout", d.blend == roaddecal::Blend::Cutout ? 1 : 0)
+             .set("uAlphaCutoff", std::clamp(d.cutoff, 0.0f, 1.0f));
+        b.mat.setTexture("uTexture", *b.tex, 0);
+
+        // Glow. The image is its own emission map, so only its painted texels
+        // light up -- which is what makes a boost pad read as a lit strip on dark
+        // tarmac rather than a glowing rectangle. Unit 3 is the slot the road's
+        // own glow map uses; units only have to be unique within one draw.
+        const float glow = std::max(d.glowStrength, 0.0f);
+        b.mat.set("uEmission", d.glow)
+             .set("uEmissionStrength", glow)
+             .set("uHasEmissionMap", glow > 0.0f ? 1 : 0)
+             .set("uEmissionUVScale", glm::vec2(1.0f)); // the patch's own 0..1 UVs
+        if (glow > 0.0f) b.mat.setTexture("uEmissionMap", *b.tex, 3);
+
+        m_decalBatches.push_back(std::move(b));
+    }
+    m_decalTex.swap(keep);
+}
+
+void RoadSystem::applyDecalWetness(float wetness, float waterLevel) {
+    // Neither uniform is in the Renderer's baseline, so they carry over from
+    // whatever drew last -- and a decal is painted ON the carriageway, so the
+    // answer it wants is the carriageway's own. Markings on a soaked track are
+    // soaked; left at someone else's value they read as dry paint on wet tarmac.
+    for (DecalBatch& b : m_decalBatches)
+        b.mat.set("uWetness", wetness).set("uWaterLevel", waterLevel);
+}
+
 void RoadSystem::rebuildCity() {
     m_city.clear();
     m_cityMeshes.clear();
@@ -1301,11 +1437,12 @@ void RoadSystem::rebuildMesh() {
     std::vector<float> h(lo.center.size());
     for (std::size_t i = 0; i < lo.center.size(); ++i)
         h[i] = lo.prof[i] + 0.06f; // lifted a touch so the ribbon reads above the ground
-    loft(lo.center, h, lo.bank);
+    loft(lo.center, h, lo.bank, lo.loops);
     buildConcrete(lo);
     buildLoops(lo);
     rebuildSideObjects();
     rebuildCity();
+    rebuildDecals();
 }
 
 bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
@@ -1323,12 +1460,16 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     //    then hang the decks under wherever it crosses a gap.
     std::vector<float> surf(L.prof.size());
     for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
-    loft(L.center, surf, L.bank);
+    loft(L.center, surf, L.bank, L.loops);
     buildConcrete(L);
     buildLoops(L);
     // Side objects are generated by the caller AFTER it republishes the graded
     // terrain (rebuildSideObjects), so posts drape on the corridor this build
     // just cut -- not on the pre-grade ground. loft() has set m_centerline for it.
+    //
+    // Decals do not wait for that: they lie on the ROAD, whose profile loft() has
+    // just published, and never touch the ground the corridor is being cut into.
+    rebuildDecals();
 
     // 3) Grade a corridor into the terrain edit field: cells within half-width get
     //    the road height; a `shoulder` band eases back to the natural ground. All

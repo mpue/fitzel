@@ -40,6 +40,17 @@ struct Pose {
     float     fov = 60.0f;
 };
 
+// A follow camera's settings, lifted off the component so a shot can also be
+// asked for around an object that carries NO camera of its own -- watching a
+// rival, whose craft the author never hung an eye on. Same numbers, same names.
+struct FollowShot {
+    glm::vec3 offset{0.0f, 3.0f, -9.0f}; // where the eye sits, in the target's frame
+    float lookHeight = 1.4f;
+    float stiffness  = 5.0f;
+    float rollWith   = 0.0f;
+    float fov        = 60.0f;
+};
+
 class CameraSystem {
 public:
     // Resolve every camera entity in the scene, easing follow cameras toward
@@ -66,6 +77,18 @@ public:
     // The pose of camera entity `id`, or false if it has no camera component,
     // was not resolved this frame, or is not active.
     bool pose(int id, Pose& out) const;
+
+    // The shot a follow camera with these settings would give around `target`
+    // this frame -- for an object with no camera of its own, which is what
+    // watching a rival is. Every camera entity goes through this same routine, so
+    // spectating cannot drift into looking like a different game.
+    //
+    // `key` names the smoothing state (the eye eases, so it has to remember where
+    // it was). Pass a NEGATIVE key: camera entity ids are non-negative and the two
+    // must not collide. State under a negative key is the caller's to keep --
+    // update() will not tidy it away as it does a camera entity's, because there
+    // is no entity that could have gone missing. reset() drops it.
+    Pose follow(int key, const Entity& target, const FollowShot& shot, float dt);
 
     // Forget every camera's smoothed position. For Play start/stop and scene
     // loads: a camera that kept its eased eye across a restart would swoop in

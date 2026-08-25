@@ -5,6 +5,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -16,6 +17,7 @@
 
 #include "CityGen.hpp"
 #include "RoadBridge.hpp"
+#include "RoadDecal.hpp"
 #include "RoadLoop.hpp"
 #include "RoadSide.hpp"
 #include "RoadTunnel.hpp"
@@ -162,12 +164,13 @@ public:
         std::vector<BridgeSpec>     tunnels;
         std::vector<roadloop::Spec> loops;
         bool                        closed = false;
-        std::vector<roadside::Line> sideObjects;
-        std::vector<city::Biome>    biomes;
+        std::vector<roadside::Line>  sideObjects;
+        std::vector<city::Biome>     biomes;
+        std::vector<roaddecal::Decal> decalRules;
     };
     Shape shape() const {
         return {roadPts, ptLift, ptBank, bridges, tunnels, loops, closed,
-                sideLines, biomes};
+                sideLines, biomes, decals};
     }
     void  setShape(const Shape& s) {
         roadPts = s.points;
@@ -181,9 +184,11 @@ public:
         closed  = s.closed;
         sideLines = s.sideObjects;
         biomes    = s.biomes;
+        decals    = s.decalRules;
         needsBuild = true;
         rebuildSideObjects(); // reflect a side-object undo/redo immediately
         rebuildCity();        // ...and a biome one
+        rebuildDecals();      // ...and a decal one
     }
 
     // --- Control point edits -------------------------------------------------
@@ -274,6 +279,41 @@ public:
     // -- prefab instances, say -- exactly where a derived line would have sat.
     // Empty until the road has been built once.
     std::vector<roadside::Instance> placeLine(const roadside::Line& line) const;
+
+    // --- Decals (see RoadDecal.hpp) ------------------------------------------
+    // Images laid on the carriageway -- start grids, arrows, boost pads, stains.
+    // Same bargain as the side objects one level down: `decals` are the saved
+    // rules, the patches are derived from them and the current centreline and are
+    // never written to the scene file, so a decal follows the road it was placed
+    // on through every edit.
+    //
+    // One batch per rule (all of a rule's repeats share a mesh -- same image, same
+    // material, one draw). The caller draws each with an IDENTITY model matrix;
+    // the geometry is already in world space.
+    struct DecalBatch {
+        fitzel::Mesh                     mesh;
+        fitzel::Material                 mat;
+        std::shared_ptr<fitzel::Texture> tex;   // holds the binding alive
+        // Straight out of the rule, so the renderer doesn't have to look it up:
+        // a blended decal goes in the sorted transparent queue, a cut-out or
+        // opaque one stays in the opaque queue where it costs nothing.
+        bool  transparent = false;
+        float opacity     = 1.0f;
+    };
+    const std::vector<DecalBatch>& decalBatches() const { return m_decalBatches; }
+    // Re-derive the decal patches from the current centreline. Cheap (a few
+    // hundred vertices a decal), so the panel calls it on every live edit; a
+    // no-op until the road has been built once, like the side objects.
+    void rebuildDecals();
+    // Push the carriageway's per-frame surface state onto every decal material.
+    // Called each frame for the same reason applyWetness is: neither uniform is
+    // in the Renderer's baseline, so a material that doesn't write them inherits
+    // the last draw's -- and a marking painted on a wet road should be wet.
+    void applyDecalWetness(float wetness, float waterLevel);
+    // Length of the built centreline in metres -- what a decal's `dist` is
+    // measured along, so the editor can offer the road's actual extent instead of
+    // an arbitrary slider range. 0 before the first build.
+    float roadLength() const { return roaddecal::centerlineLength(m_centerline); }
 
     // --- Roadside city (see CityGen.hpp) -------------------------------------
     // Same deal as the side objects, one level up: `biomes` are the saved rules,
@@ -422,6 +462,10 @@ public:
     // instances they produce are derived, not saved.
     std::vector<roadside::Line> sideLines;
 
+    // Decal rules (see RoadDecal.hpp). Saved with the road; the patches they
+    // produce are derived, not saved.
+    std::vector<roaddecal::Decal> decals;
+
     // Roadside city rules (see CityGen.hpp). Saved with the road; the buildings
     // they produce are derived, not saved.
     std::vector<city::Biome> biomes;
@@ -485,8 +529,12 @@ private:
         std::vector<int>* ptSample = nullptr) const;
     // Loft the ribbon mesh + collider + veg centreline from the sampled centre and
     // its per-sample surface heights (already lifted onto the graded profile).
+    // `loops` is passed in only to leave their stretches OUT of the ribbon: a loop
+    // carries the road over that ground itself, and a flat carriageway drawn under
+    // it as well is a second road nobody asked for (see roadloop::Loop::sa).
     void loft(const std::vector<glm::vec2>& center, const std::vector<float>& height,
-              const std::vector<float>& bank);
+              const std::vector<float>& bank,
+              const std::vector<roadloop::Loop>& loops);
     // Build the road's concrete -- bridge decks and piers, tunnel bores and
     // portals -- into ONE mesh, and merge it into the collider. They share a mesh
     // and a material because they are the same cast concrete, and because a deck
@@ -530,6 +578,12 @@ private:
     std::vector<float>           m_centerlineY; // road surface height per sample (deck over bridges)
     std::vector<float>           m_centerlineBank; // cross-fall per sample (degrees)
     std::vector<SideBatch>       m_sideBatches; // derived side-object instances
+    std::vector<DecalBatch>      m_decalBatches;// derived decal patches
+    // Decal images by display name, held across a re-derive. The asset
+    // database's own cache is weak, so without this every rebuildDecals() --
+    // and the panel calls it on every frame of a slider drag -- would drop the
+    // last owner of the texture and decode the file again from disk.
+    std::unordered_map<std::string, std::shared_ptr<fitzel::Texture>> m_decalTex;
     city::District               m_city;        // derived roadside buildings
     std::vector<fitzel::Mesh>    m_cityMeshes;  // one per m_city.batches entry
 };

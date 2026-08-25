@@ -1323,10 +1323,24 @@ int main(int argc, char** argv) {
         // Cloud controls.
         float cloudCoverage = 0.5f;
         float cloudDensity  = 1.0f;
-        float cloudScale    = 0.0025f;
+        // A cumulus is at least as TALL as it is wide. The old 140..320 slab was
+        // 180 m thick under 400 m features, so every cloud came out a pancake --
+        // and a field of pancakes seen from underneath is a textured ceiling,
+        // which is exactly what it looked like. Base and top now stand roughly
+        // where real ones do, and the feature size grew to match.
+        float cloudScale    = 0.0009f;
         float cloudSpeed    = 5.0f;
-        float cloudBottom   = 140.0f;
-        float cloudTop      = 320.0f;
+        float cloudBottom   = 700.0f;
+        float cloudTop      = 2400.0f;
+
+        // The high layer (see sky.frag): ice, well above the cumulus and well
+        // above the weather -- which is why none of this is touched by the storm
+        // slider below. A front rolling in does not blow the cirrus away; it
+        // slides underneath it.
+        float cirrusAmount  = 0.35f;   // 0 = clear, 1 = a milky sheet
+        float cirrusHeight  = 1400.0f; // world units; the whole layer scales with it
+        float cirrusSpeed   = 2.5f;    // the jet stream, not the surface wind
+        float contrailAmount = 0.0f;   // 0 = an empty sky, 1 = four trails
 
         // Weather: 0 = clear .. 1 = storm. Drives clouds, light, fog, waves, rain.
         float weather     = 0.0f;
@@ -3475,6 +3489,16 @@ int main(int argc, char** argv) {
         // Every tunable is bound by name to a getter/setter and serialised as
         // part of the project scene (.fitzel "settings" object). Missing keys are
         // ignored, so scenes keep loading as fields come and go.
+        //
+        // A key of the WRONG TYPE is ignored too, and that is not belt-and-braces.
+        // nlohmann's `value()` does not fall back on a type mismatch -- it throws
+        // -- and the only thing above this to catch a json::type_error is main()'s
+        // outermost handler, which prints "Fatal:" to a stderr no windowed build
+        // has and exits. So one stale or mistyped field in a .fitzel does not fail
+        // to load: it takes the whole editor down, with the project the user just
+        // picked as the apparent culprit. (It did, when two settings were
+        // registered under the same name and the file ended up holding the other
+        // one's type.) A field we cannot read keeps its default instead.
         struct Setting {
             std::string                                key;
             std::function<void(nlohmann::json&)>       write;
@@ -3484,17 +3508,27 @@ int main(int argc, char** argv) {
         auto addF = [&](const char* k, float& r) {
             tunables.push_back({k,
                 [k, &r](nlohmann::json& j){ j[k] = r; },
-                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+                [k, &r](const nlohmann::json& j){
+                    const auto it = j.find(k);
+                    if (it != j.end() && it->is_number()) r = it->get<float>();
+                }});
         };
         auto addB = [&](const char* k, bool& r) {
             tunables.push_back({k,
                 [k, &r](nlohmann::json& j){ j[k] = r; },
-                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+                [k, &r](const nlohmann::json& j){
+                    const auto it = j.find(k);
+                    if (it != j.end() && it->is_boolean()) r = it->get<bool>();
+                }});
         };
         auto addI = [&](const char* k, int& r) {
             tunables.push_back({k,
                 [k, &r](nlohmann::json& j){ j[k] = r; },
-                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+                [k, &r](const nlohmann::json& j){
+                    const auto it = j.find(k);
+                    if (it != j.end() && it->is_number_integer())
+                        r = it->get<int>();
+                }});
         };
         // Strings, for the settings that NAME something rather than measure it.
         // There was no such adder, which is why the environment's HDRI could be
@@ -3504,7 +3538,10 @@ int main(int argc, char** argv) {
         auto addS = [&](const char* k, std::string& r) {
             tunables.push_back({k,
                 [k, &r](nlohmann::json& j){ j[k] = r; },
-                [k, &r](const nlohmann::json& j){ r = j.value(k, r); }});
+                [k, &r](const nlohmann::json& j){
+                    const auto it = j.find(k);
+                    if (it != j.end() && it->is_string()) r = it->get<std::string>();
+                }});
         };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
@@ -3523,6 +3560,14 @@ int main(int argc, char** argv) {
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
         addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
         addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
+        addF("cloudBottom", cloudBottom);      addF("cloudTop", cloudTop);
+        addF("cirrus", cirrusAmount);          addF("cirrusHeight", cirrusHeight);
+        addF("cirrusWind", cirrusSpeed);
+        // NOT "contrails": that name belongs to the vehicle trail toggle a few
+        // lines up (addB, a bool). Two settings under one key write over each
+        // other in the file, and whichever loses gets read back at the other's
+        // type -- which is what threw json::type_error out of a scene load.
+        addF("skyContrails", contrailAmount);
         addF("fogDensity", fogDensity);        addF("fogFalloff", fogFalloff);
         // Image-based lighting. The panorama travels as its PROJECT-RELATIVE
         // path, not as a GUID and not as an absolute one: it survives a
@@ -4564,6 +4609,11 @@ int main(int argc, char** argv) {
         float     playCamFov = 60.0f;
         bool      playPrevEdit = false;
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
+        // Whose race you are watching: an opponent's entity id, or -1 for your
+        // own craft. V steps through the field. It changes only what the eye is
+        // hung on -- the sim, the controls and the HUD stay yours, because
+        // watching a rival is a camera decision and nothing else.
+        int       spectateId = -1;
 
         // --- Lua `game` API bridge -------------------------------------------
         // Scripts mutate the entity list only through deferred queues (the tick
@@ -5429,6 +5479,45 @@ int main(int argc, char** argv) {
                     activeCam = -1;              // target vanished -> free camera
                     camera.setFov(playCamFov);
                 }
+
+                // Watching a rival (V). Last, so it wins over whatever the view
+                // would otherwise be: it is the one camera decision the person at
+                // the keyboard made just now, by hand.
+                //
+                // A rival that carries its own camera child is looked THROUGH --
+                // whose camera it is, is the hierarchy's answer, and an author who
+                // hung an eye on that craft meant it. One that carries none gets
+                // your own camera's settings, so a rival's view is the view you
+                // already know rather than some other game's shot.
+                if (!gliderMode) spectateId = -1;   // only meaningful in a race
+                if (spectateId >= 0) {
+                    const Entity* tgt = document.find(spectateId);
+                    if (!tgt || !tgt->activeInHierarchy) {
+                        spectateId = -1;
+                    } else {
+                        camerasys::Pose sp;
+                        const int own = childCam(spectateId);
+                        if (own < 0 || !cams.pose(own, sp)) {
+                            camerasys::FollowShot shot;
+                            if (const Entity* mine =
+                                    viewId >= 0 ? document.find(viewId) : nullptr)
+                                if (const auto* cc =
+                                        mine->components.get<CameraComponent>()) {
+                                    shot.offset     = mine->localCenter;
+                                    shot.lookHeight = cc->lookHeight;
+                                    shot.stiffness  = cc->stiffness;
+                                    shot.rollWith   = cc->rollWith;
+                                    shot.fov        = cc->fov;
+                                }
+                            // Negative key: the smoothing state is ours, not a
+                            // camera entity's (see CameraSystem::follow).
+                            sp = cams.follow(-(spectateId + 1), *tgt, shot, dt);
+                        }
+                        camera.setPosition(sp.position);
+                        camera.setBasis(sp.front, sp.up);
+                        camera.setFov(sp.fov);
+                    }
+                }
                 // Player two's eye, same rule one craft over. Split screen is now
                 // just a second camera entity being asked for its pose.
                 //
@@ -5538,16 +5627,45 @@ int main(int argc, char** argv) {
             }
             prevF = fDown;
 
-            // V toggles the drive-a-vehicle mode. A scene vehicle (a model with
-            // a Vehicle component, nearest to the camera) takes precedence: in
-            // Play it spawns the Jolt car from the component at the model, in
-            // the editor the arcade sim test-drives the model itself. With no
-            // scene vehicle, the primitive test car behaves as before.
+            // V has two jobs, and which one it is doing is never ambiguous
+            // because they cannot both apply.
+            //
+            // FLYING A RACE: step the view through the field -- your own craft,
+            // then each rival that entered, then back to your own. Entering a
+            // car in the middle of a race is not a thing anyone wants that key
+            // to do, and watching the field is, so while a glider is being flown
+            // with rivals on the track, V is the view switch.
+            //
+            // OTHERWISE: toggle the drive-a-vehicle mode, as it always has. A
+            // scene vehicle (a model with a Vehicle component, nearest to the
+            // camera) takes precedence: in Play it spawns the Jolt car from the
+            // component at the model, in the editor the arcade sim test-drives
+            // the model itself. With no scene vehicle, the primitive test car
+            // behaves as before.
             const bool vDown = input.isKeyDown(GLFW_KEY_V);
-            if (vDown && !prevV) {
-                vehicleMode = !vehicleMode;
-                if (vehicleMode) enterVehicleMode();
-                else             endEditorDrive();
+            if (vDown && !prevV && !ImGui::GetIO().WantTextInput) {
+                // The field, in scene order -- NOT in race order. A list that
+                // reshuffles as places change would step somewhere different
+                // every time it is pressed, and the one thing a view switch has
+                // to be is predictable. Only racers that entered: the rest are
+                // scenery this session.
+                std::vector<int> field;
+                if (gliderMode)
+                    for (const Entity& e : entities) {
+                        const auto* oc = e.components.get<OpponentComponent>();
+                        if (oc && oc->entered && e.activeInHierarchy)
+                            field.push_back(e.id);
+                    }
+                if (field.empty()) {
+                    vehicleMode = !vehicleMode;
+                    if (vehicleMode) enterVehicleMode();
+                    else             endEditorDrive();
+                } else {
+                    const auto at = std::find(field.begin(), field.end(), spectateId);
+                    spectateId = (at == field.end())      ? field.front()
+                               : (at + 1 == field.end())  ? -1
+                                                          : *(at + 1);
+                }
             }
             prevV = vDown;
 
@@ -8193,6 +8311,32 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    // A loop needs a grip of its own. It is NAMED by two control
+                    // points, but it stands twenty metres over them -- so the thing
+                    // to point at is the crown of the turn, where the loop actually
+                    // is, and picking it selects the pair whose row the panel edits.
+                    // Control points win the contest: they are smaller targets and
+                    // there are far more of them.
+                    const std::vector<roadloop::Loop>& builtLoops = road.loopGeometry();
+                    auto loopCrown = [](const roadloop::Loop& lp) {
+                        glm::vec3 top = lp.frames.empty() ? glm::vec3(0.0f)
+                                                          : lp.frames.front().pos;
+                        for (const roadloop::Frame& f : lp.frames)
+                            if (f.pos.y > top.y) top = f.pos;
+                        return top;
+                    };
+                    int loopHover = -1;
+                    if (viewportHovered && !roadDragging && roadHover < 0) {
+                        float bestD = 15.0f; // pixel grab radius, a touch larger
+                        for (int i = 0; i < static_cast<int>(builtLoops.size()); ++i) {
+                            if (builtLoops[i].frames.empty()) continue;
+                            ImVec2 sp;
+                            if (!toScreen(loopCrown(builtLoops[i]), sp)) continue;
+                            const float d = std::hypot(sp.x - mp.x, sp.y - mp.y);
+                            if (d < bestD) { bestD = d; loopHover = i; }
+                        }
+                    }
+
                     // Pick / add on click.
                     if (viewportHovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                         const int best = roadHover;
@@ -8210,6 +8354,13 @@ int main(int argc, char** argv) {
                                 // drag is one undo step.
                                 beginRoadEdit();
                             }
+                        } else if (loopHover >= 0) {
+                            // Selecting the turn selects the pair that names it, so
+                            // the panel's row for THIS loop is the live one and its
+                            // radius is one field away -- rather than a list of
+                            // "#2 -> #1" to count out against the viewport.
+                            roadSel  = builtLoops[loopHover].pa;
+                            roadSel2 = builtLoops[loopHover].pb;
                         } else {
                             glm::vec3 h;
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) {
@@ -8352,6 +8503,19 @@ int main(int argc, char** argv) {
                             prev = sp; have = true;
                         }
                     };
+                    // The same, addressed by centreline SAMPLE rather than by
+                    // control point -- a loop's footprint starts at a point but ends
+                    // wherever its own geometry comes back down.
+                    auto drawFootprint = [&](int i0, int i1, ImU32 col, float th) {
+                        ImVec2 prev; bool have = false;
+                        for (int i = std::max(0, i0);
+                             i <= i1 && i < static_cast<int>(pv.center.size()); ++i) {
+                            ImVec2 sp;
+                            if (!toScreen(pv.center[i], sp)) { have = false; continue; }
+                            if (have) dl->AddLine(prev, sp, col, th);
+                            prev = sp; have = true;
+                        }
+                    };
                     for (const RoadSystem::BridgeSpec& b : road.bridges)
                         drawSpan(b.a, b.b, IM_COL32(255, 140, 60, 220), 4.0f);
                     // Bored stretches in a cooler colour: a road can carry both,
@@ -8360,6 +8524,136 @@ int main(int argc, char** argv) {
                         drawSpan(t.a, t.b, IM_COL32(90, 190, 255, 220), 4.0f);
                     if (roadSel >= 0 && roadSel2 >= 0 && roadSel != roadSel2)
                         drawSpan(roadSel, roadSel2, IM_COL32(255, 255, 255, 200), 3.0f);
+
+                    // --- Loops -----------------------------------------------
+                    // A loop gets a colour of its own: it is neither a deck nor a
+                    // bore, and borrowing one of theirs would make three structures
+                    // read as two. The ring is the turn's own centreline projected,
+                    // so it is drawn where the loop stands -- which is what makes a
+                    // loop something to look at and click rather than a row in a
+                    // list naming two numbers.
+                    auto drawRing = [&](const roadloop::Loop& lp, ImU32 col, float th,
+                                        bool dashed) {
+                        ImVec2 prev; bool have = false;
+                        for (std::size_t i = 0; i < lp.frames.size(); ++i) {
+                            ImVec2 sp;
+                            if (!toScreen(lp.frames[i].pos, sp)) { have = false; continue; }
+                            if (have && (!dashed || (i / 4) % 2 == 0))
+                                dl->AddLine(prev, sp, col, th);
+                            prev = sp; have = true;
+                        }
+                    };
+                    auto shadowText = [&](ImVec2 at, ImU32 col, const char* txt) {
+                        dl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
+                                    IM_COL32(0, 0, 0, 200), txt);
+                        dl->AddText(at, col, txt);
+                    };
+                    for (int i = 0; i < static_cast<int>(builtLoops.size()); ++i) {
+                        const roadloop::Loop& lp = builtLoops[i];
+                        if (lp.frames.empty()) continue;
+                        const bool lsel = (lp.pa == roadSel && lp.pb == roadSel2) ||
+                                          (lp.pa == roadSel2 && lp.pb == roadSel);
+                        const bool lhov = (i == loopHover);
+                        const ImU32 col = lsel ? IM_COL32(255, 190, 255, 255)
+                                        : lhov ? IM_COL32(240, 205, 255, 250)
+                                               : IM_COL32(190, 130, 255, 205);
+                        // The ground the turn stands in place of -- its FOOTPRINT,
+                        // not the pair's whole stretch: a turn advances only half
+                        // its radius while it goes round, so the road past its feet
+                        // is still road. This is the same span the ribbon leaves
+                        // out, so it answers "where did my road go?" exactly.
+                        drawFootprint(lp.sa, lp.sb, (col & 0x00FFFFFFu) | 0x55000000u,
+                                      4.0f);
+                        drawRing(lp, col, (lsel || lhov) ? 3.0f : 2.0f, /*dashed=*/false);
+                        ImVec2 sp;
+                        if (toScreen(loopCrown(lp), sp)) {
+                            const float rad = (lsel || lhov) ? 7.0f : 5.5f;
+                            dl->AddCircleFilled(sp, rad, col);
+                            dl->AddCircle(sp, rad, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+                            char lb[80];
+                            std::snprintf(lb, sizeof(lb), "Loop #%d-#%d  %.0f m tall%s",
+                                          lp.pa, lp.pb, lp.radius * 2.0f,
+                                          lp.inverts ? "" : "  (a hump: too long to turn over)");
+                            shadowText(ImVec2(sp.x + rad + 3.0f, sp.y - rad - 2.0f),
+                                       IM_COL32(240, 220, 255, 245), lb);
+                        }
+                    }
+
+                    // What "Create loop" would give you, drawn before it is asked
+                    // for: with two points picked and no loop on them yet, the turn
+                    // that button would build is ghosted in. Planned by the SAME
+                    // routine the build runs, so the ghost cannot promise a shape
+                    // the road would not produce -- including refusing to: a pair
+                    // too close together plans nothing, and says so where the eye
+                    // already is, instead of leaving a button that quietly does
+                    // nothing.
+                    if (roadSel >= 0 && roadSel2 >= 0 && roadSel != roadSel2 &&
+                        pv.center.size() >= 2) {
+                        bool already = false;
+                        for (const roadloop::Spec& sp : road.loops)
+                            already = already ||
+                                      (sp.a == roadSel && sp.b == roadSel2) ||
+                                      (sp.a == roadSel2 && sp.b == roadSel);
+                        if (!already) {
+                            std::vector<glm::vec2> gcen(pv.center.size());
+                            std::vector<float>     gprof(pv.center.size());
+                            for (std::size_t i = 0; i < pv.center.size(); ++i) {
+                                gcen[i]  = glm::vec2(pv.center[i].x, pv.center[i].z);
+                                gprof[i] = pv.center[i].y;
+                            }
+                            roadloop::Spec want;
+                            want.a = roadSel; want.b = roadSel2;
+                            const std::vector<roadloop::Loop> ghost =
+                                roadloop::plan(gcen, gprof, pv.ptSample, {want},
+                                               road.width);
+                            const ImU32 ghostCol = IM_COL32(230, 180, 255, 190);
+                            if (!ghost.empty() && !ghost.front().frames.empty()) {
+                                const roadloop::Loop& lp = ghost.front();
+                                drawRing(lp, ghostCol, 2.0f, /*dashed=*/true);
+                                ImVec2 sp;
+                                if (toScreen(loopCrown(lp), sp)) {
+                                    // How far the turn travels while it goes round
+                                    // is the distance between the two points, so
+                                    // both numbers a loop is judged by are on screen
+                                    // while they are still being chosen.
+                                    float run = 0.0f;
+                                    for (int k = lp.sa; k < lp.sb &&
+                                         k + 1 < static_cast<int>(pv.center.size()); ++k)
+                                        run += glm::length(
+                                            glm::vec2(pv.center[k + 1].x - pv.center[k].x,
+                                                      pv.center[k + 1].z - pv.center[k].z));
+                                    char lb[128];
+                                    if (!lp.inverts)
+                                        std::snprintf(lb, sizeof(lb),
+                                                      "%.0f m of road is too far for a %.0f m "
+                                                      "radius: a hump, not a loop",
+                                                      run, lp.radius);
+                                    else if (lp.sway > 0.05f)
+                                        std::snprintf(lb, sizeof(lb),
+                                                      "Loop here: %.0f m tall, %.0f m of road, "
+                                                      "swaying %.0f m to clear itself",
+                                                      lp.radius * 2.0f, run, lp.sway);
+                                    else
+                                        std::snprintf(lb, sizeof(lb),
+                                                      "Loop here: %.0f m tall, %.0f m of road",
+                                                      lp.radius * 2.0f, run);
+                                    shadowText(ImVec2(sp.x + 9.0f, sp.y - 9.0f),
+                                               lp.inverts ? ghostCol
+                                                          : IM_COL32(255, 190, 120, 235), lb);
+                                }
+                            } else {
+                                const int pa = std::min(roadSel, roadSel2);
+                                ImVec2 sp;
+                                if (pa < static_cast<int>(pv.ptSample.size()) &&
+                                    pv.ptSample[pa] < static_cast<int>(pv.center.size()) &&
+                                    toScreen(pv.center[pv.ptSample[pa]] +
+                                                 glm::vec3(0.0f, 1.5f, 0.0f), sp))
+                                    shadowText(ImVec2(sp.x + 9.0f, sp.y - 9.0f),
+                                               IM_COL32(255, 150, 130, 235),
+                                               "Too close together for a loop");
+                            }
+                        }
+                    }
 
                     // Handles. A point the terrain hides is drawn faint rather
                     // than dropped: it still has to be findable behind a ridge,
@@ -9526,8 +9820,34 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
                 ImGui::SliderFloat("Coverage",    &cloudCoverage, 0.0f, 1.0f);
                 ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
-                ImGui::SliderFloat("Cloud scale", &cloudScale, 0.001f, 0.006f, "%.4f");
+                ImGui::SliderFloat("Cloud scale", &cloudScale, 0.0003f, 0.005f, "%.4f");
                 ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
+                ImGui::SliderFloat("Cloud base",  &cloudBottom, 100.0f, 3000.0f, "%.0f m");
+                ImGui::SliderFloat("Cloud top",   &cloudTop, 300.0f, 7000.0f, "%.0f m");
+                ui::hint("Base, top and scale decide whether the sky reads as\n"
+                         "weather or as a ceiling. A cumulus is at least as\n"
+                         "TALL as it is wide, so a thin slab under wide\n"
+                         "features can only ever be a textured lid -- scale\n"
+                         "sets that width, and LOWER means bigger clouds.\n"
+                         "Coverage does two jobs: how much sky is taken, and\n"
+                         "how far the tops build into it.");
+
+                // --- The high layer -----------------------------------------
+                // Its own section because it is its own weather. Cirrus sits
+                // above everything the storm slider touches, and a sky with no
+                // cumulus in it at all can still have this.
+                if (ui::header("Cirrus & contrails")) {
+                    ImGui::SliderFloat("Cirrus",   &cirrusAmount, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Height",   &cirrusHeight, 400.0f, 6000.0f, "%.0f m");
+                    ImGui::SliderFloat("Jet wind", &cirrusSpeed, 0.0f, 12.0f);
+                    ImGui::SliderFloat("Contrails", &contrailAmount, 0.0f, 1.0f);
+                    ui::hint("Ice, drawn into streaks by a wind that has nothing\n"
+                             "to do with the one below. Contrails come in one at\n"
+                             "a time as the slider rises, each older than the\n"
+                             "last -- wider, softer and more broken up.\n"
+                             "Everything up here scales with Height, so raising\n"
+                             "the layer does not turn aircraft into motorways.");
+                }
                 ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.02f, "%.4f");
                 ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
 
@@ -12048,6 +12368,21 @@ int main(int argc, char** argv) {
                 renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f),
                                 true, /*reflective=*/wetMirror);
 
+            // Decals painted ON the carriageway -- start grids, arrows, boost
+            // pads, oil stains -- lofted onto the road's own surface from the
+            // rules saved with it (see RoadDecal.hpp). Cut-out and opaque ones
+            // ride the ordinary opaque queue; only a blended one pays for
+            // sorting, which is why it is a per-decal choice and not a global
+            // one.
+            if (road.enabled && !road.decalBatches().empty()) {
+                road.applyDecalWetness(surfaceWet, waterLevel);
+                for (const RoadSystem::DecalBatch& d : road.decalBatches())
+                    renderer.submit(d.mesh, d.mat, glm::mat4(1.0f),
+                                    /*castsPointShadow=*/false,
+                                    /*reflective=*/false, d.opacity,
+                                    /*forceTransparent=*/d.transparent);
+            }
+
             // Tyre skid marks accumulated while driving (alpha-blended, on ground).
             skids.render(renderer);
             trails.render(renderer);
@@ -12539,12 +12874,16 @@ int main(int argc, char** argv) {
                 sky.setVec3("uSunDir", light.direction);
                 sky.setVec3("uSunColor", light.color);
                 sky.setFloat("uTime", static_cast<float>(now));
-                sky.setFloat("uCoverage", glm::mix(0.62f, 0.10f, effCoverage));
+                sky.setFloat("uCoverage", glm::mix(0.86f, 0.46f, effCoverage));
                 sky.setFloat("uCloudDensity", effDensity);
                 sky.setFloat("uCloudScale", cloudScale);
                 sky.setFloat("uCloudSpeed", effWind);
                 sky.setFloat("uCloudBottom", effCloudBot);
                 sky.setFloat("uCloudTop", cloudTop);
+                sky.setFloat("uCirrus", cirrusAmount);
+                sky.setFloat("uCirrusHeight", cirrusHeight);
+                sky.setFloat("uCirrusSpeed", cirrusSpeed);
+                sky.setFloat("uContrails", contrailAmount);
                 sky.setFloat("uExposure", exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
@@ -13058,6 +13397,27 @@ int main(int argc, char** argv) {
                         racehud::draw(dl, hmin, hsize, race,
                                       host.hud.empty() ? 0.0f : fs * 1.5f,
                                       endPrompt, endIn);
+                    // Whose view this is. The instruments below still read YOUR
+                    // race -- your lap, your energy -- so a view that quietly
+                    // showed somebody else's craft with your dials around it
+                    // would be a lie. It says the name and it says the key.
+                    if (spectateId >= 0) {
+                        const Entity* w = document.find(spectateId);
+                        char wb[96];
+                        std::snprintf(wb, sizeof(wb), "Watching %s  -  V",
+                                      (w && !w->name.empty()) ? w->name.c_str()
+                                                              : "rival");
+                        const ImVec2 ts = ImGui::CalcTextSize(wb);
+                        const ImVec2 at(hmin.x + (hsize.x - ts.x) * 0.5f,
+                                        hmin.y + hsize.y - ts.y - fs * 2.0f);
+                        dl->AddRectFilled(ImVec2(at.x - fs * 0.5f, at.y - fs * 0.25f),
+                                          ImVec2(at.x + ts.x + fs * 0.5f,
+                                                 at.y + ts.y + fs * 0.25f),
+                                          IM_COL32(0, 0, 0, 110), fs * 0.25f);
+                        dl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
+                                    IM_COL32(0, 0, 0, 200), wb);
+                        dl->AddText(at, IM_COL32(255, 225, 140, 240), wb);
+                    }
                     // Player two's instruments, in the right-hand pane, from its
                     // own race state. It gets no menu input: the end-of-race
                     // question is one decision about one scene, and two people

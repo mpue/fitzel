@@ -38,7 +38,7 @@ void groundAt(const std::vector<glm::vec2>& center, const std::vector<float>& s,
 std::vector<Loop> plan(const std::vector<glm::vec2>& center,
                        const std::vector<float>& prof,
                        const std::vector<int>& ptSample,
-                       const std::vector<Spec>& specs) {
+                       const std::vector<Spec>& specs, float roadWidth) {
     std::vector<Loop> out;
     if (center.size() < 2 || prof.size() != center.size() || specs.empty())
         return out;
@@ -56,12 +56,55 @@ std::vector<Loop> plan(const std::vector<glm::vec2>& center,
         if (sa < 0 || sb > last || sb <= sa) continue;
 
         const float s0 = s[sa], s1 = s[sb];
-        const float L  = s1 - s0;                     // ground covered by one turn
+        const float L  = s1 - s0;                     // the stretch the loop is on
         const float R  = std::clamp(sp.radius, 3.0f, 120.0f);
         if (L < 2.0f) continue;                       // the points are on top of each other
 
+        const float adv = L;          // the turn covers the stretch it was given
+        const float a   = adv / kTau;  // forward metres per radian of turn
+
+        // Where the rising branch runs into the falling one. Same height means
+        // theta and 2*pi - theta; same place as well means
+        //     a*theta + R*sin(theta) = pi*a,
+        // and that has a root in (0, pi) exactly when R > a -- which is also
+        // exactly when the turn inverts at all. Bisection, because the root is
+        // bracketed by construction (the left end is -pi*a, the right end is
+        // +(R - a)*epsilon) and forty halvings are nothing next to lofting the
+        // ribbon it decides the shape of.
+        float crossT = -1.0f, crossY = 0.0f;
+        if (R > a) {
+            auto f = [&](float t) { return a * t + R * std::sin(t) - kPi * a; };
+            float lo = 1e-4f, hi = kPi - 1e-4f;
+            for (int it = 0; it < 40; ++it) {
+                const float mid = 0.5f * (lo + hi);
+                (f(mid) < 0.0f ? lo : hi) = mid;
+            }
+            crossT = 0.5f * (lo + hi);
+            crossY = R * (1.0f - std::cos(crossT));
+        }
+
+        // How far to lean the turn across the road so those two branches pass
+        // beside each other instead of through each other. One carriageway plus a
+        // metre is the clearance to buy; `g` is how much of the sway actually
+        // shows up at the crossing, so a crossing near the crest (g ~ 1) is cheap
+        // and one near the feet (g ~ 0) is not worth buying at all -- which is why
+        // it fades out down there rather than being scaled up without limit.
+        float sway = 0.0f;
+        if (crossT > 0.0f && crossY > kCrossFree * R) {
+            const float g    = std::sin(crossT) * std::fabs(std::sin(crossT));
+            const float fade = std::clamp((crossY - kCrossFree * R) / (kCrossFade * R),
+                                          0.0f, 1.0f);
+            const float want = roadWidth + 1.0f;
+            if (g > 1e-3f)
+                sway = fade * std::min(want / (2.0f * g), kMaxSway * roadWidth);
+        }
+
         Loop lp;
-        lp.radius = R;
+        lp.radius  = R;
+        lp.sa = sa; lp.sb = sb;   // the ground this turn stands in place of
+        lp.pa = p0; lp.pb = p1;
+        lp.sway    = sway;
+        lp.inverts = (R > a);
         lp.frames.reserve(kSamples + 1);
         lp.lo = glm::vec3(1e9f);
         lp.hi = glm::vec3(-1e9f);
@@ -72,20 +115,31 @@ std::vector<Loop> plan(const std::vector<glm::vec2>& center,
             // the loop's footprint is spread evenly along the road rather than
             // bunched where the circle happens to be steep.
             glm::vec2 gp, gd; float gy;
-            groundAt(center, s, prof, s0 + L * th / kTau, gp, gd, gy);
+            groundAt(center, s, prof, s0 + adv * th / kTau, gp, gd, gy);
             const glm::vec3 fwd(gd.x, 0.0f, gd.y);
             const glm::vec3 up(0.0f, 1.0f, 0.0f);
+            // Across the road, horizontal: the axis the turn sways along.
+            const glm::vec3 flatSide = glm::normalize(glm::cross(up, fwd));
+
+            // The sway and its rate. sin*|sin| rather than sin: both are odd about
+            // the crest (which is what separates the branches at all), but this one
+            // is quadratic at the ends, so the turn leaves and rejoins the road
+            // running straight instead of setting off sideways.
+            const float sn   = std::sin(th);
+            const float lat  = sway * sn * std::fabs(sn);
+            const float dlat = sway * 2.0f * std::fabs(sn) * std::cos(th);
 
             Frame fr;
             // Circle in the vertical plane containing the road direction, plus the
             // advance already baked into `gp`. R*sin(theta) is what makes the turn
             // leave and rejoin the ground TANGENTIALLY (dh/dtheta = 0 at both
             // ends) instead of with a lip.
+            fr.ahead = fwd;
             fr.pos = glm::vec3(gp.x, gy, gp.y) + fwd * (R * std::sin(th)) +
-                     up * (R * (1.0f - std::cos(th)));
+                     up * (R * (1.0f - std::cos(th))) + flatSide * lat;
             // d(pos)/d(theta), ignoring how the road itself curves under the turn.
-            const glm::vec3 dp = fwd * (R * std::cos(th) + L / kTau) +
-                                 up * (R * std::sin(th));
+            const glm::vec3 dp = fwd * (R * std::cos(th) + a) +
+                                 up * (R * std::sin(th)) + flatSide * dlat;
             fr.tangent = glm::normalize(dp);
             // The frame is built OFF THE TANGENT, not off the circle. The circle's
             // own normal (-sin, cos) is not perpendicular to this path: the advance
@@ -93,11 +147,16 @@ std::vector<Loop> plan(const std::vector<glm::vec2>& center,
             // is half a radian out at the quarter points -- enough to light the
             // ribbon wrongly and to tilt the gravity the craft is held on by.
             //
-            // The turn lies in a vertical plane containing the road, so `side` is
-            // simply the horizontal across it -- constant, and well defined even
-            // where the tangent passes through vertical (which it does twice, and
-            // where cross(tangent, worldUp) would collapse).
-            fr.side   = glm::normalize(glm::cross(up, fwd));
+            // `side` starts as the horizontal across the road -- well defined even
+            // where the tangent passes through vertical, which it does twice and
+            // where cross(tangent, worldUp) would collapse -- and is then squared
+            // up against the tangent, because a swaying turn's tangent is no longer
+            // perpendicular to it. Straightening it here rather than using it raw
+            // is what keeps the cross-section square to the track: the raw vector
+            // would shear the ribbon by the sway's own angle. The lean it picks up
+            // in exchange is real banking, and the craft rides it.
+            const glm::vec3 sq = flatSide - fr.tangent * glm::dot(flatSide, fr.tangent);
+            fr.side   = glm::normalize(sq);
             fr.normal = glm::normalize(glm::cross(fr.tangent, fr.side));
             // Nose elevation, unwrapped against the previous frame.
             float ang = std::atan2(glm::dot(fr.tangent, up), glm::dot(fr.tangent, fwd));
@@ -127,7 +186,7 @@ std::vector<Loop> plan(const std::vector<glm::vec2>& center,
 Frame at(const Loop& lp, float arc) {
     if (lp.frames.empty()) return {};
     if (lp.length <= 1e-4f) return lp.frames.front();
-    arc -= std::floor(arc / lp.length) * lp.length;    // wrap into [0, length)
+    arc = std::clamp(arc, 0.0f, lp.length);            // the ends are NOT the same place
     std::size_t i = static_cast<std::size_t>(
         std::lower_bound(lp.s.begin(), lp.s.end(), arc) - lp.s.begin());
     if (i == 0) i = 1;
@@ -143,6 +202,7 @@ Frame at(const Loop& lp, float arc) {
     // the frame stays orthonormal between samples too.
     f.side    = glm::normalize(glm::mix(a.side, b.side, t));
     f.normal  = glm::normalize(glm::cross(f.tangent, f.side));
+    f.ahead   = glm::normalize(glm::mix(a.ahead, b.ahead, t));
     f.pitch   = glm::mix(a.pitch, b.pitch, t);
     return f;
 }
