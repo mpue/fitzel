@@ -34,12 +34,6 @@ set(SANDBOX_RUNTIME_SOURCES
     # file holds the rules and the patches are lofted from them on load, so
     # the shipped player has to be able to build them too.
     src/RoadDecal.cpp
-    # The sky's clouds. Runtime, like everything derived from rules: the scene
-    # file holds a seed and a dozen numbers, and the volumes and placements are
-    # baked from them on load -- so the shipped player has to be able to bake
-    # them too.
-    src/CloudShape.cpp
-    src/CloudField.cpp
     src/RaceSim.cpp
     src/Difficulty.cpp
     src/RaceGrid.cpp
@@ -196,15 +190,6 @@ target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 #   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
 add_executable(skycheck tools/skycheck.cpp)
 target_link_libraries(skycheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
-
-# The cloud look (sandbox/tools/cloudcheck.cpp): bakes one cumulus and renders it
-# filling the frame, so a shape can be held against a photograph. Separate from
-# skycheck because a baked cloud needs the modelling code compiled in, not just
-# two shader files -- and because one cloud filling the frame is the view where a
-# wrong bulge is actually visible, which a whole sky never is.
-#   build/release/bin/cloudcheck.exe <outDir> sandbox/assets/shaders
-add_executable(cloudcheck tools/cloudcheck.cpp src/CloudShape.cpp src/CloudField.cpp)
-target_link_libraries(cloudcheck PRIVATE fitzel glfw glad_gl_core_33 glm::glm stb_headers)
 
 # The icon check (sandbox/tools/iconcheck.cpp): runs a picture through the exact
 # path "Export Game" uses -- build the .ico, patch a COPY of player.exe, then read

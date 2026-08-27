@@ -10,6 +10,13 @@ uniform vec3 uSunDir;     // towards the sun
 uniform vec3 uSunColor;   // sun radiance (already dimmed at night)
 uniform float uTime;
 
+// Cloud controls.
+uniform float uCoverage;     // THRESHOLD: lower = more sky covered
+uniform float uCloudDensity; // optical density multiplier
+uniform float uCloudScale;   // noise frequency
+uniform float uCloudSpeed;   // wind speed
+uniform float uCloudBottom;  // slab altitudes (world units)
+uniform float uCloudTop;
 
 // The high layer: ice, far above the cumulus and far above the weather.
 uniform float uCirrus;       // 0..1 how much of it there is (0 = none)
@@ -22,6 +29,14 @@ uniform int   uTonemap;
 
 const float PI = 3.14159265;
 
+// Extinction, PER METRE. It matters that these are per metre and not per sample:
+// both marches multiply a density by a step length, and the step lengths follow
+// the slab thickness -- so a coefficient tuned by eye at a 180 m slab turns
+// every cloud in a 1700 m one solid black. That is exactly what happened when
+// the layer was raised, and it is why they are named and written down here
+// rather than sitting as bare numbers in the loop.
+const float kExtinct = 0.020;   // along the view ray: opaque through ~200 m
+const float kSunSig  = 0.0035;  // toward the sun: light reaches ~300 m in
 
 vec3 acesTonemap(vec3 x) {
     const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -54,7 +69,7 @@ float hash13(vec3 p) {
 float vnoise3(vec3 x) {
     vec3 i = floor(x);
     vec3 f = fract(x);
-    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);   // quintic: C2 across cells
+    f = f * f * (3.0 - 2.0 * f);
     float n000 = hash13(i + vec3(0, 0, 0));
     float n100 = hash13(i + vec3(1, 0, 0));
     float n010 = hash13(i + vec3(0, 1, 0));
@@ -72,7 +87,7 @@ float vnoise3(vec3 x) {
 float vnoise2(vec2 x) {
     vec2 i = floor(x);
     vec2 f = fract(x);
-    f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);   // quintic, as vnoise3
+    f = f * f * (3.0 - 2.0 * f);
     return mix(mix(hash12(i + vec2(0, 0)), hash12(i + vec2(1, 0)), f.x),
                mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), f.x), f.y);
 }
@@ -86,6 +101,16 @@ float fbm2(vec2 p) {
 // the MAXIMA are domed and the minima are creases. This is the whole difference
 // between a cauliflower and a cloud of smoke, and no amount of thresholding
 // smooth noise will produce it.
+float billow(vec3 p, int octaves) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 5; ++i) {
+        if (i >= octaves) break;
+        s += a * (1.0 - abs(2.0 * vnoise3(p) - 1.0));
+        p *= 2.03;
+        a *= 0.5;
+    }
+    return s;
+}
 
 // Sparse procedural starfield (night only).
 vec3 starField(vec3 dir) {
@@ -146,24 +171,61 @@ vec3 skyColor(vec3 dir) {
     return col;
 }
 
-// --- Cumulus: not here any more ---------------------------------------------
+// --- Cumulus ----------------------------------------------------------------
+// Three things make a shape read as a cumulus rather than as fog with holes in
+// it, and the old single-threshold fBm had none of them:
 //
-// The low cloud used to be marched right here, from a thresholded billow field.
-// It is gone, and not because the code was bad -- because the approach could not
-// reach what was being asked of it. A cumulus is DETACHED, has a SHARP OUTLINE
-// and is a CAULIFLOWER, and a threshold over a continuous noise field gives
-// connected regions with soft edges, always. Several rounds of tuning each fixed
-// a real fault (contrast, silhouette, shear, stack depth, march resolution) and
-// none of them made it look more like a cloud.
+//   * BILLOWS -- see billow() above.
+//   * A FLAT BASE and a domed top. The slab is one air mass: everything
+//     condenses at the same altitude, which is why a real cumulus field looks
+//     like it is standing on a sheet of glass. Only the TOPS climb, and they
+//     climb further the more of them there are.
+//   * EROSION. The bulges are carved back where they are already thin, so the
+//     silhouette frays into wisps instead of ending on a smooth contour.
 //
-// Low cloud is now built as spheres budding off spheres, baked into a volume
-// and drawn as one instanced box per cloud -- see CloudShape.hpp and
-// CloudField.hpp. It is a separate pass, drawn over this one.
-//
-// What stays here is everything ABOVE the cumulus: the sky gradient, the sun,
-// the stars, and the ice ten kilometres up. Cirrus is a sheet, not a volume --
-// from the ground it has no thickness to march -- so the analytic version is
-// not a compromise, it is the right shape of answer.
+// Split in two on purpose: the light march below needs the SHAPE, not the fray,
+// and it runs five times per step. Handing it the cheap half is most of what
+// pays for the expensive one.
+
+// How much cloud there can be at height `t` through the slab. `amount` is the
+// coverage as a 0..1 quantity (uCoverage is a threshold, so it runs the other
+// way): a thin fair-weather field is all base and no build.
+float heightShape(float t, float amount) {
+    float top = mix(0.34, 1.0, amount);
+    return smoothstep(0.0, 0.07, t) * smoothstep(top, top * 0.45, t);
+}
+
+// Where in the noise field a world point samples from. The SHEAR is the point:
+// the wind is stronger higher up, so a cloud's top is dragged ahead of its base
+// and the whole thing leans. One add, and it is most of what stops a field of
+// cumulus looking like it was stamped out of a sheet -- a vertical column of
+// noise reads as a pillar, a leaning one reads as weather.
+vec3 cloudSample(vec3 p, float t) {
+    vec3 wind  = vec3(uTime * uCloudSpeed, 0.0, uTime * uCloudSpeed * 0.3);
+    vec3 shear = vec3(t * (uCloudTop - uCloudBottom) * 0.5, 0.0, 0.0);
+    return (p + wind + shear) * uCloudScale;
+}
+
+float cloudBase(vec3 p) {
+    float amount = clamp(1.0 - uCoverage, 0.0, 1.0);
+    float t = (p.y - uCloudBottom) / max(uCloudTop - uCloudBottom, 1.0);
+    float n = billow(cloudSample(p, t), 4);
+    return smoothstep(uCoverage, uCoverage + 0.20, n) * heightShape(t, amount);
+}
+
+float cloudDensity(vec3 p) {
+    float base = cloudBase(p);
+    if (base <= 0.0) return 0.0;
+    // Finer billows, drifting slightly against the wind so the edges boil rather
+    // than slide. Remapped against the base so a thick core survives untouched
+    // and only the thin skirts are eaten away -- erode everywhere and the whole
+    // field goes translucent instead of getting an edge.
+    float t = (p.y - uCloudBottom) / max(uCloudTop - uCloudBottom, 1.0);
+    vec3 q = cloudSample(p, t);
+    float detail = billow(q * 6.1 - vec3(0.0, uTime * 0.04, 0.0), 3);
+    float erode  = (1.0 - detail) * 0.42;
+    return clamp((base - erode) / max(1.0 - erode, 1e-3), 0.0, 1.0);
+}
 
 // --- The high layer: cirrus and contrails ------------------------------------
 // Not marched. Ice at ten kilometres is a sheet, not a volume: from the ground
@@ -215,12 +277,7 @@ float contrails(vec2 q) {
         float age = hash11(fi * 5.93 + 4.2);         // 0 fresh .. 1 spread out
 
         float d = abs(dot(q, n) - off);
-        // Widths in cirrus heights: a fresh trail is a few hundred metres of ice
-        // seen from kilometres away, which is a hairline. The old 0.04..0.31 put
-        // it at 56..430 m of half-width at a 1400 m layer -- so the "trail"
-        // subtended ten degrees of sky and read as a searchlight beam. A quarter
-        // of that is still generous for the aged one, which really does spread.
-        float w = mix(0.010, 0.072, age) * H;        // it spreads as it ages
+        float w = mix(0.040, 0.307, age) * H;        // it spreads as it ages
         float core = exp(-(d * d) / (w * w));
 
         // Along its length: a trail has two ends, and an old one has holes.
@@ -229,10 +286,7 @@ float contrails(vec2 q) {
         float gaps = mix(1.0, smoothstep(0.30, 0.72,
                                          vnoise2(vec2(s * (1.54 / H) + fi * 17.0, age * 6.0))),
                          age);
-        // ...and pale with it. A contrail is recognised by being STRAIGHT, not
-        // by being bright; at 0.85 coverage a fresh one was as opaque as a
-        // cumulus and drew the eye off everything else in the sky.
-        total += core * ends * gaps * mix(0.42, 0.11, age) * lit;
+        total += core * ends * gaps * mix(0.85, 0.30, age) * lit;
     }
     return clamp(total, 0.0, 1.0);
 }
@@ -251,7 +305,7 @@ vec4 renderHigh(vec3 ro, vec3 rd) {
     float fine = 0.0;
     float a = cirrusMask(q * (2.24 / max(uCirrusHeight, 1.0)), fine);
     a *= mix(0.55, 1.0, fine);            // fibres within the sheet
-    a += contrails(q) * 0.55;
+    a += contrails(q) * 0.9;
     // Thinned toward the horizon: at a grazing angle the plane is so far away
     // that atmosphere has eaten it, and without this the whole layer piles up
     // into a hard band where it meets the sky.
@@ -272,6 +326,91 @@ vec4 renderHigh(vec3 ro, vec3 rd) {
     return vec4(col * a, a);
 }
 
+// Henyey-Greenstein phase function.
+float phaseHG(float c, float g) {
+    float g2 = g * g;
+    return (1.0 - g2) / (4.0 * PI * pow(1.0 + g2 - 2.0 * g * c, 1.5));
+}
+
+// Raymarch the cloud slab. Returns premultiplied colour in .rgb and coverage
+// (1 - transmittance) in .a.
+vec4 renderClouds(vec3 ro, vec3 rd, vec3 behind) {
+    // A soft floor rather than a hard cutoff. At a grazing angle the slab runs
+    // for hundreds of kilometres and no march can pay for that, so the layer is
+    // faded into the haze instead of ending on a line -- which is exactly what
+    // the old 1600 m cap drew across the horizon.
+    float horizonFade = smoothstep(0.0, 0.10, rd.y);
+    if (horizonFade <= 0.0) return vec4(0.0);
+
+    float thick = max(uCloudTop - uCloudBottom, 1.0);
+    float t0 = (uCloudBottom - ro.y) / rd.y;
+    float t1 = (uCloudTop    - ro.y) / rd.y;
+    t0 = max(t0, 0.0);
+    if (t1 <= t0) return vec4(0.0);
+    // Reach measured in slab thicknesses, so raising the layer lengthens the
+    // view along it by the same factor and the field still runs to the horizon.
+    t1 = min(t1, t0 + thick * 14.0);
+
+    const int STEPS = 64;
+    // Steps that GROW with distance. A cloud twenty kilometres away is a few
+    // pixels wide and does not need the sampling one overhead does; a constant
+    // step long enough to reach it would band everything close up. Geometric
+    // growth keeps the near end fine and still gets there in 64 steps.
+    const float GROW = 1.035;
+    float span = (pow(GROW, float(STEPS)) - 1.0) / (GROW - 1.0);
+    float dt = (t1 - t0) / span;
+
+    float cosA  = dot(rd, uSunDir);
+    float phase = mix(phaseHG(cosA, 0.2), phaseHG(cosA, -0.15), 0.5);
+    float dayF  = smoothstep(-0.1, 0.2, uSunDir.y); // fade sun lighting at night
+
+    vec3 ambient = pow(mix(vec3(0.10, 0.13, 0.20), vec3(0.55, 0.62, 0.75),
+                       smoothstep(-0.1, 0.2, uSunDir.y)), vec3(2.2));
+
+    float T = 1.0;
+    vec3  col = vec3(0.0);
+    // Per-pixel dither on the start offset breaks the raymarch banding.
+    float dither = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    float t = t0 + dt * dither;
+    for (int i = 0; i < STEPS; ++i) {
+        vec3 p = ro + rd * t;
+        float d = cloudDensity(p) * uCloudDensity;
+        if (d > 0.001) {
+            // Light march toward the sun for self-shadowing. cloudBase, not
+            // cloudDensity: what casts the shadow inside a cumulus is its bulk,
+            // and the fray on its edges is not worth five samples a step.
+            float ls = 0.0;
+            float lstep = (uCloudTop - uCloudBottom) * 0.12;
+            for (int j = 1; j <= 5; ++j) {
+                vec3 lp = p + uSunDir * (lstep * float(j));
+                ls += cloudBase(lp) * uCloudDensity;
+            }
+            float sun = exp(-ls * lstep * kSunSig);
+
+            // Silver lining: light that took a short path through the thin edge
+            // of a bulge and came out the other side, which is the brightest
+            // thing in a real cumulus field and was missing entirely.
+            float rim = pow(1.0 - clamp(d, 0.0, 1.0), 3.0) * pow(max(cosA, 0.0), 8.0);
+
+            vec3 lum = uSunColor * (sun * phase * 3.5 + rim * 1.4) * dayF + ambient;
+            // Aerial perspective. Cloud twenty kilometres away is seen through
+            // twenty kilometres of air and loses its contrast into the sky
+            // behind it -- which is the entire reason a real cumulus field reads
+            // as going somewhere. Without it the far edge stays as white as the
+            // one overhead and the layer is a band pasted along the horizon,
+            // which is what the first attempt looked like.
+            lum = mix(lum, behind, 1.0 - exp(-t * 7.0e-5));
+            float dens = d * dt * kExtinct;
+            float a = 1.0 - exp(-dens);
+            col += T * lum * a;
+            T   *= exp(-dens);
+            if (T < 0.02) break;
+        }
+        t  += dt;
+        dt *= GROW;
+    }
+    return vec4(col * horizonFade, (1.0 - T) * horizonFade);
+}
 
 void main() {
     // Reconstruct the world-space view ray from the NDC position.
@@ -284,9 +423,8 @@ void main() {
     // it and a cloud passing under a contrail cuts the contrail, as it should.
     vec4 high = renderHigh(uCameraPos, dir);
     col = col * (1.0 - high.a) + high.rgb;
-    // The low cloud is a separate pass drawn after this one (CloudField), which
-    // is also what puts it in front of the cirrus -- correctly, since it is nine
-    // kilometres nearer.
+    vec4 clouds = renderClouds(uCameraPos, dir, col);
+    col = col * (1.0 - clouds.a) + clouds.rgb;
 
     FragColor = vec4(toOutput(col), 1.0);
 }
