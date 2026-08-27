@@ -14,6 +14,16 @@ compile_commands.json
 /.idea/
 *.user
 
+# Run logs. The Release editor is /SUBSYSTEM:WINDOWS and has no console of its
+# own, so its output gets caught by redirecting it into a file next to the exe --
+# which is a debugging session's leftovers, not something anyone else needs.
+*.log
+
+# Raw screen captures. The ones the README actually shows live in /images/ and
+# are tracked; this is where the full-size originals land on the way there, at a
+# few megabytes each.
+/screenshots/
+
 # Large binary texture assets (provided locally, not tracked)
 /content/textures/
 
