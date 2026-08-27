@@ -1,21 +1,58 @@
 # Fitzel
 
-A portable OpenGL starter that serves as the base for a graphics engine.
-Cross-platform (Windows / Linux / macOS), self-contained, modern C++20.
+Fitzel is a game engine with an editor, written in modern C++20 against OpenGL 3.3
+core -- Windows, Linux and macOS, with every dependency fetched at configure time and
+nothing installed system-wide. You build a world in it (terrain, roads, buildings,
+props, lights, scripts), press Play to drive through that world, and export the result
+as a standalone game that no longer contains the editor.
+
+![A race through a generated city at sunset, running in the player](images/race-city.png)
+
+What it is pointed at is things that move through a landscape at speed. Roads are
+splines laid across streamed procedural terrain, with bridges, tunnels, loops, kerbs
+and guard rails *derived* from those splines rather than placed by hand; a district
+generator fills the sides with buildings that keep out of the road; and a race sim, a
+car, a glider, a HUD, opponents and a leaderboard come with it instead of having to be
+written first. Gameplay behaviour is Lua -- one script per entity, on a fresh VM every
+time Play starts (see [docs/lua-scripting.md](docs/lua-scripting.md)). The tools
+themselves stay C++, deliberately: a broken script must never be able to take an
+editing session with it.
+
+The editor has one rule that outranks convention: **nothing important may require a
+steady hand.** Every value that can be dragged can also be clicked and typed, a click
+that drifts a little is still a click rather than the start of a drag, panels move only
+by their title bar, and the double-click window is wider and more forgiving in position
+than standard. None of that is a mode -- there is nothing to switch on, no second
+workflow to learn and no habit from another editor that stops working; the thresholds
+around the ordinary widgets are simply set wider (`engine/src/ui/Gui.cpp`). Where a
+tool could only be built around precise dragging, it gets a typed or stepped path
+instead, and that constraint wins when it and convention disagree.
 
 ## Stack
 
-| Concern            | Library                | How it's pulled in        |
-| ------------------ | ---------------------- | ------------------------- |
-| Windowing / input  | [GLFW](https://www.glfw.org/) 3.4 | CMake `FetchContent` |
-| OpenGL loader      | [GLAD2](https://github.com/Dav1dde/glad) (gl 3.3 core) | `FetchContent` (generated at configure time) |
-| Math               | [GLM](https://github.com/g-truc/glm) 1.0.1 | `FetchContent` |
-| Image loading      | [stb_image](https://github.com/nothings/stb) | `FetchContent` |
-| Debug UI           | [Dear ImGui](https://github.com/ocornut/imgui) 1.91.5 | `FetchContent` |
+Everything below is pulled in by `FetchContent` from
+[cmake/Dependencies.cmake](cmake/Dependencies.cmake), which is also the file the
+licence notices are generated from — so this table and what actually links cannot
+drift apart for long.
 
-All dependencies are fetched at configure time — **no system-wide installs
-required**. The first configure/build needs a network connection and Python 3
-with Jinja2 (used by GLAD to generate the loader):
+| Concern              | Library |
+| -------------------- | ------- |
+| Windowing / input    | [GLFW](https://www.glfw.org/) |
+| OpenGL loader        | [GLAD2](https://github.com/Dav1dde/glad) (gl 3.3 core, generated at configure time) |
+| Math                 | [GLM](https://github.com/g-truc/glm) |
+| Editor UI            | [Dear ImGui](https://github.com/ocornut/imgui) (docking) + [ImGuizmo](https://github.com/CedricGuillemet/ImGuizmo) gizmos + [ImGuiColorTextEdit](https://github.com/BalazsJako/ImGuiColorTextEdit) for the script editor |
+| Images               | [stb_image](https://github.com/nothings/stb), [tinyexr](https://github.com/syoyo/tinyexr) for the EXR normal maps and HDRIs |
+| Model loading        | [assimp](https://github.com/assimp/assimp), [cgltf](https://github.com/jkuhlmann/cgltf) |
+| Audio                | [miniaudio](https://github.com/mackron/miniaudio) |
+| Physics              | [Jolt](https://github.com/jrouwe/JoltPhysics) |
+| Gameplay scripting   | [Lua](https://www.lua.org/) |
+| Scenes / settings    | [nlohmann/json](https://github.com/nlohmann/json) |
+
+Versions live in `cmake/Dependencies.cmake` rather than here, for the same reason.
+Nothing is installed system-wide, and **no dependency is copied into this repo**.
+
+The first configure/build therefore needs a network connection, and Python 3 with
+Jinja2 (which is what GLAD generates the loader with):
 
 ```sh
 python -m pip install jinja2
@@ -27,13 +64,14 @@ python -m pip install jinja2
 fitzel/
 ├── CMakeLists.txt          # top-level build
 ├── CMakePresets.json       # ready-made configure/build presets
-├── cmake/Dependencies.cmake# FetchContent for GLFW / GLAD / GLM
+├── cmake/Dependencies.cmake# every third-party dependency, and their versions
 ├── engine/                 # the engine, built as a static lib `fitzel`
 │   ├── include/fitzel/     # public API (<fitzel/...>)
 │   └── src/                # implementation
-└── sandbox/                # example app linking the engine
+└── sandbox/                # editor + player
     ├── src/main.cpp        # streamed infinite terrain + CSM + materials
-    └── assets/shaders/     # GLSL shaders (copied next to the binary)
+    ├── assets/shaders/     # GLSL shaders (copied next to the binary)
+    └── tools/              # offline checks (see "Offline checks" below)
 ```
 
 ## Build
@@ -80,16 +118,25 @@ The engine exposes a small, RAII-based core to build on:
 - `fitzel::Audio` / `fitzel::Sound` — miniaudio-backed playback: looping ambient
   layers (volume-controlled) and one-shot effects, used to drive weather audio.
 
-The sandbox ties it together: an **infinite, streamed procedural landscape** under a
+`sandbox/` is what ties it together, and it builds twice from mostly the same sources:
+`sandbox.exe` is the editor, `player.exe` is the same world without any of the tooling
+— which is the copy "Export Game" ships. What the two share is the *runtime*
+(terrain, roads, vehicles, scripts, audio, the whole render path); what only the editor
+has is the panels, the gizmos and the undo stack.
+
+The scene both of them draw is an **infinite, streamed procedural landscape** under a
 **day/night sky with volumetric clouds**, lit by a directional sun with **cascaded
-shadow mapping** (PCF) and **Blinn-Phong** shading, cubes that cast shadows onto the
-terrain, **atmospheric fog** (aerial perspective), and a **planar-reflective water
-plane** (reflecting sky + clouds) flooding the valleys. The renderer exposes both a one-call path
+shadow mapping** (PCF), **atmospheric fog** (aerial perspective), **raymarched
+volumetric fog** in placed volumes, and a **planar-reflective water plane** flooding
+the valleys. The renderer exposes both a one-call path
 (`begin()` → `submit()` → `end()`) and multi-pass building blocks
-(`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`) used to render the
-reflection/refraction passes. A live ImGui panel tweaks the light, cascade split,
-water (level/waves/tint) and regenerates the terrain. Controls: WASD + Q/E to move,
-hold right mouse to look, scroll to zoom, ESC to quit.
+(`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`), which is what the
+reflection and refraction passes are built out of.
+
+Editor camera: WASD + Q/E to move, hold right mouse to look, scroll to zoom. `F` frames
+the selected object; `Shift+F` toggles walking through the scene in first person.
+
+![The editor: hierarchy, inspector, asset browser and the frame-time panel](images/editor.png)
 
 ### Rendering notes
 
@@ -207,12 +254,90 @@ for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
   `lit.frag`/`water.frag`. Distant geometry fades into a horizon haze whose colour
   tracks the time of day (and warms toward the sun via in-scatter), giving depth and
   hiding the streaming edge; valleys and water pick up ground mist.
+- **Volumetric fog**: the other kind, and deliberately a separate thing from the
+  bullet above. That one is a closed form -- cheap, global, and with no shape: every
+  surface at the same distance gets the same amount of it, nothing can be foggier than
+  its neighbour, and the sun cannot be blocked on the way in. This one is a *box* of
+  participating medium, raymarched front to back against the scene depth, with its
+  density taken from an animated 3D noise field and the sun sampled through the same
+  cascades the surfaces use -- which buys the two things the closed form can never
+  have: structure (banks, wisps, holes drifting through) and shafts. A short secondary
+  march toward the sun shadows the inside of a bank against its lit rim; without it an
+  evenly lit volume reads as coloured glass.
+
+  ![Ground mist lying over the terrain at sunset](images/fog-editor.png)
+
+  Volumes are things you *place*: a `VolumetricFogComponent` on any entity, scaled with
+  the gizmo, so the box outlined when it is selected is the box that gets marched. One
+  scene-wide volume in the sky settings is one more entry in the same list, for mist
+  over a whole track -- it can follow the camera, because a four-kilometre box marched
+  in forty steps is a step every hundred metres and the structure disappears between
+  them. Volumes accumulate back to front into one buffer, so two overlapping banks read
+  as one body of air rather than as whichever was drawn last. Each is drawn as its own
+  proxy box rather than a fullscreen pass, which is what makes mist-per-archway
+  affordable: a volume covering a tenth of the screen costs a tenth of the fill. The
+  buffer runs at a fraction of the pane and is tent-filtered on the way back up.
+
+  Two knobs are worth knowing about because they are not the obvious thing:
+  **Vertical detail** squashes the noise lookup vertically. The field is addressed in
+  world metres and is isotropic, so at the default scale one feature is a hundred
+  metres across on *every* axis -- a forty-metre ground layer then spans two dozen
+  features sideways and less than half a feature top to bottom, and reads as a flat
+  pattern pulled upward. **Height falloff** raises the coverage *threshold* with height
+  instead of scaling the density down. Scaling thins every column by the same curve, so
+  the lid of the layer ends up an analytic surface, identical over a bank and over a
+  hole; as a threshold the top is a contour of the noise -- ragged, and higher over a
+  bank than over a hole.
 - **Water**: planar reflection + refraction. The scene is rendered twice off-screen
   (a mirror-matrix camera with the underwater half clipped for the reflection, the
   above-water half clipped for the refraction), then the water surface blends the two
   by Fresnel, with animated noise ripples distorting the projective lookups and a
   specular sun glint. A world-space clip plane (`uClipPlane` in `lit.vert`,
   `GL_CLIP_DISTANCE0`) drives the clipping.
+
+### Offline checks
+
+Several things here cannot be judged from inside the editor, and each has a small
+console program that renders or measures it on its own. They are built alongside the
+game and run by hand; none of them ship.
+
+| Tool | What it answers |
+| ---- | --------------- |
+| `shadercheck <shaders>` | Does every shader still compile? A broken one costs its effect *silently* -- the Release editor is `/SUBSYSTEM:WINDOWS` and has nowhere to print a compile error to. Exits non-zero. |
+| `skycheck <out> <shaders>` | What does the sky actually look like? Renders `sky.frag` alone, from cameras pointed where the clouds are. |
+| `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
+| `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
+| `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
+| `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |
+
+`skycheck` and `fogcheck` are not tests -- nothing in them passes or fails. They are a
+way of *seeing*: the sky sits behind the panels and above the default pitch, and the
+fog is half-resolution, tent-blurred, under bloom and a tonemapper and only visible
+from inside the volume, so both had previously been worked on by reasoning about noise
+functions and hoping.
+
+`fogcheck` marches `volfog.frag` at full resolution against a synthetic depth buffer --
+no half-res, no upsample, no post -- so what comes out is the field rather than the
+filter, and a bank can be judged without a scene arguing about it:
+
+![A fog layer with the sun behind it, marched on its own](images/fog-backlit.png)
+
+It also writes three orthogonal slices of the baked 3D noise straight out, and that
+dump is the part that earns the tool. The fog once had no vertical structure at all,
+and from the shader's side nothing disagreed with anything: every band, every octave
+and the worley lattice share one cell hash, and that hash (FNV-1a with no finalizer)
+avalanches *upward*, so whichever coordinate is mixed last never reaches the low bits
+`hashUnit` reads. The 64³ volume was a 2D field extruded along one axis, and a
+horizontal slice of it said so in one look:
+
+| Horizontal slice of the field | The layer it produced |
+| ----------------------------- | --------------------- |
+| ![Striped slice of the baked noise](images/fog-noise-slice-broken.png) | ![Fog in long parallel streaks](images/fog-banks-broken.png) |
+| ![The same slice, properly three-dimensional](images/fog-noise-slice.png) | ![Fog in billowed banks](images/fog-banks.png) |
+
+```sh
+build/release/bin/fogcheck out sandbox/assets/shaders   # fogcheck.exe on Windows
+```
 
 Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.

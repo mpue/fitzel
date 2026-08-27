@@ -47,6 +47,7 @@ set(SANDBOX_RUNTIME_SOURCES
     # Runtime: a fog bank is part of the world the scene author built, so the
     # shipped player has to march it too.
     src/VolumetricFog.cpp
+    src/FogNoise.cpp
     # The in-game graphics menu. Runtime by definition: fitting the game to
     # the machine is the shipped player's job, not the editor's.
     src/GraphicsMenu.cpp
@@ -190,6 +191,18 @@ target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 #   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
 add_executable(skycheck tools/skycheck.cpp)
 target_link_libraries(skycheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
+
+# The fog look (sandbox/tools/fogcheck.cpp): the same idea as skycheck, one layer
+# down. Marches volfog.frag at FULL resolution against a synthetic depth buffer
+# and writes the frames out. Volumetric fog is the hardest thing here to get a
+# plain look at -- half-res, tent-blurred, under bloom and the tonemapper, mixed
+# with the closed-form haze, and only visible from inside the volume -- so a
+# density field that is wrong for arithmetic reasons had nowhere to be caught.
+# Shares FogNoise.cpp with the engine on purpose: a check that bakes its own copy
+# of the noise is wrong in the way that looks right.
+#   build/release/bin/fogcheck.exe <outDir> sandbox/assets/shaders
+add_executable(fogcheck tools/fogcheck.cpp src/FogNoise.cpp)
+target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
 
 # The icon check (sandbox/tools/iconcheck.cpp): runs a picture through the exact
 # path "Export Game" uses -- build the .ico, patch a COPY of player.exe, then read

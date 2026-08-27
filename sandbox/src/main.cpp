@@ -3599,6 +3599,7 @@ int main(int argc, char** argv) {
         addF("volFogColorB", volFogSet.medium.color.z);
         addF("volFogCoverage", volFogSet.medium.coverage);
         addF("volFogNoiseScale", volFogSet.medium.noiseScale);
+        addF("volFogNoiseVertical", volFogSet.medium.verticalDetail);
         addF("volFogDetail", volFogSet.medium.detail);
         addF("volFogWarp", volFogSet.medium.warp);
         addF("volFogWindX", volFogSet.medium.wind.x);
@@ -9894,6 +9895,11 @@ int main(int argc, char** argv) {
                     ImGui::SliderFloat("Edge fade", &volFogSet.medium.edge, 0.02f, 1.0f);
                     ImGui::SliderFloat("Height falloff##volfog",
                                        &volFogSet.medium.heightFalloff, 0.0f, 3.0f);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How much harder it is for fog to exist near\n"
+                                          "the top of the box. Carves the lid out of the\n"
+                                          "noise, so the layer has a ragged top rather\n"
+                                          "than a smooth fade.");
 
                     ui::sectionText("Medium");
                     ImGui::SliderFloat("Thickness", &volFogSet.medium.density, 0.0f, 0.5f,
@@ -9911,6 +9917,14 @@ int main(int argc, char** argv) {
                                        0.001f, 0.06f, "%.4f");
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Smaller = bigger banks.");
+                    ImGui::SliderFloat("Vertical detail",
+                                       &volFogSet.medium.verticalDetail, 0.25f, 8.0f,
+                                       "%.2fx");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("How much finer the field is going up than\n"
+                                          "sideways. At 1 a shallow layer sits inside a\n"
+                                          "single feature and the fog looks like a flat\n"
+                                          "pattern pulled upward.");
                     ImGui::SliderFloat("Detail", &volFogSet.medium.detail, 0.0f, 0.95f);
                     ImGui::SliderFloat("Swirl", &volFogSet.medium.warp, 0.0f, 1.5f);
                     ImGui::DragFloat3("Wind##volfog", &volFogSet.medium.wind.x, 0.05f,

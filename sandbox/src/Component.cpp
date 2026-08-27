@@ -1269,6 +1269,8 @@ const std::vector<Property>& VolumetricFogComponent::properties() {
         addV("Tint", "color", &FogMedium::color, PropKind::Color);
         addF("Coverage", "coverage", &FogMedium::coverage, 0.0f, 0.95f);
         addF("Noise scale", "noiseScale", &FogMedium::noiseScale, 0.002f, 0.20f, "%.3f");
+        addF("Vertical detail", "verticalDetail", &FogMedium::verticalDetail, 0.25f,
+             8.0f, "%.2fx");
         addF("Detail", "detail", &FogMedium::detail, 0.0f, 0.95f);
         addF("Swirl", "warp", &FogMedium::warp, 0.0f, 1.5f);
         addV("Wind", "wind", &FogMedium::wind, PropKind::Vec3, 0.05f);

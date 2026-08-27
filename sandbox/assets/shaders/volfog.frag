@@ -49,6 +49,7 @@ uniform float uCoverage;      // noise level below which there is no fog at all
 
 // --- The noise -------------------------------------------------------------
 uniform float uNoiseScale;    // world metres -> noise space
+uniform float uNoiseVertical; // how much finer the field is vertically
 uniform float uDetail;        // how hard the worley band breaks the shape up
 uniform float uWarp;          // domain warp: the swirl in the banks
 uniform vec3  uWind;          // metres per second the field drifts
@@ -95,15 +96,40 @@ float ign(vec2 p) {
 }
 
 // How much of the box a point is inside, `pl` being in unit-cube space: 1 in the
-// middle, easing to 0 across the outer `uEdge` of every half-extent, times the
-// vertical thinning. Multiplying the three axes keeps the corners from seaming.
-float shell(vec3 pl) {
+// middle, easing to 0 across the outer `uEdge` of every half-extent. Multiplying
+// the three axes keeps the corners from seaming.
+float boxFade(vec3 pl) {
     vec3 t = clamp((vec3(0.5) - abs(pl)) / max(vec3(0.5 * uEdge), vec3(1e-4)),
                    0.0, 1.0);
     float e = t.x * t.y * t.z;
-    e = e * e * (3.0 - 2.0 * e);
+    return e * e * (3.0 - 2.0 * e);
+}
+
+// The coverage threshold AT THIS HEIGHT -- how high the noise has to reach here
+// for there to be fog at all. This is where the vertical thinning lives now, and
+// moving it here from a multiply is the difference between a layer with a top
+// and a layer with a fade.
+//
+// Multiplying the density by exp(-k*h) thins every column by the same curve, so
+// whatever shape the noise had is still there at every height, just fainter: the
+// lid of the fog ends up an analytic surface, perfectly smooth, identical over a
+// bank and over a hole. Raising the THRESHOLD instead means the top of the fog
+// is a contour of the noise field -- ragged where the field is ragged, higher
+// over a bank than over a hole, with peaks that stick out alone. That contour is
+// most of what makes a layer read as a body of air rather than as a gradient.
+float coverageAt(vec3 pl) {
     float hRel = clamp(pl.y + 0.5, 0.0, 1.0);   // 0 at the box floor, 1 at its lid
-    return e * exp(-uHeightFalloff * 4.0 * hRel);
+    return uCoverage + hRel * uHeightFalloff * 0.55;
+}
+
+// World position -> noise space, squashed vertically. One place, because the
+// warp band, the shape band and the detail band all have to agree about it --
+// three bands squashed by three different amounts is three fields, and the warp
+// would drag the shape sideways relative to its own detail.
+vec3 noiseCoord(vec3 pw) {
+    vec3 p = pw - uWind * uTime;
+    p.y *= uNoiseVertical;
+    return p * uNoiseScale;
 }
 
 // The full medium: three fetches -- a low-frequency vector field that warps the
@@ -111,12 +137,14 @@ float shell(vec3 pl) {
 // that shape into billows. `pw` is world space (so neighbouring volumes share
 // one field), `pl` the box's own (so the walls are the box's).
 float density(vec3 pw, vec3 pl) {
-    float s = shell(pl);
+    float s = boxFade(pl);
     if (s <= 0.002) return 0.0;
-    vec3 q = (pw - uWind * uTime) * uNoiseScale;
+    float cov = coverageAt(pl);
+    if (cov >= 1.0) return 0.0;   // above the layer: nothing can clear the bar
+    vec3 q = noiseCoord(pw);
     vec3 w = (texture(uNoise, q * 0.30).rgb - 0.5) * uWarp;
     float base  = texture(uNoise, q + w).r;
-    float shape = smoothstep(uCoverage, uCoverage + 0.32, base);
+    float shape = smoothstep(cov, cov + 0.32, base);
     float det   = texture(uNoise, q * 3.1 + w).a;
     // The worley band SCALES the shape rather than being subtracted from it.
     // Subtracting is the cloud recipe, and it is wrong here: a cloud's core sits
@@ -132,11 +160,12 @@ float density(vec3 pw, vec3 pl) {
 // The same field with the detail bands left out -- one fetch. Used only by the
 // light march, where the difference is invisible and the cost is threefold.
 float coarseDensity(vec3 pw, vec3 pl) {
-    float s = shell(pl);
+    float s = boxFade(pl);
     if (s <= 0.002) return 0.0;
-    vec3 q = (pw - uWind * uTime) * uNoiseScale;
-    float base = texture(uNoise, q).r;
-    return uDensity * smoothstep(uCoverage, uCoverage + 0.32, base) * s;
+    float cov = coverageAt(pl);
+    if (cov >= 1.0) return 0.0;
+    float base = texture(uNoise, noiseCoord(pw)).r;
+    return uDensity * smoothstep(cov, cov + 0.32, base) * s;
 }
 
 // How much sun reaches a point through the fog itself. Three taps toward the

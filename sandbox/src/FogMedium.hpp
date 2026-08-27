@@ -27,6 +27,24 @@ struct FogMedium {
     // each other then share one field and read as the same air, where a per-box
     // field would put a visible seam on the line between them.
     float     noiseScale = 0.010f; // world metres -> noise space (smaller = bigger banks)
+    // How much finer the field is VERTICALLY than horizontally.
+    //
+    // Without this the fog is not volumetric-looking however well it is marched,
+    // and the reason is arithmetic rather than art. The field is addressed in
+    // world metres and is isotropic, so at the default scale one feature is a
+    // hundred metres across -- on every axis. A ground layer is forty metres
+    // tall: it spans a couple of dozen features sideways and less than half a
+    // feature top to bottom. Every ray at the same x/z then walks through the
+    // same value, the only thing that changes with height is the analytic
+    // thinning, and the result reads exactly like a 2D pattern extruded upward,
+    // because that is what it is.
+    //
+    // Squashing the lookup vertically is the standard answer for a layered
+    // medium and it is also the physical one: real fog banks are wide and flat,
+    // their billows far shorter than they are broad. 3 puts roughly one feature
+    // per ten metres of height, which is what turns the blanket into banks with
+    // holes, ragged tops and wisps that a march can actually find.
+    float     verticalDetail = 3.0f;
     float     detail     = 0.45f;  // how hard the worley band breaks the shape up
     float     warp       = 0.35f;  // domain warp: the swirl inside a bank
     glm::vec3 wind{2.0f, 0.0f, 0.6f}; // metres per second the field drifts
@@ -60,6 +78,10 @@ struct FogMedium {
 //    metres instead of six hundred is almost nothing.
 //  - the vertical thinning, which exists so world mist hugs the ground. A bank
 //    placed in an archway is meant to fill it.
+//
+// The vertical detail is NOT one of them: it is a ratio, not a length, so a
+// twenty-metre bank wants its billows squashed by the same factor a
+// six-hundred-metre layer does.
 //
 // Fewer steps too: the march is cut to the piece of ray actually inside the box,
 // so a short crossing gets a fine step count for free.
