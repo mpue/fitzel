@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.21)
 
 project(Fitzel
-    VERSION 0.3.0
-    DESCRIPTION "Portable OpenGL base for a graphics engine"
+    VERSION 0.4.0
+    DESCRIPTION "Game engine and editor for things that move through a landscape"
     LANGUAGES C CXX)
 
 # --- Global settings -------------------------------------------------------
