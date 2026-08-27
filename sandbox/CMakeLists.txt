@@ -90,6 +90,9 @@ set(SANDBOX_RUNTIME_SOURCES
 # TerrainPanel.cpp, the panel widget, is editor-only.)
 set(SANDBOX_EDITOR_SOURCES
     src/GridRenderer.cpp
+    # Standard views + middle-mouse pan for the editor viewport. Editor-only:
+    # the player has a game to look at, not a viewport to navigate.
+    src/ViewportNav.cpp
     src/ModelingPanel.cpp
     src/AssetDrop.cpp
     src/VideoImport.cpp

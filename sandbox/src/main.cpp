@@ -69,6 +69,7 @@
 #ifndef FITZEL_PLAYER
 #include "GridRenderer.hpp"
 #include "ModelingPanel.hpp"
+#include "ViewportNav.hpp"
 #endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
@@ -1027,8 +1028,15 @@ void drawEditMenu(const EditMenuCtx& c) {
 }
 
 void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
+                  viewnav::Nav& viewNav,
                   bool& prefsDirty, bool& requestDockRebuild) {
     if (!ImGui::BeginMenu("View")) return;
+    // Where the camera looks from, before which windows are open: it is the one
+    // entry here that changes the picture rather than the furniture, and it is
+    // the way to reach a standard view without a numpad -- or without holding
+    // anything steady, which is the point (see the editor's aims in README).
+    viewNav.drawMenu();
+    ImGui::Separator();
     // Grouped by the JOB, not by which file draws it. A flat list of twenty-eight
     // entries is a list you read start to finish every time; "where do I set fog"
     // has an obvious answer only once the entries are sorted the way the work is.
@@ -3289,6 +3297,13 @@ int main(int argc, char** argv) {
         bool        prevXkey = false; // X: toggle gizmo local/world space
         bool        camFocusing = false;      // F: smoothly gliding to a focus point
         glm::vec3   camFocusTarget{0.0f};
+#ifndef FITZEL_PLAYER
+        // The viewport's other two ways of moving: the axis-aligned standard
+        // views (numpad, Blender's layout) and middle-mouse panning. See
+        // ViewportNav.hpp -- both are editor-only, the player has no viewport to
+        // navigate.
+        viewnav::Nav viewNav;
+#endif
 
         // Undo/redo edge state + gizmo-drag snapshot (a drag is one undoable step).
         bool                prevUndo = false, prevRedo = false;
@@ -5281,6 +5296,14 @@ int main(int argc, char** argv) {
         // A short grace after the last input keeps easing/hover smooth. `activeFrame`
         // decides the NEXT iteration's pacing, so it's recomputed each frame's end.
         bool         activeFrame = true;
+        // ...with one exception: a camera that is ANIMATING ITSELF. The caps
+        // above are driven by input, and a view change or an F-focus is the one
+        // thing that keeps moving after the input that asked for it is over --
+        // so it was being drawn at the idle rate, and a quarter-second sweep
+        // came out as three or four frames. Nothing about it looked like an
+        // interpolation problem, because it was not one. Set while the eye is
+        // still travelling; costs a fraction of a second of full rate.
+        bool         camAnimating = false;
         double       lastActive  = window.time();
         double       frameStart  = window.time();
         const double kIdleGrace  = 0.4;        // s of full-rate after last input
@@ -5357,7 +5380,7 @@ int main(int argc, char** argv) {
 
 
         while (window.isOpen()) {
-            const bool uncapped = playMode || playerMode;
+            const bool uncapped = playMode || playerMode || camAnimating;
             if (uncapped) {
                 window.pollEvents();
             } else if (activeFrame) {
@@ -6509,12 +6532,42 @@ int main(int argc, char** argv) {
                          input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_X) * look,
                         -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
                 }
+#ifndef FITZEL_PLAYER
+                // The rest of the viewport's navigation: numpad 1/3/7 for the
+                // standard views and middle-mouse panning (ViewportNav.cpp).
+                // After the fly controls, so a look this frame is already in and
+                // can cancel a view change that is still swinging.
+                {
+                    viewnav::Env nav{};
+                    nav.viewportHovered = viewportHovered || presentMode;
+                    // Number keys belong to the game while one is running, and to
+                    // the text field while one is being typed into.
+                    nav.keysFree  = !playMode && !playerMode &&
+                                    !ImGui::GetIO().WantTextInput;
+                    nav.looking   = mouseLook;
+                    nav.viewportH = static_cast<float>(viewH);
+                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
+                        nav.haveSelection   = true;
+                        nav.selectionCenter = entities[entitySel].center;
+                    }
+                    nav.groundY = streamer.heightAt(camera.position().x,
+                                                    camera.position().z);
+                    viewNav.update(camera, input, nav, dt);
+                }
+#endif
             }
 
             // Focus (F): glide the camera to the target, cancelled by any manual
-            // camera input (right-mouse fly) or leaving the free camera.
+            // camera input (right-mouse fly, a pan, a standard view) or leaving
+            // the free camera. Two things easing the same position at once would
+            // end up somewhere neither of them was asked for.
+#ifndef FITZEL_PLAYER
+            const bool navMovingCam = viewNav.gliding() || viewNav.panning();
+#else
+            const bool navMovingCam = false;
+#endif
             if (camFocusing) {
-                if (fpsMode || vehicleMode || gliderMode || playMode ||
+                if (fpsMode || vehicleMode || gliderMode || playMode || navMovingCam ||
                     input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                     camFocusing = false;
                 } else {
@@ -6528,6 +6581,12 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+
+            // Is the eye still moving on its own? Decides the NEXT frame's
+            // pacing (see the caps at the top of the loop): an animation nobody
+            // is holding a key for still has to be drawn at full rate, or it is
+            // not an animation, it is a slideshow.
+            camAnimating = camFocusing || navMovingCam;
 
             // --- Camera path: record samples or drive playback ----------
             camPathRec.update(camera, dt, !vehicleMode && !gliderMode);
@@ -7820,7 +7879,7 @@ int main(int argc, char** argv) {
                 drawFileMenu(fileMenu);
                 drawSceneMenu(sceneMenu);
                 drawEditMenu(editMenu);
-                drawViewMenu(gui, viewPanels, prefsDirty, requestDockRebuild);
+                drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild);
                 if (ImGui::BeginMenu("Help")) {
                     if (ImGui::MenuItem("About Fitzel...")) showAbout = true;
                     ImGui::EndMenu();
@@ -8191,6 +8250,20 @@ int main(int argc, char** argv) {
                 normalizeSelection();
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+
+                // Which way we are looking, when it is a standard view. Blender
+                // puts this in the same corner, and for the same reason: front
+                // and back look identical until something moves, so a view you
+                // cannot name is one you have to test by nudging the camera --
+                // which is exactly what the standard views are for avoiding.
+                if (!playMode)
+                    if (const char* vl = viewnav::label(viewNav.current())) {
+                        ImDrawList* vdl = ImGui::GetWindowDrawList();
+                        const ImVec2 at(rmin.x + 12.0f, rmin.y + 10.0f);
+                        vdl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
+                                     IM_COL32(0, 0, 0, 160), vl);
+                        vdl->AddText(at, IM_COL32(235, 240, 250, 225), vl);
+                    }
 
                 // UI overlay authoring preview: while the overlay editor is open and
                 // we're not playing, draw the 2D elements over the viewport (clipped
@@ -13634,7 +13707,7 @@ int main(int argc, char** argv) {
                 input.isKeyDown(GLFW_KEY_UP) || input.isKeyDown(GLFW_KEY_DOWN) ||
                 input.isKeyDown(GLFW_KEY_LEFT) || input.isKeyDown(GLFW_KEY_RIGHT);
             const bool interacting =
-                mouseActive || keyHeld || io.WantTextInput ||
+                mouseActive || keyHeld || io.WantTextInput || camAnimating ||
                 ImGui::IsAnyItemActive() || ImGuizmo::IsUsing() || vehicleMode || gliderMode;
             if (interacting) lastActive = now;
             activeFrame = (now - lastActive) < kIdleGrace;
