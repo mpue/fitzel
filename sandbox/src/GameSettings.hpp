@@ -13,6 +13,32 @@
 // dialog and consumed by projectio::exportGame.
 namespace game {
 
+// What the player IS on the first frame of the game -- which is a decision about
+// the GAME, not about a level, and had until now been two per-scene checkboxes
+// ("Start Play in vehicle mode" / "...in glider mode") sitting in the Vehicle and
+// Glider panels.
+//
+// Two bools in two panels could not express this list, and that is why it moved:
+// they can say on-foot-or-driving-or-flying and nothing else, they can disagree
+// with each other, and neither of them is anywhere near the dialog that decides
+// what the shipped game is. A game that opens on a camera -- an attract screen,
+// a title card, a reel circling the car -- was not expressible at all.
+enum class StartMode {
+    Fps = 0,     // on foot at the PlayerStart: the walking player
+    Vehicle,     // behind the wheel of the scene's vehicle
+    Glider,      // flying the scene's glider
+    MainCamera,  // watching, through the camera marked Main Camera
+    Multishot,   // watching, through the scene's multishot camera (the attract reel)
+};
+
+// "On foot", "Behind the wheel", ... -- for the dialog.
+const char* startModeName(StartMode m);
+// The key written to game.json. A NAME rather than the enum's number, so the file
+// reads as what it means and so inserting a mode in the middle of the list cannot
+// silently turn every configured game into a different one.
+const char* startModeKey(StartMode m);
+StartMode   startModeFromKey(const std::string& key);
+
 struct Settings {
     std::string exeName;                    // exported exe base name ("" = project name)
     std::string splash;                     // splash image, project-relative ("" = engine default)
@@ -22,6 +48,7 @@ struct Settings {
     // format and no build step for anyone to get wrong.
     std::string icon;                       // icon source image, project-relative ("" = none)
     std::string startScene;                 // scene stem the game boots into ("" = default scene)
+    StartMode   startMode = StartMode::Fps; // ...and what the player is when it does
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
     bool trimAssets = false;                 // export only assets the project references
     // Bundle content/, project/ and assets/ into one encrypted game.fpak next to

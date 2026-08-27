@@ -396,6 +396,14 @@ browsable folders. What that folder is called, which scenes it carries and what
 the loading screen looks like all come from **Game Settings**, stored per project
 in `game.json` next to the scenes.
 
+**Start as** is there too, next to the start scene, because the two are one
+decision: which level opens, and what the player is when it does -- on foot at
+the Player Start, behind the wheel of the scene's vehicle, flying its glider, or
+watching, through the camera marked Main Camera or through the multishot camera
+that cuts its own shots. The last two are how a game opens on an attract screen
+rather than on a player. A mode the scene cannot provide falls back to on foot:
+a game that cannot start the way it was configured should still start.
+
 Two of those settings are about the thing somebody actually receives:
 
 - **Icon** -- a square PNG. The export scales it to every size Windows asks for

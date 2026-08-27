@@ -1686,10 +1686,18 @@ int main(int argc, char** argv) {
         PhysicsBodyId physCarId = 0;   // Jolt vehicle chassis (Play-mode drive)
         bool  carPlaced   = false;
         bool  showVehicle = true;
-        // Play-start options (per-scene, serialized): drop straight into the car
-        // when Play begins, and whether the aiming crosshair is drawn in Play.
-        bool  startInVehicleMode = false;
-        bool  startInGliderMode  = false; // ...or straight into the glider
+        // What the game starts as is a GAME setting now -- game.json, the Game
+        // Settings dialog, game::StartMode -- because it is a statement about the
+        // game rather than about a level, and because two bools in two panels
+        // could not say "open on a camera" at all.
+        //
+        // These two are what a scene saved BEFORE that move says instead. Still
+        // read, so a project that has always dropped into its glider still does;
+        // no longer written and no longer editable, so the first save of each
+        // scene drops them and the dialog is the only place that decides. They
+        // only apply while the game setting is still the default (on foot).
+        bool  legacyStartVehicle = false;
+        bool  legacyStartGlider  = false;
         bool  showCrosshair      = true;
         // Scene vehicle (a model with a VehicleComponent) being driven: its
         // entity id, and -- for the editor test-drive -- the transform snapshot
@@ -3593,8 +3601,19 @@ int main(int argc, char** argv) {
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
         addB("autoWeather", autoWeather);      addF("weather", weather);
         addB("muted", muted);                  addF("volume", masterVolume);
-        addB("startInVehicleMode", startInVehicleMode);
-        addB("startInGliderMode", startInGliderMode);
+        // Read but not written: see legacyStartVehicle. A no-op save lambda is
+        // what "this key is on its way out" looks like in this registry -- the
+        // value keeps working until the scene is next saved, and then it is gone.
+        const auto addLegacyB = [&](const char* k, bool& r) {
+            tunables.push_back({k,
+                [](nlohmann::json&){},
+                [k, &r](const nlohmann::json& j){
+                    const auto it = j.find(k);
+                    if (it != j.end() && it->is_boolean()) r = it->get<bool>();
+                }});
+        };
+        addLegacyB("startInVehicleMode", legacyStartVehicle);
+        addLegacyB("startInGliderMode", legacyStartGlider);
         addB("showCrosshair", showCrosshair);
         addB("skidMarks", skids.enabled);      addF("skidSlip", skids.slipThresh);
         addF("skidWidth", skids.markHalfW);    addF("skidDark", skids.opacity);
@@ -5219,17 +5238,83 @@ int main(int argc, char** argv) {
                     a && a->playOnStart && e.activeInHierarchy)
                     startAudioSource(e.id);
 
-            // Optionally start behind the wheel instead of the walking player.
-            // enterVehicleMode spawns/drives the nearest scene vehicle (or a
-            // fallback car) and takes over from the first-person setup above.
-            if (startInVehicleMode) {
+            // --- What the game starts as -------------------------------------
+            // The walking player is set up above and is the fallback for
+            // everything here, which is deliberate: every other mode needs the
+            // scene to provide something (a vehicle, a glider, a camera), and a
+            // game that cannot start the way it was configured should start in
+            // the way that always works rather than not start at all.
+            //
+            // Read from the project's game.json rather than from the copy the
+            // dialog edits, for the same reason the loading screen is re-read on
+            // every level change: it is one small file, and reading it here means
+            // a change in the dialog is in effect on the very next Play instead
+            // of after a restart.
+            game::StartMode startAs = game::StartMode::Fps;
+            if (!currentProject.empty())
+                startAs = game::load(std::filesystem::path(currentProject)
+                                         .parent_path().generic_string()).startMode;
+            // A scene from before the setting moved (see legacyStartVehicle).
+            // Only while the game says nothing else, so the dialog always wins.
+            if (startAs == game::StartMode::Fps) {
+                if (legacyStartVehicle)     startAs = game::StartMode::Vehicle;
+                else if (legacyStartGlider) startAs = game::StartMode::Glider;
+            }
+
+            // The camera the watching modes hand the frame to. Multishot asks for
+            // the first camera that cuts its own shots; both fall back to the one
+            // marked Main Camera (already in `activeCam` from the loop above), and
+            // then to any camera at all -- a scene with one camera and no main
+            // flag is a mistake worth being forgiving about.
+            const auto startCamera = [&](bool wantMultishot) {
+                for (const Entity& e : entities) {
+                    const auto* cc = e.components.get<CameraComponent>();
+                    if (!cc || !e.activeInHierarchy) continue;
+                    if (wantMultishot && cc->mode != CameraComponent::Multishot)
+                        continue;
+                    return e.id;
+                }
+                return -1;
+            };
+
+            switch (startAs) {
+            case game::StartMode::Vehicle:
+                // enterVehicleMode spawns/drives the nearest scene vehicle (or a
+                // fallback car) and takes over from the first-person setup above.
                 vehicleMode = true;
                 enterVehicleMode();
-            } else if (startInGliderMode) {
-                // ...or straight into the glider: enterGliderMode flies the
-                // nearest glider entity (no-op if the scene has none).
+                break;
+            case game::StartMode::Glider:
+                // enterGliderMode flies the nearest glider entity (no-op if the
+                // scene has none, which then leaves the walking player).
                 gliderMode = true;
                 enterGliderMode();
+                break;
+            case game::StartMode::MainCamera:
+            case game::StartMode::Multishot: {
+                // Watching, not playing. The character capsule stays spawned and
+                // simply stands there -- exactly what a showroom scene does a few
+                // lines below, and for the same reason: what makes this a picture
+                // rather than a level is that nothing is driven by the keyboard
+                // and the cursor is free, not that the physics world is emptied.
+                // Order matters: the mode's OWN answer first, then the camera
+                // the author marked as main, then any camera at all. Asking for
+                // "a camera" before "the main one" would open a scene with three
+                // of them on whichever happens to come first in the list.
+                int cam = (startAs == game::StartMode::Multishot)
+                              ? startCamera(true) : -1;
+                if (cam < 0) cam = activeCam;          // the Main Camera, if any
+                if (cam < 0) cam = startCamera(false); // ...else any camera
+                if (cam >= 0) {
+                    activeCam = cam;
+                    fpsMode = false;
+                    input.setCursorLocked(false);
+                }
+                break;
+            }
+            case game::StartMode::Fps:
+            default:
+                break;   // the walking player, already standing up
             }
 
             // A showroom scene is a start screen, not a level: no walking player
@@ -5281,6 +5366,12 @@ int main(int argc, char** argv) {
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
+            // Give the VIEW back too. A camera entity had it whenever the game
+            // started on one or a CameraSwitcher cut to one during the run, and
+            // the free camera restored below is overwritten by that camera on the
+            // very next frame otherwise -- the editor camera moving on its own,
+            // with nothing on screen to say what had taken it.
+            activeCam = -1;
             input.setCursorLocked(false);
             camera.setPosition(playCamPos);
             camera.setYaw(playCamYaw);
@@ -12297,7 +12388,12 @@ int main(int argc, char** argv) {
 
                 // Per-scene Play options (saved with the scene / exported game).
                 ui::sectionText("Play start");
-                ImGui::Checkbox("Start Play in vehicle mode", &startInVehicleMode);
+                // WHAT Play starts as lives in File > Game Settings now ("Start
+                // as"). It is a statement about the game rather than about this
+                // panel, there are five answers rather than one checkbox here and
+                // another in the Glider panel, and two checkboxes could disagree.
+                // The pointer stays because this is where people look for it.
+                ImGui::TextDisabled("Start mode: File > Game Settings");
                 ImGui::Checkbox("Show crosshair", &showCrosshair);
 
                 ui::sectionText("Skid marks");
@@ -12379,10 +12475,10 @@ int main(int argc, char** argv) {
                 else
                     ImGui::TextDisabled("Add a Glider component, then press G to fly");
 
-                // Per-scene Play option (saved with the scene / exported game):
-                // begin Play already flying the nearest glider.
+                // Starting Play already flying is File > Game Settings ("Start
+                // as") now -- see the note in the Vehicle panel.
                 ui::sectionText("Play start");
-                ImGui::Checkbox("Start Play in glider mode", &startInGliderMode);
+                ImGui::TextDisabled("Start mode: File > Game Settings");
 
                 // Turn a selected model into a glider with one click (undoable).
                 auto makeGlider = [&](int rootId) -> std::string {

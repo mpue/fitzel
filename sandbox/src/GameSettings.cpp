@@ -66,7 +66,33 @@ nlohmann::json writeLoading(const loadingscreen::Style& s) {
     return j;
 }
 
+// The start modes, in the order the dialog lists them: what the player is, from
+// the most hands-on to the most hands-off.
+struct ModeInfo { StartMode mode; const char* key; const char* name; };
+const ModeInfo kModes[] = {
+    {StartMode::Fps,        "fps",        "On foot"},
+    {StartMode::Vehicle,    "vehicle",    "Behind the wheel"},
+    {StartMode::Glider,     "glider",     "Flying the glider"},
+    {StartMode::MainCamera, "camera",     "Watching (Main Camera)"},
+    {StartMode::Multishot,  "multishot",  "Watching (Multishot camera)"},
+};
+
 } // namespace
+
+const char* startModeName(StartMode m) {
+    for (const ModeInfo& i : kModes) if (i.mode == m) return i.name;
+    return kModes[0].name;
+}
+
+const char* startModeKey(StartMode m) {
+    for (const ModeInfo& i : kModes) if (i.mode == m) return i.key;
+    return kModes[0].key;
+}
+
+StartMode startModeFromKey(const std::string& key) {
+    for (const ModeInfo& i : kModes) if (key == i.key) return i.mode;
+    return StartMode::Fps;   // an unknown or missing key is the walking player
+}
 
 static std::string settingsPath(const std::string& projectFolder) {
     return projectFolder + "/game.json";
@@ -83,6 +109,7 @@ Settings load(const std::string& projectFolder) {
     s.splash       = j.value("splash", std::string{});
     s.icon         = j.value("icon", std::string{});
     s.startScene   = j.value("startScene", std::string{});
+    s.startMode    = startModeFromKey(j.value("startMode", std::string("fps")));
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
     s.trimAssets   = j.value("trimAssets", false);
     s.packContent  = j.value("packContent", true);
@@ -100,6 +127,7 @@ void save(const std::string& projectFolder, const Settings& s) {
     j["splash"]       = s.splash;
     j["icon"]         = s.icon;
     j["startScene"]   = s.startScene;
+    j["startMode"]    = startModeKey(s.startMode);
     j["exportScenes"] = s.exportScenes;
     j["trimAssets"]   = s.trimAssets;
     j["packContent"]  = s.packContent;

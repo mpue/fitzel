@@ -329,6 +329,29 @@ bool drawSettingsModal(const char* popupId, Settings& s,
     ui::hint("Scene the game boots into. Default is the project's main scene.");
     ImGui::Spacing();
 
+    // --- Start mode ----------------------------------------------------------
+    // Directly under the start scene, because the two are one decision: WHICH
+    // level opens, and what the player is standing in when it does.
+    ui::sectionText("Start as");
+    ImGui::SetNextItemWidth(-1.0f);
+    if (ImGui::BeginCombo("##startMode", startModeName(s.startMode))) {
+        for (int i = 0; i <= static_cast<int>(StartMode::Multishot); ++i) {
+            const StartMode m = static_cast<StartMode>(i);
+            if (ImGui::Selectable(startModeName(m), s.startMode == m))
+                s.startMode = m;
+        }
+        ImGui::EndCombo();
+    }
+    ui::hint("What the player is on the first frame.\n"
+             "On foot spawns the walking player at the Player Start.\n"
+             "Behind the wheel / Flying take over the scene's vehicle or glider.\n"
+             "The two watching modes hand the frame to a camera instead of to a\n"
+             "player -- an attract screen or a title card. Main Camera uses the\n"
+             "one marked as such; Multishot uses the first multishot camera in\n"
+             "the scene, which is the one that cuts its own shots.\n"
+             "A mode the scene cannot provide falls back to on foot.");
+    ImGui::Spacing();
+
     // --- Export scenes -------------------------------------------------------
     ui::sectionText("Scenes to export");
     bool all = s.exportScenes.empty();
