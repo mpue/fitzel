@@ -409,7 +409,7 @@ const std::vector<Property>& CameraComponent::properties() {
         std::vector<Property> p;
         Property mode;
         mode.label = "Mode"; mode.key = "mode"; mode.kind = PropKind::EnumInt;
-        mode.enumLabels = {"Static", "Follow parent"};
+        mode.enumLabels = {"Static", "Follow parent", "Multishot"};
         mode.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->mode; };
         p.push_back(std::move(mode));
         // Only a follow camera has anything to catch up with; on a static one
@@ -447,9 +447,89 @@ const std::vector<Property>& CameraComponent::properties() {
         act.label = "Active on start"; act.key = "activeOnStart"; act.kind = PropKind::Bool;
         act.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->activeOnStart; };
         p.push_back(std::move(act));
+
+        // --- Multishot ---------------------------------------------------------
+        // The shot list itself (which moves are in the rotation) and the subject
+        // are drawn by the inspector, not from here: a bool per shot as thirteen
+        // separate rows would bury the six numbers that actually change the look.
+        // These are those numbers, and they are hidden on the other two modes,
+        // where they would be knobs that do nothing.
+        const auto shooting = [](const void* o) {
+            return static_cast<const CameraComponent*>(o)->mode == CameraComponent::Multishot;
+        };
+        const auto addShot = [&p, &shooting](const char* label, const char* key,
+                                             float multishot::Settings::*m,
+                                             float lo, float hi, const char* fmt) {
+            Property f;
+            f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.fmt = fmt;
+            f.visible = shooting;
+            f.field = [m](void* o) -> void* {
+                return &(static_cast<CameraComponent*>(o)->shots.*m);
+            };
+            p.push_back(std::move(f));
+        };
+        // Timing: how long a shot is held, and how much that length wanders.
+        // Variance is not decoration -- cuts landing on an exact metronome are
+        // the other clear tell of a generated sequence.
+        addShot("Shot length",  "shotDuration", &multishot::Settings::duration,  1.0f, 15.0f, "%.1f s");
+        addShot("Length spread","shotVariance", &multishot::Settings::variance,  0.0f, 0.9f,  "%.2f");
+        // Framing. Multipliers on what the subject's own size already decides,
+        // which is why they read 1.0 rather than in metres (see MultiShot.hpp).
+        addShot("Framing",      "framing",      &multishot::Settings::distance,  0.3f, 3.0f,  "%.2fx");
+        addShot("Eye height",   "eyeHeight",    &multishot::Settings::height,    0.2f, 2.5f,  "%.2fx");
+        addShot("Move pace",    "movePace",     &multishot::Settings::speed,     0.2f, 2.5f,  "%.2fx");
+        addShot("Aim lead",     "aimLead",      &multishot::Settings::lead,      0.0f, 1.5f,  "%.2f s");
+        // Look.
+        addShot("Dutch angle",  "dutch",        &multishot::Settings::dutch,     0.0f, 25.0f, "%.0f deg");
+        addShot("Handheld",     "handheld",     &multishot::Settings::shake,     0.0f, 1.0f,  "%.2f");
+        // A cut is the default because it is what an edit is made of; the fade is
+        // here for the cases where it is not (a slow product turntable).
+        addShot("Cross fade",   "crossFade",    &multishot::Settings::blend,     0.0f, 2.0f,  "%.2f s");
+        addShot("Ground clear", "clearance",    &multishot::Settings::clearance, 0.0f, 5.0f,  "%.2f m");
+        Property story;
+        story.label = "Storyboard order"; story.key = "storyboard"; story.kind = PropKind::Bool;
+        story.visible = shooting;
+        story.field = [](void* o) -> void* {
+            return &static_cast<CameraComponent*>(o)->shots.sequential;
+        };
+        p.push_back(std::move(story));
+        Property seed;
+        seed.label = "Seed"; seed.key = "shotSeed"; seed.kind = PropKind::Int;
+        seed.slider = true; seed.min = 0.0f; seed.max = 999.0f;
+        seed.visible = shooting;
+        seed.field = [](void* o) -> void* {
+            return &static_cast<CameraComponent*>(o)->shots.seed;
+        };
+        p.push_back(std::move(seed));
         return p;
     }();
     return props;
+}
+
+// The scalars ride the property metadata above; the subject and the shot list do
+// not. The list is keyed by NAME rather than by index (see multishot::shotKey),
+// so a scene saved today still says "no fly-bys" after a shot is inserted in the
+// middle of the enum -- an index would have quietly moved that veto onto whatever
+// shot landed in the slot.
+void CameraComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["shotTarget"] = shotTarget;
+    if (mode == Multishot) {
+        nlohmann::json list = nlohmann::json::object();
+        for (int i = 0; i < multishot::ShotCount; ++i)
+            list[multishot::shotKey(i)] = shots.use[i];
+        j["shotList"] = std::move(list);
+    }
+}
+void CameraComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    shotTarget = j.value("shotTarget", -1);
+    // A camera saved before the shot list existed gets the default (everything
+    // on), which is also what a freshly added component has.
+    if (j.contains("shotList") && j["shotList"].is_object())
+        for (int i = 0; i < multishot::ShotCount; ++i)
+            shots.use[i] = j["shotList"].value(multishot::shotKey(i), true);
 }
 
 const std::vector<Property>& CameraSwitcherComponent::properties() {

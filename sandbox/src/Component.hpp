@@ -16,6 +16,7 @@
 
 #include "EditMesh.hpp"               // EditMesh, held by MeshComponent
 #include "FogMedium.hpp"              // FogMedium, held by VolumetricFogComponent
+#include "MultiShot.hpp"              // multishot::Settings, held by CameraComponent
 #include "Property.hpp"
 #include "ScriptParam.hpp"
 
@@ -30,6 +31,10 @@ struct GizmoDraw {
     // transform, not a scene. A component whose MEANING involves its parent
     // (a follow camera aims at it) cannot draw itself honestly without this.
     glm::vec3 parentCenter{0.0f};
+    // ...and how big it is. Only the multishot camera reads it, and it has to:
+    // every distance in a shot is a multiple of the subject's bounding box, so a
+    // gizmo drawn without the box would be showing a framing radius it invented.
+    glm::vec3 parentHalf{1.0f};
     bool      hasParent = false;
     virtual void line(const glm::vec3& a, const glm::vec3& b, const glm::vec4& col) = 0;
     // A `radius` circle centred at `c`, in the plane whose normal is `axis`.
@@ -1216,8 +1221,10 @@ public:
 class CameraComponent : public ComponentBase {
 public:
     // What kind of eye this is. Static stands where it is put (a cutscene angle,
-    // a fixed trackside shot); Follow trails the object it hangs on.
-    enum Mode { Static = 0, Follow = 1 };
+    // a fixed trackside shot); Follow trails the object it hangs on; Multishot
+    // SHOOTS one -- it cuts between the moves an advert is made of instead of
+    // holding a single angle (see MultiShot.hpp).
+    enum Mode { Static = 0, Follow = 1, Multishot = 2 };
 
     int   mode          = Static;
     float fov           = 60.0f; // vertical field of view (degrees)
@@ -1254,6 +1261,20 @@ public:
     // smoothing, the aim-at-the-craft logic and the loop handling to get there.
     float rollWith   = 0.0f;  // 0 = level horizon .. 1 = fully attached
 
+    // --- Multishot ------------------------------------------------------------
+    // WHOSE camera this is, is a QUESTION AGAIN here, and it has to be, because
+    // this is the one camera that is not attached to what it films. A follow
+    // camera rides its parent; a multishot camera stands off it -- ahead of it,
+    // above it, planted in the road waiting for it to arrive -- so it cannot be
+    // its subject's child without every shot fighting the transform it hangs
+    // from. So the subject is NAMED: pick the object to shoot in the inspector.
+    //
+    // -1 falls back to the parent, so parenting one to a car still does the
+    // obvious thing, and "Shoot this" on a selected object can hand you a
+    // working camera without touching the hierarchy at all.
+    int shotTarget = -1;      // entity id of the subject (-1 = this camera's parent)
+    multishot::Settings shots; // the shot list and how it is shot
+
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<CameraComponent>(*this);
     }
@@ -1261,6 +1282,12 @@ public:
     const char* displayName() const override { return "Camera"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    // The scalar settings ride the property metadata; the subject id and the
+    // shot list do not (an entity reference and a bool-per-shot), so they need
+    // an explicit save/load of their own -- see CameraSwitcher for the same
+    // pattern with the same reason.
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
     void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
         glm::vec3 fwd = rot * glm::vec3(0.0f, 0.0f, -1.0f);
         glm::vec3 up  = rot * glm::vec3(0.0f, 1.0f, 0.0f);
@@ -1271,7 +1298,7 @@ public:
         // the lie that hides the mistake this gizmo exists to catch: a camera
         // parked in FRONT of the craft, watching it come at the viewer. Aimed
         // properly, a camera on the wrong side is obvious at a glance.
-        if (mode == Follow && g.hasParent) {
+        if ((mode == Follow || mode == Multishot) && g.hasParent) {
             const glm::vec3 aim = g.parentCenter + glm::vec3(0.0f, lookHeight, 0.0f);
             const glm::vec3 d   = aim - c;
             if (glm::length(d) > 1e-4f) {
@@ -1287,8 +1314,22 @@ public:
             }
             // The tether: which object this camera belongs to, drawn as the line
             // it is. In a hierarchy of thirty entities that is the fastest way to
-            // see whose eye you have selected.
+            // see whose eye you have selected. (For a multishot camera the caller
+            // points `parentCenter` at the SUBJECT, which is the same question
+            // asked of a camera that is deliberately not parented to it.)
             g.line(c, aim, {0.5f, 0.85f, 1.0f, 0.35f});
+            // A multishot camera does not shoot from where it stands -- it stands
+            // off its subject, and the ring is where its moves live. Drawing it
+            // is the only way "Framing 1.4" means anything before you press play,
+            // and it is what makes the framing slider adjustable by eye rather
+            // than by trial.
+            if (mode == Multishot) {
+                const float r = std::max(std::sqrt(g.parentHalf.x * g.parentHalf.x +
+                                                   g.parentHalf.z * g.parentHalf.z), 0.4f);
+                const float ring = (r * 2.6f + 1.5f) * std::max(shots.distance, 0.05f);
+                g.circle(g.parentCenter, ring, {0.0f, 1.0f, 0.0f},
+                         {0.5f, 0.85f, 1.0f, 0.30f});
+            }
         }
         const float D = 2.0f;                                   // frustum depth
         const float h = D * glm::tan(glm::radians(fov) * 0.5f); // half height at D

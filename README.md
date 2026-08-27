@@ -295,6 +295,48 @@ for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
   specular sun glint. A world-space clip plane (`uClipPlane` in `lit.vert`,
   `GL_CLIP_DISTANCE0`) drives the clipping.
 
+### Multishot camera
+
+A camera that *shoots* an object rather than riding one. It cuts between the moves a
+car advert or a replay is made of -- a hero three-quarter, a turntable orbit, a crane
+down, a slider past, a push-in, a reveal, a **dolly zoom**, a bird's eye, a wheel-level
+pass, a car-to-car track, a nose shot, a **fly-by** with the camera planted in the road,
+an overtake -- around whatever it is pointed at. Right-click an object in the hierarchy,
+pick **"Shoot this"**, and there is a working camera on it; **Preview** runs the
+sequence in the viewport without entering Play.
+
+![A multishot camera framing a car in the editor](images/multishot-camera.png)
+
+It is not a camera path, and the difference is the point. A recorded path is a spline of
+*world* keyframes, which is right for a fixed subject and useless for a car: drive
+somewhere else and the whole path has to be authored again. Every move here is expressed
+relative to the subject instead -- "three quarters front, one car length out, drifting
+in" -- so it holds for any object, anywhere, at any speed. It is also why the subject is
+*named* (an entity id) rather than read off the hierarchy as the follow camera's is: a
+camera that films a car stands beside it, ahead of it, or waits for it at the kerb, and
+as a child of that car every shot would be fighting its transform.
+
+What keeps it from being a shuffle of angles:
+
+- **Every distance is a multiple of the subject's bounding box**, never metres, so the
+  same settings frame a go-kart and an articulated lorry.
+- **The shot list follows the subject's measured speed.** A fly-by needs something to
+  fly by: below a crawl it is a camera watching a parked car, so it is weighted out and
+  the standing moves come in; past motorway speed it is the other way round.
+- **The eye stays out of the ground**, checked against the terrain every frame. The
+  shots that live near the tarmac are the good ones and the ones that would otherwise
+  end up inside a hill.
+- **No shot twice in a row, alternating flanks, shot lengths that vary.** Two orbits
+  back to back do not read as two shots, and cuts landing on an exact metronome are the
+  clearest tell that a sequence was generated rather than cut.
+- **A seed is a take**: the same seed replays the same run, so a sequence can be shot
+  again after moving a light.
+
+Mechanically it is one more mode of the existing Camera component
+(`sandbox/src/MultiShot.hpp`), so it resolves to the same pose every other camera does --
+and works unchanged as the Play camera, as a CameraSwitcher target, in a script, in
+split screen and in the exported player.
+
 ### Offline checks
 
 Several things here cannot be judged from inside the editor, and each has a small
@@ -306,6 +348,7 @@ game and run by hand; none of them ship.
 | `shadercheck <shaders>` | Does every shader still compile? A broken one costs its effect *silently* -- the Release editor is `/SUBSYSTEM:WINDOWS` and has nowhere to print a compile error to. Exits non-zero. |
 | `skycheck <out> <shaders>` | What does the sky actually look like? Renders `sky.frag` alone, from cameras pointed where the clouds are. |
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
+| `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
 | `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
 | `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |

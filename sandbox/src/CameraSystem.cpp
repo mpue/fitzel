@@ -7,6 +7,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include "Component.hpp"
+#include "MultiShot.hpp"     // the multishot camera's director
 #include "SandboxMath.hpp"   // sceneHeading()
 #include "SceneTypes.hpp"
 
@@ -23,6 +24,16 @@ const Entity* findById(const std::vector<Entity>& entities, int id) {
 
 } // namespace
 
+// Out of line purely so the header can forward-declare multishot::Director: a
+// unique_ptr member needs the full type where the destructor is written, and
+// nowhere else.
+CameraSystem::CameraSystem() = default;
+CameraSystem::~CameraSystem() = default;
+
+void CameraSystem::setGround(std::function<float(float, float)> ground) {
+    m_ground = std::move(ground);
+}
+
 void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
     m_pose.clear();
 
@@ -32,6 +43,37 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
 
         Pose p;
         p.fov = cc->fov;
+
+        if (cc->mode == CameraComponent::Multishot) {
+            // A multishot camera SHOOTS an object rather than riding one, so it
+            // is the one camera that names its subject instead of reading it off
+            // the hierarchy (see CameraComponent::shotTarget). The parent is the
+            // fallback, so parenting one to a car still does the obvious thing.
+            const Entity* subj = findById(entities, cc->shotTarget >= 0
+                                                        ? cc->shotTarget : e.parent);
+            // No subject means no shot. Left out of the frame's set exactly like
+            // a follow camera with no parent: a camera that quietly starts
+            // orbiting the world origin is worse than one that stops being a
+            // view, because the second is visibly a mistake.
+            if (!subj || !subj->activeInHierarchy) { m_shots.erase(e.id); continue; }
+
+            multishot::Subject sub;
+            sub.center = subj->center;
+            sub.half   = subj->half;
+            // The heading from the rotation, not from rotation.y -- the same trap
+            // the chase camera fell into, and the same fix (see sceneHeading).
+            sub.yaw    = sceneHeading(subj->rotation);
+
+            multishot::Settings st = cc->shots;
+            st.fov = cc->fov;   // the camera's own lens is the base every shot scales
+
+            auto& dir = m_shots[e.id];
+            if (!dir) dir = std::make_unique<multishot::Director>();
+            m_pose[e.id] = dir->update(sub, st, dt, m_ground);
+            m_chase.erase(e.id);   // not a follow camera: no eased eye to keep
+            continue;
+        }
+        m_shots.erase(e.id);       // ...and the other way round
 
         if (cc->mode != CameraComponent::Follow) {
             // Static: the entity's own transform IS the pose. -Z is forward, the
@@ -69,6 +111,11 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
     for (auto it = m_chase.begin(); it != m_chase.end();)
         it = (it->first >= 0 && m_pose.count(it->first) == 0)
                  ? m_chase.erase(it) : std::next(it);
+    // Same for the running edits: a camera that was deleted or switched off has
+    // no shot in flight, and coming back should open on shot one rather than
+    // resume something the viewer never saw the start of.
+    for (auto it = m_shots.begin(); it != m_shots.end();)
+        it = (m_pose.count(it->first) == 0) ? m_shots.erase(it) : std::next(it);
 }
 
 Pose CameraSystem::follow(int key, const Entity& target, const FollowShot& shot,
@@ -185,6 +232,17 @@ bool CameraSystem::pose(int id, Pose& out) const {
 void CameraSystem::reset() {
     m_chase.clear();
     m_pose.clear();
+    m_shots.clear();
+}
+
+multishot::Director* CameraSystem::director(int id) {
+    const auto it = m_shots.find(id);
+    return (it == m_shots.end()) ? nullptr : it->second.get();
+}
+
+const multishot::Director* CameraSystem::director(int id) const {
+    const auto it = m_shots.find(id);
+    return (it == m_shots.end()) ? nullptr : it->second.get();
 }
 
 } // namespace camerasys

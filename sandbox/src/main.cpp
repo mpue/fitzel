@@ -3133,6 +3133,37 @@ int main(int argc, char** argv) {
             const int id = spawnChild(n.id, type, n.center, glm::vec3(0.0f));
             entitySel = document.indexOf(id);
         };
+        // A camera that SHOOTS the picked object: an Empty carrying a Camera in
+        // Multishot mode, aimed at that object by id (see MultiShot.hpp).
+        //
+        // It is deliberately NOT a child of its subject, which is the opposite of
+        // how a follow camera is made here. A multishot camera stands off the
+        // thing it films -- ahead of it, above it, planted in the road waiting for
+        // it -- and a camera parented to a moving car would be fighting that
+        // transform in every shot. So the subject is named instead, and this menu
+        // item is what saves the author from having to know that.
+        //
+        // Where it is placed hardly matters (the shots decide where the eye goes),
+        // but it is put a sensible framing distance off the subject anyway, so the
+        // gizmo's tether is short and readable rather than crossing the map.
+        auto addShotCamera = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            const Entity& n = entities[idx];
+            const float r = glm::max(glm::length(glm::vec2(n.half.x, n.half.z)), 0.4f);
+            Entity cam;
+            cam.type        = EntityType::Empty;
+            cam.half        = glm::vec3(0.5f);
+            cam.id          = entityCounter++;
+            cam.name        = n.name + " Cam";
+            cam.localCenter = cam.center =
+                n.center + glm::vec3(r * 2.6f + 1.5f, n.half.y + 1.0f, 0.0f);
+            auto cc = std::make_unique<CameraComponent>();
+            cc->mode       = CameraComponent::Multishot;
+            cc->shotTarget = n.id;
+            cam.components.items.push_back(std::move(cc));
+            history.push(std::make_unique<AddEntityCmd>(cam), document);
+            entitySel = document.indexOf(cam.id);
+        };
         // Insert a new Empty between `idx` and its current parent, then reparent
         // `idx` under it -- keeping the node put. Groups the node under a fresh
         // pivot, like Unity's "Create Empty Parent".
@@ -4917,6 +4948,11 @@ int main(int argc, char** argv) {
             return d;
         }());
         scripts.setHost(&host);
+
+        // The ground, for the multishot camera's clearance check. Handed over
+        // once: a shot that ducks to wheel height is the one worth having, and it
+        // is the one that ends up inside a hill without this.
+        cams.setGround([&](float x, float z) { return streamer.heightAt(x, z); });
 
         // Road side objects reference a model by name/path/GUID; resolve (and
         // import) each once, then cache the library id. Failures aren't cached, so
@@ -8251,6 +8287,24 @@ int main(int argc, char** argv) {
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
+                // A camera preview owns the viewport: say which one, and give it
+                // a way out that is right where it took the view from. Without
+                // this the free camera has simply gone, and getting it back means
+                // knowing that some camera in the hierarchy has it -- a trap, and
+                // exactly the kind this editor is meant not to set.
+                if (!playMode && activeCam >= 0) {
+                    const Entity* pcam = document.find(activeCam);
+                    char lbl[160];
+                    std::snprintf(lbl, sizeof lbl, "Exit camera: %s",
+                                  pcam ? pcam->name.c_str() : "(gone)");
+                    ImGui::SetCursorScreenPos(ImVec2(rmin.x + 12.0f, rmin.y + 30.0f));
+                    if (ImGui::Button(lbl)) activeCam = -1;
+                    // The pick test above already latched this click. Clicking a
+                    // button that sits over the scene must not also select
+                    // whatever happens to be behind it.
+                    if (ImGui::IsItemHovered()) viewportClicked = false;
+                }
+
                 // Which way we are looking, when it is a standard view. Blender
                 // puts this in the same corner, and for the same reason: front
                 // and back look identical until something moves, so a view you
@@ -9567,6 +9621,20 @@ int main(int argc, char** argv) {
                         if (b.parent >= 0)
                             if (const Entity* pe = document.find(b.parent)) {
                                 gz.parentCenter = pe->center;
+                                gz.parentHalf   = pe->half;
+                                gz.hasParent    = true;
+                            }
+                        // A multishot camera's "parent" for gizmo purposes is
+                        // what it SHOOTS, which is deliberately not what it hangs
+                        // from (see CameraComponent::shotTarget). Same question --
+                        // which object is this camera about -- so it goes down the
+                        // same channel rather than growing a second one.
+                        if (const auto* mcam = b.components.get<CameraComponent>();
+                            mcam && mcam->mode == CameraComponent::Multishot &&
+                            mcam->shotTarget >= 0)
+                            if (const Entity* se = document.find(mcam->shotTarget)) {
+                                gz.parentCenter = se->center;
+                                gz.parentHalf   = se->half;
                                 gz.hasParent    = true;
                             }
                         for (const auto& comp : b.components.items)
@@ -10425,6 +10493,7 @@ int main(int argc, char** argv) {
                 // Deferred context-menu creation requests (applied after the tree
                 // is drawn, so entities isn't mutated mid-iteration).
                 int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
+                int shotCamReq = -1;   // "Shoot this": a multishot camera on this object
                 int vehicleLightsReq = -1;
                 EntityType primChildType = EntityType::Box;
                 auto typeColor = [](EntityType t) -> ImU32 {
@@ -10535,6 +10604,9 @@ int main(int argc, char** argv) {
                                                     cc->activeOnStart))
                                     setMainCamera(entities[i].id);
                             }
+                            ImGui::Separator();
+                            if (ImGui::MenuItem("Shoot this (Multishot camera)"))
+                                shotCamReq = i;
                             if (entities[i].components.get<VehicleComponent>()) {
                                 ImGui::Separator();
                                 if (ImGui::MenuItem("Add headlights")) vehicleLightsReq = i;
@@ -10597,6 +10669,7 @@ int main(int argc, char** argv) {
                 else if (emptyParentReq >= 0) addEmptyParent(emptyParentReq);
                 else if (emptyChildReq >= 0)  addEmptyChild(emptyChildReq);
                 else if (primChildReq >= 0)   addPrimitiveChild(primChildReq, primChildType);
+                else if (shotCamReq >= 0)     addShotCamera(shotCamReq);
                 else if (vehicleLightsReq >= 0) addVehicleLights(vehicleLightsReq);
                 // Apply a requested reparent (rejecting cycles).
                 if (reparentSrc >= 0 && reparentTo != -2) {
@@ -11109,6 +11182,88 @@ int main(int argc, char** argv) {
                                     }
                                 } else if (ImGui::Button("Set as Main Camera")) {
                                     setMainCamera(be.id); mainCamJustSet = true;
+                                }
+                                // --- Multishot -------------------------------
+                                // The two things the property metadata cannot
+                                // carry: WHAT is being shot (an entity
+                                // reference) and WHICH MOVES are in the rotation
+                                // (a bool per shot, which as thirteen inspector
+                                // rows would bury every number above it).
+                                if (cam->mode == CameraComponent::Multishot) {
+                                    ImGui::Separator();
+                                    const Entity* subj = document.find(
+                                        cam->shotTarget >= 0 ? cam->shotTarget : be.parent);
+                                    const std::string slabel =
+                                        subj ? subj->name
+                                             : (cam->shotTarget < 0 ? "(parent -- none)"
+                                                                    : "(missing)");
+                                    if (ImGui::BeginCombo("Subject", slabel.c_str())) {
+                                        if (ImGui::Selectable("(parent)", cam->shotTarget < 0))
+                                            cam->shotTarget = -1;
+                                        for (const Entity& se : entities) {
+                                            if (se.id == be.id) continue;   // not itself
+                                            if (ImGui::Selectable(se.name.c_str(),
+                                                                  cam->shotTarget == se.id))
+                                                cam->shotTarget = se.id;
+                                        }
+                                        ImGui::EndCombo();
+                                    }
+                                    if (!subj)
+                                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
+                                                           "Pick an object to shoot.");
+
+                                    // What is on screen right now, and the speed
+                                    // the shot list is choosing against -- the two
+                                    // numbers that explain why it picked what it
+                                    // picked. Without them a rotation that leans
+                                    // on travelling shots looks like a bug rather
+                                    // than a parked car.
+                                    if (auto* dir = cams.director(be.id)) {
+                                        ImGui::Text("Now: %s  %.1fs left  (%.0f km/h)",
+                                                    multishot::shotName(dir->shot()),
+                                                    dir->remaining(), dir->speed() * 3.6f);
+                                        if (ImGui::Button("Cut")) dir->cut();
+                                        ImGui::SameLine();
+                                    } else {
+                                        ImGui::TextDisabled("Not running -- preview or play.");
+                                    }
+                                    // Preview drives the viewport from this camera
+                                    // without entering Play, which is the only way
+                                    // to judge a shot: framing is not a number, it
+                                    // is a picture.
+                                    if (activeCam == be.id) {
+                                        if (ImGui::Button("Stop preview")) activeCam = -1;
+                                    } else if (ImGui::Button("Preview")) {
+                                        activeCam = be.id;
+                                    }
+
+                                    if (ImGui::TreeNodeEx("Shots",
+                                                          ImGuiTreeNodeFlags_DefaultOpen)) {
+                                        if (ImGui::SmallButton("All"))
+                                            for (bool& u : cam->shots.use) u = true;
+                                        ImGui::SameLine();
+                                        if (ImGui::SmallButton("None"))
+                                            for (bool& u : cam->shots.use) u = false;
+                                        ImGui::SameLine();
+                                        ImGui::TextDisabled("(? per shot)");
+                                        for (int i = 0; i < multishot::ShotCount; ++i) {
+                                            ImGui::PushID(i);
+                                            ImGui::Checkbox(multishot::shotName(i),
+                                                            &cam->shots.use[i]);
+                                            if (ImGui::IsItemHovered())
+                                                ImGui::SetTooltip("%s", multishot::shotHint(i));
+                                            // Audition one move now, instead of
+                                            // waiting for the rotation to offer it.
+                                            if (auto* dir = cams.director(be.id)) {
+                                                ImGui::SameLine(ImGui::GetWindowWidth() - 40.0f);
+                                                if (ImGui::SmallButton(">")) dir->play(i);
+                                                if (ImGui::IsItemHovered())
+                                                    ImGui::SetTooltip("Play this shot now");
+                                            }
+                                            ImGui::PopID();
+                                        }
+                                        ImGui::TreePop();
+                                    }
                                 }
                             } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
                                 // Radius from metadata; Target is a picker over the

@@ -40,6 +40,11 @@ set(SANDBOX_RUNTIME_SOURCES
     # The scene's cameras. Runtime, like everything a saved scene contains: a
     # follow camera is scene data, and the shipped player has to resolve it too.
     src/CameraSystem.cpp
+    # The multishot camera: the shot director the Camera component's Multishot
+    # mode runs on. Runtime for the same reason as the cameras themselves -- a
+    # shot list is scene data, and an attract screen or a replay in the shipped
+    # player is exactly where it earns its keep.
+    src/MultiShot.cpp
     # The post chain (SSAO, bloom, tonemap, speed blur, FXAA). Runtime: the
     # shipped player draws the same frame the editor does.
     src/PostChain.cpp
@@ -180,10 +185,22 @@ target_link_libraries(audiocheck PRIVATE fitzel)
 # placed/skipped counters can show it -- from the generator's side those lots
 # built fine. Exits non-zero if anything solid crosses the kerb.
 #   build/release/bin/citycheck.exe
+# (MultiShot.cpp comes along because the Camera component saves its shot list by
+#  name -- Component.cpp calls into it, so anything that links the components
+#  links this too. It pulls in nothing of its own.)
 add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
-                         src/PropertyMeta.cpp)
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
+# a parked car, a fast one, a lorry and a slope, and measures what a camera fault
+# actually looks like -- the subject leaving the frame, the eye going through the
+# ground, a shot repeating itself. None of that is visible in the editor, because
+# the editor shows you the picture from inside the mistake.
+#   build/release/bin/shotcheck.exe
+add_executable(shotcheck tools/shotcheck.cpp src/MultiShot.cpp)
+target_link_libraries(shotcheck PRIVATE glm::glm)
 
 # The sky look (sandbox/tools/skycheck.cpp): renders sky.vert/sky.frag on its own
 # into an offscreen buffer, from a camera pointed where the clouds actually are,

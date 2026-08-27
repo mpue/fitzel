@@ -1,11 +1,17 @@
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
 
 struct Entity;
+// The multishot camera's running edit, kept per camera below. Forward-declared
+// rather than included: MultiShot.hpp includes THIS header for the pose type, so
+// including it back would be a cycle -- and nothing here needs its innards.
+namespace multishot { class Director; }
 
 // The scene's cameras: every entity carrying a CameraComponent, resolved once a
 // frame into the pose it looks from.
@@ -53,6 +59,17 @@ struct FollowShot {
 
 class CameraSystem {
 public:
+    CameraSystem();
+    ~CameraSystem();
+    CameraSystem(const CameraSystem&) = delete;
+    CameraSystem& operator=(const CameraSystem&) = delete;
+
+    // Terrain height under (x, z), for the multishot camera's ground clearance.
+    // Handed in rather than looked up, because this knows about entities and
+    // poses and has no business knowing what a terrain streamer is. Optional: a
+    // scene with no ground simply gets the subject-relative floor.
+    void setGround(std::function<float(float, float)> ground);
+
     // Resolve every camera entity in the scene, easing follow cameras toward
     // where they want to be over `dt` seconds of render time.
     //
@@ -92,8 +109,15 @@ public:
 
     // Forget every camera's smoothed position. For Play start/stop and scene
     // loads: a camera that kept its eased eye across a restart would swoop in
-    // from wherever the last run left it.
+    // from wherever the last run left it. Multishot cameras go back to shot one,
+    // for the same reason: a take starts at the top.
     void reset();
+
+    // The running shot of multishot camera `id`, or nullptr if it has none this
+    // frame. The inspector reads it to say what is on screen and to cut; nothing
+    // in the frame needs it.
+    ::multishot::Director*       director(int id);
+    const ::multishot::Director* director(int id) const;
 
 private:
     // A follow camera's smoothed eye. Kept here rather than on the component
@@ -113,6 +137,11 @@ private:
 
     std::unordered_map<int, Chase> m_chase;  // camera entity id -> eased state
     std::unordered_map<int, Pose>  m_pose;   // camera entity id -> this frame
+    // Multishot cameras' running edits, kept for the same reason as m_chase and
+    // swept the same way. Behind a pointer so this header does not have to drag
+    // the whole director into everything that includes a camera.
+    std::unordered_map<int, std::unique_ptr<::multishot::Director>> m_shots;
+    std::function<float(float, float)> m_ground;
 };
 
 } // namespace camerasys
