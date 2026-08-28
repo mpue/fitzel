@@ -121,11 +121,25 @@ set(SANDBOX_EDITOR_SOURCES
     src/RoadPrefab.cpp
     src/BuildingPanel.cpp
     src/CityPanel.cpp
+    # The offline path tracer: the still-image renderer behind the Render panel.
+    # Editor-only, all three files. A shipped game has no use for a renderer that
+    # takes minutes a frame, and the tracer's whole point is the picture you make
+    # OF the game rather than one you play in.
+    src/PathTrace.cpp
+    src/PathTraceCapture.cpp
+    src/PathTracePanel.cpp
     src/VehicleTool.cpp
     src/GliderTool.cpp)
 
 # The editor: full sandbox with all panels/tools.
 add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})
+
+# The Render panel writes the finished image out: stb_image_write for the PNG,
+# tinyexr for the linear .exr beside it. Both are header-only interfaces whose
+# implementation TUs live in the engine (tinyexr) or in PathTracePanel.cpp (stb
+# write); this only puts their include directories on the editor, and the player
+# gets neither.
+target_link_libraries(sandbox PRIVATE stb_headers tinyexr_dep)
 
 # The player: the same runtime compiled with FITZEL_PLAYER, which #ifndef's out
 # the editor UI in main.cpp. This is the binary shipped by "Export Game".
@@ -223,6 +237,30 @@ target_link_libraries(skycheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers
 #   build/release/bin/fogcheck.exe <outDir> sandbox/assets/shaders
 add_executable(fogcheck tools/fogcheck.cpp src/FogNoise.cpp)
 target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
+
+# The path-tracer check (sandbox/tools/pathcheck.cpp): renders scenes whose
+# answer is known in advance -- a white furnace that must come back at radiance
+# 1, a shadow whose position is arithmetic, the same frame twice from one seed --
+# and exits non-zero when one of them is wrong. A renderer is the worst kind of
+# code to judge by eye: every wrong answer still produces a picture, and one that
+# is 8% too bright or missing a bounce looks exactly like one that is right.
+# No GL: PathTrace.cpp is deliberately pure arithmetic, so this runs anywhere.
+#   build/release/bin/pathcheck.exe [outDir]
+add_executable(pathcheck tools/pathcheck.cpp src/PathTrace.cpp)
+target_link_libraries(pathcheck PRIVATE glm::glm stb_headers)
+
+# The capture check (sandbox/tools/capturecheck.cpp): builds a small scene
+# through the real engine types, submits it to a real Renderer, and harvests it
+# exactly as the Render panel does -- then asserts on the things that have
+# arithmetic answers. pathcheck proves the tracer computes light correctly;
+# this proves it is handed the scene that was drawn. That is the half more
+# likely to be quietly wrong, because a sheared normal, a texture read back
+# upside down or a scale applied twice all still produce a picture.
+# Needs a GL context: the geometry only exists inside the driver's buffers.
+#   build/release/bin/capturecheck.exe [outDir]
+add_executable(capturecheck tools/capturecheck.cpp
+                            src/PathTrace.cpp src/PathTraceCapture.cpp)
+target_link_libraries(capturecheck PRIVATE fitzel stb_headers)
 
 # The icon check (sandbox/tools/iconcheck.cpp): runs a picture through the exact
 # path "Export Game" uses -- build the .ico, patch a COPY of player.exe, then read

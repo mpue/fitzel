@@ -70,6 +70,7 @@
 #include "GridRenderer.hpp"
 #include "ModelingPanel.hpp"
 #include "ViewportNav.hpp"
+#include "PathTracePanel.hpp"
 #endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
@@ -797,7 +798,7 @@ void buildDefaultDockLayout(ImGuiID dockId) {
             "Vegetation", "Scatter",
             "Roads", "City", "Buildings",
             "Materials", "Models", "Prefabs", "Assets",
-            "UI Overlay", "Camera path", "Camera", "3D Cursor",
+            "UI Overlay", "Camera path", "Camera", "3D Cursor", "Render",
             "Vehicle", "Glider", "Voxels", "Mixer", "Scripts",
             "Performance", "Stats"})
         ImGui::DockBuilderDockWindow(w, tools);
@@ -1236,6 +1237,12 @@ int main(int argc, char** argv) {
         bool  iblSkybox    = false;   // draw the HDRI as the sky background
         float iblIntensity = 1.0f;
         std::string hdriLoaded;       // relPath of the loaded HDRI ("" = none)
+        // The same panorama as a file path. Kept alongside the relPath
+        // because the offline renderer lights from the file directly (it has
+        // no GL cubemap to sample), and resolving the library entry a second
+        // time at render time would fail exactly when the library has been
+        // re-scanned -- which is when a render would silently lose its sky.
+        std::string hdriAbsPath;
 
         // Water: planar reflection/refraction targets + a surface quad.
         // A tessellated water grid so Gerstner waves can displace its vertices.
@@ -2096,6 +2103,15 @@ int main(int argc, char** argv) {
         bool showVehiclePanel = false;
         bool showGliderPanel  = false;
         bool showEnv         = false;
+#ifndef FITZEL_PLAYER
+        // The offline renderer. Its open flag lives on the state rather
+        // than beside the other bools because the panel, the harvest and
+        // the running job are one thing, and splitting the visibility off
+        // would be the only part of it main.cpp owned. Editor-only: the
+        // shipped player has no reason to carry a renderer that takes
+        // minutes a frame.
+        pathpanel::State pathRender;
+#endif
         bool showMixer       = false;
         bool showUnityImport = false;
         std::string modelFile;       // selected file in the Models panel
@@ -4134,7 +4150,9 @@ int main(int argc, char** argv) {
             for (const AssetId id : assetDb.allAssets()) {
                 const AssetDatabase::Entry* e = assetDb.entry(id);
                 if (!e || e->relPath != hdriLoaded) continue;
-                if (!environment.load(e->absPath.string()))
+                if (environment.load(e->absPath.string()))
+                    hdriAbsPath = e->absPath.string();
+                else
                     std::fprintf(stderr, "[Fitzel] HDRI failed to load: %s\n",
                                  e->absPath.string().c_str());
                 return;
@@ -5499,6 +5517,7 @@ int main(int argc, char** argv) {
             {"Presentation", "UI Overlay",     nullptr, &showUiOverlay},
             {"Presentation", "Camera",         nullptr, &showCamera},
             {"Presentation", "Camera path",    nullptr, &showCamPath},
+            {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
             {"Inspect",  "Performance",        "F3",    &showPerf},
             {"Inspect",  "Stats",              nullptr, &showStats},
@@ -12312,6 +12331,21 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // The offline renderer's panel. Draws itself, including the
+            // preview of whatever the running render has reached so far;
+            // pressing Render in it only raises a flag, which service()
+            // above acts on at the one point in the frame where it can.
+            // The project FOLDER, not the .fitzel file: currentProject is the
+            // scene-file path (every other user of it takes parent_path too), so
+            // passing it straight through put renders inside a path that names a
+            // file. Empty means no project is open, and the panel says so rather
+            // than writing next to the executable.
+            pathpanel::draw(pathRender,
+                            currentProject.empty()
+                                ? std::filesystem::path()
+                                : std::filesystem::path(currentProject).parent_path(),
+                            now);
+
             // HDRI environment lighting (image-based lighting).
             if (showEnv) {
                 if (ImGui::Begin("Environment", &showEnv)) {
@@ -12351,8 +12385,9 @@ int main(int argc, char** argv) {
                         for (const auto& [label, path] : hdris)
                             if (ImGui::Selectable(label.c_str(), label == hdriLoaded)) {
                                 if (environment.load(path)) {
-                                    hdriLoaded = label;
-                                    iblEnabled = true;
+                                    hdriLoaded  = label;
+                                    hdriAbsPath = path;
+                                    iblEnabled  = true;
                                 }
                             }
                         ImGui::EndCombo();
@@ -13185,6 +13220,25 @@ int main(int argc, char** argv) {
             const long long fzShadowMark = prof::mark();
             renderer.setPointLights(pointLights);
             renderer.setSpotLights(spotLights);
+#ifndef FITZEL_PLAYER
+            // The offline renderer harvests HERE and nowhere else: every
+            // system has submitted, the lights are set, and begin() has not
+            // yet cleared the queue. Costs a bool test unless somebody has
+            // actually pressed Render.
+            pathpanel::SceneLook ptLook;
+            ptLook.hdriPath      = hdriAbsPath;
+            ptLook.hdriIntensity = iblEnabled ? iblIntensity : 0.0f;
+            // The grade the post chain will put on this very frame. Without it a
+            // render comes out flat and cool beside the viewport, because the
+            // viewport never shows an ungraded image -- not even in a project
+            // nobody has touched the Colour grade panel in.
+            ptLook.grade.hueShift   = hueShift;
+            ptLook.grade.saturation = saturation;
+            ptLook.grade.value      = valueGain;
+            ptLook.grade.warmth     = warmth;
+            ptLook.grade.contrast   = contrast;
+            pathpanel::service(pathRender, renderer, camera, ptLook);
+#endif
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
 
             // --- Multi-pass render with sky and planar water ------------

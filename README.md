@@ -337,6 +337,50 @@ Mechanically it is one more mode of the existing Camera component
 and works unchanged as the Play camera, as a CameraSwitcher target, in a script, in
 split screen and in the exported player.
 
+### Offline render (path tracer)
+
+**View > Presentation > Render.** Frame a shot in the viewport, press Render, and the
+scene is traced properly: light that bounces, shadows with real penumbrae, reflections
+from the geometry rather than from a probe, and a lens that can be opened until the
+background falls out of focus. Minutes rather than milliseconds -- this is for the
+picture you show somebody, not for the game.
+
+The raster path buys its frame rate with approximations that are invisible at speed and
+obvious in a held image. Reflections come from a 256-pixel cube captured a few frames
+ago from somewhere near the camera; ambient light is one flat colour or a blurred
+convolution; nothing bounces, so a red car on grey tarmac casts no red onto the tarmac.
+A screenshot inherits every one of them, and a store page is looked at for minutes.
+
+It shares the raster path's vocabulary on purpose -- the same albedo/roughness/
+reflectivity a material already carries, the same range-limited lamp falloff, the same
+ACES curve at the end -- so a render reads as *the same scene, better lit* rather than
+as a different game. Where the two differ it is because the approximation was the
+difference.
+
+- **The scene comes from the render queue**, not from the scene file. By the time
+  anything reaches `Renderer::submit` it is just a mesh, a material and a place, so
+  terrain, roads, bridges, loops, decals, splines, city towers and imported models are
+  all harvested by one piece of code -- including systems written after it.
+- **The sun has a size.** One slider, and every shadow edge in the picture stops being
+  the hard line a shadow map draws. It is the most effective setting here for not
+  looking like a screenshot.
+- **The distance limit is the render time.** A landscape is millions of triangles of
+  which a hero shot sees a few hundred thousand. It is a radius, not a frustum cull:
+  what is behind the camera still shows up in the flank of a car.
+- **The image refines while you watch it** and Stop keeps what has arrived, because
+  "how many samples does this shot need" has no answer except watching one.
+- **Saving writes a linear `.exr` beside the PNG**, since the PNG has already been
+  through the tonemap and cannot be graded back out of it.
+
+Not traced, and said so in the panel rather than left to be noticed: grass, trees,
+particles, rain and water, whose geometry only ever exists inside a vertex shader; and
+the terrain's painted layer textures, which are blended triplanar in the shader (its
+base colour is used).
+
+`sandbox/src/PathTrace.hpp` is the tracer and touches no GL at all -- which is what lets
+`pathcheck` below test it against known answers. `PathTraceCapture.hpp` is the half that
+reads the GPU, and `capturecheck` tests that.
+
 ### Offline checks
 
 Several things here cannot be judged from inside the editor, and each has a small
@@ -350,6 +394,8 @@ game and run by hand; none of them ship.
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
 | `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
 | `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
+| `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
+| `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, and what came back out of a texture. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
 | `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |
 
