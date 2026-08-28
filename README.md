@@ -18,6 +18,12 @@ time Play starts (see [docs/lua-scripting.md](docs/lua-scripting.md)). The tools
 themselves stay C++, deliberately: a broken script must never be able to take an
 editing session with it.
 
+Two things in it are not real-time and are not meant to be. A **path tracer** renders
+stills of a scene properly -- bounced light, real penumbrae, a lens that opens -- for
+the picture you show somebody rather than the one you play. The same tracer **bakes
+indirect light** into a grid of probes that the game then lights from, which is what
+lets the inside of a tunnel be darker than an open field instead of merely as bright.
+
 The editor has one rule that outranks convention: **nothing important may require a
 steady hand.** Every value that can be dragged can also be clicked and typed, a click
 that drifts a little is still a click rather than the start of a drag, panels move only
@@ -157,9 +163,17 @@ the selected object; `Shift+F` toggles walking through the scene in first person
   a sharp HDR sun glint that the bloom picks up. The refraction pass keeps a depth
   texture, so the water knows its column thickness: thin water at the shore gets
   animated **foam**, and submerged terrain is darkened as **wet** in `lit.frag`.
+- **Ambient light, in three tiers**, most specific first. A **baked probe grid**
+  (below) when the scene has one: sampled by world position, so it knows that under a
+  bridge is not an open field. An **HDRI irradiance convolution** when an environment map
+  is loaded: the right colour from every direction, but the same everywhere in the world.
+  Otherwise a single **flat ambient colour**, which is the one every surface used to get.
 - **SSAO**: the HDR pass writes a depth texture; a half-res screen-space ambient
   occlusion pass reconstructs view position/normal from depth and samples a hemisphere
-  kernel; the composite multiplies it into the scene to darken creases and valleys.
+  kernel; the composite multiplies it into the scene to darken creases and valleys. It
+  is a screen-space stand-in for occlusion the baked grid actually knows about -- it
+  catches the fine creases the grid is too coarse for, and the grid catches the large
+  scale it cannot see off-screen.
 - **Weather**: a single `weather` value (0 clear → 1 storm), drifting automatically or
   driven by a slider, ties together cloud coverage/density/wind/altitude, sun & ambient
   dimming, fog density, Gerstner wave height/choppiness, lightning flashes, and rain.
