@@ -353,9 +353,12 @@ A screenshot inherits every one of them, and a store page is looked at for minut
 
 It shares the raster path's vocabulary on purpose -- the same albedo/roughness/
 reflectivity a material already carries, the same range-limited lamp falloff, the same
-ACES curve at the end -- so a render reads as *the same scene, better lit* rather than
-as a different game. Where the two differ it is because the approximation was the
-difference.
+sRGB-to-linear step, the same ACES curve, **and the same colour grade**. That last one
+is not a nicety: the viewport never shows a raw tonemap, `composite.frag` grades every
+frame on its way to the screen, and the project's defaults are nowhere near neutral
+(saturation 1.35, a warm white balance, a contrast lift). A render reads as *the same
+scene, better lit* rather than as a different game, and where the two differ it is
+because the approximation was the difference.
 
 - **The scene comes from the render queue**, not from the scene file. By the time
   anything reaches `Renderer::submit` it is just a mesh, a material and a place, so
@@ -385,6 +388,37 @@ particles, rain and water, whose geometry only ever exists inside a vertex shade
 the terrain layers' normal maps, so the ground is the right colour and lit as the smooth
 surface it geometrically is.
 
+#### When a render disagrees with the viewport
+
+It will, and the reason is never visible in the finished picture: a wrong texture, a
+wrong material, wrong light, a wrong tonemap and a wrong grade all produce a plausible
+image. So the panel is built to be asked rather than stared at.
+
+**The report** under the progress bar says what the harvest actually found -- triangles,
+meshes, how many draws they served, textures and how many were downsampled, what was
+culled -- and then, as notes, every way the render differs from the viewport by design,
+plus the numbers it is working from: which sky (a panorama with its size and intensity,
+or the scene's flat ambient as a gradient), the exposure, the full grade, the sun's
+colour and disc, the fog density, the lamp count. Most "why is this wrong" questions are
+answered by reading that line.
+
+**Diagnose > Show** removes everything after one stage, so the first view that looks
+wrong is the stage that is wrong:
+
+| Mode | Answers |
+| ---- | ------- |
+| Base colour only | each surface's own colour -- no light, no tonemap, no grade. Right here and wrong in the full render means the textures are fine and the lighting is not. |
+| Normals | whether a transform sheared or flipped a surface. |
+| Depth | whether geometry is where it appears to be. |
+
+And when the sky is in question, `capturecheck` writes a panorama out three ways --
+straight from the buffer, through the tracer's direction lookup, and traced -- which is
+the only way to settle it, since a map is otherwise only ever seen through the tonemap,
+the grade and whatever the light did on the way.
+
+Renders are saved into `<project>/renders/`, numbered, and the panel prints the folder
+before you press the button.
+
 `sandbox/src/PathTrace.hpp` is the tracer and touches no GL at all -- which is what lets
 `pathcheck` below test it against known answers. `PathTraceCapture.hpp` is the half that
 reads the GPU, and `capturecheck` tests that.
@@ -403,9 +437,15 @@ game and run by hand; none of them ship.
 | `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
 | `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
 | `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
-| `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, and what came back out of a texture. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
+| `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, what came back out of a texture, that a texture's alpha channel alone does not make an opaque material transparent, and that each terrain layer coloured the ground its band claims. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
 | `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |
+
+One habit these earned the hard way: **run a new check once against the broken state
+before trusting it.** A regression test written for the path tracer passed against the
+build that still had the bug -- its synthetic panorama was smaller than the sampler's
+grid, so there was no mismatch left to catch -- and very nearly signed off a wrong
+diagnosis. A check that has never been seen to fail is a check that has not been tested.
 
 `skycheck` and `fogcheck` are not tests -- nothing in them passes or fails. They are a
 way of *seeing*: the sky sits behind the panels and above the default pitch, and the
