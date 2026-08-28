@@ -5,6 +5,7 @@ add_library(fitzel STATIC
     src/graphics/Mesh.cpp
     src/graphics/InstancedMesh.cpp
     src/graphics/Texture.cpp
+    src/graphics/Texture3D.cpp
     src/graphics/VideoTexture.cpp
     src/graphics/Material.cpp
     src/graphics/ShadowMap.cpp

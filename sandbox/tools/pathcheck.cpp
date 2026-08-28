@@ -338,6 +338,32 @@ std::shared_ptr<pathtrace::Scene> skyScene(bool withFog) {
     return sc;
 }
 
+// Reconstruct a probe the way the shader will: one line and a clamp.
+glm::vec3 irradianceFrom(const pathtrace::ProbeSh& sh, const glm::vec3& n) {
+    return glm::max(sh.sh0 + sh.shX * n.x + sh.shY * n.y + sh.shZ * n.z,
+                    glm::vec3(0.0f));
+}
+
+// A panorama that is white above the horizon and black below it. Chosen because
+// its answer is not approximately anything: an L1 band reconstructs a hemisphere
+// EXACTLY at the pole and at the equator (0.5 + 0.5 * n.y), so straight up must
+// come back at 1, straight down at 0 and sideways at 0.5. Nothing about that
+// survives a wrong normalisation constant.
+std::shared_ptr<pathtrace::Scene> hemisphereSkyScene() {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    sc->sun.enabled = false;
+    sc->env.width  = 64;
+    sc->env.height = 32;
+    sc->env.pixels.assign(static_cast<std::size_t>(64) * 32 * 3, 0.0f);
+    for (int y = 16; y < 32; ++y)            // row 0 is DOWN; the top half is sky
+        for (int x = 0; x < 64; ++x) {
+            const std::size_t o = (static_cast<std::size_t>(y) * 64 + x) * 3;
+            sc->env.pixels[o] = sc->env.pixels[o + 1] = sc->env.pixels[o + 2] = 1.0f;
+        }
+    sc->env.intensity = 1.0f;
+    return sc;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -722,7 +748,128 @@ int main(int argc, char** argv) {
         check(inRange, "every direction on the sphere lands inside the panorama");
     }
 
-    // --- 9. Pictures --------------------------------------------------------
+    // --- 9. Light probes ----------------------------------------------------
+    std::printf("\nlight probes (irradiance as an L1 band)\n");
+    {
+        pathtrace::BakeSettings b;
+        b.rays = 4096; b.maxBounces = 2; b.seed = 5u;
+
+        // A uniform environment of radiance 1. A Lambertian surface under it
+        // reflects exactly its albedo, so the stored quantity must be 1 for
+        // every normal -- and the directional band must be nothing at all.
+        {
+            auto sc = std::make_shared<pathtrace::Scene>();
+            sc->sun.enabled = false;
+            sc->env.zenith = sc->env.horizon = sc->env.ground = glm::vec3(1.0f);
+            const auto probes = pathtrace::bakeProbes(*sc, {glm::vec3(0.0f)}, b);
+            check(probes.size() == 1, "one point in, one probe out");
+            const glm::vec3 up   = irradianceFrom(probes[0], glm::vec3(0, 1, 0));
+            const glm::vec3 side = irradianceFrom(probes[0], glm::vec3(1, 0, 0));
+            check(std::fabs(up.r - 1.0f) < 0.03f && std::fabs(side.r - 1.0f) < 0.03f,
+                  "a uniform sky reconstructs at 1 in every direction",
+                  "up " + std::to_string(up.r) + ", sideways " + std::to_string(side.r));
+            const float dir = glm::length(probes[0].shX) + glm::length(probes[0].shY) +
+                              glm::length(probes[0].shZ);
+            check(dir < 0.05f, "and has no direction to it",
+                  "band-1 magnitude " + std::to_string(dir));
+            check(probes[0].valid, "a probe in the open is usable");
+        }
+
+        // Sky above, nothing below. The exact answers are 1, 0.5 and 0.
+        {
+            auto sc = hemisphereSkyScene();
+            const auto probes = pathtrace::bakeProbes(*sc, {glm::vec3(0.0f)}, b);
+            const float up   = irradianceFrom(probes[0], glm::vec3(0, 1, 0)).r;
+            const float side = irradianceFrom(probes[0], glm::vec3(1, 0, 0)).r;
+            const float down = irradianceFrom(probes[0], glm::vec3(0, -1, 0)).r;
+            check(std::fabs(up - 1.0f) < 0.05f, "facing the sky: all of it",
+                  std::to_string(up));
+            check(std::fabs(side - 0.5f) < 0.04f, "facing the horizon: half",
+                  std::to_string(side));
+            check(down < 0.04f, "facing away from it: none", std::to_string(down));
+        }
+
+        // The whole point of a probe grid over a flat ambient colour: a place
+        // with no sky over it has to come out dark, and a single ambient colour
+        // cannot tell the difference between there and an open field.
+        {
+            auto sc = hemisphereSkyScene();
+            pathtrace::Material m;
+            m.albedo = glm::vec3(0.02f);   // near-black lid, so nothing bounces
+            m.roughness = 1.0f;
+            sc->materials.push_back(m);
+            addQuad(*sc, {-40, 8, -40}, {40, 8, -40}, {40, 8, 40}, {-40, 8, 40},
+                    {0, -1, 0}, 0);
+            const auto probes = pathtrace::bakeProbes(
+                *sc, {glm::vec3(0.0f, 1.0f, 0.0f), glm::vec3(60.0f, 1.0f, 0.0f)}, b);
+            const float under = irradianceFrom(probes[0], glm::vec3(0, 1, 0)).r;
+            const float open  = irradianceFrom(probes[1], glm::vec3(0, 1, 0)).r;
+            check(under < open * 0.15f,
+                  "a probe under a lid is dark, one beside it is not",
+                  "under " + std::to_string(under) + " vs open " + std::to_string(open));
+        }
+
+        // Bounced colour. A white sky, a red wall, and a probe beside it: the
+        // side facing the wall has to come back redder than the side facing
+        // away. This is the thing a flat ambient can never do.
+        {
+            auto sc = hemisphereSkyScene();
+            pathtrace::Material red;
+            red.albedo = glm::vec3(0.85f, 0.05f, 0.05f);
+            red.roughness = 1.0f;
+            sc->materials.push_back(red);
+            addQuad(*sc, {-2, -6, -6}, {-2, -6, 6}, {-2, 6, 6}, {-2, 6, -6},
+                    {1, 0, 0}, 0);
+            const auto probes = pathtrace::bakeProbes(*sc, {glm::vec3(0.0f)}, b);
+            const glm::vec3 toward = irradianceFrom(probes[0], glm::vec3(-1, 0, 0));
+            const glm::vec3 away   = irradianceFrom(probes[0], glm::vec3(1, 0, 0));
+            const float towardRatio = toward.r / std::max(toward.b, 1e-4f);
+            const float awayRatio   = away.r / std::max(away.b, 1e-4f);
+            check(towardRatio > awayRatio * 1.3f,
+                  "the side facing a red wall picks up red",
+                  "red/blue facing it " + std::to_string(towardRatio) +
+                  ", facing away " + std::to_string(awayRatio));
+        }
+
+        // Buried probes have to say so, or the inside of a wall darkens
+        // everything that samples near it.
+        {
+            auto sc = hemisphereSkyScene();
+            pathtrace::Material m;
+            m.albedo = glm::vec3(0.5f);
+            sc->materials.push_back(m);
+            addBox(*sc, glm::vec3(0.0f), glm::vec3(2.0f), 0);
+            const auto probes = pathtrace::bakeProbes(
+                *sc, {glm::vec3(0.0f), glm::vec3(10.0f, 0.0f, 0.0f)}, b);
+            check(!probes[0].valid, "a probe inside solid geometry is marked unusable");
+            check(probes[1].valid, "one outside it is not");
+        }
+
+        // The design promise, as a number: what is baked must not change when
+        // the sun does. Two bakes with the sun in very different places, and
+        // the results have to agree -- otherwise the grid is a photograph of
+        // one moment and this engine's sun crosses the sky in four minutes.
+        {
+            auto morning = hemisphereSkyScene();
+            morning->sun.enabled   = true;
+            morning->sun.direction = glm::normalize(glm::vec3(1.0f, 0.2f, 0.0f));
+            morning->sun.color     = glm::vec3(6.0f);
+            auto noon = hemisphereSkyScene();
+            noon->sun.enabled   = true;
+            noon->sun.direction = glm::vec3(0.0f, 1.0f, 0.0f);
+            noon->sun.color     = glm::vec3(6.0f);
+
+            const auto a = pathtrace::bakeProbes(*morning, {glm::vec3(0.0f)}, b);
+            const auto c = pathtrace::bakeProbes(*noon, {glm::vec3(0.0f)}, b);
+            const float d = glm::length(a[0].sh0 - c[0].sh0) +
+                            glm::length(a[0].shY - c[0].shY);
+            check(d < 0.01f, "moving the sun does not change what is baked",
+                  "difference " + std::to_string(d));
+        }
+    }
+
+    // --- 10. Pictures -------------------------------------------------------
+
     std::printf("\nwriting look frames\n");
     {
         pathtrace::Settings s;

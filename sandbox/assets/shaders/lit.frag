@@ -93,6 +93,38 @@ uniform float uEnvMaxLod;      // coarsest mip level (for rough reflections)
 uniform float uReflectivity;   // 0 = matte (no reflection), 1 = mirror
 uniform float uRoughness;      // 0 = sharp reflection, 1 = blurry
 
+// Baked indirect light, looked up by WORLD POSITION rather than by a surface
+// coordinate. Three volumes, one per colour channel, each texel holding that
+// channel's four L1 spherical-harmonic coefficients as RGBA. The bake put the
+// cosine convolution into the numbers, so reconstruction here is one dot
+// product and a clamp -- there is no spherical-harmonic maths in this shader,
+// deliberately, because the constants belong where they can be checked against
+// an answer (see pathtrace::bakeProbes and pathcheck).
+uniform sampler3D uLightGridR;
+uniform sampler3D uLightGridG;
+uniform sampler3D uLightGridB;
+uniform int   uUseLightGrid;
+uniform vec3  uLightGridLo;
+uniform vec3  uLightGridHi;
+uniform float uLightGridIntensity;
+
+// What a Lambertian surface at `wp` facing `n` receives, per unit albedo --
+// the same quantity uAmbient is, which is what lets it stand in for it.
+vec3 bakedIrradiance(vec3 wp, vec3 n) {
+    vec3 t = (wp - uLightGridLo) / max(uLightGridHi - uLightGridLo, vec3(1e-4));
+    // Half a texel in from each face: a sample exactly on the boundary picks up
+    // the clamp, and the outermost probes are the ones sitting in whatever the
+    // grid was cut off by.
+    vec3 dim = vec3(textureSize(uLightGridR, 0));
+    t = clamp(t, 0.5 / dim, 1.0 - 0.5 / dim);
+    vec4 r = texture(uLightGridR, t);
+    vec4 g = texture(uLightGridG, t);
+    vec4 b = texture(uLightGridB, t);
+    vec4 basis = vec4(1.0, n.x, n.y, n.z);
+    return max(vec3(dot(r, basis), dot(g, basis), dot(b, basis)), vec3(0.0))
+           * uLightGridIntensity;
+}
+
 // Image-based lighting from an HDRI (diffuse irradiance + specular prefilter).
 uniform int         uUseIBL;         // 1 = light ambient from the HDRI
 uniform samplerCube uIrradiance;     // diffuse convolution
@@ -707,7 +739,13 @@ void main() {
     // Ambient: image-based lighting from the HDRI when enabled, else the flat
     // directional ambient. IBL gives diffuse irradiance + a soft env specular.
     vec3 ambient;
-    if (uUseIBL == 1) {
+    if (uUseLightGrid == 1) {
+        // The baked grid wins over both of the others where it exists, because
+        // it is the only one of the three that knows WHERE the surface is. A
+        // flat ambient lights the inside of a tunnel exactly as brightly as an
+        // open field; an HDRI convolution does the same, only in colour.
+        ambient = albedo * bakedIrradiance(vWorldPos, N);
+    } else if (uUseIBL == 1) {
         float NoV = max(dot(N, V), 0.0);
         vec3  R   = reflect(-V, N);
         vec3  F0  = vec3(0.04);

@@ -732,11 +732,17 @@ struct Tracer {
     float     sunCosMax = 1.0f;
     float     sunPdf    = 0.0f;  // solid-angle density; 0 marks a hard-edged sun
     glm::vec3 sunRadiance{0.0f};
+    // Held separately from the scene's own switch so a caller can trace the
+    // scene WITHOUT its sun while leaving the scene untouched. The light-probe
+    // bake needs exactly that: what it stores has to stay true as the sun moves
+    // across the sky, so the sun is the one light it must not include.
+    bool      sunOn = true;
 
     Tracer(const Scene& scene, const Bvh& accel, const EnvSampler& env,
            int bounces, float clamp)
         : sc(scene), bvh(accel), envDist(env), maxBounces(bounces),
           clampIndirect(clamp) {
+        sunOn     = sc.sun.enabled;
         sunAxis   = glm::normalize(sc.sun.direction);
         sunCosMax = std::cos(glm::radians(std::max(0.0f, sc.sun.angularRadiusDeg)));
         const float solid = 2.0f * kPi * (1.0f - sunCosMax);
@@ -951,7 +957,7 @@ struct Tracer {
         glm::vec3 L(0.0f);
         const auto alphaFn = [&](int tri, float u, float v) { return shadowFactor(tri, u, v); };
 
-        if (sc.sun.enabled && luminance(sc.sun.color) > 1e-5f) {
+        if (sunOn && luminance(sc.sun.color) > 1e-5f) {
             const glm::vec3 dir = sunPdf > 0.0f ? sampleCone(sunAxis, sunCosMax, rng)
                                                 : sunAxis;
             const float NoL = glm::dot(N, dir);
@@ -1168,7 +1174,7 @@ struct Tracer {
                 // the light sampler never had a chance.
                 if (!lastDelta && envDist.valid())
                     sky *= misWeight(lastPdf, envDist.pdfFor(ray.d));
-                if (sc.sun.enabled && sunPdf > 0.0f &&
+                if (sunOn && sunPdf > 0.0f &&
                     glm::dot(ray.d, sunAxis) > sunCosMax) {
                     // Straight from the camera, or off a mirror, the disc is
                     // simply what is there. Off a rough surface it shares the
@@ -1395,6 +1401,116 @@ glm::vec3 Environment::sample(const glm::vec3& dir) const {
     const float t = glm::clamp(dir.y, -1.0f, 1.0f);
     if (t >= 0.0f) return glm::mix(horizon, zenith, std::sqrt(t));
     return glm::mix(horizon, ground, std::sqrt(-t));
+}
+
+std::vector<ProbeSh> bakeProbes(const Scene& scene,
+                                const std::vector<glm::vec3>& points,
+                                const BakeSettings& settings,
+                                const std::function<bool(float)>& progress) {
+    std::vector<ProbeSh> out(points.size());
+    if (points.empty()) return out;
+
+    Bvh bvh;
+    bvh.build(scene.triangles);
+    EnvSampler envDist;
+    envDist.build(scene.env);
+
+    const int rays = std::max(8, settings.rays);
+    int threads = settings.threads > 0
+                ? settings.threads
+                : static_cast<int>(std::thread::hardware_concurrency()) - 1;
+    threads = std::clamp(threads, 1, 64);
+
+    std::atomic<std::size_t> next{0};
+    std::atomic<std::size_t> done{0};
+    std::atomic<bool>        stop{false};
+
+    auto worker = [&]() {
+        Tracer tracer(scene, bvh, envDist, settings.maxBounces, 0.0f);
+        tracer.sunOn = settings.includeSun;
+        for (;;) {
+            const std::size_t i = next.fetch_add(1);
+            if (i >= points.size() || stop.load()) return;
+
+            Rng rng(i, static_cast<std::uint64_t>(settings.seed) * 6151u + 17u);
+            const glm::vec3 P = points[i];
+
+            // The projection integral, taken by Monte Carlo over the whole
+            // sphere. Uniform directions rather than cosine-weighted ones
+            // because a probe has no normal -- it has to answer for every
+            // normal a surface near it might have.
+            glm::vec3 c00(0.0f), c1m1(0.0f), c10(0.0f), c11(0.0f);
+            int backfaces = 0;
+            for (int r = 0; r < rays; ++r) {
+                const float u1 = rng.uniform(), u2 = rng.uniform();
+                const float z   = 1.0f - 2.0f * u1;
+                const float rad = std::sqrt(std::max(0.0f, 1.0f - z * z));
+                const float phi = 2.0f * kPi * u2;
+                const glm::vec3 d(rad * std::cos(phi), z, rad * std::sin(phi));
+
+                // Is this probe buried? A ray leaving a solid object meets the
+                // INSIDE of its shell, and a probe whose rays mostly do that
+                // has no sky to record.
+                Ray probe;
+                probe.o = P;
+                probe.d = d;
+                probe.prepare();
+                Hit hit;
+                if (bvh.closest(probe, kInf, hit)) {
+                    const Triangle& t = scene.triangles[hit.tri];
+                    const glm::vec3 gN =
+                        glm::cross(t.p1 - t.p0, t.p2 - t.p0);
+                    if (glm::dot(gN, d) > 0.0f) ++backfaces;
+                }
+
+                Ray ray;
+                ray.o = P;
+                ray.d = d;
+                const glm::vec3 L = tracer.radiance(ray, rng);
+
+                c00  += L * 0.282095f;
+                c1m1 += L * (0.488603f * d.y);
+                c10  += L * (0.488603f * d.z);
+                c11  += L * (0.488603f * d.x);
+            }
+
+            // 4*pi/N is the solid angle each sample stands for.
+            const float norm = 4.0f * kPi / static_cast<float>(rays);
+            c00 *= norm; c1m1 *= norm; c10 *= norm; c11 *= norm;
+
+            // Convolve with the cosine lobe and divide by pi, so what comes out
+            // is what a Lambertian surface reflects per unit albedo -- the same
+            // quantity the flat ambient colour is. The band-1 factor is
+            // (2*pi/3)/pi = 2/3; the band-0 factor is pi/pi = 1.
+            ProbeSh sh;
+            sh.sh0 = c00 * 0.282095f;
+            const float k1 = (2.0f / 3.0f) * 0.488603f;
+            sh.shX = c11  * k1;
+            sh.shY = c1m1 * k1;
+            sh.shZ = c10  * k1;
+            sh.valid = static_cast<float>(backfaces) /
+                       static_cast<float>(rays) < 0.6f;
+            out[i] = sh;
+
+            done.fetch_add(1);
+        }
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(static_cast<std::size_t>(threads));
+    for (int t = 0; t < threads; ++t) pool.emplace_back(worker);
+
+    if (progress) {
+        while (done.load() < points.size() && !stop.load()) {
+            const float p = static_cast<float>(done.load()) /
+                            static_cast<float>(points.size());
+            if (!progress(p)) stop.store(true);
+            std::this_thread::sleep_for(std::chrono::milliseconds(40));
+        }
+    }
+    for (std::thread& t : pool) t.join();
+    if (progress) progress(1.0f);
+    return out;
 }
 
 float firstHitDistance(const Scene& scene, const glm::vec3& origin,

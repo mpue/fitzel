@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <cstdint>
 #include <memory>
 #include <thread>
@@ -344,6 +345,50 @@ private:
 // Shared so a render and a screenshot of the same scene land on the same curve
 // rather than merely a similar one.
 glm::vec3 tonemap(const glm::vec3& linear, float exposure, const Grade& grade);
+
+// --- Light probes -----------------------------------------------------------
+// Irradiance at a point, as an L1 spherical-harmonic band.
+//
+// Already convolved with the cosine lobe and divided by pi, so reconstructing
+// it is one line and a clamp:
+//
+//     irradiance = max(sh0 + shX * n.x + shY * n.y + shZ * n.z, 0)
+//
+// and the result multiplies straight into the albedo -- exactly as the flat
+// ambient colour it replaces does. The convolution constants live in the bake,
+// on the CPU, where they can be checked against a known answer; the shader that
+// consumes this has no spherical harmonics in it at all.
+struct ProbeSh {
+    glm::vec3 sh0{0.0f};
+    glm::vec3 shX{0.0f}, shY{0.0f}, shZ{0.0f};
+    // False when the probe sits inside solid geometry -- most of its rays left
+    // through the back of a surface. Such a probe has no sky to record and
+    // would darken everything near it, so a consumer fills it from a neighbour
+    // instead of trusting it.
+    bool valid = true;
+};
+
+struct BakeSettings {
+    int      rays       = 256;  // per probe
+    int      maxBounces = 3;
+    int      threads    = 0;
+    unsigned seed       = 1u;
+    // The sun is OFF by default, and that is the design rather than a
+    // convenience. A baked light that included it would be a photograph of one
+    // moment, and this engine's sun crosses the sky in four minutes -- the game
+    // would contradict the bake within seconds of pressing Play. What is stored
+    // is the sky, the static lamps and everything they bounce off, all of which
+    // hold still. The sun stays dynamic, as it already is.
+    bool     includeSun = false;
+};
+
+// Trace irradiance at each point. `progress` is called from the coordinating
+// thread with 0..1 and returns false to cancel; the result is then whatever had
+// been finished. Threads internally, so call it off the render thread.
+std::vector<ProbeSh> bakeProbes(const Scene& scene,
+                                const std::vector<glm::vec3>& points,
+                                const BakeSettings& settings,
+                                const std::function<bool(float)>& progress = {});
 
 // Distance from `origin` along `dir` to the nearest surface, or 0 when the ray
 // hits nothing. Brute force over every triangle, no accelerator: it is called

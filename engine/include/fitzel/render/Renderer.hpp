@@ -9,6 +9,7 @@
 #include "fitzel/graphics/CascadedShadowMap.hpp"
 #include "fitzel/graphics/CubeShadowMap.hpp"
 #include "fitzel/graphics/CubeRenderTarget.hpp"
+#include "fitzel/graphics/Texture3D.hpp"
 
 namespace fitzel {
 
@@ -89,6 +90,10 @@ public:
     // aliasing; the shader only uses them when uUseIBL == 1.
     static constexpr int kIrradianceUnit = 16;
     static constexpr int kPrefilterUnit  = 17;
+    // The baked light grid: three volumes, one per colour channel, each holding
+    // that channel's four spherical-harmonic coefficients in RGBA. Units 24-26
+    // because the terrain's layer normal maps run to 23.
+    static constexpr int kLightGridUnit = 24;
 
     // Cube-face resolution of the dynamic environment probe.
     static constexpr int kDefaultEnvProbeRes = 256;
@@ -111,6 +116,25 @@ public:
     void setEnvironmentIBL(const EnvironmentIBL* ibl, bool enabled, float intensity) {
         m_ibl = ibl; m_iblEnabled = enabled; m_iblIntensity = intensity;
     }
+    // Baked indirect light, sampled by world position (see LightGrid in the
+    // sandbox and pathtrace::bakeProbes). Replaces the flat ambient term where
+    // it covers: a probe under a bridge has no sky over it and says so, which
+    // one ambient colour for the whole world cannot.
+    //
+    // Three textures rather than one because a colour channel's four
+    // coefficients fit an RGBA texel exactly, and that is what lets the hardware
+    // interpolate between neighbouring probes correctly -- packing all twelve
+    // into one volume would blend across coefficient boundaries.
+    //
+    // Pass nullptr to switch back to the flat ambient. `lo`/`hi` are the grid's
+    // world bounds.
+    void setLightGrid(const Texture3D* r, const Texture3D* g, const Texture3D* b,
+                      const glm::vec3& lo, const glm::vec3& hi, float intensity) {
+        m_gridR = r; m_gridG = g; m_gridB = b;
+        m_gridLo = lo; m_gridHi = hi; m_gridIntensity = intensity;
+    }
+    bool lightGridEnabled() const { return m_gridR && m_gridG && m_gridB; }
+
     // Point lights for this frame (applied to lit-shader surfaces in every pass).
     void setPointLights(const std::vector<PointLight>& lights) { m_pointLights = lights; }
     // Spot lights for this frame (applied to lit-shader surfaces in every pass).
@@ -295,6 +319,16 @@ private:
     std::vector<PointLight> m_pointLights;
     std::vector<SpotLight>  m_spotLights;
     Fog              m_fog;
+    const Texture3D* m_gridR = nullptr;
+    const Texture3D* m_gridG = nullptr;
+    const Texture3D* m_gridB = nullptr;
+    glm::vec3        m_gridLo{0.0f}, m_gridHi{1.0f};
+    float            m_gridIntensity = 1.0f;
+    // A 1x1x1 black volume, bound whenever there is no grid. Same reason the
+    // env probe is always bound: an unbound sampler3D reads unit 0, which is
+    // whatever 2D texture the material happened to leave there.
+    mutable Texture3D m_gridFallback;
+
     const EnvironmentIBL* m_ibl = nullptr;
     bool             m_iblEnabled  = false;
     float            m_iblIntensity = 1.0f;

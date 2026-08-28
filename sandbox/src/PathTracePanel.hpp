@@ -4,8 +4,13 @@
 #include <memory>
 #include <string>
 
-#include <fitzel/graphics/Texture.hpp>
+#include <atomic>
+#include <thread>
 
+#include <fitzel/graphics/Texture.hpp>
+#include <fitzel/graphics/Texture3D.hpp>
+
+#include "LightGrid.hpp"
 #include "PathTrace.hpp"
 #include "PathTraceCapture.hpp"
 
@@ -66,12 +71,38 @@ struct State {
     int    previewSamples = -1;
     double previewStamp   = 0.0;
 
+    // --- Baked light -------------------------------------------------------
+    // The grid shares this panel because it shares everything that makes it
+    // possible: the same harvest of the render queue, the same tracer, the same
+    // moment in the frame. Splitting it into a panel of its own would duplicate
+    // all three to separate two buttons.
+    // The settings and the worker live here; the GRID does not. It belongs to
+    // the application (lightgrid::Runtime), because a shipped game loads and
+    // lights from one without there being an editor anywhere near it.
+    lightgrid::Settings gridSettings;
+    std::string         gridStatus;
+
+    // The bake runs for minutes, so it runs on its own thread and the editor
+    // stays usable. The atomics are the only things the two threads share.
+    std::thread        bakeThread;
+    std::atomic<bool>  bakeRunning{false};
+    std::atomic<bool>  bakeCancel{false};
+    std::atomic<float> bakeProgress{0.0f};
+    std::atomic<bool>  bakeDone{false};   // finished: join, upload, hand over
+    bool bakeRequested = false;
+
     State();
+    ~State();
+    State(const State&)            = delete;
+    State& operator=(const State&) = delete;
 };
 
-// Draw the panel. `projectDir` is where a saved render lands (in renders/).
+// Draw the panel. `scenePath` is the open scene's file: renders land beside it
+// in renders/, and its baked light in lightgrids/. Empty means no scene is
+// open, and the panel says so rather than writing somewhere arbitrary.
 // `now` is the editor's clock, used only to rate-limit the preview refresh.
-void draw(State& state, const std::filesystem::path& projectDir, double now);
+void draw(State& state, lightgrid::Runtime& light,
+          const std::filesystem::path& scenePath, double now);
 
 // The parts of the frame's look that the Renderer does not carry, because they
 // belong to something else: the sky is a file the environment map was loaded
@@ -88,7 +119,12 @@ struct SceneLook {
 // frame's submit() calls and BEFORE the next begin() -- that is the only window
 // in which the renderer's queue holds the scene. Cheap (a bool test) unless a
 // render was actually asked for.
-void service(State& state, const fitzel::Renderer& renderer,
-             const fitzel::Camera& camera, const SceneLook& look);
+// Also hands the renderer this frame's baked light, loads the grid belonging to
+// `scenePath` when the scene changes, and finishes a bake that has completed on
+// its worker thread -- all of which need a current GL context and the render
+// loop's own moment, which is why they live here rather than in draw().
+void service(State& state, lightgrid::Runtime& light,
+             fitzel::Renderer& renderer, const fitzel::Camera& camera,
+             const SceneLook& look, const std::filesystem::path& scenePath);
 
 } // namespace pathpanel

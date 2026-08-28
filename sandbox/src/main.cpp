@@ -78,6 +78,7 @@
 #include "FolderDialog.hpp"
 #include "GameSettingsPanel.hpp"
 #include "LoadingScreen.hpp"
+#include "LightGrid.hpp"
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -1232,6 +1233,11 @@ int main(int argc, char** argv) {
         DirectionalLight light;
 
         // Image-based lighting from an HDRI (chosen from the asset library).
+        // Baked indirect light for the open scene. RUNTIME, not editor state:
+        // the shipped player loads the same .fgrid beside its scene and lights
+        // from it, and only the BAKE button lives in the editor.
+        lightgrid::Runtime lightGrid;
+
         EnvironmentIBL environment;
         bool  iblEnabled   = false;
         bool  iblSkybox    = false;   // draw the HDRI as the sky background
@@ -12335,15 +12341,15 @@ int main(int argc, char** argv) {
             // preview of whatever the running render has reached so far;
             // pressing Render in it only raises a flag, which service()
             // above acts on at the one point in the frame where it can.
-            // The project FOLDER, not the .fitzel file: currentProject is the
-            // scene-file path (every other user of it takes parent_path too), so
-            // passing it straight through put renders inside a path that names a
-            // file. Empty means no project is open, and the panel says so rather
-            // than writing next to the executable.
-            pathpanel::draw(pathRender,
+            // The scene FILE, not its folder: renders land beside it in
+            // renders/ and its baked light in lightgrids/, both named after it,
+            // so two scenes in one project cannot overwrite each other's. Empty
+            // means nothing is open, and the panel says so rather than writing
+            // next to the executable.
+            pathpanel::draw(pathRender, lightGrid,
                             currentProject.empty()
                                 ? std::filesystem::path()
-                                : std::filesystem::path(currentProject).parent_path(),
+                                : std::filesystem::path(currentProject),
                             now);
 
             // HDRI environment lighting (image-based lighting).
@@ -13220,6 +13226,13 @@ int main(int argc, char** argv) {
             const long long fzShadowMark = prof::mark();
             renderer.setPointLights(pointLights);
             renderer.setSpotLights(spotLights);
+            // Baked light for this frame: loads the grid belonging to the open
+            // scene the first time it is seen, then hands it to the renderer.
+            // Before the shadow and lit passes, which is where it is read.
+            lightGrid.syncTo(currentProject.empty()
+                                 ? std::filesystem::path()
+                                 : std::filesystem::path(currentProject),
+                             renderer);
 #ifndef FITZEL_PLAYER
             // The offline renderer harvests HERE and nowhere else: every
             // system has submitted, the lights are set, and begin() has not
@@ -13237,7 +13250,10 @@ int main(int argc, char** argv) {
             ptLook.grade.value      = valueGain;
             ptLook.grade.warmth     = warmth;
             ptLook.grade.contrast   = contrast;
-            pathpanel::service(pathRender, renderer, camera, ptLook);
+            pathpanel::service(pathRender, lightGrid, renderer, camera, ptLook,
+                               currentProject.empty()
+                                   ? std::filesystem::path()
+                                   : std::filesystem::path(currentProject));
 #endif
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
 

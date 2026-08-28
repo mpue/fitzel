@@ -437,6 +437,42 @@ before you press the button.
 `pathcheck` below test it against known answers. `PathTraceCapture.hpp` is the half that
 reads the GPU, and `capturecheck` tests that.
 
+### Baked light (probe grid)
+
+**Render panel > Baked light > Bake.** The same tracer that makes a still fills a grid
+of probes over the world, each storing what arrives there as an L1 spherical-harmonic
+band. `lit.frag` looks it up by world position, and it replaces the flat ambient colour.
+
+That colour is the thing worth replacing. One value, applied to every surface in the
+world: under it the inside of a tunnel is exactly as bright as an open field, and the
+SSAO pass exists largely to paper over the difference. A probe under a bridge has no sky
+above it and says so; a probe beside a red wall comes back red on the side facing it.
+
+**The sun is deliberately not baked.** This engine runs a day cycle -- twenty-four hours
+in four minutes by default -- so light baked with the sun in it would be a photograph of
+one moment that the game contradicts within seconds of pressing Play. What holds still is
+the sky, the static lamps and everything those bounce off. That goes in the grid; the
+direct sun stays dynamic exactly as it was.
+
+**A grid rather than lightmaps**, and the reason is not only that it is less work. A
+lightmap needs every static surface given a second, non-overlapping UV set with padding
+between charts -- an unwrapper, a new vertex attribute through every mesh producer in the
+engine, an atlas, seam dilation. A grid is sampled by world position, so no geometry
+changes at all. And it does something a lightmap structurally cannot: **moving objects
+pick it up too.** A car driving under a bridge goes dark, and takes the colour of the
+tarmac it is over.
+
+Baked light is saved beside its scene in `lightgrids/`, and the shipped player loads and
+lights from it without linking a line of the tracer that made it -- only the bake is
+editor-only (`LightGridBake.cpp`); `LightGrid.cpp` is runtime.
+
+Three volumes go to the GPU, one per colour channel, because a channel's four
+coefficients fit an RGBA texel exactly -- which is what lets the hardware interpolate
+between neighbouring probes for free. Packing all twelve into one volume would blend
+across coefficient boundaries. Probes that landed inside solid geometry are detected (most
+of their rays leave through the back of a surface) and filled from their neighbours,
+because an unfilled one is a black spot that smears into every surface near it.
+
 ### Offline checks
 
 Several things here cannot be judged from inside the editor, and each has a small
@@ -450,7 +486,7 @@ game and run by hand; none of them ship.
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
 | `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
 | `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
-| `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
+| `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). Also pins the light-probe bake against answers a spherical harmonic gets exactly: a uniform sky reconstructs at 1 in every direction, a hemisphere at 1 / 0.5 / 0, and moving the sun must change nothing at all. A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
 | `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, what came back out of a texture, that a texture's alpha channel alone does not make an opaque material transparent, and that each terrain layer coloured the ground its band claims. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
 | `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |

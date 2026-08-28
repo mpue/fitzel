@@ -12,6 +12,7 @@
 #include <tinyexr.h>
 
 #include <fitzel/render/Renderer.hpp>
+#include <fitzel/graphics/Texture3D.hpp>
 #include <fitzel/scene/Camera.hpp>
 
 #include "UiStyle.hpp"
@@ -98,7 +99,8 @@ State::State() {
     settings.batch      = 4;
 }
 
-void draw(State& st, const std::filesystem::path& projectDir, double now) {
+void draw(State& st, lightgrid::Runtime& light,
+          const std::filesystem::path& scenePath, double now) {
     if (!st.open) return;
 
     ImGui::SetNextWindowSize(ImVec2(420, 620), ImGuiCond_FirstUseEver);
@@ -213,6 +215,50 @@ void draw(State& st, const std::filesystem::path& projectDir, double now) {
     ImGui::Checkbox("Include glass and transparency", &st.capture.includeTransparent);
     ImGui::EndDisabled();
 
+    // --- Baked light ------------------------------------------------------
+    ImGui::Spacing();
+    ui::sectionText("Baked light");
+    {
+        const bool baking = st.bakeRunning.load();
+        ImGui::BeginDisabled(baking);
+        ImGui::SliderInt("Probe density", &st.gridSettings.resolution, 4, 64,
+                         "%d across");
+        ui::hint("Probes along the widest side of the world. The cost is cubic\n"
+                 "in this, so it is the one number worth thinking about before\n"
+                 "pressing Bake. 16 is a draft, 24 is usable, 40 is a lot.");
+        ImGui::SliderInt("Rays per probe", &st.gridSettings.rays, 16, 2048, "%d",
+                         ImGuiSliderFlags_Logarithmic);
+        ImGui::SliderInt("Bounces##grid", &st.gridSettings.bounces, 1, 6);
+        ImGui::EndDisabled();
+
+        if (!baking) {
+            if (ImGui::Button("Bake light", ImVec2(-1.0f, 0.0f))) {
+                st.bakeRequested = true;
+                st.gridStatus = "harvesting the scene...";
+            }
+        } else {
+            if (ImGui::Button("Cancel bake", ImVec2(-1.0f, 0.0f)))
+                st.bakeCancel.store(true);
+            char bar[64];
+            std::snprintf(bar, sizeof(bar), "%.0f%%",
+                          st.bakeProgress.load() * 100.0f);
+            ImGui::ProgressBar(st.bakeProgress.load(), ImVec2(-1.0f, 0.0f), bar);
+        }
+
+        ImGui::BeginDisabled(!light.grid.valid());
+        ImGui::Checkbox("Use baked light", &light.enabled);
+        ImGui::SliderFloat("Bounce strength", &light.intensity, 0.0f, 3.0f, "%.2f");
+        ImGui::EndDisabled();
+        ui::hint("Replaces the scene's flat ambient colour with what each place\n"
+                 "actually receives: under a bridge is dark, beside a red wall\n"
+                 "is red. The SUN is deliberately not in it -- the day cycle\n"
+                 "moves it, and baked light has to survive that -- so the sun\n"
+                 "stays dynamic and this is everything else.");
+        const std::string& note = st.gridStatus.empty() ? light.status
+                                                         : st.gridStatus;
+        if (!note.empty()) ImGui::TextDisabled("%s", note.c_str());
+    }
+
     // --- Go ---------------------------------------------------------------
     ImGui::Spacing();
     ImGui::Separator();
@@ -252,9 +298,9 @@ void draw(State& st, const std::filesystem::path& projectDir, double now) {
     // implied is a file you go looking for afterwards -- and it landed in the
     // wrong place once already, inside a path that named the .fitzel FILE
     // rather than the folder holding it.
-    const bool haveProject = !projectDir.empty();
-    const std::filesystem::path dir = haveProject ? projectDir / "renders"
-                                                  : std::filesystem::path();
+    const bool haveProject = !scenePath.empty();
+    const std::filesystem::path dir =
+        haveProject ? scenePath.parent_path() / "renders" : std::filesystem::path();
     if (haveProject) ImGui::TextDisabled("into %s", dir.string().c_str());
     else             ImGui::TextDisabled("save a project first -- a render is "
                                          "kept beside the scene it is of");
@@ -314,45 +360,112 @@ void draw(State& st, const std::filesystem::path& projectDir, double now) {
     ImGui::End();
 }
 
-void service(State& st, const fitzel::Renderer& renderer,
-             const fitzel::Camera& camera, const SceneLook& look) {
-    if (!st.captureRequested) return;
-    st.captureRequested = false;
+State::~State() {
+    // The bake thread outlives nothing. Cancelling and joining here is what
+    // makes closing the editor mid-bake a close rather than a crash.
+    bakeCancel.store(true);
+    if (bakeThread.joinable()) bakeThread.join();
+}
 
-    // A render in flight is abandoned rather than queued: pressing Render again
-    // means "that framing, not the old one".
-    st.job.cancel();
+void service(State& st, lightgrid::Runtime& light,
+             fitzel::Renderer& renderer, const fitzel::Camera& camera,
+             const SceneLook& look, const std::filesystem::path& scenePath) {
+    // A finished bake. The worker filled `light.grid` directly; all that is
+    // left is the half that needs a GL context and the render thread.
+    if (st.bakeDone.exchange(false)) {
+        if (st.bakeThread.joinable()) st.bakeThread.join();
+        st.bakeRunning.store(false);
+        if (light.grid.valid()) {
+            light.upload();
+            const std::filesystem::path f = lightgrid::pathFor(scenePath);
+            const bool saved = !f.empty() && lightgrid::save(light.grid, f);
+            char msg[256];
+            std::snprintf(msg, sizeof(msg), "%d x %d x %d probes baked%s",
+                          light.grid.nx, light.grid.ny, light.grid.nz,
+                          saved ? " and saved beside the scene"
+                                : " (not saved: no scene file)");
+            st.gridStatus = msg;
+        } else {
+            // The grid was cleared by the cancel, so the scene has no baked
+            // light until the next bake -- said plainly, because silently
+            // falling back to the flat ambient looks like the bake did nothing.
+            light.scene.clear();      // makes syncTo reload what was on disk
+            st.gridStatus = "bake cancelled";
+        }
+    }
+
+    if (!st.captureRequested && !st.bakeRequested) return;
+
+    // --- The harvest, shared by both buttons ------------------------------
+    const bool wantBake = st.bakeRequested;
+    st.captureRequested = false;
+    st.bakeRequested    = false;
 
     pathcapture::Options opt = st.capture;
     opt.hdriPath      = look.hdriPath;
     opt.hdriIntensity = look.hdriIntensity;
     opt.grade         = look.grade;
+    if (wantBake) {
+        // A bake is not a shot. It has to cover the world a car will drive
+        // through, not the few hundred metres one framing can see, so the
+        // camera-distance limit is lifted for it.
+        opt.maxDistance = 0.0f;
+    }
 
-    std::shared_ptr<pathtrace::Scene> scene =
+    std::shared_ptr<pathtrace::Scene> scenePtr =
         pathcapture::capture(renderer, camera, opt, &st.report);
     st.reportLine = st.report.summary();
 
-    if (scene->triangles.empty()) {
-        st.status = "nothing to render: the frame has no geometry the tracer "
-                    "can read (grass, water and particles do not count).";
+    if (scenePtr->triangles.empty()) {
+        (wantBake ? st.gridStatus : st.status) =
+            "nothing to work with: the frame has no geometry the tracer can "
+            "read (grass, water and particles do not count).";
         return;
     }
 
-    scene->camera.apertureRadius = std::max(0.0f, st.aperture);
+    if (wantBake) {
+        light.grid = lightgrid::layout(*scenePtr, st.gridSettings);
+        if (!light.grid.valid()) {
+            st.gridStatus = "the scene is too small to put a grid over";
+            return;
+        }
+        st.bakeCancel.store(false);
+        st.bakeProgress.store(0.0f);
+        st.bakeDone.store(false);
+        st.bakeRunning.store(true);
+        st.gridStatus = "baking...";
+        // The scene goes to the worker as a shared_ptr and is never touched
+        // here again, so the editor is free to carry on editing the one it was
+        // harvested from while the bake runs.
+        lightgrid::Grid* target = &light.grid;
+        st.bakeThread = std::thread([&st, target, scenePtr] {
+            lightgrid::bake(*target, *scenePtr, st.gridSettings,
+                            [&st](float p) {
+                                st.bakeProgress.store(p);
+                                return !st.bakeCancel.load();
+                            });
+            st.bakeDone.store(true);
+        });
+        return;
+    }
+
+    // --- A still ----------------------------------------------------------
+    st.job.cancel();
+    scenePtr->camera.apertureRadius = std::max(0.0f, st.aperture);
     if (st.aperture > 0.0f) {
         if (st.autoFocus) {
-            const float d = pathtrace::firstHitDistance(*scene, scene->camera.position,
-                                                        scene->camera.forward);
+            const float d = pathtrace::firstHitDistance(
+                *scenePtr, scenePtr->camera.position, scenePtr->camera.forward);
             // Nothing under the crosshair (the camera is pointed at the sky):
             // keep the last distance rather than focusing at zero, which would
             // blur the entire picture and look like a bug.
             if (d > 0.0f) st.focusDistance = d;
         }
-        scene->camera.focusDistance = std::max(0.1f, st.focusDistance);
+        scenePtr->camera.focusDistance = std::max(0.1f, st.focusDistance);
     }
 
     st.previewSamples = -1;
-    st.job.start(std::move(scene), st.settings);
+    st.job.start(std::move(scenePtr), st.settings);
     st.status = "rendering";
 }
 

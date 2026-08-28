@@ -87,6 +87,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
     src/Profiler.cpp
+    # Loading a baked light grid and lighting from it. Runtime by definition:
+    # it is what the shipped game does with the editor's bake.
+    src/LightGrid.cpp
     src/DebugOverlay.cpp)
 
 # Editor-only sources: panels, tools and dialogs reachable only from the editor
@@ -128,6 +131,11 @@ set(SANDBOX_EDITOR_SOURCES
     src/PathTrace.cpp
     src/PathTraceCapture.cpp
     src/PathTracePanel.cpp
+    # Filling a light grid needs the whole path tracer; sampling one needs a
+    # texture lookup. Only the BAKE is editor-only -- LightGrid.cpp itself is
+    # runtime, below, so a shipped game lights from a bake without linking a
+    # line of the renderer that made it.
+    src/LightGridBake.cpp
     src/VehicleTool.cpp
     src/GliderTool.cpp)
 

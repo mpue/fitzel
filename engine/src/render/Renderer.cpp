@@ -536,6 +536,22 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uPrefilterMaxLod",
                     useIbl ? static_cast<float>(m_ibl->prefilterMipLevels() - 1) : 0.0f);
 
+        // The baked light grid. Always bound, for the same reason as the probe
+        // cube above.
+        if (!m_gridFallback.isValid())
+            m_gridFallback = Texture3D::create(1, 1, 1, std::vector<float>(4, 0.0f));
+        const bool useGrid = lightGridEnabled();
+        (useGrid ? *m_gridR : m_gridFallback).bind(kLightGridUnit);
+        (useGrid ? *m_gridG : m_gridFallback).bind(kLightGridUnit + 1);
+        (useGrid ? *m_gridB : m_gridFallback).bind(kLightGridUnit + 2);
+        s->setInt("uLightGridR", kLightGridUnit);
+        s->setInt("uLightGridG", kLightGridUnit + 1);
+        s->setInt("uLightGridB", kLightGridUnit + 2);
+        s->setInt("uUseLightGrid", useGrid ? 1 : 0);
+        s->setVec3("uLightGridLo", m_gridLo);
+        s->setVec3("uLightGridHi", m_gridHi);
+        s->setFloat("uLightGridIntensity", m_gridIntensity);
+
         for (int i = 0; i < cascades; ++i) {
             s->setMat4(Indexed("uLightSpace", i), m_csm.lightMatrices()[i]);
             s->setFloat(Indexed("uCascadeSplits", i), m_csm.splitDistances()[i]);
