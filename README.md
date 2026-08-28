@@ -172,6 +172,14 @@ the selected object; `Shift+F` toggles walking through the scene in first person
   `fitzel::Audio`/miniaudio). Placeholder WAVs are git-ignored; generate them with the
   snippet below or drop in your own.
 
+![A rock face under cirrus, the terrain's layers blended by height and slope](images/landscape.png)
+
+Everything in that shot comes out of the list above: the ground is four triplanar sets
+picked by height and slope with their normal maps on, the sky is the cloud shader's
+cirrus layer, the haze over the far ridges is the aerial perspective in `lit.frag`, and
+the sun is an HDR radiance rather than a white circle -- which is why it blooms instead
+of clipping.
+
 ### Weather sounds (not in the repo)
 
 The weather audio loads `rain.wav`, `wind.wav`, `breeze.wav`, `thunder.wav` from a
@@ -344,6 +352,12 @@ scene is traced properly: light that bounces, shadows with real penumbrae, refle
 from the geometry rather than from a probe, and a lens that can be opened until the
 background falls out of focus. Minutes rather than milliseconds -- this is for the
 picture you show somebody, not for the game.
+
+![A car rendered offline: soft sun shadow, HDRI horizon, and its own colour bounced onto the ground](images/pathtraced-car.png)
+
+That patch of warm light on the ground beside the front wheel is the point of the whole
+thing. Nothing in the raster path can put it there: it is the car's own paint lighting
+the ground it stands on, and it costs a bounce.
 
 The raster path buys its frame rate with approximations that are invisible at speed and
 obvious in a held image. Reflections come from a 256-pixel cube captured a few frames
