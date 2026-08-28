@@ -33,6 +33,11 @@ constexpr const char* kAlphaCutoff  = "uAlphaCutoff";
 constexpr const char* kEmission     = "uEmission";
 constexpr const char* kEmissionStr  = "uEmissionStrength";
 constexpr const char* kTexture      = "uTexture";
+constexpr const char* kLayerCount   = "uLayerCount";
+constexpr const char* kDetailScale  = "uDetailScale";
+constexpr const char* kDetailStr    = "uDetailStrength";
+// The most layers lit.frag declares (MAX_TERRAIN_LAYERS).
+constexpr int kMaxTerrainLayers = 6;
 
 // Quantised so a voxel mesh's per-vertex colours collapse back onto the palette
 // they were painted from instead of producing one material per triangle.
@@ -215,8 +220,10 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
     // Voxel meshes colour their surfaces per vertex, so their materials are
     // built from the colour rather than from the material object.
     std::unordered_map<std::uint64_t, int>                    voxelMatCache;
+    std::vector<glm::vec4>                                    paint;
 
     bool sawTerrainLayers = false;
+    bool sawTerrainPaint  = false;
     bool sawWetness       = false;
 
     auto textureFor = [&](const fitzel::Texture* tex) -> int {
@@ -282,12 +289,24 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         if (colorMode == 2) {
             m.texture = textureFor(mat->texture(kTexture));
         } else if (colorMode == 1) {
-            // Terrain. The painted layers are triplanar-blended in the shader
-            // from world position and slope; reproducing that here would be a
-            // second implementation of it, so the terrain's base colour is used
-            // and the difference is reported rather than hidden.
-            if (mat->uniform("uLayerCount") && mat->get<int>("uLayerCount", 0) > 0)
-                sawTerrainLayers = true;
+            // Terrain: its painted layers, each with the height and slope band
+            // it covers and its own tiling. Read by NAME out of the material,
+            // which is how they were set -- so a layer added to the terrain
+            // editor arrives here without this code being told about it.
+            const int layers = std::min(mat->get<int>(kLayerCount, 0),
+                                        kMaxTerrainLayers);
+            for (int i = 0; i < layers; ++i) {
+                const std::string ix = "[" + std::to_string(i) + "]";
+                pathtrace::TerrainLayer L;
+                L.texture = textureFor(mat->texture("uLayerTex" + ix));
+                L.band    = mat->get<glm::vec4>("uLayerBand" + ix, glm::vec4(0.0f));
+                L.scale   = mat->get<float>("uLayerScale" + ix, 0.1f);
+                if (L.texture >= 0) m.layers.push_back(L);
+            }
+            m.detailScale    = mat->get<float>(kDetailScale, 0.0f);
+            m.detailStrength = mat->get<float>(kDetailStr, 0.0f);
+            if (layers > 0 && m.layers.empty()) sawTerrainLayers = true;
+            if (!m.layers.empty()) sawTerrainPaint = true;
         }
 
         const int index = static_cast<int>(scene->materials.size());
@@ -364,6 +383,14 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
             tri.uv1 = v1.uv;
             tri.uv2 = v2.uv;
 
+            // Terrain paint. Gathered for every triangle because the table has
+            // to line up with the triangle list, and thrown away at the end if
+            // the scene turns out to have no painted terrain in it -- which is
+            // cheaper than deciding up front and being wrong.
+            paint.push_back(v0.paint);
+            paint.push_back(v1.paint);
+            paint.push_back(v2.paint);
+
             if (perVertexColor) {
                 // Voxels carry their colour in the paint attribute. One
                 // material per distinct colour, quantised, so a painted model
@@ -398,6 +425,9 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         scene->materials.emplace_back();
     }
 
+    if (sawTerrainPaint && paint.size() == scene->triangles.size() * 3)
+        scene->vertexPaint = std::move(paint);
+
     rep.triangles = static_cast<long long>(scene->triangles.size());
     rep.materials = static_cast<int>(scene->materials.size());
     rep.textures  = static_cast<int>(scene->textures.size());
@@ -406,8 +436,12 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         rep.notes.emplace_back("the scene is wet: the shader's rain darkening and "
                                "sheen are not traced, so surfaces render dry");
     if (sawTerrainLayers)
-        rep.notes.emplace_back("terrain layer textures are not traced: the "
-                               "terrain's base colour is used instead");
+        rep.notes.emplace_back("a terrain layer's texture could not be read: "
+                               "that layer falls back to the base colour");
+    if (sawTerrainPaint)
+        rep.notes.emplace_back("terrain layers are traced (height/slope bands, "
+                               "triplanar, hand-painted weights); their normal "
+                               "maps are not");
     rep.notes.emplace_back("grass, trees, particles, rain and water are not "
                                "traced: their geometry only exists in a shader");
     if (rep.culled > 0)

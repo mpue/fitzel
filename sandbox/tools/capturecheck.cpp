@@ -80,6 +80,127 @@ fitzel::MeshData quadData() {
     return d;
 }
 
+// --- Terrain layers ---------------------------------------------------------
+// A terrain is not textured by its UVs -- it is a heightfield, and a map laid on
+// it by its vertices stretches wherever the ground gets steep. It is coloured by
+// WHERE IT IS instead: each painted layer claims the surfaces whose height and
+// slope fall inside its band. Which means the whole thing can be wrong in a way
+// that still produces ground: the right texture in the wrong place.
+//
+// So: two layers with disjoint height bands, two pieces of ground at different
+// heights, and the question is whether each one got the layer that claims it.
+void checkTerrainLayers(const std::filesystem::path& outDir) {
+    std::printf("\nterrain layers\n");
+
+    fitzel::Shader shader = fitzel::Shader::fromSource(
+        "#version 330 core\nvoid main(){gl_Position=vec4(0);}",
+        "#version 330 core\nout vec4 c;\nvoid main(){c=vec4(1);}");
+
+    // Two flat, unmistakable colours. Flat on purpose: the question here is
+    // which layer landed where, and a patterned texture would only make the
+    // answer harder to read.
+    const unsigned char lowPx[]  = {220, 30, 30, 255, 220, 30, 30, 255,
+                                    220, 30, 30, 255, 220, 30, 30, 255};
+    const unsigned char highPx[] = {30, 40, 220, 255, 30, 40, 220, 255,
+                                    30, 40, 220, 255, 30, 40, 220, 255};
+    fitzel::Texture lowTex  = fitzel::Texture::fromPixels(lowPx,  2, 2, 4);
+    fitzel::Texture highTex = fitzel::Texture::fromPixels(highPx, 2, 2, 4);
+
+    fitzel::Material terrain(shader);
+    terrain.set("uColorMode", 1)
+           .set("uLayerCount", 2)
+           .set("uAlbedo", glm::vec3(0.0f, 1.0f, 0.0f))  // green = no layer covered
+           .set("uDetailScale", 0.0f)
+           .set("uLayerBand[0]", glm::vec4(-100.0f, 5.0f, 0.0f, 40.0f))
+           .set("uLayerScale[0]", 0.1f)
+           .set("uLayerBand[1]", glm::vec4(15.0f, 200.0f, 0.0f, 40.0f))
+           .set("uLayerScale[1]", 0.1f);
+    terrain.setTexture("uLayerTex[0]", lowTex,  3);
+    terrain.setTexture("uLayerTex[1]", highTex, 4);
+
+    const fitzel::MeshData data = quadData();
+    fitzel::Mesh quad = fitzel::Mesh::create(data);
+
+    fitzel::Camera camera(glm::vec3(0.0f, 90.0f, 0.0f));
+    camera.setBasis(glm::vec3(0.0f, -1.0f, 0.0f), glm::vec3(0.0f, 0.0f, -1.0f));
+    fitzel::Renderer renderer;
+    fitzel::DirectionalLight light;
+    renderer.begin(camera, 1.0f, light);
+
+    // Low ground at y = 0 and high ground at y = 20, each a 20 m square.
+    const glm::mat4 low  = glm::scale(
+        glm::translate(glm::mat4(1.0f), glm::vec3(-25.0f, 0.0f, 0.0f)),
+        glm::vec3(10.0f, 1.0f, 10.0f));
+    const glm::mat4 high = glm::scale(
+        glm::translate(glm::mat4(1.0f), glm::vec3(25.0f, 20.0f, 0.0f)),
+        glm::vec3(10.0f, 1.0f, 10.0f));
+    renderer.submit(quad, terrain, low);
+    renderer.submit(quad, terrain, high);
+
+    pathcapture::Options opt;
+    opt.maxDistance = 0.0f;
+    pathcapture::Report rep;
+    std::shared_ptr<pathtrace::Scene> scene =
+        pathcapture::capture(renderer, camera, opt, &rep);
+
+    check(!scene->materials.empty() && scene->materials[0].layers.size() == 2,
+          "both terrain layers were harvested",
+          scene->materials.empty()
+              ? "no material"
+              : std::to_string(scene->materials[0].layers.size()) + " layers");
+    if (!scene->materials.empty() && scene->materials[0].layers.size() == 2) {
+        const auto& L = scene->materials[0].layers;
+        check(near(L[0].band.y, 5.0f) && near(L[1].band.x, 15.0f),
+              "each layer kept the band it covers",
+              "layer 0 ends at " + std::to_string(L[0].band.y) +
+              ", layer 1 starts at " + std::to_string(L[1].band.x));
+        check(near(L[0].scale, 0.1f), "and its tiling");
+    }
+
+    // Base colour only: no light, no tonemap, so what comes back is the layer
+    // blend and nothing else.
+    pathtrace::Settings s;
+    s.width = 128; s.height = 128; s.samples = 4; s.batch = 4;
+    s.show = pathtrace::Show::BaseColor;
+    pathtrace::Job job;
+    job.start(scene, s);
+    while (job.running()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::vector<unsigned char> px;
+    if (!job.snapshotLdr(px)) { check(false, "the terrain rendered"); return; }
+
+    // Straight down from 90 m: a point's screen offset is x / (90 - y), scaled
+    // by the half-angle of the lens. Both squares are therefore findable by
+    // arithmetic rather than by looking.
+    const float halfTan = std::tan(glm::radians(30.0f));
+    auto screenX = [&](float worldX, float worldY) {
+        const float ndc = (worldX / (90.0f - worldY)) / halfTan;
+        return std::clamp(static_cast<int>((ndc * 0.5f + 0.5f) * 128.0f), 0, 127);
+    };
+    auto pixel = [&](int x, int y) {
+        const std::size_t o = (static_cast<std::size_t>(y) * 128 + x) * 4;
+        return glm::ivec3(px[o], px[o + 1], px[o + 2]);
+    };
+    const glm::ivec3 onLow  = pixel(screenX(-25.0f, 0.0f), 64);
+    const glm::ivec3 onHigh = pixel(screenX(25.0f, 20.0f), 64);
+
+    check(onLow.r > onLow.b + 40 && onLow.r > onLow.g + 40,
+          "ground below the first band's ceiling got the first layer",
+          "rgb " + std::to_string(onLow.r) + "," + std::to_string(onLow.g) + "," +
+          std::to_string(onLow.b));
+    check(onHigh.b > onHigh.r + 40 && onHigh.b > onHigh.g + 40,
+          "ground above the second band's floor got the second",
+          "rgb " + std::to_string(onHigh.r) + "," + std::to_string(onHigh.g) + "," +
+          std::to_string(onHigh.b));
+    // Green is the material's own base colour, which only shows where no layer
+    // claims the ground. Seeing it here would mean the bands were never applied.
+    check(!(onLow.g > onLow.r && onLow.g > onLow.b),
+          "the layers were applied, not skipped for the base colour");
+
+    const std::filesystem::path f = outDir / "capturecheck-terrain.png";
+    stbi_write_png(f.string().c_str(), 128, 128, 4, px.data(), 128 * 4);
+    std::printf("  wrote %s\n", f.string().c_str());
+}
+
 // --- Looking at a panorama --------------------------------------------------
 // Not a test: a way of SEEING what the offline renderer sees when a scene lights
 // from an HDRI. "The colours of the map are wrong" is a claim nothing in a
@@ -561,6 +682,8 @@ int main(int argc, char** argv) {
     }
 
     for (const std::string& n : rep.notes) std::printf("  note: %s\n", n.c_str());
+
+    checkTerrainLayers(outDir);
 
     // Optional: a panorama to look at, for when a render's sky is in question.
     if (argc > 2) dumpPanorama(argv[2], outDir);

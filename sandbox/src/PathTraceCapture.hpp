@@ -39,8 +39,10 @@ class Renderer;
 //   * Water -- a procedurally displaced surface, likewise.
 //   * The sky -- an analytic shader, replaced here by the HDRI when the scene
 //     has one and by a gradient when it does not.
-//   * Terrain layer TEXTURES -- the painted layers are triplanar-blended in the
-//     shader; the terrain's base colour is used instead.
+//   * Terrain layer NORMAL MAPS. The layers themselves are traced -- their
+//     height and slope bands, their triplanar projection and the hand-painted
+//     weights -- but the relief they carry is not, so the ground is coloured
+//     correctly and lit as the smooth surface it geometrically is.
 namespace pathcapture {
 
 struct Options {

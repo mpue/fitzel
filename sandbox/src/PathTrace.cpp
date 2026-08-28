@@ -136,6 +136,67 @@ glm::vec3 sampleGGXVNDF(const glm::vec3& Ve, float a, float u1, float u2) {
     return glm::normalize(glm::vec3(a * Nh.x, a * Nh.y, std::max(1e-6f, Nh.z)));
 }
 
+// --- Terrain shading --------------------------------------------------------
+// lit.frag's terrainSurface(), transcribed. A terrain has no UVs worth the name
+// -- it is a heightfield, and a texture laid on it by its vertices stretches
+// wherever the ground gets steep -- so the ground is coloured by WHERE IT IS
+// instead: each painted layer claims the surfaces whose height and slope fall
+// inside its band, and the layers cross-fade where the bands overlap.
+//
+// Transcribed rather than approximated, for the same reason as the tonemap: a
+// terrain that is nearly the viewport's is a terrain somebody has to decide
+// about, every time they look at a render.
+float hash21(const glm::vec2& p0) {
+    glm::vec2 p = glm::fract(p0 * glm::vec2(123.34f, 345.45f));
+    p += glm::dot(p, p + 34.345f);
+    return glm::fract(p.x * p.y);
+}
+
+float vnoise(const glm::vec2& p) {
+    const glm::vec2 i = glm::floor(p);
+    const glm::vec2 f = glm::fract(p);
+    const glm::vec2 u = f * f * (3.0f - 2.0f * f);
+    const float a = hash21(i);
+    const float b = hash21(i + glm::vec2(1, 0));
+    const float c = hash21(i + glm::vec2(0, 1));
+    const float d = hash21(i + glm::vec2(1, 1));
+    return glm::mix(glm::mix(a, b, u.x), glm::mix(c, d, u.x), u.y);
+}
+
+float detailFbm(glm::vec2 p) {
+    float sum = 0.0f, amp = 0.5f;
+    for (int i = 0; i < 4; ++i) {
+        sum += amp * vnoise(p);
+        p   *= 2.0f;
+        amp *= 0.5f;
+    }
+    return sum;
+}
+
+// A soft window: fully inside between start and end, feathered at both edges.
+float band(float x, float start, float end, float feather) {
+    const auto ss = [](float e0, float e1, float v) {
+        const float t = glm::clamp((v - e0) / std::max(e1 - e0, 1e-6f), 0.0f, 1.0f);
+        return t * t * (3.0f - 2.0f * t);
+    };
+    return ss(start - feather, start + feather, x) *
+           (1.0f - ss(end - feather, end + feather, x));
+}
+
+// One texture projected down all three axes and blended by the normal, so a
+// cliff face gets the same material as the flat beside it without a seam.
+glm::vec3 triplanar(const Image& tex, const glm::vec3& wp, const glm::vec3& n,
+                    float scale) {
+    glm::vec3 bw = glm::abs(n);
+    bw = bw * bw * bw * bw;                       // pow(|n|, 4): a tight blend
+    const float t = bw.x + bw.y + bw.z;
+    bw /= std::max(t, 1e-6f);
+    const glm::vec4 cx = tex.sample(wp.z * scale, wp.y * scale);
+    const glm::vec4 cy = tex.sample(wp.x * scale, wp.z * scale);
+    const glm::vec4 cz = tex.sample(wp.x * scale, wp.y * scale);
+    return glm::vec3(cx) * bw.x + glm::vec3(cy) * bw.y + glm::vec3(cz) * bw.z;
+}
+
 // --- The surface at a hit ---------------------------------------------------
 // The material with its texture already resolved, so the shading code below
 // never has to know whether a colour came from a map or a field.
@@ -732,6 +793,18 @@ struct Tracer {
         return t.uv0 * w + t.uv1 * u + t.uv2 * v;
     }
 
+    // The terrain paint at a hit. Zero when the scene carries none, which is
+    // the same answer an unpainted terrain gives -- so nothing downstream has
+    // to know whether the side table exists.
+    glm::vec4 paintAt(int tri, float u, float v) const {
+        if (sc.vertexPaint.empty()) return glm::vec4(0.0f);
+        const std::size_t o = static_cast<std::size_t>(tri) * 3;
+        if (o + 2 >= sc.vertexPaint.size()) return glm::vec4(0.0f);
+        const float w = 1.0f - u - v;
+        return sc.vertexPaint[o] * w + sc.vertexPaint[o + 1] * u +
+               sc.vertexPaint[o + 2] * v;
+    }
+
     // How much light survives one crossing of this triangle, as a colour. Glass
     // tints what passes through it, which is what stops a green-tinted
     // windscreen from casting a grey shadow.
@@ -749,11 +822,61 @@ struct Tracer {
         return glm::vec3(1.0f - a);
     }
 
-    Surface surfaceAt(const Material& m, const glm::vec2& uv, float& outAlpha) const {
+    // The terrain's colour at a point, from its layers. Returns false when no
+    // layer covers it, which is the shader's "gap between bands" case and falls
+    // back to the flat base colour exactly as lit.frag does.
+    bool terrainColorAt(const Material& m, const glm::vec3& wp, const glm::vec3& n,
+                        const glm::vec4& paint, glm::vec3& out) const {
+        if (m.layers.empty()) return false;
+
+        // The height-edge jitter. The shader fades this noise out where a pixel
+        // covers more than about one period of it, because it has one sample
+        // per pixel and would otherwise alias. Here it is taken at full
+        // strength everywhere: a path tracer already takes tens of samples per
+        // pixel with the ray jittered inside it, so the noise is AVERAGED
+        // rather than pointed at -- the one place the offline renderer gets a
+        // better answer than the shader for free rather than for effort.
+        const float detail = m.detailScale > 0.0f
+                           ? detailFbm(glm::vec2(wp.x, wp.z) * m.detailScale)
+                           : 0.5f;
+        const float h        = wp.y + (detail - 0.5f) * 3.0f;
+        const float slopeDeg = glm::degrees(std::acos(glm::clamp(n.y, -1.0f, 1.0f)));
+
+        // Hand-painted layers override the automatic height/slope blend where
+        // they cover, and leave it untouched where they do not.
+        const glm::vec4 p = glm::clamp(paint, glm::vec4(0.0f), glm::vec4(1.0f));
+        const float cover = glm::clamp(p.x + p.y + p.z + p.w, 0.0f, 1.0f);
+
+        glm::vec3 acc(0.0f);
+        float wsum = 0.0f;
+        for (std::size_t i = 0; i < m.layers.size(); ++i) {
+            const TerrainLayer& L = m.layers[i];
+            const float autoW = band(h, L.band.x, L.band.y, 1.5f) *
+                                band(slopeDeg, L.band.z, L.band.w, 6.0f);
+            const float pw = i < 4 ? p[static_cast<int>(i)] : 0.0f;
+            const float w  = autoW * (1.0f - cover) + pw;
+            if (w <= 0.0f) continue;
+            if (L.texture < 0 || L.texture >= static_cast<int>(sc.textures.size()))
+                continue;
+            acc  += triplanar(sc.textures[L.texture], wp, n, L.scale) * w;
+            wsum += w;
+        }
+        if (wsum < 1e-4f) return false;
+        out = acc / wsum;
+        return true;
+    }
+
+    Surface surfaceAt(const Material& m, const glm::vec2& uv, const glm::vec3& wp,
+                      const glm::vec3& n, const glm::vec4& paint,
+                      float& outAlpha) const {
         Surface s;
         glm::vec3 base = m.albedo;
         float     texA = 1.0f;
-        if (m.texture >= 0 && m.texture < static_cast<int>(sc.textures.size())) {
+        glm::vec3 terrain;
+        if (terrainColorAt(m, wp, n, paint, terrain)) {
+            base = terrain;
+        } else if (m.texture >= 0 &&
+                   m.texture < static_cast<int>(sc.textures.size())) {
             const glm::vec4 t = sc.textures[m.texture].sample(uv.x, uv.y);
             base = glm::vec3(t) * m.tint;
             texA = t.a;
@@ -986,6 +1109,14 @@ struct Tracer {
             // literally the colour the texture holds and the inspector shows.
             // Linearising here would make every diagnostic look too dark and
             // start a second hunt.
+            glm::vec3 N = tri.n0 * w + tri.n1 * hit.u + tri.n2 * hit.v;
+            N = glm::dot(N, N) < 1e-12f
+              ? glm::normalize(glm::cross(tri.p1 - tri.p0, tri.p2 - tri.p0))
+              : glm::normalize(N);
+            glm::vec3 terrain;
+            if (terrainColorAt(mat, ray.o + ray.d * hit.t, N,
+                               paintAt(hit.tri, hit.u, hit.v), terrain))
+                return terrain;
             if (mat.texture >= 0 && mat.texture < static_cast<int>(sc.textures.size()))
                 return glm::vec3(sc.textures[mat.texture].sample(uv.x, uv.y)) * mat.tint;
             return mat.albedo;
@@ -1065,7 +1196,10 @@ struct Tracer {
             if (glm::dot(N, -ray.d) < 0.0f) N = -N; // shade the side we can see
 
             float texA = 1.0f;
-            const Surface s = surfaceAt(mat, uv, texA);
+            // gN, not N: the slope a layer band tests is the ground's, not the
+            // one turned to face the eye.
+            const Surface s = surfaceAt(mat, uv, P, gN,
+                                        paintAt(hit.tri, hit.u, hit.v), texA);
 
             // Cutout and blended surfaces: decide whether this ray sees the
             // surface at all before doing any shading work.

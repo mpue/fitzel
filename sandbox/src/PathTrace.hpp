@@ -59,6 +59,17 @@ struct Image {
     glm::vec4 sample(float u, float v) const;
 };
 
+// One painted terrain layer. A layer covers the ground wherever the surface's
+// HEIGHT and its SLOPE both fall inside the layer's band, cross-fading with
+// whatever else overlaps it -- which is how a terrain gets sand at the water
+// line, grass on the flats, rock on the steep faces and snow up top without
+// anybody painting a mask.
+struct TerrainLayer {
+    int       texture = -1;          // index into Scene::textures
+    glm::vec4 band{0.0f};            // height start/end, slope start/end (degrees)
+    float     scale = 0.1f;          // world units -> texture tiling, triplanar
+};
+
 // A surface, in the same terms the material asset and lit.frag use. See
 // MaterialDef in SceneTypes.hpp -- these fields are that struct, resolved.
 //
@@ -82,6 +93,13 @@ struct Material {
     // 0 opaque / 1 cutout / 2 blend, matching AlphaMode in SceneTypes.hpp.
     int       alphaMode    = 0;
     float     alphaCutoff  = 0.5f;
+
+    // Terrain (uColorMode == 1). Empty on every other material, which is what
+    // makes this a description of the surface rather than a mode flag: a
+    // material with layers is shaded from them, one without is not.
+    std::vector<TerrainLayer> layers;
+    float detailScale    = 0.0f;   // frequency of the height-edge jitter
+    float detailStrength = 0.0f;   // unused for colour; kept for completeness
 };
 
 // One triangle, world space, with the vertex normals and UVs it was drawn with.
@@ -188,6 +206,14 @@ struct Grade {
 // editing the scene while a render of the old one finishes.
 struct Scene {
     std::vector<Triangle> triangles;
+    // Terrain paint weights, three per triangle, parallel to `triangles`.
+    //
+    // Kept beside the triangles rather than inside them because it is dead
+    // weight on everything else: a car is a hundred thousand triangles that
+    // will never be painted, and forty-eight bytes each of nothing is a real
+    // cost in a structure the tracer is bandwidth-bound on. Empty when the
+    // scene has no painted terrain in it, which is most scenes.
+    std::vector<glm::vec4> vertexPaint;
     std::vector<Material> materials;
     std::vector<Image>    textures;
     Sun                   sun;

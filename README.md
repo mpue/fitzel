@@ -372,10 +372,18 @@ difference.
 - **Saving writes a linear `.exr` beside the PNG**, since the PNG has already been
   through the tonemap and cannot be graded back out of it.
 
+The terrain is coloured the way the shader colours it: a heightfield has no UVs worth
+the name, so each painted layer claims the ground whose height *and* slope fall inside
+its band, projected triplanar and cross-faded where bands overlap, with hand-painted
+weights overriding. One thing comes out better offline than on the GPU -- the noise that
+jitters the band edges has to be faded out in the shader wherever a pixel covers more
+than one period of it, while the tracer takes tens of jittered samples per pixel and so
+resolves it instead.
+
 Not traced, and said so in the panel rather than left to be noticed: grass, trees,
 particles, rain and water, whose geometry only ever exists inside a vertex shader; and
-the terrain's painted layer textures, which are blended triplanar in the shader (its
-base colour is used).
+the terrain layers' normal maps, so the ground is the right colour and lit as the smooth
+surface it geometrically is.
 
 `sandbox/src/PathTrace.hpp` is the tracer and touches no GL at all -- which is what lets
 `pathcheck` below test it against known answers. `PathTraceCapture.hpp` is the half that
