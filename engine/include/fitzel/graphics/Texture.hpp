@@ -63,6 +63,16 @@ public:
 
     bool isValid() const { return m_id != 0; }
 
+    // Pull the top mip back off the GPU as RGBA8. The CPU-side counterpart to
+    // bind(): a consumer that has to SAMPLE a surface rather than draw it (the
+    // path tracer reading a car's base-colour map) needs the pixels, and this is
+    // cheaper than re-decoding the file -- which it may not even have, since a
+    // texture can come from a .fpak, a video frame or a procedural fill.
+    //
+    // A full stall, like Mesh::readback(): one-off work only. Invalid texture ->
+    // an invalid ImagePixels.
+    ImagePixels readback() const;
+
     // Bind to a texture unit (0 by default).
     void bind(std::uint32_t unit = 0) const;
 

@@ -341,6 +341,26 @@ Texture Texture::thumbnail(const std::string& path, int maxDim) {
     return fromImagePixels(decodeThumbnail(path, maxDim));
 }
 
+ImagePixels Texture::readback() const {
+    ImagePixels img;
+    if (!m_id || m_width <= 0 || m_height <= 0) return img;
+
+    img.width    = m_width;
+    img.height   = m_height;
+    img.channels = 4;
+    img.pixels.resize(static_cast<std::size_t>(m_width) * m_height * 4);
+
+    // Row length/alignment are set explicitly rather than assumed: a stale
+    // GL_PACK_* from some other code path is exactly the kind of state leak that
+    // produces a sheared image and gets blamed on the reader.
+    glBindTexture(GL_TEXTURE_2D, m_id);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ROW_LENGTH, 0);
+    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, img.pixels.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return img;
+}
+
 void Texture::bind(std::uint32_t unit) const {
     glActiveTexture(GL_TEXTURE0 + unit);
     glBindTexture(GL_TEXTURE_2D, m_id);

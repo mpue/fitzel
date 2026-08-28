@@ -166,6 +166,15 @@ void Renderer::setViewport(int width, int height) {
     m_vpHeight = height;
 }
 
+std::vector<Renderer::Submission> Renderer::submissions() const {
+    std::vector<Submission> out;
+    out.reserve(m_queue.size());
+    for (const Renderable& r : m_queue)
+        out.push_back({r.mesh, r.material, r.model, r.opacity, r.reflective,
+                       r.forceTransparent});
+    return out;
+}
+
 void Renderer::begin(const Camera& camera, float aspect,
                      const DirectionalLight& light) {
     m_camera = &camera;

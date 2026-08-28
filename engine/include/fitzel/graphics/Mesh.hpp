@@ -52,6 +52,24 @@ public:
     // Issue the draw call. Assumes a shader is already bound.
     void draw() const;
 
+    // Pull the geometry back off the GPU.
+    //
+    // create() uploads and forgets: after it returns, the only copy of the mesh
+    // is the one in the driver's buffer, and the CPU knows nothing but the
+    // bounds. That is right for drawing and wrong for anything that has to
+    // REASON about the surface -- the path tracer, which needs triangles, not
+    // draw calls. Rather than keep a second copy of every mesh alive for the one
+    // time in a session somebody renders a still, this asks the driver for it
+    // back at that moment.
+    //
+    // Costs a full pipeline stall, so it belongs in a one-off (an offline
+    // render), never in a frame. Needs a current GL context. An empty MeshData
+    // means there was nothing uploaded.
+    MeshData readback() const;
+
+    std::uint32_t vertexCount() const { return m_vertexCount; }
+    std::uint32_t indexCount()  const { return m_indexCount; }
+
     // Local-space axis-aligned bounding box (for frustum culling).
     const glm::vec3& boundsMin() const { return m_boundsMin; }
     const glm::vec3& boundsMax() const { return m_boundsMax; }

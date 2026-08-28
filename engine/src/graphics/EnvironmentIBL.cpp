@@ -301,6 +301,19 @@ void EnvironmentIBL::renderCube() const {
     glBindVertexArray(0);
 }
 
+EnvironmentIBL::Panorama EnvironmentIBL::loadPanorama(const std::string& path) {
+    Panorama pano;
+    int w = 0, h = 0;
+    float* px = loadEquirect(path, w, h);
+    if (!px) return pano;
+    pano.exposureScale = normalizeEquirect(px, w, h);
+    pano.width  = w;
+    pano.height = h;
+    pano.pixels.assign(px, px + static_cast<std::size_t>(w) * h * 3);
+    std::free(px);
+    return pano;
+}
+
 bool EnvironmentIBL::load(const std::string& path) {
     int w = 0, h = 0;
     float* pixels = loadEquirect(path, w, h);

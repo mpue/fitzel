@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "fitzel/graphics/Shader.hpp"
 
@@ -20,6 +21,25 @@ public:
     ~EnvironmentIBL();
     EnvironmentIBL(const EnvironmentIBL&)            = delete;
     EnvironmentIBL& operator=(const EnvironmentIBL&) = delete;
+
+    // The panorama on the CPU, decoded and rescaled exactly as load() does it.
+    //
+    // Exposed because a second consumer exists -- the offline path tracer lights
+    // from the same sky the raster path does -- and the one thing that must not
+    // be duplicated is the NORMALISATION. It is not a plain decode: the mean
+    // luminance is measured and the whole image rescaled to a common brightness
+    // (see normalizeEquirect), so a renderer that merely re-read the file would
+    // light its scene at a different exposure than the viewport and there would
+    // be nothing in either to say which was right.
+    //
+    // No GL, so this is safe off the render thread. Empty pixels = load failed.
+    struct Panorama {
+        std::vector<float> pixels;  // equirectangular RGB, row 0 = up
+        int   width = 0, height = 0;
+        float exposureScale = 1.0f; // the factor the rescale applied
+        bool  valid() const { return !pixels.empty() && width > 0 && height > 0; }
+    };
+    static Panorama loadPanorama(const std::string& path);
 
     // Load an equirectangular HDR file and build the env / irradiance /
     // prefilter cubemaps. Returns false (and leaves valid() false) on failure.

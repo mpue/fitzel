@@ -205,6 +205,46 @@ public:
     int lastDrawn()  const { return m_lastDrawn; }
     int lastCulled() const { return m_lastCulled; }
 
+    // What the frame submitted, for a consumer that has to render the scene a
+    // SECOND way.
+    //
+    // The queue is the only place that knows the whole drawn world in one list.
+    // Terrain chunks, roads, bridges, loops, decals, splines, city towers and
+    // every entity mesh arrive here from a dozen unrelated systems, and by the
+    // time they do, all of them are the same thing: a mesh, a surface and a
+    // place. An offline renderer that harvested those systems one by one would
+    // have to be extended every time a new one is written, and would quietly
+    // omit whatever nobody remembered; harvesting the queue cannot, because the
+    // queue is what "the scene" means to the picture on screen.
+    //
+    // Valid between submit() and the next begin(). The pointers are the caller's
+    // own meshes and materials -- borrowed, not owned.
+    struct Submission {
+        const Mesh*     mesh;
+        const Material* material;
+        glm::mat4       model;
+        float           opacity;
+        bool            reflective;
+        // The caller's forceTransparent: this material's transparency lives in
+        // its texture's alpha channel rather than in the scalar. Carried
+        // because it is the ONLY thing that separates a map whose alpha means
+        // transparency from one whose alpha means nothing -- and a great many
+        // opaque materials ship an atlas with an alpha channel in it.
+        bool            textureAlphaIsTransparency;
+    };
+    std::vector<Submission> submissions() const;
+
+    // The frame's lighting, as it was handed in. Same purpose as submissions():
+    // a second renderer needs the sun the first one used, not one reconstructed
+    // from the scene file and hoped to match.
+    const DirectionalLight&        light()        const { return m_light; }
+    const std::vector<PointLight>& pointLights()  const { return m_pointLights; }
+    const std::vector<SpotLight>&  spotLights()   const { return m_spotLights; }
+    const Fog&                     fog()          const { return m_fog; }
+    float                          exposure()     const { return m_exposure; }
+    bool                           iblEnabled()   const { return m_iblEnabled && m_ibl; }
+    float                          iblIntensity() const { return m_iblIntensity; }
+
 private:
     struct Renderable {
         const Mesh*     mesh;

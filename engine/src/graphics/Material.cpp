@@ -16,6 +16,16 @@ Material& Material::setTexture(const std::string& name, const Texture& texture,
     return *this;
 }
 
+const Material::Value* Material::uniform(const std::string& name) const {
+    auto it = m_uniforms.find(name);
+    return it == m_uniforms.end() ? nullptr : &it->second;
+}
+
+const Texture* Material::texture(const std::string& name) const {
+    auto it = m_textures.find(name);
+    return it == m_textures.end() ? nullptr : it->second.texture;
+}
+
 void Material::apply() const {
     m_shader->bind();
 

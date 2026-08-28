@@ -166,6 +166,34 @@ void Mesh::update(const std::vector<Vertex>& vertices) {
     if (!vertices.empty()) { m_boundsMin = lo; m_boundsMax = hi; }
 }
 
+MeshData Mesh::readback() const {
+    MeshData data;
+    if (!m_vbo || m_vertexCount == 0) return data;
+
+    // The VBO holds exactly the Vertex struct that create() wrote, so the read
+    // is a straight memcpy out of the driver -- no attribute walking, no format
+    // guessing. If the layout in Mesh.hpp ever changes, this follows it for free.
+    data.vertices.resize(m_vertexCount);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    glGetBufferSubData(GL_ARRAY_BUFFER, 0,
+                       static_cast<GLsizeiptr>(m_vertexCount * sizeof(Vertex)),
+                       data.vertices.data());
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    if (m_ebo && m_indexCount > 0) {
+        data.indices.resize(m_indexCount);
+        // Bound to the plain target, not through the VAO: binding an element
+        // buffer while a VAO is current would rewrite that VAO's index binding.
+        glBindVertexArray(0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
+        glGetBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0,
+                           static_cast<GLsizeiptr>(m_indexCount * sizeof(std::uint32_t)),
+                           data.indices.data());
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    }
+    return data;
+}
+
 void Mesh::draw() const {
     glBindVertexArray(m_vao);
     if (m_indexCount > 0) {
