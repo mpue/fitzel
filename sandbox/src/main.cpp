@@ -71,6 +71,8 @@
 #include "SceneSubmit.hpp"
 #include "MaterialsPanel.hpp"
 #include "MeshPaintPanel.hpp"
+#include "ModelsPanel.hpp"
+#include "PrefabsPanel.hpp"
 #ifndef FITZEL_PLAYER
 #include "Autosave.hpp"
 #include "GridRenderer.hpp"
@@ -11840,85 +11842,20 @@ int main(int argc, char** argv) {
 
             // Model import: list glTF/GLB files under models/ and drop one into
             // the scene in front of the camera as a Model entity.
-            if (showModels) {
-                if (ImGui::Begin("Models", &showModels)) {
-                    ImGui::TextDisabled("Import glTF/GLB from the models/ folder.");
-                    std::error_code mec;
-                    std::vector<std::string> files;
-                    for (const auto& e :
-                         std::filesystem::directory_iterator(modelDir, mec)) {
-                        if (!e.is_regular_file()) continue;
-                        std::string ext = e.path().extension().string();
-                        for (char& c : ext) c = static_cast<char>(std::tolower(
-                            static_cast<unsigned char>(c)));
-                        if (ext == ".glb" || ext == ".gltf" || ext == ".dae" || ext == ".fbx")
-                            files.push_back(e.path().filename().string());
-                    }
-                    std::sort(files.begin(), files.end());
-                    for (const std::string& f : files)
-                        if (ImGui::Selectable(f.c_str(), modelFile == f)) modelFile = f;
-
-                    ImGui::Separator();
-                    ImGui::BeginDisabled(modelFile.empty());
-                    if (ImGui::Button("Import to scene")) {
-                        const std::string path = modelDir + "/" + modelFile;
-                        const glm::vec3 p = camera.position() + camera.front() * 8.0f;
-                        const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
-                        if (isStructuredModel(path)) addModelHierarchy(g, path);
-                        else {
-                            const int id = models.import(path, assetDb, materials);
-                            if (id >= 0) addModelEntity(g, id);
-                        }
-                    }
-                    ImGui::EndDisabled();
-                    ImGui::TextDisabled("%d model(s) loaded.",
-                                        static_cast<int>(models.size()));
-                }
-                ImGui::End();
-            }
+            modelsui::drawPanel({showModels, modelDir, modelFile,
+                                 models, assetDb, materials,
+                                 camera, streamer,
+                                 isStructuredModel, addModelHierarchy,
+                                 addModelEntity});
 
             // Prefabs: reusable object templates saved in the project's prefabs/
             // folder. Make one from the current selection, or click a saved prefab
             // to drop an instance into the scene (on the ground in front of the
             // camera). See PrefabSystem.hpp.
-            if (showPrefabs) {
-                ImGui::SetNextWindowSize(ImVec2(300.0f, 380.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Prefabs", &showPrefabs)) {
-                    const std::string dir = prefabDir();
-                    if (dir.empty()) {
-                        ImGui::TextWrapped(
-                            "Open or create a project first -- prefabs are saved in "
-                            "the project's prefabs/ folder.");
-                    } else {
-                        const bool hasSel =
-                            entitySel >= 0 &&
-                            entitySel < static_cast<int>(entities.size()) &&
-                            entities[entitySel].type != EntityType::Sun;
-                        ImGui::TextDisabled("New prefab from the selected object:");
-                        ImGui::SetNextItemWidth(-1.0f);
-                        ImGui::InputText("##prefabName", prefabNameBuf,
-                                         sizeof(prefabNameBuf));
-                        ImGui::BeginDisabled(!hasSel || prefabNameBuf[0] == '\0');
-                        if (ImGui::Button("Create from selection", ImVec2(-1.0f, 0.0f)))
-                            createPrefabFromSelection(prefabNameBuf);
-                        ImGui::EndDisabled();
-                        if (!hasSel)
-                            ImGui::TextDisabled("(select an object in the scene first)");
-
-                        ImGui::Separator();
-                        ImGui::TextDisabled("Click a prefab to add it to the scene:");
-                        ImGui::BeginChild("##prefabList", ImVec2(0.0f, 0.0f), true);
-                        const auto items = prefab::list(dir);
-                        for (const auto& it : items)
-                            if (ImGui::Selectable((it.first + "##" + it.second).c_str()))
-                                instantiatePrefabFile(it.second);
-                        if (items.empty())
-                            ImGui::TextDisabled("(no prefabs yet)");
-                        ImGui::EndChild();
-                    }
-                }
-                ImGui::End();
-            }
+            prefabsui::drawPanel({showPrefabs, prefabDir, entities, entitySel,
+                                  prefabNameBuf, sizeof(prefabNameBuf),
+                                  createPrefabFromSelection,
+                                  instantiatePrefabFile});
 
             // Import Unity asset: browse an asset folder, preview which textures
             // map by Unity naming convention, then import the FBX as a hierarchy
