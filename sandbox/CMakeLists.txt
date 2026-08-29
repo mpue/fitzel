@@ -1,6 +1,7 @@
 # Runtime sources: everything needed to load a saved project and render/simulate
 # it at play time. Shared by the editor (sandbox) and the editor-free player.
 set(SANDBOX_RUNTIME_SOURCES
+    src/SceneSubmit.cpp
     src/main.cpp
     src/Primitives.cpp
     # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
