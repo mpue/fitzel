@@ -1,6 +1,12 @@
 # Normalize line endings: store as LF in the repo, check out native on Windows.
 * text=auto
 
+# Batch files are always CRLF. Not cosmetic: cmd.exe reads a .bat by byte
+# offset, and with bare LF endings `call :label` intermittently fails to find
+# its target ("Das Sprungziel wurde nicht gefunden") -- a check that silently
+# does not run looks exactly like one that passed.
+*.bat   text eol=crlf
+
 # Sources and assets are always LF.
 *.cpp   text eol=lf
 *.hpp   text eol=lf

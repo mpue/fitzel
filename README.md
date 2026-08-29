@@ -491,7 +491,18 @@ because an unfilled one is a black spot that smears into every surface near it.
 
 Several things here cannot be judged from inside the editor, and each has a small
 console program that renders or measures it on its own. They are built alongside the
-game and run by hand; none of them ship.
+game; none of them ship.
+
+`check-all.bat` runs the ones that have a verdict and prints a line each -- quiet
+while they pass, and the failing tool's own output where one does not. It runs them
+from the repository root, which they need (they resolve `content\`, `images\` and
+`sandbox\assets\` relative to it), and sends everything they produce to
+`build\checks\`. Left out by default and added by `--all`: `audiocheck`, which
+plays sixteen audible seconds, and `skycheck` and `fogcheck`, which are ways of
+SEEING and cannot fail. `--build` builds first.
+
+The table below is what each one is for; run them singly while working on that
+one thing.
 
 | Tool | What it answers |
 | ---- | --------------- |
