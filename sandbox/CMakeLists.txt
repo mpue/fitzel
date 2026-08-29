@@ -1,6 +1,7 @@
 # Runtime sources: everything needed to load a saved project and render/simulate
 # it at play time. Shared by the editor (sandbox) and the editor-free player.
 set(SANDBOX_RUNTIME_SOURCES
+    src/SceneGraph.cpp
     src/SceneSubmit.cpp
     src/main.cpp
     src/Primitives.cpp
@@ -250,6 +251,29 @@ add_executable(meshpaintcheck tools/meshpaintcheck.cpp src/MeshPaint.cpp
                               src/MultiShot.cpp)
 target_compile_definitions(meshpaintcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(meshpaintcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# viewcheck (sandbox/tools/viewcheck.cpp): renders a project's scene offscreen
+# and writes it to a PNG. Every other harness measures; this one LOOKS, which is
+# the only way to answer whether a wall is wearing the brick or the default grey.
+# Draws through scenesubmit::submit -- the same code the editor draws through --
+# because a harness with its own submit loop would eventually show a picture the
+# screen does not, and a wrong answer that looks like evidence is worse than none.
+# Links imgui for ImGuizmo alone: the editor composes every object's matrix with
+# it, and a second implementation would be a picture of a slightly different scene.
+#   build/release/bin/viewcheck.exe <projectFolder> [out.png] [--size WxH]
+add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp
+                         src/SceneGraph.cpp
+                         src/ProjectIO.cpp src/GameSettings.cpp
+                         src/ModelLibrary.cpp src/Component.cpp
+                         src/Primitives.cpp src/EditMesh.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(viewcheck PRIVATE FITZEL_PLAYER
+    # The same engine content root the editor falls back to, so a material's
+    # textures resolve here too -- a harness that renders textured surfaces
+    # untextured would lie about the one question it exists to answer.
+    FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
+target_link_libraries(viewcheck PRIVATE fitzel imgui stb_headers
+                                        nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
 # a parked car, a fast one, a lorry and a slope, and measures what a camera fault

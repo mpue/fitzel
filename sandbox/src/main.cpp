@@ -67,6 +67,7 @@
 #include "RainRenderer.hpp"
 #include "EditMesh.hpp"
 #include "MeshPaint.hpp"
+#include "SceneGraph.hpp"
 #include "SceneSubmit.hpp"
 #include "MeshPaintPanel.hpp"
 #ifndef FITZEL_PLAYER
@@ -2302,14 +2303,11 @@ int main(int argc, char** argv) {
         };
         // Build translate * rotate(euler deg) * scale via ImGuizmo's own compose
         // so the gizmo and the rendered transform share one Euler convention.
+        // The scene's composition convention, shared with everything else that
+        // has to agree with it exactly (see SceneGraph.hpp).
         auto composeModel = [](const glm::vec3& t, const glm::vec3& rotDeg,
                                const glm::vec3& s) {
-            const float tt[3] = {t.x, t.y, t.z};
-            const float rr[3] = {rotDeg.x, rotDeg.y, rotDeg.z};
-            const float ss[3] = {s.x, s.y, s.z};
-            float m[16];
-            ImGuizmo::RecomposeMatrixFromComponents(tt, rr, ss, m);
-            return glm::make_mat4(m);
+            return scenegraph::compose(t, rotDeg, s);
         };
         // Place an imported model as a Model entity sitting on the terrain.
         auto addModelEntity = [&](glm::vec3 groundPos, int modelId) {

@@ -545,6 +545,7 @@ one thing.
 | Tool | What it answers |
 | ---- | --------------- |
 | `shadercheck <shaders>` | Does every shader still compile? A broken one costs its effect *silently* -- the Release editor is `/SUBSYSTEM:WINDOWS` and has nowhere to print a compile error to. Exits non-zero. |
+| `viewcheck <project> [out.png]` | What does the scene actually LOOK like? Loads a project and renders its objects offscreen to a PNG, through `scenesubmit::submit` -- the same code the editor draws through, which is the whole reason that function was lifted out of `main()`. No terrain, sky, water or post chain yet: this is the objects on a flat ground colour, which is the view for a question about a material, a mesh or a stroke of paint. Prints what it drew and what it skipped, with each object's material, because the first question about a surprising picture is always whether the scene is what you think it is. |
 | `skycheck <out> <shaders>` | What does the sky actually look like? Renders `sky.frag` alone, from cameras pointed where the clouds are. |
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
 | `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
