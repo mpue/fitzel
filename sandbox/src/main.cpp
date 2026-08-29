@@ -1856,6 +1856,8 @@ int main(int argc, char** argv) {
             roadUndoOpen = false;
             auto cmd = std::make_unique<RoadShapeCmd>(road, roadUndoBefore,
                                                       road.shape(), label);
+            // push(), not pushApplied(): RoadShapeCmd::redo does more than
+            // assign -- it flags the rebuild the committed shape needs.
             if (!cmd->trivial()) history.push(std::move(cmd), document);
         };
         // The point edits above predate the history (they are declared before it,
@@ -2726,7 +2728,7 @@ int main(int argc, char** argv) {
             mc->touch();
             e.components.items.push_back(std::move(mc));
             meshFaceSel = -1;
-            history.push(std::make_unique<ModifyEntityCmd>(before, e), document);
+            history.pushApplied(std::make_unique<ModifyEntityCmd>(before, e));
         };
         // The scale an entity currently applies to its mesh (1 unless someone has
         // dragged the Scale gizmo). Read before an edit and re-applied after, or
@@ -2770,7 +2772,7 @@ int main(int argc, char** argv) {
             meshFaceSel = op(*mc);
             normalizeMeshEntity(e, *mc, scale);
             auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
-            if (!cmd->trivial()) history.push(std::move(cmd), document);
+            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
         };
         // World-space corners of one face of the selected mesh, for picking and
         // for drawing the highlight. Empty when there is no such face.
@@ -3211,7 +3213,7 @@ int main(int argc, char** argv) {
                 if (auto* cc = e.components.get<CameraComponent>())
                     cc->activeOnStart = (e.id == entId);
             auto cmd = std::make_unique<ModifyEntitiesCmd>(before, snapshotEntities(camIds));
-            if (!cmd->trivial()) history.push(std::move(cmd), document);
+            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
         };
         // Context-menu helpers (index-based; capture the id first so the entities
         // vector may safely grow underneath).
@@ -8618,7 +8620,7 @@ int main(int argc, char** argv) {
                                 entitySel = hit;
                                 auto cmd = std::make_unique<ModifyEntitiesCmd>(
                                     before, snapshotEntities(ids));
-                                if (!cmd->trivial()) history.push(std::move(cmd), document);
+                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                             }
                         }
                     }
@@ -9469,7 +9471,7 @@ int main(int argc, char** argv) {
                         Entity* e = document.find(meshPaintBefore.id);
                         if (!e) return;
                         auto cmd = std::make_unique<ModifyEntityCmd>(meshPaintBefore, *e);
-                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                     };
                     // Only one tool may own the left button. The older panels each
                     // switch their rivals off from their own list; rather than add
@@ -9760,7 +9762,7 @@ int main(int argc, char** argv) {
                             gizmoActive = false;
                             auto cmd = std::make_unique<ModifyEntitiesCmd>(
                                 gizmoBefore, snapshotEntities(gizmoIds));
-                            if (!cmd->trivial()) history.push(std::move(cmd), document);
+                            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                         }
                     }
                     if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
@@ -9850,7 +9852,7 @@ int main(int argc, char** argv) {
                                 // the shape -- that happens on every frame above.
                                 faceGizmoActive = false;
                                 auto cmd = std::make_unique<ModifyEntityCmd>(faceGizmoBefore, b);
-                                if (!cmd->trivial()) history.push(std::move(cmd), document);
+                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                             }
                         }
                         else if (entityEditMode) {
@@ -10859,7 +10861,7 @@ int main(int argc, char** argv) {
                     if (wantClearPaint && meshpaint::clear(m->mesh)) { m->touch(); did = true; }
                     if (did) {
                         auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
-                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                     }
                 }
             }
@@ -11815,7 +11817,7 @@ int main(int argc, char** argv) {
                             inspEditId = -1;
                             auto cmd = std::make_unique<ModifyEntitiesCmd>(
                                 inspEditBefore, snapshotEntities(inspEditIds));
-                            if (!cmd->trivial()) history.push(std::move(cmd), document);
+                            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                         }
                     }
                 } else {
@@ -12803,7 +12805,7 @@ int main(int argc, char** argv) {
                     std::string rep = vehicleui::autoSetup(document, rootId);
                     if (Entity* after = document.find(rootId)) {
                         auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
-                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                     }
                     return rep;
                 };
@@ -12849,7 +12851,7 @@ int main(int argc, char** argv) {
                     std::string rep = gliderui::autoSetup(document, rootId);
                     if (Entity* after = document.find(rootId)) {
                         auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
-                        if (!cmd->trivial()) history.push(std::move(cmd), document);
+                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                     }
                     return rep;
                 };

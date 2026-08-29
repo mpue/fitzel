@@ -31,6 +31,33 @@ public:
         m_redo.clear();
         ++m_revision;
     }
+    // Bank a change that is ALREADY in the document. push() runs the command's
+    // redo, which is exactly right when the command IS the change -- and wrong
+    // when the caller made it by hand first, which is what everything that
+    // snapshots an entity before and after does. Redo then assigns that "after"
+    // copy over the live entity to reach a state it is already in: a deep copy
+    // of every component for nothing, and -- because assigning a ComponentList
+    // destroys the old components and clones new ones -- every pointer into that
+    // entity left dangling. A viewport tool that goes on drawing from the
+    // component it just edited then reads freed memory, which is a crash that
+    // waits for the allocator to reuse the block rather than one that happens
+    // where the mistake is.
+    //
+    // Undo and redo are unaffected: the command still carries both snapshots, so
+    // the first Ctrl+Z has a "before" to go back to and the redo after it puts
+    // the "after" back the ordinary way.
+    //
+    // Not every already-applied caller can use this. It is right when redo()
+    // only ASSIGNS state -- the entity snapshot commands. Where redo() also does
+    // work (RoadShapeCmd::redo calls setShape, which flags a rebuild and
+    // regenerates the side objects, city and decals) that work still has to
+    // happen, so those callers stay on push().
+    void pushApplied(std::unique_ptr<Command> c) {
+        if (!c) return;
+        m_undo.push_back(std::move(c));
+        m_redo.clear();
+        ++m_revision;
+    }
     void undo(Document& doc) {
         if (m_undo.empty()) return;
         m_undo.back()->undo(doc);
