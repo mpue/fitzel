@@ -130,6 +130,16 @@ cmake --build build
 On Windows the bundled CMake/Ninja/compiler ship with Visual Studio — run the
 commands from a *Developer PowerShell for VS* so the toolchain is on `PATH`.
 
+## Invariants
+
+A handful of rules hold BETWEEN files and so live in none of them -- which
+texture units are spoken for, which shader uniforms every material has to write
+because the program is shared, when an undo push invalidates the pointers you
+are holding. Breaking one of them is silent: nothing crashes, an effect simply
+stops appearing, or appears somewhere else weeks later.
+[docs/invariants.md](docs/invariants.md) collects them, each with the code it
+was read out of.
+
 ## Extending the engine
 
 The engine exposes a small, RAII-based core to build on:
