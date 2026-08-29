@@ -97,6 +97,9 @@ set(SANDBOX_RUNTIME_SOURCES
 # by both -- the runtime render uses its TerrainLook/TerrainLayer structs -- but
 # TerrainPanel.cpp, the panel widget, is editor-only.)
 set(SANDBOX_EDITOR_SOURCES
+    # Crash recovery: the periodic scene snapshot and the dialog that offers it
+    # back. Editor-only -- the player has no unsaved work to lose.
+    src/Autosave.cpp
     src/GridRenderer.cpp
     # Standard views + middle-mouse pan for the editor viewport. Editor-only:
     # the player has a game to look at, not a viewport to navigate.
@@ -214,6 +217,21 @@ add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# The autosave check (sandbox/tools/autosavecheck.cpp): drives the crash-snapshot
+# writer over a simulated afternoon of editing and round-trips a scene through a
+# snapshot file. Autosave is the one subsystem whose failure is invisible -- a
+# snapshot never written, or written with its material GUIDs lost, looks exactly
+# like a working one until the day somebody needs it, and by then the work is
+# gone. Built with FITZEL_PLAYER so ProjectIO leaves the exporter (icon writer,
+# installer) out: the harness has no use for it.
+#   build/release/bin/autosavecheck.exe [workDir]
+add_executable(autosavecheck tools/autosavecheck.cpp src/Autosave.cpp
+                             src/ProjectIO.cpp src/GameSettings.cpp
+                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                             src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(autosavecheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(autosavecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
 # a parked car, a fast one, a lorry and a slope, and measures what a camera fault

@@ -29,20 +29,30 @@ public:
         c->redo(doc);
         m_undo.push_back(std::move(c));
         m_redo.clear();
+        ++m_revision;
     }
     void undo(Document& doc) {
         if (m_undo.empty()) return;
         m_undo.back()->undo(doc);
         m_redo.push_back(std::move(m_undo.back()));
         m_undo.pop_back();
+        ++m_revision;
     }
     void redo(Document& doc) {
         if (m_redo.empty()) return;
         m_redo.back()->redo(doc);
         m_undo.push_back(std::move(m_redo.back()));
         m_redo.pop_back();
+        ++m_revision;
     }
-    void clear() { m_undo.clear(); m_redo.clear(); }
+    void clear() { m_undo.clear(); m_redo.clear(); ++m_revision; }
+
+    // A counter bumped by every edit that passes through here (and by clear(),
+    // which replaces the document wholesale). It never resets, so anyone who
+    // remembers a value can ask "has the scene changed since?" with one integer
+    // compare -- which is what lets the autosave stay silent in an idle editor
+    // instead of rewriting an unchanged snapshot every few minutes.
+    unsigned    revision() const { return m_revision; }
 
     bool        canUndo()  const { return !m_undo.empty(); }
     bool        canRedo()  const { return !m_redo.empty(); }
@@ -51,6 +61,7 @@ public:
 
 private:
     std::vector<std::unique_ptr<Command>> m_undo, m_redo;
+    unsigned                              m_revision = 0;
 };
 
 // Value equality across every editable/serialized field (so a no-op edit can be

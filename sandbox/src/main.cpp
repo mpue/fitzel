@@ -67,6 +67,7 @@
 #include "RainRenderer.hpp"
 #include "EditMesh.hpp"
 #ifndef FITZEL_PLAYER
+#include "Autosave.hpp"
 #include "GridRenderer.hpp"
 #include "ModelingPanel.hpp"
 #include "ViewportNav.hpp"
@@ -822,6 +823,7 @@ struct FileMenuCtx {
     const std::string&              prefLocation;
     const std::vector<std::string>& recentProjects;
     const std::string&              exportStatus;
+    const std::string&              autosaveStatus;
     const char*                     projNameBuf;
     char*                           wizName;
     std::size_t                     wizNameCap;
@@ -914,6 +916,11 @@ void drawFileMenu(const FileMenuCtx& c) {
     }
     if (!c.exportStatus.empty())
         ImGui::TextDisabled("%s", c.exportStatus.c_str());
+    // When the last crash snapshot was taken. Not an action, just proof the
+    // safety net is there -- which is the only thing anyone wants to know about
+    // it until the day they need it.
+    if (!c.autosaveStatus.empty())
+        ImGui::TextDisabled("%s", c.autosaveStatus.c_str());
     ImGui::Separator();
     if (ImGui::BeginMenu("Open Project")) {
         if (ImGui::MenuItem("Browse folder...")) {
@@ -2158,6 +2165,15 @@ int main(int argc, char** argv) {
         std::string       prefLocation = defaultProjectsRoot; // wizard default dir
         std::vector<std::string> recentProjects;              // folders, newest first
         const std::string prefsPath = "editor.json";
+#ifndef FITZEL_PLAYER
+        // Crash recovery. The writer snapshots the open scene every few minutes;
+        // `pendingSnapshot` is what a session that never shut down left behind,
+        // read once here and offered back by a dialog on the first frames. Beside
+        // editor.json, for the same reason: this is the editor's own state on
+        // this machine, not the project's. See Autosave.hpp.
+        autosave::Autosave autoSave;
+        autosave::Snapshot pendingSnapshot = autosave::pending(autoSave.dir());
+#endif
         // UI comfort settings, also in editor.json. prefsDirty is written out at
         // the end of the frame, so dragging the size slider isn't one file write
         // per pixel.
@@ -2467,10 +2483,19 @@ int main(int argc, char** argv) {
             if (uiFontFamily == gui.fontFamilyName(i)) { gui.setFontFamily(i); break; }
         ui::setBoldFont(gui.boldFont());
 
+        // Saving (any of the three ways) puts the work in the project, so the
+        // snapshot has nothing left to offer and is dropped -- otherwise the next
+        // start would ask about work that is not missing. In the player it is a
+        // no-op: there is no editing session to lose.
+#ifndef FITZEL_PLAYER
+        auto noteSaved        = [&]{ autoSave.clear(); };
+#else
+        auto noteSaved        = []{};
+#endif
         auto safeName             = [&](const std::string& s){ return projectio::safeName(s); };
         auto loadProjectMaterials = [&](const std::string& d){ projectio::loadProjectMaterials(pio, d); };
-        auto saveProjectTo        = [&](const std::string& f){ projectio::saveProjectTo(pio, f); };
-        auto saveCurrent          = [&](){ projectio::saveCurrent(pio); };
+        auto saveProjectTo        = [&](const std::string& f){ projectio::saveProjectTo(pio, f); noteSaved(); };
+        auto saveCurrent          = [&](){ projectio::saveCurrent(pio); noteSaved(); };
         auto exportGame           = [&](const std::string& o){ projectio::exportGame(pio, o); };
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
         // Loading/creating a project replaces the document, so the undo history
@@ -2495,10 +2520,23 @@ int main(int argc, char** argv) {
             history.clear(); prefabCache.clear();
             return projectio::beginLoadScene(pio, sceneLoad, p);
         };
+#ifndef FITZEL_PLAYER
+        // Crash recovery, which is an ordinary project open in every respect
+        // except where the scene comes from -- so it does exactly what
+        // openProjectAsync does around it, and differs in that one line.
+        auto restoreSnapshot = [&](const autosave::Snapshot& snap){
+            road.refreshTextures(snap.projectFolder);
+            veg.refreshTreeAssets(snap.projectFolder);
+            history.clear(); prefabCache.clear();
+            return projectio::beginRecoveredProject(pio, sceneLoad,
+                                                    snap.projectFolder, snap.file,
+                                                    snap.scenePath);
+        };
+#endif
         // Scenes within the open project. Switching/creating replaces the document,
         // so the undo history is cleared at the boundary (like opening a project).
         auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
-        auto saveSceneFile        = [&](const std::string& p){ projectio::saveScene(pio, p); };
+        auto saveSceneFile        = [&](const std::string& p){ projectio::saveScene(pio, p); noteSaved(); };
         auto loadSceneFile        = [&](const std::string& p){ const bool ok = projectio::loadSceneFile(pio, p); history.clear(); prefabCache.clear(); return ok; };
         auto newSceneInProject    = [&](const std::string& f, const std::string& n){ auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
         auto renameScene          = [&](const std::string& p, const std::string& n){ return projectio::renameScene(pio, p, n); };
@@ -5466,7 +5504,7 @@ int main(int argc, char** argv) {
         // names lives for the whole loop) and redrawn from every frame.
         FileMenuCtx fileMenu{
             window, currentProject, prefLocation, recentProjects, exportStatus,
-            projNameBuf,
+            autoSave.status(), projNameBuf,
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
             wizardOpen, wizardIsNew, gameSettings, gameSettingsOpen,
             saveCurrent, exportGame, openProjectAsync, listProjectsIn,
@@ -5566,6 +5604,21 @@ int main(int argc, char** argv) {
             // This is THE guard against a runaway sim, and the reason the step
             // cap below can be generous: however long a frame took, the sims are
             // never handed more than this much of it.
+#ifndef FITZEL_PLAYER
+            // The crash snapshot. Held off while the document is not a faithful
+            // picture of the user's work: play mode mutates entities that Stop
+            // rolls back, a streaming load has only half a scene, and while the
+            // recovery dialog is still up the document is the OLD session's --
+            // snapshotting over the very file being offered would eat it.
+            autoSave.tick(window.time(),
+                          !playMode && !playerMode && !sceneLoad.active &&
+                              !pendingSnapshot.valid(),
+                          currentProject, history.revision(),
+                          [&](const std::string& path){
+                              return projectio::saveSceneWithMaterials(pio, path);
+                          });
+#endif
+
             constexpr double kMaxFrameDt = 0.05;   // 20 fps
             const float  dt  = static_cast<float>(std::min(now - lastTime, kMaxFrameDt));
             lastTime = now;
@@ -8240,6 +8293,34 @@ int main(int argc, char** argv) {
                 if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
                     ImGui::CloseCurrentPopup();
                 ImGui::EndPopup();
+            }
+
+            // --- Crash recovery ----------------------------------------------
+            // A snapshot outlived its session, so the editor comes up asking about
+            // it before anything else. Restoring loads it as the document without
+            // writing a byte into the project: the user looks at what came back
+            // and decides with Ctrl+S, which is the only place work becomes real.
+            if (pendingSnapshot.valid()) {
+                switch (autosave::drawRecoveryModal(pendingSnapshot)) {
+                case autosave::Choice::Restore: {
+                    const autosave::Snapshot snap = pendingSnapshot;
+                    pendingSnapshot = autosave::Snapshot{};
+                    if (!restoreSnapshot(snap))
+                        std::fprintf(stderr, "Could not restore the snapshot %s\n",
+                                     snap.file.c_str());
+                    // Consumed either way: the file has been read into the
+                    // document, and one left on disk would be offered again at
+                    // the next start as though it were still missing work.
+                    autosave::discard(autoSave.dir());
+                    break;
+                }
+                case autosave::Choice::Discard:
+                    autosave::discard(autoSave.dir());
+                    pendingSnapshot = autosave::Snapshot{};
+                    break;
+                case autosave::Choice::None:
+                    break;
+                }
             }
 
             // --- Game Settings dialog ----------------------------------------
@@ -14056,6 +14137,19 @@ int main(int argc, char** argv) {
                 window.swapBuffers();
             }
         }
+
+#ifndef FITZEL_PLAYER
+        // Out of the loop under our own power. That is the whole definition of a
+        // clean shutdown here, so this session's snapshot goes: the next start
+        // finding one is what tells it the session before ended badly, and one
+        // left after a normal quit would make that signal lie.
+        //
+        // Unless the offer on screen was never answered. Closing the editor is not
+        // a decision about work from a session that crashed -- and it is exactly
+        // the thing someone does by reflex when a dialog they did not expect comes
+        // up. Then the snapshot stays, and is offered again next time.
+        if (!pendingSnapshot.valid()) autoSave.clear();
+#endif
 
     } catch (const std::exception& e) {
         std::fprintf(stderr, "Fatal: %s\n", e.what());

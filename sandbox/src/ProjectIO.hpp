@@ -92,6 +92,15 @@ Entity readEntityJson(Context& ctx, const nlohmann::json& e);
 
 // Serialization.
 void saveScene(const Context& ctx, const std::string& path);
+
+// The scene PLUS an inline copy of the material library (each material with its
+// GUID, so entity references still resolve). One self-contained file that needs
+// nothing beside it -- which is what a crash snapshot has to be, since the point
+// of the snapshot is the work the project folder has not been told about yet.
+// Load it back with beginRecoveredProject. False if the file could not be
+// written -- the caller has to know, since an unwritten snapshot is exactly the
+// failure nobody notices until it is needed.
+bool saveSceneWithMaterials(const Context& ctx, const std::string& path);
 void writeProjectMaterials(const Context& ctx, const std::string& matsDir);
 void loadProjectMaterials(Context& ctx, const std::string& matsDir);
 bool loadScene(Context& ctx, const std::string& path);
@@ -126,6 +135,14 @@ bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder);
 // Start switching to another scene inside the already-open project (materials and
 // mounts are left untouched, as the synchronous loadSceneFile does).
 bool beginLoadScene(Context& ctx, SceneLoad& load, const std::string& scenePath);
+// Open `folder` as a project, but take the scene from `snapshotPath` (a file
+// written by saveSceneWithMaterials) instead of from the project's own scene
+// file. `scenePath` is the scene the snapshot stands in for: it becomes
+// currentProject when the load finishes, so saving writes the user's scene and
+// not the snapshot. This is the crash-recovery path -- see Autosave.hpp.
+bool beginRecoveredProject(Context& ctx, SceneLoad& load, const std::string& folder,
+                           const std::string& snapshotPath,
+                           const std::string& scenePath);
 // Advance a running load: builds entities for up to ~budgetMs (always at least
 // one, so it can't stall), updating progress/label. When the last entity is in it
 // applies scene settings, enforces the Sun invariant, sets currentProject (and,

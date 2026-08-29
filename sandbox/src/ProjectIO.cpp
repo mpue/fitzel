@@ -61,11 +61,13 @@ void writeMeta(const std::string& path, AssetId id, const char* type) {
     std::ofstream f(path + ".meta"); if (f) f << m.dump(2) << '\n';
 }
 
-// Serialise one material to <dir>/<name>-<guid8>.fmat (+ its .meta).
-void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
-    const std::string file = dir + "/" + safeName(md.name) + "-" +
-                             md.assetId.toString().substr(0, 8) + ".fmat";
+// One material as JSON. The single spelling of a material on disk, shared by the
+// per-material .fmat files and by the inline copy a self-contained scene carries
+// (saveSceneWithMaterials, below). Written out twice the two would drift, and the
+// copy that drifts is the one nobody reads until a crash makes them need it.
+nlohmann::json materialJson(const MaterialDef& md) {
     nlohmann::json m;
+    m["id"]           = md.assetId.toString();
     m["name"]         = md.name;
     m["albedo"]       = vec3Json(md.albedo);
     m["tint"]         = vec3Json(md.tint);
@@ -91,7 +93,15 @@ void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
     if (md.videoId.valid())       m["video"]       = md.videoId.toString();
     if (md.normalTexId.valid())   m["normalMap"]   = md.normalTexId.toString();
     if (md.emissionTexId.valid()) m["emissionMap"] = md.emissionTexId.toString();
-    std::ofstream f(file); if (f) f << m.dump(2) << '\n';
+    return m;
+}
+
+// Serialise one material to <dir>/<name>-<guid8>.fmat (+ its .meta).
+void writeMaterialFile(const MaterialDef& md, const std::string& dir) {
+    const std::string file = dir + "/" + safeName(md.name) + "-" +
+                             md.assetId.toString().substr(0, 8) + ".fmat";
+    std::ofstream f(file);
+    if (f) f << materialJson(md).dump(2) << '\n';
     writeMeta(file, md.assetId, "Material");
 }
 
@@ -275,7 +285,10 @@ Entity readEntityJson(Context& ctx, const nlohmann::json& e) {
     return b;
 }
 
-void saveScene(const Context& ctx, const std::string& path) {
+// The scene document as JSON: entities + the host's scene settings. Split out of
+// saveScene so a snapshot can add to it (saveSceneWithMaterials) without a second
+// copy of the entity-writing loop.
+static nlohmann::json buildSceneJson(const Context& ctx) {
     nlohmann::json j;
     j["version"] = 3;         // scene *format* version, bumped on layout changes
     j["app"]     = fitzel::kVersionFull; // the build that wrote it (diagnostics)
@@ -292,8 +305,30 @@ void saveScene(const Context& ctx, const std::string& path) {
         ctx.writeSettings(s);
         j["settings"] = std::move(s);
     }
+    return j;
+}
+
+void saveScene(const Context& ctx, const std::string& path) {
+    const nlohmann::json j = buildSceneJson(ctx);
     std::ofstream f(path);
     if (f) f << j.dump(2) << '\n';
+}
+
+bool saveSceneWithMaterials(const Context& ctx, const std::string& path) {
+    nlohmann::json j = buildSceneJson(ctx);
+    // The material library, inline. A project's materials normally live beside
+    // the scene as .fmat files; a snapshot has to stand on its own, because the
+    // whole point is that it describes work the project folder has NOT been told
+    // about yet. Model-owned materials are left out for the same reason the .fmat
+    // writer leaves them out: importing the model recreates them.
+    nlohmann::json mats = nlohmann::json::array();
+    for (const MaterialDef& md : ctx.materials)
+        if (!md.fromModel) mats.push_back(materialJson(md));
+    j["materials"] = std::move(mats);
+    std::ofstream f(path);
+    if (!f) return false;
+    f << j.dump(2) << '\n';
+    return static_cast<bool>(f);
 }
 
 void writeProjectMaterials(const Context& ctx, const std::string& matsDir) {
@@ -370,7 +405,14 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
     ctx.materials.clear();
     for (const auto& m : j["materials"]) {
         MaterialDef md;
-        md.assetId      = AssetId::generate();
+        // A GUID if the file carries one (a snapshot does), a fresh one otherwise
+        // (legacy v2 scenes predate material GUIDs). This matters: entities
+        // reference their material BY that GUID, so minting a new one where the
+        // file already had it would land every object on the default material.
+        md.assetId      = m.contains("id")
+                            ? AssetId::fromString(m["id"].get<std::string>())
+                            : AssetId{};
+        if (!md.assetId.valid()) md.assetId = AssetId::generate();
         md.name         = m.value("name", std::string{});
         md.albedo       = readVec3Json(m.value("albedo", nlohmann::json{}), md.albedo);
         md.reflectivity = m.value("reflectivity", md.reflectivity);
@@ -563,6 +605,28 @@ bool beginOpenProject(Context& ctx, SceneLoad& load, const std::string& folder) 
     ctx.assetDb.refresh();
     loadProjectMaterials(ctx, matsDirIn(folder));
     if (!startSceneLoad(ctx, load, scene)) return false;
+    load.fullOpen      = true;
+    load.projectFolder = folder;
+    return true;
+}
+
+bool beginRecoveredProject(Context& ctx, SceneLoad& load, const std::string& folder,
+                           const std::string& snapshotPath,
+                           const std::string& scenePath) {
+    if (!fitzel::vfs::exists(snapshotPath)) { load = SceneLoad{}; load.done = true; return false; }
+    // The project is opened for real -- its assets are mounted and its .fmat
+    // files read -- and only then is the snapshot streamed over the top. Its
+    // inline materials replace the ones just read, so unsaved material edits come
+    // back too; everything the snapshot does not carry (textures, models, the
+    // prefab folder) still resolves through the project it belongs to.
+    ctx.assetDb.mountProject(folder);
+    ctx.assetDb.refresh();
+    loadProjectMaterials(ctx, matsDirIn(folder));
+    if (!startSceneLoad(ctx, load, snapshotPath)) return false;
+    // Point the finished load at the scene the snapshot STANDS IN FOR, not at the
+    // snapshot file: the next Ctrl+S has to write the user's scene, not overwrite
+    // a recovery file in a temp folder.
+    load.scenePath     = scenePath;
     load.fullOpen      = true;
     load.projectFolder = folder;
     return true;
