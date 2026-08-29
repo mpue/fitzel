@@ -70,6 +70,73 @@ execute_process(COMMAND ${CMAKE_COMMAND}
 # --- Third-party dependencies ----------------------------------------------
 include(cmake/Dependencies.cmake)
 
+# --- AddressSanitizer (the `asan` preset, a tree of its own) ----------------
+# What this is for: a use-after-free does not crash where the mistake is. It
+# crashes later, wherever the allocator happens to hand the block out again --
+# which is how a brush stroke that read a freed component came down as a crash
+# on the NEXT stroke, at an address that had to be reverse-engineered before it
+# named anything. ASan turns that into a report at the read itself, with the
+# stacks for the allocation and for the free beside it.
+#
+# Deliberately NOT applied to the dependencies. ASan replaces the allocator for
+# the whole process, so heap errors are caught in uninstrumented code too --
+# what compiling a translation unit adds on top is stack and global checking.
+# Buying that for Jolt, assimp and imgui would cost most of the build time and
+# hand back other people's findings, so this starts where our own code starts.
+# It sits after the dependencies for exactly that reason: add_compile_options
+# only reaches targets defined below it.
+#
+# Release, not Debug: /RTC1 and ASan are incompatible, and /O2 keeps it fast
+# enough to leave on. The runtime (clang_rt.asan_dynamic-x86_64.dll) ships with
+# MSVC and vcvars puts it on PATH; cl writes the link directive for it into the
+# objects, so nothing has to be said here about linking.
+option(FITZEL_ASAN "Instrument our own code with AddressSanitizer" OFF)
+if(FITZEL_ASAN)
+    if(MSVC)
+        # /bigobj because instrumentation adds sections per function, and
+        # main.cpp is fourteen thousand lines: without it the object file
+        # overflows its own format (C1128). Worth reading as a measurement
+        # of that file rather than as a compiler flag.
+        add_compile_options(/fsanitize=address /bigobj)
+        add_link_options(/INCREMENTAL:NO)
+        # The price of not instrumenting the dependencies. Under ASan the
+        # MSVC STL turns on container annotations -- red zones between a
+        # vector's size and its capacity -- and stamps a /FAILIFMISMATCH
+        # into every object file, so a translation unit that has them
+        # cannot be linked against one that does not. assimp and Jolt do
+        # not, and the link comes apart in several hundred LNK2038s.
+        #
+        # Switching them off costs one narrow check: a read between size()
+        # and capacity(), inside memory the allocator really did hand out.
+        # Everything the sanitizer is here for is untouched, because ASan
+        # replaces the allocator itself -- use-after-free, double free,
+        # reads past the end of an allocation, stack overruns. To buy the
+        # narrow check back, move this block above the dependencies so they
+        # are instrumented too, and drop this definition.
+        add_compile_definitions(_DISABLE_STL_ANNOTATION)
+        # The runtime beside the executables, not merely somewhere on a
+        # developer prompt's PATH. Without it they do not start at all --
+        # and a process that fails to load exits 0xC0000135, which is
+        # NEGATIVE, so a runner testing `if errorlevel 1` calls that a pass.
+        # Eight harnesses once reported green that way without executing a
+        # single instruction.
+        get_filename_component(_fitzel_msvc_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+        find_file(FITZEL_ASAN_RUNTIME clang_rt.asan_dynamic-x86_64.dll
+                  HINTS "${_fitzel_msvc_bin}" NO_DEFAULT_PATH)
+        if(FITZEL_ASAN_RUNTIME)
+            file(COPY "${FITZEL_ASAN_RUNTIME}"
+                 DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+        else()
+            message(WARNING "ASan runtime not found next to the compiler; "
+                            "the instrumented binaries will not start.")
+        endif()
+    else()
+        add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address)
+    endif()
+    message(STATUS "Fitzel: AddressSanitizer on (engine + sandbox)")
+endif()
+
 # --- Project targets -------------------------------------------------------
 add_subdirectory(engine)
 

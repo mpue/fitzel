@@ -90,7 +90,35 @@ cmake --build --preset default
 ./build/default/bin/sandbox   # run (sandbox.exe on Windows)
 ```
 
-Other presets: `release` (Ninja, optimized) and `vs` (Visual Studio solution).
+Other presets: `release` (Ninja, optimized), `asan` (see below) and `vs`
+(Visual Studio solution).
+
+### With AddressSanitizer
+
+```sh
+cmake --preset asan
+cmake --build --preset asan     # or build-asan.bat on Windows
+check-all.bat --asan
+```
+
+A tree of its own beside the release build, not a switch on it. A use-after-free
+does not crash where the mistake is -- it crashes wherever the allocator next
+hands the block out, which can be seconds and several user actions later, at an
+address that says nothing about what was read. Instrumented, the same bug stops
+at the read itself and names the allocation and the free beside it. It costs two
+to three times the running time, which is why it is a second tree and not the
+first one.
+
+Only our own code is instrumented; the dependencies are not. ASan replaces the
+process allocator either way, so heap errors are still caught inside them -- what
+is given up is stack and container checking there, and with it most of the build
+time and a pile of other people's findings. The one local cost is
+`_DISABLE_STL_ANNOTATION`: MSVC's container red zones change what a translation
+unit will link against, so they have to be off on both sides of that line.
+
+The harnesses run under it unchanged, and all of them pass. Reproducing something
+that only happens while clicking means running `build\asan\bin\sandbox.exe`
+itself -- slower, but that is where the interactive bugs live.
 
 ### Plain CMake
 

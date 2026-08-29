@@ -22,6 +22,16 @@
             }
         },
         {
+            "name": "asan",
+            "inherits": "release",
+            "displayName": "Ninja (release + AddressSanitizer)",
+            "description": "Its own tree: same optimisation, every heap access checked",
+            "binaryDir": "${sourceDir}/build/asan",
+            "cacheVariables": {
+                "FITZEL_ASAN": "ON"
+            }
+        },
+        {
             "name": "vs",
             "displayName": "Visual Studio (multi-config)",
             "generator": "Visual Studio 18 2026",
@@ -30,6 +40,7 @@
     ],
     "buildPresets": [
         { "name": "default", "configurePreset": "default" },
-        { "name": "release", "configurePreset": "release" }
+        { "name": "release", "configurePreset": "release" },
+        { "name": "asan", "configurePreset": "asan" }
     ]
 }
