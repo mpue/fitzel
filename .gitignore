@@ -56,3 +56,7 @@ Thumbs.db
 
 # Video assets (imported/converted locally, not tracked)
 /content/videos/
+
+# Python bytecode -- tools/crashdump.py leaves this behind when imported.
+__pycache__/
+*.pyc

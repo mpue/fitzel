@@ -23,6 +23,25 @@ endif()
 # Generate compile_commands.json for tooling (clangd, etc.).
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# --- Symbols in the Release build ------------------------------------------
+# The editor ships /SUBSYSTEM:WINDOWS with no console, so what a crash leaves
+# behind is a minidump in %LOCALAPPDATA%\CrashDumps and nothing else. Without a
+# PDB that dump names an address and stops there: reading it means finding the
+# module base by hand and working backwards from the offset to guess what was
+# being dereferenced. With one, tools/crashdump.py prints function and line.
+#
+# /Zi does not change the code the optimiser produces -- it only writes down
+# what it did. The one thing that WOULD change the binary is the linker's habit
+# of switching /OPT:REF and /OPT:ICF off as soon as /DEBUG appears, so both are
+# named again here: same executable as before, plus a file beside it that can
+# explain it.
+if(MSVC)
+    string(APPEND CMAKE_C_FLAGS_RELEASE   " /Zi")
+    string(APPEND CMAKE_CXX_FLAGS_RELEASE " /Zi")
+    string(APPEND CMAKE_EXE_LINKER_FLAGS_RELEASE    " /DEBUG /OPT:REF /OPT:ICF")
+    string(APPEND CMAKE_SHARED_LINKER_FLAGS_RELEASE " /DEBUG /OPT:REF /OPT:ICF")
+endif()
+
 option(FITZEL_BUILD_SANDBOX "Build the sandbox example application" ON)
 
 # --- Version header ---------------------------------------------------------
