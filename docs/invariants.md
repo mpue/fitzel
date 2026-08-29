@@ -49,22 +49,28 @@ derselben Unit sind ein Typkonflikt.
 | 1 | `uNormalMap` | Objekt, Straße |
 | 3 | `uEmissionMap` | Objekt, Straße, Straßen-Decals |
 | 4 | `uWetMap` | nur Straße |
-| 3 + n | `uLayerTex[n]` — Terrain-Albedo-Layer | nur Terrain |
+| 3,4,5,6,8,9 | `uLayerTex[n]` — Terrain-Albedo-Layer (`terrainLayerUnit`) | nur Terrain |
 | 18 + n | `uLayerNorm[n]` — Terrain-Layer-Normalen | nur Terrain |
 | 8–11 | `uPaintTex[0..3]` — Mesh-Paint-Slots | nur bemalte Meshes |
 
 Für etwas Neues ist ab **27** frei.
 
-### Der Konflikt, der schon drinsteht
+### Warum die Terrain-Layer eine Lücke haben
 
-`uLayerTex[n]` bindet auf `3 + n` (`main.cpp`, Terrain-Layer-Block), und
-`kMaxTerrainLayers` ist 6. Der **fünfte texturierte Layer (n = 4) landet also auf
-Unit 7** — dort, wo der Renderer das Cascade-Array hält. Ein `sampler2D` und ein
-`sampler2DArray` auf einer Unit: der Terrain-Schatten oder der Layer geht kaputt,
-je nachdem, was der Treiber tut. Der Kommentar in `Renderer.hpp` beschreibt die
-Belegung bereits so, wie sie gemeint war („3-6, 8-11"), also mit einer Lücke bei
-7 — nur bindet der Code sie nicht. Beißt erst ab fünf **texturierten** Layern,
-deshalb ist es bisher niemandem passiert.
+`terrainLayerUnit(n)` ist **nicht** `3 + n`, sondern 3, 4, 5, 6, 8, 9 — Unit 7
+wird übersprungen, weil dort das Cascade-Array liegt. Bis 2026-08-29 band der
+Code stumpf durch, und der fünfte **texturierte** Layer landete auf 7: ein
+`sampler2D` über einem `sampler2DArray`, ohne Fehlermeldung, mit dem Ergebnis,
+dass der Boden entweder seine Schatten oder diesen Layer verliert — je nachdem,
+was der Treiber daraus macht. Fünf texturierte Layer hatte nie jemand, deshalb
+lag es lange da. `Renderer.hpp` beschrieb die Belegung die ganze Zeit mit der
+Lücke („3-6, 8-11"); nur die Bindung hielt sich nicht daran.
+
+Die Lücke hängt jetzt per `static_assert` an `Renderer::kShadowMapUnit`: wandert
+die Konstante, bricht der Build, statt dass sich das hier still wieder öffnet.
+Ein zweiter prüft, dass die Layer-Normalmaps (18 + n) nicht in das Light-Grid ab
+24 hineinwachsen — mit sechs Layern enden sie auf 23, also **exakt** an der
+Kante.
 
 ---
 

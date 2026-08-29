@@ -14,11 +14,28 @@
 
 namespace fitzel { class AssetDatabase; }
 
-// The most terrain texture layers the lit shader blends (units 3..3+N-1).
+// The most terrain texture layers the lit shader blends (see terrainLayerUnit).
 // 6, not 8: the lit shader also declares shadow/env/material samplers, and macOS
 // (Metal) caps a program at 16 active fragment samplers. 6 layers keeps the
 // total at exactly 16.
 inline constexpr int kMaxTerrainLayers = 6;
+
+// Which texture unit layer `i` binds its albedo to. NOT 3 + i: the renderer
+// binds the shadow cascade array on unit 7 for EVERY draw, terrain included, so
+// the run steps over it -- 3, 4, 5, 6, 8, 9. Putting a sampler2D there landed it
+// on top of a sampler2DArray, and the ground lost either that layer or its
+// shadows, depending on what the driver made of the clash. It took five
+// TEXTURED layers to reach, which is why it sat unnoticed; Renderer.hpp has
+// described the layout with the gap in it ("3-6, 8-11") all along -- only the
+// binding never skipped. main.cpp static_asserts the gap against the renderer's
+// own constant, so moving that constant cannot quietly reopen this.
+inline constexpr int terrainLayerUnit(int layer) {
+    constexpr int kFirstUnit = 3, kCascadeArrayUnit = 7;
+    const int unit = kFirstUnit + layer;
+    return unit < kCascadeArrayUnit ? unit : unit + 1;
+}
+// ...and its normal map, kept high so it clears the shadow/env/IBL samplers.
+inline constexpr int terrainLayerNormUnit(int layer) { return 18 + layer; }
 
 // One terrain texture layer: its albedo texture and the height + slope band it
 // covers. The shader blends every layer whose band contains a fragment's world

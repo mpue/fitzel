@@ -12926,8 +12926,23 @@ int main(int argc, char** argv) {
 
             // Push the (possibly edited) terrain params into the material, plus
             // the texture layers: bind each layer with a texture to its own unit
-            // (3..3+N-1) and upload its height/slope band + tiling. Layers without
-            // a texture are skipped, so uLayerCount is the bound count.
+            // (terrainLayerUnit -- NOT a plain run, it steps over the cascade
+            // array) and upload its height/slope band + tiling. Layers without a
+            // texture are skipped, so uLayerCount is the bound count.
+            //
+            // The gap is tied to the renderer's own constant here, where both are
+            // visible. A layer landing on the cascade array is a sampler2D over a
+            // sampler2DArray: no error, no crash, just the ground losing its
+            // shadows or that layer -- so it is worth a compile-time answer rather
+            // than a comment asking people to remember.
+            static_assert([] {
+                for (int i = 0; i < kMaxTerrainLayers; ++i)
+                    if (terrainLayerUnit(i) == Renderer::kShadowMapUnit) return false;
+                return true;
+            }(), "a terrain layer would bind over the shadow cascade array");
+            static_assert(terrainLayerNormUnit(kMaxTerrainLayers - 1) <
+                              Renderer::kLightGridUnit,
+                          "terrain layer normal maps have grown into the light grid");
             terrainMat.set("uDetailScale", look.detailScale)
                       .set("uDetailStrength", look.detailStrength)
                       .set("uTerrainSpec", look.gloss)
@@ -12942,16 +12957,17 @@ int main(int argc, char** argv) {
                 for (const TerrainLayer& L : look.layers) {
                     if (!L.tex || bound >= kMaxTerrainLayers) continue;
                     const std::string ix = std::to_string(bound);
-                    terrainMat.setTexture("uLayerTex[" + ix + "]", *L.tex, 3 + bound)
+                    terrainMat.setTexture("uLayerTex[" + ix + "]", *L.tex,
+                                          terrainLayerUnit(bound))
                               .set("uLayerBand[" + ix + "]",
                                    glm::vec4(L.heightStart, L.heightEnd,
                                              L.slopeStart, L.slopeEnd))
                               .set("uLayerScale[" + ix + "]", L.scale);
-                    // Optional normal map on a high unit (18+) so it clears the
+                    // Optional normal map, kept high so it clears the
                     // shadow/env/IBL samplers the renderer binds lower down.
                     if (L.norm) {
                         terrainMat.setTexture("uLayerNorm[" + ix + "]", *L.norm,
-                                              18 + bound)
+                                              terrainLayerNormUnit(bound))
                                   .set("uLayerHasNorm[" + ix + "]", 1);
                     } else {
                         terrainMat.set("uLayerHasNorm[" + ix + "]", 0);
