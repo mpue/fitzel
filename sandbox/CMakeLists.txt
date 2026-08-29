@@ -107,6 +107,7 @@ set(SANDBOX_EDITOR_SOURCES
     # the player has a game to look at, not a viewport to navigate.
     src/ViewportNav.cpp
     src/MeshPaint.cpp
+    src/MaterialsPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingPanel.cpp
     src/AssetDrop.cpp
