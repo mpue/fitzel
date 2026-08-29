@@ -1420,6 +1420,35 @@ void MeshComponent::save(nlohmann::json& j) const {
         for (int i : f) fs << i << ' ';
     }
     j["faces"] = fs.str();
+    // Texture paint, only where there is any: "corner w0 w1 w2 w3", sparse. Most
+    // meshes are never painted and most corners of a painted one are not, so a
+    // dense array would put four numbers per corner into every scene file to say
+    // nothing. Absent means unpainted, which is also what an older scene says.
+    if (mesh.painted()) {
+        std::ostringstream ps;
+        ps.precision(4);
+        for (std::size_t i = 0; i < mesh.paint.size(); ++i) {
+            const glm::vec4& w = mesh.paint[i];
+            if (w.x <= 0.0f && w.y <= 0.0f && w.z <= 0.0f && w.w <= 0.0f) continue;
+            ps << i << ' ' << w.x << ' ' << w.y << ' ' << w.z << ' ' << w.w << ' ';
+        }
+        j["paint"] = ps.str();
+    }
+    // What those weights mean on this mesh. Written whenever a slot points
+    // somewhere, painted or not: filling the slots is a step of the work, and a
+    // reload that lost them would leave the weights meaning nothing.
+    bool anySlot = false;
+    for (const MeshPaintSlot& sl : paintSlots) anySlot = anySlot || sl.material.valid();
+    if (anySlot) {
+        nlohmann::json slots = nlohmann::json::array();
+        for (const MeshPaintSlot& sl : paintSlots) {
+            nlohmann::json e;
+            if (sl.material.valid()) e["material"] = sl.material.toString();
+            e["scale"] = sl.scale;
+            slots.push_back(std::move(e));
+        }
+        j["paintSlots"] = std::move(slots);
+    }
 }
 
 void MeshComponent::load(const nlohmann::json& j) {
@@ -1451,6 +1480,26 @@ void MeshComponent::load(const nlohmann::json& j) {
     }
     // A scene that stored nothing usable still has to draw something.
     if (mesh.faces.empty()) mesh = EditMesh::box(glm::vec3(0.5f));
+    mesh.syncPaint();
+    if (j.contains("paint") && j["paint"].is_string()) {
+        std::istringstream ps(j["paint"].get<std::string>());
+        std::size_t i = 0;
+        glm::vec4   w(0.0f);
+        while (ps >> i >> w.x >> w.y >> w.z >> w.w) {
+            if (i >= mesh.paint.size()) break;   // corrupt stream: stop, don't guess
+            mesh.paint[i] = glm::clamp(w, 0.0f, 1.0f);
+        }
+    }
+    for (MeshPaintSlot& sl : paintSlots) sl = MeshPaintSlot{};
+    if (j.contains("paintSlots") && j["paintSlots"].is_array()) {
+        const nlohmann::json& a = j["paintSlots"];
+        for (std::size_t i = 0; i < a.size() && i < paintSlots.size(); ++i) {
+            if (a[i].contains("material") && a[i]["material"].is_string())
+                paintSlots[i].material =
+                    fitzel::AssetId::fromString(a[i]["material"].get<std::string>());
+            paintSlots[i].scale = a[i].value("scale", 0.5f);
+        }
+    }
     touch();
 }
 

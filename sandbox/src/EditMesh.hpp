@@ -23,8 +23,29 @@ struct EditMesh {
     std::vector<glm::vec3>        verts;
     std::vector<std::vector<int>> faces;   // indices into verts, CCW from outside
 
+    // Texture-paint weights for the first four terrain layers, one per CORNER --
+    // the same vec4 the terrain paints, on the same shader path (see the brush in
+    // MeshPaint.hpp). Parallel to `verts`: a corner and its weights are one thing
+    // in two arrays, so every operation that adds or drops a corner has to move
+    // the weights with it or a later stroke paints the wrong face. Empty means
+    // "nothing painted", which is the state every mesh starts in and most stay in.
+    std::vector<glm::vec4>        paint;
+
     // A unit box, the starting point for everything: 8 corners, 6 quads.
     static EditMesh box(const glm::vec3& half);
+
+    // Weights of corner `i`, zero where the mesh carries none. Read through this
+    // rather than indexing `paint`, which is empty on an unpainted mesh.
+    glm::vec4 paintAt(int i) const {
+        return (i >= 0 && i < static_cast<int>(paint.size())) ? paint[i]
+                                                              : glm::vec4(0.0f);
+    }
+    // Bring `paint` up to one entry per corner (zeros for the new ones). Cheap and
+    // idempotent, so operations call it before touching the array.
+    void syncPaint() { paint.resize(verts.size(), glm::vec4(0.0f)); }
+    // Is there any paint at all? Decides whether the entity needs the painted
+    // material (and whether the scene file carries the weights).
+    bool painted() const;
 
     bool      validFace(int f) const;
     glm::vec3 faceCenter(int f) const;

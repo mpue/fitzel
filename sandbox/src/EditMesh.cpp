@@ -11,6 +11,16 @@ bool okFace(const EditMesh& m, int f) {
     return f >= 0 && f < static_cast<int>(m.faces.size()) && m.faces[f].size() >= 3;
 }
 
+// Add a corner and its weights in one step. Every operation that grows the mesh
+// goes through here: `paint` runs parallel to `verts`, and the one way to keep
+// two arrays in step is to never lengthen one of them alone.
+int addVert(EditMesh& m, const glm::vec3& p, const glm::vec4& w) {
+    m.syncPaint();
+    m.verts.push_back(p);
+    m.paint.push_back(w);
+    return static_cast<int>(m.verts.size()) - 1;
+}
+
 } // namespace
 
 EditMesh EditMesh::box(const glm::vec3& h) {
@@ -28,7 +38,14 @@ EditMesh EditMesh::box(const glm::vec3& h) {
         {3, 7, 6, 2},   // +Y
         {0, 1, 5, 4},   // -Y
     };
+    m.syncPaint();
     return m;
+}
+
+bool EditMesh::painted() const {
+    for (const glm::vec4& w : paint)
+        if (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f || w.w > 0.0f) return true;
+    return false;
 }
 
 bool EditMesh::validFace(int f) const { return okFace(*this, f); }
@@ -93,8 +110,9 @@ int extrude(EditMesh& m, int face, float dist) {
     std::vector<int> cap;
     cap.reserve(loop.size());
     for (int i : loop) {
-        cap.push_back(static_cast<int>(m.verts.size()));
-        m.verts.push_back(m.verts[i] + n * dist);
+        // The copy inherits the corner's paint, so extruding a painted face
+        // carries the paint out with it instead of leaving the new cap bare.
+        cap.push_back(addVert(m, m.verts[i] + n * dist, m.paintAt(i)));
     }
 
     // Wall in the gap: one quad per edge of the loop, wound (a, b, b', a'). Its
@@ -156,10 +174,17 @@ int subdivide(EditMesh& m, int face) {
     if (!okFace(m, face) || m.faces[face].size() != 4) return -1;
     const std::vector<int> q = m.faces[face];
     const int base = static_cast<int>(m.verts.size());
-    // Four edge midpoints, then the centre.
-    for (int i = 0; i < 4; ++i)
-        m.verts.push_back(0.5f * (m.verts[q[i]] + m.verts[q[(i + 1) % 4]]));
-    m.verts.push_back(m.faceCenter(face));
+    // Four edge midpoints, then the centre. The new corners take the average of
+    // the ones they sit between, which is exactly what the shader would have
+    // interpolated there -- so splitting a face for a finer brush does not change
+    // how the face already looks.
+    glm::vec4 pc(0.0f);
+    for (int i = 0; i < 4; ++i) {
+        addVert(m, 0.5f * (m.verts[q[i]] + m.verts[q[(i + 1) % 4]]),
+                0.5f * (m.paintAt(q[i]) + m.paintAt(q[(i + 1) % 4])));
+        pc += 0.25f * m.paintAt(q[i]);
+    }
+    addVert(m, m.faceCenter(face), pc);
     const int e0 = base, e1 = base + 1, e2 = base + 2, e3 = base + 3, ct = base + 4;
     m.faces[face] = {q[0], e0, ct, e3};
     m.faces.push_back({e0, q[1], e1, ct});
@@ -178,11 +203,19 @@ int deleteFace(EditMesh& m, int face) {
     for (const std::vector<int>& f : m.faces)
         for (int i : f)
             if (i >= 0 && i < static_cast<int>(remap.size())) remap[i] = 0;
+    m.syncPaint();
     std::vector<glm::vec3> kept;
+    std::vector<glm::vec4> keptPaint;
     kept.reserve(m.verts.size());
+    keptPaint.reserve(m.paint.size());
     for (std::size_t i = 0; i < m.verts.size(); ++i)
-        if (remap[i] == 0) { remap[i] = static_cast<int>(kept.size()); kept.push_back(m.verts[i]); }
+        if (remap[i] == 0) {
+            remap[i] = static_cast<int>(kept.size());
+            kept.push_back(m.verts[i]);
+            keptPaint.push_back(m.paint[i]);   // weights follow their corner
+        }
     m.verts = std::move(kept);
+    m.paint = std::move(keptPaint);
     for (std::vector<int>& f : m.faces)
         for (int& i : f) i = remap[i];
 
@@ -236,6 +269,7 @@ fitzel::MeshData build(const EditMesh& m) {
             v.position = m.verts[i];
             v.normal   = n;
             v.uv       = glm::vec2(glm::dot(m.verts[i], tx), glm::dot(m.verts[i], ty));
+            v.paint    = m.paintAt(i);
             return v;
         };
         // Fan from the first corner. Fine for the convex faces these operations

@@ -211,6 +211,21 @@ uniform vec4      uLayerBand[MAX_TERRAIN_LAYERS];  // (hStart, hEnd, slopeStart,
 uniform float     uLayerScale[MAX_TERRAIN_LAYERS]; // triplanar tiling per layer
 uniform sampler2D uLayerNorm[MAX_TERRAIN_LAYERS];  // optional per-layer normal map
 uniform int       uLayerHasNorm[MAX_TERRAIN_LAYERS]; // 1 = layer i has a normal map
+// Mesh texture paint (every uColorMode but 1). An object whose CORNERS carry
+// paint weights (EditMesh::paint) blends up to four textures of ITS OWN over its
+// material where somebody painted it -- triplanar, so it needs no UV unwrap and
+// no texture per object.
+//
+// These four slots are the object's, not the terrain's. Sharing the terrain's
+// layer array (which this did at first) meant choosing a brick to paint a wall
+// with put brick on the GROUND, where the height/slope blend would then spread
+// it by itself. Only a painted object's material sets uMeshPaint; on every other
+// draw the weights are zero anyway, so the shared program cannot leak one
+// object's stroke onto another.
+uniform int       uMeshPaint;     // 1 = read vPaint as paint-slot weights
+uniform sampler2D uPaintTex[4];   // the base-colour texture of each slot
+uniform float     uPaintScale[4]; // world units -> tiling, per slot
+uniform int       uPaintHas[4];   // 1 = that slot points at a material
 uniform float     uTexScale;   // world units -> texture tiling (fallback)
 uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal-map relief
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
@@ -469,6 +484,45 @@ vec3 layerTriplanarNormal(int i, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 d
     return triplanarNormal(uLayerNorm[5], wp, n, scale, dpdx, dpdy);
 }
 
+// Constant-index dispatch for the paint slots, as layerTriplanar does for the
+// terrain and for the same reason: GLSL 3.30 will not index a sampler array with
+// a value it cannot fold at compile time.
+vec3 paintTriplanar(int i, vec3 wp, vec3 n, vec3 dpdx, vec3 dpdy) {
+    if (i == 0) return triplanar(uPaintTex[0], wp, n, uPaintScale[0], dpdx, dpdy);
+    if (i == 1) return triplanar(uPaintTex[1], wp, n, uPaintScale[1], dpdx, dpdy);
+    if (i == 2) return triplanar(uPaintTex[2], wp, n, uPaintScale[2], dpdx, dpdy);
+    return triplanar(uPaintTex[3], wp, n, uPaintScale[3], dpdx, dpdy);
+}
+
+// The painted slots over an object's own albedo. The cover -- how much of this
+// fragment was hand-painted -- comes out of the weights that actually landed on
+// a FILLED slot: 0 leaves the material untouched, 1 replaces it. Weight sitting
+// in an empty slot counts for nothing, or clearing a slot would fade the object
+// away to grey instead of just undoing that colour.
+//
+// There is deliberately no automatic height/slope blend underneath, as there is
+// on the terrain: an object is whatever its material says until somebody paints
+// on it, and a wall that turned to grass everywhere it was NOT painted would be
+// the opposite of a brush.
+void meshPaintOverlay(vec3 wp, vec3 n, vec3 dpdx, vec3 dpdy, inout vec3 albedo) {
+    // Never on the terrain: it has weights of its own and its own way of reading
+    // them, so a stale uMeshPaint from an object drawn earlier would paint the
+    // ground with the last wall's textures.
+    if (uMeshPaint != 1 || uColorMode == 1) return;
+    vec4  paint = clamp(vPaint, 0.0, 1.0);
+    vec3  acc   = vec3(0.0);
+    float wsum  = 0.0;
+    for (int i = 0; i < 4; ++i) {         // four slots = one vertex vec4
+        if (uPaintHas[i] != 1) continue;  // an empty slot paints nothing
+        float w = paint[i];
+        if (w <= 0.0) continue;
+        acc  += paintTriplanar(i, wp, n, dpdx, dpdy) * w;
+        wsum += w;
+    }
+    if (wsum < 1e-4) return;
+    albedo = mix(albedo, acc / wsum, clamp(wsum, 0.0, 1.0));
+}
+
 // Height- and slope-driven terrain surface: blends the configured texture layers
 // by coverage, producing both the albedo and the perturbed normal in one pass.
 // Layer coverage (height band x slope band) weights both, so a layer's normal
@@ -617,6 +671,12 @@ void main() {
     } else {
         albedo = uAlbedo;
     }
+    // Hand-painted layers on a modelled object. Guarded by a uniform so the
+    // derivatives below are taken in uniform control flow; the sampling inside
+    // uses them explicitly (textureGrad), which is what makes it safe to reach
+    // for them from a branch that varies per fragment.
+    if (uMeshPaint == 1)
+        meshPaintOverlay(vWorldPos, N, dFdx(vWorldPos), dFdy(vWorldPos), albedo);
     // Masked transparency ("transparency map", Cutout mode): drop fully/mostly
     // transparent texels before any lighting so they never write colour or depth.
     if (uAlphaCutout == 1 && texA < uAlphaCutoff) discard;

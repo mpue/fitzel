@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <functional>
 #include <memory>
@@ -1591,6 +1592,21 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// One of the four things a brush stroke can put on a modelled mesh: a material
+// from the scene's library, and how big its texture sits on the surface (world
+// units to texture tiling, so 0.5 repeats every two metres).
+//
+// The slots belong to the OBJECT. They were the terrain's texture layers to
+// begin with, which was wrong twice over: choosing a brick to paint a wall with
+// meant adding brick to the GROUND, where the automatic height/slope blend would
+// then start painting it by itself -- and a painted wall carried into another
+// scene as a prefab would have found whatever layers that scene's terrain
+// happened to have. What an object was painted with travels with the object.
+struct MeshPaintSlot {
+    fitzel::AssetId material;      // its base-colour texture is what gets painted
+    float           scale = 0.5f;  // world units -> texture tiling
+};
+
 // --- Built-in component: Mesh (an editable shape, modelled in the editor) -----
 // Turns an entity's geometry from "one of the four primitives" into a polygon
 // mesh the author shapes in place -- extrude a face, scale one, push one in.
@@ -1609,6 +1625,9 @@ class MeshComponent : public ComponentBase {
 public:
     EditMesh      mesh     = EditMesh::box(glm::vec3(0.5f));
     std::uint64_t revision = editmesh::nextRevision(); // bump on every edit
+    // What the four paint weights on each corner MEAN on this mesh. Four because
+    // that is one vertex vec4; empty slots simply cannot be painted into.
+    std::array<MeshPaintSlot, 4> paintSlots{};
 
     // Take a fresh stamp: every mutation ends with this, and it is what tells the
     // GPU cache its copy is out of date.

@@ -104,6 +104,8 @@ set(SANDBOX_EDITOR_SOURCES
     # Standard views + middle-mouse pan for the editor viewport. Editor-only:
     # the player has a game to look at, not a viewport to navigate.
     src/ViewportNav.cpp
+    src/MeshPaint.cpp
+    src/MeshPaintPanel.cpp
     src/ModelingPanel.cpp
     src/AssetDrop.cpp
     src/VideoImport.cpp
@@ -232,6 +234,21 @@ add_executable(autosavecheck tools/autosavecheck.cpp src/Autosave.cpp
                              src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(autosavecheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(autosavecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# The mesh-paint check (sandbox/tools/meshpaintcheck.cpp): paints a modelled box
+# and then does everything the modelling tools can do to it. Paint lives on the
+# mesh's corners, in an array parallel to the corners themselves -- an operation
+# that moves one and not the other leaves the mesh drawing perfectly and the
+# paint on the wrong faces some strokes later, which is not a thing anyone finds
+# by looking at the viewport. Built with FITZEL_PLAYER, like the other harnesses.
+#   build/release/bin/meshpaintcheck.exe
+add_executable(meshpaintcheck tools/meshpaintcheck.cpp src/MeshPaint.cpp
+                              src/EditMesh.cpp src/SandboxMath.cpp
+                              src/CameraPath.cpp src/Component.cpp
+                              src/Primitives.cpp src/PropertyMeta.cpp
+                              src/MultiShot.cpp)
+target_compile_definitions(meshpaintcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(meshpaintcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
 # a parked car, a fast one, a lorry and a slope, and measures what a camera fault
