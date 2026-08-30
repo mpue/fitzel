@@ -8,7 +8,7 @@ Nichts hier ist geplant oder gewünscht; jede Zeile ist am Code geprüft, mit
 Fundstelle. Was eine Datei ihrem eigenen Leser bereits sagt, steht hier nicht
 noch einmal — sondern wird verlinkt.
 
-Alle sechs teilen eine Eigenschaft: **ein Verstoß ist unsichtbar.** Nichts stürzt
+Alle sieben teilen eine Eigenschaft: **ein Verstoß ist unsichtbar.** Nichts stürzt
 ab, nichts wird rot. Der Effekt bleibt aus, die Farbe sitzt auf dem falschen
 Face, der Export lädt nichts mehr, der Schatten verschwindet — Wochen später und
 weit weg von der Änderung, die es verursacht hat.
@@ -179,6 +179,25 @@ Läuft es auseinander, zeichnet das Mesh weiterhin einwandfrei und die Farbe
 taucht ein paar Striche später auf den falschen Faces auf, lange nach der
 Operation, die es verursacht hat. Deshalb geht jedes Wachsen durch `addVert()`
 und deshalb misst `meshpaintcheck` genau das.
+
+---
+
+## 7. Ein Softbody trägt seine eigenen Halbmaße nach
+
+`scenesubmit::submit` **skaliert** ein modelliertes Mesh auf die Halbmaße seiner
+Entity: `scale = (half * 2) / meshBounds`. Für einen Softbody, dessen Mesh sich
+jeden Frame verformt, heißt das: bleibt `half` stehen, wird jede Delle auf dem
+Weg zum Bildschirm wieder herausgerechnet — das Objekt simuliert einwandfrei und
+sieht **starr** aus.
+
+Deshalb setzt `SoftBodySystem::sync` `half` in jedem Frame auf die Bounds der
+simulierten Vertices, mit demselben Klemmwert (`1e-4`), den der Renderer
+benutzt: nur dann ist der Faktor exakt 1 und die Verformung kommt 1:1 an. Ein
+zweiter Klemmwert an einer der beiden Stellen ist ein langsamer, atmender
+Skalierungsfehler, den niemand als solchen erkennt.
+
+`softcheck` misst genau diesen Faktor mit — ohne Fenster, allein aus `half` und
+den Mesh-Bounds.
 
 ---
 

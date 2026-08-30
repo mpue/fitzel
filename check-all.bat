@@ -80,6 +80,7 @@ call :run shadercheck
 call :run citycheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
+call :run softcheck
 call :run shotcheck
 call :run pathcheck "%OUT%"
 call :run capturecheck "%OUT%"

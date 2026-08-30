@@ -86,6 +86,59 @@ public:
     PhysicsBodyId addConvexHull(const glm::vec3* points, int count, glm::vec3 pos,
                                 glm::quat rot, float mass);
 
+    // --- Soft bodies (Jolt SoftBody: jelly, cloth, an inflated shell) -------
+    // A soft body is not a transform the way a rigid body is: it is a cloud of
+    // particles held together by constraints, and what comes back out of it is
+    // POSITIONS, not a position and a rotation. So the two readbacks below are
+    // the whole interface -- the caller re-skins its mesh from them every frame.
+    struct SoftBodyDesc {
+        float mass            = 20.0f;  // total, spread evenly over the particles
+        float compliance      = 0.0f;   // inverse edge stiffness (0 = as stiff as
+                                        // the solver gets; ~1e-3 = properly soft)
+        float shearCompliance = 0.0f;   // same, for the diagonals across a quad
+        float bendCompliance  = -1.0f;  // < 0 = create no bend constraints at all
+        float pressure        = 0.0f;   // inflates a CLOSED shell (n*R*T); a shell
+                                        // with no pressure and no volume constraints
+                                        // collapses into a bag, which is correct
+        float damping         = 0.1f;   // linear damping per particle
+        float friction        = 0.5f;
+        float restitution     = 0.0f;
+        float gravityFactor   = 1.0f;
+        int   iterations      = 5;      // solver iterations (more = stiffer/steadier)
+    };
+
+    // A closed (or open, for cloth) triangle surface as a soft body. `verts` are
+    // in the body's local space, `indices` a triangle list; `pinned`, if given,
+    // is one flag per vertex -- a pinned particle has infinite mass and hangs the
+    // rest of the body off it. Edge/shear/bend constraints are derived from the
+    // triangles. Returns 0 on failure.
+    PhysicsBodyId addSoftMesh(const glm::vec3* verts, int vertCount,
+                              const std::uint32_t* indices, int indexCount,
+                              const std::uint8_t* pinned, glm::vec3 pos,
+                              glm::quat rot, const SoftBodyDesc& desc);
+
+    // A jelly cube: a `grid`x`grid`x`grid` lattice of particles filling the box,
+    // with tetrahedral VOLUME constraints, which is what makes it wobble back
+    // into shape instead of deflating. Only the outer shell gets faces (that is
+    // what getSoftFaces returns, and what there is to draw). Returns 0 on failure.
+    PhysicsBodyId addSoftBox(glm::vec3 halfExtents, int grid, glm::vec3 pos,
+                             glm::quat rot, const SoftBodyDesc& desc);
+
+    // How many particles / how many surface triangles this body has. 0 for an
+    // unknown id or a rigid body.
+    int  softVertexCount(PhysicsBodyId id) const;
+    int  softFaceCount(PhysicsBodyId id) const;
+    // The surface triangle list (3 * softFaceCount indices). Fixed for the life
+    // of the body, so read it once when the body is made.
+    bool getSoftFaces(PhysicsBodyId id, std::uint32_t* out, int count) const;
+    // This frame's particle positions, as offsets from `outCenter` (the body's
+    // centre of mass, in world space) with the body's rotation already applied.
+    // World position of particle i is therefore outCenter + out[i], which is what
+    // lets a caller draw the body as a mesh sitting at outCenter with no rotation
+    // of its own. Writes min(count, softVertexCount) entries.
+    bool getSoftVertices(PhysicsBodyId id, glm::vec3* out, int count,
+                         glm::vec3& outCenter) const;
+
     // Static triangle-mesh collider for concave world geometry (e.g. roads).
     // `verts` are world-space positions; `indices` is a triangle list (a multiple
     // of 3). Always static. Returns 0 on failure.

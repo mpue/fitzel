@@ -1311,6 +1311,62 @@ const std::vector<Property>& PhysicsComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& SoftBodyComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property kind;
+        kind.label = "Shape"; kind.key = "kind"; kind.kind = PropKind::EnumInt;
+        kind.enumLabels = {"Jelly", "Balloon", "Cloth", "This mesh"};
+        kind.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->kind; };
+        p.push_back(std::move(kind));
+        Property res;
+        res.label = "Resolution"; res.key = "resolution"; res.kind = PropKind::Int;
+        res.min = 2.0f; res.max = 10.0f; res.slider = true;
+        res.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->resolution; };
+        // A modelled mesh brings its own particles -- one per corner it already has.
+        res.visible = [](const void* o) {
+            return static_cast<const SoftBodyComponent*>(o)->kind != SoftBodyComponent::FromMesh;
+        };
+        p.push_back(std::move(res));
+        Property mass;
+        mass.label = "Mass"; mass.key = "mass"; mass.kind = PropKind::Float;
+        mass.min = 0.1f; mass.max = 1000.0f; mass.speed = 0.5f; mass.fmt = "%.1f kg";
+        mass.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->mass; };
+        p.push_back(std::move(mass));
+        Property soft;
+        soft.label = "Softness"; soft.key = "softness"; soft.kind = PropKind::Float;
+        soft.slider = true; soft.min = 0.0f; soft.max = 1.0f; soft.fmt = "%.2f";
+        soft.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->softness; };
+        p.push_back(std::move(soft));
+        Property press;
+        press.label = "Pressure"; press.key = "pressure"; press.kind = PropKind::Float;
+        press.min = 0.0f; press.max = 20000.0f; press.speed = 50.0f; press.fmt = "%.0f";
+        press.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->pressure; };
+        // Only a hollow shell has anything to inflate: a jelly lattice holds its
+        // own volume, and a cloth has none to hold.
+        press.visible = [](const void* o) {
+            const int k = static_cast<const SoftBodyComponent*>(o)->kind;
+            return k == SoftBodyComponent::Balloon || k == SoftBodyComponent::FromMesh;
+        };
+        p.push_back(std::move(press));
+        Property damp;
+        damp.label = "Damping"; damp.key = "damping"; damp.kind = PropKind::Float;
+        damp.slider = true; damp.min = 0.0f; damp.max = 1.0f; damp.fmt = "%.2f";
+        damp.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->damping; };
+        p.push_back(std::move(damp));
+        Property pin;
+        pin.label = "Pinned"; pin.key = "pinning"; pin.kind = PropKind::EnumInt;
+        pin.enumLabels = {"Nothing", "Corners", "One edge"};
+        pin.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->pinning; };
+        pin.visible = [](const void* o) {
+            return static_cast<const SoftBodyComponent*>(o)->kind == SoftBodyComponent::Cloth;
+        };
+        p.push_back(std::move(pin));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& VolumetricFogComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -1633,6 +1689,8 @@ struct AutoRegister {
             /*addable=*/false});
         components::registerType({"physics", "Physics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PhysicsComponent>()); }});
+        components::registerType({"soft_body", "Soft Body",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SoftBodyComponent>()); }});
         components::registerType({"player_start", "Player Start",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<PlayerStartComponent>()); }});
         // Not in the Add Component menu: a mesh replaces what an entity draws, so

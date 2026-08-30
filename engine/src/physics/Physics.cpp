@@ -1,6 +1,7 @@
 #include "fitzel/physics/Physics.hpp"
 
 #include <algorithm>
+#include <cfloat>
 #include <cstdio>
 #include <mutex>
 #include <thread>
@@ -21,6 +22,10 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
+#include <Jolt/Physics/Body/BodyLock.h>
+#include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
+#include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
+#include <Jolt/Physics/SoftBody/SoftBodySharedSettings.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
@@ -494,6 +499,229 @@ void PhysicsWorld::removeBody(PhysicsBodyId id) {
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (bi.IsAdded(bid)) bi.RemoveBody(bid);
     bi.DestroyBody(bid);
+}
+
+// --- Soft bodies -------------------------------------------------------------
+
+namespace {
+
+// Everything a soft body needs once its particles and constraints exist: wrap
+// the shared settings in a body, put it in the moving layer, switch it on.
+// Shared because addSoftMesh and addSoftBox differ only in the geometry above.
+JPH::BodyID createSoftBody(JPH::PhysicsSystem& system,
+                           const JPH::Ref<JPH::SoftBodySharedSettings>& shared,
+                           glm::vec3 pos, glm::quat rot,
+                           const PhysicsWorld::SoftBodyDesc& d) {
+    JPH::SoftBodyCreationSettings s(shared, JPH::RVec3(pos.x, pos.y, pos.z),
+                                    toJolt(rot), Layers::MOVING);
+    s.mNumIterations = static_cast<JPH::uint32>(std::max(d.iterations, 1));
+    s.mLinearDamping = std::max(d.damping, 0.0f);
+    s.mPressure      = std::max(d.pressure, 0.0f);
+    s.mFriction      = glm::clamp(d.friction, 0.0f, 1.0f);
+    s.mRestitution   = glm::clamp(d.restitution, 0.0f, 1.0f);
+    s.mGravityFactor = d.gravityFactor;
+    // Bake the rotation into the particles -- Jolt solves a soft body a little
+    // more accurately with the body's own rotation left at identity, and
+    // getSoftVertices puts the rotation back on the way out.
+    s.mMakeRotationIdentity = true;
+    return system.GetBodyInterface().CreateAndAddSoftBody(s, JPH::EActivation::Activate);
+}
+
+// The soft-body state behind a body, or null if it is a rigid one. Every reader
+// below runs outside Update(), which is why the no-lock interface is safe.
+const JPH::SoftBodyMotionProperties* softProps(const JPH::Body& b) {
+    if (!b.IsSoftBody()) return nullptr;
+    return static_cast<const JPH::SoftBodyMotionProperties*>(b.GetMotionProperties());
+}
+
+} // namespace
+
+PhysicsBodyId PhysicsWorld::addSoftMesh(const glm::vec3* verts, int vertCount,
+                                        const std::uint32_t* indices, int indexCount,
+                                        const std::uint8_t* pinned, glm::vec3 pos,
+                                        glm::quat rot, const SoftBodyDesc& desc) {
+    if (!verts || !indices || vertCount < 3 || indexCount < 3) return 0;
+    JPH::Ref<JPH::SoftBodySharedSettings> shared = new JPH::SoftBodySharedSettings;
+
+    // One particle per vertex, the total mass split evenly between them. A pinned
+    // particle gets zero inverse mass -- infinitely heavy, so the rest of the body
+    // hangs off it instead of moving it. That is what nails a cloth to its corners.
+    const float invMass = static_cast<float>(vertCount) / std::max(desc.mass, 0.01f);
+    shared->mVertices.reserve(static_cast<JPH::uint>(vertCount));
+    for (int i = 0; i < vertCount; ++i) {
+        JPH::SoftBodySharedSettings::Vertex v;
+        v.mPosition = JPH::Float3(verts[i].x, verts[i].y, verts[i].z);
+        v.mInvMass  = (pinned && pinned[i]) ? 0.0f : invMass;
+        shared->mVertices.push_back(v);
+    }
+    const auto vc = static_cast<std::uint32_t>(vertCount);
+    for (int i = 0; i + 2 < indexCount; i += 3) {
+        JPH::SoftBodySharedSettings::Face f(indices[i], indices[i + 1], indices[i + 2]);
+        if (f.mVertex[0] >= vc || f.mVertex[1] >= vc || f.mVertex[2] >= vc) continue;
+        if (f.IsDegenerate()) continue; // AddFace asserts on these; drop them quietly
+        shared->mFaces.push_back(f);
+    }
+    if (shared->mFaces.empty()) return 0;
+
+    // Edges, shear diagonals and (optionally) bend constraints, all derived from
+    // the triangles: this is what turns a triangle soup into something that holds
+    // its shape. Compliance is the inverse of stiffness, so 0 is as rigid as the
+    // solver gets and ~1e-3 is properly soft.
+    const JPH::SoftBodySharedSettings::VertexAttributes attr(
+        std::max(desc.compliance, 0.0f), std::max(desc.shearCompliance, 0.0f),
+        desc.bendCompliance >= 0.0f ? desc.bendCompliance : FLT_MAX);
+    shared->CreateConstraints(&attr, 1,
+                              JPH::SoftBodySharedSettings::EBendType::Distance);
+    shared->Optimize();
+
+    return createSoftBody(m_impl->system, shared, pos, rot, desc)
+        .GetIndexAndSequenceNumber();
+}
+
+PhysicsBodyId PhysicsWorld::addSoftBox(glm::vec3 halfExtents, int grid,
+                                       glm::vec3 pos, glm::quat rot,
+                                       const SoftBodyDesc& desc) {
+    // A surface-only box would be a bag: with no pressure inside it, it folds up
+    // the moment it lands. A jelly cube is a solid LATTICE instead -- particles
+    // through the inside as well, tied into tetrahedra whose volume the solver
+    // preserves. That is the difference between a balloon and a block of jelly,
+    // and it is why this one cannot be expressed through addSoftMesh.
+    const int n = std::clamp(grid, 2, 12);
+    const glm::vec3 half = glm::max(halfExtents, glm::vec3(0.02f));
+    const glm::vec3 step = (half * 2.0f) / static_cast<float>(n - 1);
+    const float compliance = std::max(desc.compliance, 0.0f);
+
+    JPH::Ref<JPH::SoftBodySharedSettings> shared = new JPH::SoftBodySharedSettings;
+    const int count = n * n * n;
+    const float invMass = static_cast<float>(count) / std::max(desc.mass, 0.01f);
+    auto index = [n](int x, int y, int z) {
+        return static_cast<std::uint32_t>(x + y * n + z * n * n);
+    };
+    shared->mVertices.reserve(static_cast<JPH::uint>(count));
+    for (int z = 0; z < n; ++z)
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                const glm::vec3 p =
+                    -half + step * glm::vec3(float(x), float(y), float(z));
+                JPH::SoftBodySharedSettings::Vertex v;
+                v.mPosition = JPH::Float3(p.x, p.y, p.z);
+                v.mInvMass  = invMass;
+                shared->mVertices.push_back(v);
+            }
+
+    // Springs along the three axes of the lattice.
+    for (int z = 0; z < n; ++z)
+        for (int y = 0; y < n; ++y)
+            for (int x = 0; x < n; ++x) {
+                const std::uint32_t a = index(x, y, z);
+                if (x < n - 1)
+                    shared->mEdgeConstraints.push_back({a, index(x + 1, y, z), compliance});
+                if (y < n - 1)
+                    shared->mEdgeConstraints.push_back({a, index(x, y + 1, z), compliance});
+                if (z < n - 1)
+                    shared->mEdgeConstraints.push_back({a, index(x, y, z + 1), compliance});
+            }
+    shared->CalculateEdgeLengths();
+
+    // Six tetrahedra fill one cell of the lattice (the standard split, the same
+    // one Jolt uses in its own sample), and their volume is what the body springs
+    // back to after a hit.
+    static const int kTetra[6][4][3] = {
+        {{0, 0, 0}, {0, 1, 1}, {0, 0, 1}, {1, 1, 1}},
+        {{0, 0, 0}, {0, 1, 0}, {0, 1, 1}, {1, 1, 1}},
+        {{0, 0, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}},
+        {{0, 0, 0}, {1, 0, 1}, {1, 0, 0}, {1, 1, 1}},
+        {{0, 0, 0}, {1, 1, 0}, {0, 1, 0}, {1, 1, 1}},
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {1, 1, 1}}};
+    for (int z = 0; z < n - 1; ++z)
+        for (int y = 0; y < n - 1; ++y)
+            for (int x = 0; x < n - 1; ++x)
+                for (const auto& t : kTetra) {
+                    JPH::SoftBodySharedSettings::Volume v;
+                    for (int i = 0; i < 4; ++i)
+                        v.mVertex[i] = index(x + t[i][0], y + t[i][1], z + t[i][2]);
+                    v.mCompliance = compliance;
+                    shared->mVolumeConstraints.push_back(v);
+                }
+    shared->CalculateVolumeConstraintVolumes();
+
+    // The outer shell, wound outwards: the only part of the lattice there is
+    // anything to draw, or for anything else to collide against.
+    auto quad = [&](std::uint32_t a, std::uint32_t b, std::uint32_t c,
+                    std::uint32_t d) {
+        shared->mFaces.push_back(JPH::SoftBodySharedSettings::Face(a, b, c));
+        shared->mFaces.push_back(JPH::SoftBodySharedSettings::Face(a, c, d));
+    };
+    const int e = n - 1;
+    for (int b = 0; b < e; ++b)
+        for (int a = 0; a < e; ++a) {
+            quad(index(a, b, 0), index(a, b + 1, 0),
+                 index(a + 1, b + 1, 0), index(a + 1, b, 0));            // -Z
+            quad(index(a, b, e), index(a + 1, b, e),
+                 index(a + 1, b + 1, e), index(a, b + 1, e));            // +Z
+            quad(index(a, 0, b), index(a + 1, 0, b),
+                 index(a + 1, 0, b + 1), index(a, 0, b + 1));            // -Y
+            quad(index(a, e, b), index(a, e, b + 1),
+                 index(a + 1, e, b + 1), index(a + 1, e, b));            // +Y
+            quad(index(0, a, b), index(0, a, b + 1),
+                 index(0, a + 1, b + 1), index(0, a + 1, b));            // -X
+            quad(index(e, a, b), index(e, a + 1, b),
+                 index(e, a + 1, b + 1), index(e, a, b + 1));            // +X
+        }
+    shared->Optimize();
+
+    return createSoftBody(m_impl->system, shared, pos, rot, desc)
+        .GetIndexAndSequenceNumber();
+}
+
+int PhysicsWorld::softVertexCount(PhysicsBodyId id) const {
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    if (!lock.Succeeded()) return 0;
+    const JPH::SoftBodyMotionProperties* mp = softProps(lock.GetBody());
+    return mp ? static_cast<int>(mp->GetVertices().size()) : 0;
+}
+
+int PhysicsWorld::softFaceCount(PhysicsBodyId id) const {
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    if (!lock.Succeeded()) return 0;
+    const JPH::SoftBodyMotionProperties* mp = softProps(lock.GetBody());
+    return mp ? static_cast<int>(mp->GetFaces().size()) : 0;
+}
+
+bool PhysicsWorld::getSoftFaces(PhysicsBodyId id, std::uint32_t* out, int count) const {
+    if (!out || count < 3) return false;
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    if (!lock.Succeeded()) return false;
+    const JPH::SoftBodyMotionProperties* mp = softProps(lock.GetBody());
+    if (!mp) return false;
+    const auto& faces = mp->GetFaces();
+    const int n = std::min(count / 3, static_cast<int>(faces.size()));
+    for (int i = 0; i < n; ++i) {
+        out[3 * i + 0] = faces[i].mVertex[0];
+        out[3 * i + 1] = faces[i].mVertex[1];
+        out[3 * i + 2] = faces[i].mVertex[2];
+    }
+    return n > 0;
+}
+
+bool PhysicsWorld::getSoftVertices(PhysicsBodyId id, glm::vec3* out, int count,
+                                   glm::vec3& outCenter) const {
+    if (!out || count <= 0) return false;
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterfaceNoLock(), JPH::BodyID(id));
+    if (!lock.Succeeded()) return false;
+    const JPH::Body& body = lock.GetBody();
+    const JPH::SoftBodyMotionProperties* mp = softProps(body);
+    if (!mp) return false;
+    // Particle positions are stored relative to the body's centre of mass, which
+    // is exactly the split a caller wants: one moving origin for the whole body,
+    // and a mesh around it that only ever changes shape.
+    const JPH::RVec3 com = body.GetCenterOfMassPosition();
+    outCenter = glm::vec3(float(com.GetX()), float(com.GetY()), float(com.GetZ()));
+    const JPH::Quat rot = body.GetRotation();
+    const auto& vs = mp->GetVertices();
+    const int n = std::min(count, static_cast<int>(vs.size()));
+    for (int i = 0; i < n; ++i) out[i] = toGlm(rot * vs[i].mPosition);
+    return n > 0;
 }
 
 // --- Character controller ---------------------------------------------------

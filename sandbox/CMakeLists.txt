@@ -75,6 +75,10 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SpraySystem.cpp
     src/ParticleSystem.cpp
     src/SkidSystem.cpp
+    # Soft bodies (Jolt SoftBody): jelly, balloons, cloth. Runtime, like the rest
+    # of the physics -- a wobbling object is scene data, and the shipped player
+    # has to simulate and draw it too.
+    src/SoftBodySystem.cpp
     src/TrailSystem.cpp
     # Lock-on missiles: gameplay, so the shipped player needs it too (the
     # settings panel inside it is simply never called there).
@@ -254,6 +258,18 @@ add_executable(meshpaintcheck tools/meshpaintcheck.cpp src/MeshPaint.cpp
                               src/MultiShot.cpp)
 target_compile_definitions(meshpaintcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(meshpaintcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# softcheck (sandbox/tools/softcheck.cpp): drops each kind of soft body on a
+# floor and measures the wobble. A soft body has no transform to inspect -- it is
+# a cloud of particles -- so "it simulated" and "it silently handed back its rest
+# pose" look identical in a screenshot. This is where the difference is caught.
+#   build/release/bin/softcheck.exe
+add_executable(softcheck tools/softcheck.cpp src/SoftBodySystem.cpp
+                         src/EditMesh.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                         src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp
+                         src/MultiShot.cpp)
+target_compile_definitions(softcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(softcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # viewcheck (sandbox/tools/viewcheck.cpp): renders a project's scene offscreen
 # and writes it to a PNG. Every other harness measures; this one LOOKS, which is

@@ -105,6 +105,7 @@
 #include "SplinePanel.hpp"
 #include "SplineEdit.hpp"
 #include "SkidSystem.hpp"
+#include "SoftBodySystem.hpp"
 #include "TrailSystem.hpp"
 #include "WeaponSystem.hpp"
 #include "WorldAudio.hpp"
@@ -4434,6 +4435,9 @@ int main(int argc, char** argv) {
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
         std::map<int, PhysicsBodyId>  physicsBody;  // entity id -> body handle
+        // The entities that wobble instead of moving as one piece. Built with the
+        // physics world at Play start and thrown away with it (see SoftBodySystem).
+        SoftBodySystem                softBodies;
         // Knockable road side objects (posts/bollards): each a dynamic body created
         // at Play start, rendered from its live physics transform so a car bowls it
         // over. Rebuilt every Play; the derived static instances take over in the
@@ -5257,6 +5261,9 @@ int main(int argc, char** argv) {
                 // they must never get a dynamic body -- one would be flung by the
                 // solver (e.g. spawning inside the terrain) and fight the tick.
                 if (e.components.get<OpponentComponent>()) continue;
+                // A soft body IS this entity's physics; a rigid collider beside it
+                // would be a second, differently shaped copy fighting the first.
+                if (e.components.get<SoftBodyComponent>()) continue;
                 const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
                 const glm::quat q = glm::quat(glm::radians(e.rotation));
                 PhysicsBodyId id = 0;
@@ -5303,6 +5310,10 @@ int main(int argc, char** argv) {
                 }
                 if (id) physicsBody[e.id] = id;
             }
+            // Jelly, balloons and cloth. After the loop above and after the world's
+            // static geometry, so a soft body lands ON the ground rather than being
+            // squeezed out of it on its first step.
+            softBodies.spawn(entities, *physics);
             // The player is a physics capsule (~1.8 m tall). It spawns at the
             // first entity carrying a PlayerStart component (adopting its facing
             // and move speed); otherwise at the edit camera.
@@ -5453,6 +5464,7 @@ int main(int argc, char** argv) {
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
             physicsBody.clear();
+            softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
             audioVoices.clear(); // stop + free any AudioSource voices
             entities  = std::move(playEntities);
@@ -7082,6 +7094,13 @@ int main(int argc, char** argv) {
                         refitTerrainCollision(fxz);
                 }
                 skids.update(*physics); // lay tyre marks where wheels slip (post-step)
+                // Soft bodies: their particles are the shape, so they come back as
+                // a mesh + a centre rather than as a transform.
+                softBodies.sync(entities, *physics,
+                    [&](Entity& e, const glm::vec3& p, const glm::vec3& r) {
+                        const glm::mat4 pw = parentWorldMat(e);
+                        setWorld(e, p, r, e.parent >= 0 ? &pw : nullptr);
+                    });
                 for (Entity& e : entities) {
                     const auto* pc = e.components.get<PhysicsComponent>();
                     if (!pc || !pc->dynamic) continue; // only dynamic bodies move
@@ -7637,6 +7656,7 @@ int main(int argc, char** argv) {
                         if (physics) physics->removeBody(bit->second);
                         physicsBody.erase(bit);
                     }
+                    if (physics) softBodies.remove(did, *physics);
                     scripts.removeEntity(did);
                     entities.erase(std::remove_if(entities.begin(), entities.end(),
                         [did](const Entity& e){ return e.id == did; }), entities.end());

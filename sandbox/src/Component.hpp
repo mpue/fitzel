@@ -1575,6 +1575,44 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Soft Body (the entity wobbles) ----------------------
+// Jolt simulates soft bodies as well as rigid ones: a cloud of particles held
+// together by constraints rather than one transform, so the thing DEFORMS -- a
+// block of jelly that squashes when it lands, a balloon that dents, a cloth that
+// drapes over what is under it.
+//
+// It replaces the Physics component rather than joining it: an entity cannot be
+// both a rigid box and a bag of particles, and Play skips the rigid body for
+// anything carrying this. What the entity DRAWS is replaced too, for the length
+// of the run: the simulated surface is written into a Mesh component every frame
+// (see SoftBodySystem), which is what puts the deformation on screen through the
+// ordinary mesh path -- material, shadows and all. Play restores the scene from
+// its backup afterwards, so neither substitution outlives the run.
+class SoftBodyComponent : public ComponentBase {
+public:
+    // What gets built at the entity's position, sized from its half-extents.
+    // Jelly is a solid lattice (it springs back into shape); Balloon and Mesh are
+    // hollow shells held out by pressure; Cloth is a flat sheet with no volume at
+    // all, which is why it is the one kind that needs pinning to hang from.
+    enum Kind { Jelly = 0, Balloon = 1, Cloth = 2, FromMesh = 3 };
+
+    int   kind       = Jelly;
+    int   resolution = 4;      // particles per axis (cost grows with the cube of it)
+    float mass       = 20.0f;  // kg, spread over every particle
+    float softness   = 0.25f;  // 0 = barely gives .. 1 = slack
+    float pressure   = 2000.0f;// what holds a hollow shell out (Balloon/Mesh only)
+    float damping    = 0.1f;   // how quickly the wobble dies down
+    int   pinning    = 1;      // Cloth: 0 = nothing, 1 = the four corners, 2 = one edge
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SoftBodyComponent>(*this);
+    }
+    const char* typeId() const override { return "soft_body"; }
+    const char* displayName() const override { return "Soft Body"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: PlayerStart (where the FPS player spawns in Play) ----
 // Attach to any entity to mark it as the player's start: on Play the walking
 // character spawns at that entity (position + facing), moving at moveSpeed. The
