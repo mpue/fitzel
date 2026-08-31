@@ -197,7 +197,22 @@ int main() {
           std::to_string(viewtrace::samplesDone(st)) + " / " +
               std::to_string(st.samples));
 
-    // --- 4. Switching off lets go of it --------------------------------------
+    // --- 4. It survives somebody else's GL error ------------------------------
+    // The editor draws a whole frame before the preview is serviced, and GL's
+    // error flag is global and sticky: whatever happened earlier is still in it.
+    // A GPU tracer that reads that flag as its own verdict switches itself off
+    // on a machine that is perfectly capable -- which is exactly what it did.
+    std::printf("\nafter somebody else leaves an error behind\n");
+    const bool wasOnGpu = st.gpuReady;
+    camera.setPosition(glm::vec3(-1.0f, 3.0f, 7.5f));
+    glEnable(GL_TEXTURE_2D);   // not a thing in core: GL_INVALID_ENUM, on purpose
+    for (int i = 0; i < 12; ++i) frame(0.05);
+    check(!wasOnGpu || st.gpuReady, "the GPU tracer stays on",
+          st.gpuReady ? "still on the GPU" : "fell back to the CPU");
+    check(viewtrace::samplesDone(st) > 0, "and keeps tracing",
+          std::to_string(viewtrace::samplesDone(st)) + " samples");
+
+    // --- 5. Switching off lets go of it --------------------------------------
     std::printf("\nswitching off\n");
     renderer.begin(camera, 4.0f / 3.0f, light);
     viewtrace::service(st, /*enabled=*/false, renderer, camera, look, 320, 240, now);

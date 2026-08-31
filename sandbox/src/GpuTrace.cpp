@@ -70,6 +70,21 @@ std::string readFile(const std::string& path) {
     return ss.str();
 }
 
+// Empty GL's error queue before doing something whose success is about to be
+// judged by it.
+//
+// The flag is global, sticky and shared with everything else drawing in this
+// context. Inside the editor a whole frame has already gone by before the
+// preview is serviced, and anything it left in there is still sitting in it --
+// so reading glGetError() straight after a dispatch answers "did ANYBODY err
+// recently", not "did this work". That is not a hypothetical: it read an
+// unrelated GL_INVALID_ENUM as its own and switched the GPU tracer off on a
+// machine that could run it perfectly well, on every frame, silently falling
+// back to the CPU. tracecheck leaves an error behind on purpose now.
+void drainErrors() {
+    for (int i = 0; i < 64 && glGetError() != GL_NO_ERROR; ++i) {}
+}
+
 void setVec3(unsigned program, const char* name, const glm::vec3& v) {
     glUniform3f(glGetUniformLocation(program, name), v.x, v.y, v.z);
 }
@@ -149,6 +164,7 @@ bool Tracer::init(const std::string& shaderPath) {
 
 bool Tracer::uploadBuffer(std::uint32_t& id, int binding, const void* data,
                           std::size_t bytes) {
+    drainErrors();
     if (!id) glGenBuffers(1, &id);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, id);
     // Never zero bytes: a binding of size 0 is not a buffer the driver has to
@@ -254,6 +270,7 @@ bool Tracer::resize(int width, int height) {
         m_samples = 0;
         return true;
     }
+    drainErrors();
     if (m_accum) glDeleteTextures(1, &m_accum);
     glGenTextures(1, &m_accum);
     glBindTexture(GL_TEXTURE_2D, m_accum);
@@ -276,6 +293,7 @@ bool Tracer::accumulate(int samples) {
     }
     if (samples <= 0) return true;
 
+    drainErrors();
     glUseProgram(m_program);
     glBindImageTexture(0, m_accum, 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA32F);
 
