@@ -213,7 +213,7 @@ endforeach()
 # broken shader ends up silently doing nothing. Run it after editing a shader:
 #   build\release\bin\shadercheck.exe sandbox\assets\shaders
 add_executable(shadercheck tools/shadercheck.cpp)
-target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_33)
+target_link_libraries(shadercheck PRIVATE glfw glad_gl_core_43)
 
 # The spatial-audio check (sandbox/tools/audiocheck.cpp): drives one sound around
 # a stationary listener through the engine's own API, so "I hear no direction"
@@ -322,7 +322,7 @@ target_link_libraries(viewcheck PRIVATE fitzel imgui stb_headers
 #   build/release/bin/rivercheck.exe [outDir] [shaderDir]
 add_executable(rivercheck tools/rivercheck.cpp src/RiverGen.cpp src/RiverSystem.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp)
-target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_33 glm::glm
+target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
                                          stb_headers nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
@@ -342,7 +342,7 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # change to it was previously made by reasoning about noise and hoping.
 #   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
 add_executable(skycheck tools/skycheck.cpp)
-target_link_libraries(skycheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
+target_link_libraries(skycheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
 
 # The fog look (sandbox/tools/fogcheck.cpp): the same idea as skycheck, one layer
 # down. Marches volfog.frag at FULL resolution against a synthetic depth buffer
@@ -354,7 +354,7 @@ target_link_libraries(skycheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers
 # of the noise is wrong in the way that looks right.
 #   build/release/bin/fogcheck.exe <outDir> sandbox/assets/shaders
 add_executable(fogcheck tools/fogcheck.cpp src/FogNoise.cpp)
-target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_33 glm::glm stb_headers)
+target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
 
 # The path-tracer check (sandbox/tools/pathcheck.cpp): renders scenes whose
 # answer is known in advance -- a white furnace that must come back at radiance

@@ -1,5 +1,7 @@
 #include "fitzel/core/Window.hpp"
 
+#include "fitzel/core/GlCaps.hpp"
+
 #include <algorithm>
 #include <cstdio>
 #include <stdexcept>
@@ -57,14 +59,28 @@ GLFWmonitor* monitorForWindow(GLFWwindow* w) {
 Window::Window(const WindowConfig& config) {
     ensureGlfwInitialized();
 
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE); // required on macOS
-    glfwWindowHint(GLFW_MAXIMIZED, config.maximized ? GLFW_TRUE : GLFW_FALSE);
+    // 4.3 first, 3.3 if the driver will not give it. The engine draws in 3.3 and
+    // every shader it ships is `#version 330 core`, which a 4.3 core context
+    // runs unchanged -- so asking for more costs nothing and buys the two things
+    // that cannot be written below it: compute shaders and shader storage
+    // buffers. Nothing in the engine REQUIRES them; see fitzel::glcaps, which is
+    // how a feature that wants them finds out whether it got them.
+    auto hint = [&config](int major, int minor) {
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, major);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, minor);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE); // required on macOS
+        glfwWindowHint(GLFW_MAXIMIZED, config.maximized ? GLFW_TRUE : GLFW_FALSE);
+    };
 
+    hint(4, 3);
     m_handle = glfwCreateWindow(config.width, config.height,
                                 config.title.c_str(), nullptr, nullptr);
+    if (!m_handle) {
+        hint(3, 3);
+        m_handle = glfwCreateWindow(config.width, config.height,
+                                    config.title.c_str(), nullptr, nullptr);
+    }
     if (!m_handle) {
         if (g_glfwWindowCount == 0) {
             glfwTerminate();
@@ -94,8 +110,12 @@ Window::Window(const WindowConfig& config) {
         glViewport(0, 0, w, h);
     });
 
-    std::printf("[Fitzel] OpenGL %s | %s\n",
-                glGetString(GL_VERSION), glGetString(GL_RENDERER));
+    // The compute line is not noise: it is the one difference between two
+    // machines that both say "OpenGL fine" and only one of which can run the
+    // GPU tracer, and it belongs in the log the day a bug report arrives.
+    std::printf("[Fitzel] OpenGL %s | %s | compute %s\n",
+                glGetString(GL_VERSION), glGetString(GL_RENDERER),
+                glcaps::compute() ? "yes" : "no");
 }
 
 Window::~Window() {

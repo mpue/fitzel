@@ -194,8 +194,15 @@ if(NOT imcolortextedit_POPULATED)
     FetchContent_Populate(imcolortextedit)
 endif()
 
-# Generate a GLAD loader for OpenGL 3.3 Core. Produces the target `glad_gl_core_33`.
-glad_add_library(glad_gl_core_33 REPRODUCIBLE API gl:core=3.3)
+# Generate a GLAD loader for OpenGL 4.3 Core. Produces the target `glad_gl_core_43`.
+#
+# The loader's version is a CEILING, not a requirement: it decides which entry
+# points can be resolved, and glad reports per version which of them the driver
+# actually gave it (GLAD_GL_VERSION_4_3). Everything the engine draws with is
+# still 3.3 -- all 41 shaders are `#version 330 core` and the window asks for
+# 3.3 when it cannot get more. 4.3 is here for what cannot be written without
+# it: compute shaders and shader storage buffers, i.e. the GPU path tracer.
+glad_add_library(glad_gl_core_43 REPRODUCIBLE API gl:core=4.3)
 
 # Expose stb headers as an interface target (implementation TU lives in engine/).
 add_library(stb_headers INTERFACE)

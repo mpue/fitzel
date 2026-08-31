@@ -1,6 +1,7 @@
 add_library(fitzel STATIC
     src/core/Window.cpp
     src/core/Input.cpp
+    src/core/GlCaps.cpp
     src/graphics/Shader.cpp
     src/graphics/Mesh.cpp
     src/graphics/InstancedMesh.cpp
@@ -46,7 +47,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(fitzel
     PUBLIC
         glfw
-        glad_gl_core_33
+        glad_gl_core_43
         glm::glm
         imgui
         Threads::Threads
