@@ -279,14 +279,21 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
 
 void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
                               float dither) const {
-    shader.setInt("uAlphaMode", r.castAlphaMode);
-    shader.setFloat("uCoverage", r.castCoverage);
-    if (r.castAlphaMode != 0) {
+    // A plain viewport mode draws every surface solid (see renderScene), so its
+    // shadows are solid too -- a clay pane throwing a quarter of a shadow would
+    // be the picture disagreeing with itself. A CUTOUT still cuts: the hole in a
+    // leaf card is its shape, and the lit shader keeps it in every mode.
+    const bool  plain     = m_shadingMode != 0;
+    const int   alphaMode = plain && r.castAlphaMode == 2 ? 0 : r.castAlphaMode;
+    const float coverage  = plain ? 1.0f : r.castCoverage;
+    shader.setInt("uAlphaMode", alphaMode);
+    shader.setFloat("uCoverage", coverage);
+    if (alphaMode != 0) {
         shader.setFloat("uCutoff", r.castCutoff);
         r.castTex->bind(0);
     }
     // Only translucent casters read it, and only the cascade pass has it.
-    if (r.castCoverage < 1.0f) shader.setFloat("uDither", dither);
+    if (coverage < 1.0f) shader.setFloat("uDither", dither);
 }
 
 void Renderer::buildCullBounds() {
@@ -348,8 +355,10 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
         const std::array<glm::vec4, 6> planes = frustumPlanes(lightSpace);
         for (std::size_t k = 0; k < m_queue.size(); ++k) {
             const Renderable& r = m_queue[k];
-            // Invisible to the eye, invisible to the sun.
-            if (r.castCoverage <= kMinCoverage) continue;
+            // Invisible to the eye, invisible to the sun -- unless a plain
+            // viewport mode is drawing it solid, in which case it is not
+            // invisible to the eye at all.
+            if (m_shadingMode == 0 && r.castCoverage <= kMinCoverage) continue;
             if (!aabbVisible(planes, m_cullBounds[k], /*count=*/4)) continue;
             // The dither offset is the golden ratio times the caster's index:
             // any two casters get patterns that share as few texels as a low
@@ -415,7 +424,7 @@ void Renderer::preparePointShadows() {
                 // Half gone or more is gone here (see kCubeFrag): the cube is
                 // sampled unfiltered, so it can only answer yes or no, and a
                 // window is a great deal closer to no than to yes.
-                if (r.castCoverage < 0.5f) continue;
+                if (m_shadingMode == 0 && r.castCoverage < 0.5f) continue;
                 if (!aabbNearPoint(m_cullBounds[q], l.position, far)) continue;
                 if (!aabbVisible(planes, m_cullBounds[q])) continue;
                 uploadCoverage(m_cubeDistShader, r, 0.0f);
@@ -571,6 +580,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uGlass", 0);
         s->setInt("uHasNormalMap", 0);
         s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
+        s->setInt("uShade", m_shadingMode); // viewport shading; 0 = the material
         s->setFloat("uRoadFade", 0.0f); // baseline: no edge fade (road re-enables)
         s->setFloat("uRainRings", 0.0f); // baseline: no drop impacts (road re-enables)
         s->setInt("uHasWetMap", 0);      // baseline: even wetness (road re-enables)
@@ -697,7 +707,16 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     std::vector<const Renderable*> opaque, transparent;
     for (const auto& r : m_queue) {
         if (skipReflective && r.reflective) continue;
-        (r.opacity < 0.999f || r.forceTransparent ? transparent : opaque).push_back(&r);
+        // A plain viewport mode has nothing to blend: those modes are there to
+        // show where the geometry IS, and a pane you can see through is a pane
+        // you cannot point at. It is also what stops a blended surface from
+        // coming back BLACK in them -- the transparent pass turns depth writes
+        // off, so with one flat colour and no alpha to soften it, whichever of
+        // the two faces happened to be drawn last won, and half the time that
+        // is the one facing away from the light.
+        const bool blended = m_shadingMode == 0 &&
+                             (r.opacity < 0.999f || r.forceTransparent);
+        (blended ? transparent : opaque).push_back(&r);
     }
     for (const Renderable* r : opaque) drawOne(*r);
     if (!transparent.empty()) {

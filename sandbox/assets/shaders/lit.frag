@@ -159,6 +159,16 @@ uniform float uRoadWidth;     // road width in metres
 uniform float uRoadUMax;      // vUV.x at the road's far edge (width / texTile)
 uniform vec3 uAlbedo;
 uniform float uAlpha;         // material opacity (1 = opaque); * texture alpha
+// Viewport shading (the editor's Blender-style ladder). 0 is what a game ever
+// renders -- the material, in full. The others strip it back so that GEOMETRY
+// can be read: what is the shape, where does it sit, is that face inside out.
+// They live in this shader rather than in three shaders of their own because
+// every one of them still needs its clip plane, its cutout, its cascade choice
+// and its fog; only the surface changes, and the surface is one branch.
+uniform int   uShade;         // 0 textured, 1 solid, 2 solid lit, 3 wireframe
+const vec3 kShadeClay = vec3(0.66, 0.64, 0.61); // one neutral surface for all of them
+const vec3 kShadeWire = vec3(0.80, 0.83, 0.88);
+
 uniform int   uGlass;         // 1 = Fresnel alpha (clear head-on, opaque rim)
 uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlphaCutoff
 uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
@@ -680,6 +690,28 @@ void main() {
     // Masked transparency ("transparency map", Cutout mode): drop fully/mostly
     // transparent texels before any lighting so they never write colour or depth.
     if (uAlphaCutout == 1 && texA < uAlphaCutoff) discard;
+
+    // The modes that do not want the material leave here, before anything is
+    // done with it -- after the cutout above, though, or a leaf card would come
+    // back as the rectangle it is drawn on.
+    if (uShade == 3) {                       // wireframe: the lines, one colour
+        FragColor = vec4(toOutput(pow(kShadeWire, vec3(2.2))), 1.0);
+        return;
+    }
+    if (uShade == 1) {
+        // Solid: a fixed studio light over the geometry normal, deliberately
+        // NOT the scene's sun. A shape has to stay readable while the sun is
+        // being moved, at night, and in a scene whose lighting is the thing
+        // currently broken.
+        const vec3 kStudio = normalize(vec3(0.35, 0.75, 0.55));
+        const float wrap = 0.35;             // light that wraps past the terminator
+        float ndl = (dot(normalize(vNormal), kStudio) + wrap) / (1.0 + wrap);
+        FragColor = vec4(toOutput(pow(kShadeClay, vec3(2.2)) *
+                                  (0.18 + 0.82 * clamp(ndl, 0.0, 1.0))), 1.0);
+        return;
+    }
+    if (uShade == 2) albedo = kShadeClay;    // solid lit: the scene's light, no texture
+
     albedo = pow(albedo, vec3(2.2)); // sRGB -> linear for correct lighting
 
     // Submerged (and just-above-waterline) surfaces are wet -> darker, with a
@@ -928,7 +960,7 @@ void main() {
     // lit storeys). vNormal, not the normal-mapped N -- which wall this is, is a
     // property of the geometry, not of a bump map.
     if (uWindowGrid == 1) emissive += windowEmission(vWorldPos, normalize(vNormal));
-    color += emissive;
+    if (uShade == 0) color += emissive;  // solid lit shows light, not paintwork
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
 

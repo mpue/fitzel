@@ -153,6 +153,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/PathTrace.cpp
     src/PathTraceCapture.cpp
     src/PathTracePanel.cpp
+    # The same tracer, left running in the viewport (the Pathtraced shading
+    # mode). Editor-only for the same reason as the three above it.
+    src/ViewportTrace.cpp
     # Filling a light grid needs the whole path tracer; sampling one needs a
     # texture lookup. Only the BAKE is editor-only -- LightGrid.cpp itself is
     # runtime, below, so a shipped game lights from a bake without linking a

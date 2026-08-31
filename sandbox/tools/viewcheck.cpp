@@ -21,7 +21,7 @@
 // world they stand in.
 //
 //   viewcheck <projectFolder> [out.png] [--size WxH] [--yaw deg] [--pitch deg]
-//             [--shaders dir]
+//             [--shaders dir] [--shade textured|solid|solidlit|wireframe]
 //
 // With no camera given it frames the scene's own bounds from a three-quarter
 // view, so a scene authored anywhere in the world still lands in the picture.
@@ -107,6 +107,10 @@ struct Options {
                         ? std::string("content") : std::string(FITZEL_CONTENT_DIR);
     int   width = 1280, height = 720;
     float yaw = -35.0f, pitch = -22.0f;
+    // The editor's viewport shading ladder, so a question about a mode has a
+    // picture too. The same numbers lit.frag uses: 0 textured, 1 solid,
+    // 2 solid lit, 3 wireframe.
+    int   shade = 0;
     bool  ok = true;
 };
 
@@ -124,6 +128,13 @@ Options parse(int argc, char** argv) {
             o.height = std::max(16, std::atoi(v.substr(x + 1).c_str()));
         } else if (a == "--yaw")     { o.yaw   = static_cast<float>(std::atof(next().c_str()));
         } else if (a == "--pitch")   { o.pitch = static_cast<float>(std::atof(next().c_str()));
+        } else if (a == "--shade") {
+            const std::string v = next();
+            o.shade = (v == "wireframe" || v == "wire") ? 3
+                    : (v == "solidlit"  || v == "lit")  ? 2
+                    : (v == "solid")                    ? 1
+                    : (v == "textured"  || v == "tex")  ? 0
+                    : std::atoi(v.c_str());
         } else if (a == "--shaders") { o.shaders = next();
         } else if (a == "--content") { o.content = next();
         } else if (!a.empty() && a[0] == '-') { o.ok = false; break;
@@ -141,7 +152,8 @@ int main(int argc, char** argv) {
     const Options opt = parse(argc, argv);
     if (!opt.ok) {
         std::printf("usage: viewcheck <projectFolder> [out.png] [--size WxH]\n"
-                    "                 [--yaw deg] [--pitch deg] [--shaders dir]\n");
+                    "                 [--yaw deg] [--pitch deg] [--shaders dir]\n"
+                    "                 [--shade textured|solid|solidlit|wireframe]\n");
         return 2;
     }
     if (!fs::exists(opt.project)) {
@@ -309,6 +321,7 @@ int main(int argc, char** argv) {
     // --- The frame -----------------------------------------------------------
     fitzel::DirectionalLight light;
     fitzel::Renderer renderer;
+    renderer.setShadingMode(opt.shade);
     renderer.setViewport(opt.width, opt.height);
     renderer.begin(camera, aspect, light);
 
@@ -334,10 +347,14 @@ int main(int argc, char** argv) {
     // before the submit.
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, opt.width, opt.height);
-    glClearColor(kSky.r, kSky.g, kSky.b, 1.0f); // a flat sky, since there is none
+    // The editor puts a plain mode against a flat dark ground rather than a sky.
+    if (opt.shade == 0) glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
+    else                glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
+    if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
     renderer.renderScene(view, proj, camera.position(), fitzel::Renderer::kNoClip, false);
+    if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glFinish();
 
     // --- Out ------------------------------------------------------------------

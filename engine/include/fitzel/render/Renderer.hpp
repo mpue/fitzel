@@ -226,6 +226,14 @@ public:
     // A clip plane that keeps every fragment (effectively no clipping).
     static const glm::vec4 kNoClip;
 
+    // Viewport shading mode, uploaded to every lit-shader draw as `uShade`:
+    // 0 the material in full, 1 solid, 2 solid lit, 3 wireframe. See lit.frag,
+    // which is where the modes actually are -- this only carries the number, so
+    // that an app switching modes does not have to reach into every material it
+    // ever built. Anything a game renders leaves it at 0.
+    void setShadingMode(int mode) { m_shadingMode = mode; }
+    int  shadingMode() const      { return m_shadingMode; }
+
     // Whether the sun casts at all. Off still CLEARS the cascades -- a cleared
     // depth map reads as "nothing between here and the sun", so the scene comes
     // out simply unshadowed rather than black -- and skips the queue replay,
@@ -301,6 +309,7 @@ private:
 
     CascadedShadowMap m_csm;
     bool              m_shadowsEnabled = true;
+    int               m_shadingMode    = 0;
     Shader            m_depthShader;
     Shader            m_cubeDistShader;             // point-shadow distance pass
     // World bounds of m_queue, rebuilt at the start of each shadow pass.

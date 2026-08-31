@@ -80,6 +80,7 @@
 #include "ModelingPanel.hpp"
 #include "ViewportNav.hpp"
 #include "PathTracePanel.hpp"
+#include "ViewportTrace.hpp"
 #endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
@@ -745,6 +746,45 @@ void road(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
     dl->AddLine({c.x + r, c.y + r}, {c.x + r * 0.35f, c.y - r}, col, 1.8f);
     dl->AddLine({c.x, c.y + r * 0.9f}, {c.x, c.y + r * 0.2f}, col, 1.4f);
     dl->AddLine({c.x, c.y - r * 0.2f}, {c.x, c.y - r * 0.8f}, col, 1.4f);
+}
+
+// The viewport shading ladder: a wire cube, then the same ball with as much of
+// the material as each mode keeps -- nothing, the scene's light, the paintwork.
+// One shape across three of the four, because what changes between them is not
+// the object.
+void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col) {
+    // The toolbar's own background, for the pattern that has to be cut OUT of a
+    // filled ball rather than drawn on top of it -- these icons have one colour
+    // to draw with, and a checker needs two.
+    constexpr ImU32 kInk = IM_COL32(29, 32, 38, 255);
+    if (mode == 3) { // wireframe: a cube with its far edges left in
+        const float a = r * 0.78f, o = r * 0.42f;
+        dl->AddRect({c.x - a, c.y - a + o}, {c.x + a - o, c.y + a}, col, 0.0f, 0, 1.5f);
+        dl->AddRect({c.x - a + o, c.y - a}, {c.x + a, c.y + a - o}, col, 0.0f, 0, 1.1f);
+        dl->AddLine({c.x - a, c.y - a + o}, {c.x - a + o, c.y - a}, col, 1.1f);
+        dl->AddLine({c.x + a - o, c.y + a}, {c.x + a, c.y + a - o}, col, 1.1f);
+        return;
+    }
+    if (mode == 4) {                       // pathtraced: a ray bouncing off it
+        dl->AddCircleFilled({c.x + r * 0.25f, c.y + r * 0.3f}, r * 0.55f, col);
+        dl->AddLine({c.x - r, c.y - r}, {c.x - r * 0.1f, c.y - r * 0.15f}, col, 1.4f);
+        dl->AddLine({c.x - r * 0.1f, c.y - r * 0.15f}, {c.x + r * 0.35f, c.y - r}, col, 1.4f);
+        dl->AddLine({c.x + r * 0.35f, c.y - r}, {c.x + r, c.y - r * 0.35f}, col, 1.4f);
+        return;
+    }
+    dl->AddCircleFilled(c, r * 0.85f, col);
+    if (mode == 2) {                       // solid lit: the scene's sun on it
+        for (int i = 0; i < 5; ++i) {
+            const float ang = 3.4f + i * 0.30f;
+            const ImVec2 d(std::cos(ang), std::sin(ang));
+            dl->AddLine({c.x + d.x * r * 1.15f, c.y + d.y * r * 1.15f},
+                        {c.x + d.x * r * 1.55f, c.y + d.y * r * 1.55f}, col, 1.3f);
+        }
+    } else if (mode == 0) {                // textured: a pattern, cut in
+        const float q = r * 0.42f;
+        dl->AddRectFilled({c.x - q, c.y - q}, {c.x, c.y}, kInk);
+        dl->AddRectFilled({c.x, c.y}, {c.x + q, c.y + q}, kInk);
+    }
 }
 
 } // namespace icon
@@ -2365,6 +2405,28 @@ int main(int argc, char** argv) {
             sun.components.items.push_back(std::make_unique<SunComponent>());
             entities.push_back(std::move(sun));
         }
+        // How the viewport draws the scene. The ladder is Blender's, and so is
+        // the reason for it: the finished picture is the worst view for most of
+        // the work that goes into making one. Wireframe shows what is behind
+        // what, Solid shows shape under a fixed studio light that a broken scene
+        // cannot take away, Solid lit shows the scene's own light without the
+        // paintwork arguing with it, and Textured is the game. Editor only --
+        // play mode always draws the game (see viewShade's use below).
+        //
+        // Not saved: it is a way of LOOKING at the scene for a minute, not a
+        // property of it, and a project that reopened in wireframe because
+        // somebody once checked a normal would be a puzzle, not a convenience.
+        // Pathtraced is the odd one out: the other four are the raster
+        // renderer told to show less, this one is a different renderer
+        // altogether, running in the background and handing the viewport a
+        // picture (see ViewportTrace.hpp).
+        enum ViewShade { kShadeTextured = 0, kShadeSolid = 1, kShadeSolidLit = 2,
+                         kShadeWireframe = 3, kShadePathTraced = 4 };
+        int viewShade = kShadeTextured;
+#ifndef FITZEL_PLAYER
+        viewtrace::State viewTrace;
+#endif
+
         ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE; // Move / Scale (axis-aligned)
         // Gizmo reference frame: WORLD = global axes, LOCAL = the object's own axes.
         // Toggle from the toolbar or with X. (ImGuizmo forces SCALE to local anyway.)
@@ -8444,6 +8506,44 @@ int main(int argc, char** argv) {
                         if (hit) gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
                     }
 
+                    // Gap, then how the viewport DRAWS the scene. Not a tool:
+                    // nothing here changes the scene, only what is shown of it,
+                    // which is why the group sits apart from the ones that edit.
+                    gap();
+                    {
+                        struct ShadeBtn { int mode; const char* id; const char* tip; };
+                        static const ShadeBtn kShades[] = {
+                            {kShadeWireframe, "shadeWire",
+                             "Wireframe -- edges only, and you can see through it"},
+                            {kShadeSolid, "shadeSolid",
+                             "Solid -- one clay surface under a fixed studio light.\n"
+                             "Shape stays readable whatever the scene's lighting does."},
+                            {kShadeSolidLit, "shadeSolidLit",
+                             "Solid lit -- the scene's own light and shadows,\n"
+                             "without the textures arguing with them."},
+                            {kShadeTextured, "shadeTextured",
+                             "Textured -- the game: materials, sky, water, plants."},
+                            {kShadePathTraced, "shadePath",
+                             "Pathtraced -- the offline renderer, live in the\n"
+                             "viewport. Starts when the camera comes to rest\n"
+                             "and refines until it is done.\n"
+                             "Click again to pick up an edit."},
+                        };
+                        for (const ShadeBtn& b : kShades) {
+                            const bool hit = iconButton(b.id, bs, b.tip, playMode, c);
+                            icon::shade(dl, b.mode, c, r,
+                                        playMode ? icon::kDim
+                                        : viewShade == b.mode ? icon::kOn : icon::kOff);
+                            if (!hit) continue;
+                            // Pressing the mode you are already in means "look
+                            // again": the trace follows the camera by itself,
+                            // and this is the one thing it cannot see coming.
+                            if (b.mode == kShadePathTraced && viewShade == b.mode)
+                                viewtrace::refresh(viewTrace);
+                            viewShade = b.mode;
+                        }
+                    }
+
                     // Gap, then the road editor: a toggle, not a one-shot action
                     // like the buttons before it, so it stays lit while it owns
                     // the left mouse button in the viewport.
@@ -8704,10 +8804,37 @@ int main(int argc, char** argv) {
                 const ImVec2 avail = ImGui::GetContentRegionAvail();
                 viewW = std::max(1, static_cast<int>(avail.x));
                 viewH = std::max(1, static_cast<int>(avail.y));
-                // GL textures are bottom-up: flip V (uv0.y=1, uv1.y=0).
-                ImGui::Image((ImTextureID)(intptr_t)viewportRT.colorTexture(),
-                             ImVec2(static_cast<float>(viewW), static_cast<float>(viewH)),
-                             ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                // In the Pathtraced mode the picture comes from the tracer
+                // instead -- until it has one, which is why the raster frame is
+                // still drawn every frame and stands in here. Its image is
+                // top-down (the tracer hands over rows, not a GL target), so it
+                // is the one image in the editor NOT drawn flipped.
+                const unsigned int traced =
+                    (viewShade == kShadePathTraced && !playMode)
+                        ? viewtrace::texture(viewTrace) : 0u;
+                if (traced) {
+                    ImGui::Image((ImTextureID)(intptr_t)traced,
+                                 ImVec2(static_cast<float>(viewW),
+                                        static_cast<float>(viewH)));
+                } else {
+                    // GL textures are bottom-up: flip V (uv0.y=1, uv1.y=0).
+                    ImGui::Image((ImTextureID)(intptr_t)viewportRT.colorTexture(),
+                                 ImVec2(static_cast<float>(viewW),
+                                        static_cast<float>(viewH)),
+                                 ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                }
+                // What the tracer is doing, over its own picture. A progressive
+                // render that says nothing is indistinguishable from a stuck
+                // one, and this one restarts whenever the camera moves -- so
+                // "waiting for the view to settle" is a thing it has to be able
+                // to say.
+                if (viewShade == kShadePathTraced && !playMode &&
+                    !viewTrace.status.empty()) {
+                    const ImVec2 rm = ImGui::GetItemRectMin();
+                    ImGui::GetWindowDrawList()->AddText(
+                        ImVec2(rm.x + 10.0f, rm.y + 8.0f),
+                        IM_COL32(255, 225, 140, 230), viewTrace.status.c_str());
+                }
                 viewportHovered = ImGui::IsItemHovered();
                 // Cursor position inside the image, mapped to NDC (for picking).
                 const ImVec2 rmin = ImGui::GetItemRectMin();
@@ -13455,6 +13582,17 @@ int main(int argc, char** argv) {
             weapons2.collectLights(pointLights);
 
             const long long fzShadowMark = prof::mark();
+            // Play mode is the game, and the game is always Textured -- a
+            // viewport mode is a way of looking at the scene while building it.
+            const int  shade = playMode ? kShadeTextured : viewShade;
+            // Pathtraced still rasters the frame underneath: it is what the
+            // viewport shows until the first trace arrives, and what it falls
+            // back to while the view is moving. The raster frame is the cheap
+            // half of that pair by a wide margin.
+            const int  rasterShade = (shade == kShadePathTraced) ? kShadeTextured
+                                                                 : shade;
+            const bool shadeFull   = (rasterShade == kShadeTextured);
+            renderer.setShadingMode(rasterShade);
             renderer.setPointLights(pointLights);
             renderer.setSpotLights(spotLights);
             // Baked light for this frame: loads the grid belonging to the open
@@ -13485,6 +13623,10 @@ int main(int argc, char** argv) {
                                currentProject.empty()
                                    ? std::filesystem::path()
                                    : std::filesystem::path(currentProject));
+            // The path-traced viewport harvests from the same window and for
+            // the same reason. Off, this is one early return.
+            viewtrace::service(viewTrace, shade == kShadePathTraced, renderer,
+                               camera, ptLook, viewW, viewH, now);
 #endif
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
 
@@ -13645,7 +13787,7 @@ int main(int argc, char** argv) {
             // Terrain occlusion is deliberately ignored -- that would want an
             // occlusion query, and erring that way only costs a pass that could
             // have been skipped, never a missing reflection.
-            const bool waterVisible = [&] {
+            const bool waterVisible = shadeFull && [&] {
                 const glm::mat4 invVP = glm::inverse(mainVP);
                 bool above = false, below = false;
                 for (int i = 0; i < 8; ++i) {
@@ -13706,26 +13848,39 @@ int main(int argc, char** argv) {
             if (viewportRT.width() != fbW || viewportRT.height() != fbH)
                 viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
             hdrRT.bind();
+            // A plain mode gets a flat ground to stand on rather than a sky: the
+            // sky is a material too, and a wireframe read against a sunset is
+            // exactly the reading these modes exist to avoid. Linear, because
+            // the composite tonemaps afterwards.
+            if (!shadeFull) glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            drawBackground(glm::inverse(mainVP), camPos, false);
+            if (shadeFull) drawBackground(glm::inverse(mainVP), camPos, false);
+            if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
+            if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
             const FrameContext gctx =
                 makeFrameContext(mainVP, camPos, now, weather, light, fog);
 
-            veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
+            // Vegetation and birds only in Textured. Grass and trees are
+            // vertex-shader geometry with shaders of their own, none of which
+            // has a clay mode -- and a hundred thousand blades of grass drawn
+            // as wireframe is a white screen, not a view of the scene.
+            if (shadeFull) {
+                veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
 
-            // Flowers into the HDR buffer, lit + fogged like grass.
-            veg.drawFlowers(gctx);
+                // Flowers into the HDR buffer, lit + fogged like grass.
+                veg.drawFlowers(gctx);
 
-            // Trees (instanced, per-material) + distant billboards into the HDR.
-            veg.drawTrees(gctx);
-            veg.drawTreeBillboards(gctx, vcam.right());
+                // Trees (instanced, per-material) + distant billboards into the HDR.
+                veg.drawTrees(gctx);
+                veg.drawTreeBillboards(gctx, vcam.right());
 
-            // Birds: a flock wheeling above the camera, two-sided into the HDR.
-            veg.drawBirds(mainVP, now, camPos);
+                // Birds: a flock wheeling above the camera, two-sided into the HDR.
+                veg.drawBirds(mainVP, now, camPos);
+            }
 
             // 4) The water surface: a large quad following the camera, sampling
             //    the reflection/refraction targets with Fresnel + ripples. Drawn
