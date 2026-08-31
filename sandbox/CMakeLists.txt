@@ -366,6 +366,14 @@ target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers
 # and exits non-zero when one of them is wrong. A renderer is the worst kind of
 # code to judge by eye: every wrong answer still produces a picture, and one that
 # is 8% too bright or missing a bounce looks exactly like one that is right.
+# tracecheck: the path-traced viewport's state machine, driven with a clock the
+# test owns. Needs the editor-only preview and everything under it.
+add_executable(tracecheck tools/tracecheck.cpp
+                          src/ViewportTrace.cpp src/GpuTrace.cpp
+                          src/PathTrace.cpp src/PathTraceCapture.cpp)
+target_link_libraries(tracecheck PRIVATE fitzel imgui glfw glad_gl_core_43
+                                         glm::glm stb_headers)
+
 # gpucheck: the GPU tracer against the CPU one, on the same frames. Needs a
 # context (4.3), which it opens for itself and skips politely without.
 add_executable(gpucheck tools/gpucheck.cpp src/GpuTrace.cpp src/PathTrace.cpp)

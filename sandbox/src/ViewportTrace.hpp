@@ -44,6 +44,11 @@ struct State {
     int   samples      = 128;   // the ceiling; it is watchable long before it
     int   maxBounces   = 4;
     float settleTime   = 0.25f; // seconds of stillness before a restart
+    // Where the compute kernel lives, resolved the way every other shader in
+    // the editor is: relative to the working directory. A field rather than a
+    // constant inside service() so a harness can point at the repo's copy
+    // instead of the one beside the executable.
+    std::string kernelPath = "assets/shaders/gputrace.comp";
 
     // --- The running preview ---
     std::shared_ptr<pathtrace::Scene> scene; // the harvest, reused across moves
@@ -73,6 +78,7 @@ struct State {
     glm::mat4   lastView{0.0f};
     int         lastW = 0, lastH = 0;
     bool        needCapture = true;  // harvest afresh on the next restart
+    bool        restartRequested = true; // somebody asked for one (not: something moved)
     bool        restartDue  = false;
     double      restartAt   = 0.0;
     bool        wasEnabled  = false;
@@ -94,6 +100,12 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
 // mode's own button again, so the way to say "look again" is to press what you
 // are already looking through.
 void refresh(State& st);
+
+// How far the current trace has got, whichever of the two is running it. The
+// state has two counters in it -- a CPU job's and a GPU accumulator's -- and
+// which one is answering is precisely the thing a caller should not have to
+// know.
+int samplesDone(const State& st);
 
 // The texture to put in the viewport, or 0 while nothing has been traced yet
 // (the caller shows its raster frame until then). Top-down, like every other

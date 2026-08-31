@@ -93,6 +93,7 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
         }
         return;
     }
+    if (!st.wasEnabled) st.restartRequested = true; // entering the mode is an ask
     st.wasEnabled = true;
 
     // Once, on the first frame in this mode: is there a GPU tracer to be had?
@@ -102,7 +103,7 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
     if (!st.gpuTried) {
         st.gpuTried = true;
         if (gputrace::available()) {
-            st.gpuReady = st.gpu.init("assets/shaders/gputrace.comp");
+            st.gpuReady = st.gpu.init(st.kernelPath);
             if (!st.gpuReady)
                 std::printf("[Fitzel] the GPU tracer stayed off: %s\n",
                             st.gpu.error().c_str());
@@ -121,12 +122,21 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
     // nobody was touching, and the preview threw away a finished picture every
     // couple of seconds to trace the same view again. A preview that never
     // finishes is worse than one that is a minute out of date.
-    if (view != st.lastView || w != st.lastW || h != st.lastH || st.needCapture) {
+    // Two different things, kept apart on purpose. `moved` is a CHANGE, and it
+    // re-arms the timer every frame it stays true, which is what makes a
+    // dragged camera schedule one restart when it comes to rest instead of one
+    // per frame. `restartRequested` is a one-shot ASK -- and the two were the
+    // same test once, with needCapture (a standing flag, cleared only by the
+    // restart itself) standing in for the ask. That reads as "something
+    // changed" on every frame until the restart happens, so the restart is
+    // pushed out on every frame and never happens: the preview sat at "waiting
+    // for the view to settle" forever.
+    const bool moved = view != st.lastView || w != st.lastW || h != st.lastH;
+    if (moved || st.restartRequested) {
         st.lastView   = view;
         st.lastW      = w;
         st.lastH      = h;
-        // Pushed out again on every change, so a camera being dragged schedules
-        // ONE restart when it comes to rest rather than one per frame.
+        st.restartRequested = false;
         st.restartDue = true;
         st.restartAt  = now + st.settleTime;
         st.status     = "waiting for the view to settle";
@@ -201,7 +211,7 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
     refreshImage(st, now);
 
     const bool onGpu = st.gpuReady;
-    const int  done  = onGpu ? st.gpu.samplesDone() : st.job.samplesDone();
+    const int  done  = samplesDone(st);
     const bool busy  = onGpu ? done < st.samples : st.job.running();
     if (!st.restartDue && (onGpu ? done > 0 : st.job.hasImage())) {
         st.status = std::to_string(done) + " / " + std::to_string(st.samples) +
@@ -213,7 +223,14 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
 void refresh(State& st) {
     // A fresh harvest, not just a re-aim: this is the way an EDIT gets into the
     // preview, and an edit is exactly what the kept scene no longer matches.
-    st.needCapture = true;
+    // The ask is separate from the flag, so that wanting a new harvest cannot
+    // be mistaken for the view still moving.
+    st.needCapture      = true;
+    st.restartRequested = true;
+}
+
+int samplesDone(const State& st) {
+    return st.gpuReady ? st.gpu.samplesDone() : st.job.samplesDone();
 }
 
 unsigned int texture(const State& st) {

@@ -92,6 +92,12 @@ REM  derselbe Beschleuniger, zwei Renderer. Auf einer Maschine ohne OpenGL 4.3
 REM  meldet es sich als uebersprungen und faellt NICHT durch -- dort rechnet
 REM  eben die CPU, und das ist kein Fehler im Code.
 call :run gpucheck "%OUT%"
+REM  tracecheck faehrt die Zustandsmaschine der Pathtracing-Vorschau mit einer
+REM  Uhr, die der Test selbst stellt: startet sie, wartet sie vorher, hoert sie
+REM  auf, faengt sie bei Kamerabewegung neu an. Nichts davon sieht man einem
+REM  Standbild an -- eine Vorschau, die nie anlaeuft, und eine, die noch rechnet,
+REM  sehen in der ersten Sekunde gleich aus.
+call :run tracecheck
 call :run capturecheck "%OUT%"
 call :run iconcheck
 
