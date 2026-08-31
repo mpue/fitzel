@@ -236,6 +236,44 @@ std::shared_ptr<pathtrace::Scene> shadowScene() {
     return sc;
 }
 
+// --- The lamp ---------------------------------------------------------------
+// The same box over the same plane, lit by ONE point lamp and by nothing else:
+// the sun is switched off and the sky is black, so every photon in the picture
+// came from the lamp or there is no picture. That is what this frame is for --
+// in every other scene here the sun would have covered for a lamp that was
+// never sampled, and the failure would have read as "a bit dark".
+//
+// The lamp sits off to one side so the box's shadow falls clear of the box
+// itself, where a camera looking straight down can see it: from (0, 6, 3)
+// through the box, the ground is met around z = -1.5.
+std::shared_ptr<pathtrace::Scene> lampScene(float range) {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material ground;
+    ground.albedo    = glm::vec3(0.6f);
+    ground.roughness = 0.9f;
+    pathtrace::Material box;
+    box.albedo    = glm::vec3(0.2f, 0.35f, 0.8f);
+    box.roughness = 0.4f;
+    sc->materials = {ground, box};
+
+    addQuad(*sc, {-20, 0, -20}, {20, 0, -20}, {20, 0, 20}, {-20, 0, 20}, {0, 1, 0}, 0);
+    addBox(*sc, {0.0f, 2.0f, 0.0f}, {1.0f, 0.5f, 1.0f}, 1);
+
+    sc->sun.enabled = false;
+    sc->env.zenith = sc->env.horizon = sc->env.ground = glm::vec3(0.0f);
+
+    pathtrace::Lamp lamp;
+    lamp.position = {0.0f, 6.0f, 3.0f};
+    lamp.color    = glm::vec3(8.0f);
+    lamp.range    = range;
+    lamp.radius   = 0.0f;   // a bare point, so the shadow edge is exact
+    lamp.cosOuter = -2.0f;  // omnidirectional -- a point light, not a cone
+    sc->lamps.push_back(lamp);
+
+    sc->camera = lookAt({0.0f, 12.0f, 0.001f}, {0.0f, 0.0f, 0.0f}, 60.0f);
+    return sc;
+}
+
 // --- A look -------------------------------------------------------------
 // Not a test: three spheres-worth of material variety over a ground plane, so
 // that "is the specular lobe sane, does glass look like glass, is the soft
@@ -521,7 +559,69 @@ int main(int argc, char** argv) {
               std::to_string(openGround));
     }
 
-    // --- 3. Determinism -----------------------------------------------------
+    // --- 3. A point lamp ----------------------------------------------------
+    std::printf("\na point lamp on its own (no sun, black sky)\n");
+    {
+        pathtrace::Settings s;
+        s.width = 128; s.height = 128; s.samples = 64; s.batch = 16;
+        // One bounce: direct light only, so what lands on the ground is a single
+        // term that can be written down rather than a series that can only be
+        // compared with itself.
+        s.maxBounces = 1; s.tonemap = false;
+        const std::vector<float> hdr = renderHdr(lampScene(12.0f), s);
+        check(!hdr.empty(), "produced an image");
+
+        const float halfExtent = 12.0f * std::tan(glm::radians(30.0f));
+        auto groundAt = [&](float worldX, float worldZ, int& px, int& py) {
+            px = static_cast<int>((worldX / halfExtent * 0.5f + 0.5f) * 128.0f);
+            py = static_cast<int>((worldZ / halfExtent * 0.5f + 0.5f) * 128.0f);
+            px = std::clamp(px, 0, 127);
+            py = std::clamp(py, 0, 127);
+        };
+        auto lum = [&](int px, int py) {
+            const std::size_t o = (static_cast<std::size_t>(py) * 128 + px) * 3;
+            return 0.2126f * hdr[o] + 0.7152f * hdr[o + 1] + 0.0722f * hdr[o + 2];
+        };
+
+        // Straight under the lamp the geometry is trivial: 6 m away, facing it
+        // squarely, so the raster path's range falloff gives (1 - 6/12)^2 = 0.25
+        // and the diffuse lobe gives albedo/pi -- albedo 0.6 sRGB, which the
+        // tracer linearises to 0.6^2.2 = 0.325 first. 8 * 0.25 * 0.325/pi =
+        // 0.207, and a few percent of dielectric specular sits on top of it.
+        int px, py;
+        groundAt(0.0f, 3.0f, px, py);
+        const float under = lum(px, py);
+        check(under > 0.05f, "a point lamp lights the scene at all",
+              "radiance " + std::to_string(under));
+        check(under > 0.19f && under < 0.24f, "...and by the amount the falloff says",
+              "radiance " + std::to_string(under) + " (want ~0.207)");
+
+        // Four metres further out and the same arithmetic gives 0.029: the
+        // check is that the light FALLS OFF, not merely that it arrived.
+        groundAt(0.0f, -4.0f, px, py);
+        const float away = lum(px, py);
+        check(away > 0.0f && away < under * 0.5f, "it falls off with distance",
+              "under " + std::to_string(under) + " vs 7m out " + std::to_string(away));
+
+        // The box between lamp and ground. With nothing else lighting the scene
+        // its shadow is not "darker", it is black.
+        groundAt(0.0f, -1.5f, px, py);
+        const float shadowed = lum(px, py);
+        check(shadowed < 0.005f, "and casts a shadow, with no sun to fill it in",
+              "shadow " + std::to_string(shadowed));
+
+        // Range is a hard edge, not a curve that fades: at range 5 the ground
+        // 6 m below the lamp is outside it and must be exactly unlit.
+        const std::vector<float> shortRange = renderHdr(lampScene(5.0f), s);
+        groundAt(0.0f, 3.0f, px, py);
+        const std::size_t o = (static_cast<std::size_t>(py) * 128 + px) * 3;
+        const float beyond = 0.2126f * shortRange[o] + 0.7152f * shortRange[o + 1] +
+                             0.0722f * shortRange[o + 2];
+        check(beyond < 1e-4f, "nothing outside the lamp's range is lit",
+              "radiance " + std::to_string(beyond));
+    }
+
+    // --- 4. Determinism -----------------------------------------------------
     std::printf("\ndeterminism (same seed, twice)\n");
     {
         pathtrace::Settings s;
@@ -536,7 +636,7 @@ int main(int argc, char** argv) {
               "rms " + std::to_string(rms(a, b)));
     }
 
-    // --- 4. Convergence -----------------------------------------------------
+    // --- 5. Convergence -----------------------------------------------------
     std::printf("\nconvergence (noise must fall with samples)\n");
     {
         pathtrace::Settings ref;
@@ -560,7 +660,7 @@ int main(int argc, char** argv) {
               "ratio " + std::to_string(errFew > 0.0f ? errMany / errFew : 0.0f));
     }
 
-    // --- 5. Cancelling ------------------------------------------------------
+    // --- 6. Cancelling ------------------------------------------------------
     std::printf("\ncancelling a long render\n");
     {
         pathtrace::Settings s;
@@ -578,7 +678,7 @@ int main(int argc, char** argv) {
               "a cancelled render still hands over what it had");
     }
 
-    // --- 6. The colour grade ------------------------------------------------
+    // --- 7. The colour grade ------------------------------------------------
     // The viewport never shows a raw tonemap: composite.frag grades every frame
     // on the way to the screen, and the project's own defaults are nowhere near
     // neutral. A render that skipped the grade came out flat and cool beside
@@ -656,7 +756,7 @@ int main(int argc, char** argv) {
               ", bright " + std::to_string(hi.r) + "->" + std::to_string(hiP.r));
     }
 
-    // --- 7. The sky on its own ----------------------------------------------
+    // --- 8. The sky on its own ----------------------------------------------
     std::printf("\nsky with no geometry in it\n");
     {
         pathtrace::Settings s;
@@ -689,7 +789,7 @@ int main(int argc, char** argv) {
         writePng(outDir / "pathcheck-sky-fog.png", skyScene(true),  look);
     }
 
-    // --- 8. The panorama path -----------------------------------------------
+    // --- 9. The panorama path -----------------------------------------------
     // The gradient sky above is not the one a real scene uses -- a project with
     // an HDRI lights from the panorama instead, and that is a completely
     // separate lookup with its own chance of being upside down or off by a
@@ -748,7 +848,7 @@ int main(int argc, char** argv) {
         check(inRange, "every direction on the sphere lands inside the panorama");
     }
 
-    // --- 9. Light probes ----------------------------------------------------
+    // --- 10. Light probes ----------------------------------------------------
     std::printf("\nlight probes (irradiance as an L1 band)\n");
     {
         pathtrace::BakeSettings b;
@@ -868,7 +968,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    // --- 10. Pictures -------------------------------------------------------
+    // --- 11. Pictures -------------------------------------------------------
 
     std::printf("\nwriting look frames\n");
     {
