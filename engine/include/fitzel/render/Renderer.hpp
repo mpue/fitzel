@@ -17,6 +17,7 @@ namespace fitzel {
 class Camera;
 class Mesh;
 class Material;
+class Texture;
 class EnvironmentIBL;
 
 struct DirectionalLight {
@@ -288,6 +289,14 @@ private:
         bool            reflective;
         float           opacity;
         bool            forceTransparent;
+        // What the SHADOW passes see of this surface, resolved once here at
+        // submit() because the depth passes bind no material at all. A pane of
+        // glass that is clear to the eye and solid to the sun is the same
+        // object described two ways, and only one of them is right.
+        float           castCoverage;  // 0 = the light passes straight through
+        int             castAlphaMode; // 0 opaque, 1 cutout, 2 blend
+        float           castCutoff;    // cutout threshold (mode 1)
+        const Texture*  castTex;       // alpha source for modes 1 and 2
     };
 
     CascadedShadowMap m_csm;
@@ -296,6 +305,11 @@ private:
     Shader            m_cubeDistShader;             // point-shadow distance pass
     // World bounds of m_queue, rebuilt at the start of each shadow pass.
     void buildCullBounds();
+    // Upload one caster's coverage to the bound depth shader. Both shadow
+    // passes need it, and a caster they disagreed about would show up as a
+    // shadow the sun casts but the point light does not.
+    void uploadCoverage(const Shader& shader, const Renderable& r,
+                        float dither) const;
     std::vector<WorldAabb> m_cullBounds;
 
     std::vector<CubeShadowMap> m_pointShadows;      // one per shadowed point light

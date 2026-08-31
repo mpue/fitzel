@@ -2,6 +2,7 @@
 
 #include "fitzel/graphics/Material.hpp"
 #include "fitzel/graphics/Mesh.hpp"
+#include "fitzel/graphics/Texture.hpp"
 #include "fitzel/graphics/EnvironmentIBL.hpp"
 #include "fitzel/scene/Camera.hpp"
 
@@ -20,33 +21,97 @@ namespace {
 
 // Minimal depth-only shader for the shadow passes -- embedded so the engine
 // stays self-contained (no app-provided asset required).
+//
+// "Depth-only" does not mean "geometry-only": how much light a caster stops is
+// a property of its SURFACE, and a pass that only knows where the triangles
+// are puts a solid black shadow under a pane of glass and a solid rectangle
+// under a leaf billboard. The coverage rules below are the ones SceneTypes.hpp
+// defines, lit.frag draws with and pathtrace::coverageAt() already follows --
+// which is why the offline render has never had this bug and this one did.
 constexpr const char* kDepthVert = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
+layout(location = 2) in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uLightSpace;
-void main() { gl_Position = uLightSpace * uModel * vec4(aPos, 1.0); }
+out vec2 vUV;
+void main() { vUV = aUV; gl_Position = uLightSpace * uModel * vec4(aPos, 1.0); }
 )";
 
 constexpr const char* kDepthFrag = R"(#version 330 core
-void main() {}
+in vec2 vUV;
+uniform sampler2D uTex;
+uniform int   uAlphaMode; // 0 = opaque, 1 = cutout, 2 = blend (texture alpha)
+uniform float uCutoff;    // cutout threshold (mode 1)
+uniform float uCoverage;  // scalar opacity, glass already folded in
+uniform float uDither;    // this caster's offset into the dither pattern
+void main() {
+    float a = uCoverage;
+    if (uAlphaMode == 1) { if (texture(uTex, vUV).a < uCutoff) discard; }
+    else if (uAlphaMode == 2) a *= texture(uTex, vUV).a;
+    if (a >= 1.0) return;
+    // Stochastic transparency. A depth map holds one occluder per texel and has
+    // nowhere to write "70% blocked", so let a fraction 1-a of the texels
+    // through and leave the averaging to the 5x5 PCF that reads the map back --
+    // the filter is already there, and this is the quantity it is summing.
+    // Interleaved gradient noise because it spreads the survivors evenly over
+    // any small neighbourhood, which is exactly the neighbourhood the kernel
+    // covers; a plain hash clumps and comes back as blotches. uDither
+    // decorrelates casters from each other, so two panes one behind the other
+    // dim the sun twice instead of both keeping the same texels and dimming
+    // once.
+    float n = fract(52.9829189 * fract(dot(gl_FragCoord.xy,
+                                           vec2(0.06711056, 0.00583715))) + uDither);
+    if (n >= a) discard;
+}
 )";
 
 // Point-shadow pass: write normalized distance-to-light into an R32F cubemap.
 constexpr const char* kCubeVert = R"(#version 330 core
 layout(location = 0) in vec3 aPos;
+layout(location = 2) in vec2 aUV;
 uniform mat4 uModel;
 uniform mat4 uVP;
 out vec3 vWorld;
-void main() { vec4 w = uModel * vec4(aPos, 1.0); vWorld = w.xyz; gl_Position = uVP * w; }
+out vec2 vUV;
+void main() {
+    vec4 w = uModel * vec4(aPos, 1.0);
+    vWorld = w.xyz; vUV = aUV; gl_Position = uVP * w;
+}
 )";
 
 constexpr const char* kCubeFrag = R"(#version 330 core
 in vec3 vWorld;
+in vec2 vUV;
 layout(location = 0) out float oDist;
 uniform vec3  uLightPos;
 uniform float uFar;
-void main() { oDist = length(vWorld - uLightPos) / uFar; }
+uniform sampler2D uTex;
+uniform int   uAlphaMode;
+uniform float uCutoff;
+uniform float uCoverage;
+void main() {
+    // Same rules, hard-edged: this cube is read with a single tap and no
+    // filter, so the cascades' dither would come back as per-texel speckle
+    // rather than as a grey. A point light gets the cheap honest answer --
+    // mostly-there casts, mostly-gone does not -- while the cutout test, which
+    // is exact per texel, works here as well as it does there.
+    float a = uCoverage;
+    if (uAlphaMode == 1) { if (texture(uTex, vUV).a < uCutoff) discard; }
+    else if (uAlphaMode == 2) a *= texture(uTex, vUV).a;
+    if (a < 0.5) discard;
+    oDist = length(vWorld - uLightPos) / uFar;
+}
 )";
+
+// A glass pane refracts the sun rather than stopping it, so it dims what passes
+// instead of blocking it. The scalar stand-in pathtrace::shadowFactor() uses
+// for the caustics nobody is tracing -- without its tint, which a depth map has
+// no room for.
+constexpr float kGlassCoverage = 0.15f;
+
+// Below this a caster is not drawn into the shadow map at all: nothing of it
+// would survive the dither anyway, and skipping is the cheap path.
+constexpr float kMinCoverage = 0.002f;
 
 // "uPointPos[3]" and friends, formatted into a stack buffer.
 //
@@ -186,8 +251,42 @@ void Renderer::begin(const Camera& camera, float aspect,
 void Renderer::submit(const Mesh& mesh, const Material& material,
                       const glm::mat4& model, bool castsPointShadow,
                       bool reflective, float opacity, bool forceTransparent) {
+    // Read the surface for the shadow passes once, here, while the material is
+    // in hand. AlphaMode as SceneTypes.hpp defines it: Opaque IGNORES the map's
+    // alpha (a great many opaque atlases carry one that means nothing, and
+    // reading it as transparency punches holes through solid paintwork),
+    // Cutout tests the texture against its cutoff, Blend multiplies.
+    float          coverage  = opacity;
+    int            alphaMode = 0;
+    float          cutoff    = 0.5f;
+    const Texture* alphaTex  = nullptr;
+    if (material.get<int>("uGlass", 0) == 1)
+        coverage = std::min(coverage, kGlassCoverage);
+    if (const Texture* tex = material.texture("uTexture")) {
+        if (material.get<int>("uAlphaCutout", 0) == 1) {
+            alphaMode = 1;
+            cutoff    = material.get<float>("uAlphaCutoff", 0.5f);
+            alphaTex  = tex;
+        } else if (forceTransparent) { // transparency lives in the texture
+            alphaMode = 2;
+            alphaTex  = tex;
+        }
+    }
     m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective,
-                       opacity, forceTransparent});
+                       opacity, forceTransparent,
+                       coverage, alphaMode, cutoff, alphaTex});
+}
+
+void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
+                              float dither) const {
+    shader.setInt("uAlphaMode", r.castAlphaMode);
+    shader.setFloat("uCoverage", r.castCoverage);
+    if (r.castAlphaMode != 0) {
+        shader.setFloat("uCutoff", r.castCutoff);
+        r.castTex->bind(0);
+    }
+    // Only translucent casters read it, and only the cascade pass has it.
+    if (r.castCoverage < 1.0f) shader.setFloat("uDither", dither);
 }
 
 void Renderer::buildCullBounds() {
@@ -221,6 +320,15 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
 
     buildCullBounds();
 
+    // A depth pass with the depth test off writes no depth at all (and the
+    // clear below is masked out too), so the cascades come back cleared and
+    // nothing in the scene casts. The editor never noticed because its frame
+    // loop leaves the test on; a caller that renders through the Renderer
+    // without one of its own -- viewcheck -- got shadowless pictures.
+    // preparePointShadows() has always set this for itself.
+    glEnable(GL_DEPTH_TEST);
+    glDepthMask(GL_TRUE);
+
     const int cascades = m_csm.cascadeCount();
     for (int i = 0; i < cascades; ++i) {
         m_csm.beginCascade(i);   // clears to 1.0, i.e. to "unshadowed"
@@ -232,15 +340,24 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
         m_depthShader.bind();
         const glm::mat4& lightSpace = m_csm.lightMatrices()[i];
         m_depthShader.setMat4("uLightSpace", lightSpace);
+        m_depthShader.setInt("uTex", 0); // alpha source for cutout/blend casters
         // Only the four SIDE planes (see aabbVisible): a caster sitting outside
         // the box along the light direction still throws a shadow into it, and
         // culling it on near/far would delete that shadow. Sideways is safe --
         // nothing beside the box can reach into it with the light parallel.
         const std::array<glm::vec4, 6> planes = frustumPlanes(lightSpace);
         for (std::size_t k = 0; k < m_queue.size(); ++k) {
+            const Renderable& r = m_queue[k];
+            // Invisible to the eye, invisible to the sun.
+            if (r.castCoverage <= kMinCoverage) continue;
             if (!aabbVisible(planes, m_cullBounds[k], /*count=*/4)) continue;
-            m_depthShader.setMat4("uModel", m_queue[k].model);
-            m_queue[k].mesh->draw();
+            // The dither offset is the golden ratio times the caster's index:
+            // any two casters get patterns that share as few texels as a low
+            // discrepancy sequence can manage, which is what makes stacked
+            // panes accumulate.
+            uploadCoverage(m_depthShader, r, 0.6180339887f * static_cast<float>(k));
+            m_depthShader.setMat4("uModel", r.model);
+            r.mesh->draw();
         }
         if (extra) extra(lightSpace);
     }
@@ -273,6 +390,7 @@ void Renderer::preparePointShadows() {
     glEnable(GL_CULL_FACE);
     glCullFace(GL_FRONT);
     m_cubeDistShader.bind();
+    m_cubeDistShader.setInt("uTex", 0);
     for (int k = 0; k < m_shadowedCount; ++k) {
         const PointLight& l = m_pointLights[k];
         const float far = std::max(l.range, 0.5f);
@@ -294,8 +412,13 @@ void Renderer::preparePointShadows() {
             for (std::size_t q = 0; q < m_queue.size(); ++q) {
                 const Renderable& r = m_queue[q];
                 if (!r.castsPointShadow) continue; // e.g. the ground
+                // Half gone or more is gone here (see kCubeFrag): the cube is
+                // sampled unfiltered, so it can only answer yes or no, and a
+                // window is a great deal closer to no than to yes.
+                if (r.castCoverage < 0.5f) continue;
                 if (!aabbNearPoint(m_cullBounds[q], l.position, far)) continue;
                 if (!aabbVisible(planes, m_cullBounds[q])) continue;
+                uploadCoverage(m_cubeDistShader, r, 0.0f);
                 m_cubeDistShader.setMat4("uModel", r.model);
                 r.mesh->draw();
             }
