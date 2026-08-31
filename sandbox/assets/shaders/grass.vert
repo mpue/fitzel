@@ -107,11 +107,14 @@ void main() {
     // Per-blade colour: large meadow patches + a finer break + a hue shift + per
     // -blade jitter, so the field mixes cool and warm greens, olive and dry straw
     // rather than one flat green. hueN swings tips from blue-green to yellow-green.
-    float patch = gnoise(iPos.xz * 0.05);
-    float fine  = gnoise(iPos.xz * 0.27 + 11.0);
-    float hueN  = gnoise(iPos.xz * 0.11 + 31.0);
-    float shade = gnoise(iPos.xz * 0.035 + 5.0);  // broad light/dark zones
-    float green = clamp(iLush - (1.0 - patch) * 0.55 + (fine - 0.5) * 0.3
+    // "meadow", not "patch": that one is a reserved word (tessellation), and a
+    // driver that enforces it rejects the whole shader -- which is what left the
+    // grass uncompiled on Intel while it built elsewhere.
+    float meadow = gnoise(iPos.xz * 0.05);
+    float fine   = gnoise(iPos.xz * 0.27 + 11.0);
+    float hueN   = gnoise(iPos.xz * 0.11 + 31.0);
+    float shade  = gnoise(iPos.xz * 0.035 + 5.0); // broad light/dark zones
+    float green = clamp(iLush - (1.0 - meadow) * 0.55 + (fine - 0.5) * 0.3
                               - r1 * 0.25, 0.0, 1.0);
     // A minority of blades go strawy even in lush ground (dead/older leaves).
     green = clamp(green - smoothstep(0.86, 0.99, r2) * 0.6, 0.0, 1.0);
