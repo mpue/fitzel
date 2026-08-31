@@ -113,6 +113,32 @@ struct Triangle {
     int       material = 0;
 };
 
+// One node of the accelerator, in the layout its build leaves behind: a leaf
+// when `count` > 0 (and `leftFirst` is its first index), an inner node
+// otherwise (and `leftFirst` is its left child, whose sibling is the next one
+// along).
+//
+// Public because a SECOND renderer has to walk the same tree. The claim a GPU
+// port makes is that it reproduces this one, and two accelerators built by two
+// pieces of code are the first place that claim quietly stops being true: a
+// different split is a different set of triangles tested in a different order,
+// and the two pictures then differ for a reason nobody can point at.
+struct BvhNode {
+    glm::vec3 lo{0.0f}, hi{0.0f};
+    int leftFirst = 0;
+    int count     = 0;
+};
+
+// The built tree: its nodes, plus the triangle indices the build reordered.
+struct BvhData {
+    std::vector<BvhNode> nodes;
+    std::vector<int>     index;
+};
+
+// Build it. Not a second build written to match the tracer's -- it IS the
+// tracer's, handed out.
+[[nodiscard]] BvhData buildBvh(const std::vector<Triangle>& triangles);
+
 // The sun. `angularRadiusDeg` is what makes a shadow's edge soft: zero is the
 // hard-edged raster look, half a degree is roughly the real sun, and a few
 // degrees reads as an overcast day. It is the single most effective dial in

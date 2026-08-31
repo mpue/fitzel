@@ -153,6 +153,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/PathTrace.cpp
     src/PathTraceCapture.cpp
     src/PathTracePanel.cpp
+    # The same tracer on the GPU. Editor-only like the rest of it -- and unlike
+    # the rest of it, optional at RUNTIME too: a context below 4.3 has no
+    # compute shaders and the machine renders on the CPU (see gputrace::available).
+    src/GpuTrace.cpp
     # The same tracer, left running in the viewport (the Pathtraced shading
     # mode). Editor-only for the same reason as the three above it.
     src/ViewportTrace.cpp
@@ -362,6 +366,12 @@ target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers
 # and exits non-zero when one of them is wrong. A renderer is the worst kind of
 # code to judge by eye: every wrong answer still produces a picture, and one that
 # is 8% too bright or missing a bounce looks exactly like one that is right.
+# gpucheck: the GPU tracer against the CPU one, on the same frames. Needs a
+# context (4.3), which it opens for itself and skips politely without.
+add_executable(gpucheck tools/gpucheck.cpp src/GpuTrace.cpp src/PathTrace.cpp)
+target_link_libraries(gpucheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+                                       stb_headers)
+
 # No GL: PathTrace.cpp is deliberately pure arithmetic, so this runs anywhere.
 #   build/release/bin/pathcheck.exe [outDir]
 add_executable(pathcheck tools/pathcheck.cpp src/PathTrace.cpp)

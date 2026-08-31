@@ -258,11 +258,9 @@ bool intersectTri(const Triangle& tri, const Ray& r, float tMax, float& t,
 // everything, which costs far more at trace time than the better build costs
 // once.
 struct Bvh {
-    struct Node {
-        glm::vec3 lo{0.0f}, hi{0.0f};
-        int leftFirst = 0; // count > 0: first index; count == 0: left child
-        int count     = 0;
-    };
+    // The node layout lives in the header now: it is handed out to anyone who
+    // has to walk this tree rather than build one of their own (see BvhNode).
+    using Node = BvhNode;
 
     std::vector<Node> nodes;
     std::vector<int>  index;     // triangle indices, reordered by the build
@@ -1881,6 +1879,18 @@ bool Job::snapshotLdr(std::vector<unsigned char>& out) const {
         }
     }
     return true;
+}
+
+// The accelerator, built and handed over. The tracer builds its own the same
+// way a line above; this exists so a second renderer does not have to have a
+// BVH build of its own to disagree with.
+BvhData buildBvh(const std::vector<Triangle>& triangles) {
+    Bvh bvh;
+    bvh.build(triangles);
+    BvhData out;
+    out.nodes = std::move(bvh.nodes);
+    out.index = std::move(bvh.index);
+    return out;
 }
 
 } // namespace pathtrace

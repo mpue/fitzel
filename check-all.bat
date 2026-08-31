@@ -87,6 +87,11 @@ call :run meshpaintcheck
 call :run softcheck
 call :run shotcheck
 call :run pathcheck "%OUT%"
+REM  gpucheck haelt den GPU-Pfadtracer gegen den CPU-Tracer: dieselbe Szene,
+REM  derselbe Beschleuniger, zwei Renderer. Auf einer Maschine ohne OpenGL 4.3
+REM  meldet es sich als uebersprungen und faellt NICHT durch -- dort rechnet
+REM  eben die CPU, und das ist kein Fehler im Code.
+call :run gpucheck "%OUT%"
 call :run capturecheck "%OUT%"
 call :run iconcheck
 

@@ -1,0 +1,503 @@
+#version 430 core
+
+// The path tracer, on the GPU.
+//
+// WHAT THIS IS FOR. The CPU tracer in PathTrace.cpp is the reference
+// implementation, and it stays that: it is pure arithmetic, it runs anywhere,
+// and pathcheck pins it to answers that were worked out by hand (a white
+// furnace comes back at 1.0, a shadow lands where trigonometry says). This
+// kernel is correct exactly insofar as it reproduces that one. gpucheck renders
+// the same scene both ways and compares, which is the only claim about a second
+// renderer worth making.
+//
+// So every term below is a transliteration, not a reinterpretation. Same
+// Moeller-Trumbore, same binned-SAH BVH walked the same way, same GGX with
+// height-correlated Smith, same range-limited lamp falloff the raster path
+// uses, same misWeight, same sRGB->linear at the same point. Where a constant
+// looks arbitrary it is because the CPU has that constant.
+//
+// WHAT IT DOES NOT DO YET, and the harness says so rather than the picture
+// quietly disagreeing:
+//   * one bounce only -- primary ray, emission, direct light. No indirect, no
+//     glass, no scattering.
+//   * no textures. Materials are their flat albedo and tint.
+//   * no HDRI: the environment is the three-stop gradient fallback.
+//   * no terrain layers, no depth of field.
+// Every one of those is a stage of its own, and each is measurable against the
+// CPU the day it lands.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The running sum of radiance, in linear RGB. Divided by the sample count when
+// it is read back, never here -- a pass that normalised as it went would have
+// to know how many passes came before it.
+layout(rgba32f, binding = 0) uniform image2D uAccum;
+
+// --- The scene, as it is laid out on the CPU -------------------------------
+// Every member is padded to a vec4 rather than packed tight. std430 would allow
+// tighter, and the tightest layout is where a GPU port spends its debugging
+// time: a vec3 in an array is 16 bytes here and 12 on the host, and the picture
+// that comes out of getting that wrong looks like a broken BVH.
+struct Tri {
+    vec4 p0, p1, p2;   // .w unused
+    vec4 n0, n1, n2;
+    vec4 uv01;         // uv0.xy, uv1.xy
+    vec4 uv2mat;       // uv2.xy, z = material index
+};
+
+struct Node {
+    vec4 lo;           // .w = leftFirst, as a float
+    vec4 hi;           // .w = count (0 marks an inner node)
+};
+
+struct Mat {
+    vec4 albedoRough;   // rgb albedo (sRGB, as authored), a = roughness
+    vec4 emissionRefl;  // rgb emission (sRGB), a = reflectivity
+    vec4 misc;          // x opacity, y emissionStrength, z alphaCutoff, w glass
+};
+
+struct Lamp {
+    vec4 posRange;      // xyz position, w range
+    vec4 dirRadius;     // xyz direction, w bulb radius
+    vec4 color;         // rgb radiance
+    vec4 cone;          // x cosInner, y cosOuter (y < -1 marks a point light)
+};
+
+layout(std430, binding = 1) readonly buffer Tris   { Tri  tris[];  };
+layout(std430, binding = 2) readonly buffer Nodes  { Node nodes[]; };
+layout(std430, binding = 3) readonly buffer Index  { int  index[]; };
+layout(std430, binding = 4) readonly buffer Mats   { Mat  mats[];  };
+layout(std430, binding = 5) readonly buffer Lamps  { Lamp lamps[]; };
+
+uniform ivec2 uSize;
+uniform int   uSampleBase;   // samples already in the accumulator (seeds the RNG)
+uniform int   uSamples;      // how many to add in this dispatch
+uniform int   uSeed;
+uniform int   uLampCount;
+
+uniform vec3  uCamPos, uCamFwd, uCamUp, uCamRight;
+uniform float uHalfU, uHalfV;
+
+uniform int   uSunOn;
+uniform vec3  uSunAxis, uSunColor, uSunRadiance, uSunDirRaw;
+uniform float uSunCosMax, uSunPdf;
+
+uniform vec3  uEnvZenith, uEnvHorizon, uEnvGround;
+uniform float uEnvIntensity;
+
+uniform vec3  uFogColor, uFogSunColor;
+uniform float uFogDensity, uFogFalloff, uFogHeight;
+
+const float kPi     = 3.14159265358979323846;
+const float kInf    = 3.402823466e38;
+const float kRayEps = 1e-3;
+
+// --- Random numbers ---------------------------------------------------------
+// PCG, the 32-bit variant. The CPU uses PCG32 with a 64-bit state, which GLSL
+// has no type for without an extension. It does not need to be the same
+// sequence -- the two renderers are compared as ESTIMATES, over enough samples
+// that the sequence cannot be what separates them. It needs to be a good
+// sequence, which a hashed LCG is and rand()-style xorshift is not.
+uint rngState;
+
+uint pcg(inout uint s) {
+    s = s * 747796405u + 2891336453u;
+    uint w = ((s >> ((s >> 28u) + 4u)) ^ s) * 277803737u;
+    return (w >> 22u) ^ w;
+}
+
+// [0,1), keeping the top 24 bits so it can never round up to 1.0 and break a
+// sampler -- the same trick, and the same reason, as Rng::uniform().
+float rnd() { return float(pcg(rngState) >> 8) * (1.0 / 16777216.0); }
+
+// `nth`, not `sample`: that is a reserved word in GLSL (an interpolation
+// qualifier), and a driver that enforces it rejects the whole kernel.
+void seedRng(ivec2 px, int nth) {
+    uint h = uint(px.y * uSize.x + px.x);
+    h = h * 747796405u + uint(nth) * 2891336453u + uint(uSeed) * 9781u;
+    rngState = h;
+    pcg(rngState);
+}
+
+// --- Sampling ---------------------------------------------------------------
+// Duff et al., branchless -- the same basis the CPU builds, so a sampled
+// direction lands in the same place relative to the surface.
+void basisFrom(vec3 n, out vec3 t, out vec3 b) {
+    float sgn = n.z >= 0.0 ? 1.0 : -1.0;
+    float a   = -1.0 / (sgn + n.z);
+    float c   = n.x * n.y * a;
+    t = vec3(1.0 + sgn * n.x * n.x * a, sgn * c, -sgn * n.x);
+    b = vec3(c, sgn + n.y * n.y * a, -n.y);
+}
+
+vec3 sampleCone(vec3 axis, float cosMax) {
+    float u1 = rnd(), u2 = rnd();
+    float cosT = 1.0 - u1 * (1.0 - cosMax);
+    float sinT = sqrt(max(0.0, 1.0 - cosT * cosT));
+    float phi  = 2.0 * kPi * u2;
+    vec3 t, b;
+    basisFrom(axis, t, b);
+    return normalize(t * (sinT * cos(phi)) + b * (sinT * sin(phi)) + axis * cosT);
+}
+
+vec2 sampleDisk() {
+    float r   = sqrt(rnd());
+    float phi = 2.0 * kPi * rnd();
+    return vec2(r * cos(phi), r * sin(phi));
+}
+
+// --- Microfacet terms -------------------------------------------------------
+float luminance(vec3 c) { return 0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b; }
+
+float ggxD(float NoH, float a) {
+    float a2 = a * a;
+    float d  = NoH * NoH * (a2 - 1.0) + 1.0;
+    return a2 / max(kPi * d * d, 1e-9);
+}
+float smithG1(float NoX, float a) {
+    float a2 = a * a;
+    float d  = NoX + sqrt(a2 + (1.0 - a2) * NoX * NoX);
+    return 2.0 * NoX / max(d, 1e-9);
+}
+float smithVis(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float v  = NoL * sqrt(a2 + (1.0 - a2) * NoV * NoV);
+    float l  = NoV * sqrt(a2 + (1.0 - a2) * NoL * NoL);
+    return 0.5 / max(v + l, 1e-9);
+}
+vec3 fresnel(vec3 F0, float VoH) {
+    float f = pow(max(0.0, 1.0 - VoH), 5.0);
+    return F0 + (vec3(1.0) - F0) * f;
+}
+float misWeight(float a, float b) {
+    float a2 = a * a, b2 = b * b;
+    return a2 / max(a2 + b2, 1e-9);
+}
+
+// --- The surface ------------------------------------------------------------
+// Surface::* on the CPU. No textures yet, so `base` is the flat albedo -- but
+// the sRGB->linear step is here and at the same point, because skipping it is
+// the classic way to end up with a render that is washed out beside the
+// viewport and no obvious reason why.
+struct Surface {
+    vec3  diffuse;
+    vec3  F0;
+    vec3  emission;
+    float alpha;      // roughness squared
+    float coverage;
+    bool  glass;
+};
+
+Surface surfaceOf(int mi) {
+    Mat m = mats[mi];
+    Surface s;
+    vec3 base = pow(max(m.albedoRough.rgb, vec3(0.0)), vec3(2.2));
+    float refl = clamp(m.emissionRefl.a, 0.0, 1.0);
+    s.diffuse  = base * (1.0 - refl);
+    s.F0       = mix(vec3(0.04), base, refl);
+    float r    = clamp(m.albedoRough.a, 0.03, 1.0);
+    s.alpha    = r * r;
+    s.emission = pow(max(m.emissionRefl.rgb, vec3(0.0)), vec3(2.2)) * m.misc.y;
+    s.coverage = m.misc.x;               // alphaMode Opaque: the scalar alone
+    s.glass    = m.misc.w > 0.5;
+    return s;
+}
+
+vec3 evalBsdf(Surface s, vec3 N, vec3 V, vec3 L, float specScale) {
+    float NoL = dot(N, L), NoV = dot(N, V);
+    if (NoL <= 0.0 || NoV <= 0.0) return vec3(0.0);
+    vec3  H   = normalize(V + L);
+    float NoH = max(0.0, dot(N, H));
+    float VoH = max(0.0, dot(V, H));
+    vec3  spec = fresnel(s.F0, VoH) * (ggxD(NoH, s.alpha) * smithVis(NoV, NoL, s.alpha));
+    return s.diffuse * (1.0 / kPi) + spec * specScale;
+}
+
+float pdfBsdf(Surface s, vec3 N, vec3 V, vec3 L, float pSpec) {
+    float NoL = dot(N, L), NoV = dot(N, V);
+    if (NoL <= 0.0 || NoV <= 0.0) return 0.0;
+    vec3  H   = normalize(V + L);
+    float NoH = max(0.0, dot(N, H));
+    float pdfSpec = ggxD(NoH, s.alpha) * smithG1(NoV, s.alpha) / max(4.0 * NoV, 1e-6);
+    float pdfDiff = NoL * (1.0 / kPi);
+    return pSpec * pdfSpec + (1.0 - pSpec) * pdfDiff;
+}
+
+float specProbability(Surface s) {
+    return clamp(0.25 + 0.6 * luminance(s.F0), 0.05, 0.95);
+}
+
+// --- The environment --------------------------------------------------------
+// The gradient fallback only (see the header): the flat ambient the raster path
+// would have used, spread over a horizon so a surface facing up and one facing
+// down are not lit identically.
+vec3 envSample(vec3 dir) {
+    float t = clamp(dir.y, -1.0, 1.0);
+    if (t >= 0.0) return mix(uEnvHorizon, uEnvZenith, sqrt(t));
+    return mix(uEnvHorizon, uEnvGround, sqrt(-t));
+}
+
+// --- Traversal --------------------------------------------------------------
+struct Hit { float t; float u, v; int tri; };
+
+bool slab(vec4 lo, vec4 hi, vec3 o, vec3 invD, float tMax, out float tNear) {
+    vec3 t0 = (lo.xyz - o) * invD;
+    vec3 t1 = (hi.xyz - o) * invD;
+    vec3 a  = min(t0, t1), b = max(t0, t1);
+    float tn = max(max(a.x, a.y), max(a.z, 0.0));
+    float tf = min(min(b.x, b.y), min(b.z, tMax));
+    tNear = tn;
+    return tn <= tf;
+}
+
+// Moeller-Trumbore, two-sided -- two-sided for the CPU's reason: a fair amount
+// of scene geometry is single-sided in the raster path only because backface
+// culling hides it, and honouring the winding would put holes where the
+// viewport shows a surface.
+bool intersectTri(Tri t, vec3 o, vec3 d, float tMax,
+                  out float outT, out float outU, out float outV) {
+    vec3 e1 = t.p1.xyz - t.p0.xyz;
+    vec3 e2 = t.p2.xyz - t.p0.xyz;
+    vec3 p  = cross(d, e2);
+    float det = dot(e1, p);
+    if (abs(det) < 1e-12) return false;
+    float inv = 1.0 / det;
+    vec3  s   = o - t.p0.xyz;
+    outU = dot(s, p) * inv;
+    if (outU < -1e-6 || outU > 1.0 + 1e-6) return false;
+    vec3 q = cross(s, e1);
+    outV = dot(d, q) * inv;
+    if (outV < -1e-6 || outU + outV > 1.0 + 1e-6) return false;
+    outT = dot(e2, q) * inv;
+    return outT > kRayEps && outT < tMax;
+}
+
+bool closest(vec3 o, vec3 d, float tMax, out Hit hit) {
+    hit.t = tMax; hit.u = 0.0; hit.v = 0.0; hit.tri = -1;
+    vec3 invD = vec3(1.0) / d;   // inf on an axis-parallel ray, which the slab
+                                 // test's min/max then handles exactly right
+
+    int   stack[64];
+    float stackT[64];
+    int   sp = 0, node = 0;
+    float nodeT;
+    if (!slab(nodes[0].lo, nodes[0].hi, o, invD, tMax, nodeT)) return false;
+
+    for (int guard = 0; guard < 100000; ++guard) {
+        int count = floatBitsToInt(nodes[node].hi.w);
+        if (count > 0) {
+            int first = floatBitsToInt(nodes[node].lo.w);
+            for (int i = 0; i < count; ++i) {
+                int ti = index[first + i];
+                float t, u, v;
+                if (intersectTri(tris[ti], o, d, hit.t, t, u, v)) {
+                    hit.t = t; hit.u = u; hit.v = v; hit.tri = ti;
+                }
+            }
+        } else {
+            int l  = floatBitsToInt(nodes[node].lo.w);
+            int rr = l + 1;
+            float tl, tr;
+            bool hl = slab(nodes[l].lo,  nodes[l].hi,  o, invD, hit.t, tl);
+            bool hr = slab(nodes[rr].lo, nodes[rr].hi, o, invD, hit.t, tr);
+            if (hl && hr) {
+                // Nearer child first: the far one is then very often already
+                // behind a confirmed hit and never opened at all.
+                int   nearI = tl <= tr ? l  : rr;
+                int   farI  = tl <= tr ? rr : l;
+                float farT  = tl <= tr ? tr : tl;
+                if (sp < 64) { stack[sp] = farI; stackT[sp] = farT; ++sp; }
+                node = nearI;
+                continue;
+            }
+            if (hl) { node = l;  continue; }
+            if (hr) { node = rr; continue; }
+        }
+        // Pop, discarding anything the closest hit has already overtaken.
+        bool popped = false;
+        while (sp > 0) {
+            --sp;
+            if (stackT[sp] > hit.t) continue;
+            node = stack[sp];
+            popped = true;
+            break;
+        }
+        if (!popped) break;
+    }
+    return hit.tri >= 0;
+}
+
+// How much light survives the walk to a light. A product rather than a boolean,
+// because the scene has partly transparent things in it and a shadow ray that
+// stopped at the first triangle would put a solid shadow under a windscreen.
+// Without textures there is no cutout to test, so this is the scalar coverage.
+vec3 transmittance(vec3 o, vec3 d, float tMax) {
+    vec3 tr = vec3(1.0);
+    vec3 org = o;
+    float remaining = tMax;
+    for (int step = 0; step < 16; ++step) {
+        Hit h;
+        if (!closest(org, d, remaining, h)) return tr;
+        int mi = int(tris[h.tri].uv2mat.z);
+        Mat m  = mats[mi];
+        float cov = m.misc.x;
+        if (m.misc.w > 0.5) {
+            // A pane refracts rather than blocks; the same stand-in for the
+            // caustics nobody is tracing that the CPU uses.
+            vec3 tint = pow(max(m.albedoRough.rgb, vec3(0.0)), vec3(2.2));
+            tr *= mix(vec3(1.0), tint, 0.35) * 0.85;
+        } else {
+            if (cov >= 0.999) return vec3(0.0);
+            tr *= (1.0 - cov);
+        }
+        if (luminance(tr) < 1e-4) return vec3(0.0);
+        org = org + d * (h.t + kRayEps);
+        remaining -= h.t + kRayEps;
+        if (remaining <= 0.0) return tr;
+    }
+    return tr;
+}
+
+// --- Direct light -----------------------------------------------------------
+vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec) {
+    vec3 L = vec3(0.0);
+
+    if (uSunOn == 1 && luminance(uSunColor) > 1e-5) {
+        vec3 dir = uSunPdf > 0.0 ? sampleCone(uSunAxis, uSunCosMax) : uSunAxis;
+        float NoL = dot(N, dir);
+        if (NoL > 0.0) {
+            vec3 tr = transmittance(P + N * kRayEps, dir, kInf);
+            if (luminance(tr) > 1e-4) {
+                // sun.color is already radiance divided by this sampler's own
+                // pdf, which is why it appears here unscaled.
+                vec3 c = uSunColor * tr * evalBsdf(s, N, V, dir, 1.0) * NoL;
+                // A disc can also be found by bouncing into it, so this strategy
+                // only claims its share. A hard-edged sun cannot be hit at all,
+                // and keeps the lot.
+                if (uSunPdf > 0.0)
+                    c *= misWeight(uSunPdf, pdfBsdf(s, N, V, dir, pSpec));
+                L += c;
+            }
+        }
+    }
+
+    for (int i = 0; i < uLampCount; ++i) {
+        Lamp lamp = lamps[i];
+        vec3  d    = lamp.posRange.xyz - P;
+        float dist = length(d);
+        if (dist < 1e-4) continue;
+        d /= dist;
+
+        // The same range-limited falloff lit.frag uses. Not inverse-square on
+        // purpose: matching the raster path's brightness matters more than being
+        // right about a light the author already tuned by eye against it.
+        float att = clamp(1.0 - dist / max(lamp.posRange.w, 1e-3), 0.0, 1.0);
+        att *= att;
+        if (att <= 0.0) continue;
+
+        if (lamp.cone.y >= -1.0) {                    // a cone, not a point
+            float cosA = dot(-d, normalize(lamp.dirRadius.xyz));
+            float cone = clamp((cosA - lamp.cone.y) /
+                               max(lamp.cone.x - lamp.cone.y, 1e-3), 0.0, 1.0);
+            cone *= cone;
+            if (cone <= 0.0) continue;
+            att *= cone;
+        }
+
+        float NoL = dot(N, d);
+        if (NoL <= 0.0) continue;
+
+        // The bulb's size softens the SHADOW, which needs a jittered ray, and
+        // the HIGHLIGHT, which does not -- widening the lobe gives the same
+        // picture as jittering it with none of the variance.
+        float radius = lamp.dirRadius.w;
+        float sphereAngle = min(1.0, radius / max(dist, 1e-3));
+        Surface wide = s;
+        wide.alpha = clamp(s.alpha + 0.5 * sphereAngle, s.alpha, 1.0);
+        float ratio     = s.alpha / max(wide.alpha, 1e-6);
+        float specScale = ratio * ratio;
+
+        vec3 target = lamp.posRange.xyz;
+        if (radius > 1e-4) {
+            vec3 t, b;
+            basisFrom(d, t, b);
+            vec2 disk = sampleDisk() * radius;
+            target += t * disk.x + b * disk.y;
+        }
+        vec3  sd    = target - P;
+        float sdist = length(sd);
+        if (sdist < 1e-4) continue;
+        sd /= sdist;
+
+        vec3 tr = transmittance(P + N * kRayEps, sd, sdist - kRayEps);
+        if (luminance(tr) < 1e-4) continue;
+        L += lamp.color.rgb * att * tr * evalBsdf(wide, N, V, d, specScale) * NoL;
+    }
+    return L;
+}
+
+vec3 applyFog(vec3 color, vec3 wp, vec3 eye, vec3 dir, float dist) {
+    if (uFogDensity <= 0.0) return color;
+    float b = uFogFalloff;
+    float c = uFogDensity * exp(-(eye.y - uFogHeight) * b);
+    float od;
+    if (abs(dir.y) > 1e-4) od = c * (1.0 - exp(-b * dir.y * dist)) / (b * dir.y);
+    else                   od = c * dist;
+    float fog = 1.0 - exp(-max(od, 0.0));
+    float sunAmt = pow(max(0.0, dot(dir, normalize(uSunDirRaw))), 4.0);
+    vec3  fogCol = mix(uFogColor, uFogSunColor, sunAmt);
+    return mix(color, fogCol, clamp(fog, 0.0, 1.0));
+}
+
+// --- One sample -------------------------------------------------------------
+vec3 sampleRadiance(vec3 org, vec3 dir) {
+    Hit hit;
+    if (!closest(org, dir, kInf, hit)) {
+        vec3 sky = envSample(dir) * uEnvIntensity;
+        // Straight from the camera the disc is simply what is there: the light
+        // sampler never had a chance at it, so there is no share to split.
+        if (uSunOn == 1 && uSunPdf > 0.0 && dot(dir, uSunAxis) > uSunCosMax)
+            sky += uSunRadiance;
+        return sky;
+    }
+
+    Tri tri = tris[hit.tri];
+    int mi  = int(tri.uv2mat.z);
+    float w = 1.0 - hit.u - hit.v;
+    vec3  P = org + dir * hit.t;
+
+    vec3 N = tri.n0.xyz * w + tri.n1.xyz * hit.u + tri.n2.xyz * hit.v;
+    if (dot(N, N) < 1e-12)
+        N = normalize(cross(tri.p1.xyz - tri.p0.xyz, tri.p2.xyz - tri.p0.xyz));
+    else
+        N = normalize(N);
+    if (dot(N, -dir) < 0.0) N = -N;   // shade the side we can see
+
+    Surface s = surfaceOf(mi);
+    // Glass needs a bounce to be anything at all, and there are none here. The
+    // CPU with maxBounces = 0 comes back with the same nothing, which is the
+    // point: the two renderers agree about what they cannot do yet.
+    if (s.glass) return vec3(0.0);
+
+    vec3 V = -dir;
+    vec3 L = s.emission + directLight(P, N, V, s, specProbability(s));
+    return applyFog(L, P, org, dir, hit.t);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= uSize.x || px.y >= uSize.y) return;
+
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < uSamples; ++i) {
+        seedRng(px, uSampleBase + i);
+        float jx = rnd(), jy = rnd();
+        float sx = (float(px.x) + jx) / float(uSize.x) * 2.0 - 1.0;
+        float sy = 1.0 - (float(px.y) + jy) / float(uSize.y) * 2.0;
+        vec3 dir = normalize(uCamFwd + uCamRight * (sx * uHalfU) + uCamUp * (sy * uHalfV));
+        sum += sampleRadiance(uCamPos, dir);
+    }
+
+    vec4 prev = imageLoad(uAccum, px);
+    imageStore(uAccum, px, vec4(prev.rgb + sum, 1.0));
+}
