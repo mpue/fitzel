@@ -37,8 +37,11 @@ struct GpuMat {
     float albedoRough[4];
     float emissionRefl[4];
     float misc[4];
+    // An enum in its own integer rather than squeezed into a float and rounded
+    // back: that trick works until the day somebody adds a fourth mode.
+    int   alphaMode[4];
 };
-static_assert(sizeof(GpuMat) == 48, "GpuMat must match its std430 counterpart");
+static_assert(sizeof(GpuMat) == 64, "GpuMat must match its std430 counterpart");
 
 struct GpuLamp {
     float posRange[4];
@@ -199,6 +202,8 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         g.misc[1] = m.emissionStrength;
         g.misc[2] = m.alphaCutoff;
         g.misc[3] = m.glass ? 1.0f : 0.0f;
+        g.alphaMode[0] = m.alphaMode;
+        g.alphaMode[1] = g.alphaMode[2] = g.alphaMode[3] = 0;
     }
 
     std::vector<GpuLamp> lamps(scene.lamps.size());
@@ -279,6 +284,8 @@ bool Tracer::accumulate(int samples) {
     setInt(m_program, "uSamples", samples);
     setInt(m_program, "uSeed", 1);
     setInt(m_program, "uLampCount", m_lampCount);
+    setInt(m_program, "uMaxBounces", m_maxBounces);
+    setFloat(m_program, "uClampIndirect", m_clampIndirect);
 
     const float halfV = std::tan(glm::radians(m_camera.fovDegrees) * 0.5f);
     const float aspect = static_cast<float>(m_width) / static_cast<float>(m_height);

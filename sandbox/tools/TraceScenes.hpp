@@ -186,4 +186,29 @@ inline std::shared_ptr<pathtrace::Scene> lookScene() {
     return sc;
 }
 
+// --- The furnace ------------------------------------------------------------
+// One horizontal plane, albedo 1, roughness 1, no reflectivity, no sun, and an
+// environment that is uniformly 1. Every pixel that lands on the plane should
+// come back at 1, and every pixel that misses it should come back at 1 too --
+// the surface is indistinguishable from the sky it stands in. That is what
+// makes this test sharp: an integrator that loses a bounce shows up as a plane
+// darker than the background, and one that double-counts shows up as brighter.
+inline std::shared_ptr<pathtrace::Scene> furnaceScene() {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material m;
+    m.albedo       = glm::vec3(1.0f);
+    m.roughness    = 1.0f;
+    m.reflectivity = 0.0f;
+    sc->materials.push_back(m);
+
+    addQuad(*sc, {-50, 0, -50}, {50, 0, -50}, {50, 0, 50}, {-50, 0, 50}, {0, 1, 0}, 0);
+
+    sc->sun.enabled = false;
+    sc->env.zenith = sc->env.horizon = sc->env.ground = glm::vec3(1.0f);
+    sc->env.intensity = 1.0f;
+    sc->camera = lookAt({0.0f, 2.0f, 6.0f}, {0.0f, 0.0f, 0.0f}, 50.0f);
+    sc->exposure = 1.0f;
+    return sc;
+}
+
 } // namespace tracescenes

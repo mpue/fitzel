@@ -44,9 +44,26 @@ public:
     // own build) and uploads everything. Keeps no reference to `scene`.
     bool upload(const pathtrace::Scene& scene);
 
+    // Re-aim without re-uploading. A camera move is the common case in a live
+    // preview and it changes nothing about the scene, while the upload is the
+    // expensive half -- it reads every mesh back off the GPU. The accumulator
+    // still has to be thrown away afterwards (resize()), because what is in it
+    // was seen from somewhere else.
+    void setCamera(const pathtrace::CameraDesc& camera) { m_camera = camera; }
+
     // Point it at a picture of this size and throw away what was accumulated.
     // Cheap enough to call whenever the camera moves.
     bool resize(int width, int height);
+
+    // How deep a path goes, and the ceiling on what one indirect sample may
+    // contribute. The same two numbers pathtrace::Settings carries and for the
+    // same reasons; set them before accumulating, and changing either means the
+    // accumulator has to be thrown away (resize()) since the samples already in
+    // it were drawn from a different estimator.
+    void setPath(int maxBounces, float clampIndirect) {
+        m_maxBounces    = maxBounces;
+        m_clampIndirect = clampIndirect;
+    }
 
     // Add `samples` more samples per pixel to the accumulator.
     //
@@ -78,6 +95,8 @@ private:
     int           m_width = 0, m_height = 0;
     int           m_samples = 0;
     int           m_lampCount = 0;
+    int           m_maxBounces = 6;
+    float         m_clampIndirect = 24.0f;
     long long     m_triangles = 0;
     bool          m_haveScene = false;
 

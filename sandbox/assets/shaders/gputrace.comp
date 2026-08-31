@@ -18,10 +18,13 @@
 //
 // WHAT IT DOES NOT DO YET, and the harness says so rather than the picture
 // quietly disagreeing:
-//   * one bounce only -- primary ray, emission, direct light. No indirect, no
-//     glass, no scattering.
-//   * no textures. Materials are their flat albedo and tint.
-//   * no HDRI: the environment is the three-stop gradient fallback.
+//   * no textures. Materials are their flat albedo and tint, so an alpha
+//     CUTOUT has nothing to test and a blend goes by the scalar alone.
+//   * no HDRI. The environment is the three-stop gradient fallback -- which is
+//     also why there is no environment importance sampling here: the CPU only
+//     builds that sampler for a MAP, and without one it does not aim at the sky
+//     either. On a scene with a panorama the two would part company, and
+//     gpucheck's frames deliberately have none.
 //   * no terrain layers, no depth of field.
 // Every one of those is a stage of its own, and each is measurable against the
 // CPU the day it lands.
@@ -51,9 +54,10 @@ struct Node {
 };
 
 struct Mat {
-    vec4 albedoRough;   // rgb albedo (sRGB, as authored), a = roughness
-    vec4 emissionRefl;  // rgb emission (sRGB), a = reflectivity
-    vec4 misc;          // x opacity, y emissionStrength, z alphaCutoff, w glass
+    vec4  albedoRough;  // rgb albedo (sRGB, as authored), a = roughness
+    vec4  emissionRefl; // rgb emission (sRGB), a = reflectivity
+    vec4  misc;         // x opacity, y emissionStrength, z alphaCutoff, w glass
+    ivec4 alphaMode;    // x = AlphaMode (0 opaque, 1 cutout, 2 blend)
 };
 
 struct Lamp {
@@ -87,6 +91,9 @@ uniform float uEnvIntensity;
 
 uniform vec3  uFogColor, uFogSunColor;
 uniform float uFogDensity, uFogFalloff, uFogHeight;
+
+uniform int   uMaxBounces;
+uniform float uClampIndirect;
 
 const float kPi     = 3.14159265358979323846;
 const float kInf    = 3.402823466e38;
@@ -140,6 +147,38 @@ vec3 sampleCone(vec3 axis, float cosMax) {
     return normalize(t * (sinT * cos(phi)) + b * (sinT * sin(phi)) + axis * cosT);
 }
 
+// Cosine-weighted, for the diffuse lobe.
+vec3 cosineHemisphere(vec3 n) {
+    float u1 = rnd(), u2 = rnd();
+    float r = sqrt(u1);
+    float phi = 2.0 * kPi * u2;
+    vec3 t, b;
+    basisFrom(n, t, b);
+    return normalize(t * (r * cos(phi)) + b * (r * sin(phi)) +
+                     n * sqrt(max(0.0, 1.0 - u1)));
+}
+
+// Heitz' visible-normal sampling. Draws half-vectors the eye can actually see,
+// which at grazing angles is the difference between a clean highlight and a
+// field of fireflies.
+vec3 sampleGGXVNDF(vec3 Ve, float a, float u1, float u2) {
+    vec3  Vh    = normalize(vec3(a * Ve.x, a * Ve.y, Ve.z));
+    float lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+    vec3  T1    = lensq > 0.0 ? vec3(-Vh.y, Vh.x, 0.0) * (1.0 / sqrt(lensq))
+                              : vec3(1.0, 0.0, 0.0);
+    vec3  T2    = cross(Vh, T1);
+
+    float r   = sqrt(u1);
+    float phi = 2.0 * kPi * u2;
+    float t1 = r * cos(phi);
+    float t2 = r * sin(phi);
+    float sh = 0.5 * (1.0 + Vh.z);
+    t2 = (1.0 - sh) * sqrt(max(0.0, 1.0 - t1 * t1)) + sh * t2;
+
+    vec3 Nh = T1 * t1 + T2 * t2 + Vh * sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2));
+    return normalize(vec3(a * Nh.x, a * Nh.y, max(1e-6, Nh.z)));
+}
+
 vec2 sampleDisk() {
     float r   = sqrt(rnd());
     float phi = 2.0 * kPi * rnd();
@@ -180,11 +219,13 @@ float misWeight(float a, float b) {
 // the classic way to end up with a render that is washed out beside the
 // viewport and no obvious reason why.
 struct Surface {
+    vec3  baseColor;  // linear, and the tint a pane of glass carries
     vec3  diffuse;
     vec3  F0;
     vec3  emission;
     float alpha;      // roughness squared
     float coverage;
+    int   alphaMode;
     bool  glass;
 };
 
@@ -193,13 +234,19 @@ Surface surfaceOf(int mi) {
     Surface s;
     vec3 base = pow(max(m.albedoRough.rgb, vec3(0.0)), vec3(2.2));
     float refl = clamp(m.emissionRefl.a, 0.0, 1.0);
-    s.diffuse  = base * (1.0 - refl);
-    s.F0       = mix(vec3(0.04), base, refl);
-    float r    = clamp(m.albedoRough.a, 0.03, 1.0);
-    s.alpha    = r * r;
-    s.emission = pow(max(m.emissionRefl.rgb, vec3(0.0)), vec3(2.2)) * m.misc.y;
-    s.coverage = m.misc.x;               // alphaMode Opaque: the scalar alone
-    s.glass    = m.misc.w > 0.5;
+    s.baseColor = base;
+    s.diffuse   = base * (1.0 - refl);
+    // F0 rises from a dielectric's 4% towards the base colour, the same trade
+    // lit.frag makes with uReflectivity: one dial standing in for metalness.
+    s.F0        = mix(vec3(0.04), base, refl);
+    float r     = clamp(m.albedoRough.a, 0.03, 1.0);
+    s.alpha     = r * r;
+    s.emission  = pow(max(m.emissionRefl.rgb, vec3(0.0)), vec3(2.2)) * m.misc.y;
+    // Without textures every AlphaMode collapses to the same answer: the map's
+    // alpha is 1, so a cutout never cuts and a blend blends by the scalar.
+    s.coverage  = m.misc.x;
+    s.alphaMode = int(m.alphaMode.x);
+    s.glass     = m.misc.w > 0.5;
     return s;
 }
 
@@ -436,7 +483,7 @@ vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec) {
     return L;
 }
 
-vec3 applyFog(vec3 color, vec3 wp, vec3 eye, vec3 dir, float dist) {
+vec3 applyFog(vec3 color, vec3 eye, vec3 dir, float dist) {
     if (uFogDensity <= 0.0) return color;
     float b = uFogFalloff;
     float c = uFogDensity * exp(-(eye.y - uFogHeight) * b);
@@ -449,39 +496,167 @@ vec3 applyFog(vec3 color, vec3 wp, vec3 eye, vec3 dir, float dist) {
     return mix(color, fogCol, clamp(fog, 0.0, 1.0));
 }
 
-// --- One sample -------------------------------------------------------------
-vec3 sampleRadiance(vec3 org, vec3 dir) {
-    Hit hit;
-    if (!closest(org, dir, kInf, hit)) {
-        vec3 sky = envSample(dir) * uEnvIntensity;
-        // Straight from the camera the disc is simply what is there: the light
-        // sampler never had a chance at it, so there is no share to split.
-        if (uSunOn == 1 && uSunPdf > 0.0 && dot(dir, uSunAxis) > uSunCosMax)
-            sky += uSunRadiance;
-        return sky;
+// --- One path ---------------------------------------------------------------
+// Tracer::radiance(), term for term. The shape is the CPU's: a loop over
+// bounces, next-event estimation at every one of them, MIS against whatever the
+// scatter might have found on its own, and Russian roulette once the path has
+// earned the right to be cut.
+
+// Ceiling on ONE indirect sample. A path that bounces off the road, finds a
+// chrome bumper and catches the sun in it carries a genuinely enormous amount
+// of light and is genuinely rare, so it lands as one white pixel that takes
+// tens of thousands of samples to average away. The primary hit is exempt --
+// clamping that would dim the light sources themselves.
+vec3 clamped(vec3 c, int bounce) {
+    if (uClampIndirect <= 0.0 || bounce == 0) return c;
+    float m = max(c.r, max(c.g, c.b));
+    return m > uClampIndirect ? c * (uClampIndirect / m) : c;
+}
+
+vec3 radiance(vec3 org, vec3 dir) {
+    vec3 L = vec3(0.0), beta = vec3(1.0);
+    vec3 eye = org, eyeDir = dir;
+    float primaryDist = -1.0;
+
+    // Crossings of transparent surfaces, counted apart from real bounces: a ray
+    // through five panes of glass has scattered once, and charging it five
+    // bounces would darken every window.
+    int passthrough = 0;
+
+    // The density this ray was sampled with, and whether that sampler was a
+    // delta (the camera, a mirror, a pane of glass). Both are for the sun: an
+    // escaping ray that lands on the disc has to know how likely it was to do
+    // so, or it double-counts what the shadow ray already found.
+    float lastPdf = 0.0;
+    bool  lastDelta = true;
+
+    for (int bounce = 0; bounce <= uMaxBounces; ++bounce) {
+        Hit hit;
+        if (!closest(org, dir, kInf, hit)) {
+            vec3 sky = envSample(dir) * uEnvIntensity;
+            if (uSunOn == 1 && uSunPdf > 0.0 && dot(dir, uSunAxis) > uSunCosMax) {
+                // Straight from the camera, or off a mirror, the disc is simply
+                // what is there. Off a rough surface it shares the find with the
+                // shadow ray.
+                sky += uSunRadiance * (lastDelta ? 1.0
+                                                 : misWeight(lastPdf, uSunPdf));
+            }
+            L += clamped(beta * sky, bounce);
+            break;
+        }
+        if (primaryDist < 0.0) primaryDist = hit.t;
+
+        Tri tri = tris[hit.tri];
+        int mi  = int(tri.uv2mat.z);
+        float w = 1.0 - hit.u - hit.v;
+        vec3  P = org + dir * hit.t;
+
+        vec3 N = tri.n0.xyz * w + tri.n1.xyz * hit.u + tri.n2.xyz * hit.v;
+        if (dot(N, N) < 1e-12)
+            N = normalize(cross(tri.p1.xyz - tri.p0.xyz, tri.p2.xyz - tri.p0.xyz));
+        else
+            N = normalize(N);
+        vec3 gN = N;
+        if (dot(N, -dir) < 0.0) N = -N;    // shade the side we can see
+
+        Surface s = surfaceOf(mi);
+
+        // Only a BLEND surface is passed through, and only by its own coverage.
+        // An opaque one is solid whatever its alpha happens to hold.
+        bool blendMiss = !s.glass && s.alphaMode == 2 && s.coverage < 0.999 &&
+                         rnd() > s.coverage;
+        if (blendMiss) {
+            if (++passthrough > 32) break;
+            org = P + dir * kRayEps;
+            --bounce;                       // a pane is not a bounce
+            continue;
+        }
+
+        L += clamped(beta * s.emission, bounce);
+
+        vec3 V = -dir;
+
+        if (s.glass) {
+            // A dielectric: reflect or refract, chosen by Fresnel. No next event
+            // estimation -- the lobe is a delta, and a shadow ray at a mirror
+            // direction would contribute nothing but noise.
+            bool entering = dot(gN, dir) < 0.0;
+            float ior  = entering ? (1.0 / 1.5) : 1.5;
+            float cosI = min(1.0, dot(N, V));
+            float sinT2 = ior * ior * (1.0 - cosI * cosI);
+            float F;
+            if (sinT2 > 1.0) {
+                F = 1.0;                    // total internal reflection
+            } else {
+                float cosT = sqrt(1.0 - sinT2);
+                float rs = (ior * cosI - cosT) / (ior * cosI + cosT);
+                float rp = (cosI - ior * cosT) / (cosI + ior * cosT);
+                F = 0.5 * (rs * rs + rp * rp);
+            }
+            if (rnd() < F) {
+                dir = reflect(dir, N);
+            } else {
+                vec3 refr = refract(dir, N, ior);
+                dir = dot(refr, refr) < 1e-8 ? reflect(dir, N) : refr;
+                beta *= s.baseColor;        // the tint the pane carries
+            }
+            org = P + dir * kRayEps;
+            lastDelta = true;
+            continue;
+        }
+
+        // Chosen before the light sampling, not after: next event estimation has
+        // to weigh itself against the SAME densities the scatter below will use,
+        // or the two strategies do not add up to one.
+        float pSpec = specProbability(s);
+        L += clamped(beta * directLight(P, N, V, s, pSpec), bounce);
+
+        if (bounce == uMaxBounces) break;
+
+        // Scatter. One lobe is chosen, but the weight divides by the pdf of
+        // BOTH, which keeps the estimate unbiased whichever fired.
+        vec3 nextDir;
+        if (rnd() < pSpec) {
+            vec3 t, b;
+            basisFrom(N, t, b);
+            vec3 Vl = vec3(dot(V, t), dot(V, b), dot(V, N));
+            if (Vl.z <= 0.0) break;
+            vec3 Hl = sampleGGXVNDF(Vl, s.alpha, rnd(), rnd());
+            vec3 H  = normalize(t * Hl.x + b * Hl.y + N * Hl.z);
+            nextDir = reflect(dir, H);
+        } else {
+            nextDir = cosineHemisphere(N);
+        }
+        float NoL = dot(N, nextDir);
+        if (NoL <= 0.0) break;
+
+        float pdf = pdfBsdf(s, N, V, nextDir, pSpec);
+        if (pdf < 1e-6) break;
+        beta *= evalBsdf(s, N, V, nextDir, 1.0) * (NoL / pdf);
+        if (luminance(beta) < 1e-5) break;
+        lastPdf   = pdf;
+        lastDelta = false;
+
+        // Russian roulette, from bounce 2 rather than 0 so the bounces carrying
+        // nearly all the visible light are never the ones thrown away.
+        if (bounce >= 2) {
+            float q = min(0.95, max(beta.r, max(beta.g, beta.b)));
+            if (rnd() > q) break;
+            beta /= q;
+        }
+
+        org = P + N * kRayEps;
+        dir = nextDir;
     }
 
-    Tri tri = tris[hit.tri];
-    int mi  = int(tri.uv2mat.z);
-    float w = 1.0 - hit.u - hit.v;
-    vec3  P = org + dir * hit.t;
-
-    vec3 N = tri.n0.xyz * w + tri.n1.xyz * hit.u + tri.n2.xyz * hit.v;
-    if (dot(N, N) < 1e-12)
-        N = normalize(cross(tri.p1.xyz - tri.p0.xyz, tri.p2.xyz - tri.p0.xyz));
-    else
-        N = normalize(N);
-    if (dot(N, -dir) < 0.0) N = -N;   // shade the side we can see
-
-    Surface s = surfaceOf(mi);
-    // Glass needs a bounce to be anything at all, and there are none here. The
-    // CPU with maxBounces = 0 comes back with the same nothing, which is the
-    // point: the two renderers agree about what they cannot do yet.
-    if (s.glass) return vec3(0.0);
-
-    vec3 V = -dir;
-    vec3 L = s.emission + directLight(P, N, V, s, specProbability(s));
-    return applyFog(L, P, org, dir, hit.t);
+    // The same guard the CPU ends with, and for the same reason: one non-finite
+    // sample is not one bad pixel. It goes into a running sum, and from then on
+    // every sample that pixel ever takes is averaged with a NaN.
+    if (any(isnan(L))) return vec3(0.0);
+    L = min(L, vec3(50000.0));
+    if (primaryDist > 0.0) L = applyFog(L, eye, eyeDir, primaryDist);
+    if (any(isnan(L))) return vec3(0.0);
+    return L;
 }
 
 void main() {
@@ -495,7 +670,7 @@ void main() {
         float sx = (float(px.x) + jx) / float(uSize.x) * 2.0 - 1.0;
         float sy = 1.0 - (float(px.y) + jy) / float(uSize.y) * 2.0;
         vec3 dir = normalize(uCamFwd + uCamRight * (sx * uHalfU) + uCamUp * (sy * uHalfV));
-        sum += sampleRadiance(uCamPos, dir);
+        sum += radiance(uCamPos, dir);
     }
 
     vec4 prev = imageLoad(uAccum, px);

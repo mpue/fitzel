@@ -8,6 +8,7 @@
 
 #include <fitzel/graphics/Texture.hpp>
 
+#include "GpuTrace.hpp"
 #include "PathTrace.hpp"
 #include "PathTraceCapture.hpp"
 #include "PathTracePanel.hpp"
@@ -46,7 +47,20 @@ struct State {
 
     // --- The running preview ---
     std::shared_ptr<pathtrace::Scene> scene; // the harvest, reused across moves
-    pathtrace::Job      job;
+    pathtrace::Job      job;                 // the CPU tracer, when there is no GPU
+
+    // The GPU tracer, when the context can run one. Not a mode the author
+    // picks: the two produce the same picture (gpucheck holds them to it), one
+    // of them is several times faster, and which is available is a property of
+    // the machine rather than a decision anybody should have to make.
+    //
+    // Its dispatches happen on the render thread, in the editor's own context,
+    // a few samples at a time -- so a slow trace costs frame rate rather than
+    // freezing the editor, and the sample budget below is the dial for that.
+    gputrace::Tracer gpu;
+    bool  gpuTried = false;   // init() attempted (it is tried once, not per frame)
+    bool  gpuReady = false;
+    int   gpuPerFrame = 2;    // samples per frame, the interactivity dial
     pathcapture::Report report;
     fitzel::Texture     image;
     int         texW = 0, texH = 0;

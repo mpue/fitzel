@@ -11,13 +11,11 @@
 // this and be wrong, and one checked only against hand-worked numbers would
 // pass on the two frames somebody thought to write down.
 //
-// WHAT IS BEING COMPARED, and it is deliberately not the finished renderer:
-// the GPU kernel does primary rays, emission and direct light, and nothing
-// else. So the CPU side runs with maxBounces = 0, which is exactly that. No
-// textures, no HDRI, no glass, no depth of field -- see gputrace.comp's header.
-// The frames here have none of those in them except the look frame's glass,
-// which both sides render as nothing, and the test says so rather than the
-// picture quietly disagreeing.
+// WHAT IS BEING COMPARED: the whole path -- bounces, next-event estimation,
+// MIS, glass, Russian roulette, the firefly clamp. What the kernel still does
+// not have is textures and an HDRI, so the frames here carry neither, and the
+// environment is the gradient both sides fall back to. See gputrace.comp's
+// header for the standing list.
 //
 // The two will never be bit-identical and are not asked to be: different random
 // sequences, different orders of summation, and 32-bit floats. They are asked
@@ -191,18 +189,27 @@ int main(int argc, char** argv) {
     // this is meant to catch, and the test would pass on a broken renderer.
     pathtrace::Settings s;
     s.width = width; s.height = height; s.samples = samples; s.batch = 16;
-    s.maxBounces = 0;          // primary + direct: exactly what the kernel does
+    s.maxBounces = 6;      // the full path, which is what the kernel does now
     s.tonemap = false;
-    s.clampIndirect = 0.0f;    // nothing indirect to clamp; keep both sides equal
+    // Left at its default and handed to the GPU as well: the clamp changes what
+    // the estimator IS, so two sides with different ceilings would be two
+    // different renderers agreeing about nothing in particular.
+    gpu.setPath(s.maxBounces, s.clampIndirect);
 
     const Frame frames[] = {
-        {"shadow", tracescenes::shadowScene(),   0.02, 0.06},
-        {"lamp",   tracescenes::lampScene(12.0f), 0.02, 0.06},
+        // The furnace first, because it is the only frame here whose right
+        // answer is known WITHOUT the other renderer: albedo 1 in an
+        // environment of radiance 1 must come back at 1, on either machine.
+        // A GPU path that lost a bounce lands below it and a double-counting
+        // one above, and neither needs a CPU to be compared against.
+        {"furnace", tracescenes::furnaceScene(),   0.02, 0.10},
+        {"shadow",  tracescenes::shadowScene(),    0.02, 0.10},
+        {"lamp",    tracescenes::lampScene(12.0f), 0.03, 0.10},
         // The look frame is the hard one: a mirror, a rough metal and a pane of
-        // glass, so it exercises the specular lobe where it is narrowest. Wider
-        // bands because a near-mirror lit by a small sun is where two random
-        // sequences disagree most.
-        {"look",   tracescenes::lookScene(),     0.06, 0.30},
+        // glass, so it exercises the specular lobe where it is narrowest and
+        // the refraction path at all. Wider bands, because a near-mirror lit by
+        // a small sun is where two random sequences disagree most.
+        {"look",    tracescenes::lookScene(),      0.06, 0.40},
     };
 
     for (const Frame& f : frames) {
@@ -250,6 +257,16 @@ int main(int argc, char** argv) {
         std::snprintf(detail, sizeof detail, "rms %.4f (allowed %.4f)",
                       err, f.maxRms);
         check(err < f.maxRms, "and it arrives in the same places", detail);
+
+        if (std::strcmp(f.name, "furnace") == 0) {
+            // The same band pathcheck holds the CPU to. The excess above 1 is
+            // the dielectric specular lobe sitting on a full-albedo diffuse
+            // base, which this BSDF does not energy-compensate: a known,
+            // bounded property of the model and not licence for a renderer that
+            // loses a bounce, which lands well below.
+            std::snprintf(detail, sizeof detail, "mean radiance %.5f (want ~1.0)", mg);
+            check(mg > 0.97 && mg < 1.12, "the GPU conserves energy too", detail);
+        }
 
         std::printf("       cpu %.2fs (%d threads) vs gpu %.2fs -- %.1fx, %lld tris\n",
                     cpuSecs, static_cast<int>(std::thread::hardware_concurrency()),
