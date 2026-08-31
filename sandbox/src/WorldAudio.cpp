@@ -15,6 +15,9 @@ namespace {
 // swinging in volume with every twitch of the racing line.
 constexpr float kRivalMin = 12.0f, kRivalMax = 160.0f, kRivalRolloff = 1.4f;
 constexpr float kPassMin  = 8.0f,  kPassMax  = 90.0f,  kPassRolloff  = 1.6f;
+// Standing ambience carries further than a swoosh and has no near field to
+// speak of -- you are either beside the water or you are not.
+constexpr float kAmbMin = 4.0f, kAmbRolloff = 1.25f;
 
 float lengthSafe(const glm::vec3& v) {
     const float l2 = glm::dot(v, v);
@@ -48,7 +51,50 @@ void WorldAudio::load(fitzel::Audio& audio, const std::string& soundDir) {
         s.setSpatial(true);
         s.setAttenuation(kPassMin, kPassMax, kPassRolloff);
     }
+    // Standing ambience. Same sample the submersion loop uses -- it is the sound
+    // of moving water, and that is what these voices are for.
+    for (AmbienceVoice& v : m_ambience) {
+        v.sound = fitzel::Sound::fromFile(audio, soundDir + "/water.wav", true);
+        if (!v.sound.isValid()) continue;
+        v.sound.setSpatial(true);
+        v.sound.setDopplerFactor(0.0f);   // a river does not move past you
+        v.sound.setVolume(0.0f);
+    }
     m_loaded = true;
+}
+
+void WorldAudio::setListener(const glm::vec3& pos, const glm::vec3& fwd,
+                             const glm::vec3& up) {
+    if (!m_audio) return;
+    // No velocity: this path exists for sources that have Doppler switched off,
+    // and handing the listener one would only pitch everything else.
+    m_audio->setListener(pos.x, pos.y, pos.z, fwd.x, fwd.y, fwd.z,
+                         up.x, up.y, up.z, 0.0f, 0.0f, 0.0f);
+}
+
+void WorldAudio::setAmbience(const std::vector<AmbiencePoint>& points,
+                             float masterGain) {
+    for (int i = 0; i < kAmbienceVoices; ++i) {
+        AmbienceVoice& v = m_ambience[i];
+        if (!v.sound.isValid()) continue;
+        const bool have = i < static_cast<int>(points.size());
+        const float want = have
+            ? std::clamp(points[i].gain, 0.0f, 1.0f) * ambienceGain * masterGain
+            : 0.0f;
+        // Smoothed, so a voice handed a different place does not jump in level
+        // -- and so a course going out of range fades instead of cutting.
+        v.gain += (want - v.gain) * 0.12f;
+        if (have) {
+            v.pos = points[i].pos;
+            v.sound.setPosition(v.pos.x, v.pos.y, v.pos.z);
+            v.sound.setAttenuation(kAmbMin, std::max(points[i].range, kAmbMin + 1.0f),
+                                   kAmbRolloff);
+            v.sound.setPitch(std::clamp(points[i].pitch, 0.5f, 2.0f));
+        }
+        v.sound.setVolume(v.gain);
+        // Started once and never stopped: a loop restarted mid-flow is a click.
+        if (!v.started && v.gain > 0.0005f) { v.sound.play(); v.started = true; }
+    }
 }
 
 void WorldAudio::reset() {
@@ -59,6 +105,11 @@ void WorldAudio::reset() {
     }
     for (fitzel::Sound& s : m_pass)
         if (s.isValid()) s.stop();
+    for (AmbienceVoice& v : m_ambience) {
+        if (v.sound.isValid()) { v.sound.setVolume(0.0f); v.sound.stop(); }
+        v.gain = 0.0f;
+        v.started = false;
+    }
     m_tracks.clear();
 }
 

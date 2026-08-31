@@ -66,6 +66,12 @@ set(SANDBOX_RUNTIME_SOURCES
     # be able to build it too -- the scene file holds the rule, not the geometry.
     src/SplineGen.cpp
     src/SplineSystem.cpp
+    # Brooks, rivers and canals. Runtime, and more so than the fences: a
+    # watercourse CUTS THE TERRAIN, so the shipped player has to re-derive the
+    # bed on load or the ground the scene was authored against is not the ground
+    # it is played on. The file holds the path and the rule, never the channel.
+    src/RiverGen.cpp
+    src/RiverSystem.cpp
     # The tower generator and the roadside city are RUNTIME, not editor-only: a
     # district is derived from its biome rules on load, so the shipped player has
     # to be able to build it too -- the scene file holds the rules, not the towers.
@@ -121,6 +127,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/RoadPanel.cpp
     src/SplinePanel.cpp
     src/SplineEdit.cpp
+    src/RiverPanel.cpp
+    src/RiverEdit.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp
     src/PaintPanel.cpp
@@ -293,6 +301,26 @@ target_compile_definitions(viewcheck PRIVATE FITZEL_PLAYER
     FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
 target_link_libraries(viewcheck PRIVATE fitzel imgui stb_headers
                                         nlohmann_json::nlohmann_json)
+
+# rivercheck (sandbox/tools/rivercheck.cpp): the water is the only thing here
+# that both READS the terrain and WRITES it, and that pairing fails in two ways
+# nobody can see. The bed creeps -- a solve that catches sight of its own cut
+# sinks the channel a little further every drag, invisible at two centimetres a
+# time and a canyon by the evening. Or the ground does not come back: move a
+# course and the abandoned trench stays, or the hill sculpted beside it is quietly
+# eaten. There is no undo for the height field (the cut is derived, not stored),
+# so a wrong difference is wrong for good.
+#
+# So it measures: ten re-cuts must leave the field bit-identical, a moved course
+# must give its ground back to the millimetre, a sculpt beside the water must come
+# through untouched, and every profile must descend or SAY that it could not. Then
+# it renders the courses through the real river.vert/river.frag over the ground
+# they cut, because whether water looks like water has no other answer.
+#   build/release/bin/rivercheck.exe [outDir] [shaderDir]
+add_executable(rivercheck tools/rivercheck.cpp src/RiverGen.cpp src/RiverSystem.cpp
+                          src/SandboxMath.cpp src/CameraPath.cpp)
+target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_33 glm::glm
+                                         stb_headers nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
 # a parked car, a fast one, a lorry and a slope, and measures what a camera fault

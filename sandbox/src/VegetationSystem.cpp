@@ -199,6 +199,28 @@ void VegetationSystem::panelBirdsFireflies() {
 
 // Cheap stable hash of a road centerline, so the grass field only re-places when
 // the road actually moved (not every frame the polyline is passed in).
+// Is (x,z) in one of the keep-out discs? Linear, because the list is a few
+// hundred entries at most and this is called from inside a placement loop that
+// is already doing four terrain height samples per candidate.
+static bool inWet(const std::vector<glm::vec3>& wet, float x, float z) {
+    for (const glm::vec3& d : wet) {
+        const float dx = x - d.x, dz = z - d.y;
+        if (dx * dx + dz * dz < d.z * d.z) return true;
+    }
+    return false;
+}
+
+static std::uint32_t wetHashOf(const std::vector<glm::vec3>& w) {
+    std::uint32_t h = 2166136261u ^ static_cast<std::uint32_t>(w.size());
+    auto mix = [&](float f) {
+        std::uint32_t b;
+        std::memcpy(&b, &f, sizeof(b));
+        h = (h ^ b) * 16777619u;
+    };
+    for (const glm::vec3& d : w) { mix(d.x); mix(d.y); mix(d.z); }
+    return h;
+}
+
 static std::uint32_t roadHashOf(const std::vector<glm::vec2>& r) {
     std::uint32_t h = 2166136261u ^ static_cast<std::uint32_t>(r.size());
     auto mix = [&](float f) {
@@ -225,6 +247,7 @@ static void grassTileGen(std::int32_t tx, std::int32_t tz, glm::vec2 origin,
                          float size, const TerrainSettings& s, float waterLvl,
                          float snowLvl, float gHeight, float gDensity, float chaos,
                          const std::vector<glm::vec2>& road, float roadClear,
+                         const std::vector<glm::vec3>& wet,
                          std::vector<float>& out) {
     std::uint32_t seed = static_cast<std::uint32_t>(tx) * 73856093u
                        ^ static_cast<std::uint32_t>(tz) * 19349663u ^ 0x9E3779B9u;
@@ -236,6 +259,7 @@ static void grassTileGen(std::int32_t tx, std::int32_t tz, glm::vec2 origin,
         for (float lx = 0.0f; lx < size; lx += spacing) {
             const float wx = origin.x + lx, wz = origin.y + lz;
             if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
+            if (inWet(wet, wx, wz)) continue;   // in a brook, not beside one
             const float h = terrainHeight(s, wx, wz);
             if (h < waterLvl + 0.5f || h > snowLvl - 1.5f) continue;
             const float e = 1.0f;
@@ -301,6 +325,7 @@ void VegetationSystem::stampGrass(glm::vec2 c, float radius, std::mt19937& rng,
         const float wz  = c.y + std::sin(ang) * rad;
         const float h   = m_streamer.heightAt(wx, wz);
         if (h < waterLevel + 0.5f || h > snowLevel - 1.5f) continue;
+        if (inWet(wet, wx, wz)) continue;
         const float e = 1.0f;
         const glm::vec3 n = glm::normalize(glm::vec3(
             m_streamer.heightAt(wx - e, wz) - m_streamer.heightAt(wx + e, wz),
@@ -352,11 +377,13 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     if (grassDirty || grassDensity != m_gDensity || grassChaos != m_gChaos ||
         grassHeight != m_gHeight || grassRadius != m_gRadius ||
         waterLevel != m_gWater || snowLevel != m_gSnow ||
-        roadClear != m_gRoadClear || rh != m_gRoadHash) {
+        roadClear != m_gRoadClear || rh != m_gRoadHash ||
+        wetHashOf(wet) != m_gWetHash) {
         const TerrainSettings s = m_streamer.settings();
         const float water = waterLevel, snow = snowLevel, gh = grassHeight;
         const float gd = grassDensity, gc = grassChaos, rc = roadClear;
         std::vector<glm::vec2> roadCopy = road;
+        std::vector<glm::vec3> wetCopy  = wet;
         // The "Grass range" slider (m) maps to a tile radius over the 12 m grid.
         const int tileR = std::clamp(
             static_cast<int>(std::lround(grassRadius / 12.0f)), 1, 12);
@@ -365,11 +392,12 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
             [=](std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size,
                 std::vector<float>& out) {
                 grassTileGen(tx, tz, origin, size, s, water, snow, gh, gd, gc,
-                             roadCopy, rc, out);
+                             roadCopy, rc, wetCopy, out);
             });
         m_grassTiles.invalidate();
         m_gDensity = gd; m_gChaos = gc; m_gHeight = gh; m_gRadius = grassRadius;
         m_gWater = water; m_gSnow = snow; m_gRoadClear = rc; m_gRoadHash = rh;
+        m_gWetHash = wetHashOf(wet);
         grassDirty = false;
     }
 
@@ -812,6 +840,7 @@ void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& ro
                 const float dx = wx - cc.x, dz = wz - cc.y;
                 if (dx * dx + dz * dz > R2) continue;
                 if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
+                if (inWet(wet, wx, wz)) continue;
                 const float h = m_streamer.heightAt(wx, wz);
                 if (h < waterLevel + 0.8f || h > snowLevel - 2.0f) continue;
                 const float e = 1.5f;

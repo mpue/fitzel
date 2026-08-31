@@ -325,6 +325,14 @@ void Renderer::setEnvProbeResolution(int res) {
     m_envPrimed = false;
 }
 
+void Renderer::bindEnvProbe(std::uint32_t unit) const {
+    m_envRead->bindTexture(unit);
+}
+
+float Renderer::envProbeMaxLod() const {
+    return static_cast<float>(m_envRead->mipLevels() - 1);
+}
+
 void Renderer::setEnvProbeMaxFaces(int faces) {
     m_envMaxFaces = glm::clamp(faces, 1, 6);
 }

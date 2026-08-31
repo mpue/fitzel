@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <vector>
 
@@ -186,6 +187,15 @@ public:
     // see prepareEnvProbe(), which is where the trade is explained.
     void setEnvProbeMaxFaces(int faces);
     int  envProbeMaxFaces() const { return m_envMaxFaces; }
+
+    // Bind the probe's cubemap to `unit` for sampling, and report its coarsest
+    // mip level. renderScene() already does this for the lit shader; this is for
+    // an APP pass that draws its own reflective surface without going through the
+    // queue -- the sandbox's river water, which is a shader of its own because it
+    // is at a different height every ten metres and the planar reflection the
+    // lake uses assumes exactly one.
+    void  bindEnvProbe(std::uint32_t unit) const;
+    float envProbeMaxLod() const;
 
     void end(); // convenience: prepareShadows() + one lit pass from the camera
 

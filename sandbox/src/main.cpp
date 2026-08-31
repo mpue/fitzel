@@ -49,6 +49,7 @@
 #include "PropertyMeta.hpp"
 #include "RoadCommand.hpp"
 #include "SplineCommand.hpp"
+#include "RiverCommand.hpp"
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
 #include "VideoLibrary.hpp"
@@ -90,6 +91,7 @@
 #include "VegetationSystem.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
+#include "RiverSystem.hpp"
 #include "RaceSim.hpp"
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
@@ -104,6 +106,8 @@
 #include "RoadPrefab.hpp"
 #include "SplinePanel.hpp"
 #include "SplineEdit.hpp"
+#include "RiverPanel.hpp"
+#include "RiverEdit.hpp"
 #include "SkidSystem.hpp"
 #include "SoftBodySystem.hpp"
 #include "TrailSystem.hpp"
@@ -397,6 +401,10 @@ ContentRoots resolveContentRoots() {
 struct CoreShaders {
     Shader lit;     // scene geometry + terrain
     Shader water;   // the water surface
+    // Running water (brooks, rivers, canals). Its own program rather than the
+    // one above because the lake's planar reflection is rendered for ONE height
+    // and a river is at a different one every ten metres -- see river.frag.
+    Shader river;
     Shader sky;     // sky + volumetric clouds (fullscreen raymarch pass)
     Shader skybox;  // HDRI background (reuses the fullscreen sky vertex shader)
 };
@@ -416,6 +424,7 @@ bool loadCoreShaders(CoreShaders& out) {
     bool ok = true;
     ok = load(out.lit,   "assets/shaders/lit.vert",   "assets/shaders/lit.frag",   "lit")   && ok;
     ok = load(out.water, "assets/shaders/water.vert", "assets/shaders/water.frag", "water") && ok;
+    ok = load(out.river, "assets/shaders/river.vert", "assets/shaders/river.frag", "river") && ok;
     ok = load(out.sky,   "assets/shaders/sky.vert",   "assets/shaders/sky.frag",   "sky")   && ok;
     load(out.skybox,     "assets/shaders/sky.vert",   "assets/shaders/skybox.frag", "skybox");
     return ok;
@@ -870,6 +879,9 @@ struct EditMenuCtx {
     std::function<std::vector<int>()> selectedIds;
     std::function<void()>             clampRoadSel;
     std::function<void()>             clampSplineSel;
+    // Also re-cuts the watercourse beds: an undo puts different PATHS back and
+    // the terrain has to follow them. See main's clampRiverSel.
+    std::function<void()>             clampRiverSel;
     std::function<void()>             duplicateSelection;
     std::function<void()>             deleteSelection;
 };
@@ -1010,9 +1022,11 @@ void drawEditMenu(const EditMenuCtx& c) {
         ? std::string("Redo ") + c.history.redoName() : "Redo";
     if (ImGui::MenuItem(undoLbl.c_str(), "Ctrl+Z", false, c.history.canUndo())) {
         c.history.undo(c.document); c.entitySel = -1; c.clampRoadSel(); c.clampSplineSel();
+        c.clampRiverSel();
     }
     if (ImGui::MenuItem(redoLbl.c_str(), "Ctrl+Y", false, c.history.canRedo())) {
         c.history.redo(c.document); c.entitySel = -1; c.clampRoadSel(); c.clampSplineSel();
+        c.clampRiverSel();
     }
     ImGui::Separator();
     const bool hasSel = c.entitySel >= 0 &&
@@ -1209,6 +1223,7 @@ int main(int argc, char** argv) {
         if (!loadCoreShaders(shaders)) return 1;
         Shader& lit    = shaders.lit;
         Shader& water  = shaders.water;
+        Shader& river  = shaders.river;
         Shader& sky    = shaders.sky;
         Shader& skybox = shaders.skybox;
 
@@ -1516,6 +1531,20 @@ int main(int argc, char** argv) {
         splines.groundAt = [&streamer](float x, float z) {
             return streamer.heightAt(x, z);
         };
+        // --- Brooks, rivers and canals (owned by RiverSystem) ----------------
+        // The same path-plus-rule deal again, with the one difference that makes
+        // it its own module: water has to know how HIGH it stands, so this reads
+        // the terrain AND writes it. It cuts its bed into the same sculpt field
+        // the road grades its corridor into -- see carveRivers below for when.
+        RiverSystem rivers;
+        // The BARE terrain and the edit field separately, never one combined
+        // height -- see the header comment on RiverSystem for why that split is
+        // the difference between a stable bed and one that jumps at a lip.
+        rivers.baseAt = [&streamer](float x, float z) {
+            return terrainPresent() ? terrainBaseHeight(streamer.settings(), x, z)
+                                    : 0.0f;
+        };
+        rivers.edits = &sculptWork;
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
         // Lock-on missiles for the flown glider. Owns its own targeting, flight,
@@ -1713,6 +1742,29 @@ int main(int argc, char** argv) {
                 // whose facades stand on the same freshly cut ground.
                 road.rebuildSideObjects();
                 road.rebuildCity();
+            }
+        };
+
+        // Cut every watercourse's bed into the terrain and republish it. Called
+        // when an EDIT ENDS -- a drag released, a slider let go, an undo stepped
+        // -- never per frame: the cut is a scan over every cell of every channel
+        // and the ground it left, which is a build-sized job, not a frame-sized
+        // one. The water surface itself follows the drag live (rivers.update),
+        // so nothing about that wait is visible.
+        auto carveRivers = [&] {
+            if (!rivers.carveDirty()) return;
+            glm::vec2 mn, mx;
+            if (rivers.carve(sculptWork, paintWork, mn, mx)) {
+                publishSculpt();
+                publishPaint();   // the bed material rides the same rebuild
+                streamer.editsChanged(mn, mx);
+                // Anything standing on the ground the channel just moved has to
+                // come with it -- guard rails and kerbs drape on the terrain.
+                road.rebuildSideObjects();
+                // ...and nothing may go on growing where the water now is.
+                veg.wet = rivers.wetDiscs(0.6f);
+                veg.grassDirty = true;
+                veg.treeCenter = glm::vec2(1e9f);   // force a tree re-plan
             }
         };
 
@@ -1923,6 +1975,45 @@ int main(int argc, char** argv) {
                 splinePtSel = -1;
         };
 
+        // --- Water editor state + undo ---------------------------------------
+        // The spline editor's five flags again. The one difference is what a
+        // commit means: pushing the undo step is also what re-cuts the bed, so
+        // every gesture ends in exactly one carve however many frames it took.
+        bool riverEditMode   = false;  // owns the LMB (mutually exclusive brushes)
+        bool showRivers      = false;  // the panel's open flag
+        int  riverSel        = -1;     // selected watercourse
+        int  riverPtSel      = -1;     // selected control point of it
+        bool riverDragging   = false;
+        bool riverDragHeight = false;  // Ctrl held on grab: the water level here
+        RiverSystem::Snapshot riverUndoBefore;
+        bool                  riverUndoOpen = false;
+        auto beginRiverEdit = [&]() {
+            if (riverUndoOpen) return; // already inside an interaction
+            riverUndoBefore = rivers.snapshot();
+            riverUndoOpen   = true;
+        };
+        auto commitRiverEdit = [&](const char* label) {
+            if (!riverUndoOpen) return;
+            riverUndoOpen = false;
+            auto cmd = std::make_unique<RiverShapeCmd>(rivers, riverUndoBefore,
+                                                       rivers.snapshot(), label);
+            if (!cmd->trivial()) history.push(std::move(cmd), document);
+            carveRivers();   // the gesture is over: the ground catches up
+        };
+        // An undo can drop the watercourse (or the point) the editor was looking
+        // at. It also puts different PATHS back, so the bed has to be re-cut --
+        // which is why this is called wherever undo and redo are, and why it is
+        // in EditMenuCtx.
+        auto clampRiverSel = [&]() {
+            if (riverSel >= static_cast<int>(rivers.paths.size())) {
+                riverSel = -1; riverPtSel = -1;
+            }
+            if (riverSel >= 0 &&
+                riverPtSel >= static_cast<int>(rivers.paths[riverSel].points.size()))
+                riverPtSel = -1;
+            carveRivers();
+        };
+
         // --- Scene UI overlay (2D screen-space HUD authored per scene) --------
         // Text/button/image elements drawn over the view while playing. Not in the
         // Document (like the road), so it carries its own selection + undo state:
@@ -1989,6 +2080,9 @@ int main(int argc, char** argv) {
         // load, an undo) re-derives the district without main having to remember
         // to. Set here rather than at construction because `materials` is the
         // Document's and only exists from this line on.
+        // Stones and reeds find-or-create their two shared materials in here.
+        rivers.materials = &materials;
+        rivers.touch();
         road.cityPalettes = [&materials](const std::vector<city::Biome>& bs) {
             return city::ensurePalettes(materials, bs);
         };
@@ -3519,6 +3613,20 @@ int main(int argc, char** argv) {
             roadSel = roadSel2 = -1;
             splines.clear();
             splineSel = splinePtSel = -1;
+            // Give the ground back BEFORE dropping the paths: release publishes
+            // the difference against what was cut, and a system with no paths
+            // left has nothing to work that out from.
+            {
+                glm::vec2 mn, mx;
+                if (rivers.release(sculptWork, paintWork, mn, mx)) {
+                    publishSculpt();
+                    publishPaint();
+                    streamer.editsChanged(mn, mx);
+                }
+                veg.wet.clear();
+            }
+            rivers.clear();
+            riverSel = riverPtSel = -1;
             veg.paintedBlades.clear();
             veg.paintedTrees.clear();
             veg.paintedFlowers.clear();
@@ -3862,10 +3970,17 @@ int main(int argc, char** argv) {
             std::ostringstream es;
             es.precision(7);
             for (const auto& [k, d] : sculptWork.deltas) {
+                // Minus the watercourse beds. A channel is derived geometry like
+                // the road's ribbon or the roadside city -- the file holds the
+                // path and the rule, and the bed is re-cut on load. Writing it
+                // here as well would save it twice, and the copy in the height
+                // field would be the ground the next re-solve then dug into.
+                const float own = d - rivers.mineAt(k);
+                if (std::fabs(own) < 1e-5f) continue;
                 const int ix = static_cast<int>(k >> 32);
                 const int iz = static_cast<int>(
                     static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
-                es << ix << ' ' << iz << ' ' << d << ' ';
+                es << ix << ' ' << iz << ' ' << own << ' ';
             }
             j["terrainEdits"] = es.str();
 
@@ -3874,7 +3989,10 @@ int main(int argc, char** argv) {
             j["terrainPaintCell"] = paintWork.cell;
             std::ostringstream ps;
             ps.precision(5);
-            for (const auto& [k, w] : paintWork.weights) {
+            for (const auto& [k, w0] : paintWork.weights) {
+                const glm::vec4 w = glm::max(w0 - rivers.minePaintAt(k),
+                                             glm::vec4(0.0f));
+                if (glm::all(glm::lessThan(w, glm::vec4(1e-4f)))) continue;
                 const int ix = static_cast<int>(k >> 32);
                 const int iz = static_cast<int>(
                     static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
@@ -3962,6 +4080,11 @@ int main(int argc, char** argv) {
             // is re-derived on load (see splines.update), exactly as the road's
             // ribbon is.
             splines.save(j["splines"]);
+
+            // Brooks, rivers and canals: paths + rules only, exactly like the
+            // fences. The bed they cut is NOT in "terrainEdits" above (see the
+            // subtraction there) -- it is re-cut on load.
+            rivers.save(j["rivers"]);
 
             // Scene 2D UI overlay (adds its own "uiOverlay" array to the settings).
             uiOverlay.save(j);
@@ -4067,6 +4190,11 @@ int main(int argc, char** argv) {
             // Restore terrain sculpt edits (empty for scenes saved before it
             // existed). Publish before the rebuild below so chunks bake them in.
             sculptWork.deltas.clear();
+            // The field is being replaced wholesale, so the record of what the
+            // watercourses had cut into the OLD one is meaningless. Dropping it
+            // without giving the ground back is exactly right here: that ground
+            // has gone with the rest of the field.
+            rivers.forget();
             sculptWork.cell = j.value("terrainEditCell", 1.0f);
             if (j.contains("terrainEdits") && j["terrainEdits"].is_string()) {
                 std::istringstream es(j["terrainEdits"].get<std::string>());
@@ -4107,6 +4235,25 @@ int main(int argc, char** argv) {
             else
                 splines.clear();
             splineSel = splinePtSel = -1;
+            // Water: absent in scenes saved before it existed, which load as none.
+            // The bed is not in the file, so cut it now -- before anything asks
+            // the terrain how high it is, which on this path is the road's
+            // re-loft immediately below.
+            if (j.contains("rivers") && j["rivers"].is_object())
+                rivers.load(j["rivers"]);
+            else
+                rivers.clear();
+            riverSel = riverPtSel = -1;
+            {
+                glm::vec2 mn, mx;
+                if (rivers.carve(sculptWork, paintWork, mn, mx)) {
+                    publishSculpt();
+                    publishPaint();
+                    streamer.editsChanged(mn, mx);
+                }
+                veg.wet = rivers.wetDiscs(0.6f);
+                veg.grassDirty = true;
+            }
             // Scene 2D UI overlay: clears itself first, so scenes without the key
             // (older ones, or a fresh scene) load with an empty overlay.
             uiOverlay.load(j);
@@ -5559,7 +5706,7 @@ int main(int argc, char** argv) {
         EditMenuCtx editMenu{
             history, document, entities, entitySel,
             prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
-            selectedIds, clampRoadSel, clampSplineSel,
+            selectedIds, clampRoadSel, clampSplineSel, clampRiverSel,
             duplicateSelection, deleteSelection,
         };
         // The View menu, as data (see PanelEntry). "Close all panels" walks this
@@ -5569,6 +5716,7 @@ int main(int argc, char** argv) {
             {"World",    "Terrain sculpt",     nullptr, &showSculpt},
             {"World",    "Terrain paint",      nullptr, &showPaint},
             {"World",    "Water",              nullptr, &showWater},
+            {"World",    "Rivers & brooks",    nullptr, &showRivers},
             {"World",    nullptr,              nullptr, nullptr},
             {"World",    "Sky & atmosphere",   nullptr, &showSky},
             {"World",    "Weather & audio",    nullptr, &showWeather},
@@ -6157,6 +6305,7 @@ int main(int argc, char** argv) {
                 // it clears first -- the bridge pair with it.
                 else if (roadEditMode && roadSel >= 0) { roadSel = roadSel2 = -1; }
                 else if (splineEditMode && splinePtSel >= 0) { splinePtSel = -1; }
+                else if (riverEditMode && riverPtSel >= 0) { riverPtSel = -1; }
                 else if (placeMode) { placeMode = false; }
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (entitySel >= 0) { entitySel = -1; }
@@ -6196,8 +6345,8 @@ int main(int argc, char** argv) {
                 const bool y = input.isKeyDown(GLFW_KEY_Y);
                 const bool wantUndo = ctrl && z && !shift;
                 const bool wantRedo = ctrl && ((z && shift) || y);
-                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); }
-                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); }
+                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); clampRiverSel(); }
+                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); clampRiverSel(); }
                 prevUndo = wantUndo;
                 prevRedo = wantRedo;
             } else {
@@ -6354,7 +6503,21 @@ int main(int argc, char** argv) {
                 blurSpeed01 = glm::clamp(glm::length(vel) / 40.0f, 0.0f, 1.2f);
                 const float halfH = svc ? glm::max(svc->chassisHalf.y, 0.1f) : 0.5f;
                 const float mass  = svc ? glm::max(svc->mass, 1.0f)         : 1200.0f;
-                const float depth = waterLevel - (cp.y - halfH);
+                // Running water counts as water. A brook sits ABOVE the lake's
+                // level, not below it, so what the chassis is in is whichever
+                // surface is higher -- and if it is the brook, it is also pushing.
+                float surfY = waterLevel;
+                glm::vec2 flowXZ(0.0f);
+                {
+                    float rSurf = 0.0f;
+                    glm::vec2 rFlow(0.0f);
+                    if (rivers.sample(glm::vec2(cp.x, cp.z), rSurf, nullptr, &rFlow) &&
+                        rSurf > surfY) {
+                        surfY  = rSurf;
+                        flowXZ = rFlow;
+                    }
+                }
+                const float depth = surfY - (cp.y - halfH);
                 const float sub   = (depth > 0.0f)
                                   ? glm::clamp(depth / (2.0f * halfH), 0.0f, 1.0f) : 0.0f;
                 // Resting submersion (the boat's float line, inspector-tunable). The
@@ -6427,6 +6590,14 @@ int main(int argc, char** argv) {
                         const glm::vec3 hv(vel.x, 0.0f, vel.z);
                         physics->applyImpulse(physCarId, -hv * (1.3f * mass * dt));
                     }
+                    // The current carries what floats in it. Scaled by how much
+                    // of the hull is actually in the water, so a car with its roof
+                    // out is nudged and a boat is taken.
+                    if (flowXZ != glm::vec2(0.0f)) {
+                        const glm::vec3 want(flowXZ.x, 0.0f, flowXZ.y);
+                        const glm::vec3 rel = want - glm::vec3(vel.x, 0.0f, vel.z);
+                        physics->applyImpulse(physCarId, rel * (1.6f * sub * mass * dt));
+                    }
                     carWaterSub = sub;
                     // Foam: a flat surface layer clinging to the waterline (a gentle
                     // ring even at rest, a trailing wake when moving) plus airborne
@@ -6458,7 +6629,7 @@ int main(int argc, char** argv) {
                             glm::vec3 off = sideV * (std::cos(ang) * hx.x * rad)
                                           + vdir  * (std::sin(ang) * hx.z * rad
                                                      - hspeed * 0.06f);
-                            p.pos = cp + off; p.pos.y = waterLevel + 0.03f;
+                            p.pos = cp + off; p.pos.y = surfY + 0.03f;
                             p.vel = sideV * ((rnd() - 0.5f) * 1.2f)
                                   - vdir * (moving ? hspeed * 0.15f : 0.0f);
                             p.vel.y = 0.0f;
@@ -6477,7 +6648,7 @@ int main(int argc, char** argv) {
                             SprayP p;
                             const float sway = (rnd() - 0.5f) * 2.0f;
                             p.pos = cp + vdir * (hx.z * 0.5f) + sideV * (sway * hx.x);
-                            p.pos.y = waterLevel + 0.05f;
+                            p.pos.y = surfY + 0.05f;
                             p.vel = glm::vec3(0.0f, glm::mix(2.0f, 4.5f, rnd()) * sHgt, 0.0f)
                                   + sideV * (sway * 3.0f)
                                   + vdir * (hspeed * 0.25f + rnd());
@@ -7025,6 +7196,24 @@ int main(int argc, char** argv) {
                 worldAudio.reset();
                 listenerHasPrev = false;
                 listenerVel     = glm::vec3(0.0f);
+            }
+
+            // Running water. Not gated on driving the way the rival engines are:
+            // these voices have Doppler switched off, so nothing about them can be
+            // pitched by a listener that jumps -- and on foot beside a brook is
+            // exactly where you want to hear one. Silent in the editor, like every
+            // other sound here.
+            if (playMode) {
+                if (!(gliderMode || vehicleMode))
+                    worldAudio.setListener(camera.position(), camera.front(),
+                                           camera.up());
+                std::vector<WorldAudio::AmbiencePoint> amb;
+                for (const RiverSystem::Audible& a :
+                     rivers.audible(camera.position(), WorldAudio::kAmbienceVoices))
+                    amb.push_back({a.pos, a.gain, a.pitch, a.range});
+                worldAudio.setAmbience(amb, mixSfx.gain());
+            } else {
+                worldAudio.setAmbience({}, 0.0f);
             }
 
             // --- Day/night: advance time, derive sun direction and lighting ---
@@ -9106,7 +9295,7 @@ int main(int argc, char** argv) {
                     // newcomer yields whenever one of them is on.
                     if (grassPaintMode || treePaintMode || flowerPaintMode ||
                         sculptMode || paintMode || scatterMode || roadEditMode ||
-                        meshPaintMode) {
+                        meshPaintMode || riverEditMode) {
                         splineEditMode = false;
                     } else {
                         const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
@@ -9130,6 +9319,40 @@ int main(int argc, char** argv) {
                         sc.endEdit   = commitSplineEdit;
                         sc.editOpen  = [&splineUndoOpen] { return splineUndoOpen; };
                         splineedit::handle(sc);
+                    }
+                }
+
+                // --- Water handles: the same gesture again, for brooks, rivers
+                //     and canals. The tool is in RiverEdit.cpp -- main only hands
+                //     it the viewport and the undo bracket, and the bracket is
+                //     what cuts the bed when the gesture ends.
+                if (riverEditMode) {
+                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
+                        sculptMode || paintMode || scatterMode || roadEditMode ||
+                        meshPaintMode || splineEditMode) {
+                        riverEditMode = false;
+                    } else {
+                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                        riveredit::Context rc{rivers, riverSel, riverPtSel,
+                                              riverDragging, riverDragHeight};
+                        rc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
+                        rc.origin      = rmin;
+                        rc.viewW       = static_cast<float>(viewW);
+                        rc.viewH       = static_cast<float>(viewH);
+                        rc.hovered     = viewportHovered;
+                        rc.mouseNdc    = viewportMouseNdc;
+                        rc.mousePos    = mp;
+                        rc.cameraPos   = camera.position();
+                        rc.cameraFront = camera.front();
+                        rc.cameraFov   = camera.fov();
+                        rc.pickTerrain = roadPickTerrain;
+                        rc.groundAt    = [&streamer](float x, float z) {
+                            return streamer.heightAt(x, z);
+                        };
+                        rc.beginEdit = beginRiverEdit;
+                        rc.endEdit   = commitRiverEdit;
+                        rc.editOpen  = [&riverUndoOpen] { return riverUndoOpen; };
+                        riveredit::handle(rc);
                     }
                 }
 
@@ -9501,7 +9724,7 @@ int main(int argc, char** argv) {
                     // the spline editor takes above.
                     if (grassPaintMode || treePaintMode || flowerPaintMode ||
                         sculptMode || paintMode || scatterMode || roadEditMode ||
-                        splineEditMode) {
+                        splineEditMode || riverEditMode) {
                         bankStroke();
                         meshPaintMode = false;
                     } else if (!mc) {
@@ -10073,7 +10296,7 @@ int main(int argc, char** argv) {
                     const bool toolOwnsClick =
                         grassPaintMode || treePaintMode || flowerPaintMode ||
                         roadEditMode || sculptMode || paintMode || scatterMode ||
-                        splineEditMode || meshPaintMode;
+                        splineEditMode || meshPaintMode || riverEditMode;
                     const ImGuiIO& io = ImGui::GetIO();
                     const bool selMod  = io.KeyCtrl; // Ctrl = modify-selection gesture
                     const bool canPick = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
@@ -10771,7 +10994,8 @@ int main(int argc, char** argv) {
             // hands it the state it may touch (see roadui::PanelState).
             roadui::drawPanel({showRoads, road, roadEditMode, roadSel, roadSel2, assetDb,
                 [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = splineEditMode = false; }, // don't fight over LMB
+                         paintMode = scatterMode = splineEditMode =
+                         riverEditMode = false; }, // don't fight over LMB
                 buildRoad, deleteRoadPoint,
                 roadPrefabCfg,
                 [&]{ const std::string d = prefabDir();
@@ -10787,7 +11011,8 @@ int main(int argc, char** argv) {
             splineui::drawPanel({showSplines, splines, splineEditMode, splineSel,
                 splinePtSel, materials,
                 [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = roadEditMode = false; },
+                         paintMode = scatterMode = roadEditMode =
+                         riverEditMode = false; },
                 [&](fitzel::AssetId id) {
                     // Jump to the material the author just pointed an element at,
                     // so giving it a texture is one click from the picker.
@@ -10796,6 +11021,16 @@ int main(int argc, char** argv) {
                     showMaterials = true;
                 },
                 beginSplineEdit, commitSplineEdit});
+
+            // Brooks, rivers and canals: the courses live in RiverSystem (saved +
+            // undoable on their own timeline), the panel only edits them. See
+            // RiverPanel.cpp.
+            riverui::drawPanel({showRivers, rivers, riverEditMode, riverSel,
+                riverPtSel,
+                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
+                         paintMode = scatterMode = roadEditMode =
+                         splineEditMode = false; },
+                beginRiverEdit, commitRiverEdit});
 
             // Roadside city: the biome rules live on the road (saved + undoable
             // with it), the panel only edits them. See CityPanel.cpp.
@@ -12999,6 +13234,13 @@ int main(int argc, char** argv) {
             // would be skipped for a frame.
             splines.update(materials);
 
+            // Water: re-solve whatever an edit dirtied, here for the same reason
+            // -- once per frame however many sliders moved. Only the SURFACE is
+            // rebuilt; the bed waits for the gesture to end (see carveRivers),
+            // which is why a drag shows the water moving live and the ground
+            // catching up when the mouse comes back up.
+            rivers.update();   // ...and before gpuMats, for the same reason
+
             // Handing them over is one function, in SceneSubmit.cpp, so that the
             // editor is a CALLER of it rather than the only place it exists --
             // see the header there for why that matters the moment anything else
@@ -13125,6 +13367,23 @@ int main(int argc, char** argv) {
                         glm::translate(glm::mat4(1.0f), -lm->center());
                     drawSideModel(lm, mm);
                 }
+
+            // --- Stones and reeds along the watercourses -----------------------
+            // Derived geometry, merged per material and already in world space --
+            // hence the identity model matrix, exactly like the roadside city and
+            // the fences below. Opaque and lit: a boulder is a boulder, and only
+            // the water itself needs a shader of its own.
+            for (const RiverSystem::Run& run : rivers.runs()) {
+                for (std::size_t i = 0; i < run.dress.size() &&
+                                        i < run.dressMeshes.size(); ++i) {
+                    const int mi = document.materialIndex(run.dress[i].material);
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) continue;
+                    renderer.submit(run.dressMeshes[i], gpuMats[mi], glm::mat4(1.0f),
+                                    true, isMirror(materials[mi]),
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
+                }
+            }
 
             // --- Splines (fences, walls, railway track) ------------------------
             // Derived geometry, merged per material and already in world space --
@@ -13513,8 +13772,109 @@ int main(int argc, char** argv) {
                 waterMesh.draw();
             }
 
+            // 5) Brooks, rivers and canals, into the same HDR buffer.
+            //
+            // After the lake, so a stream running into it lays over the surface
+            // it is joining. Blended with depth writes OFF: the surface is
+            // transparent, and one that wrote depth would punch a hole in the
+            // water behind it wherever a bend doubles back into view. Two-sided,
+            // because a fall's curtain is routinely seen from behind.
+            //
+            // Its own pass rather than a submission to the renderer, because a
+            // river is not a material on a mesh -- it is a shader with one
+            // channel's numbers in it, and there are as many sets of those as
+            // there are watercourses.
+            if (!rivers.runs().empty()) {
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                glDepthMask(GL_FALSE);
+                glDisable(GL_CULL_FACE);
+                river.bind();
+                river.setMat4("uViewProj", mainVP);
+                // Nothing to clip in the main pass: this plane passes everything,
+                // so a clip distance left enabled by an earlier pass cannot eat
+                // the water.
+                river.setVec4("uClipPlane", glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f));
+                river.setVec3("uCameraPos", camPos);
+                river.setVec3("uLightDir", light.direction);
+                river.setVec3("uLightColor", light.color);
+                river.setVec3("uAmbient", light.ambient);
+                river.setFloat("uTime", static_cast<float>(now));
+                river.setVec3("uFogColor", fog.color);
+                river.setVec3("uFogSunColor", fog.sunColor);
+                river.setFloat("uFogDensity", fog.density);
+                river.setFloat("uFogHeightFalloff", fog.heightFalloff);
+                river.setFloat("uFogHeight", fog.height);
+                river.setFloat("uExposure", exposure);
+                river.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
+                // The scene probe, for the reflection. Unit 2 is the renderer's
+                // own probe unit and it rebinds it every lit pass, so borrowing
+                // it here costs nothing and cannot alias a 2D sampler: this
+                // shader reads the cube and nothing else from it.
+                renderer.bindEnvProbe(Renderer::kEnvProbeUnit);
+                river.setInt("uEnvProbe", Renderer::kEnvProbeUnit);
+                river.setFloat("uEnvMaxLod", renderer.envProbeMaxLod());
+                for (std::size_t i = 0; i < rivers.runs().size() &&
+                                        i < rivers.paths.size(); ++i) {
+                    if (!rivers.paths[i].enabled) continue;
+                    const RiverSystem::Run& run = rivers.runs()[i];
+                    if (run.mesh.vertexCount() == 0) continue;
+                    const rivergen::Style& rst = rivers.paths[i].style;
+                    river.setVec3("uShallow", rst.shallow);
+                    river.setVec3("uDeep", rst.deep);
+                    river.setFloat("uClarity", rst.clarity);
+                    river.setFloat("uReflect", rst.reflect);
+                    river.setFloat("uRippleScale", rst.rippleScale);
+                    river.setFloat("uRipple", rst.ripple);
+                    river.setFloat("uFlowSpeed", rst.flowSpeed);
+                    river.setFloat("uFoamWidth", rst.foamWidth);
+                    river.setFloat("uSparkle", rst.sparkle);
+                    run.mesh.draw();
+                }
+                glEnable(GL_CULL_FACE);
+                glDepthMask(GL_TRUE);
+                glDisable(GL_BLEND);
+            }
+
             // --- Rain streaks (storm) + boat foam, into the HDR buffer --------
             rain.draw(gctx);
+            // Mist off the falls and rapids. The emitters come out of the
+            // PROFILE (rivergen::spray), so the spray is wherever the water is
+            // actually falling rather than wherever somebody remembered to place
+            // a puff -- and it moves with the course when the course is dragged.
+            //
+            // Near the camera only: a kilometre of gorge would otherwise fill the
+            // pool with particles nobody can see, and the pool is shared with the
+            // boat wake. Airborne droplets only; the pool's flat foam snaps to the
+            // LAKE's level, which is not where a brook is.
+            if (spray.ready() && !rivers.runs().empty()) {
+                std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+                auto rnd = [&] { return u01(sprayRng); };
+                for (std::size_t ri = 0; ri < rivers.runs().size() &&
+                                         ri < rivers.paths.size(); ++ri) {
+                    if (!rivers.paths[ri].enabled) continue;
+                    for (const rivergen::SprayPoint& sp : rivers.runs()[ri].spray) {
+                        const float d = glm::distance(camPos, sp.pos);
+                        if (d > 110.0f) continue;
+                        const float fade = 1.0f - glm::smoothstep(60.0f, 110.0f, d);
+                        // Poisson-ish: one draw per emitter per frame, so a
+                        // hundred of them cost a hundred comparisons and not a
+                        // hundred accumulators.
+                        if (rnd() > sp.strength * fade * 16.0f * dt) continue;
+                        const glm::vec3 side(sp.dir.z, 0.0f, -sp.dir.x);
+                        SprayP p;
+                        p.pos  = sp.pos + side * ((rnd() - 0.5f) * sp.width * 1.4f);
+                        p.pos.y += rnd() * 0.25f;
+                        p.vel  = sp.dir * (1.2f + rnd() * 2.8f) +
+                                 glm::vec3(0.0f, 1.0f + rnd() * 2.6f, 0.0f) +
+                                 side * ((rnd() - 0.5f) * 1.6f);
+                        p.life = p.life0 = 0.55f + rnd() * 0.85f;
+                        p.size = 0.5f + rnd() * 1.1f;
+                        p.flat = 0.0f;
+                        spray.add(p);
+                    }
+                }
+            }
             spray.update(dt, waterLevel); // age the pool, then draw what survived
             spray.draw(gctx);
             // Authored emitters. Stepped with the frame clock rather than the

@@ -25,6 +25,21 @@ namespace fitzel { class Camera; }
 // methods render into the caller's currently-bound framebuffer.
 class VegetationSystem {
 public:
+    // Ground nothing may grow on: discs (xy centre, z radius) covering the
+    // wetted channels, handed over by the host from RiverSystem::wetDiscs.
+    //
+    // A member rather than a parameter on all six placement calls, and set when
+    // the WATER is edited rather than per frame: it is a property of the world,
+    // the same way the water line and the snow line are. The tile workers take a
+    // copy of it with everything else, so it must stay small and flat -- which is
+    // exactly why it is a list of discs and not a pointer to the river system.
+    //
+    // The scalar water line above cannot do this job. It is one height for the
+    // whole world, and a brook is above it, not below it: the ground a channel
+    // was cut into is still well clear of the sea, so every filter that asks
+    // "am I above the water" says yes in the middle of a stream.
+    std::vector<glm::vec3> wet;
+
     VegetationSystem(fitzel::TerrainStreamer& streamer, fitzel::Camera& camera);
     ~VegetationSystem(); // frees the tree GL buffers
 
@@ -223,6 +238,7 @@ private:
     glm::vec2     m_grassCenter{1e9f}; // last flower-regrow center (camera follow)
     // Cached generator inputs; a change re-places the whole field (invalidate).
     float         m_gWater = 1e9f, m_gSnow = 1e9f, m_gRoadClear = -1.0f;
+    std::uint32_t m_gWetHash = 0;
     float         m_gDensity = -1.0f, m_gChaos = -1.0f, m_gHeight = -1.0f;
     float         m_gRadius = -1.0f;
     std::uint32_t m_gRoadHash = 0;

@@ -42,6 +42,10 @@ public:
     // several times a second, and a pool that runs dry simply drops the quietest
     // pass, which nobody can hear anyway.
     static constexpr int kPassVoices  = 6;
+    // Standing ambience: places that make a noise whether or not anything is
+    // happening at them. Four is enough for a valley with a stream, a fall and a
+    // weir in it; past that they smear into one hiss and cost voices for nothing.
+    static constexpr int kAmbienceVoices = 4;
 
     float rivalGain    = 0.55f; // rival engines, relative to the player's own
     float rivalRange   = 140.0f;// past this a rival is not worth a voice (m)
@@ -53,6 +57,7 @@ public:
     // building answers with its own size; this is the margin around it.
     float passReach    = 14.0f; // m
     float doppler      = 1.0f;  // 0 = off, 1 = physical, higher = exaggerated
+    float ambienceGain = 0.85f; // standing ambience, relative to everything else
 
     // Load the samples from `soundDir`. Re-loading is a no-op. A missing file
     // leaves that layer silent rather than failing -- a project without a swoosh
@@ -77,6 +82,30 @@ public:
                 int skipIdA, int skipIdB,   // the craft in the seats: not rivals
                 float masterGain);
 
+    // --- Standing ambience ---------------------------------------------------
+    // One place that makes a noise. Running water is what this exists for: a
+    // brook is not an event, it is somewhere you can hear from, and the whole
+    // difference between a stream that is there and one that is only drawn is
+    // that you hear it before you see it.
+    struct AmbiencePoint {
+        glm::vec3 pos{0.0f};
+        float     gain  = 1.0f;   // 0..1 at the source
+        float     pitch = 1.0f;   // a brook is higher than a river
+        float     range = 70.0f;  // metres it carries
+    };
+
+    // Park the voices on `points` (loudest first; anything past kAmbienceVoices
+    // is ignored). Voices are started once and thereafter only MOVED -- a loop
+    // restarted every time the camera drifts is a click, not a river. Call it
+    // every frame with an empty list to fade the lot out.
+    void setAmbience(const std::vector<AmbiencePoint>& points, float masterGain);
+
+    // Place the ears and do nothing else. For a host that wants only the
+    // standing ambience -- on foot, say -- where the rival and pass machinery
+    // has nothing to track and update() would be a scan for no reason.
+    void setListener(const glm::vec3& pos, const glm::vec3& fwd,
+                     const glm::vec3& up);
+
 private:
     // One rival engine voice plus what it is currently following.
     struct RivalVoice {
@@ -100,6 +129,16 @@ private:
     fitzel::Audio* m_audio = nullptr;
     RivalVoice     m_rivals[kRivalVoices];
     fitzel::Sound  m_pass[kPassVoices];
+    // A standing voice and where it currently stands. `started` is what keeps a
+    // loop from being restarted: once a voice is playing it stays playing, and
+    // going quiet is a volume of 0 rather than a stop.
+    struct AmbienceVoice {
+        fitzel::Sound sound;
+        glm::vec3     pos{0.0f};
+        float         gain = 0.0f;   // smoothed, so a voice fades rather than jumps
+        bool          started = false;
+    };
+    AmbienceVoice  m_ambience[kAmbienceVoices];
     // Keyed by entity id for rivals, and by ~(building index) for buildings, so
     // the two cannot collide in one map.
     std::unordered_map<int, Track> m_tracks;

@@ -78,6 +78,10 @@ set /a RAN=0
 REM --- Die Pruefungen: Exit-Code hat eine Bedeutung -------------------------
 call :run shadercheck
 call :run citycheck
+REM  rivercheck schreibt zwar Bilder, ist aber trotzdem eine Pruefung: die
+REM  Wasserlaeufe schneiden ins Hoehenfeld, und ein kriechendes Bett oder eine
+REM  nicht zurueckgegebene Rinne sieht man an keinem Bild.
+call :run rivercheck "%OUT%" "sandbox\assets\shaders"
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
 call :run softcheck
