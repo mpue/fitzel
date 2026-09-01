@@ -1,0 +1,1284 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fitzel Engine</title>
+<meta name="description" content="Fitzel is a game engine with an editor, written in C++20 against OpenGL 3.3 core. Build a world of streamed terrain and spline roads, press Play, export it as a standalone game.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0A0D0B">
+<link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MiA1OCI+PHJlY3Qgd2lkdGg9IjUyIiBoZWlnaHQ9IjU4IiBmaWxsPSIjMEEwRDBCIi8+PHBhdGggZD0iTTI2IDIgNDkgMTUuNXYyN0wyNiA1NiAzIDQyLjV2LTI3eiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM0ZDRjc0IiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMjAgNDRjMC0xMyAyLTIxIDgtMjciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNGQ0Y3NCIgc3Ryb2tlLXdpZHRoPSIzLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0zMyA0NmMxLTE0IDMtMjIgNi0zMyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjQTJBRkE0IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1kYXNoYXJyYXk9IjQgNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Fitzel Engine">
+<meta property="og:description" content="Fitzel is a game engine with an editor, written in C++20 against OpenGL 3.3 core. Build a world of streamed terrain and spline roads, press Play, export it as a standalone game.">
+<meta property="og:image" content="https://mpue.github.io/fitzel/img/hero.jpg">
+<meta property="og:url" content="https://mpue.github.io/fitzel/">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..900&family=Source+Serif+4:opsz,wght@8..60,300..600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#0A0D0B;
+  --ground-2:#0E120F;
+  --surface:#141A16;
+  --surface-2:#1A211C;
+  --line:#232C25;
+  --line-2:#2F3A32;
+  --ink:#E7ECE6;
+  --ink-2:#A2AFA4;
+  --ink-3:#6C7A6F;
+  --green:#3FCF74;
+  --green-2:#8FE3AC;
+  --green-dim:#1E5F38;
+  --amber:#E8913C;
+  --amber-dim:#5B3A18;
+  --pad:clamp(20px,5vw,52px);
+  --rail:172px;
+  --f-disp:"Archivo","Arial Narrow",Helvetica,sans-serif;
+  --f-body:"Source Serif 4",Georgia,"Times New Roman",serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,"Consolas",monospace;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+
+body{
+  margin:0;
+  background:var(--ground);
+  color:var(--ink);
+  font-family:var(--f-body);
+  font-size:17.5px;
+  line-height:1.62;
+  -webkit-font-smoothing:antialiased;
+  overflow-x:hidden;
+}
+
+html[data-lang="de"] .en{display:none !important}
+html[data-lang="en"] .de{display:none !important}
+
+/* ---------- type ---------- */
+h1,h2,h3,h4{
+  font-family:var(--f-disp);
+  font-variation-settings:"wdth" 118;
+  font-weight:800;
+  line-height:1.02;
+  text-wrap:balance;
+  margin:0;
+  letter-spacing:-.012em;
+}
+h2{font-size:clamp(30px,4.4vw,50px)}
+h3{font-size:clamp(20px,2.3vw,25px);font-variation-settings:"wdth" 112;letter-spacing:0}
+h4{font-size:15px;font-variation-settings:"wdth" 108;letter-spacing:.01em}
+p{margin:0}
+a{color:var(--green-2);text-decoration:none;border-bottom:1px solid rgba(63,207,116,.32)}
+a:hover{border-bottom-color:var(--green)}
+:focus-visible{outline:2px solid var(--green);outline-offset:3px;border-radius:2px}
+strong{font-weight:600;color:#F3F7F2}
+code,kbd{font-family:var(--f-mono);font-size:.85em;color:var(--green-2)}
+kbd{background:var(--surface-2);border:1px solid var(--line-2);border-radius:4px;padding:1px 6px;color:var(--ink)}
+
+.mono{font-family:var(--f-mono)}
+.eyebrow{
+  font-family:var(--f-mono);font-size:11px;font-weight:500;
+  letter-spacing:.17em;text-transform:uppercase;color:var(--green);
+}
+.lede{font-size:clamp(19px,2.1vw,22px);line-height:1.5;color:var(--ink)}
+.muted{color:var(--ink-2)}
+
+/* ---------- shell ---------- */
+.wrap{max-width:1180px;margin-inline:auto;padding-inline:var(--pad)}
+
+.topbar{
+  position:sticky;top:0;z-index:50;
+  background:rgba(10,13,11,.82);
+  backdrop-filter:blur(14px) saturate(1.2);
+  border-bottom:1px solid var(--line);
+}
+.topbar-in{
+  max-width:1180px;margin-inline:auto;padding:11px var(--pad);
+  display:flex;align-items:center;gap:20px;
+}
+.brand{display:flex;align-items:center;gap:10px;border:0}
+.brand svg{display:block}
+.brand span{
+  font-family:var(--f-disp);font-variation-settings:"wdth" 122;font-weight:900;
+  font-size:19px;letter-spacing:.03em;color:var(--ink);text-transform:uppercase;
+}
+.topnav{display:flex;gap:20px;margin-left:auto}
+.topnav a{
+  font-family:var(--f-mono);font-size:11.5px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--ink-2);border:0;
+}
+.topnav a:hover{color:var(--green)}
+.langsw{display:flex;border:1px solid var(--line-2);border-radius:999px;overflow:hidden}
+.langsw button{
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;
+  background:transparent;color:var(--ink-3);border:0;padding:5px 11px;cursor:pointer;
+}
+.langsw button[aria-pressed="true"]{background:var(--green);color:#06210F;font-weight:600}
+.ghlink{
+  display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line-2);
+  border-radius:999px;padding:5px 13px 5px 10px;color:var(--ink);
+  font-family:var(--f-mono);font-size:11.5px;letter-spacing:.06em;
+}
+.ghlink:hover{border-color:var(--green);color:var(--green)}
+
+/* ---------- hero ---------- */
+.hero{position:relative;isolation:isolate;overflow:hidden;border-bottom:1px solid var(--line)}
+.hero-img{
+  position:absolute;inset:0;width:100%;height:100%;object-fit:cover;
+  z-index:-2;filter:saturate(1.05);
+}
+.hero::after{
+  content:"";position:absolute;inset:0;z-index:-1;
+  background:
+    linear-gradient(to bottom,rgba(10,13,11,.62) 0%,rgba(10,13,11,.42) 38%,rgba(10,13,11,.93) 88%,var(--ground) 100%),
+    radial-gradient(120% 90% at 12% 60%,rgba(10,13,11,.86) 0%,rgba(10,13,11,0) 62%);
+}
+.hero-in{
+  max-width:1180px;margin-inline:auto;padding:clamp(78px,13vw,150px) var(--pad) clamp(46px,7vw,74px);
+}
+.hero h1{
+  font-size:clamp(58px,13.5vw,168px);
+  font-variation-settings:"wdth" 125;font-weight:900;
+  letter-spacing:-.028em;line-height:.86;margin:16px 0 0;
+  text-transform:uppercase;
+}
+.hero h1 .dot{color:var(--green)}
+.hero .lede{max-width:33ch;margin-top:22px;text-shadow:0 2px 22px rgba(0,0,0,.6)}
+.cta{display:flex;flex-wrap:wrap;gap:12px;margin-top:30px}
+.btn{
+  display:inline-flex;align-items:center;gap:9px;
+  font-family:var(--f-mono);font-size:12.5px;letter-spacing:.09em;text-transform:uppercase;
+  padding:13px 22px;border-radius:2px;border:1px solid transparent;
+}
+.btn-primary{background:var(--green);color:#052A12;font-weight:600}
+.btn-primary:hover{background:var(--green-2)}
+.btn-ghost{border-color:var(--line-2);color:var(--ink);background:rgba(10,13,11,.4)}
+.btn-ghost:hover{border-color:var(--green);color:var(--green)}
+.heroshot{
+  font-family:var(--f-mono);font-size:11px;color:var(--ink-3);
+  margin-top:38px;letter-spacing:.04em;
+}
+
+/* ---------- stat strip ---------- */
+.stats{
+  border-bottom:1px solid var(--line);
+  background:var(--ground-2);
+}
+.stats-in{
+  max-width:1180px;margin-inline:auto;padding-inline:var(--pad);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(146px,1fr));
+}
+.stat{padding:22px 0 24px;border-left:1px solid var(--line);padding-left:20px}
+.stat:first-child{border-left:0;padding-left:0}
+.stat b{
+  display:block;font-family:var(--f-disp);font-variation-settings:"wdth" 115;
+  font-weight:800;font-size:27px;color:var(--ink);letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums;
+}
+.stat span{
+  display:block;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.11em;
+  text-transform:uppercase;color:var(--ink-3);margin-top:6px;line-height:1.5;
+}
+
+/* ---------- sections with the rail ---------- */
+.sec{
+  display:grid;
+  grid-template-columns:var(--rail) minmax(0,1fr);
+  column-gap:44px;
+  padding:clamp(56px,8vw,96px) 0;
+  border-top:1px solid var(--line);
+}
+.sec:first-of-type{border-top:0}
+.sec > .rail{
+  grid-column:1;grid-row:1/-1;
+  border-right:1px dashed var(--line-2);
+  padding-right:22px;
+}
+.rail-in{position:sticky;top:78px;text-align:right}
+.rail-in .marker{
+  display:block;width:9px;height:9px;border-radius:50%;
+  background:var(--green);margin-left:auto;margin-bottom:14px;
+  box-shadow:0 0 0 4px rgba(63,207,116,.14);
+}
+.rail-in .num{
+  display:block;font-family:var(--f-mono);font-size:10.5px;color:var(--ink-3);
+  letter-spacing:.14em;margin-top:9px;
+}
+.sec > *:not(.rail){grid-column:2}
+.sec .stack{display:flex;flex-direction:column;gap:26px}
+.prose{max-width:64ch;display:flex;flex-direction:column;gap:18px;color:var(--ink-2)}
+.prose p strong{color:var(--ink)}
+
+/* ---------- figures ---------- */
+figure{margin:0}
+.shot{
+  border:1px solid var(--line-2);background:var(--surface);
+  border-radius:3px;overflow:hidden;
+}
+.shot img{display:block;width:100%;height:auto}
+.shot figcaption{
+  font-family:var(--f-mono);font-size:11.5px;line-height:1.6;color:var(--ink-3);
+  padding:11px 14px;border-top:1px solid var(--line);background:var(--ground-2);
+}
+.bleed{grid-column:2}
+
+/* ---------- cards ---------- */
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1px;background:var(--line)}
+.card{background:var(--surface);padding:26px 24px 28px;display:flex;flex-direction:column;gap:11px}
+.card .step{
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.16em;color:var(--green);
+}
+.card p{font-size:16px;color:var(--ink-2);line-height:1.55}
+
+/* feature list */
+.feats{display:grid;grid-template-columns:repeat(auto-fit,minmax(272px,1fr));gap:2px 34px;list-style:none;padding:0;margin:0}
+.feats li{
+  padding:14px 0;border-top:1px solid var(--line);
+  font-size:16px;color:var(--ink-2);line-height:1.5;
+}
+.feats li b{
+  display:block;font-family:var(--f-disp);font-variation-settings:"wdth" 110;
+  font-weight:700;font-size:14.5px;color:var(--ink);letter-spacing:.005em;margin-bottom:3px;
+}
+
+/* ---------- the steady-hand panel ---------- */
+.creed{
+  background:linear-gradient(180deg,rgba(30,95,56,.20),rgba(20,26,22,.55));
+  border:1px solid var(--green-dim);border-radius:3px;
+  padding:clamp(30px,5vw,54px);
+  display:flex;flex-direction:column;gap:26px;
+}
+.creed blockquote{
+  margin:0;font-family:var(--f-disp);font-variation-settings:"wdth" 115;font-weight:800;
+  font-size:clamp(25px,3.6vw,42px);line-height:1.08;letter-spacing:-.015em;
+  color:#F1F7EF;text-wrap:balance;max-width:19ch;
+}
+.creed blockquote em{color:var(--green);font-style:normal}
+.creedgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:22px 30px}
+.creedgrid div{font-size:15.5px;line-height:1.55;color:var(--ink-2)}
+.creedgrid b{display:block;color:var(--green-2);font-family:var(--f-mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px}
+
+/* ---------- amber (offline) ---------- */
+.amber .rail-in .marker{background:var(--amber);box-shadow:0 0 0 4px rgba(232,145,60,.15)}
+.amber .eyebrow{color:var(--amber)}
+.amber .feats li b{color:#F6E5D2}
+.pill{
+  display:inline-block;font-family:var(--f-mono);font-size:10.5px;letter-spacing:.13em;
+  text-transform:uppercase;border:1px solid var(--amber-dim);color:var(--amber);
+  padding:4px 10px;border-radius:999px;
+}
+
+/* ---------- weather instrument ---------- */
+.instrument{
+  border:1px solid var(--line-2);border-radius:3px;overflow:hidden;background:var(--surface);
+}
+.instrument canvas{display:block;width:100%;height:auto;background:#0b0f14}
+.dials{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:18px 28px;padding:18px 20px;border-top:1px solid var(--line);background:var(--ground-2)}
+.dial label{
+  display:flex;justify-content:space-between;gap:10px;
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-3);margin-bottom:9px;
+}
+.dial label b{color:var(--green);font-weight:500;font-variant-numeric:tabular-nums}
+input[type=range]{
+  -webkit-appearance:none;appearance:none;width:100%;height:22px;background:transparent;cursor:pointer;
+}
+input[type=range]::-webkit-slider-runnable-track{height:3px;background:var(--line-2);border-radius:2px}
+input[type=range]::-moz-range-track{height:3px;background:var(--line-2);border-radius:2px}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:var(--green);
+  margin-top:-7.5px;border:0;box-shadow:0 0 0 5px rgba(63,207,116,.12);
+}
+input[type=range]::-moz-range-thumb{
+  width:18px;height:18px;border-radius:50%;background:var(--green);border:0;
+  box-shadow:0 0 0 5px rgba(63,207,116,.12);
+}
+
+/* ---------- code / console ---------- */
+.code{
+  background:#0C110E;border:1px solid var(--line-2);border-radius:3px;
+  overflow-x:auto;
+}
+.code .bar{
+  display:flex;gap:9px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.09em;color:var(--ink-3);
+  background:var(--surface);
+}
+.code .bar i{width:8px;height:8px;border-radius:50%;background:var(--line-2);display:block}
+.code pre{
+  margin:0;padding:18px 20px;font-family:var(--f-mono);font-size:13px;line-height:1.72;
+  color:var(--ink-2);white-space:pre;
+}
+.code .c{color:var(--ink-3);font-style:italic}
+.code .k{color:var(--green)}
+.code .s{color:var(--amber)}
+.code .n{color:#9BC7E8}
+
+.checks{width:100%;border-collapse:collapse;font-size:15.5px}
+.checks th,.checks td{text-align:left;padding:12px 16px 12px 0;border-top:1px solid var(--line);vertical-align:top}
+.checks th{
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.13em;text-transform:uppercase;
+  color:var(--ink-3);font-weight:500;border-top:0;
+}
+.checks td:first-child{
+  font-family:var(--f-mono);font-size:13px;color:var(--green-2);white-space:nowrap;padding-right:26px;
+}
+.checks td:last-child{color:var(--ink-2);line-height:1.5}
+.tablewrap{overflow-x:auto}
+
+.stacktable{width:100%;border-collapse:collapse;font-size:15.5px}
+.stacktable td{padding:11px 16px 11px 0;border-top:1px solid var(--line);vertical-align:baseline}
+.stacktable td:first-child{
+  font-family:var(--f-mono);font-size:11px;letter-spacing:.11em;text-transform:uppercase;
+  color:var(--ink-3);white-space:nowrap;width:1%;padding-right:30px;
+}
+.stacktable td:last-child{color:var(--ink-2)}
+
+/* fog comparison */
+.compare{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:2px;background:var(--line)}
+.compare figure{background:var(--surface);padding:0}
+.compare img{display:block;width:100%;height:auto}
+.compare figcaption{
+  font-family:var(--f-mono);font-size:11.5px;line-height:1.55;color:var(--ink-3);
+  padding:11px 14px;
+}
+.compare .bad figcaption b{color:#E2705F}
+.compare .good figcaption b{color:var(--green)}
+.compare figcaption b{display:block;font-weight:500;letter-spacing:.09em;text-transform:uppercase;font-size:10.5px;margin-bottom:5px}
+
+/* ---------- footer ---------- */
+.foot{border-top:1px solid var(--line);background:var(--ground-2)}
+.foot-in{
+  max-width:1180px;margin-inline:auto;padding:clamp(52px,8vw,88px) var(--pad);
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:44px;
+}
+.foot h2{font-size:clamp(28px,3.6vw,42px)}
+.foot .clone{margin-top:24px}
+.foot small{display:block;font-family:var(--f-mono);font-size:11px;color:var(--ink-3);line-height:1.9;letter-spacing:.03em}
+.foot .links{display:flex;flex-direction:column;gap:9px;font-family:var(--f-mono);font-size:12.5px}
+.foot .links a{border:0;color:var(--ink-2)}
+.foot .links a:hover{color:var(--green)}
+
+/* ---------- responsive ---------- */
+@media (max-width:880px){
+  .sec{grid-template-columns:1fr;row-gap:22px}
+  .sec > .rail{grid-column:1;grid-row:auto;border-right:0;border-left:2px solid var(--green-dim);padding-right:0;padding-left:14px}
+  .rail-in{position:static;text-align:left}
+  .rail-in .marker{margin-left:0;margin-bottom:9px}
+  .sec > *:not(.rail){grid-column:1}
+  .bleed{grid-column:1;margin-inline:calc(-1 * var(--pad))}
+  .bleed .shot{border-inline:0;border-radius:0}
+  .stat{border-left:0;padding-left:0}
+  .topnav{display:none}
+}
+@media (max-width:560px){
+  body{font-size:16.5px}
+  .brand span{font-size:16px}
+}
+
+@media (prefers-reduced-motion:reduce){
+  *{animation-duration:.001ms !important;transition-duration:.001ms !important}
+}
+.reveal{opacity:0;transform:translateY(14px);transition:opacity .7s ease,transform .7s cubic-bezier(.2,.7,.3,1)}
+.reveal.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){.reveal{opacity:1;transform:none}}
+</style>
+<script>
+(function(){try{var l=localStorage.getItem("fitzel-lang");}catch(e){var l=null}
+if(l!=="de"&&l!=="en"){l=(navigator.language||"en").toLowerCase().indexOf("de")===0?"de":"en"}
+document.documentElement.setAttribute("data-lang",l);document.documentElement.setAttribute("lang",l);})();
+</script>
+</head>
+<body>
+
+
+<header class="topbar">
+  <div class="topbar-in">
+    <a class="brand" href="#top" aria-label="Fitzel">
+      <svg width="26" height="29" viewBox="0 0 52 58" aria-hidden="true">
+        <path d="M26 2 49 15.5v27L26 56 3 42.5v-27z" fill="none" stroke="#3FCF74" stroke-width="3"/>
+        <path d="M20 44c0-13 2-21 8-27" fill="none" stroke="#3FCF74" stroke-width="2.4" stroke-linecap="round"/>
+        <path d="M20 32c-5-1-8-5-8-10 5 0 9 3 10 8M21 24c-4-2-6-6-5-11 5 1 8 5 8 10" fill="#3FCF74" opacity=".55"/>
+        <path d="M33 46c1-14 3-22 6-33" fill="none" stroke="#A2AFA4" stroke-width="2.2" stroke-dasharray="4 5" stroke-linecap="round"/>
+      </svg>
+      <span>Fitzel</span>
+    </a>
+    <nav class="topnav">
+      <a href="#welt"><span class="de">Welt</span><span class="en">World</span></a>
+      <a href="#editor"><span class="de">Editor</span><span class="en">Editor</span></a>
+      <a href="#bild"><span class="de">Bild</span><span class="en">Picture</span></a>
+      <a href="#offline"><span class="de">Offline</span><span class="en">Offline</span></a>
+      <a href="#pruefen"><span class="de">Pr&#252;fen</span><span class="en">Checks</span></a>
+      <a href="#ausliefern"><span class="de">Ausliefern</span><span class="en">Shipping</span></a>
+    </nav>
+    <div class="langsw" role="group" aria-label="Sprache / Language">
+      <button type="button" data-setlang="de" aria-pressed="false">DE</button>
+      <button type="button" data-setlang="en" aria-pressed="false">EN</button>
+    </div>
+    <a class="ghlink" href="https://github.com/mpue/fitzel" target="_blank" rel="noopener">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.49-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.81.06 1.23.83 1.23.83.72 1.23 1.89.87 2.35.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      GitHub
+    </a>
+  </div>
+</header>
+
+<section class="hero" id="top">
+  <img class="hero-img" src="img/hero.jpg" alt="Ein Rennen durch eine generierte Stadt bei Sonnenuntergang, im Player">
+  <div class="hero-in">
+    <p class="eyebrow">C++20 &#183; OpenGL 3.3 core &#183; Windows / Linux / macOS</p>
+    <h1>Fitzel<span class="dot">.</span></h1>
+    <p class="lede de">Eine Game-Engine mit Editor f&#252;r alles, was sich <strong>schnell durch eine Landschaft bewegt</strong>. Welt bauen, Play dr&#252;cken, als eigenst&#228;ndiges Spiel exportieren.</p>
+    <p class="lede en">A game engine with an editor, pointed at things that <strong>move through a landscape at speed</strong>. Build the world, press Play, export it as a standalone game.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/mpue/fitzel" target="_blank" rel="noopener">
+        <span class="de">Quellcode auf GitHub</span><span class="en">Source on GitHub</span> &#8594;
+      </a>
+      <a class="btn btn-ghost" href="#welt">
+        <span class="de">Was drin steckt</span><span class="en">What is in it</span>
+      </a>
+    </div>
+    <p class="heroshot">
+      <span class="de">&#8593; Kein Konzeptbild: ein Rennen im exportierten Player, Stadt und Strecke prozedural.</span>
+      <span class="en">&#8593; Not a concept render: a race in the exported player, city and track generated.</span>
+    </p>
+  </div>
+</section>
+
+<div class="stats">
+  <div class="stats-in">
+    <div class="stat"><b><span class="de">87.700</span><span class="en">87,700</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
+    <div class="stat"><b>43</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
+    <div class="stat"><b>22</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
+    <div class="stat"><b>14</b><span class="de">Abh&#228;ngigkeiten &#8212; keine im Repo</span><span class="en">Dependencies &#8212; none vendored</span></div>
+    <div class="stat"><b>0</b><span class="de">systemweite Installationen</span><span class="en">System-wide installs</span></div>
+  </div>
+</div>
+
+<main class="wrap">
+
+  <!-- ============ &#220;BERBLICK ============ -->
+  <section class="sec reveal" id="ueberblick">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">&#220;berblick</p><p class="eyebrow en">Overview</p>
+      <span class="num">01 &#8212; 03</span>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Von leerer Szene bis zum Ordner, den jemand doppelklickt.</h2>
+      <h2 class="en">From an empty scene to a folder somebody double-clicks.</h2>
+
+      <div class="prose de">
+        <p class="lede">Fitzel ist kein Renderer-Demo und kein Framework, das erst ein Spiel drumherum braucht. Ein Rennspiel, ein Auto, ein Gleiter, ein HUD, Gegner und eine Bestenliste sind da &#8212; <strong>bevor</strong> die erste Zeile eigener Code geschrieben ist.</p>
+        <p>Geschrieben in modernem C++20 gegen OpenGL 3.3 core. Jede Abh&#228;ngigkeit wird beim Konfigurieren geholt, nichts wird systemweit installiert und nichts liegt kopiert im Repo. Der Editor ist C++, das Spielverhalten ist Lua &#8212; diese Trennung ist Absicht: ein kaputtes Skript darf niemals eine Editor-Sitzung mit sich rei&#223;en.</p>
+      </div>
+      <div class="prose en">
+        <p class="lede">Fitzel is not a renderer demo, and not a framework that still needs a game written around it. A race sim, a car, a glider, a HUD, opponents and a leaderboard are already there &#8212; <strong>before</strong> the first line of your own code.</p>
+        <p>Written in modern C++20 against OpenGL 3.3 core. Every dependency is fetched at configure time, nothing is installed system-wide and nothing is copied into the repo. The editor is C++, gameplay behaviour is Lua &#8212; deliberately so: a broken script must never be able to take an editing session with it.</p>
+      </div>
+
+      <div class="cards">
+        <div class="card">
+          <span class="step">01</span>
+          <h3 class="de">Bauen</h3><h3 class="en">Build</h3>
+          <p class="de">Terrain, Stra&#223;en, H&#228;user, Props, Licht, Skripte. Gestreamtes Endlos-Terrain, Stra&#223;en als Splines, Stadt aus Biom-Regeln.</p>
+          <p class="en">Terrain, roads, buildings, props, lights, scripts. Streamed infinite terrain, roads as splines, districts from biome rules.</p>
+        </div>
+        <div class="card">
+          <span class="step">02</span>
+          <h3 class="de">Play</h3><h3 class="en">Play</h3>
+          <p class="de">Frische Lua-VM bei jedem Start. Szene und Materialbibliothek werden vorher kopiert und beim Stoppen zur&#252;ckgestellt &#8212; Play kann die Arbeit nicht kaputt machen.</p>
+          <p class="en">A fresh Lua VM every time. Scene and material library are copied first and restored on stop &#8212; Play cannot damage the work.</p>
+        </div>
+        <div class="card">
+          <span class="step">03</span>
+          <h3 class="de">Exportieren</h3><h3 class="en">Export</h3>
+          <p class="de">Ein Ordner, der l&#228;uft: <code>player.exe</code> unter dem eigenen Namen, eigenes Icon im Exe, verschl&#252;sseltes <code>game.fpak</code>, fertiger Installer.</p>
+          <p class="en">A folder that runs: <code>player.exe</code> under the game's own name, its icon written into the exe, an encrypted <code>game.fpak</code>, and an installer.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ WELT ============ -->
+  <section class="sec reveal" id="welt">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Welt</p><p class="eyebrow en">World</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Die Stra&#223;e wird gezogen. Alles andere folgt ihr.</h2>
+      <h2 class="en">You draw the road. Everything else follows it.</h2>
+
+      <div class="prose de">
+        <p>Stra&#223;en sind Splines &#252;ber gestreamtem prozeduralem Terrain. Br&#252;cken, Tunnel, Loopings, Bordsteine und Leitplanken werden aus diesen Splines <strong>abgeleitet</strong>, nicht von Hand gesetzt &#8212; und ein Bezirks-Generator f&#252;llt die Seiten mit H&#228;usern, die der Fahrbahn aus dem Weg gehen. Wer die Kurve verschiebt, verschiebt die Leitplanke mit.</p>
+        <p>Das Terrain darunter ist unendlich und nahtlos: Chunks entstehen aus Weltraum-Noise, also passen Nachbarn ohne Naht zusammen. Erzeugt wird auf einem Worker-Pool, hochgeladen werden ein paar fertige Chunks pro Frame &#8212; eine Chunk-Grenze zu &#252;berqueren h&#228;lt das Bild nie an.</p>
+      </div>
+      <div class="prose en">
+        <p>Roads are splines laid across streamed procedural terrain. Bridges, tunnels, loops, kerbs and guard rails are <strong>derived</strong> from those splines rather than placed by hand &#8212; and a district generator fills the sides with buildings that keep out of the road. Move the curve and the guard rail moves with it.</p>
+        <p>The terrain underneath is infinite and seamless: chunks are generated from world-space noise, so neighbours tile without a seam. Generation runs on a worker-thread pool and the render thread uploads a few finished chunks per frame &#8212; crossing a chunk border never stalls the frame.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/landscape.jpg" alt="Eine Felswand unter Zirruswolken, die Terrainschichten nach H&#246;he und Neigung gemischt" loading="lazy">
+        <figcaption class="de">Vier triplanar projizierte PBR-Sets (Sand / Ger&#246;ll / Fels / Schnee), gemischt nach H&#246;he und Neigung, jedes mit eigener Normal Map. Der Dunst &#252;ber den K&#228;mmen ist die aerial perspective im <code>lit.frag</code>, die Sonne eine HDR-Radiance &#8212; deshalb bl&#252;ht sie, statt zu clippen.</figcaption>
+        <figcaption class="en">Four triplanar PBR sets (sand / rocky ground / cliff / snow) blended by height and slope, each with its own normal map. The haze over the far ridges is the aerial perspective in <code>lit.frag</code>; the sun is an HDR radiance, which is why it blooms instead of clipping.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Skulptieren statt neu w&#252;rfeln</b><b class="en">Sculpt, don't reroll</b>
+          <span class="de">Anheben, senken, gl&#228;tten, planieren, thermische Erosion, Landform-Stempel (Kuppe, Kegel, Mesa, Krater, Grat, Gebirgszug) und T&#228;ler ziehen &#8212; als d&#252;nne Weltraum-Ebene &#252;ber dem Noise.</span>
+          <span class="en">Raise, lower, smooth, flatten, thermal erosion, landform stamps (dome, cone, mesa, crater, ridge, mountain range) and dragged valleys &#8212; a sparse world-space layer on top of the noise.</span></li>
+        <li><b class="de">Presets und Regler mit Preview</b><b class="en">Presets and knobs with a preview</b>
+          <span class="de">H&#252;gelland, Alpin, Canyon, Mesa, Archipel, Fjorde &#8212; dazu Talschnitt, Gipfelsch&#228;rfe, Relief&#252;berh&#246;hung, mit Live-Vorschau beim Loslassen des Reglers.</span>
+          <span class="en">Rolling hills, alpine, canyon, mesa, archipelago, fjords &#8212; plus valley carving, peak sharpness and relief exaggeration, with a live preview that rebuilds on slider release.</span></li>
+        <li><b class="de">Pinsel auf dem Boden</b><b class="en">A brush on the ground</b>
+          <span class="de">Terrain-Layer von Hand malen, als Vertex-Gewichte gespeichert; sie &#252;berschreiben die H&#246;hen/Neigungs-Regel genau dort, wo gemalt wurde.</span>
+          <span class="en">Hand-paint the terrain layers, stored as per-vertex weights that override the height/slope rule exactly where painted.</span></li>
+        <li><b class="de">Fl&#252;sse, B&#228;che, Wasserf&#228;lle</b><b class="en">Rivers, streams, waterfalls</b>
+          <span class="de">Aus Splines abgeleitet &#8212; das System entscheidet die H&#246;he, gel&#246;st gegen den Boden; F&#228;lle sind eine Wurfparabel.</span>
+          <span class="en">Derived from splines &#8212; the system decides the height, solved against the ground; falls are a projectile arc.</span></li>
+        <li><b class="de">Z&#228;une, Mauern, Gleise</b><b class="en">Fences, walls, rails</b>
+          <span class="de">Dieselbe Kurve, andere Regel: abgeleitete Spline-Geometrie ohne Build-Schritt.</span>
+          <span class="en">Same curve, a different rule: derived spline geometry with no build step.</span></li>
+        <li><b class="de">Vegetation auf der GPU</b><b class="en">Vegetation on the GPU</b>
+          <span class="de">Gras und B&#228;ume als Tile-gestreutes Instancing, das mit dem Streaming-Radius mitwandert.</span>
+          <span class="en">Grass and trees as tile-streamed instanced scatter that follows the streaming radius.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ EDITOR / CREED ============ -->
+  <section class="sec reveal" id="editor">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Editor</p><p class="eyebrow en">Editor</p>
+    </div></div>
+
+    <div class="creed">
+      <blockquote class="de">Nichts Wichtiges darf eine <em>ruhige Hand</em> verlangen.</blockquote>
+      <blockquote class="en">Nothing important may require a <em>steady hand</em>.</blockquote>
+
+      <div class="prose de" style="max-width:62ch">
+        <p>Diese Regel schl&#228;gt Konvention. Jeder Wert, den man ziehen kann, l&#228;sst sich auch anklicken und tippen. Ein Klick, der ein bisschen verrutscht, bleibt ein Klick und wird nicht zum Beginn eines Ziehens. Panels bewegen sich nur an ihrer Titelleiste. Das Doppelklick-Fenster ist zeitlich und r&#228;umlich gro&#223;z&#252;giger als &#252;blich.</p>
+        <p><strong>Nichts davon ist ein Modus.</strong> Es gibt nichts einzuschalten, keinen zweiten Arbeitsablauf zu lernen und keine Gewohnheit aus einem anderen Editor, die pl&#246;tzlich nicht mehr funktioniert &#8212; die Schwellwerte um die ganz normalen Widgets sind schlicht weiter gesetzt. Und wo ein Werkzeug nur um pr&#228;zises Ziehen herum baubar w&#228;re, bekommt es stattdessen einen getippten oder gerasteten Weg. Wenn diese Regel und Konvention sich streiten, gewinnt die Regel.</p>
+      </div>
+      <div class="prose en" style="max-width:62ch">
+        <p>This rule outranks convention. Every value that can be dragged can also be clicked and typed. A click that drifts a little is still a click rather than the start of a drag. Panels move only by their title bar. The double-click window is wider and more forgiving in position than standard.</p>
+        <p><strong>None of it is a mode.</strong> There is nothing to switch on, no second workflow to learn and no habit from another editor that stops working &#8212; the thresholds around the ordinary widgets are simply set wider. And where a tool could only be built around precise dragging, it gets a typed or stepped path instead. When that constraint and convention disagree, the constraint wins.</p>
+      </div>
+
+      <div class="creedgrid">
+        <div><b class="de">Ziehen ist optional</b><b class="en">Dragging is optional</b>
+          <span class="de">Jeder Regler ist auch ein Eingabefeld.</span><span class="en">Every slider is also a text field.</span></div>
+        <div><b class="de">Klick bleibt Klick</b><b class="en">A click stays a click</b>
+          <span class="de">Wackeln unter der Schwelle l&#246;st kein Ziehen aus.</span><span class="en">Wobble under the threshold never starts a drag.</span></div>
+        <div><b class="de">Kein Modus</b><b class="en">No mode</b>
+          <span class="de">Nichts einzuschalten, nichts zu lernen.</span><span class="en">Nothing to switch on, nothing to learn.</span></div>
+        <div><b class="de">Play kann nichts kaputt machen</b><b class="en">Play cannot break anything</b>
+          <span class="de">Szene und Materialien werden kopiert und zur&#252;ckgestellt.</span><span class="en">Scene and materials are copied and restored.</span></div>
+      </div>
+    </div>
+
+    <figure class="shot bleed reveal" style="margin-top:34px">
+      <img src="img/editor.jpg" alt="Der Editor: Hierarchie, Inspector, Asset-Browser und das Frame-Zeit-Panel" loading="lazy">
+      <figcaption class="de">Hierarchie, Inspector, Asset-Browser, Materialbibliothek und ein Frame-Zeit-Panel, das nicht nur FPS zeigt, sondern wohin die Zeit geht &#8212; Shadows, Present, Draw-Aufrufe, sichtbar gegen gecullt.</figcaption>
+      <figcaption class="en">Hierarchy, inspector, asset browser, material library &#8212; and a frame-time panel that reports not just FPS but where the time went: shadows, present, draw calls, visible versus culled.</figcaption>
+    </figure>
+  </section>
+
+  <!-- ============ BILD / RENDERING ============ -->
+  <section class="sec reveal" id="bild">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Bild</p><p class="eyebrow en">Picture</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Ein Vorw&#228;rts-Renderer, der aussieht wie ein gedrehter Film.</h2>
+      <h2 class="en">A forward renderer that reads like footage.</h2>
+
+      <div class="prose de">
+        <p>Die Szene rendert linear in einen HDR-Puffer. Ein Composite-Pass legt <strong>Bloom</strong>, <strong>God Rays</strong> (radialer March von der Bildschirmposition der Sonne) und eine analytische <strong>Lens Flare</strong> darauf, dann <strong>ACES</strong>-Tonemapping, Belichtung und Gamma. Autorenfarben werden bei Benutzung linearisiert, die Sonne ist eine echte HDR-Radiance &#8212; deshalb liest sie sich als Sonne.</p>
+      </div>
+      <div class="prose en">
+        <p>The scene renders linear into an HDR buffer. A composite pass adds <strong>bloom</strong>, <strong>god rays</strong> (a radial march from the sun's screen position) and an analytic <strong>lens flare</strong>, then applies <strong>ACES</strong> filmic tonemapping, exposure and gamma. Authored colours are linearised on use and the sun is a real HDR radiance &#8212; which is why it reads as a sun.</p>
+      </div>
+
+      <ul class="feats">
+        <li><b>Cascaded Shadow Maps</b>
+          <span class="de">Vier Tiefenbereiche in ein 2048&#178;-Depth-Array, Kaskadenwahl nach View-Tiefe, 3&#215;3 PCF mit neigungsskaliertem Bias.</span>
+          <span class="en">Four depth ranges into a 2048&#178; depth array, cascade picked by view depth, 3&#215;3 PCF with slope-scaled bias.</span></li>
+        <li><b class="de">Wasser mit Spiegelung und Brechung</b><b class="en">Water: reflection and refraction</b>
+          <span class="de">Zwei Offscreen-P&#228;sse mit Clip-Plane, Schlick-Fresnel, tiefenget&#246;nte Brechung, Gerstner-Wellen, Schaum am Ufer.</span>
+          <span class="en">Two off-screen passes with a clip plane, Schlick Fresnel, depth-tinted refraction, Gerstner waves and foam at the shore.</span></li>
+        <li><b class="de">Volumetrische Wolken</b><b class="en">Volumetric clouds</b>
+          <span class="de">Raymarch durch eine Wolkenplatte mit 3D-Value-Noise, Licht-March zur Sonne f&#252;r Selbstverschattung, Henyey-Greenstein-Phase f&#252;r den Silberrand.</span>
+          <span class="en">A raymarched cloud slab with 3D value-noise density, a secondary light march to the sun for self-shadowing and a Henyey-Greenstein phase for the silver lining.</span></li>
+        <li><b class="de">Ambient in drei Stufen</b><b class="en">Ambient in three tiers</b>
+          <span class="de">Gebackenes Probe-Gitter, sonst HDRI-Irradiance-Faltung, sonst eine flache Farbe. Das Spezifischste gewinnt.</span>
+          <span class="en">A baked probe grid, else an HDRI irradiance convolution, else one flat colour. Most specific wins.</span></li>
+        <li><b>SSAO</b>
+          <span class="de">Halbaufgel&#246;st aus der Tiefe rekonstruiert &#8212; f&#228;ngt die feinen Falten, f&#252;r die das Probe-Gitter zu grob ist.</span>
+          <span class="en">Half-res, reconstructed from depth &#8212; it catches the fine creases the probe grid is too coarse for.</span></li>
+        <li><b class="de">Frustum-Culling pro Pass</b><b class="en">Per-pass frustum culling</b>
+          <span class="de">Jeder Pass zieht seine eigenen sechs Ebenen (Gribb-Hartmann); das Panel meldet sichtbar gegen gecullt.</span>
+          <span class="en">Each pass extracts its own six planes (Gribb-Hartmann); the panel reports visible versus culled.</span></li>
+      </ul>
+
+      <h3 class="de" style="margin-top:14px">Ein Wert, an dem alles h&#228;ngt</h3>
+      <h3 class="en" style="margin-top:14px">One value everything hangs from</h3>
+      <div class="prose de">
+        <p><code>weather</code> l&#228;uft von 0 (klar) bis 1 (Sturm) und zieht alles mit: Wolkendeckung, -dichte, -h&#246;he und Wind, Sonnen- und Ambient-D&#228;mpfung, Nebeldichte, Gerstner-Wellenh&#246;he, Blitze, Regen &#8212; und die Audio-Schichten, deren Lautst&#228;rken sich &#252;berblenden, mit einem Donner-One-Shot auf jedem Blitz. Zieh unten am Regler; die Skizze rechnet dieselbe Idee im Browser nach.</p>
+      </div>
+      <div class="prose en">
+        <p><code>weather</code> runs from 0 (clear) to 1 (storm) and ties everything together: cloud coverage, density, altitude and wind, sun and ambient dimming, fog density, Gerstner wave height, lightning, rain &#8212; and the audio layers, whose volumes cross-fade, with a thunder one-shot on every flash. Drag the slider below; the sketch runs the same idea in the browser.</p>
+      </div>
+
+      <div class="instrument">
+        <canvas id="wx" width="1180" height="470" role="img" aria-label="Interaktive Skizze: ein Wetter- und Tageszeit-Wert steuert Himmel, Wolken, Nebel, Wellen und Regen"></canvas>
+        <div class="dials">
+          <div class="dial">
+            <label for="wxw"><span><span class="de">Wetter</span><span class="en">Weather</span></span><b id="wxwv">0.20</b></label>
+            <input id="wxw" type="range" min="0" max="1" step="0.01" value="0.2">
+          </div>
+          <div class="dial">
+            <label for="wxt"><span><span class="de">Tageszeit</span><span class="en">Time of day</span></span><b id="wxtv">17:40</b></label>
+            <input id="wxt" type="range" min="0" max="24" step="0.05" value="17.67">
+          </div>
+        </div>
+      </div>
+      <p class="heroshot" style="margin-top:-6px">
+        <span class="de">Eine Skizze im Browser, nicht die Engine &#8212; aber genau die Kopplung, die im Editor an einem Regler h&#228;ngt.</span>
+        <span class="en">A browser sketch, not the engine &#8212; but exactly the coupling that hangs off one slider in the editor.</span>
+      </p>
+
+      <h3 class="de" style="margin-top:14px">Volumetrischer Nebel: der, der eine Form hat</h3>
+      <h3 class="en" style="margin-top:14px">Volumetric fog: the kind that has a shape</h3>
+      <div class="prose de">
+        <p>H&#246;hennebel ist eine geschlossene Formel: billig, global, ohne Struktur &#8212; alles in gleicher Entfernung bekommt gleich viel, nichts kann nebliger sein als sein Nachbar, und die Sonne l&#228;sst sich auf dem Weg hinein nicht verdecken. Volumetrischer Nebel ist stattdessen eine <strong>Kiste</strong> aus teilnehmendem Medium, von vorn nach hinten gegen die Szenentiefe gemarcht, mit Dichte aus einem animierten 3D-Noise-Feld und der Sonne durch dieselben Kaskaden gesampelt, die auch die Oberfl&#228;chen benutzen. Das kauft zwei Dinge, die die Formel nie haben kann: Struktur und Lichtsch&#228;chte.</p>
+        <p>Volumen sind Dinge, die man <em>platziert</em> &#8212; eine Komponente auf einer beliebigen Entity, mit dem Gizmo skaliert. Sie akkumulieren von hinten nach vorn in einen Puffer, damit zwei &#252;berlappende B&#228;nke wie ein K&#246;rper Luft aussehen und nicht wie das zuletzt gezeichnete.</p>
+      </div>
+      <div class="prose en">
+        <p>Height fog is a closed form: cheap, global, and with no shape &#8212; everything at the same distance gets the same amount, nothing can be foggier than its neighbour, and the sun cannot be blocked on the way in. Volumetric fog is instead a <strong>box</strong> of participating medium, marched front to back against the scene depth, with its density from an animated 3D noise field and the sun sampled through the same cascades the surfaces use. That buys two things the closed form never can: structure and shafts.</p>
+        <p>Volumes are things you <em>place</em> &#8212; a component on any entity, scaled with the gizmo. They accumulate back to front into one buffer, so two overlapping banks read as one body of air rather than as whichever was drawn last.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/fogeditor.jpg" alt="Bodennebel &#252;ber dem Terrain bei Sonnenuntergang" loading="lazy">
+        <figcaption class="de">Bodennebel &#252;ber dem Terrain, im Editor platziert und mit dem Gizmo skaliert.</figcaption>
+        <figcaption class="en">Ground mist lying over the terrain, placed in the editor and scaled with the gizmo.</figcaption>
+      </figure>
+
+      <div class="prose de">
+        <p>Zwei Regler sind nicht das Offensichtliche. <strong>Vertikale Detailsch&#228;rfe</strong> staucht den Noise-Lookup in der H&#246;he: das Feld ist in Weltmetern adressiert und isotrop, also ist ein Merkmal hundert Meter gro&#223; auf <em>jeder</em> Achse &#8212; eine vierzig Meter dicke Bodenschicht spannt seitlich zwei Dutzend Merkmale und vertikal kein halbes, und liest sich als flaches, nach oben gezogenes Muster. <strong>H&#246;henabfall</strong> hebt die Deckungs-<em>Schwelle</em> mit der H&#246;he an, statt die Dichte zu skalieren: skaliert w&#228;re der Deckel eine analytische Fl&#228;che, identisch &#252;ber Bank und Loch; als Schwelle ist er eine Kontur des Noise &#8212; ausgefranst, und &#252;ber einer Bank h&#246;her als &#252;ber einem Loch.</p>
+      </div>
+      <div class="prose en">
+        <p>Two knobs are not the obvious thing. <strong>Vertical detail</strong> squashes the noise lookup vertically: the field is addressed in world metres and is isotropic, so one feature is a hundred metres across on <em>every</em> axis &#8212; a forty-metre ground layer then spans two dozen features sideways and less than half a feature top to bottom, and reads as a flat pattern pulled upward. <strong>Height falloff</strong> raises the coverage <em>threshold</em> with height instead of scaling the density down: scaled, the lid of the layer is an analytic surface, identical over a bank and over a hole; as a threshold it is a contour of the noise &#8212; ragged, and higher over a bank than over a hole.</p>
+      </div>
+
+      <div class="compare reveal">
+        <figure class="bad">
+          <img src="img/slicebad.jpg" alt="Gestreifte Schicht des gebackenen Noise" loading="lazy">
+          <figcaption><b class="de">Vorher &#8212; der Schnitt</b><b class="en">Before &#8212; the slice</b>
+            <span class="de">Ein 2D-Feld, entlang einer Achse extrudiert.</span>
+            <span class="en">A 2D field, extruded along one axis.</span></figcaption>
+        </figure>
+        <figure class="bad">
+          <img src="img/fogbad.jpg" alt="Nebel in langen parallelen Streifen" loading="lazy">
+          <figcaption><b class="de">Vorher &#8212; der Nebel</b><b class="en">Before &#8212; the fog</b>
+            <span class="de">Lange parallele Streifen statt B&#228;nke.</span>
+            <span class="en">Long parallel streaks instead of banks.</span></figcaption>
+        </figure>
+        <figure class="good">
+          <img src="img/sliceok.jpg" alt="Derselbe Schnitt, richtig dreidimensional" loading="lazy">
+          <figcaption><b class="de">Nachher &#8212; der Schnitt</b><b class="en">After &#8212; the slice</b>
+            <span class="de">Derselbe Schnitt, wirklich dreidimensional.</span>
+            <span class="en">The same slice, properly three-dimensional.</span></figcaption>
+        </figure>
+        <figure class="good">
+          <img src="img/fogok.jpg" alt="Nebel in aufget&#252;rmten B&#228;nken" loading="lazy">
+          <figcaption><b class="de">Nachher &#8212; der Nebel</b><b class="en">After &#8212; the fog</b>
+            <span class="de">B&#228;nke, Schwaden, L&#246;cher, die durchziehen.</span>
+            <span class="en">Banks, wisps and holes drifting through.</span></figcaption>
+        </figure>
+      </div>
+
+      <div class="prose de">
+        <p>Am Shader stimmte alles: jedes Band, jede Oktave und das Worley-Gitter teilen sich einen Zellen-Hash &#8212; und dieser Hash (FNV-1a ohne Finalizer) lawinet <em>nach oben</em>, sodass die zuletzt eingemischte Koordinate nie die unteren Bits erreicht, die <code>hashUnit</code> liest. Das 64&#179;-Volumen war ein extrudiertes 2D-Feld. Ein horizontaler Schnitt hat es in einem Blick gesagt &#8212; herausgeschrieben von einem Werkzeug, das nichts pr&#252;ft, sondern nur zeigt.</p>
+      </div>
+      <div class="prose en">
+        <p>From the shader's side nothing disagreed: every band, every octave and the worley lattice share one cell hash &#8212; and that hash (FNV-1a with no finalizer) avalanches <em>upward</em>, so whichever coordinate is mixed last never reaches the low bits <code>hashUnit</code> reads. The 64&#179; volume was a 2D field extruded along one axis. A horizontal slice said so in one look &#8212; written out by a tool that tests nothing and only shows.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ OFFLINE ============ -->
+  <section class="sec reveal amber" id="offline">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Offline</p><p class="eyebrow en">Offline</p>
+    </div></div>
+
+    <div class="stack">
+      <span class="pill de">Nicht in Echtzeit &#8212; und nicht daf&#252;r gedacht</span>
+      <span class="pill en">Not real-time, and not meant to be</span>
+      <h2 class="de">F&#252;r das Bild, das man jemandem zeigt.</h2>
+      <h2 class="en">For the picture you show somebody.</h2>
+
+      <div class="prose de">
+        <p>Der Rasterpfad kauft seine Bildrate mit N&#228;herungen, die bei Tempo unsichtbar und im stehenden Bild offensichtlich sind: Spiegelungen aus einem 256-Pixel-Cube von vor ein paar Frames, Ambient als eine flache Farbe, und <strong>nichts springt</strong> &#8212; ein rotes Auto wirft kein Rot auf grauen Asphalt. Ein Screenshot erbt jede einzelne davon, und eine Store-Seite wird minutenlang angeschaut.</p>
+        <p>Also: <em>View &#8250; Presentation &#8250; Render.</em> Shot im Viewport einrahmen, Render dr&#252;cken, und die Szene wird richtig getract &#8212; Licht, das springt, Halbschatten mit echter Weichheit, Spiegelungen aus der Geometrie und eine Blende, die sich &#246;ffnen l&#228;sst, bis der Hintergrund aus dem Fokus f&#228;llt. Minuten statt Millisekunden.</p>
+      </div>
+      <div class="prose en">
+        <p>The raster path buys its frame rate with approximations that are invisible at speed and obvious in a held image: reflections from a 256-pixel cube captured a few frames ago, ambient as one flat colour, and <strong>nothing bounces</strong> &#8212; a red car on grey tarmac casts no red onto the tarmac. A screenshot inherits every one of them, and a store page is looked at for minutes.</p>
+        <p>So: <em>View &#8250; Presentation &#8250; Render.</em> Frame a shot in the viewport, press Render, and the scene is traced properly &#8212; light that bounces, shadows with real penumbrae, reflections from the geometry and a lens that can be opened until the background falls out of focus. Minutes rather than milliseconds.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/ptcar.jpg" alt="Ein offline gerendertes Auto: weicher Sonnenschatten, HDRI-Horizont, und die eigene Lackfarbe auf dem Boden" loading="lazy">
+        <figcaption class="de">Der warme Fleck auf dem Boden neben dem Vorderrad ist der ganze Punkt: das ist der eigene Lack des Autos, der den Boden beleuchtet, auf dem es steht. Nichts im Rasterpfad kann ihn dorthin setzen &#8212; er kostet einen Bounce.</figcaption>
+        <figcaption class="en">That patch of warm light on the ground beside the front wheel is the point of the whole thing: it is the car's own paint lighting the ground it stands on. Nothing in the raster path can put it there &#8212; it costs a bounce.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Die Szene kommt aus der Render-Queue</b><b class="en">The scene comes from the render queue</b>
+          <span class="de">Nicht aus der Szenendatei. Was <code>Renderer::submit</code> erreicht, ist nur noch Mesh, Material und Ort &#8212; Terrain, Stra&#223;en, Br&#252;cken, Loopings, Decals, Splines, Stadtt&#252;rme und importierte Modelle erntet <em>ein</em> St&#252;ck Code ein, auch Systeme, die es sp&#228;ter gab.</span>
+          <span class="en">Not from the scene file. By the time anything reaches <code>Renderer::submit</code> it is just a mesh, a material and a place &#8212; so terrain, roads, bridges, loops, decals, splines, city towers and imported models are all harvested by one piece of code, including systems written after it.</span></li>
+        <li><b class="de">Die Sonne hat eine Gr&#246;&#223;e</b><b class="en">The sun has a size</b>
+          <span class="de">Ein Regler, und jede Schattenkante im Bild h&#246;rt auf, die harte Linie zu sein, die eine Shadow Map zeichnet. Die wirksamste Einstellung dagegen, wie ein Screenshot auszusehen.</span>
+          <span class="en">One slider, and every shadow edge stops being the hard line a shadow map draws. The most effective setting here for not looking like a screenshot.</span></li>
+        <li><b class="de">Derselbe Grade wie im Viewport</b><b class="en">The same grade as the viewport</b>
+          <span class="de">Gleiches Albedo/Roughness, gleiche Lampenabnahme, gleiche ACES-Kurve &#8212; <em>und derselbe Farb-Grade</em>. Ein Render liest sich als dieselbe Szene, besser beleuchtet, nicht als ein anderes Spiel.</span>
+          <span class="en">The same albedo/roughness, the same lamp falloff, the same ACES curve &#8212; <em>and the same colour grade</em>. A render reads as the same scene, better lit, rather than as a different game.</span></li>
+        <li><b class="de">Es verfeinert sich beim Zusehen</b><b class="en">It refines while you watch</b>
+          <span class="de">Stop beh&#228;lt, was angekommen ist &#8212; &#8222;wie viele Samples braucht dieser Shot" hat keine Antwort au&#223;er hinsehen. Gespeichert wird ein lineares <code>.exr</code> neben dem PNG.</span>
+          <span class="en">Stop keeps what has arrived &#8212; "how many samples does this shot need" has no answer except watching one. Saving writes a linear <code>.exr</code> beside the PNG.</span></li>
+      </ul>
+
+      <h3 class="de" style="margin-top:10px">Gebackenes Licht: ein Gitter, keine Lightmaps</h3>
+      <h3 class="en" style="margin-top:10px">Baked light: a grid, not lightmaps</h3>
+      <div class="prose de">
+        <p>Derselbe Tracer f&#252;llt ein Gitter aus Sonden &#252;ber der Welt, jede speichert das, was dort ankommt, als L1-Kugelfl&#228;chenfunktion. <code>lit.frag</code> schl&#228;gt sie nach Weltposition nach und ersetzt damit die flache Ambient-Farbe. Genau die ist das, was ersetzt geh&#246;rt: ein Wert f&#252;r jede Fl&#228;che der Welt, unter dem das Innere eines Tunnels exakt so hell ist wie ein offenes Feld.</p>
+        <p><strong>Die Sonne wird bewusst nicht gebacken.</strong> Diese Engine l&#228;uft einen Tageszyklus &#8212; vierundzwanzig Stunden in vier Minuten. Licht mit der Sonne darin gebacken w&#228;re die Fotografie eines Moments, dem das Spiel Sekunden nach Play widerspricht. Was stillh&#228;lt, ist der Himmel, die statischen Lampen und alles, woran die abprallen.</p>
+        <p>Und ein Gitter kann etwas, das eine Lightmap strukturell nicht kann: <strong>bewegte Objekte nehmen es mit auf.</strong> Ein Auto, das unter eine Br&#252;cke f&#228;hrt, wird dunkel &#8212; und nimmt die Farbe des Asphalts an, &#252;ber dem es steht. Gebackenes Licht liegt neben seiner Szene; der ausgelieferte Player leuchtet daraus, ohne eine Zeile des Tracers zu linken, der es gemacht hat.</p>
+      </div>
+      <div class="prose en">
+        <p>The same tracer fills a grid of probes over the world, each storing what arrives there as an L1 spherical-harmonic band. <code>lit.frag</code> looks it up by world position and it replaces the flat ambient colour. That colour is the thing worth replacing: one value applied to every surface in the world, under which the inside of a tunnel is exactly as bright as an open field.</p>
+        <p><strong>The sun is deliberately not baked.</strong> This engine runs a day cycle &#8212; twenty-four hours in four minutes. Light baked with the sun in it would be a photograph of one moment that the game contradicts within seconds of pressing Play. What holds still is the sky, the static lamps and everything those bounce off.</p>
+        <p>And a grid does something a lightmap structurally cannot: <strong>moving objects pick it up too.</strong> A car driving under a bridge goes dark, and takes the colour of the tarmac it is over. Baked light is saved beside its scene, and the shipped player lights from it without linking a line of the tracer that made it.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/baked.jpg" alt="Ein Auto auf Asphalt unter gebackenem indirektem Licht" loading="lazy">
+        <figcaption class="de">Dieselbe Sonde, die den Schatten unter dem Auto kennt, wei&#223; auch, dass der Asphalt daneben warm ist. Sonden, die in massiver Geometrie landen, werden erkannt und aus ihren Nachbarn gef&#252;llt &#8212; eine ungef&#252;llte ist ein schwarzer Fleck, der in jede Fl&#228;che in ihrer N&#228;he schmiert.</figcaption>
+        <figcaption class="en">The same probe that knows about the shadow under the car knows the tarmac beside it is warm. Probes that landed inside solid geometry are detected and filled from their neighbours &#8212; an unfilled one is a black spot that smears into every surface near it.</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ============ KAMERA ============ -->
+  <section class="sec reveal" id="kamera">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Kamera</p><p class="eyebrow en">Camera</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Eine Kamera, die ein Objekt <em style="font-style:normal;color:var(--green)">filmt</em>, statt auf ihm zu sitzen.</h2>
+      <h2 class="en">A camera that <em style="font-style:normal;color:var(--green)">shoots</em> an object rather than riding one.</h2>
+
+      <div class="prose de">
+        <p>Sie schneidet zwischen den Einstellungen, aus denen eine Autowerbung oder ein Replay gemacht ist: Hero-Dreiviertel, Umlauf, Kranfahrt, Slider, Push-in, Reveal, Dolly-Zoom, Vogelperspektive, Radh&#246;he, Car-to-Car, Nase, ein <strong>Fly-by</strong> mit der Kamera in der Fahrbahn, ein &#220;berholer. Rechtsklick auf ein Objekt in der Hierarchie, <em>&#8222;Shoot this"</em>, und es gibt eine funktionierende Kamera darauf.</p>
+        <p>Es ist kein Kamerapfad, und darin liegt der Punkt. Ein aufgezeichneter Pfad ist ein Spline aus <em>Welt</em>-Keyframes &#8212; richtig f&#252;r ein festes Motiv und nutzlos f&#252;r ein Auto: fahr woanders hin, und der ganze Pfad muss neu gebaut werden. Hier ist jede Bewegung relativ zum Motiv formuliert &#8212; &#8222;dreiviertel von vorn, eine Wagenl&#228;nge weg, hereindriftend" &#8212; und gilt damit f&#252;r jedes Objekt, &#252;berall, bei jedem Tempo.</p>
+      </div>
+      <div class="prose en">
+        <p>It cuts between the moves a car advert or a replay is made of: a hero three-quarter, a turntable orbit, a crane down, a slider past, a push-in, a reveal, a dolly zoom, a bird's eye, a wheel-level pass, car-to-car, a nose shot, a <strong>fly-by</strong> with the camera planted in the road, an overtake. Right-click an object in the hierarchy, pick <em>"Shoot this"</em>, and there is a working camera on it.</p>
+        <p>It is not a camera path, and the difference is the point. A recorded path is a spline of <em>world</em> keyframes &#8212; right for a fixed subject and useless for a car: drive somewhere else and the whole path has to be authored again. Every move here is expressed relative to the subject &#8212; "three quarters front, one car length out, drifting in" &#8212; so it holds for any object, anywhere, at any speed.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/multishot.jpg" alt="Eine Multishot-Kamera, die im Editor ein Auto einrahmt" loading="lazy">
+        <figcaption class="de">Preview l&#228;uft die Sequenz im Viewport, ohne in den Play-Modus zu gehen. Mechanisch ist es ein weiterer Modus der vorhandenen Kamera-Komponente &#8212; es funktioniert unver&#228;ndert als Play-Kamera, im Skript, im Splitscreen und im exportierten Spiel.</figcaption>
+        <figcaption class="en">Preview runs the sequence in the viewport without entering Play. Mechanically it is one more mode of the existing camera component &#8212; so it works unchanged as the Play camera, in a script, in split screen and in the exported player.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Jede Distanz ist ein Vielfaches der Bounding Box</b><b class="en">Every distance is a multiple of the bounding box</b>
+          <span class="de">Nie Meter. Dieselben Einstellungen rahmen ein Gokart und einen Sattelzug.</span>
+          <span class="en">Never metres. The same settings frame a go-kart and an articulated lorry.</span></li>
+        <li><b class="de">Die Shot-Liste folgt dem gemessenen Tempo</b><b class="en">The shot list follows measured speed</b>
+          <span class="de">Ein Fly-by braucht etwas zum Vorbeifliegen: unterhalb von Schritttempo ist es eine Kamera, die ein geparktes Auto anschaut &#8212; also wird er ausgewichtet und die stehenden Moves kommen herein.</span>
+          <span class="en">A fly-by needs something to fly by: below a crawl it is a camera watching a parked car, so it is weighted out and the standing moves come in.</span></li>
+        <li><b class="de">Das Auge bleibt aus dem Boden</b><b class="en">The eye stays out of the ground</b>
+          <span class="de">Jeden Frame gegen das Terrain gepr&#252;ft. Die Shots nahe am Asphalt sind die guten &#8212; und die, die sonst in einem H&#252;gel enden.</span>
+          <span class="en">Checked against the terrain every frame. The shots that live near the tarmac are the good ones, and the ones that would otherwise end up inside a hill.</span></li>
+        <li><b class="de">Ein Seed ist ein Take</b><b class="en">A seed is a take</b>
+          <span class="de">Kein Shot zweimal hintereinander, wechselnde Flanken, variierende L&#228;ngen &#8212; Schnitte auf einem exakten Metronom sind das deutlichste Zeichen, dass eine Sequenz generiert und nicht geschnitten wurde. Derselbe Seed spielt denselben Lauf, also l&#228;sst sich nach dem Verschieben einer Lampe nochmal gedreht werden.</span>
+          <span class="en">No shot twice in a row, alternating flanks, varying lengths &#8212; cuts landing on an exact metronome are the clearest tell that a sequence was generated rather than cut. The same seed replays the same run, so a sequence can be shot again after moving a light.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ SPIEL ============ -->
+  <section class="sec reveal" id="spiel">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Spiel</p><p class="eyebrow en">Game</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Werkzeuge in C++. Verhalten in Lua.</h2>
+      <h2 class="en">Tools in C++. Behaviour in Lua.</h2>
+
+      <div class="prose de">
+        <p>Jede Entity darf ein Skript tragen; beim Start von Play entsteht eine <strong>frische Lua-VM</strong>, alles l&#228;dt neu und <code>start()</code> l&#228;uft wieder. Jedes Skript hat seine eigene Umgebung &#8212; zwei Objekte mit demselben Skript teilen keinen Zustand. Ein Laufzeitfehler wird einmal gemeldet und deaktiviert <em>nur dieses eine</em> Skript bis zum n&#228;chsten Play.</p>
+      </div>
+      <div class="prose en">
+        <p>Any entity can carry a script; pressing Play creates a <strong>fresh Lua VM</strong>, everything reloads and <code>start()</code> runs again. Each script has its own environment &#8212; two objects with the same script share no state. A runtime error is reported once and disables <em>only that one</em> script until the next Play.</p>
+      </div>
+
+      <div class="code">
+        <div class="bar"><i></i><i></i><i></i> drop.lua</div>
+<pre><span class="c">-- <span class="de">Jede Sekunde einen Fass-Stapel vor dem Spieler fallen lassen</span><span class="en">Drop a stack of barrels in front of the player once a second</span></span>
+<span class="k">local</span> t = <span class="n">0</span>
+
+<span class="k">function</span> update(dt)
+    t = t + dt
+    <span class="k">if</span> t &gt;= <span class="n">1.0</span> <span class="k">then</span>
+        t = <span class="n">0</span>
+        <span class="k">local</span> x, y, z = game.cameraPos()
+        game.spawnPrefab(<span class="s">"Barrel Stack"</span>, x, game.terrainHeight(x, z), z, <span class="n">90</span>)
+    <span class="k">end</span>
+<span class="k">end</span></pre>
+      </div>
+
+      <ul class="feats">
+        <li><b class="de">Was gebunden ist</b><b class="en">What is bound</b>
+          <span class="de">Eingabe, Kamera, Spawn/Destroy, Prefabs, Jolt-Physik (Velocity, Impulse), Audio, Score und HUD, Objekte finden und umh&#228;ngen, Raycast, Terrainh&#246;he.</span>
+          <span class="en">Input, camera, spawn/destroy, prefabs, Jolt physics (velocity, impulses), audio, score and HUD, finding and reparenting objects, raycast, terrain height.</span></li>
+        <li><b class="de">Fest getakteter Arcade-Kern</b><b class="en">A fixed-step arcade core</b>
+          <span class="de">Auto und Gleiter integrieren bei 1/120 s mit Render-Interpolation &#8212; Fahrverhalten h&#228;ngt nicht an der Bildrate.</span>
+          <span class="en">Car and glider integrate at 1/120 s with render interpolation &#8212; handling does not depend on frame rate.</span></li>
+        <li><b class="de">Gleiter statt Flugsimulator</b><b class="en">A glider, not a flight sim</b>
+          <span class="de">Der Kn&#252;ppel fordert eine <em>Gierrate</em>; die Querlage kommt aus der tats&#228;chlich erreichten Rate, nicht umgekehrt.</span>
+          <span class="en">The stick asks for a <em>yaw rate</em>; the bank angle comes out of the rate actually achieved, not the other way round.</span></li>
+        <li><b class="de">Dazu, ohne dass es geschrieben werden muss</b><b class="en">In the box already</b>
+          <span class="de">Rennlogik, Runden und Bestenliste, Verfolgerkamera, Splitscreen, Partikel, Lock-on-Raketen, Gegner-KI, Ladebildschirm.</span>
+          <span class="en">Race logic, laps and a leaderboard, a chase camera, split screen, particles, lock-on missiles, opponent AI, a loading screen.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ PR&#220;FEN ============ -->
+  <section class="sec reveal" id="pruefen">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Pr&#252;fen</p><p class="eyebrow en">Checks</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Ein Renderer ist das Schlimmste, was man mit dem Auge beurteilen kann.</h2>
+      <h2 class="en">A renderer is the worst thing to judge by eye.</h2>
+
+      <div class="prose de">
+        <p>Jede falsche Antwort produziert trotzdem ein Bild. Ein kaputter Shader kostet still seinen Effekt &#8212; der Release-Editor ist <code>/SUBSYSTEM:WINDOWS</code> und hat nirgendwohin, wo er einen Compile-Fehler hinschreiben k&#246;nnte. Deshalb hat jede dieser Fragen ein eigenes kleines Konsolenprogramm, das sie allein rendert oder misst. Sie werden neben dem Spiel gebaut; keines wird ausgeliefert.</p>
+      </div>
+      <div class="prose en">
+        <p>Every wrong answer still produces a picture. A broken shader costs its effect <em>silently</em> &#8212; the release editor is <code>/SUBSYSTEM:WINDOWS</code> and has nowhere to print a compile error to. So each of these questions gets its own small console program that renders or measures it on its own. They are built alongside the game; none of them ship.</p>
+      </div>
+
+      <div class="code">
+        <div class="bar"><i></i><i></i><i></i> check-all.bat</div>
+<pre><span class="k">&gt;</span> check-all.bat --build
+<span class="c"><span class="de">   still, solange sie bestehen &#8212; und die Ausgabe des Werkzeugs, wo eines nicht besteht</span><span class="en">   quiet while they pass &#8212; and the failing tool's own output where one does not</span></span></pre>
+      </div>
+
+      <div class="tablewrap">
+        <table class="checks">
+          <thead><tr>
+            <th><span class="de">Werkzeug</span><span class="en">Tool</span></th>
+            <th><span class="de">Welche Frage es beantwortet</span><span class="en">What it answers</span></th>
+          </tr></thead>
+          <tbody>
+            <tr><td>shadercheck</td><td><span class="de">Kompiliert noch jeder Shader? Exit-Code ungleich null, wenn nicht.</span><span class="en">Does every shader still compile? Exits non-zero.</span></td></tr>
+            <tr><td>viewcheck</td><td><span class="de">Wie sieht die Szene wirklich aus? L&#228;dt ein Projekt und rendert es offscreen in ein PNG &#8212; durch denselben Code, durch den der Editor zeichnet.</span><span class="en">What does the scene actually look like? Loads a project and renders it offscreen to a PNG, through the same code the editor draws with.</span></td></tr>
+            <tr><td>pathcheck</td><td><span class="de">Rechnet der Pathtracer Licht richtig? Szenen, deren Antwort vorher feststeht &#8212; ein wei&#223;er Ofen, der bei Radiance 1 zur&#252;ckkommen muss; ein Schatten, dessen Position Arithmetik ist; Rauschen, das mit 1/&#8730;n fallen muss.</span><span class="en">Does the path tracer compute light correctly? Scenes whose answer is known in advance &#8212; a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, noise that must fall as 1/&#8730;n.</span></td></tr>
+            <tr><td>capturecheck</td><td><span class="de">Bekommt der Tracer die Szene, die tats&#228;chlich gezeichnet wurde? Baut sie &#252;ber die echten Engine-Typen, erntet sie wie das Render-Panel und pr&#252;ft, wo Vertices landen und wohin Normalen unter nicht-uniformer Skalierung zeigen.</span><span class="en">Is the tracer handed the scene that was actually drawn? Builds it through the real engine types, harvests it as the Render panel does, and checks where vertices landed and which way normals point under non-uniform scale.</span></td></tr>
+            <tr><td>shotcheck</td><td><span class="de">Beh&#228;lt die Multishot-Kamera ihr Motiv im Bild und ihr Auge aus dem Boden &#8212; &#252;ber einem geparkten Auto, einem schnellen, einem Lastwagen und einem Hang? Das ist der eine Fehler, den man im Editor nicht sehen kann, weil der Editor das Bild von <em>innerhalb</em> des Fehlers zeigt.</span><span class="en">Does the multishot camera keep its subject in frame and its eye out of the ground &#8212; over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from <em>inside</em> the mistake.</span></td></tr>
+            <tr><td>citycheck</td><td><span class="de">Ragt ein generiertes Haus &#252;ber den Bordstein? Ein Turm &#252;ber der Stra&#223;e ist eine Wand, in die man bei Tempo f&#228;hrt, auf einem Abschnitt, der frei aussah.</span><span class="en">Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear.</span></td></tr>
+            <tr><td>iconcheck</td><td><span class="de">Benutzt Windows wirklich das Icon, das &#8222;Export Game" ins Exe geschrieben hat?</span><span class="en">Will Windows really use the icon "Export Game" wrote into the exe?</span></td></tr>
+            <tr><td>audiocheck</td><td><span class="de">Gibt das Ger&#228;t der Engine mehr als einen Ausgabekanal? Ein Mono-Ausgang ist der wahrscheinlichste Grund f&#252;r eine Welt ohne Richtung.</span><span class="en">Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it.</span></td></tr>
+            <tr><td>skycheck &#183; fogcheck</td><td><span class="de">Keine Tests &#8212; nichts darin besteht oder f&#228;llt durch. Sie sind eine Art zu <em>sehen</em>: der Himmel sitzt hinter den Panels, der Nebel ist halbaufgel&#246;st, verwischt, unter Bloom und Tonemapper und nur von innen sichtbar. Beide wurden vorher durch Nachdenken &#252;ber Noise-Funktionen bearbeitet und Hoffen.</span><span class="en">Not tests &#8212; nothing in them passes or fails. They are a way of <em>seeing</em>: the sky sits behind the panels; the fog is half-res, blurred, under bloom and a tonemapper and only visible from inside. Both had previously been worked on by reasoning about noise functions and hoping.</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <figure class="shot reveal">
+        <img src="img/fogbacklit.jpg" alt="Eine Nebelschicht mit der Sonne dahinter, allein gemarcht" loading="lazy">
+        <figcaption class="de"><code>fogcheck</code> marschiert <code>volfog.frag</code> in voller Aufl&#246;sung gegen einen synthetischen Tiefenpuffer &#8212; kein Halbbild, kein Upsample, kein Post. Was herauskommt, ist das Feld statt des Filters.</figcaption>
+        <figcaption class="en"><code>fogcheck</code> marches <code>volfog.frag</code> at full resolution against a synthetic depth buffer &#8212; no half-res, no upsample, no post. What comes out is the field rather than the filter.</figcaption>
+      </figure>
+
+      <div class="creed" style="grid-column:auto !important;margin-top:8px">
+        <blockquote class="de" style="font-size:clamp(20px,2.6vw,30px);max-width:26ch">Eine Pr&#252;fung, die man nie hat scheitern sehen, ist eine ungepr&#252;fte Pr&#252;fung.</blockquote>
+        <blockquote class="en" style="font-size:clamp(20px,2.6vw,30px);max-width:26ch">A check that has never been seen to fail is a check that has not been tested.</blockquote>
+        <div class="prose de" style="max-width:62ch">
+          <p>Eine Regressionspr&#252;fung f&#252;r den Pathtracer bestand gegen den Build, der den Fehler noch hatte: ihr synthetisches Panorama war kleiner als das Raster des Samplers, es blieb also keine Abweichung mehr zu fangen. Sie h&#228;tte beinahe eine falsche Diagnose abgesegnet. Seitdem gilt: <strong>jede neue Pr&#252;fung erst einmal gegen den kaputten Zustand laufen lassen.</strong></p>
+        </div>
+        <div class="prose en" style="max-width:62ch">
+          <p>A regression test written for the path tracer passed against the build that still had the bug: its synthetic panorama was smaller than the sampler's grid, so there was no mismatch left to catch. It very nearly signed off a wrong diagnosis. The habit it earned: <strong>run a new check once against the broken state before trusting it.</strong></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ AUSLIEFERN ============ -->
+  <section class="sec reveal" id="ausliefern">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Ausliefern</p><p class="eyebrow en">Shipping</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Ein Ordner, der l&#228;uft &#8212; ohne den Editor darin.</h2>
+      <h2 class="en">A folder that runs &#8212; with the editor no longer in it.</h2>
+
+      <div class="prose de">
+        <p><em>Export Game</em> schreibt den editorfreien <code>player.exe</code> unter dem Namen des Spiels, ein Boot-<code>game.json</code>, die Lizenzhinweise und &#8212; sofern nicht abgeschaltet &#8212; ein verschl&#252;sseltes <code>game.fpak</code> statt browsbarer Ordner. <strong>Start as</strong> steht direkt neben der Startszene, weil beides eine Entscheidung ist: welches Level &#246;ffnet, und was der Spieler ist, wenn es &#246;ffnet &#8212; zu Fu&#223;, am Steuer, im Gleiter, oder zusehend durch die Main Camera oder die Multishot-Kamera, die sich ihre Schnitte selbst macht. Die letzten beiden sind, wie ein Spiel auf einem Attract-Screen &#246;ffnet statt auf einem Spieler.</p>
+      </div>
+      <div class="prose en">
+        <p><em>Export Game</em> writes the editor-free <code>player.exe</code> under the game's own name, a boot <code>game.json</code>, the licence notices and &#8212; unless switched off &#8212; one encrypted <code>game.fpak</code> instead of browsable folders. <strong>Start as</strong> sits right next to the start scene, because the two are one decision: which level opens, and what the player is when it does &#8212; on foot, behind the wheel, flying the glider, or watching, through the Main Camera or through the multishot camera that cuts its own shots. The last two are how a game opens on an attract screen rather than on a player.</p>
+      </div>
+
+      <ul class="feats">
+        <li><b>Icon</b>
+          <span class="de">Ein quadratisches PNG. Der Export skaliert es auf jede Gr&#246;&#223;e, die Windows verlangt, baut das Icon im Speicher und schreibt es mit <code>UpdateResource</code> direkt in die Ressourcen des kopierten Exe. Kein <code>.ico</code>, kein Rebuild der Engine &#8212; das Exe wurde lange vorher gelinkt, und genau deshalb geht es so.</span>
+          <span class="en">A square PNG. The export scales it to every size Windows asks for, builds the icon in memory and writes it straight into the copied exe's resources with <code>UpdateResource</code>. No <code>.ico</code> to make and no rebuild of the engine &#8212; the exe being branded was linked long before, which is the whole reason it is done this way.</span></li>
+        <li><b>Installer</b>
+          <span class="de">Erzeugt ein Inno-Setup-Skript f&#252;r den fertigen Ordner und kompiliert es zu einer einzelnen <code>&lt;name&gt;-setup.exe</code>, mit demselben Icon, Startmen&#252;-Eintrag und Uninstaller. Installiert pro Benutzer &#8212; f&#252;r ein Spiel fragt niemand nach Adminrechten.</span>
+          <span class="en">Generates an Inno Setup script for the finished folder and compiles it into a single <code>&lt;name&gt;-setup.exe</code>, with the same icon, a Start-menu entry and an uninstaller. It installs per-user &#8212; nobody is asked for admin rights to play a game.</span></li>
+        <li><b class="de">Beide d&#252;rfen den Export nicht scheitern lassen</b><b class="en">Neither may fail an export</b>
+          <span class="de">Ein unmarkiertes Exe in einem funktionierenden Ordner schl&#228;gt einen weggeworfenen Zehn-Minuten-Export wegen eines Bildes.</span>
+          <span class="en">An unbranded exe in a working folder beats throwing away a ten-minute export over a picture.</span></li>
+        <li><b class="de">Lizenzen, die nicht abdriften k&#246;nnen</b><b class="en">Licences that cannot drift</b>
+          <span class="de">Jede Fremdkomponente ist permissiv (MIT, BSD-3, zlib, Boost, MIT-0) &#8212; ein damit gebautes Spiel darf closed source sein und verkauft werden. Die Hinweisdatei wird generiert, nie getippt: Versionen kommen aus <code>Dependencies.cmake</code>, Lizenztexte w&#246;rtlich aus den geholten Quellen.</span>
+          <span class="en">Every third-party component is permissive (MIT, BSD-3, zlib, Boost, MIT-0) &#8212; a game built with it can be closed-source and sold. The notice file is generated, never typed: versions are read back out of <code>Dependencies.cmake</code> and every licence text is copied verbatim from the fetched sources.</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ============ STACK ============ -->
+  <section class="sec reveal" id="stack">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Stack</p><p class="eyebrow en">Stack</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Vierzehn Bibliotheken. Keine davon liegt im Repo.</h2>
+      <h2 class="en">Fourteen libraries. None of them vendored.</h2>
+
+      <div class="prose de">
+        <p>Alles wird per <code>FetchContent</code> aus <code>cmake/Dependencies.cmake</code> geholt &#8212; derselben Datei, aus der die Lizenzhinweise generiert werden, damit die Liste und das, was tats&#228;chlich gelinkt wird, nicht lange auseinanderdriften k&#246;nnen. Der erste Build braucht deshalb Netz, und Python 3 mit Jinja2, weil GLAD damit den Loader generiert.</p>
+      </div>
+      <div class="prose en">
+        <p>Everything is pulled in by <code>FetchContent</code> from <code>cmake/Dependencies.cmake</code> &#8212; the same file the licence notices are generated from, so the list and what actually links cannot drift apart for long. The first build therefore needs a network connection, and Python 3 with Jinja2, which is what GLAD generates the loader with.</p>
+      </div>
+
+      <div class="tablewrap">
+        <table class="stacktable">
+          <tr><td><span class="de">Fenster / Eingabe</span><span class="en">Window / input</span></td><td>GLFW</td></tr>
+          <tr><td><span class="de">GL-Loader</span><span class="en">GL loader</span></td><td>GLAD2 <span class="muted">&#8212; gl 3.3 core, beim Konfigurieren generiert</span></td></tr>
+          <tr><td><span class="de">Mathematik</span><span class="en">Math</span></td><td>GLM</td></tr>
+          <tr><td><span class="de">Editor-UI</span><span class="en">Editor UI</span></td><td>Dear ImGui (docking) + ImGuizmo + ImGuiColorTextEdit</td></tr>
+          <tr><td><span class="de">Bilder</span><span class="en">Images</span></td><td>stb_image, tinyexr <span class="muted">&#8212; EXR-Normal-Maps und HDRIs</span></td></tr>
+          <tr><td><span class="de">Modelle</span><span class="en">Models</span></td><td>assimp, cgltf</td></tr>
+          <tr><td>Audio</td><td>miniaudio</td></tr>
+          <tr><td><span class="de">Physik</span><span class="en">Physics</span></td><td>Jolt</td></tr>
+          <tr><td>Scripting</td><td>Lua</td></tr>
+          <tr><td><span class="de">Szenen / Settings</span><span class="en">Scenes / settings</span></td><td>nlohmann/json</td></tr>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot" id="repo">
+  <div class="foot-in">
+    <div>
+      <p class="eyebrow de">Loslegen</p><p class="eyebrow en">Get started</p>
+      <h2 class="de" style="margin-top:14px">Klonen, konfigurieren, bauen.</h2>
+      <h2 class="en" style="margin-top:14px">Clone, configure, build.</h2>
+      <div class="code clone">
+<pre><span class="k">git</span> clone https://github.com/mpue/fitzel.git
+<span class="k">cd</span> fitzel
+python -m pip install jinja2
+cmake --preset release
+cmake --build --preset release
+./build/release/bin/sandbox</pre>
+      </div>
+      <div class="cta" style="margin-top:24px">
+        <a class="btn btn-primary" href="https://github.com/mpue/fitzel" target="_blank" rel="noopener">github.com/mpue/fitzel &#8594;</a>
+      </div>
+    </div>
+    <div>
+      <p class="eyebrow de">Weiterlesen</p><p class="eyebrow en">Read on</p>
+      <div class="links" style="margin-top:16px">
+        <a href="https://github.com/mpue/fitzel#readme" target="_blank" rel="noopener">README</a>
+        <a href="https://github.com/mpue/fitzel/blob/master/docs/lua-scripting.md" target="_blank" rel="noopener">docs/lua-scripting.md</a>
+        <a href="https://github.com/mpue/fitzel/blob/master/docs/invariants.md" target="_blank" rel="noopener">docs/invariants.md</a>
+        <a href="https://github.com/mpue/fitzel/blob/master/docs/third-party-licenses.md" target="_blank" rel="noopener">docs/third-party-licenses.md</a>
+        <a href="https://github.com/mpue/fitzel/blob/master/cmake/Dependencies.cmake" target="_blank" rel="noopener">cmake/Dependencies.cmake</a>
+      </div>
+      <small style="margin-top:26px">
+        <span class="de">Windows &#183; Linux &#183; macOS &#8212; OpenGL 3.3 core.<br>Presets: <code>default</code> (Ninja, Debug), <code>release</code>, <code>asan</code>, <code>vs</code>.<br>Terrain-Texturen und Wetter-Sounds sind git-ignoriert; das README sagt, woher sie kommen.</span>
+        <span class="en">Windows &#183; Linux &#183; macOS &#8212; OpenGL 3.3 core.<br>Presets: <code>default</code> (Ninja, Debug), <code>release</code>, <code>asan</code>, <code>vs</code>.<br>Terrain textures and weather sounds are git-ignored; the README says where to get them.</span>
+      </small>
+      <small style="margin-top:20px;color:#4E5A51">
+        <span class="de">Screenshots aus dem Editor und dem Player dieses Repos. Kein Konzeptmaterial.</span>
+        <span class="en">Screenshots from this repo's editor and player. No concept art.</span>
+      </small>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---------- language ---------- */
+  var root = document.documentElement;
+  function setLang(l){
+    root.setAttribute("data-lang", l);
+    root.setAttribute("lang", l);
+    var bs = document.querySelectorAll("[data-setlang]");
+    for (var i=0;i<bs.length;i++){
+      bs[i].setAttribute("aria-pressed", bs[i].getAttribute("data-setlang")===l ? "true" : "false");
+    }
+    try { localStorage.setItem("fitzel-lang", l); } catch(e){}
+  }
+  var start = null;
+  try { start = localStorage.getItem("fitzel-lang"); } catch(e){}
+  if (start !== "de" && start !== "en") {
+    start = (navigator.language || "en").toLowerCase().indexOf("de") === 0 ? "de" : "en";
+  }
+  setLang(start);
+  document.addEventListener("click", function(ev){
+    var b = ev.target.closest ? ev.target.closest("[data-setlang]") : null;
+    if (b) setLang(b.getAttribute("data-setlang"));
+  });
+
+  /* ---------- reveal on scroll ---------- */
+  var reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var els = document.querySelectorAll(".reveal");
+  if (reduced || !("IntersectionObserver" in window)) {
+    for (var j=0;j<els.length;j++) els[j].classList.add("in");
+  } else {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(e){ if (e.isIntersecting){ e.target.classList.add("in"); io.unobserve(e.target); } });
+    }, {rootMargin:"0px 0px -8% 0px", threshold:0.04});
+    for (var k=0;k<els.length;k++) io.observe(els[k]);
+  }
+
+  /* ---------- the weather instrument ---------- */
+  var cv = document.getElementById("wx");
+  if (!cv) return;
+  var ctx = cv.getContext("2d");
+  var W = cv.width, H = cv.height;
+  var wS = document.getElementById("wxw"), tS = document.getElementById("wxt");
+  var wV = document.getElementById("wxwv"), tV = document.getElementById("wxtv");
+
+  /* deterministic value noise */
+  var P = new Uint8Array(512);
+  (function(){ var s=1337; for (var i=0;i<256;i++){ s=(s*1664525+1013904223)>>>0; P[i]=s>>>24; }
+                for (var i2=0;i2<256;i2++) P[256+i2]=P[i2]; })();
+  function fade(t){ return t*t*(3-2*t); }
+  function vn(x,y){
+    var xi=Math.floor(x)&255, yi=Math.floor(y)&255, xf=x-Math.floor(x), yf=y-Math.floor(y);
+    var a=P[P[xi]+yi], b=P[P[xi+1]+yi], c=P[P[xi]+yi+1], d=P[P[xi+1]+yi+1];
+    var u=fade(xf), v=fade(yf);
+    return ((a*(1-u)+b*u)*(1-v) + (c*(1-u)+d*u)*v)/255;
+  }
+  function fbm(x,y,oct){
+    var s=0,a=0.5,f=1;
+    for (var i=0;i<oct;i++){ s+=vn(x*f,y*f)*a; a*=0.5; f*=2; }
+    return s;
+  }
+
+  var drops = [];
+  for (var d=0; d<420; d++) drops.push({x:Math.random(), y:Math.random(), l:0.25+Math.random()*0.9, s:0.5+Math.random()*0.9});
+
+  function mix(a,b,t){ return a+(b-a)*t; }
+  function rgb(c){ return "rgb("+Math.round(c[0])+","+Math.round(c[1])+","+Math.round(c[2])+")"; }
+  function mixc(a,b,t){ return [mix(a[0],b[0],t),mix(a[1],b[1],t),mix(a[2],b[2],t)]; }
+
+  var flash = 0, nextFlash = 2.5, t0 = null;
+
+  function frame(now){
+    if (t0 === null) t0 = now;
+    var time = (now - t0)/1000;
+    var w = parseFloat(wS.value);
+    var hour = parseFloat(tS.value);
+
+    /* sun elevation: -1 (midnight) .. 1 (noon) */
+    var el = Math.sin((hour/24)*Math.PI*2 - Math.PI/2);
+    var day = Math.max(0, Math.min(1, (el+0.18)/0.5));           /* 0 night .. 1 day */
+    var dusk = Math.max(0, 1 - Math.abs(el)*3.4);                 /* horizon warmth */
+
+    var zenithDay=[64,124,196], zenithNight=[8,12,26];
+    var horizDay=[168,200,226], horizNight=[16,20,38], horizDusk=[236,138,66];
+    var zen = mixc(zenithNight, zenithDay, day);
+    var hor = mixc(horizNight, horizDay, day);
+    hor = mixc(hor, horizDusk, dusk*0.85);
+    /* storm desaturates and darkens the sky */
+    var grey = [70,76,84];
+    zen = mixc(zen, mixc(grey,[26,29,34],0.5), w*0.72);
+    hor = mixc(hor, grey, w*0.6);
+
+    var g = ctx.createLinearGradient(0,0,0,H*0.72);
+    g.addColorStop(0, rgb(zen));
+    g.addColorStop(1, rgb(hor));
+    ctx.fillStyle = g; ctx.fillRect(0,0,W,H);
+
+    /* sun */
+    var sx = W*(0.10 + (hour/24)*0.82);
+    var sy = H*0.70 - el*H*0.62;
+    if (el > -0.22){
+      var sunA = (1-w*0.72) * Math.max(0, Math.min(1,(el+0.22)/0.3));
+      var sc = mixc([255,238,196],[255,150,72], dusk);
+      var gl = ctx.createRadialGradient(sx,sy,0,sx,sy,H*0.72);
+      gl.addColorStop(0,"rgba("+Math.round(sc[0])+","+Math.round(sc[1])+","+Math.round(sc[2])+","+(0.95*sunA)+")");
+      gl.addColorStop(0.06,"rgba("+Math.round(sc[0])+","+Math.round(sc[1])+","+Math.round(sc[2])+","+(0.34*sunA)+")");
+      gl.addColorStop(1,"rgba(255,200,140,0)");
+      ctx.fillStyle = gl; ctx.fillRect(0,0,W,H);
+    }
+
+    /* clouds: coverage, density, altitude and wind all follow w */
+    var cov = mix(0.62, 0.20, w);          /* noise threshold: lower = more cloud */
+    var alt = mix(0.30, 0.17, w);
+    var wind = mix(0.010, 0.075, w);
+    var bands = 30;
+    for (var b=0;b<bands;b++){
+      var fy = b/bands;
+      var yy = H*alt + fy*H*0.30;
+      var scaleX = 1/(90 - fy*46);
+      var n0 = time*wind*4;
+      ctx.beginPath();
+      var started=false;
+      for (var x=0; x<=W; x+=6){
+        var n = fbm(x*scaleX + n0, fy*3.1 + 11.0, 3);
+        var h = Math.max(0, n - cov) * (1.9 - fy*0.6);
+        var py = yy - h*H*0.34;
+        if (!started){ ctx.moveTo(x,py); started=true; } else ctx.lineTo(x,py);
+      }
+      ctx.lineTo(W, yy); ctx.lineTo(0, yy); ctx.closePath();
+      var lit = mixc([255,246,232], mixc([196,206,214],[92,98,108], w), 1-Math.max(0,day)*0.7);
+      lit = mixc(lit, mixc([255,168,96],[120,80,70],w), dusk*0.7);
+      lit = mixc([24,29,44], lit, 0.16 + 0.84*day);
+      ctx.fillStyle = "rgba("+Math.round(lit[0])+","+Math.round(lit[1])+","+Math.round(lit[2])+","+(0.055 + w*0.045)+")";
+      ctx.fill();
+    }
+
+    /* lightning */
+    if (w > 0.62){
+      nextFlash -= 0.016;
+      if (nextFlash <= 0){ flash = 1; nextFlash = 0.7 + Math.random()*(3.6 - (w-0.62)*4); }
+    }
+    if (flash > 0){
+      ctx.fillStyle = "rgba(228,238,255,"+(flash*0.42*(w-0.55))+")";
+      ctx.fillRect(0,0,W,H);
+      flash -= 0.09;
+      if (flash < 0) flash = 0;
+    }
+
+    /* distant ridge, then a near ridge -- 1D fbm, the same idea as the terrain field */
+    function ridge(off, amp, base, col, blur){
+      ctx.beginPath(); ctx.moveTo(0,H);
+      for (var x=0;x<=W;x+=4){
+        var n = fbm(x*0.0016 + off, off*2.3, 5);
+        var n2 = fbm(x*0.0062 + off, 7.7, 3);
+        var y = H*base - (n*0.78 + n2*0.22 - 0.35)*amp;
+        ctx.lineTo(x,y);
+      }
+      ctx.lineTo(W,H); ctx.closePath();
+      var gg = ctx.createLinearGradient(0,H*base-amp,0,H);
+      gg.addColorStop(0, "rgba("+col+","+(0.95-blur*0.35)+")");
+      gg.addColorStop(1, "rgba("+col+",1)");
+      ctx.fillStyle = gg; ctx.fill();
+    }
+    var hazeT = 0.30 + w*0.34;
+    var far = mixc([26,32,30], hor, hazeT);
+    var near = mixc([13,17,15], hor, hazeT*0.34);
+    ridge(3.1, H*0.30, 0.74, Math.round(far[0])+","+Math.round(far[1])+","+Math.round(far[2]), 1);
+    ridge(9.4, H*0.20, 0.90, Math.round(near[0])+","+Math.round(near[1])+","+Math.round(near[2]), 0);
+
+    /* water strip with Gerstner-ish crests whose height follows w */
+    var wy = H*0.905;
+    var waveA = 2 + w*13;
+    ctx.beginPath(); ctx.moveTo(0,H);
+    for (var x2=0;x2<=W;x2+=3){
+      var ph = x2*0.017 + time*(0.9 + w*1.6);
+      var y2 = wy + Math.sin(ph)*waveA*0.55 + Math.sin(ph*0.43+1.7)*waveA*0.45;
+      ctx.lineTo(x2,y2);
+    }
+    ctx.lineTo(W,H); ctx.closePath();
+    var wcol = mixc(mixc([12,26,34],[46,92,116],day), [44,48,52], w*0.6);
+    var wg = ctx.createLinearGradient(0,wy-14,0,H);
+    wg.addColorStop(0,"rgba("+Math.round(wcol[0]*1.5)+","+Math.round(wcol[1]*1.4)+","+Math.round(wcol[2]*1.35)+",1)");
+    wg.addColorStop(1,"rgba("+Math.round(wcol[0])+","+Math.round(wcol[1])+","+Math.round(wcol[2])+",1)");
+    ctx.fillStyle = wg; ctx.fill();
+
+    /* fog density rises with w */
+    var fogA = 0.05 + w*0.30;
+    var fg = ctx.createLinearGradient(0,H*0.52,0,H);
+    var fc = mixc(hor, [150,158,162], w*0.5);
+    fg.addColorStop(0,"rgba("+Math.round(fc[0])+","+Math.round(fc[1])+","+Math.round(fc[2])+",0)");
+    fg.addColorStop(1,"rgba("+Math.round(fc[0])+","+Math.round(fc[1])+","+Math.round(fc[2])+","+fogA+")");
+    ctx.fillStyle = fg; ctx.fillRect(0,H*0.52,W,H*0.48);
+
+    /* rain: wind-slanted streaks, only once there is weather to speak of */
+    if (w > 0.18){
+      var rainN = Math.floor((w-0.18)*1.22*drops.length);
+      var slant = 0.16 + w*0.30;
+      ctx.strokeStyle = "rgba(202,216,226,"+(0.10+w*0.24)+")";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (var r=0;r<rainN;r++){
+        var dp = drops[r];
+        var yy2 = (dp.y + time*(0.35+w*0.75)*dp.s) % 1;
+        var xx = (dp.x + yy2*slant*0.5) % 1;
+        var px = xx*W, py2 = yy2*H;
+        var len = dp.l*(10+w*30);
+        ctx.moveTo(px,py2); ctx.lineTo(px - len*slant, py2 + len);
+      }
+      ctx.stroke();
+    }
+
+    /* readouts */
+    wV.textContent = w.toFixed(2);
+    var hh = Math.floor(hour)%24, mm = Math.floor((hour-Math.floor(hour))*60);
+    tV.textContent = (hh<10?"0":"")+hh+":"+(mm<10?"0":"")+mm;
+  }
+
+  if (reduced){
+    requestAnimationFrame(function(n){ frame(n); });
+    wS.addEventListener("input", function(){ t0=null; requestAnimationFrame(frame); });
+    tS.addEventListener("input", function(){ t0=null; requestAnimationFrame(frame); });
+  } else {
+    var running = false;
+    var loop = function(n){ frame(n); requestAnimationFrame(loop); };
+    var vis = new IntersectionObserver(function(es){
+      es.forEach(function(e){ if (e.isIntersecting && !running){ running = true; requestAnimationFrame(loop); } });
+    }, {threshold:0.05});
+    vis.observe(cv);
+  }
+})();
+</script>
+
+</body>
+</html>
