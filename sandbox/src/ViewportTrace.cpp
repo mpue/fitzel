@@ -23,29 +23,6 @@ void aim(pathtrace::Scene& scene, const fitzel::Camera& camera) {
     scene.camera.fovDegrees = camera.fov();
 }
 
-// The GPU keeps SUMS in a float image; the screen wants eight bits through the
-// same curve the Render panel's still goes through. Tonemapped on the CPU with
-// pathtrace::tonemap rather than in a resolve shader, so the preview and the
-// still cannot drift apart -- it is the same function, not a second one that
-// looks like it.
-bool gpuLdr(const State& st, std::vector<unsigned char>& out, int& w, int& h) {
-    std::vector<float> hdr;
-    if (!st.gpu.snapshotHdr(hdr)) return false;
-    w = st.gpu.width();
-    h = st.gpu.height();
-    const float exposure = st.scene ? st.scene->exposure : 1.0f;
-    const pathtrace::Grade grade = st.scene ? st.scene->grade : pathtrace::Grade{};
-    out.assign(static_cast<std::size_t>(w) * h * 4, 255);
-    for (std::size_t i = 0, n = static_cast<std::size_t>(w) * h; i < n; ++i) {
-        const glm::vec3 c = pathtrace::tonemap(
-            glm::vec3(hdr[i * 3], hdr[i * 3 + 1], hdr[i * 3 + 2]), exposure, grade);
-        for (int k = 0; k < 3; ++k)
-            out[i * 4 + k] = static_cast<unsigned char>(
-                std::clamp(c[k], 0.0f, 1.0f) * 255.0f + 0.5f);
-    }
-    return true;
-}
-
 void refreshImage(State& st, double now) {
     const bool onGpu   = st.gpuReady;
     const bool hasImg  = onGpu ? st.gpu.samplesDone() > 0 : st.job.hasImage();
@@ -53,19 +30,30 @@ void refreshImage(State& st, double now) {
     const int  done    = onGpu ? st.gpu.samplesDone() : st.job.samplesDone();
     const bool running = onGpu ? done < st.samples : st.job.running();
     if (done == st.shownSamples && !running) return;
-    // A quarter of a second between uploads while it converges. The picture
-    // gains a little less noise in that time than the upload costs to make.
-    if (running && now - st.shownStamp < 0.25) return;
 
-    std::vector<unsigned char> px;
-    int w = 0, h = 0;
     if (onGpu) {
-        if (!gpuLdr(st, px, w, h)) return;
-    } else {
-        if (!st.job.snapshotLdr(px)) return;
-        w = st.job.settings().width;
-        h = st.job.settings().height;
+        // On the card, every frame, and the picture the viewport draws IS the
+        // texture it writes. No readback: reading a float image the compute
+        // shader has just written waits for the card to finish everything queued
+        // behind it, and that wait was the reason this used to happen four times
+        // a second -- so the preview crept forward in steps instead of getting
+        // steadily better in front of you.
+        const float exposure = st.scene ? st.scene->exposure : 1.0f;
+        const pathtrace::Grade grade = st.scene ? st.scene->grade : pathtrace::Grade{};
+        if (!st.gpu.resolve(exposure, grade)) return;
+        st.shownSamples = done;
+        st.shownStamp   = now;
+        return;
     }
+
+    // The CPU tracer still comes back over the bus -- its picture is in main
+    // memory to begin with -- and it still pays for the upload, so it keeps the
+    // quarter-second throttle it always had.
+    if (running && now - st.shownStamp < 0.25) return;
+    std::vector<unsigned char> px;
+    if (!st.job.snapshotLdr(px)) return;
+    const int w = st.job.settings().width;
+    const int h = st.job.settings().height;
     if (!st.image.isValid() || st.texW != w || st.texH != h) {
         st.image = fitzel::Texture::blank(w, h);
         st.texW  = w;
@@ -165,6 +153,7 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
         }
 
         st.shownSamples = -1;
+        ++st.restarts;      // the accumulator is about to be thrown away
         if (st.gpuReady) {
             // The upload is the expensive half and only a real edit needs it;
             // a camera move re-aims what is already there. resize() throws the
@@ -200,6 +189,17 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
     // driver whose single command runs long. A few samples a frame is what
     // makes this a preview rather than a freeze.
     if (st.gpuReady && !st.restartDue && st.gpu.samplesDone() < st.samples) {
+        // How many samples fit in this frame's share of the GPU. The dispatch
+        // runs in the editor's own context, so every millisecond it takes is a
+        // millisecond the editor is not drawing in -- but a fixed count is wrong
+        // in both directions: two samples is a crawl on a card that could do
+        // thirty, and a crawl is what a preview must never be, while thirty on a
+        // slow one turns the whole editor to treacle. So it is a TIME budget,
+        // and the count follows from what a sample actually cost here.
+        const double ms = st.gpu.msPerSample();
+        if (ms > 0.0)
+            st.gpuPerFrame = glm::clamp(
+                static_cast<int>(st.gpuFrameBudgetMs / ms), 1, 64);
         const int left = st.samples - st.gpu.samplesDone();
         if (!st.gpu.accumulate(std::min(st.gpuPerFrame, left))) {
             std::printf("[Fitzel] the GPU tracer stopped: %s\n",
@@ -217,6 +217,13 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
         st.status = std::to_string(done) + " / " + std::to_string(st.samples) +
                     (busy ? " samples" : " samples, done") +
                     (onGpu ? " (GPU)" : " (CPU)");
+        // A map that did not fit the GPU's buffer leaves its surface on the flat
+        // colour underneath it. Said out loud: a texture quietly missing from a
+        // preview reads as a material that is simply the wrong colour, and that
+        // is a thing somebody then goes and "fixes" in the material.
+        if (onGpu && st.gpu.texturesDropped() > 0)
+            st.status += " -- " + std::to_string(st.gpu.texturesDropped()) +
+                         " map(s) too large for this card, drawn flat";
     }
 }
 
@@ -234,6 +241,9 @@ int samplesDone(const State& st) {
 }
 
 unsigned int texture(const State& st) {
+    // The GPU's own eight-bit picture when it has one -- it never travels
+    // through main memory at all. The CPU tracer's goes up as a Texture.
+    if (st.gpuReady && st.gpu.ldrTexture() != 0) return st.gpu.ldrTexture();
     return st.image.isValid() ? st.image.id() : 0u;
 }
 

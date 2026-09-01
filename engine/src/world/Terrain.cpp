@@ -180,6 +180,20 @@ void TerrainEditField::raise(glm::vec2 c, float radius, float amount) {
     });
 }
 
+void TerrainEditField::pull(glm::vec2 c, float radius, float amount,
+                            float falloff) {
+    if (amount == 0.0f) return;
+    const float f = glm::clamp(falloff, 0.5f, 6.0f);
+    forBrushCells(cell, c, radius, [&](int ix, int iz, float, float, float w) {
+        // The brush weight is already the smooth bell; the exponent bends it.
+        // Raising the WEIGHT rather than remapping the distance keeps 1 at the
+        // centre and 0 at the rim for every exponent, so changing the shape never
+        // changes how far the edit reaches.
+        const float g = (f == 1.0f) ? w : std::pow(w, f);
+        if (g > 0.0f) deltas[cellKey(ix, iz)] += amount * g;
+    });
+}
+
 void TerrainEditField::flatten(const TerrainSettings& s, glm::vec2 c,
                                float radius, float amount, float target) {
     forBrushCells(cell, c, radius, [&](int ix, int iz, float wx, float wz, float w) {

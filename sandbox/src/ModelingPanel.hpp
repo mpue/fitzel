@@ -1,8 +1,13 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include <glm/glm.hpp>
+
+#include <fitzel/asset/AssetId.hpp>
+
+#include "SceneTypes.hpp"   // MaterialDef (a face is dressed from the library)
 
 class MeshComponent;
 
@@ -23,6 +28,7 @@ struct PanelState {
     bool&           show;
     MeshComponent*  mesh;        // null: the selection has no editable mesh
     int&            faceSel;     // index of the selected face, -1 for none
+    const std::vector<MaterialDef>& materials; // the library a face is dressed from
     bool            haveSelection = false; // an entity is selected at all
     bool            canConvert    = false; // ...and it could become a mesh
 
@@ -33,6 +39,10 @@ struct PanelState {
     // squares the entity's half-extents with it -- so an operation here is just
     // the operation, and every one of them gets that treatment.
     std::function<void(const std::function<int(MeshComponent&)>&, const char*)> edit;
+
+    // Open the Materials panel on a material, for editing the surface itself
+    // rather than which one the face wears.
+    std::function<void(fitzel::AssetId)> editMaterial;
 
     // Live read-outs for the header (0 when nothing is selected).
     int faceCount = 0, vertCount = 0;

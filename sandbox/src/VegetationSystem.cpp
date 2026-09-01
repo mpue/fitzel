@@ -1,6 +1,7 @@
 #include "VegetationSystem.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cfloat>
 #include <chrono>
@@ -419,6 +420,52 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     return regenerated;
 }
 
+// --- Instance culling -------------------------------------------------------
+// Why a tree needs this and a blade of grass does not.
+//
+// grass.vert rejects an off-screen blade in its first four lines, and that is
+// enough there: a blade is seven vertices, so the shader that throws it away is
+// most of what it would have cost anyway. A tree mesh is not seven vertices --
+// the models people actually use run to hundreds of thousands each -- and a
+// vertex shader that discards the tree still had to fetch and transform every
+// one of them. The only way not to pay for a tree that is behind the camera is
+// to not put it in the draw call.
+//
+// So each pass builds its own visible list. Per pass, not per frame: the water
+// reflection looks the other way up and every shadow cascade looks from the sun,
+// and a list culled against the camera would put holes in both.
+
+// The six world-space frustum planes of a view-projection matrix (Gribb-Hartmann),
+// normalized so a plane test yields a real distance.
+static std::array<glm::vec4, 6> frustumPlanesOf(const glm::mat4& m) {
+    std::array<glm::vec4, 6> p{};
+    for (int i = 0; i < 3; ++i) {
+        p[i * 2 + 0] = glm::vec4(m[0][3] + m[0][i], m[1][3] + m[1][i],
+                                 m[2][3] + m[2][i], m[3][3] + m[3][i]);
+        p[i * 2 + 1] = glm::vec4(m[0][3] - m[0][i], m[1][3] - m[1][i],
+                                 m[2][3] - m[2][i], m[3][3] - m[3][i]);
+    }
+    for (glm::vec4& pl : p) {
+        const float len = glm::length(glm::vec3(pl));
+        if (len > 1e-6f) pl /= len;
+    }
+    return p;
+}
+
+// Is the sphere at least partly on the inside of the first `count` planes?
+//
+// `count` is 4 for a shadow cascade: the near and far planes of a light's box
+// cut along the direction the light looks, and a caster standing in front of the
+// slice -- outside it, but between it and the sun -- still throws its shadow
+// into it. Culling on those two planes deletes exactly those shadows. Sideways
+// is safe, which is where the saving is anyway.
+static bool sphereVisible(const std::array<glm::vec4, 6>& planes, const glm::vec3& c,
+                   float r, int count = 6) {
+    for (int i = 0; i < count; ++i)
+        if (glm::dot(glm::vec3(planes[i]), c) + planes[i].w < -r) return false;
+    return true;
+}
+
 // Point the currently-bound VAO's per-instance attributes (iPos3, iRot, iHeight,
 // iPhase, iLush) at one streamed grass tile's instance buffer. Mirrors the blade
 // instance layout makeBladeField() sets up, but rebound per tile at draw time.
@@ -485,6 +532,7 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
 // --- Trees ------------------------------------------------------------------
 
 VegetationSystem::~VegetationSystem() {
+    if (m_cullVBO)      glDeleteBuffers(1, &m_cullVBO);
     if (m_grassBaseVBO) glDeleteBuffers(1, &m_grassBaseVBO);
     if (m_grassBaseVAO) glDeleteVertexArrays(1, &m_grassBaseVAO);
     for (TreeSpecies& sp : m_species) {
@@ -613,6 +661,8 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
     }
     std::vector<float> verts;
     const float scale = 1.0f / md.height();
+    // ...and the sphere that holds the normalized mesh, for the instance culling.
+    float boundR2 = 0.0f;
     for (fitzel::ModelPrimitive& p : md.primitives) {
         TreeLOD::Prim tp;
         tp.first  = static_cast<int>(verts.size() / 8);
@@ -622,9 +672,16 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
         if (tp.hasTex)
             tp.tex = Texture::fromPixels(p.texPixels.data(), p.texWidth, p.texHeight, 4);
         for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
-            verts.push_back(p.vertices[i + 0] * scale);
-            verts.push_back((p.vertices[i + 1] - md.minY) * scale);
-            verts.push_back(p.vertices[i + 2] * scale);
+            const float nx = p.vertices[i + 0] * scale;
+            const float ny = (p.vertices[i + 1] - md.minY) * scale;
+            const float nz = p.vertices[i + 2] * scale;
+            // Around the mesh's mid-height, which is where the instance sphere
+            // is centred.
+            const float dy = ny - 0.5f;
+            boundR2 = std::max(boundR2, nx * nx + dy * dy + nz * nz);
+            verts.push_back(nx);
+            verts.push_back(ny);
+            verts.push_back(nz);
             verts.push_back(p.vertices[i + 3]);
             verts.push_back(p.vertices[i + 4]);
             verts.push_back(p.vertices[i + 5]);
@@ -633,6 +690,7 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
         }
         lod.prims.push_back(std::move(tp));
     }
+    lod.boundR = std::max(0.5f, std::sqrt(boundR2));
     glGenVertexArrays(1, &lod.vao);
     glBindVertexArray(lod.vao);
     glGenBuffers(1, &lod.vbo);
@@ -937,6 +995,48 @@ void VegetationSystem::eraseTree(glm::vec2 c, float radius) {
     }
 }
 
+int VegetationSystem::cullInstances(const TreeSpecies& sp, const TreeLOD& lod,
+                                    const glm::mat4& viewProj, int planeCount,
+                                    const glm::vec2& camXZ, float lodMin,
+                                    float lodMax) {
+    const std::array<glm::vec4, 6> planes = frustumPlanesOf(viewProj);
+    m_visInst.clear();
+    m_visInst.reserve(sp.inst.size());
+    for (std::size_t i = 0; i + 5 <= sp.inst.size(); i += 5) {
+        const float scale = sp.inst[i + 4];
+        // The LOD band, decided here as well as in the vertex shader. The shader
+        // still has to do it (a band edge must not depend on who asked), but a
+        // tree rejected there has already been fetched and transformed -- which
+        // for a mesh of this size is the entire cost. Rejecting it here is what
+        // makes a LOD chain worth having.
+        const float d = glm::length(glm::vec2(sp.inst[i], sp.inst[i + 2]) - camXZ);
+        if (d < lodMin || d > lodMax) continue;
+        const glm::vec3 centre(sp.inst[i], sp.inst[i + 1] + 0.5f * scale,
+                               sp.inst[i + 2]);
+        // A margin on top of the mesh's own radius: the crown sways in the wind,
+        // and a tree that pops out at the edge of the screen is a worse bug than
+        // the handful of instances this keeps.
+        const float r = lod.boundR * scale + 0.5f;
+        if (!sphereVisible(planes, centre, r, planeCount)) continue;
+        m_visInst.insert(m_visInst.end(), sp.inst.begin() + i,
+                                          sp.inst.begin() + i + 5);
+    }
+    const int count = static_cast<int>(m_visInst.size() / 5);
+    m_drawnInstances += count;
+    if (count == 0) return 0;
+    if (!m_cullVBO) glGenBuffers(1, &m_cullVBO);
+    glBindBuffer(GL_ARRAY_BUFFER, m_cullVBO);
+    // Orphan first: the buffer was read by the pass before this one, and
+    // overwriting it without saying so makes the driver wait for that draw.
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(m_visInst.size() * sizeof(float)),
+                 nullptr, GL_STREAM_DRAW);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(m_visInst.size() * sizeof(float)),
+                 m_visInst.data(), GL_STREAM_DRAW);
+    return count;
+}
+
 void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
                                       float weather) {
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
@@ -948,15 +1048,24 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     m_treeDepth.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
     m_treeDepth.setFloat("uTreeHeight", 1.0f); // meshes normalized to unit height
     m_treeDepth.setInt("uTex", 0);
-    // Shadows use LOD0 over every instance (no distance banding).
+    // Shadows use LOD0 over every instance (no distance banding) -- but only the
+    // instances THIS cascade can see. A cascade is a slice of the view, and
+    // drawing the whole forest into each of them was the same trees five times
+    // over: it is the single most expensive thing a dense forest did.
     for (const TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.count == 0 || sp.lods.empty()) continue;
         const TreeLOD& lod = sp.lods.front();
+        // Four planes, not six: a tree standing between the sun and the slice is
+        // outside the box and still casts into it (see sphereVisible).
+        const int vis = cullInstances(sp, lod, lightSpace, 4,
+                                      glm::vec2(0.0f), 0.0f, 1e9f);
+        if (vis == 0) continue;
         glBindVertexArray(lod.vao);
+        bindTreeInstanceAttribs(m_cullVBO);
         for (const TreeLOD::Prim& tp : lod.prims) {
             if (tp.hasTex) tp.tex.bind(0);
             m_treeDepth.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-            glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, sp.count);
+            glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, vis);
         }
     }
     glBindVertexArray(0);
@@ -998,11 +1107,18 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
             hi = std::max(hi, lo);
             m_tree.setFloat("uLodMin", lo);
             m_tree.setFloat("uLodNear", hi);
+            // Only the trees this view can see, and only the ones this LOD is
+            // responsible for. Per pass, because the water reflection asks with
+            // a different matrix (see cullInstances).
+            const int vis = cullInstances(sp, lod, c.viewProj, 6,
+                                          glm::vec2(c.camPos.x, c.camPos.z), lo, hi);
+            if (vis == 0) continue;
             glBindVertexArray(lod.vao);
+            bindTreeInstanceAttribs(m_cullVBO);
             for (const TreeLOD::Prim& tp : lod.prims) {
                 if (tp.hasTex) tp.tex.bind(0);
                 m_tree.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-                glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, sp.count);
+                glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, vis);
             }
         }
     }
@@ -1049,8 +1165,26 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     // Master toggle + one-line status so the section reads at a glance.
     ImGui::Checkbox("Trees", &treeEnabled);
     ImGui::SameLine();
-    ImGui::TextDisabled("%d species  -  %d drawn",
+    ImGui::TextDisabled("%d species  -  %d in range",
                         static_cast<int>(m_species.size()), treeCount);
+    // What the frame actually submitted, summed over the main view, the water
+    // reflection and every shadow cascade. This is the number that decides the
+    // cost -- a forest standing in four cascades is drawn five times over -- and
+    // it is invisible everywhere else in the editor.
+    if (treeEnabled && treeCount > 0) {
+        int verts = 0;
+        for (const TreeSpecies& sp : m_species)
+            if (!sp.lods.empty())
+                for (const TreeLOD::Prim& tp : sp.lods.front().prims)
+                    verts = std::max(verts, tp.first + tp.count);
+        ImGui::TextDisabled("%d instances submitted last frame (%d k vertices each)",
+                            m_drawnLast, verts / 1000);
+        if (verts > 60000)
+            ui::hint("That mesh is %d vertices, and every instance pays all of "
+                     "them in every pass it survives. At this size a billboard "
+                     "past 60 m and one coarse LOD are worth more than every "
+                     "other setting in this panel put together.", verts);
+    }
 
     // Source toggles: use generated and/or painted trees, in any combination.
     ImGui::BeginDisabled(!treeEnabled);

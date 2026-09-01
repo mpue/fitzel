@@ -91,6 +91,17 @@ public:
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
     const std::vector<float>& treeInstances() const { return m_treeInst; }
 
+    // Tree instances actually submitted last frame, summed over every pass (the
+    // main view, the water reflection and each shadow cascade). Against
+    // treeCount -- which counts each tree once -- this says how many times over
+    // the forest is being drawn, which is the number that decides the frame.
+    int drawnInstances() const { return m_drawnLast; }
+
+    // Roll the per-frame counters. Call once at the top of a frame, before the
+    // shadow cascades -- they are the first pass that draws trees, and they are
+    // the reason the count is worth having.
+    void beginFrame() { m_drawnLast = m_drawnInstances; m_drawnInstances = 0; }
+
     // One detail level of a tree species: a mesh file dropped over the terrain,
     // shown only within [prev.dist, dist) of the camera (the last mesh LOD runs
     // out to the billboard start / far plane). LOD0 is the highest detail.
@@ -101,6 +112,13 @@ public:
                       int first = 0, count = 0; bool cutout = false; };
         std::vector<Prim> prims;     // per-material draw groups
         std::uint32_t vao = 0, vbo = 0;
+        // Bounding-sphere radius of the loaded mesh in UNIT-HEIGHT units, about
+        // the point half a height up -- so an instance's world sphere is
+        // (pos + (0, 0.5*scale, 0), boundR * scale). Measured on load rather
+        // than assumed, because a bush is wider than it is tall and a poplar is
+        // the other way round, and a guessed radius either clips crowns at the
+        // screen edge or gives the culling nothing to reject.
+        float boundR = 0.75f;
     };
     // A configurable tree type: an ordered LOD chain + a far billboard, its own
     // density/size and its own GPU instance buffer (5 floats/tree: pos3,yaw,scale).
@@ -217,6 +235,13 @@ private:
     // Load a .glb into `lod` (fills prims + creates its VAO/VBO bound to the
     // species' instance buffer). Returns false if the model failed to load.
     bool loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod);
+    // The instances of `sp` that a pass with this view-projection can see AND
+    // that belong to this LOD's distance band, uploaded to the shared cull
+    // buffer; returns how many to draw. `planeCount` is 4 for a shadow cascade
+    // -- see sphereVisible in the .cpp.
+    int  cullInstances(const TreeSpecies& sp, const TreeLOD& lod,
+                       const glm::mat4& viewProj, int planeCount,
+                       const glm::vec2& camXZ, float lodMin, float lodMax);
     void scanTreeAssets(); // populate m_modelFiles / m_texFiles from the search dirs
     // Absolute path of a model/billboard picked by file name. Falls back to the
     // built-in content dir when the name isn't in the scanned list (e.g. a scene
@@ -253,6 +278,18 @@ private:
     std::string              m_modelDir, m_texDir;
     std::string              m_projectDir;  // open project, scanned too ("" = none)
     const float              m_treeRadius = 120.0f;
+    // --- Instance culling ----------------------------------------------------
+    // The subset of a species' instances a given pass can actually see, rebuilt
+    // per pass into one reused GPU buffer. See drawTrees for why a tree mesh
+    // cannot be left to the vertex shader to reject.
+    std::vector<float>       m_visInst;
+    std::uint32_t            m_cullVBO = 0;
+    // How many instances the last frame's passes drew, for the Trees panel: the
+    // difference between this and treeCount is what the culling saved, and it is
+    // the only place an author can see that a forest is being drawn six times
+    // over because it stands in every shadow cascade.
+    int                      m_drawnInstances = 0;
+    int                      m_drawnLast = 0;
     std::mt19937             m_trng{555u};
     // Combined positions of every species (5 floats/tree) -- feeds flower
     // clustering around trunks and the treeInstances() accessor.

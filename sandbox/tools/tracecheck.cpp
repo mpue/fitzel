@@ -159,6 +159,13 @@ int main() {
           std::to_string(viewtrace::samplesDone(st)) + " / " +
               std::to_string(st.samples));
 
+    // There is a picture to PUT somewhere. Worth a row of its own because the
+    // viewport draws whatever this hands over and nothing else: the day the
+    // preview started resolving on the card, everything above still passed
+    // while a zero here would have left the viewport black.
+    check(viewtrace::texture(st) != 0u, "and there is a texture to show for it",
+          "texture id " + std::to_string(viewtrace::texture(st)));
+
     // Sixty more frames -- three seconds of scene time, well past every timer in
     // there. A preview that restarts on its own drops back to a low count here,
     // and that is precisely the bug this row exists for.
@@ -176,17 +183,19 @@ int main() {
     check(viewtrace::samplesDone(st) == 0 || st.status.find("settle") != std::string::npos,
           "a moved camera arms a restart", st.status);
     // The restart is what CLEARS the accumulator, so the evidence that one
-    // happened is the count DROPPING -- not the count being above zero, which
-    // it still is from the view before. Asking the weak question here passed
-    // while doing nothing, which is its own small lesson.
+    // happened is st.restarts going up. It used to be the sample count DROPPING,
+    // which was the right question while a preview took many frames to reach its
+    // target -- and became unanswerable the day the tracer got quick enough to
+    // get back there inside one frame. A test that measures the machine's speed
+    // instead of the code's behaviour fails on the good news.
+    const int restartsBefore = st.restarts;
     frames = 0;
-    while (viewtrace::samplesDone(st) >= settled && frames < 20) {
+    while (st.restarts == restartsBefore && frames < 20) {
         frame(0.05);
         ++frames;
     }
-    check(viewtrace::samplesDone(st) < settled, "and starts the new view over",
-          "count fell to " + std::to_string(viewtrace::samplesDone(st)) + " after " +
-              std::to_string(frames) + " frames");
+    check(st.restarts > restartsBefore, "and starts the new view over",
+          "started over after " + std::to_string(frames) + " frames");
 
     frames = 0;
     while (viewtrace::samplesDone(st) < st.samples && frames < 200) {

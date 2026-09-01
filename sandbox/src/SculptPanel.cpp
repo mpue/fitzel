@@ -12,15 +12,20 @@ void drawPanel(const PanelState& s) {
                 s.flowerPaintMode = s.paintMode = s.scatterMode = false; // brush owns the LMB
         if (s.sculptMode)
             ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
-                "Hold LMB to sculpt | Alt inverts raise/lower");
+                s.tool == 8 ? "Press and drag to pull the ground out"
+                            : "Hold LMB to sculpt | Alt inverts raise/lower");
         else
             ImGui::TextDisabled("Enable to reshape the ground with the brush");
 
         const char* tools[] = {"Raise", "Lower", "Smooth", "Flatten",
-                               "Erode", "Stamp", "Noise", "Carve"};
+                               "Erode", "Stamp", "Noise", "Carve", "Pull"};
         ImGui::Combo("Tool", &s.tool, tools, IM_ARRAYSIZE(tools));
         ImGui::SliderFloat("Radius", &s.radius, 1.0f, 40.0f, "%.1f m");
-        ImGui::SliderFloat("Strength", &s.strength, 0.05f, 1.0f);
+        // Pull has no rate: it is not a dab repeated while you hold the button,
+        // it is one gesture whose height is wherever you let go. So the strength
+        // slider would be a knob that does nothing, which is worse than no knob.
+        if (s.tool != 8)
+            ImGui::SliderFloat("Strength", &s.strength, 0.05f, 1.0f);
         if (s.tool == 3)
             ImGui::SliderFloat("Flatten height", &s.flattenHeight,
                                -40.0f, 60.0f, "%.1f m");
@@ -46,6 +51,26 @@ void drawPanel(const PanelState& s) {
             }
             ImGui::TextColored(ImVec4(0.8f, 0.6f, 1.0f, 1.0f),
                                "Click to stamp | Alt inverts (digs in)");
+        }
+
+        if (s.tool == 8) {
+            ImGui::SliderFloat("Proportion", &s.pullFalloff, 0.5f, 6.0f, "%.2f");
+            ImGui::TextDisabled(
+                s.pullFalloff < 0.85f ? "Broad shoulder: the whole disc comes up"
+              : s.pullFalloff > 1.6f  ? "Sharp peak: only the middle follows"
+                                      : "Smooth hill");
+            // Steppers, not a drag. This is the whole point of the field: a
+            // click on the ground pulls it out by exactly this much, so the tool
+            // can be used without ever holding a button down and moving -- and a
+            // negative number pushes in, which is why there is no modifier for
+            // that either.
+            ImGui::InputFloat("Height", &s.pullHeight, 0.5f, 2.0f, "%.2f m");
+            s.pullHeight = glm::clamp(s.pullHeight, -200.0f, 200.0f);
+            ImGui::TextColored(ImVec4(0.6f, 0.9f, 1.0f, 1.0f),
+                "Click the ground to pull it out by that much");
+            ImGui::TextDisabled("Or hold and move up/down to dial it in "
+                                "(Shift = fine). Either way the ground follows "
+                                "the number -- it never piles up.");
         }
 
         // Grid spacing only makes sense to change before any edits exist (the map

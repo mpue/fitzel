@@ -263,7 +263,9 @@ Course solve(Kind k, const Style& st, const std::vector<glm::vec2>& flat,
              const std::vector<float>& bias, const std::vector<int>& ptSample,
              const std::function<float(float, float)>& groundAt) {
     Course c;
-    const int n = static_cast<int>(flat.size());
+    // Not const: the falls are resampled below (step 6b), which is the one stage
+    // that adds stations rather than only reading them.
+    int n = static_cast<int>(flat.size());
     if (n < 2) return c;
 
     // 1) The ground under the author's line, in the order they drew it.
@@ -519,7 +521,301 @@ Course solve(Kind k, const Style& st, const std::vector<glm::vec2>& flat,
         for (int i = 1; i < n; ++i) H[i] = std::min(H[i], H[i - 1]);
     }
 
+
+    // 6b) The falls, resolved. -------------------------------------------------
+    //
+    // Up to here a fall is two stations and a number. The samples are two metres
+    // apart IN PLAN and a cliff is not, so the whole height of the drop happens
+    // between one station and the next -- and a surface drawn over that does
+    // exactly what the profile does: it turns a right angle at the lip, runs down
+    // the rock as a flat ribbon, and turns another one at the bottom. Both of
+    // those creases are the first thing anybody sees, and no amount of shading
+    // fixes a crease.
+    //
+    // What water does at a lip is not a corner. It arrives MOVING, and a moving
+    // thing that runs out of ledge follows a parabola: y = -g x^2 / 2v^2, from
+    // the lip, in the plan direction it was already travelling. So the surface
+    // over a fall is that parabola for as long as it stands ABOVE the ground the
+    // profile had, and where the rock comes back up to meet it -- a cascade
+    // rather than a free fall -- the rock wins again.
+    //
+    // Taking the LARGER of the two is what makes that one rule instead of two
+    // cases, and it is what buys the lip its rounding for nothing: a parabola
+    // leaves its start horizontal, so it is already tangent to the pool above the
+    // lip and there is no corner left to round. The same maximum, smoothed, eases
+    // the jet into the plunge pool at the bottom instead of planting it there.
+    //
+    // Both of those need STATIONS to be drawn with, and a two-metre plan spacing
+    // has none to spare -- so the fall's own stretch is resampled, uniformly in
+    // plan, which for a parabola is uniform in curvature: fine where it bends
+    // over the lip, coarse down the straight part of the drop where two points
+    // would do.
+    //
+    // The price of the parabola is that the water is then somewhere the ground is
+    // not, which the carve has to be told or it would build a ramp of earth under
+    // a jet hanging in mid-air. That is what Course::air is: how far this
+    // station's water stands clear of the ground it came off.
+    c.air.assign(n, 0.0f);
+    {
+        constexpr float kG = 9.81f;
+        // How fast the water goes over a lip. Critical flow -- a channel at a
+        // ledge accelerates to it whatever it was doing before -- with the
+        // authored current as a floor, so a mill race throws its water further
+        // than a pond outlet does and neither of them needs a knob for it.
+        const float vLip = std::max(std::max(st.current, 0.6f),
+                                    std::sqrt(kG * glm::clamp(st.depth, 0.05f, 4.0f)));
+        // Every step in the FINISHED profile, which is not the same list as the
+        // falls found in step 5 and has to be re-derived here rather than reused.
+        //
+        // Two reasons. The first is that step 5 threw away the short ones: that
+        // demotion is about the POOLS -- a knee-high drop does not deserve a flat
+        // above it and a plunge below -- and it has no business deciding whether
+        // the surface may be a curve. A half-metre drop over half a metre of
+        // ground is a right angle in the water exactly like a fifty-metre one is,
+        // and a hillside of them is the staircase a brook comes out as.
+        //
+        // The second is subtler and was the actual bug. Step 5 WRITES to the
+        // profile: it flattens a pool above every lip, and that flat lands in the
+        // middle of whatever steep run happened to be there -- so a stretch that
+        // was one long fall becomes fall, shelf, fall, and the second half of it
+        // is no longer the start of anything. Read the old flags and that second
+        // lip has no jet, keeps its right angle, and is the one crease left in a
+        // river where every other one was rounded.
+        std::vector<char> ledge(n, 0);
+        for (int i = 1; i < n; ++i) {
+            const float ds = std::max(c.s[i] - c.s[i - 1], 1e-4f);
+            if ((H[i - 1] - H[i]) / ds > st.fallSlope) ledge[i] = 1;
+        }
+        // One jet per step: where it leaves, how high, how hard it bends, and how
+        // far downstream it gets before it has fallen the whole drop.
+        struct Jet { float s0, y0, k, reach, drop, span; };
+        std::vector<Jet> jets;
+        for (int i = 1; i < n; ++i) {
+            if (!ledge[i] || ledge[i - 1]) continue;    // first segment of a run
+            int b = i;
+            while (b + 1 < n && ledge[b + 1]) ++b;
+            Jet j;
+            j.drop  = std::max(H[i - 1] - H[b], 0.05f);
+            j.s0    = c.s[i - 1];
+            j.y0    = H[i - 1];
+            j.k     = kG / (2.0f * vLip * vLip);
+            j.reach = vLip * std::sqrt(2.0f * j.drop / kG);
+            // How far downstream this step is anybody's business: the flight, or
+            // the whole run of steep ground, whichever is longer, plus a margin.
+            //
+            // The two are different things and both matter. A vertical ledge is
+            // over in a metre and the water flies for ten; a cascade runs down a
+            // hundred metres of rock and the jet only covers its first few. The
+            // far end of THAT is a corner too -- the place a long chute flattens
+            // out into a pool -- and it needs stations for the same reason the
+            // lip does.
+            j.span  = std::max(j.reach * 1.9f, (c.s[b] - j.s0) + 1.5f);
+            jets.push_back(j);
+        }
+
+        if (!jets.empty()) {
+            // The stations the jets need, merged into the ones the line already
+            // had. Uniform in plan, which for a parabola is uniform in TURNING --
+            // the arc bends hardest at the lip and is nearly straight by the
+            // bottom, and a plan-uniform spacing puts the samples where the bend
+            // is without having to be told.
+            //
+            // Half again past the reach, because the landing needs stations too:
+            // the arc stops being the answer where it meets the pool, and a
+            // transition with no station in it is a corner however smoothly it
+            // was computed.
+            std::vector<float> S = c.s;
+            // A budget over the whole course, not per step. A quarter-metre
+            // station wherever water is falling is cheap on one waterfall and is
+            // not cheap on a line drawn straight down a mountainside of ledges --
+            // that is thousands of stations, each of them a row of the surface
+            // strip and a handful of cells of the carve. Where the course asks
+            // for more than this, every step is thinned by the same factor, so
+            // what gets coarser is the whole river rather than whichever falls
+            // happened to be solved last.
+            constexpr int kMaxJetStations = 4000;
+            int want = 0;
+            for (const Jet& j : jets)
+                want += glm::clamp(
+                    static_cast<int>(std::lround(j.span / 0.25f)), 4, 240);
+            const float thin = want > kMaxJetStations
+                             ? static_cast<float>(kMaxJetStations) / want : 1.0f;
+            for (const Jet& j : jets) {
+                const int m = glm::clamp(
+                    static_cast<int>(std::lround(j.span / 0.25f * thin)), 4, 240);
+                for (int q = 1; q <= m; ++q)
+                    S.push_back(j.s0 + j.span * static_cast<float>(q) /
+                                       static_cast<float>(m));
+            }
+            std::sort(S.begin(), S.end());
+            {
+                std::vector<float> keep;
+                keep.reserve(S.size());
+                for (float v : S) {
+                    if (v < 0.0f || v > c.length) continue;
+                    // Never two stations a few millimetres apart: a sliver
+                    // segment carries a full station's worth of drop over no
+                    // ground at all, which is a corner by arithmetic.
+                    if (!keep.empty() && v - keep.back() < 0.08f) continue;
+                    keep.push_back(v);
+                }
+                if (keep.empty() || keep.back() < c.length - 1e-4f)
+                    keep.push_back(c.length);
+                S.swap(keep);
+            }
+
+            // The old line read at an arbitrary plan distance. Everything the
+            // resample carries over -- the position, the author's bias -- comes
+            // through here, so the new stations sit exactly ON the old polyline
+            // rather than near it.
+            int walk = 0;
+            auto at = [&](float sv, float& t) {
+                while (walk + 1 < n - 1 && c.s[walk + 1] < sv) ++walk;
+                while (walk > 0 && c.s[walk] > sv) --walk;
+                const float span = std::max(c.s[walk + 1] - c.s[walk], 1e-6f);
+                t = glm::clamp((sv - c.s[walk]) / span, 0.0f, 1.0f);
+            };
+
+            const int m = static_cast<int>(S.size());
+            std::vector<glm::vec2> P2(m);
+            std::vector<float>     H2(m), B2(m), A2(m, 0.0f), G2(m), R2(m);
+            std::vector<char>      zone(m, 0);
+            for (int i = 0; i < m; ++i) {
+                float t = 0.0f;
+                at(S[i], t);
+                P2[i] = glm::mix(P[walk], P[walk + 1], t);
+                B2[i] = glm::mix(B[walk], B[walk + 1], t);
+                const float rock = glm::mix(H[walk], H[walk + 1], t);
+                R2[i] = rock;
+                float y = rock;
+                for (const Jet& j : jets) {
+                    const float x = S[i] - j.s0;
+                    // A metre of margin either side, so the rounding pass below
+                    // reaches the pool the jet lands in and not just the jet.
+                    if (x > -1.0f && x < j.span + 1.0f) zone[i] = 1;
+                    if (x <= 0.0f || x > j.reach * 1.9f) continue;
+                    const float jet = j.y0 - j.k * x * x;
+                    if (jet <= y - 3.0f) continue;
+                    // Rounded where the two meet, so the jet neither snaps onto
+                    // the rock face nor lands on the pool with a crease. The
+                    // radius grows with the fall: a two-metre step is rounded in
+                    // centimetres, a fifty-metre one over a couple of metres.
+                    //
+                    // ...and it grows again with how steeply the arc is falling
+                    // where it meets, because the radius is a height and what has
+                    // to be rounded is an ANGLE. Two metres of height at the lip
+                    // is two metres of ground; the same two metres where the jet
+                    // is dropping four to one is half a metre of ground, which is
+                    // one station, which is a crease. The cap is what keeps the
+                    // smoothing honest: a smooth maximum lifts the result by at
+                    // most an eighth of its radius, so this one can float the
+                    // water no more than about forty centimetres over its pool.
+                    // A metre of GROUND, expressed in the height units the two
+                    // are compared in. That conversion is the whole trick: the
+                    // radius is a height and what has to be rounded is an ANGLE,
+                    // so a fixed height rounds a lip generously and a landing
+                    // where the jet drops four to one not at all. At the lip the
+                    // slope is zero and so is the radius, which is right -- a
+                    // parabola leaves horizontally and has nothing to round.
+                    //
+                    // The cap keeps it honest: a smooth maximum lifts its result
+                    // by at most an eighth of the radius, so this can float the
+                    // water half a metre over its plunge pool and no more --
+                    // which is about what the boil at the foot of a fall stands
+                    // proud by anyway.
+                    const float slope = 2.0f * j.k * x;
+                    const float r = glm::clamp(slope * 1.0f, 0.30f, 4.0f);
+                    const float h = glm::clamp(0.5f + 0.5f * (jet - y) / r,
+                                               0.0f, 1.0f);
+                    const float sm = glm::mix(y, jet, h) + r * h * (1.0f - h) * 0.5f;
+                    if (sm > y) y = sm;
+                }
+                H2[i] = y;
+            }
+
+            // What the smooth maximum cannot do on its own: round the LANDING.
+            //
+            // It works in height, and at the foot of a fall the arc and the pool
+            // cross so steeply that even a generous height radius is a quarter of
+            // a metre of ground -- one station, which is a corner. So the jets'
+            // own stretches get a few passes of an ordinary smoothing filter
+            // afterwards, which works in the direction the corner is actually
+            // measured in. It is a no-op down the straight of a drop (a filter
+            // does nothing to a line) and it costs the crest a couple of
+            // centimetres, which is a shape that was already right.
+            // Weighted by where the neighbours actually ARE, not by how many
+            // there are. The jets' stations are a quarter of a metre apart and the
+            // line's own are two metres, and an index-weighted filter across that
+            // boundary averages a station next door with one three houses down --
+            // which does not smooth the step, it invents a new one.
+            for (int pass = 0; pass < 8; ++pass) {
+                std::vector<float> sm = H2;
+                for (int i = 1; i + 1 < m; ++i) {
+                    if (!zone[i]) continue;
+                    const float run = S[i + 1] - S[i - 1];
+                    if (run < 1e-5f) continue;
+                    const float lin = glm::mix(H2[i - 1], H2[i + 1],
+                                               (S[i] - S[i - 1]) / run);
+                    sm[i] = glm::mix(H2[i], lin, 0.5f);
+                }
+                H2.swap(sm);
+            }
+            // The descent guarantee is the whole promise of this module, and
+            // neither a smooth maximum nor a filter is monotone on paper. Held
+            // here, not hoped for.
+            for (int i = 1; i < m; ++i) H2[i] = std::min(H2[i], H2[i - 1]);
+            // ...and the airborne fraction is re-derived from where the water
+            // ended up, not from where it was before the rounding. It is what
+            // stops the carve building a ramp under a jet, so it has to describe
+            // the profile that is actually going to be drawn.
+            for (int i = 0; i < m; ++i)
+                A2[i] = glm::clamp((H2[i] - R2[i]) / 0.6f, 0.0f, 1.0f);
+
+            // The ground is re-asked rather than interpolated: a station inserted
+            // halfway down a cliff face is nowhere near the average of the two it
+            // sits between, and the carve under it reads this number.
+            for (int i = 0; i < m; ++i)
+                G2[i] = groundAt ? groundAt(P2[i].x, P2[i].y) : 0.0f;
+
+            // A control point names its stretch by station index, so the indices
+            // move with the stations: the first new station at or after the old
+            // one, which always exists because the resample only ever ADDS.
+            {
+                int seg = 0;
+                for (int& ps : c.ptSample) {
+                    const float want = c.s[glm::clamp(ps, 0, n - 1)];
+                    while (seg + 1 < m && S[seg] < want) ++seg;
+                    ps = seg;
+                }
+            }
+
+            P.swap(P2);
+            H.swap(H2);
+            B.swap(B2);
+            c.ground.swap(G2);
+            c.air.swap(A2);
+            c.s.swap(S);
+            n = m;
+            c.wander.assign(n, 0.0f);
+            for (int i = 0; i < n; ++i)
+                c.wander[i] = wander(c.s[i], st.meanderLength, st.seed);
+            // Which stations are a fall is now a question about the RESAMPLED
+            // profile. The plunge scoop and the whitewater both read it, and the
+            // old flags against the new stations would put the scoop under the
+            // wrong stretch of river.
+            fall.assign(n, 0);
+            for (int i = 1; i < n; ++i) {
+                const float ds = std::max(c.s[i] - c.s[i - 1], 1e-4f);
+                if ((H[i - 1] - H[i]) / ds > st.fallSlope) fall[i] = 1;
+            }
+        }
+    }
+
     // 7) Widths, the plunge scoop, and the surface line itself.
+    // The line is sized HERE and not back at step 2, because step 6b may have
+    // added stations to it since -- and a course whose line is one station short
+    // of its own widths is a buffer overrun, not a short river.
+    c.line.resize(n);
     c.half.resize(n);
     c.deep.resize(n);
     c.shift.assign(n, 0.0f);
@@ -583,7 +879,13 @@ Course solve(Kind k, const Style& st, const std::vector<glm::vec2>& flat,
     // half <= 0.8 R, the radius is always at least 0.625 of the full width, and
     // no drawn line whatsoever can invert a section.
     for (int i = 0; i < n; ++i) {
-        const int a = std::max(i - 2, 0), b = std::min(i + 2, n - 1);
+        // A window in METRES, not in stations. The fall resample leaves stations
+        // a few centimetres apart, and a fixed +/-2 there measures the turn of a
+        // stretch shorter than the noise in it -- which reports a hairpin on a
+        // straight line and pinches the channel to nothing at every waterfall.
+        int a = i, b = i;
+        while (a > 0     && c.s[i] - c.s[a] < 4.0f) --a;
+        while (b < n - 1 && c.s[b] - c.s[i] < 4.0f) ++b;
         const float run = std::max(c.s[b] - c.s[a], 1e-3f);
         const float dot = glm::clamp(glm::dot(c.dir[a], c.dir[b]), -1.0f, 1.0f);
         const float turn = std::acos(dot) / run;          // 1 / radius
@@ -709,7 +1011,11 @@ Surface surface(Kind k, const Style& st, const Course& c) {
         // A hair inside the waterline: the carve puts the ground at exactly the
         // water surface there, and two coplanar surfaces meeting edge-on is a
         // z-fight the whole length of the bank.
-        const float hw = c.half[i] * 0.99f;
+        // A jet in mid air is not held out by its banks any more: it necks in
+        // as it accelerates, which is most of what makes a fall read as one
+        // thing leaving a ledge rather than as a ribbon pinned to a cliff.
+        const float air = i < static_cast<int>(c.air.size()) ? c.air[i] : 0.0f;
+        const float hw = c.half[i] * 0.99f * (1.0f - 0.22f * air);
         const float sh = glm::clamp(c.shift[i], -c.half[i] * 0.85f,
                                      c.half[i] * 0.85f);
         for (int j = 0; j < cols; ++j) {
@@ -734,12 +1040,13 @@ Surface surface(Kind k, const Style& st, const Course& c) {
             const float dm = u * hw;
             const float uu = (dm >= sh) ? (dm - sh) / std::max(c.half[i] - sh, 1e-3f)
                                         : (sh - dm) / std::max(c.half[i] + sh, 1e-3f);
-            // w is the local speed in m/s, and it is there to be READ, never to
-            // be multiplied by a clock -- doing that is what made the pattern
-            // tear (see Course::flow).
+            // ...and w says whether this is water on a bed at all: see
+            // Course::air. The shader draws a flying sheet as filaments and a
+            // lying one as ripples, and nothing else in the vertex can tell it
+            // which it has -- a curtain's normal alone cannot, because a steep
+            // cascade still has its water firmly on the rock.
             v.paint    = glm::vec4(depthFactor(k, st, uu) * c.deep[i],
-                                   c.white[i], hw,
-                                   st.flowSpeed * (1.0f + 2.0f * c.white[i]));
+                                   c.white[i], hw, air);
             lo = glm::min(lo, v.position);
             hi = glm::max(hi, v.position);
             md.vertices.push_back(v);
@@ -984,16 +1291,27 @@ std::vector<SprayPoint> spray(const Style& st, const Course& c) {
     // lands. Quiet stretches contribute nothing at all -- an emitter that never
     // emits still costs a pool slot every frame.
     const float spacing = std::max(2.5f, st.width * 0.6f);
+    // Spaced along the WATER, not along the map. A fifty-metre fall covers two
+    // metres of plan distance, so spacing them by `s` puts one emitter on the
+    // whole of it -- and a waterfall that mists at one point is a waterfall
+    // nobody believes. `sSurf` is the fall's own length, which is what the mist
+    // is actually spread over.
     float next = -1e9f;
     for (int i = 1; i < n; ++i) {
-        if (c.white[i] < 0.55f || c.slope[i] < st.rapidSlope) continue;
-        if (c.s[i] - next < spacing) continue;
-        next = c.s[i];
+        const float air = i < static_cast<int>(c.air.size()) ? c.air[i] : 0.0f;
+        if (c.white[i] < 0.55f || (c.slope[i] < st.rapidSlope && air < 0.2f))
+            continue;
+        if (c.sSurf[i] - next < spacing) continue;
+        next = c.sSurf[i];
         SprayPoint sp;
         sp.pos      = c.line[i];
         sp.dir      = glm::normalize(glm::vec3(c.dir[i].x, -0.25f, c.dir[i].y));
-        sp.strength = glm::clamp(c.white[i] * (0.4f + c.slope[i] * 1.4f), 0.0f, 1.0f);
-        sp.width    = c.half[i] * 1.6f;
+        // Falling water throws far more of it than fast water does, and the
+        // bottom of a drop throws the most of all -- so the strength follows the
+        // gradient AND how long this water has been in the air.
+        sp.strength = glm::clamp(c.white[i] * (0.4f + c.slope[i] * 1.4f + air),
+                                 0.0f, 1.0f);
+        sp.width    = c.half[i] * (1.6f + air);
         out.push_back(sp);
     }
     return out;

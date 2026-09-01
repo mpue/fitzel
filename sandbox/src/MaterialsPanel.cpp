@@ -57,6 +57,16 @@ void drawPanel(const PanelState& s) {
             ++matShown;
             const std::string lbl = s.materials[i].name + "##m" + std::to_string(i);
             if (ImGui::Selectable(lbl.c_str(), i == s.sel)) s.sel = i;
+            // Draggable, with the same GUID payload the Assets browser sends: the
+            // viewport drops it onto whatever is under the cursor -- one face of a
+            // modelled mesh, or the whole object. A material is a thing you point
+            // at here and want over there, and this is the shortest way to say so.
+            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+                const std::string g = s.materials[i].assetId.toString();
+                ImGui::SetDragDropPayload("ASSET_GUID", g.data(), g.size());
+                ImGui::TextUnformatted(s.materials[i].name.c_str());
+                ImGui::EndDragDropSource();
+            }
         }
         // Say what the filter is holding back rather than leaving an
         // empty list to be read as an empty library. The editor below

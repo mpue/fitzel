@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <unordered_map>
 
 namespace {
 
@@ -19,6 +20,130 @@ int addVert(EditMesh& m, const glm::vec3& p, const glm::vec4& w) {
     m.verts.push_back(p);
     m.paint.push_back(w);
     return static_cast<int>(m.verts.size()) - 1;
+}
+
+// Add a face wearing `mat`, the same bargain as addVert one array over: `faceMat`
+// runs parallel to `faces`, so nothing appends to one of them alone. A face grown
+// out of another one inherits its material, which is what makes extruding a brick
+// wall produce brick sides rather than four bare stubs.
+int addFace(EditMesh& m, std::vector<int> loop, const fitzel::AssetId& mat) {
+    m.syncFaceMat();
+    m.faces.push_back(std::move(loop));
+    m.faceMat.push_back(mat);
+    return static_cast<int>(m.faces.size()) - 1;
+}
+
+// Both ends of an edge in one key, order-independent -- the same edge is (a, b)
+// in one face and (b, a) in its neighbour, and they have to hash alike or every
+// face would think it stands alone.
+std::uint64_t edgeKey(int a, int b) {
+    const std::uint32_t lo = static_cast<std::uint32_t>(std::min(a, b));
+    const std::uint32_t hi = static_cast<std::uint32_t>(std::max(a, b));
+    return (static_cast<std::uint64_t>(hi) << 32) | lo;
+}
+
+// One face of a loop cut: which quad, which of its four edges the cut crosses,
+// and which END of that edge `t` is measured from. That last one is the whole
+// bookkeeping of the walk -- neighbouring quads wind opposite ways round their
+// shared edge, so "0.3 along it" means two different points depending on which
+// face is asked, and a ring that forgot to carry the reference end would cut a
+// zigzag around the mesh instead of a line.
+struct RingStep {
+    int face = -1;
+    int edge = 0;   // index into the face's loop: the edge (fv[e], fv[e+1])
+    int ref  = -1;  // the end of that edge `t` counts from
+};
+
+// Faces meeting at each edge, at most the two a surface can have. Built once per
+// loop cut: the mesh carries no adjacency of its own, and deriving it on demand
+// is cheaper in every sense than keeping a half-edge structure in step through
+// every operation above.
+using EdgeMap = std::unordered_map<std::uint64_t, std::pair<int, int>>;
+
+EdgeMap buildEdges(const EditMesh& m) {
+    EdgeMap e;
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        const std::vector<int>& fv = m.faces[f];
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            auto& slot = e.try_emplace(edgeKey(fv[i], fv[(i + 1) % fv.size()]),
+                                       -1, -1).first->second;
+            if (slot.first < 0)       slot.first  = static_cast<int>(f);
+            else if (slot.second < 0) slot.second = static_cast<int>(f);
+            // A third face on one edge is not a surface. Ignored rather than
+            // rejected: the cut stops there, which is the honest answer.
+        }
+    }
+    return e;
+}
+
+// Walk the band one quad at a time, always leaving through the edge OPPOSITE the
+// one it came in by -- which is what makes the cut a straight line rather than a
+// wander. Stops at anything that is not an unvisited quad: the mesh's border, an
+// n-gon, or the face it started from (a closed band around a box).
+void walkRing(const EditMesh& m, const EdgeMap& edges, RingStep from,
+              std::vector<char>& visited, std::vector<RingStep>& out) {
+    RingStep cur = from;
+    while (cur.face >= 0 && !visited[cur.face]) {
+        visited[cur.face] = 1;
+        out.push_back(cur);
+
+        const std::vector<int>& fv = m.faces[cur.face];
+        const int j   = cur.edge;
+        const int opp = (j + 2) % 4;
+        // The end of the far edge that corresponds to `ref`: the one joined to it
+        // by a side of the quad rather than by the cut.
+        const int oppRef = (fv[j] == cur.ref) ? fv[(j + 3) % 4] : fv[(j + 2) % 4];
+
+        const int a = fv[opp], b = fv[(opp + 1) % 4];
+        auto it = edges.find(edgeKey(a, b));
+        if (it == edges.end()) break;
+        const int next = (it->second.first == cur.face) ? it->second.second
+                                                        : it->second.first;
+        if (next < 0 || m.faces[next].size() != 4 || visited[next]) break;
+
+        const std::vector<int>& nv = m.faces[next];
+        int ne = -1;
+        for (int k = 0; k < 4 && ne < 0; ++k) {
+            const int p = nv[k], q = nv[(k + 1) % 4];
+            if ((p == a && q == b) || (p == b && q == a)) ne = k;
+        }
+        if (ne < 0) break;
+        cur = RingStep{next, ne, oppRef};
+    }
+}
+
+// The whole band `face` lies in, in `dir` (0 or 1), start face included. Walked
+// in both directions: an open band -- a wall, a strip of steps -- has the
+// starting face somewhere in its middle, and a one-way walk would cut only the
+// half of it that happens to lie ahead.
+std::vector<RingStep> loopRing(const EditMesh& m, int face, int dir) {
+    std::vector<RingStep> ring;
+    if (!okFace(m, face) || m.faces[face].size() != 4) return ring;
+    const EdgeMap edges = buildEdges(m);
+    std::vector<char> visited(m.faces.size(), 0);
+
+    const std::vector<int>& fv = m.faces[face];
+    const int e0 = (dir & 1);
+    walkRing(m, edges, RingStep{face, e0, fv[e0]}, visited, ring);
+
+    // ...and the other way: step across the entry edge into the face behind, then
+    // let the same walk carry on from there.
+    const int a = fv[e0], b = fv[(e0 + 1) % 4];
+    auto it = edges.find(edgeKey(a, b));
+    if (it != edges.end()) {
+        const int back = (it->second.first == face) ? it->second.second
+                                                    : it->second.first;
+        if (back >= 0 && m.faces[back].size() == 4 && !visited[back]) {
+            const std::vector<int>& bv = m.faces[back];
+            int be = -1;
+            for (int k = 0; k < 4 && be < 0; ++k) {
+                const int p = bv[k], q = bv[(k + 1) % 4];
+                if ((p == a && q == b) || (p == b && q == a)) be = k;
+            }
+            if (be >= 0) walkRing(m, edges, RingStep{back, be, fv[e0]}, visited, ring);
+        }
+    }
+    return ring;
 }
 
 } // namespace
@@ -45,6 +170,18 @@ EditMesh EditMesh::box(const glm::vec3& h) {
 bool EditMesh::painted() const {
     for (const glm::vec4& w : paint)
         if (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f || w.w > 0.0f) return true;
+    return false;
+}
+
+void EditMesh::setFaceMaterial(int f, const fitzel::AssetId& id) {
+    if (f < 0 || f >= static_cast<int>(faces.size())) return;
+    syncFaceMat();
+    faceMat[f] = id;
+}
+
+bool EditMesh::dressed() const {
+    for (const fitzel::AssetId& id : faceMat)
+        if (id.valid()) return true;
     return false;
 }
 
@@ -122,9 +259,12 @@ int extrude(EditMesh& m, int face, float dist) {
     // is the side you look at when you sink a window into a wall. Flipping the
     // order for a negative distance (as this once did) turns the recess
     // inside out and its walls vanish.
+    const fitzel::AssetId mat = m.faceMaterial(face);
     for (std::size_t i = 0; i < loop.size(); ++i) {
         const std::size_t j = (i + 1) % loop.size();
-        m.faces.push_back({loop[i], loop[j], cap[j], cap[i]});
+        // The walls wear what the face wore: extruding a brick panel grows brick
+        // sides, not four faces in the object's own material.
+        addFace(m, {loop[i], loop[j], cap[j], cap[i]}, mat);
     }
     m.faces[face] = cap;   // the cap takes the selection with it
     return face;
@@ -186,15 +326,73 @@ int subdivide(EditMesh& m, int face) {
     }
     addVert(m, m.faceCenter(face), pc);
     const int e0 = base, e1 = base + 1, e2 = base + 2, e3 = base + 3, ct = base + 4;
+    const fitzel::AssetId mat = m.faceMaterial(face);
     m.faces[face] = {q[0], e0, ct, e3};
-    m.faces.push_back({e0, q[1], e1, ct});
-    m.faces.push_back({ct, e1, q[2], e2});
-    m.faces.push_back({e3, ct, e2, q[3]});
+    addFace(m, {e0, q[1], e1, ct}, mat);
+    addFace(m, {ct, e1, q[2], e2}, mat);
+    addFace(m, {e3, ct, e2, q[3]}, mat);
+    return face;
+}
+
+int loopLength(const EditMesh& m, int face, int dir) {
+    return static_cast<int>(loopRing(m, face, dir).size());
+}
+
+int loopCut(EditMesh& m, int face, int dir, float t) {
+    const std::vector<RingStep> ring = loopRing(m, face, dir);
+    if (ring.empty()) return -1;
+    // Never on top of an existing corner: a cut at 0 or 1 is a face split into
+    // itself and a zero-width sliver, which is geometry that draws as nothing and
+    // gets in the way of everything afterwards.
+    t = std::clamp(t, 0.02f, 0.98f);
+
+    // One new corner per crossed EDGE, not per face: two faces share the edge
+    // between them, and cutting it twice would leave the halves meeting at two
+    // corners in the same place -- a seam that shows the moment either side moves.
+    // Keyed without regard to direction, which is safe precisely because the walk
+    // carries the reference end around: both faces measure the edge from the same
+    // corner, so the corner one of them made is the one the other wanted.
+    std::unordered_map<std::uint64_t, int> cutVert;
+    auto cutOn = [&](int from, int to) {
+        const std::uint64_t k = edgeKey(from, to);
+        auto it = cutVert.find(k);
+        if (it != cutVert.end()) return it->second;
+        const int v = addVert(m, glm::mix(m.verts[from], m.verts[to], t),
+                              glm::mix(m.paintAt(from), m.paintAt(to), t));
+        cutVert.emplace(k, v);
+        return v;
+    };
+
+    // Split every face in the band. The near half keeps the face's index -- and
+    // with it the selection, since the ring always starts at the face that was
+    // asked for -- and the far half is appended; both wear the material the face
+    // had.
+    for (const RingStep& st : ring) {
+        const std::vector<int> fv = m.faces[st.face];   // by value: m.faces grows
+        const int j = st.edge;
+        // Read the quad starting at the crossed edge, so the two cuts are always
+        // on sides 0 and 2 of `w` and the rest is one shape rather than four cases.
+        const int w0 = fv[j], w1 = fv[(j + 1) % 4],
+                  w2 = fv[(j + 2) % 4], w3 = fv[(j + 3) % 4];
+        // `ref` says which end of the crossed edge t counts from; the far edge is
+        // measured from the corner joined to it along the quad's side.
+        const bool fwd = (w0 == st.ref);
+        const int  a   = fwd ? cutOn(w0, w1) : cutOn(w1, w0);
+        const int  b   = fwd ? cutOn(w3, w2) : cutOn(w2, w3);
+
+        const fitzel::AssetId mat = m.faceMaterial(st.face);
+        m.faces[st.face] = {w0, a, b, w3};
+        addFace(m, {a, w1, w2, b}, mat);
+    }
     return face;
 }
 
 int deleteFace(EditMesh& m, int face) {
     if (face < 0 || face >= static_cast<int>(m.faces.size())) return -1;
+    // The face's material goes with it, or every face after this one would
+    // inherit its neighbour's -- the parallel-array failure, one array over.
+    m.syncFaceMat();
+    m.faceMat.erase(m.faceMat.begin() + face);
     m.faces.erase(m.faces.begin() + face);
 
     // Drop the vertices no face uses any more and renumber, or a long editing
@@ -249,12 +447,23 @@ glm::vec3 recenter(EditMesh& m) {
     return shift;
 }
 
-fitzel::MeshData build(const EditMesh& m) {
-    fitzel::MeshData d;
-    d.vertices.reserve(m.faces.size() * 6);
+std::vector<Group> buildGroups(const EditMesh& m) {
+    std::vector<Group> groups;
+    groups.push_back(Group{});   // the object's own material, always first
+    // Which group a face's material belongs to. Linear: a mesh wears a handful of
+    // materials, and a map over that is bookkeeping nobody reads back.
+    auto groupFor = [&](const fitzel::AssetId& id) -> fitzel::MeshData& {
+        if (!id.valid()) return groups[0].data;
+        for (Group& g : groups)
+            if (g.material == id) return g.data;
+        groups.push_back(Group{id, fitzel::MeshData{}});
+        return groups.back().data;
+    };
+
     for (std::size_t f = 0; f < m.faces.size(); ++f) {
         const std::vector<int>& fv = m.faces[f];
         if (fv.size() < 3) continue;
+        fitzel::MeshData& d = groupFor(m.faceMaterial(static_cast<int>(f)));
         const glm::vec3 n = m.faceNormal(static_cast<int>(f));
         // Planar UVs along whichever axis the face faces least, so the projection
         // never collapses. Metres per unit UV, so a texture keeps its scale as a
@@ -281,19 +490,33 @@ fitzel::MeshData build(const EditMesh& m) {
             d.vertices.push_back(vert(fv[i + 1]));
         }
     }
+    // An empty first group means every face wears a material of its own; drawing
+    // an empty mesh is a draw call that paints nothing, so drop it.
+    if (groups[0].data.vertices.empty() && groups.size() > 1)
+        groups.erase(groups.begin());
+    return groups;
+}
+
+fitzel::MeshData build(const EditMesh& m) {
+    fitzel::MeshData d;
+    for (const Group& g : buildGroups(m))
+        d.vertices.insert(d.vertices.end(), g.data.vertices.begin(),
+                          g.data.vertices.end());
     return d;
 }
 
 } // namespace editmesh
 
-const fitzel::Mesh& EditMeshCache::mesh(int entityId, std::uint64_t revision,
-                                        const EditMesh& m) {
+const std::vector<EditMeshCache::Sub>& EditMeshCache::submeshes(
+    int entityId, std::uint64_t revision, const EditMesh& m) {
     // A fresh entry has revision 0 and a real one never does (the stamps start at
     // 1), so this one comparison covers "not uploaded yet" as well as "stale".
     Entry& e = m_entries[entityId];
     if (e.revision != revision) {
-        e.mesh     = fitzel::Mesh::create(editmesh::build(m));
+        e.subs.clear();
+        for (editmesh::Group& g : editmesh::buildGroups(m))
+            e.subs.push_back(Sub{g.material, fitzel::Mesh::create(g.data)});
         e.revision = revision;
     }
-    return e.mesh;
+    return e.subs;
 }

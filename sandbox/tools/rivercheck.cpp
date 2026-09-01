@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -325,6 +326,10 @@ bool contested(const RiverSystem& rv, int self, glm::vec2 xz) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // Unbuffered, always. Redirect this harness to a file and stdio goes
+    // block-buffered; crash it and the whole log is still in that buffer, so the
+    // one run that most needed to say where it got to says nothing at all.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const fs::path outDir = (argc > 1) ? fs::path(argv[1]) : fs::path(".");
     const fs::path shDir  = (argc > 2) ? fs::path(argv[2])
                                        : fs::path("assets/shaders");
@@ -446,6 +451,51 @@ int main(int argc, char** argv) {
             fail("bed under water", name + ": bed reaches the surface");
     }
 
+    // --- 1a) It bends rather than kinks -------------------------------------
+    // The measurement the falls exist for. A profile that drops its whole height
+    // between two stations two metres apart draws a surface that turns a right
+    // angle at the lip, runs down the rock as a flat ribbon and turns another one
+    // at the bottom -- and those two creases are the first thing anybody sees in
+    // a waterfall. They are also invisible to every other check here: the water
+    // still descends, the bed is still under it, nothing is out of tolerance.
+    //
+    // So the worst CORNER in the centreline is measured directly, in degrees,
+    // over segments long enough not to be sampling noise. Water bends; it does
+    // not fold.
+    {
+        float worst = 0.0f, worstAt = 0.0f;
+        glm::vec3 worstIn(0.0f), worstOut(0.0f);
+        const char* where = "";
+        for (int i = 0; i < static_cast<int>(rivers.paths.size()); ++i) {
+            const rivergen::Course& c = rivers.course(i);
+            for (std::size_t k = 1; k + 1 < c.line.size(); ++k) {
+                const glm::vec3 a = c.line[k]     - c.line[k - 1];
+                const glm::vec3 b = c.line[k + 1] - c.line[k];
+                if (glm::length(a) < 0.15f || glm::length(b) < 0.15f) continue;
+                const float d = glm::clamp(
+                    glm::dot(glm::normalize(a), glm::normalize(b)), -1.0f, 1.0f);
+                const float deg = glm::degrees(std::acos(d));
+                if (deg > worst) {
+                    worst = deg; where = rivers.paths[i].name.c_str();
+                    worstAt = c.s[k];
+                    worstIn = a; worstOut = b;
+                }
+            }
+        }
+        char d[180];
+        std::snprintf(d, sizeof d,
+                      "worst corner %.1f deg (%s, at %.0f m; %.2f m over %.2f m "
+                      "into %.2f m over %.2f m)",
+                      worst, where, worstAt, -worstIn.y,
+                      glm::length(glm::vec2(worstIn.x, worstIn.z)), -worstOut.y,
+                      glm::length(glm::vec2(worstOut.x, worstOut.z)));
+        // A lip rounded over a ballistic arc turns maybe fifteen degrees from one
+        // station to the next; an unrounded one turns ninety. Anything over forty
+        // is a crease, whatever else it is.
+        if (worst > 40.0f) fail("water bends, not kinks", d);
+        else               pass("water bends, not kinks", d);
+    }
+
     // --- 1b) It wanders, and it is not one width or one depth ---------------
     // A straight line was drawn; a river has to come out. Measured on the lowland
     // course alone, because the others are on gradients steep enough that the
@@ -541,10 +591,16 @@ int main(int argc, char** argv) {
         const char* where = "";
         for (int i = 0; i < static_cast<int>(rivers.paths.size()); ++i) {
             const rivergen::Course& c = rivers.course(i);
+            // Over a window in METRES, and the same one the clamp uses. Not in
+            // stations: a fall is resampled to centimetre spacing, and a turn
+            // measured across two of those is measuring the sampling.
             for (std::size_t k = 2; k + 2 < c.dir.size(); ++k) {
-                const float dot = glm::clamp(glm::dot(c.dir[k - 2], c.dir[k + 2]),
+                std::size_t a = k, b = k;
+                while (a > 0 && c.s[k] - c.s[a] < 4.0f) --a;
+                while (b + 1 < c.dir.size() && c.s[b] - c.s[k] < 4.0f) ++b;
+                const float dot = glm::clamp(glm::dot(c.dir[a], c.dir[b]),
                                              -1.0f, 1.0f);
-                const float run = std::max(c.s[k + 2] - c.s[k - 2], 1e-3f);
+                const float run = std::max(c.s[b] - c.s[a], 1e-3f);
                 const float turn = std::acos(dot) / run;          // 1 / radius
                 if (turn < 1e-5f) continue;
                 const float widths = (1.0f / turn) / (c.half[k] * 2.0f);
@@ -813,11 +869,17 @@ int main(int argc, char** argv) {
     const char* groundVS = R"(#version 330 core
 layout(location=0) in vec3 aPos;
 layout(location=1) in vec3 aNormal;
+layout(location=2) in float aBank;
 uniform mat4 uViewProj;
-out vec3 vN; out vec3 vP;
-void main(){ vN = aNormal; vP = aPos; gl_Position = uViewProj * vec4(aPos,1.0); })";
+out vec3 vN; out vec3 vP; out float vBank;
+void main(){ vN = aNormal; vP = aPos; vBank = aBank;
+             gl_Position = uViewProj * vec4(aPos,1.0); })";
+    // The bank layer is in here for a reason that took a while to notice: without
+    // it the bed of a brook is painted MEADOW, and a foot of clear water over
+    // grass comes out as a green stain. Every judgement about how shallow water
+    // looks was being made against the wrong thing underneath it.
     const char* groundFS = R"(#version 330 core
-in vec3 vN; in vec3 vP; out vec4 F;
+in vec3 vN; in vec3 vP; in float vBank; out vec4 F;
 uniform vec3 uLightDir;
 void main(){
     vec3 n = normalize(vN);
@@ -826,6 +888,7 @@ void main(){
     vec3 grass = vec3(0.28, 0.38, 0.20);
     vec3 stone = vec3(0.42, 0.40, 0.37);
     vec3 c = mix(grass, stone, rock);
+    c = mix(c, vec3(0.44, 0.41, 0.35), clamp(vBank, 0.0, 1.0));   // wet gravel
     c *= 0.35 + 0.75 * d;
     F = vec4(pow(c, vec3(1.0/2.2)), 1.0);
 })";
@@ -863,9 +926,20 @@ void main(){
         const rivergen::Course& cb = rivers.course(brook);
         const rivergen::Course& cr = rivers.course(river);
         const rivergen::Course& cl = rivers.course(lowland);
-        const glm::vec3 bmid = cb.line[cb.line.size() / 2];
-        const glm::vec3 rmid = cr.line[cr.line.size() / 2];
-        const glm::vec3 lmid = cl.line[cl.line.size() / 2];
+        // Halfway along the WATER, not halfway through the array. The falls are
+        // resampled to centimetre spacing, so the middle station of a course with
+        // a waterfall in it is somewhere on that waterfall -- and a shot framed
+        // on it is a shot of the inside of a hill.
+        auto midway = [](const rivergen::Course& c) {
+            const float want = c.length * 0.5f;
+            std::size_t best = c.line.size() / 2;
+            for (std::size_t k = 0; k < c.s.size(); ++k)
+                if (c.s[k] >= want) { best = k; break; }
+            return c.line[best];
+        };
+        const glm::vec3 bmid = midway(cb);
+        const glm::vec3 rmid = midway(cr);
+        const glm::vec3 lmid = midway(cl);
         for (std::size_t i = 0; i < rivers.runs().size(); ++i) {
             int dressVerts = 0;
             for (const fitzel::Mesh& m : rivers.runs()[i].dressMeshes)
@@ -892,10 +966,14 @@ void main(){
         // three-metre brook is a brook rather than a line on a hillside.
         auto standing = [&](const glm::vec3& at, glm::vec3 off) {
             glm::vec3 eye = at + off;
-            eye.y = world.height(eye.x, eye.z) + 1.7f;   // eye height, on the bank
+            // Eye height on the bank -- but never below the water it is looking
+            // at. A wide river cuts its banks down to its own level, so an eye
+            // planted on the ground beside one ends up UNDER the surface, and the
+            // shot comes out as the underside of a sheet of water.
+            eye.y = std::max(world.height(eye.x, eye.z), at.y) + 1.7f;
             return eye;
         };
-        const Shot shots[] = {
+        std::vector<Shot> shots = {
             // Looking down the brook from a few metres up the bank.
             {"brook", standing(bmid, glm::vec3(6.0f, 0.0f, 7.0f)),
              bmid + glm::vec3(-14.0f, -0.6f, -16.0f),
@@ -918,10 +996,88 @@ void main(){
              glm::vec2(lmid.x, lmid.z), 520.0f, 3.0f},
             // ...and from the bank, where the pools, the riffles and the deep
             // line against the outer bank are what there is to look at.
-            {"lowland_bank", standing(lmid, glm::vec3(26.0f, 0.0f, 16.0f)),
+            {"lowland_bank", standing(lmid, glm::vec3(44.0f, 0.0f, 28.0f)),
              lmid + glm::vec3(-60.0f, -1.5f, -40.0f),
              glm::vec2(lmid.x, lmid.z), 300.0f, 1.5f},
         };
+
+        // --- The fall ---------------------------------------------------------
+        // The one shot the others cannot stand in for. A waterfall is where the
+        // surface stops being a draped ribbon and becomes a thing with a lip, a
+        // curtain and a foot -- and every one of those three is a place the strip
+        // can come out as a crease instead. So the biggest step in any course is
+        // found and looked at from below, from the side, and over the lip.
+        struct Step { int run = -1; glm::vec3 lip{0.0f}, foot{0.0f}; float drop = 0.0f; };
+        Step big;
+        for (std::size_t i = 0; i < rivers.runs().size(); ++i) {
+            const rivergen::Course& c = rivers.course(static_cast<int>(i));
+            const float fs = rivers.paths[i].style.fallSlope;
+            for (std::size_t k = 1; k < c.line.size(); ) {
+                const float ds = std::max(c.s[k] - c.s[k - 1], 1e-4f);
+                if ((c.line[k - 1].y - c.line[k].y) / ds <= fs) { ++k; continue; }
+                const std::size_t a = k;
+                while (k < c.line.size() &&
+                       (c.line[k - 1].y - c.line[k].y) /
+                           std::max(c.s[k] - c.s[k - 1], 1e-4f) > fs) ++k;
+                const float drop = c.line[a - 1].y - c.line[k - 1].y;
+                if (drop > big.drop) {
+                    big.run = static_cast<int>(i);
+                    big.lip = c.line[a - 1];
+                    big.foot = c.line[k - 1];
+                    big.drop = drop;
+                }
+            }
+        }
+        if (big.run >= 0) {
+            const rivergen::Course& c = rivers.course(big.run);
+            // Downstream, and across it: the frame every fall shot is set up in.
+            glm::vec2 d2(0.0f, 1.0f);
+            {
+                float best = 1e30f;
+                for (std::size_t k = 0; k < c.line.size(); ++k) {
+                    const float e = glm::distance(c.line[k], big.foot);
+                    if (e < best) { best = e; d2 = c.dir[k]; }
+                }
+            }
+            const glm::vec3 fwd(d2.x, 0.0f, d2.y);
+            const glm::vec3 side(d2.y, 0.0f, -d2.x);
+            const glm::vec3 mid = (big.lip + big.foot) * 0.5f;
+            const float reach = std::max(big.drop, 6.0f);
+            std::printf("  biggest fall: %.1f m, lip (%.0f %.0f %.0f) foot (%.0f %.0f %.0f)\n",
+                        big.drop, big.lip.x, big.lip.y, big.lip.z,
+                        big.foot.x, big.foot.y, big.foot.z);
+            // From the plunge pool, looking back up the curtain.
+            shots.push_back({"fall_foot",
+                             big.foot + fwd * (reach * 0.9f) + glm::vec3(0.0f, 2.0f, 0.0f),
+                             mid, glm::vec2(mid.x, mid.z),
+                             std::max(reach * 4.0f, 60.0f), 0.5f});
+            // From the side at half height: the shot the crease shows up in.
+            shots.push_back({"fall_side",
+                             mid + side * (reach * 1.1f) + fwd * (reach * 0.25f) +
+                                 glm::vec3(0.0f, reach * 0.25f, 0.0f),
+                             mid, glm::vec2(mid.x, mid.z),
+                             std::max(reach * 4.0f, 60.0f), 0.5f});
+            // Beside the lip looking along it, which is where the crest either
+            // rounds over or snaps off. Framed off the channel WIDTH, not off a
+            // fixed number of metres: at seven metres from a thirty-metre river
+            // the shot is inside the water and shows nothing but one bank.
+            const float wide = std::max(2.0f * c.half[0], 3.0f);
+            float lipW = wide;
+            {
+                float best = 1e30f;
+                for (std::size_t k = 0; k < c.line.size(); ++k) {
+                    const float e = glm::distance(c.line[k], big.lip);
+                    if (e < best) { best = e; lipW = std::max(2.0f * c.half[k], 3.0f); }
+                }
+            }
+            shots.push_back({"fall_lip",
+                             big.lip - fwd * (lipW * 1.6f) + side * (lipW * 1.5f) +
+                                 glm::vec3(0.0f, std::max(lipW * 0.5f, 4.0f), 0.0f),
+                             big.lip + fwd * (lipW * 0.8f) -
+                                 glm::vec3(0.0f, lipW * 0.6f, 0.0f),
+                             glm::vec2(big.lip.x, big.lip.z),
+                             std::max(reach * 2.5f, 50.0f), 0.4f});
+        }
 
         GLuint fbo = 0, tex = 0, rbo = 0;
         glGenTextures(1, &tex);
@@ -946,18 +1102,64 @@ void main(){
         glViewport(0, 0, kW, kH);
         glEnable(GL_DEPTH_TEST);
 
+        const glm::vec3 lightDir = glm::normalize(glm::vec3(0.45f, 0.72f, 0.28f));
+
         // river.frag samples an environment cubemap. There is no scene to capture
-        // one from here, so a flat sky-coloured cube stands in: it makes the
-        // reflection readable without pretending to be a reflection of anything.
+        // one from here, so one is built: a sky gradient, a sun, and ground below
+        // the horizon.
+        //
+        // It used to be a single flat colour per face, and that was quietly the
+        // worst thing in this harness. Half of what makes water look like water
+        // is the reflection MOVING as the ripples tilt it, and a reflection that
+        // is the same colour in every direction cannot move -- so every shading
+        // change came out looking like no change at all, and the pictures said a
+        // rippled surface and a flat one were the same picture. Thirty-two pixels
+        // a face is enough to tell them apart.
         GLuint envCube = 0;
         glGenTextures(1, &envCube);
         glBindTexture(GL_TEXTURE_CUBE_MAP, envCube);
-        for (int f = 0; f < 6; ++f) {
-            const float sky[3] = {0.42f, 0.60f, 0.86f};
-            const float grnd[3] = {0.22f, 0.24f, 0.20f};
-            const float* c = (f == 2) ? sky : (f == 3) ? grnd : sky;
-            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGB16F, 1, 1, 0,
-                         GL_RGB, GL_FLOAT, c);
+        {
+            const int E = 32;
+            std::vector<float> face(static_cast<std::size_t>(E) * E * 3);
+            for (int f = 0; f < 6; ++f) {
+                for (int y = 0; y < E; ++y) {
+                    for (int x = 0; x < E; ++x) {
+                        // The direction this texel looks in, per the cube map
+                        // face convention.
+                        const float u = 2.0f * (x + 0.5f) / E - 1.0f;
+                        const float v = 1.0f - 2.0f * (y + 0.5f) / E;
+                        glm::vec3 d;
+                        switch (f) {
+                            case 0: d = { 1.0f,    v,   -u}; break;
+                            case 1: d = {-1.0f,    v,    u}; break;
+                            case 2: d = {    u, 1.0f,   -v}; break;
+                            case 3: d = {    u,-1.0f,    v}; break;
+                            case 4: d = {    u,    v, 1.0f}; break;
+                            default:d = {   -u,    v,-1.0f}; break;
+                        }
+                        d = glm::normalize(d);
+                        glm::vec3 c;
+                        if (d.y >= 0.0f) {
+                            c = glm::mix(glm::vec3(0.78f, 0.86f, 0.98f),
+                                         glm::vec3(0.30f, 0.50f, 0.92f),
+                                         std::pow(d.y, 0.6f));
+                            const float sun = glm::dot(d, lightDir);
+                            if (sun > 0.995f) c += glm::vec3(24.0f);
+                            else c += glm::vec3(2.4f) * std::pow(
+                                          std::max(sun, 0.0f), 120.0f);
+                        } else {
+                            c = glm::mix(glm::vec3(0.30f, 0.34f, 0.26f),
+                                         glm::vec3(0.16f, 0.18f, 0.14f),
+                                         std::min(-d.y * 2.0f, 1.0f));
+                        }
+                        const std::size_t i =
+                            (static_cast<std::size_t>(y) * E + x) * 3;
+                        face[i] = c.x; face[i + 1] = c.y; face[i + 2] = c.z;
+                    }
+                }
+                glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + f, 0, GL_RGB16F,
+                             E, E, 0, GL_RGB, GL_FLOAT, face.data());
+            }
         }
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -965,7 +1167,6 @@ void main(){
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
 
-        const glm::vec3 lightDir = glm::normalize(glm::vec3(0.45f, 0.72f, 0.28f));
         std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
         stbi_flip_vertically_on_write(1);
 
@@ -973,7 +1174,7 @@ void main(){
             // The ground, sampled off the terrain the courses actually cut.
             const int n = static_cast<int>(sh.span / sh.step) + 1;
             std::vector<float> verts;
-            verts.reserve(static_cast<std::size_t>(n) * n * 6);
+            verts.reserve(static_cast<std::size_t>(n) * n * 7);
             auto H = [&](int ix, int iz) {
                 return world.height(sh.centre.x - sh.span * 0.5f + ix * sh.step,
                                     sh.centre.y - sh.span * 0.5f + iz * sh.step);
@@ -989,7 +1190,11 @@ void main(){
                     const float hU = H(ix, std::min(iz + 1, n - 1));
                     const glm::vec3 nrm = glm::normalize(
                         glm::vec3(hL - hR, 2.0f * sh.step, hD - hU));
-                    verts.insert(verts.end(), {x, H(ix, iz), z, nrm.x, nrm.y, nrm.z});
+                    // Layer 3 is the one every course in this harness paints its
+                    // bed with (see the loop that sets bankLayer above).
+                    const float bank = world.paint.sample(x, z)[2];
+                    verts.insert(verts.end(),
+                                 {x, H(ix, iz), z, nrm.x, nrm.y, nrm.z, bank});
                 }
             }
             for (int iz = 0; iz + 1 < n; ++iz)
@@ -1010,11 +1215,14 @@ void main(){
             glBufferData(GL_ELEMENT_ARRAY_BUFFER, idx.size() * sizeof(std::uint32_t),
                          idx.data(), GL_STATIC_DRAW);
             glEnableVertexAttribArray(0);
-            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
                                   reinterpret_cast<void*>(0));
             glEnableVertexAttribArray(1);
-            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float),
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
                                   reinterpret_cast<void*>(3 * sizeof(float)));
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, 7 * sizeof(float),
+                                  reinterpret_cast<void*>(6 * sizeof(float)));
 
             const glm::mat4 view = glm::lookAt(sh.eye, sh.at, glm::vec3(0, 1, 0));
             const glm::mat4 proj = glm::perspective(glm::radians(55.0f),
@@ -1076,6 +1284,10 @@ void main(){
             glActiveTexture(GL_TEXTURE2);
             glBindTexture(GL_TEXTURE_CUBE_MAP, envCube);
             glUniform1i(glGetUniformLocation(riverProg, "uEnvProbe"), 2);
+            // No mips on the stand-in cube, so no LOD to blur into: the
+            // roughness the shader asks for is exercised in the editor, where the
+            // probe has them. What this harness is here to show is that the
+            // reflection MOVES with the ripples at all.
             f1("uEnvMaxLod", 0.0f);
 
             glEnable(GL_BLEND);

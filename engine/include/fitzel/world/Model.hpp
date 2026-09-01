@@ -126,11 +126,20 @@ struct ModelNode {
     glm::vec3   center{0.0f}; // world position of that centre (model space)
 };
 
-// Load a model via assimp (FBX, DAE, ...), one ModelNode per mesh-bearing node,
-// so the caller can create a separate entity per element (structure preserved,
-// no animation). Empty on failure. `flipV` mirrors the V texture coordinate:
-// most FBX/DAE author UVs bottom-left (glTF/our upload are top-left), so V needs
-// flipping -- but it varies per exporter, hence the toggle.
+// Load a glTF / GLB the way loadModelNodes does: one ModelNode per mesh-bearing
+// node instead of one flat model, so a scene exported from Blender arrives as
+// its parts rather than a single fused object. Node transforms are baked and no
+// skeleton is kept, so this is for static models -- a rigged one still belongs
+// on loadGltf. Textures come from inside the file exactly as in loadGltf.
+std::vector<ModelNode> loadGltfNodes(const std::string& path);
+
+// Load a model, one ModelNode per mesh-bearing node, so the caller can create a
+// separate entity per element (structure preserved, no animation). Empty on
+// failure. glTF/GLB is handed to loadGltfNodes (cgltf); FBX, DAE and friends go
+// through assimp, where `flipV` mirrors the V texture coordinate: most FBX/DAE
+// author UVs bottom-left (glTF/our upload are top-left), so V needs flipping --
+// but it varies per exporter, hence the toggle. It is ignored for glTF, which
+// fixes the UV origin.
 std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV = true);
 
 // One material's Unity-convention texture matches, for the import-preview UI.

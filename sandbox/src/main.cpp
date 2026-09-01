@@ -53,6 +53,7 @@
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
 #include "VideoLibrary.hpp"
+#include "GpuTimer.hpp"
 #include "Profiler.hpp"
 #include "DebugOverlay.hpp"
 #include "SandboxMath.hpp"
@@ -90,6 +91,7 @@
 #include "LoadingScreen.hpp"
 #include "LightGrid.hpp"
 #include "VegetationSystem.hpp"
+#include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
 #include "RiverSystem.hpp"
@@ -118,6 +120,7 @@
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
 #include "CityPanel.hpp"
+#include "VehicleGizmo.hpp"
 #include "VehicleTool.hpp"
 #include "GliderTool.hpp"
 #include "CarAudio.hpp"
@@ -355,6 +358,18 @@ struct BootConfig {
     std::string project;
     std::string scene;             // start scene stem ("" = default scene)
     bool        fullscreen = true;
+    // --- Benchmark mode ------------------------------------------------------
+    // `--profile <file>` plays the project for a few seconds, writes what the
+    // frame cost -- every CPU and GPU zone, and what the vegetation submitted --
+    // to that file, and quits.
+    //
+    // It exists because the alternative is reading numbers off a screen: the
+    // Performance window is the right tool while you are in there working, and
+    // the wrong one for "is this change faster than that one", which needs the
+    // same scene measured twice under the same conditions and the two numbers
+    // side by side. This is that.
+    std::string profilePath;
+    double      profileSeconds = 8.0;
 };
 
 BootConfig loadBootConfig(int argc, char** argv) {
@@ -369,8 +384,14 @@ BootConfig loadBootConfig(int argc, char** argv) {
             cfg.fullscreen = gj.value("fullscreen", true);
         } catch (...) {}
     }
-    for (int i = 1; i + 1 < argc; ++i)
-        if (std::string(argv[i]) == "--play") cfg.project = argv[i + 1];
+    for (int i = 1; i + 1 < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--play")            cfg.project     = argv[i + 1];
+        else if (a == "--scene")      cfg.scene       = argv[i + 1];
+        else if (a == "--profile")    cfg.profilePath = argv[i + 1];
+        else if (a == "--profile-seconds")
+            cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
+    }
     return cfg;
 }
 
@@ -1496,6 +1517,35 @@ int main(int argc, char** argv) {
         float noiseSeed      = 0.0f;         // advanced per dab so detail layers up
         float carveDepth     = 12.0f;        // valley depth (m); Alt raises a ridge
 
+        // --- Proportional pull ------------------------------------------------
+        // Press on the ground and the point under the cursor follows it up or
+        // down, with the disc around it coming along less and less out to the rim.
+        //
+        // It is the one sculpt tool here that is not a dab. Every other brush
+        // applies a step per frame and the ground ends up wherever holding the
+        // button for that long put it -- which means the result depends on the
+        // steadiness of a hand, and getting a hill to a particular height means
+        // creeping up on it. This one is ABSOLUTE: the height is a function of
+        // where the mouse is now, not of how long it has been down, so overshoot
+        // costs nothing, wobble leaves nothing behind, and letting go early
+        // leaves exactly what was on screen. That is the whole reason it exists
+        // next to Raise rather than instead of it.
+        float pullFalloff    = 1.0f;         // skirt shape (see TerrainEditField::pull)
+        // What one CLICK is worth. The drag is a convenience on top of it, not
+        // the way in: press-and-move is exactly the gesture this editor exists to
+        // not require (see the Parkinson note in the project's UI rules), so the
+        // tool has to be complete without it -- set the number with the panel's
+        // steppers, click the ground, done. A drag ends by writing what it
+        // arrived at back into here, so the next click repeats it.
+        float pullHeight     = 4.0f;         // metres per click; negative pushes in
+        bool      pullActive  = false;       // a pull gesture is in progress
+        glm::vec2 pullCenter{0.0f};          // where it was anchored
+        float     pullRadius  = 8.0f;        // ...and the radius it was anchored with
+        float     pullShape   = 1.0f;        // ...and the shape, both frozen for the drag
+        float     pullApplied = 0.0f;        // metres already written to the field
+        float     pullStartY  = 0.0f;        // mouse Y at the press, in screen pixels
+        float     pullScale   = 0.05f;       // world metres per screen pixel, at the anchor
+
         // --- Terrain texture painting --------------------------------------
         // A parallel sparse field of per-layer paint weights, baked into the terrain
         // vertices and blended over the automatic height/slope look. A 3D brush
@@ -1556,12 +1606,26 @@ int main(int argc, char** argv) {
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
         if (!veg.initTrees(modelDir, texDir)) return 1;
 
-        // --- Roads / paths (owned by RoadSystem) -----------------------------
-        // Ribbon mesh along a Catmull-Rom spline, draped on the terrain. RoadSystem
-        // owns the mesh/material/collider/centreline; main keeps the control-point
-        // editor state (shares the LMB) and the roadPickTerrain helper below (used
-        // by every viewport brush, not just roads).
-        RoadSystem road(lit, assetDb, streamer, texDir);
+        // --- Roads / paths (owned by RoadSet) --------------------------------
+        // A ribbon mesh along a Catmull-Rom spline, draped on the terrain -- and as
+        // many of them as the author draws, each complete with its own width,
+        // surface, rails and roadside city, the same deal the watercourses get.
+        // RoadSystem owns one road's mesh/material/collider/centreline and RoadSet
+        // owns the list; main keeps the control-point editor state (shares the LMB)
+        // and the roadPickTerrain helper below (used by every viewport brush, not
+        // just roads).
+        //
+        // There is always at least one road (see RoadSet.hpp), so the editor below
+        // can say "the road being edited" without asking whether there is one.
+        RoadSet roads(lit, assetDb, streamer, texDir);
+        // The roadside city's screen-size cull is a QUALITY setting, not a
+        // property of one road, so the graphics menu edits this and every road
+        // takes it (the Roadside panel still edits the selected road's own).
+        float cityDetailCull = roads.active().cityMinPixels;
+        // The terrain panel's "the ground moved" signal. It is one flag for the
+        // whole set rather than a road's own: regenerating the terrain moved the
+        // ground under every corridor, not under the selected one.
+        bool  roadsDirty = false;
         // --- Fences, walls and railway track (owned by SplineSystem) ---------
         // The same idea as the road, one step lighter: a path plus a rule, with
         // the geometry derived from the two and never saved. No Build step --
@@ -1639,10 +1703,11 @@ int main(int argc, char** argv) {
             t.grassDensity  = &veg.grassDensity;
             t.grassRadius   = &veg.grassRadius;
             t.flowerDensity = &veg.flowerDensity;
-            t.cityMinPixels = &road.cityMinPixels;
+            t.cityMinPixels = &cityDetailCull;
             t.regrowVegetation = [&] { veg.grassDirty = true; };
             t.setVSync = [&](bool on) { glfwSwapInterval(on ? 1 : 0); };
             gfxmenu::apply(gfxSet, prev, renderer, t);
+            for (RoadSystem* r : roads) r->cityMinPixels = cityDetailCull;
         };
         applyGfx(gfxSet);   // the saved choices, before the first frame is drawn
 
@@ -1654,6 +1719,7 @@ int main(int argc, char** argv) {
         // Erase a control point, keeping the bridges that name points by index
         // honest: any bridge ending on it goes with it, and later points shift down.
         auto removeRoadPoint = [&](int k) {
+            RoadSystem& road = roads.active();
             if (k < 0 || k >= static_cast<int>(road.roadPts.size())) return;
             road.erasePoint(k);
             std::vector<RoadSystem::BridgeSpec> keep;
@@ -1692,6 +1758,7 @@ int main(int argc, char** argv) {
         // any bridge endpoint at or after `at` shifts up by one so it keeps naming the
         // same point. Selects the new point.
         auto insertRoadPoint = [&](int at, glm::vec2 p) {
+            RoadSystem& road = roads.active();
             at = glm::clamp(at, 0, static_cast<int>(road.roadPts.size()));
             // A point dropped between two others inherits their height, so
             // inserting into a raised stretch doesn't punch a hole in it.
@@ -1732,6 +1799,7 @@ int main(int argc, char** argv) {
         // point in the middle instead of always at the tail. A click that projects
         // past an open end extends the road there instead of splitting the end segment.
         auto roadInsertIndex = [&](glm::vec2 P) -> int {
+            const RoadSystem& road = roads.active();
             const int n = static_cast<int>(road.roadPts.size());
             if (n < 2) return n; // 0 or 1 points: nothing to insert between -> append
             float bestD = 1e30f, bestT = 0.0f;
@@ -1774,14 +1842,18 @@ int main(int argc, char** argv) {
         // rebuild the affected chunks, then loft the drivable mesh + collider.
         auto buildRoad = [&] {
             glm::vec2 mn, mx;
-            if (road.build(sculptWork, mn, mx)) {
+            // Every road, not just the one being edited -- see RoadSet::buildAll
+            // for why a crossing that is cut one road at a time drifts.
+            if (roads.buildAll(sculptWork, mn, mx)) {
                 publishSculpt();
                 streamer.editsChanged(mn, mx);
-                // Now that the corridor is graded into the live terrain, drape the
-                // side objects (rails/curbs/posts) on it -- and re-plan the city,
+                // Now that the corridors are graded into the live terrain, drape the
+                // side objects (rails/curbs/posts) on them -- and re-plan the city,
                 // whose facades stand on the same freshly cut ground.
-                road.rebuildSideObjects();
-                road.rebuildCity();
+                for (RoadSystem* r : roads) {
+                    r->rebuildSideObjects();
+                    r->rebuildCity();
+                }
             }
         };
 
@@ -1800,7 +1872,7 @@ int main(int argc, char** argv) {
                 streamer.editsChanged(mn, mx);
                 // Anything standing on the ground the channel just moved has to
                 // come with it -- guard rails and kerbs drape on the terrain.
-                road.rebuildSideObjects();
+                roads.rebuildSideObjects();
                 // ...and nothing may go on growing where the water now is.
                 veg.wet = rivers.wetDiscs(0.6f);
                 veg.grassDirty = true;
@@ -1942,22 +2014,60 @@ int main(int argc, char** argv) {
         // everything else. An interaction -- a drag, a button, a slider -- opens
         // with the shape it found and closes by pushing the difference, so a drag
         // across fifty frames is one undo step and not fifty.
+        //
+        // WHICH road is remembered with the shape: the list can be re-pointed
+        // between opening an interaction and closing it (a scene load, an undo of
+        // an "Add road"), and a step that put one road's points onto another
+        // would be worse than no undo at all.
         RoadSystem::Shape roadUndoBefore;
+        RoadSystem*       roadUndoTarget = nullptr;
         bool              roadUndoOpen = false;
         auto beginRoadEdit = [&]() {
             if (roadUndoOpen) return; // already inside an interaction
-            roadUndoBefore = road.shape();
+            roadUndoTarget = &roads.active();
+            roadUndoBefore = roadUndoTarget->shape();
             roadUndoOpen   = true;
         };
         auto commitRoadEdit = [&](const char* label) {
             if (!roadUndoOpen) return;
             roadUndoOpen = false;
+            if (!roadUndoTarget) return;
+            RoadSystem& road = *roadUndoTarget;
             auto cmd = std::make_unique<RoadShapeCmd>(road, roadUndoBefore,
                                                       road.shape(), label);
             // push(), not pushApplied(): RoadShapeCmd::redo does more than
             // assign -- it flags the rebuild the committed shape needs.
             if (!cmd->trivial()) history.push(std::move(cmd), document);
         };
+        // --- The road list, as undoable steps --------------------------------
+        // Adding or deleting a whole road. Deleting does not destroy it (see
+        // RoadSet), so both directions are one flag and the RoadShapeCmds already
+        // in the history keep pointing at a road that is still there.
+        //
+        // pushApplied, not push: the list has already been changed by the time
+        // this is called, and re-running redo() would only set the flag it is
+        // already at.
+        auto addRoad = [&]() {
+            const int i  = roads.add();
+            const int id = roads.idAt(i);
+            roadSel = roadSel2 = -1;
+            if (id >= 0)
+                history.pushApplied(
+                    std::make_unique<RoadListCmd>(roads, id, true, "Add road"));
+        };
+        auto deleteRoad = [&](int i) {
+            const int id = roads.idAt(i);
+            if (id < 0 || !roads.remove(i)) return;   // the last road stays
+            roadSel = roadSel2 = -1;
+            history.pushApplied(
+                std::make_unique<RoadListCmd>(roads, id, false, "Delete road"));
+        };
+        // Point #3 of the road you just left is not point #3 of this one.
+        auto selectRoad = [&](int i) {
+            roads.select(i);
+            roadSel = roadSel2 = -1;
+        };
+
         // The point edits above predate the history (they are declared before it,
         // next to the road); these are what the editor actually calls.
         auto addRoadPoint = [&](int at, glm::vec2 p) {
@@ -1974,7 +2084,7 @@ int main(int argc, char** argv) {
         // longer exists. Nothing dereferences it unchecked, but a phantom
         // selection lights up the panel's height field for a point you can't see.
         auto clampRoadSel = [&]() {
-            const int n = static_cast<int>(road.roadPts.size());
+            const int n = static_cast<int>(roads.active().roadPts.size());
             if (roadSel  >= n) roadSel  = -1;
             if (roadSel2 >= n) roadSel2 = -1;
         };
@@ -2054,6 +2164,41 @@ int main(int argc, char** argv) {
             carveRivers();
         };
 
+        // --- Vehicle setup gizmo ---------------------------------------------
+        // Half of VehicleComponent describes a shape -- where the axles are, how
+        // wide the track is, how big the wheels are, where the collision box sits
+        // and how far down the mass is -- and none of it was visible, so setting a
+        // car up was guesswork. VehicleGizmo draws that shape in the viewport and
+        // puts a handle on each number; what lives here is its selection, its drag
+        // flag and its undo bracket.
+        //
+        // The bracket is the ENTITY, not the component: the component rides on the
+        // entity, so ModifyEntityCmd already covers the whole edit and an undo
+        // cannot leave the two out of step.
+        bool   vehGizmoEdit      = false; // handles armed (else it only draws)
+        int    vehGizmoSel       = vehiclegizmo::kNone;
+        bool   vehGizmoDrag      = false;
+        bool   vehGizmoOwnsMouse = false; // set per frame; keeps ImGuizmo off the LMB
+        Entity vehGizmoBefore;
+        bool   vehGizmoUndoOpen  = false;
+        int    vehGizmoUndoId    = -1;
+        auto beginVehicleEdit = [&](int entId) {
+            if (vehGizmoUndoOpen) return; // already inside an interaction
+            const Entity* e = document.find(entId);
+            if (!e) return;
+            vehGizmoBefore   = *e;
+            vehGizmoUndoId   = entId;
+            vehGizmoUndoOpen = true;
+        };
+        auto commitVehicleEdit = [&](const char*) {
+            if (!vehGizmoUndoOpen) return;
+            vehGizmoUndoOpen = false;
+            Entity* after = document.find(vehGizmoUndoId);
+            if (!after) return;
+            auto cmd = std::make_unique<ModifyEntityCmd>(vehGizmoBefore, *after);
+            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
+        };
+
         // --- Scene UI overlay (2D screen-space HUD authored per scene) --------
         // Text/button/image elements drawn over the view while playing. Not in the
         // Document (like the road), so it carries its own selection + undo state:
@@ -2123,9 +2268,14 @@ int main(int argc, char** argv) {
         // Stones and reeds find-or-create their two shared materials in here.
         rivers.materials = &materials;
         rivers.touch();
-        road.cityPalettes = [&materials](const std::vector<city::Biome>& bs) {
-            return city::ensurePalettes(materials, bs);
+        // Every road, and every road the author adds later -- so a second one is
+        // wired the same way the first is without main having to remember.
+        roads.onCreate = [&materials](RoadSystem& r) {
+            r.cityPalettes = [&materials](const std::vector<city::Biome>& bs) {
+                return city::ensurePalettes(materials, bs);
+            };
         };
+        for (RoadSystem* r : roads) roads.onCreate(*r);
         int  matSel          = 0;    // selected material in the Materials panel
         // Name filter for the Materials panel. A project's library grows into the
         // dozens (every imported model brings its own), and hunting one name in
@@ -2603,6 +2753,7 @@ int main(int argc, char** argv) {
         };
         // Populate both roadsides (well, the configured side(s)) in one click.
         auto scatterRoadside = [&]() {
+            const RoadSystem& road = roads.active();
             const RoadSystem::Preview pv = road.previewGeometry();
             if (pv.center.size() < 2) return;
             std::vector<glm::vec2> cl;
@@ -2690,7 +2841,7 @@ int main(int argc, char** argv) {
         // Rescan road-surface textures and tree assets to include the project being
         // opened before the scene loads (loadScene restores the saved surface/trees
         // by name, so the project's files must already be in the lists by then).
-        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); prefabCache.clear(); road.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
+        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); prefabCache.clear(); roads.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
 
         // Non-blocking editor loads: kick off an incremental scene load, then step
         // it each frame (below) so the UI keeps drawing with a progress bar. The
@@ -2699,7 +2850,7 @@ int main(int argc, char** argv) {
         // below) -- they need the scene complete before continuing.
         projectio::SceneLoad sceneLoad;
         auto openProjectAsync = [&](const std::string& f){
-            road.refreshTextures(f); veg.refreshTreeAssets(f);
+            roads.refreshTextures(f); veg.refreshTreeAssets(f);
             history.clear(); prefabCache.clear();
             return projectio::beginOpenProject(pio, sceneLoad, f);
         };
@@ -2712,7 +2863,7 @@ int main(int argc, char** argv) {
         // except where the scene comes from -- so it does exactly what
         // openProjectAsync does around it, and differs in that one line.
         auto restoreSnapshot = [&](const autosave::Snapshot& snap){
-            road.refreshTextures(snap.projectFolder);
+            roads.refreshTextures(snap.projectFolder);
             veg.refreshTreeAssets(snap.projectFolder);
             history.clear(); prefabCache.clear();
             return projectio::beginRecoveredProject(pio, sceneLoad,
@@ -2767,7 +2918,7 @@ int main(int argc, char** argv) {
         // This is the longest wait the game ever has, and the one that used to be
         // spent staring at an unpainted window.
         auto openProjectShowing = [&](const std::string& folder) {
-            road.refreshTextures(folder);
+            roads.refreshTextures(folder);
             veg.refreshTreeAssets(folder);
             loading.setProjectFolder(folder);
             loading.setStyle(game::load(folder).loading);
@@ -3064,7 +3215,7 @@ int main(int argc, char** argv) {
                 exportStatus = "Pick a prefab to place along the road.";
                 return;
             }
-            const auto at = road.placeLine(roadprefab::asLine(roadPrefabCfg));
+            const auto at = roads.active().placeLine(roadprefab::asLine(roadPrefabCfg));
             if (at.empty()) {
                 exportStatus = "Nothing to place -- build the road first.";
                 return;
@@ -3173,6 +3324,7 @@ int main(int argc, char** argv) {
         // to "authored" (see city::bake). It becomes the live building, so the
         // Buildings panel can re-tune it or save it as a prefab straight away.
         auto bakeNearestBuilding = [&]() {
+            RoadSystem& road = roads.active();
             const city::District& d = road.district();
             const glm::vec3 eye = camera.position();
             int   best = -1;
@@ -3659,7 +3811,7 @@ int main(int argc, char** argv) {
             streamer.update(camera.position());
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
-            road.rebuildMesh(); // re-drape the committed road on the new terrain
+            roads.rebuildMeshes(); // re-drape the committed roads on the new terrain
         };
         applyScene(scene); // start in the selected scene (Empty by default)
 
@@ -3668,10 +3820,9 @@ int main(int argc, char** argv) {
         // scene starts blank instead of inheriting the terrain you were just editing.
         auto resetWorldForNewScene = [&]() {
             look.layers.clear();
-            road.clearPoints();
-            road.bridges.clear();
-            road.tunnels.clear();
-            road.needsBuild = false;
+            // Back to one empty road -- a new scene has no roads in it, and the
+            // editor always has one to draw into (see RoadSet::clear).
+            roads.clear();
             roadSel = roadSel2 = -1;
             splines.clear();
             splineSel = splinePtSel = -1;
@@ -3721,6 +3872,10 @@ int main(int argc, char** argv) {
             // First sync after boot or a scene load: the world is being set up, not
             // edited, so nothing here is reported back to the author as a change.
             const bool fresh = !terrainSynced;
+            // Did the GROUND itself move this sync? Anything derived from it has
+            // to be re-derived, and the watercourses are the only thing here that
+            // cannot wait for a button (see the end of this lambda).
+            bool groundMoved = false;
             TerrainComponent* tc = nullptr;
             int owner = -1;
             for (Entity& e : entities) {
@@ -3741,11 +3896,12 @@ int main(int argc, char** argv) {
                     streamer.rebuild();
                     veg.grassDirty  = true;
                     veg.treeCenter  = glm::vec2(1e9f);
+                    groundMoved     = true;
                     // The ground moved under a built road, so its graded corridor
                     // wants cutting again -- flag it, never rebuild behind the
                     // author's back. On a load there is nothing to report: that
                     // road was built on this terrain.
-                    if (!fresh) road.needsBuild = true;
+                    if (!fresh) roads.markNeedsBuild();
                 } else if (uiSettings != uiMirror) {
                     tc->settings = uiSettings;
                 }
@@ -3763,10 +3919,32 @@ int main(int argc, char** argv) {
                 // The committed road drapes on the ground, so re-loft it now that
                 // the ground has arrived (or gone). A load lofts the road before
                 // the terrain entity exists, which is exactly when this matters.
-                road.rebuildMesh();
-                if (!fresh) road.needsBuild = true; // ...and re-cut its corridor
+                roads.rebuildMeshes();
+                if (!fresh) roads.markNeedsBuild(); // ...and re-cut their corridors
+                groundMoved = true;
             }
             terrainEntity = owner;
+
+            // ...and the water, which is the one thing here that cannot be left
+            // to a button.
+            //
+            // A scene load re-cuts every watercourse from its saved path (the bed
+            // is derived, never stored) -- but it does that while reading the
+            // settings, which is BEFORE this mirror has run. So the profile is
+            // solved against last scene's terrain, or against no terrain at all
+            // when the previous scene had none, and the whole river comes out at
+            // y=0: gone, until something happens to dirty it. Turning any knob in
+            // the river panel does, which is exactly the shape of the report --
+            // "after loading, the river is missing until I touch a slider".
+            //
+            // Re-solving here rather than moving the load order is deliberate:
+            // this is the one place that knows the ground has changed, and it has
+            // to answer for a terrain edited later just as much as for one that
+            // arrived late.
+            if (groundMoved) {
+                rivers.touch();
+                carveRivers();
+            }
         };
         // One Empty carrying a Terrain component: the scene's ground as an object.
         // The entity's transform is only where its marker sits in the viewport --
@@ -4136,7 +4314,7 @@ int main(int argc, char** argv) {
 
             // The road owns its own scene state (the graded terrain corridor rides
             // along in "terrainEdits" above; the mesh is re-lofted on load).
-            road.save(j["road"]);
+            roads.save(j);
 
             // Fences, walls and track: paths + rules only. Every metre of geometry
             // is re-derived on load (see splines.update), exactly as the road's
@@ -4284,12 +4462,12 @@ int main(int argc, char** argv) {
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
 
-            // Road: empty for scenes saved before roads were persisted (the old
-            // road.txt Save/Load in the panel still works for those).
-            if (j.contains("road") && j["road"].is_object()) {
-                road.load(j["road"]);
-                roadSel = roadSel2 = -1;
-            }
+            // Roads: reads the `roads` array, or the single `road` object a scene
+            // from before roads were plural has. A scene with neither (saved
+            // before roads were persisted at all) loads as one empty road rather
+            // than inheriting the roads of the scene being replaced.
+            roads.load(j);
+            roadSel = roadSel2 = -1;
             // Splines: absent in scenes saved before they existed, which load as
             // none rather than as an error (load() clears first either way).
             if (j.contains("splines") && j["splines"].is_object())
@@ -4322,7 +4500,7 @@ int main(int argc, char** argv) {
             uiSel = uiOverlay.empty() ? -1 : 0;
             // The graded corridor is already baked into the restored terrain
             // edits above, so just re-loft the committed mesh on that ground.
-            road.rebuildMesh();
+            roads.rebuildMeshes();
 
             // Re-apply model-material overrides now that every model has
             // re-imported (see writeSettings). Matched by the same stable key so
@@ -4668,10 +4846,14 @@ int main(int argc, char** argv) {
             return best;
         };
         // Where the model sits relative to the physics chassis: the box centre
-        // rides higher than the model so the wheels (which hang 0.3-0.5 m of
+        // rides higher than the model so the wheels (which hang `chassisY` of
         // suspension below the box bottom) land where they were modelled.
+        //
+        // `chassisY` is the one number both sides must agree on -- it goes into
+        // the Jolt suspension as its rest length below, and into the setup gizmo
+        // as where it draws the box. It used to be a 0.4 written out twice.
         auto vehicleVisualY = [](const VehicleComponent& vc) {
-            return -vc.chassisHalf.y - 0.4f - vc.wheelY;
+            return -vc.chassisHalf.y - vc.chassisY - vc.wheelY;
         };
         // Spawn the Jolt car from the entity's component at its transform (in
         // Play). True on success; physCarId/driveVehicleId are set.
@@ -4694,6 +4876,7 @@ int main(int argc, char** argv) {
             tuning.grip           = vc->grip;
             tuning.drive          = vc->drive;
             tuning.uprightAssist  = vc->uprightAssist;
+            tuning.suspensionRest = vc->chassisY;
             physCarId = physics->addVehicle(
                 glm::max(vc->chassisHalf, glm::vec3(0.05f)), vc->mass, sp, q,
                 vc->wheelRadius, vc->wheelWidth, vc->halfTrack,
@@ -4822,7 +5005,7 @@ int main(int argc, char** argv) {
             float roadY = 0.0f;
             // The whole section counts as ground, raised edges included -- riding
             // up the lip is the point of it.
-            if (road.surfaceHeightAt(glm::vec2(x, z), road.surfaceHalf(), roadY, yMax))
+            if (roads.surfaceHeightAt(glm::vec2(x, z), roadY, yMax))
                 if (roadY > h) h = roadY;
             return h;
         };
@@ -4938,7 +5121,7 @@ int main(int argc, char** argv) {
             // position, so the grid has to exist first or everyone starts from
             // wherever they were parked.
             if (g >= 0 && playMode)
-                racegrid::lineUp(entities, road, g, /*applyParticipation=*/true,
+                racegrid::lineUp(entities, roads.active(), g, /*applyParticipation=*/true,
                                  driveGliderId2);
             if (g >= 0) beginGliderDrive(g);
             else        gliderMode = false; // nothing to fly
@@ -5389,21 +5572,27 @@ int main(int argc, char** argv) {
             // heightfield around the start position; it follows the focus below.
             terrainCollId = 0;
             refitTerrainCollision(glm::vec2(camera.position().x, camera.position().z));
-            // Roads: a static triangle-mesh collider (from the last Build, graded
-            // into the terrain), so the player and objects can walk/drive on them.
-            if (road.enabled && road.collIndices().size() >= 3)
-                physics->addMesh(road.collVerts().data(),
-                                 static_cast<int>(road.collVerts().size()),
-                                 road.collIndices().data(),
-                                 static_cast<int>(road.collIndices().size()));
-            // Side objects collide as a box each, sized to the model's AABB. Rails
-            // and curbs are static (mass 0) -- they stop a car driving off the edge.
-            // Knockable lines (posts, bollards) are DYNAMIC, so the car bowls them
-            // over; those are tracked in sidePosts and rendered from their live
-            // transform below. The fresh physics world discards all of them when
-            // Play stops, like the road mesh.
+            // Roads: every one in the scene, each with its own collider, its own
+            // rails and posts and its own city. A hidden road is not there to be
+            // driven on either, which is what makes the checkbox in the road list
+            // a way to try a layout without deleting the other one.
             sidePosts.clear();
-            if (road.enabled)
+            for (const RoadSystem* rp : roads) {
+                const RoadSystem& road = *rp;
+                if (!road.enabled) continue;
+                // A static triangle-mesh collider (from the last Build, graded
+                // into the terrain), so the player and objects can walk/drive on it.
+                if (road.collIndices().size() >= 3)
+                    physics->addMesh(road.collVerts().data(),
+                                     static_cast<int>(road.collVerts().size()),
+                                     road.collIndices().data(),
+                                     static_cast<int>(road.collIndices().size()));
+                // Side objects collide as a box each, sized to the model's AABB. Rails
+                // and curbs are static (mass 0) -- they stop a car driving off the edge.
+                // Knockable lines (posts, bollards) are DYNAMIC, so the car bowls them
+                // over; those are tracked in sidePosts and rendered from their live
+                // transform below. The fresh physics world discards all of them when
+                // Play stops, like the road mesh.
                 for (const RoadSystem::SideBatch& batch : road.sideBatches()) {
                     LoadedModel* lm = resolveSideModel(batch.model);
                     if (!lm) continue;
@@ -5426,20 +5615,21 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
-            // The city's facades: a static box per piece the generator flagged as
-            // solid (its masses and podium, not the bands, fins or signs), so a
-            // vehicle crashes into a building instead of driving through it. That
-            // is a handful per tower rather than one per part -- BuildingGen only
-            // marks the load-bearing shapes -- which is what keeps a whole
-            // district's collision affordable. Discarded with the physics world
-            // when Play stops, like the road mesh.
-            if (road.enabled && road.cityEnabled)
-                for (const city::Piece& pc : road.district().colliders) {
-                    physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
-                                    glm::angleAxis(glm::radians(pc.yaw),
-                                                   glm::vec3(0, 1, 0)),
-                                    0.0f);
-                }
+                // The city's facades: a static box per piece the generator flagged as
+                // solid (its masses and podium, not the bands, fins or signs), so a
+                // vehicle crashes into a building instead of driving through it. That
+                // is a handful per tower rather than one per part -- BuildingGen only
+                // marks the load-bearing shapes -- which is what keeps a whole
+                // district's collision affordable. Discarded with the physics world
+                // when Play stops, like the road mesh.
+                if (road.cityEnabled)
+                    for (const city::Piece& pc : road.district().colliders) {
+                        physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
+                                        glm::angleAxis(glm::radians(pc.yaw),
+                                                       glm::vec3(0, 1, 0)),
+                                        0.0f);
+                    }
+            }
             // Fences, walls and track: one static box per short run of path (see
             // splinegen::Collider). Coarse on purpose -- a car needs the wall to
             // be there, not to be able to thread the gap between two rails -- and
@@ -5821,6 +6011,55 @@ int main(int argc, char** argv) {
         };
 #endif
 
+
+        // --- Benchmark mode ---------------------------------------------------
+        // See BootConfig::profilePath. Vsync goes off for the run: a frame that
+        // waits for the display measures the display.
+        double profileStart = 0.0;
+        if (!boot.profilePath.empty()) glfwSwapInterval(0);
+        auto writeProfileReport = [&] {
+            std::ofstream out(boot.profilePath);
+            if (!out) return;
+            const prof::FrameStats fs = prof::frameStats();
+            int pw = 0, ph = 0;
+            window.framebufferSize(pw, ph);
+            const auto glStr = [](GLenum e) {
+                const GLubyte* v = glGetString(e);
+                return v ? reinterpret_cast<const char*>(v) : "?";
+            };
+            out << "fitzel " << fitzel::kVersion << " profile" << "\n";
+            out << "project    " << bootProject << "\n";
+            out << "scene      " << (bootScene.empty() ? "(default)" : bootScene) << "\n";
+            out << "resolution " << pw << "x" << ph << "\n";
+            out << "gpu        " << glStr(GL_RENDERER) << "\n";
+            out << "gl         " << glStr(GL_VERSION) << "\n";
+            out << "measured   " << boot.profileSeconds << " s over "
+                << prof::history().size() << " frames" << "\n" << "\n";
+            out << "frame      avg " << fs.avg << " ms ("
+                << (fs.avg > 0.0f ? 1000.0f / fs.avg : 0.0f) << " fps)"
+                << "   worst " << fs.worst << " ms"
+                << "   1% low " << fs.low1 << " fps"
+                << "   spikes " << fs.spikes << "\n" << "\n";
+            out << "where the time goes (ms; GPU rows are the pass on the card)" << "\n";
+            std::vector<const prof::ZoneStat*> zs;
+            for (const prof::ZoneStat& z : prof::zones()) zs.push_back(&z);
+            std::sort(zs.begin(), zs.end(),
+                      [](const prof::ZoneStat* a, const prof::ZoneStat* b) {
+                          return a->avg > b->avg;
+                      });
+            for (const prof::ZoneStat* z : zs)
+                out << "  " << z->name << "  avg " << z->avg
+                    << "  worst " << z->worst << "\n";
+            out << "\n" << "scene" << "\n";
+            out << "  terrain chunks loaded   " << streamer.loadedChunkCount() << "\n";
+            out << "  trees in range          " << veg.treeCount << "\n";
+            out << "  tree instances drawn    " << veg.drawnInstances()
+                << "  (summed over every pass in one frame)" << "\n";
+            out << "  grass blades streamed   " << veg.grassCount << "\n";
+            out << "  grass blades painted    "
+                << veg.paintedBlades.size() / 7 << "\n";
+            out << "  entities                " << entities.size() << "\n";
+        };
 
         while (window.isOpen()) {
             const bool uncapped = playMode || playerMode || camAnimating;
@@ -6462,7 +6701,7 @@ int main(int argc, char** argv) {
             };
 
             racesim::RaceEnv raceEnv{
-                input, controlsFor(0), document, entities, streamer, road,
+                input, controlsFor(0), document, entities, streamer, roads.active(),
                 driveVehicleId, driveGliderId, driveGliderId2, driveBackup,
                 dt, kSimH, simAlpha, simSteps,
                 (gliderMode ? gliderPos : carPos),               // player world pos
@@ -6779,7 +7018,7 @@ int main(int argc, char** argv) {
                     if (driveGliderId2 >= 0) {
                         racesim::RaceEnv env2{
                             input, controlsFor(1), document, entities,
-                            streamer, road,
+                            streamer, roads.active(),
                             -1, driveGliderId2, driveGliderId, driveBackup,
                             dt, kSimH, simAlpha, simSteps,
                             race2.gliderPos, race2.gliderSpeedMps, true,
@@ -7096,8 +7335,9 @@ int main(int argc, char** argv) {
                 // whichever of the two reaches further, and the city goes back to
                 // being culled by the one knob that is meant to control it.
                 float autoFar = terrainFar;
-                if (road.enabled && road.cityEnabled && !road.district().empty())
-                    autoFar = std::max(autoFar, road.cityRange + 60.0f);
+                for (const RoadSystem* r : roads)
+                    if (r->enabled && r->cityEnabled && !r->district().empty())
+                        autoFar = std::max(autoFar, r->cityRange + 60.0f);
                 autoFar = std::min(autoFar, 5000.0f); // the manual slider's ceiling
                 const float farZ = farPlaneAuto ? autoFar
                                                : std::max(farPlaneManual, 50.0f);
@@ -7128,21 +7368,35 @@ int main(int argc, char** argv) {
 
             // When the road settles (not mid-drag), regrow vegetation so it
             // clears off the new road; debounced to avoid thrashing while editing.
-            if (road.vegDirty && !roadDragging) {
-                road.vegDirty = false;
-                veg.grassDirty   = true;
-                veg.treeCenter   = glm::vec2(1e9f);
+            {
+                bool anyVegDirty = false;
+                for (RoadSystem* r : roads)
+                    if (r->vegDirty) { r->vegDirty = false; anyVegDirty = true; }
+                if (anyVegDirty && !roadDragging) {
+                    veg.grassDirty = true;
+                    veg.treeCenter = glm::vec2(1e9f);
+                }
             }
+
+            // A new frame's worth of vegetation statistics (what the culling
+            // actually submitted last frame -- see VegetationSystem::beginFrame).
+            veg.beginFrame();
 
             // Regrow grass (async) / trees when the camera has moved far enough.
             {
                 const glm::vec2 camXZ(camera.position().x, camera.position().z);
-                if (veg.updateGrass(camXZ, road.centerline(), road.width * 0.5f + 1.5f,
+                // Every road's centreline as one polyline, the runs separated by a
+                // break marker so nothing mows a strip between two of them; the
+                // clearance is the widest road's, which is the only number this
+                // interface has room for.
+                const std::vector<glm::vec2> cls = roads.centerlines();
+                const float roadW = roads.maxWidth();
+                if (veg.updateGrass(camXZ, cls, roadW * 0.5f + 1.5f,
                                     waterLevel, look.snowLevel) && veg.flowerEnabled)
-                    veg.regenFlowers(veg.grassCenter(), road.centerline(), road.width,
+                    veg.regenFlowers(veg.grassCenter(), cls, roadW,
                                      waterLevel, look.snowLevel);
                 veg.updateFlowers(); // finish + upload a pending async flower regen
-                veg.updateTrees(camXZ, road.centerline(), road.width, waterLevel, look.snowLevel);
+                veg.updateTrees(camXZ, cls, roadW, waterLevel, look.snowLevel);
             }
 
             // --- Weather: drift (auto) and derive storm parameters ----------
@@ -7170,8 +7424,12 @@ int main(int argc, char** argv) {
             // the road stays wet for ~20s after a shower and nothing should still be
             // landing on it then. Needs a wet surface too -- rings on dry tarmac read
             // as dents. Scaled by the road's own dial (see the Roads panel).
-            const float ringAmount =
-                rainIntensity * glm::min(roadWetness * 2.0f, 1.0f) * road.rainRings;
+            // The weather's half of the drop-impact rings. Each road multiplies
+            // its own `rainRings` onto this when it is drawn -- the strength is a
+            // property of the surface, and two roads in one scene do not have to
+            // agree about it.
+            const float ringWeather =
+                rainIntensity * glm::min(roadWetness * 2.0f, 1.0f);
 
             // Wetness eases toward the rain intensity: quick to soak (~2s), slow to
             // dry (~20s), so surfaces glisten for a while after the rain stops.
@@ -7252,7 +7510,8 @@ int main(int argc, char** argv) {
                 listenerHasPrev = true;
                 worldAudio.update(dt, lp, camera.front(), camera.up(), listenerVel,
                                   entities,
-                                  road.enabled ? &road.district() : nullptr,
+                                  roads.active().enabled ? &roads.active().district()
+                                                         : nullptr,
                                   driveGliderId, driveGliderId2, mixSfx.gain());
             } else if (listenerHasPrev) {
                 worldAudio.reset();
@@ -8327,7 +8586,7 @@ int main(int argc, char** argv) {
                         // question by hand a moment ago.
                         driveGliderId2 = (rootId2 >= 0) ? rootId2
                                        : (splitScreen ? pickPlayerTwo(rootId) : -1);
-                        racegrid::lineUp(entities, road, rootId,
+                        racegrid::lineUp(entities, roads.active(), rootId,
                                          /*applyParticipation=*/true, driveGliderId2);
                         beginGliderDrive(rootId);
                         if (driveGliderId2 >= 0) seatGliderState(race2, driveGliderId2);
@@ -8902,6 +9161,14 @@ int main(int argc, char** argv) {
                         const AssetId gid = AssetId::fromString(std::string(
                             static_cast<const char*>(pl->Data), pl->DataSize));
                         const AssetType at = assetDb.typeForId(gid);
+                        // Is it one of the scene's materials? Asked of the library
+                        // rather than of the asset database, because a material
+                        // dragged out of the Materials panel has a GUID and may
+                        // have no .fmat on disk yet -- and it is still the thing
+                        // the drop is about.
+                        int dropMat = -1;
+                        for (int k = 0; k < static_cast<int>(materials.size()); ++k)
+                            if (materials[k].assetId == gid) { dropMat = k; break; }
                         const float asp = static_cast<float>(viewW) /
                                           static_cast<float>(viewH);
                         const glm::mat4 vp =
@@ -8915,6 +9182,88 @@ int main(int argc, char** argv) {
                                     const int id = models.import(mp, assetDb, materials);
                                     if (id >= 0) addModelEntity(hit, id);
                                 }
+                            }
+                        } else if (at == AssetType::Material || dropMat >= 0) {
+                            // A material dropped ON A FACE dresses that face
+                            // alone; dropped anywhere else on an object it
+                            // becomes the object's. This is the drag half of the
+                            // Modeling panel's picker, and it exists BESIDE it
+                            // rather than instead of it: aiming at a face is a
+                            // gesture some days do not have, and the panel's
+                            // combo is the same operation without one.
+                            const int mi = dropMat;
+                            const glm::mat4 inv = glm::inverse(vp);
+                            glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
+                            glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
+                            const glm::vec3 ro = glm::vec3(pn);
+                            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+                            if (mi < 0) {
+                                exportStatus = "That material isn't in this scene's "
+                                               "library -- open the project it "
+                                               "belongs to first.";
+                            } else {
+                            // The face under the cursor, over every modelled mesh
+                            // in the scene: dressing a face should not first
+                            // require selecting the object it belongs to.
+                            int   faceEnt = -1, faceHit = -1;
+                            float faceT   = 1e30f;
+                            for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
+                                const MeshComponent* emc =
+                                    entities[i].components.get<MeshComponent>();
+                                if (!emc) continue;
+                                for (int f = 0;
+                                     f < static_cast<int>(emc->mesh.faces.size()); ++f) {
+                                    const std::vector<glm::vec3> w =
+                                        meshFaceWorld(entities[i], *emc, f);
+                                    // The same fan the GPU mesh is built from, so
+                                    // what is dropped on is exactly what is drawn.
+                                    for (std::size_t k = 1; k + 1 < w.size(); ++k) {
+                                        const float t =
+                                            rayTriangle(ro, rd, w[0], w[k], w[k + 1]);
+                                        if (t >= 0.0f && t < faceT) {
+                                            faceT = t; faceHit = f; faceEnt = i;
+                                        }
+                                    }
+                                }
+                            }
+                            int hit = faceEnt;
+                            if (hit < 0) {
+                                // No face: the nearest solid takes it whole.
+                                float bestT = 1e30f;
+                                for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
+                                    const EntityType t = entities[i].type;
+                                    const bool solid = t == EntityType::Box || t == EntityType::Ramp ||
+                                                       t == EntityType::Cylinder || t == EntityType::Sphere;
+                                    if (!solid) continue;
+                                    const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
+                                                                    entities[i].center + entities[i].half);
+                                    if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
+                                }
+                            }
+                            if (hit >= 0) {
+                                const std::vector<int> ids{entities[hit].id};
+                                auto before = snapshotEntities(ids);
+                                Entity& e = entities[hit];
+                                if (faceEnt == hit && faceHit >= 0) {
+                                    MeshComponent* emc = e.components.get<MeshComponent>();
+                                    emc->mesh.setFaceMaterial(faceHit, gid);
+                                    emc->touch();   // the GPU copy is split by material
+                                    meshFaceOwner = e.id;
+                                    meshFaceSel   = faceHit;
+                                    exportStatus  = "Material on one face.";
+                                } else if (auto* emc = e.components.get<MaterialComponent>()) {
+                                    emc->material = gid;
+                                } else {
+                                    auto nc = std::make_unique<MaterialComponent>();
+                                    nc->material = gid;
+                                    e.components.items.push_back(std::move(nc));
+                                }
+                                entitySel = hit;
+                                matSel    = mi;
+                                auto cmd = std::make_unique<ModifyEntitiesCmd>(
+                                    before, snapshotEntities(ids));
+                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
+                            }
                             }
                         } else if (at == AssetType::Texture) {
                             // Pick the solid under the drop point.
@@ -8967,6 +9316,12 @@ int main(int argc, char** argv) {
 
                 // --- Road edit handles: draggable control-point markers -----
                 if (roadEditMode) {
+                    // The handles belong to the road the Roads panel has selected;
+                    // the others are drawn by the renderer and are not grabbable
+                    // (there is one set of point indices, and a bridge names its
+                    // ends by index). Bound here rather than per use: the selection
+                    // cannot change in the middle of a viewport gesture.
+                    RoadSystem& road = roads.active();
                     const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
                     const ImVec2 org = rmin; // image top-left in screen space
@@ -9483,6 +9838,44 @@ int main(int argc, char** argv) {
                     }
                 }
 
+                // --- Vehicle setup handles: the tuning geometry drawn where it
+                //     actually is, and draggable. Only for the selected vehicle,
+                //     and only DRAWN unless the panel's toggle is on -- seeing the
+                //     shape costs nothing and is most of the value, while taking
+                //     the left button off the transform gizmo has to be asked for.
+                //     The tool is in VehicleGizmo.cpp.
+                vehGizmoOwnsMouse = false;
+                if (!playMode && entitySel >= 0 &&
+                    entitySel < static_cast<int>(entities.size())) {
+                    Entity& ve = entities[entitySel];
+                    if (auto* gvc = ve.components.get<VehicleComponent>()) {
+                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                        vehiclegizmo::Context gc{*gvc, worldOf(ve),
+                                                 vehGizmoSel, vehGizmoDrag};
+                        gc.editable  = vehGizmoEdit;
+                        gc.origin    = rmin;
+                        gc.viewW     = static_cast<float>(viewW);
+                        gc.viewH     = static_cast<float>(viewH);
+                        gc.viewProj  = camera.projectionMatrix(asp) * camera.viewMatrix();
+                        gc.hovered   = viewportHovered;
+                        gc.mouseNdc  = viewportMouseNdc;
+                        gc.mousePos  = mp;
+                        gc.cameraPos = camera.position();
+                        // Where the collision box sits is main's relation (it is
+                        // what places the Jolt body at Play), so the gizmo asks
+                        // rather than repeating it -- a box drawn a hand's width
+                        // from where physics puts it would be worse than no box.
+                        gc.boxCenterY = [&](const VehicleComponent& v) {
+                            return -vehicleVisualY(v);
+                        };
+                        const int vid = ve.id;
+                        gc.beginEdit = [&, vid] { beginVehicleEdit(vid); };
+                        gc.endEdit   = commitVehicleEdit;
+                        gc.editOpen  = [&] { return vehGizmoUndoOpen; };
+                        vehGizmoOwnsMouse = vehiclegizmo::handle(gc) || vehGizmoEdit;
+                    }
+                }
+
                 // --- Grass brush: stamp/erase instanced blades under a circular
                 //     3D brush that hugs the terrain. Hold LMB and drag to paint;
                 //     hold Alt (or toggle Erase) to rub grass out. -------------
@@ -9694,10 +10087,73 @@ int main(int argc, char** argv) {
                     if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                         sculptFlattenH = center.y;
 
+                    // --- Pull: one gesture, absolute height ------------------
+                    // Anchored on the press and driven by the mouse from there on
+                    // -- deliberately NOT by where the cursor lands on the ground,
+                    // because the ground it would be asking is the ground this
+                    // gesture is busy moving, and a tool that reads its own output
+                    // runs away from you.
+                    if (sculptTool == 8) {
+                        if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            pullActive  = true;
+                            pullCenter  = glm::vec2(center.x, center.z);
+                            pullRadius  = sculptRadius;
+                            pullShape   = pullFalloff;
+                            pullApplied = 0.0f;
+                            pullStartY  = ImGui::GetIO().MousePos.y;
+                            // How many metres of world one pixel of drag is worth,
+                            // measured AT THE ANCHOR: project a metre of height
+                            // there and see how tall it comes out on screen. So
+                            // the peak keeps up with the cursor whether the anchor
+                            // is at your feet or across the valley, which is the
+                            // difference between a tool that feels like pulling
+                            // and one that feels like a slider in disguise.
+                            const glm::vec4 a = vp * glm::vec4(center, 1.0f);
+                            const glm::vec4 b = vp * glm::vec4(center + glm::vec3(0.0f, 1.0f, 0.0f), 1.0f);
+                            const float pxPerM = (a.w > 1e-4f && b.w > 1e-4f)
+                                ? std::fabs((b.y / b.w - a.y / a.w)) * 0.5f * viewH
+                                : 0.0f;
+                            // Clamped, because the measurement degenerates: from
+                            // straight overhead a metre of height is worth almost
+                            // no pixels at all, and an unclamped scale there turns
+                            // a twitch into a mountain.
+                            pullScale = glm::clamp(
+                                (pxPerM > 0.5f) ? 1.0f / pxPerM : 0.5f, 0.01f, 0.5f);
+                        }
+                        if (pullActive && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                            // A drag ends by becoming the new click height, so
+                            // the next hill matches the one just made without
+                            // anybody having to read a number off the screen.
+                            if (std::fabs(pullApplied) > 1e-3f) pullHeight = pullApplied;
+                            pullActive = false;
+                        }
+                        if (pullActive) {
+                            const ImGuiIO& io = ImGui::GetIO();
+                            // The click is worth `pullHeight` on its own; moving
+                            // up or down from there adjusts it. Up the screen is
+                            // up the world, and Shift is the fine gear -- the same
+                            // gesture over four times the travel.
+                            float travel = (pullStartY - io.MousePos.y) * pullScale;
+                            if (io.KeyShift) travel *= 0.25f;
+                            const float want = pullHeight + travel;
+                            const float step = want - pullApplied;
+                            if (std::fabs(step) > 1e-4f) {
+                                sculptWork.pull(pullCenter, pullRadius, step, pullShape);
+                                pullApplied = want;
+                                publishSculpt();
+                                const float m = pullRadius + 3.0f * sculptWork.cell;
+                                streamer.editsChanged(
+                                    glm::vec2(pullCenter.x - m, pullCenter.y - m),
+                                    glm::vec2(pullCenter.x + m, pullCenter.y + m));
+                                veg.grassDirty = true;
+                            }
+                        }
+                    }
+
                     // Stamp drops a landform once per click; the other tools apply
                     // continuously while the button is held.
                     const bool stampTool = (sculptTool == 5);
-                    const bool apply = onGround &&
+                    const bool apply = onGround && sculptTool != 8 &&
                         (stampTool ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                                    : ImGui::IsMouseDown(ImGuiMouseButton_Left));
                     if (apply) {
@@ -9751,9 +10207,17 @@ int main(int argc, char** argv) {
                     }
 
                     // Brush cursor: a ground-hugging ring, coloured per tool.
-                    if (onGround) {
+                    // Once a pull is under way the ring stays on its ANCHOR --
+                    // that is where the edit is, and a ring that followed the
+                    // cursor would be pointing at ground the tool is not touching.
+                    const bool ringHere = onGround || pullActive;
+                    const glm::vec2 ringAt = pullActive ? pullCenter
+                                                        : glm::vec2(center.x, center.z);
+                    const float ringR = pullActive ? pullRadius : sculptRadius;
+                    if (ringHere) {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = sculptTool == 2 ? IM_COL32(120, 200, 255, 225)
+                        const ImU32 col = sculptTool == 8 ? IM_COL32(150, 255, 210, 235)
+                                        : sculptTool == 2 ? IM_COL32(120, 200, 255, 225)
                                         : sculptTool == 3 ? IM_COL32(255, 210, 90, 225)
                                         : sculptTool == 4 ? IM_COL32(200, 150, 110, 225)
                                         : sculptTool == 5 ? IM_COL32(200, 140, 255, 225)
@@ -9763,18 +10227,40 @@ int main(int argc, char** argv) {
                                                           : IM_COL32(140, 235, 140, 225);
                         const int SEG = 56;
                         ImVec2 prev; bool have = false;
+                        auto toScreen = [&](float wx, float wy, float wz, ImVec2& out) {
+                            const glm::vec4 cc = vp * glm::vec4(wx, wy, wz, 1.0f);
+                            if (cc.w <= 1e-4f) return false;
+                            const glm::vec3 n = glm::vec3(cc) / cc.w;
+                            out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * viewW,
+                                         org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            return true;
+                        };
                         for (int i = 0; i <= SEG; ++i) {
                             const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * sculptRadius;
-                            const float wz = center.z + std::sin(a) * sculptRadius;
-                            const glm::vec4 cc = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (cc.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
+                            const float wx = ringAt.x + std::cos(a) * ringR;
+                            const float wz = ringAt.y + std::sin(a) * ringR;
+                            ImVec2 sp;
+                            if (!toScreen(wx, streamer.heightAt(wx, wz) + 0.05f, wz, sp)) {
+                                have = false; continue;
+                            }
                             if (have) dl->AddLine(prev, sp, col, 2.0f);
                             prev = sp; have = true;
+                        }
+                        // A pull also draws its own stem and says how far it has
+                        // come. Reading the height off the silhouette of a hill
+                        // you are in the middle of making is guesswork, and this
+                        // tool is here so that a height can be aimed at.
+                        if (pullActive) {
+                            const float ground = streamer.heightAt(ringAt.x, ringAt.y);
+                            ImVec2 foot, tip;
+                            if (toScreen(ringAt.x, ground - pullApplied, ringAt.y, foot) &&
+                                toScreen(ringAt.x, ground, ringAt.y, tip)) {
+                                dl->AddLine(foot, tip, col, 2.0f);
+                                dl->AddCircleFilled(tip, 4.0f, col);
+                                char lbl[32];
+                                std::snprintf(lbl, sizeof lbl, "%+.2f m", pullApplied);
+                                dl->AddText(ImVec2(tip.x + 8.0f, tip.y - 8.0f), col, lbl);
+                            }
                         }
                     }
                 }
@@ -10227,7 +10713,7 @@ int main(int argc, char** argv) {
                                 if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                             }
                         }
-                        else if (entityEditMode) {
+                        else if (entityEditMode && !vehGizmoOwnsMouse) {
                             float model[16];
                             ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
@@ -10423,7 +10909,8 @@ int main(int argc, char** argv) {
                     const bool toolOwnsClick =
                         grassPaintMode || treePaintMode || flowerPaintMode ||
                         roadEditMode || sculptMode || paintMode || scatterMode ||
-                        splineEditMode || meshPaintMode || riverEditMode;
+                        splineEditMode || meshPaintMode || riverEditMode ||
+                        vehGizmoOwnsMouse;
                     const ImGuiIO& io = ImGui::GetIO();
                     const bool selMod  = io.KeyCtrl; // Ctrl = modify-selection gesture
                     const bool canPick = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
@@ -10970,17 +11457,22 @@ int main(int argc, char** argv) {
 
             terrainui::drawPanel({
                 showTerrain, uiSettings, streamer, camera, look,
-                texScale, normalStrength, veg.grassDirty, veg.treeCenter, road.needsBuild,
+                texScale, normalStrength, veg.grassDirty, veg.treeCenter, roadsDirty,
                 assetDb, thumbFor,
                 sculptWork, publishSculpt, paintWork, publishPaint,
                 terrainOn, [&]{ addTerrainEntity(); },
             });
 
+            // The terrain panel only ever SETS that flag; hand it on to every
+            // road, since regenerating the ground moved all of them.
+            if (roadsDirty) { roads.markNeedsBuild(); roadsDirty = false; }
+
             sculptui::drawPanel({
                 showSculpt, sculptMode,
                 grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, paintMode,
                 scatterMode,
-                sculptTool, sculptRadius, sculptStrength, sculptFlattenH,
+                sculptTool, sculptRadius, sculptStrength, pullFalloff, pullHeight,
+                sculptFlattenH,
                 stampShape, stampHeight, stampRot, noiseFreq, carveDepth,
                 sculptWork, streamer, veg.grassDirty, publishSculpt,
             });
@@ -11005,7 +11497,7 @@ int main(int argc, char** argv) {
                     grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode,
                     sculptMode, paintMode,
                     brushErase, scatterCfg, models, scatteredCount,
-                    road.roadPts.size() >= 2,
+                    roads.active().roadPts.size() >= 2,
                     scatterRoadside, scatterClearAll,
                 });
             }
@@ -11119,11 +11611,12 @@ int main(int argc, char** argv) {
 
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
-            roadui::drawPanel({showRoads, road, roadEditMode, roadSel, roadSel2, assetDb,
+            roadui::drawPanel({showRoads, roads, roadEditMode, roadSel, roadSel2, assetDb,
                 [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
                          paintMode = scatterMode = splineEditMode =
                          riverEditMode = false; }, // don't fight over LMB
                 buildRoad, deleteRoadPoint,
+                addRoad, deleteRoad, selectRoad,
                 roadPrefabCfg,
                 [&]{ const std::string d = prefabDir();
                      return d.empty()
@@ -11162,8 +11655,8 @@ int main(int argc, char** argv) {
             // Roadside city: the biome rules live on the road (saved + undoable
             // with it), the panel only edits them. See CityPanel.cpp.
             if (showCity)
-                cityui::drawPanel({showCity, road, road.built(),
-                                   [&]{ road.rebuildCity(); },
+                cityui::drawPanel({showCity, roads.active(), roads.active().built(),
+                                   [&]{ roads.active().rebuildCity(); },
                                    bakeNearestBuilding,
                                    beginRoadEdit, commitRoadEdit,
                                    exportStatus});
@@ -11179,9 +11672,17 @@ int main(int argc, char** argv) {
                 if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
                     meshFaceSel = -1;
                 modelui::drawPanel({
-                    showModeling, mc, meshFaceSel, haveSel,
+                    showModeling, mc, meshFaceSel, materials, haveSel,
                     haveSel && !mc && entities[entitySel].type == EntityType::Box,
                     [&]{ convertToMesh(); }, applyMeshEdit,
+                    // "Edit this material" on a face: the surface itself is a
+                    // material, and the place to change one is the Materials
+                    // panel. Reads only, so it is safe from inside the panel.
+                    [&](AssetId id) {
+                        if (!id.valid()) return;
+                        matSel        = document.materialIndex(id);
+                        showMaterials = true;
+                    },
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                     mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
                 });
@@ -11855,7 +12356,7 @@ int main(int argc, char** argv) {
                                 // down -- the chain stops at the first match, so a
                                 // second branch for the same component type would
                                 // never run.
-                                racegrid::inspector(*fl, entities, road);
+                                racegrid::inspector(*fl, entities, roads.active());
                             } else if (auto* cp = dynamic_cast<CheckpointComponent*>(c)) {
                                 // Gate size from metadata; the pass SFX is a picker
                                 // with volume/pitch sliders and a Preview, like the
@@ -12931,6 +13432,18 @@ int main(int argc, char** argv) {
                 const int pick = vehicleui::panelSection(document, selId, makeDrivable);
                 if (pick >= 0) entitySel = document.indexOf(pick);
 
+                ui::sectionText("Setup gizmo");
+                ImGui::Checkbox("Edit setup in viewport", &vehGizmoEdit);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Drag the axles, track, wheels, collision box and centre\n"
+                        "of mass directly in the viewport.\n\n"
+                        "The shape is ALWAYS drawn for the selected vehicle -- this\n"
+                        "hands the handles the left mouse button, so the transform\n"
+                        "gizmo pauses while it is on.\n\n"
+                        "Arrow keys nudge the selected handle (Shift = bigger steps).");
+                ImGui::TextDisabled("Select a vehicle to see its setup drawn.");
+
                 ui::sectionText("Test car");
                 ImGui::Checkbox("Show vehicle", &showVehicle);
                 if (ImGui::Button("Place at camera")) placeCar();
@@ -13125,97 +13638,110 @@ int main(int argc, char** argv) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
             }
 
-            // What the carriageway (and its bridge decks and loops) is wet with:
-            // the weather's puddles or the road's own authored sheen, whichever is
-            // wetter. Only the road's surfaces read this -- the terrain, the craft
-            // and every other material stay on the weather's value alone, which is
-            // the whole point of the road having its own.
-            const float surfaceWet = glm::max(roadWetness,
-                                              glm::clamp(road.wetness, 0.0f, 1.0f));
-            // Wet enough, and asked to mirror at all: this is what makes the road
-            // sample the probe -- and therefore what makes the probe worth
-            // capturing (see step 0 below) and the road worth keeping out of it.
-            const bool wetMirror = surfaceWet > 0.02f && road.wetReflect > 0.001f;
+            // Every road in the scene, each drawn with its own surface, its own
+            // wetness and its own glow -- which is the whole point of them being
+            // separate objects rather than one ribbon with a fork in it.
+            //
+            // `anyWetMirror` comes out of this loop for the probe below: a probe
+            // is worth capturing if ANY road is going to sample it.
+            bool anyWetMirror = false;
+            for (RoadSystem* rp : roads) {
+                RoadSystem& road = *rp;
+                // What the carriageway (and its bridge decks and loops) is wet with:
+                // the weather's puddles or the road's own authored sheen, whichever is
+                // wetter. Only the road's surfaces read this -- the terrain, the craft
+                // and every other material stay on the weather's value alone, which is
+                // the whole point of the road having its own.
+                const float surfaceWet = glm::max(roadWetness,
+                                                  glm::clamp(road.wetness, 0.0f, 1.0f));
+                // Wet enough, and asked to mirror at all: this is what makes the road
+                // sample the probe -- and therefore what makes the probe worth
+                // capturing (see step 0 below) and the road worth keeping out of it.
+                const bool wetMirror = surfaceWet > 0.02f && road.wetReflect > 0.001f;
+                // Drop impacts: the weather's rings scaled by this road's own strength.
+                const float ringAmount = ringWeather * road.rainRings;
+                if (wetMirror && road.enabled && road.verts() > 0) anyWetMirror = true;
 
-            // The committed road mesh only changes on Build (see the Roads panel);
-            // editing shows a live preview instead (drawn in the viewport overlay).
-            if (road.enabled && road.verts() > 0) {
-                road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
-                // Wet sheen: the wetter of the weather and the road's own setting.
-                // The road's is a floor, not an override -- an authored-wet track
-                // stays wet in the sun, and rain can still soak a dry one further.
-                // (The loop meshes below share this material, so they follow.)
-                road.material().set("uWetness", surfaceWet);
-                // Drop impacts: rings while it is actually coming down, not while the
-                // tarmac is merely still wet -- so they stop with the rain, not with
-                // the puddles. Every other material gets 0 from the Renderer's
-                // baseline, so the effect can't leak off the road.
-                road.material().set("uRainRings", ringAmount);
-                road.material().set("uTime", static_cast<float>(now));
-                // Edge fade: pass the fade band + the UV-to-metres mapping, and route
-                // the road through the transparent (alpha-blended) queue when it's on.
-                const bool roadFades = road.fadeWidth > 0.0f;
-                road.material().set("uRoadFade",  roadFades ? road.fadeWidth : 0.0f);
-                // Measured across the WHOLE section (raised edges included), which
-                // is what the ribbon's u now spans -- against the bare width the
-                // fade would find its edge halfway up the lip and dissolve it.
-                const float roadSpan = road.surfaceHalf() * 2.0f;
-                road.material().set("uRoadWidth", roadSpan);
-                road.material().set("uRoadUMax",  road.texTile > 1e-4f
-                                                      ? roadSpan / road.texTile : 0.0f);
-                // Glow: colour/strength/map plus the UV scale that keeps the map
-                // spanning the carriageway. Re-applied per frame because it is
-                // derived from width/texTile, which the panel edits live.
-                road.applyEmission();
-                // Puddles: map + tiling, live-edited in the panel like the glow.
-                road.applyWetness();
-                // Flagged reflective while it is wet, which keeps it OUT of the
-                // probe capture. Left in, the carriageway is drawn into the cube
-                // it is about to sample -- last frame's reflection reflected
-                // again, every frame, and any garbage in it (a probe face that
-                // was never rendered) never washes out.
-                renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false,
-                                /*reflective=*/wetMirror, 1.0f,
-                                /*forceTransparent=*/roadFades);
-            }
+                // The committed road mesh only changes on Build (see the Roads panel);
+                // editing shows a live preview instead (drawn in the viewport overlay).
+                if (road.enabled && road.verts() > 0) {
+                    road.material().set("uWaterLevel", waterLevel); // wet-darken submerged
+                    // Wet sheen: the wetter of the weather and the road's own setting.
+                    // The road's is a floor, not an override -- an authored-wet track
+                    // stays wet in the sun, and rain can still soak a dry one further.
+                    // (The loop meshes below share this material, so they follow.)
+                    road.material().set("uWetness", surfaceWet);
+                    // Drop impacts: rings while it is actually coming down, not while the
+                    // tarmac is merely still wet -- so they stop with the rain, not with
+                    // the puddles. Every other material gets 0 from the Renderer's
+                    // baseline, so the effect can't leak off the road.
+                    road.material().set("uRainRings", ringAmount);
+                    road.material().set("uTime", static_cast<float>(now));
+                    // Edge fade: pass the fade band + the UV-to-metres mapping, and route
+                    // the road through the transparent (alpha-blended) queue when it's on.
+                    const bool roadFades = road.fadeWidth > 0.0f;
+                    road.material().set("uRoadFade",  roadFades ? road.fadeWidth : 0.0f);
+                    // Measured across the WHOLE section (raised edges included), which
+                    // is what the ribbon's u now spans -- against the bare width the
+                    // fade would find its edge halfway up the lip and dissolve it.
+                    const float roadSpan = road.surfaceHalf() * 2.0f;
+                    road.material().set("uRoadWidth", roadSpan);
+                    road.material().set("uRoadUMax",  road.texTile > 1e-4f
+                                                          ? roadSpan / road.texTile : 0.0f);
+                    // Glow: colour/strength/map plus the UV scale that keeps the map
+                    // spanning the carriageway. Re-applied per frame because it is
+                    // derived from width/texTile, which the panel edits live.
+                    road.applyEmission();
+                    // Puddles: map + tiling, live-edited in the panel like the glow.
+                    road.applyWetness();
+                    // Flagged reflective while it is wet, which keeps it OUT of the
+                    // probe capture. Left in, the carriageway is drawn into the cube
+                    // it is about to sample -- last frame's reflection reflected
+                    // again, every frame, and any garbage in it (a probe face that
+                    // was never rendered) never washes out.
+                    renderer.submit(road.mesh(), road.material(), glm::mat4(1.0f), false,
+                                    /*reflective=*/wetMirror, 1.0f,
+                                    /*forceTransparent=*/roadFades);
+                }
 
-            // The road's concrete -- bridge decks and tunnel bores, one mesh --
-            // built by the same Build as the road it carries. Unlike the ribbon it
-            // casts shadows: there is ground under a deck for them to fall on, and
-            // a bore wants the hill over it to keep the sun out.
-            if (road.enabled && road.hasBridges()) {
-                road.bridgeMaterial().set("uWaterLevel", waterLevel);
-                // A deck is carriageway: it takes the road's own wetness too.
-                road.bridgeMaterial().set("uWetness", surfaceWet);
-                // A deck is carriageway too: rain hits it like the rest of the road.
-                road.bridgeMaterial().set("uRainRings", ringAmount);
-                road.bridgeMaterial().set("uTime", static_cast<float>(now));
-                renderer.submit(road.bridgeMesh(), road.bridgeMaterial(),
-                                glm::mat4(1.0f), true, /*reflective=*/wetMirror);
-            }
+                // The road's concrete -- bridge decks and tunnel bores, one mesh --
+                // built by the same Build as the road it carries. Unlike the ribbon it
+                // casts shadows: there is ground under a deck for them to fall on, and
+                // a bore wants the hill over it to keep the sun out.
+                if (road.enabled && road.hasBridges()) {
+                    road.bridgeMaterial().set("uWaterLevel", waterLevel);
+                    // A deck is carriageway: it takes the road's own wetness too.
+                    road.bridgeMaterial().set("uWetness", surfaceWet);
+                    // A deck is carriageway too: rain hits it like the rest of the road.
+                    road.bridgeMaterial().set("uRainRings", ringAmount);
+                    road.bridgeMaterial().set("uTime", static_cast<float>(now));
+                    renderer.submit(road.bridgeMesh(), road.bridgeMaterial(),
+                                    glm::mat4(1.0f), true, /*reflective=*/wetMirror);
+                }
 
-            // Vertical loops. Drawn with the road's OWN surface material -- a loop
-            // is carriageway, not structure -- but as a separate mesh, because its
-            // geometry cannot live in a ribbon that has one height per ground
-            // position (see RoadLoop.hpp).
-            if (road.enabled && road.hasLoops())
-                renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f),
-                                true, /*reflective=*/wetMirror);
+                // Vertical loops. Drawn with the road's OWN surface material -- a loop
+                // is carriageway, not structure -- but as a separate mesh, because its
+                // geometry cannot live in a ribbon that has one height per ground
+                // position (see RoadLoop.hpp).
+                if (road.enabled && road.hasLoops())
+                    renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f),
+                                    true, /*reflective=*/wetMirror);
 
-            // Decals painted ON the carriageway -- start grids, arrows, boost
-            // pads, oil stains -- lofted onto the road's own surface from the
-            // rules saved with it (see RoadDecal.hpp). Cut-out and opaque ones
-            // ride the ordinary opaque queue; only a blended one pays for
-            // sorting, which is why it is a per-decal choice and not a global
-            // one.
-            if (road.enabled && !road.decalBatches().empty()) {
-                road.applyDecalWetness(surfaceWet, waterLevel);
-                for (const RoadSystem::DecalBatch& d : road.decalBatches())
-                    renderer.submit(d.mesh, d.mat, glm::mat4(1.0f),
-                                    /*castsPointShadow=*/false,
-                                    /*reflective=*/false, d.opacity,
-                                    /*forceTransparent=*/d.transparent);
-            }
+                // Decals painted ON the carriageway -- start grids, arrows, boost
+                // pads, oil stains -- lofted onto the road's own surface from the
+                // rules saved with it (see RoadDecal.hpp). Cut-out and opaque ones
+                // ride the ordinary opaque queue; only a blended one pays for
+                // sorting, which is why it is a per-decal choice and not a global
+                // one.
+                if (road.enabled && !road.decalBatches().empty()) {
+                    road.applyDecalWetness(surfaceWet, waterLevel);
+                    for (const RoadSystem::DecalBatch& d : road.decalBatches())
+                        renderer.submit(d.mesh, d.mat, glm::mat4(1.0f),
+                                        /*castsPointShadow=*/false,
+                                        /*reflective=*/false, d.opacity,
+                                        /*forceTransparent=*/d.transparent);
+                }
+            } // every road
 
             // Tyre skid marks accumulated while driving (alpha-blended, on ground).
             skids.render(renderer);
@@ -13401,7 +13927,10 @@ int main(int argc, char** argv) {
             // row, no undo snapshot and no line in the scene file. Their materials
             // are the shared "Building A..H" library slots, so they ride in
             // gpuMats like anything else.
-            if (road.enabled && road.cityEnabled && !road.district().empty()) {
+            for (const RoadSystem* rp : roads) {
+                const RoadSystem& road = *rp;
+                if (!road.enabled || !road.cityEnabled || road.district().empty())
+                    continue;
                 const city::District& dist = road.district();
                 const glm::vec3 eye = camera.position();
                 // Pixels that one metre of height covers at one metre from the
@@ -13460,8 +13989,9 @@ int main(int argc, char** argv) {
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
             };
-            if (road.enabled)
-                for (const RoadSystem::SideBatch& batch : road.sideBatches()) {
+            for (const RoadSystem* rp : roads) {
+                if (!rp->enabled) continue;
+                for (const RoadSystem::SideBatch& batch : rp->sideBatches()) {
                     // Knockable instances are dynamic bodies in Play -- drawn from
                     // their live physics transform below, not their static seat.
                     if (playMode && batch.knockable) continue;
@@ -13480,6 +14010,7 @@ int main(int argc, char** argv) {
                         drawSideModel(lm, mm);
                     }
                 }
+            }
             // Knockable posts follow their rigid body: read the box's world
             // transform (its centre == the model's AABB centre, as placed) and draw
             // the model there, so a clipped post tumbles and flies off.
@@ -13639,7 +14170,10 @@ int main(int argc, char** argv) {
             // its own set inside the loop below -- shadows are cut to a view
             // frustum, so they cannot be shared between two people looking at
             // different places.
-            renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
+            {
+                FZ_GPU_ZONE("GPU shadows");
+                renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
+            }
             prof::addSince("shadows", fzShadowMark);
             const long long fzSceneMark = prof::mark();
 
@@ -13723,8 +14257,9 @@ int main(int argc, char** argv) {
             // that was never rendered at all. This is what makes rain and the
             // road's Wet-reflection slider cost a cubemap render; with that
             // slider at 0, or a dry road, nothing here is paid for.
-            wantProbe = wantProbe || (wetMirror && road.enabled && road.verts() > 0);
+            wantProbe = wantProbe || anyWetMirror;
             if (wantProbe) {
+                FZ_GPU_ZONE("GPU env probe");
                 // Capture at the first MIRROR-like object if there is one (best
                 // parallax there); otherwise around the camera, so reflective
                 // terrain / not-yet-placed materials still get a sensible probe.
@@ -13813,6 +14348,7 @@ int main(int argc, char** argv) {
 
                 // Reflection/refraction render LINEAR (tonemap=false) so the water
                 // shader can sample and tonemap them once at the end.
+                FZ_GPU_ZONE("GPU water reflect/refract");
                 reflectRT.bind();
                 glClear(GL_DEPTH_BUFFER_BIT);
                 drawBackground(glm::inverse(proj * reflView), reflEye, false);
@@ -13856,7 +14392,10 @@ int main(int argc, char** argv) {
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             if (shadeFull) drawBackground(glm::inverse(mainVP), camPos, false);
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
+            {
+                FZ_GPU_ZONE("GPU terrain + objects");
+                renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
+            }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
             // Shared draw context for the lit vegetation (grass, trees, billboards)
@@ -13869,14 +14408,17 @@ int main(int argc, char** argv) {
             // has a clay mode -- and a hundred thousand blades of grass drawn
             // as wireframe is a white screen, not a view of the scene.
             if (shadeFull) {
-                veg.drawGrass(gctx); // grass into the HDR buffer, lit + fogged
+                { FZ_GPU_ZONE("GPU grass");
+                  veg.drawGrass(gctx); } // grass into the HDR buffer, lit + fogged
 
                 // Flowers into the HDR buffer, lit + fogged like grass.
-                veg.drawFlowers(gctx);
+                { FZ_GPU_ZONE("GPU flowers");
+                  veg.drawFlowers(gctx); }
 
                 // Trees (instanced, per-material) + distant billboards into the HDR.
-                veg.drawTrees(gctx);
-                veg.drawTreeBillboards(gctx, vcam.right());
+                { FZ_GPU_ZONE("GPU trees");
+                  veg.drawTrees(gctx);
+                  veg.drawTreeBillboards(gctx, vcam.right()); }
 
                 // Birds: a flock wheeling above the camera, two-sided into the HDR.
                 veg.drawBirds(mainVP, now, camPos);
@@ -14052,6 +14594,7 @@ int main(int argc, char** argv) {
             // around the sun nor take the frame's exposure.
             {
                 FZ_ZONE("volumetric fog");
+                FZ_GPU_ZONE("GPU volumetric fog");
                 // Every entity carrying a VolumetricFogComponent is a volume, and
                 // its BOX is the entity's own -- the same transform the gizmo
                 // edits and the selection outline draws, built through the same
@@ -14123,6 +14666,7 @@ int main(int argc, char** argv) {
                 pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
                 pp.blurAnchorValid  = blurSt.blurAnchorValid;
+                FZ_GPU_ZONE("GPU post (bloom/blur)");
                 post.run(hdrRT, pp, fsQuad);
             }
 
@@ -14147,7 +14691,8 @@ int main(int argc, char** argv) {
                 const int pw = std::max(1, dstW / views);
                 glViewport(vi * pw, 0, pw, dstH);
             }
-            post.present(fsQuad, fxaaEnabled);
+            { FZ_GPU_ZONE("GPU composite");
+              post.present(fsQuad, fxaaEnabled); }
             } // per-pane loop
 
             // Back to the whole image. Everything after this -- the editor grid,
@@ -14541,6 +15086,26 @@ int main(int argc, char** argv) {
                 // GPU or in the driver, not in our frame.
                 FZ_ZONE("present (swap)");
                 window.swapBuffers();
+            }
+            // Whatever the GPU finished while we were busy: read the timestamps
+            // back now, two frames after they were issued, and post them to the
+            // profiler beside the CPU zones (see GpuTimer.hpp).
+            gputime::collect();
+
+            // --- Benchmark mode (--profile) ----------------------------------
+            // Measure for a few seconds, write the breakdown, quit. The window
+            // starts on the first frame AFTER the project is up and the profiler
+            // has been reset: a scene load leaves a half-second frame in the
+            // history that would otherwise be the "worst" number for the whole
+            // run and drag the average with it.
+            if (!boot.profilePath.empty()) {
+                if (profileStart <= 0.0) {
+                    profileStart = window.time();
+                    prof::reset();
+                } else if (window.time() - profileStart > boot.profileSeconds) {
+                    writeProfileReport();
+                    window.requestClose();
+                }
             }
         }
 

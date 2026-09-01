@@ -6,8 +6,8 @@
 #include <vector>
 
 #include "RoadPrefab.hpp"
+#include "RoadSet.hpp"
 
-class RoadSystem;
 namespace fitzel { class AssetDatabase; }
 
 // The Roads panel: the road's build button, its shape/surface tunables, and the
@@ -20,7 +20,13 @@ namespace roadui {
 // than this list -- the same shape terrainui::PanelState uses.
 struct PanelState {
     bool&        show;      // the window's own open flag
-    RoadSystem&  road;
+    // Every road in the scene. The picker at the top of the panel selects one and
+    // the rest of the panel edits it.
+    RoadSet&     roads;
+    // The road being edited. A call, not a reference: the selection is made IN
+    // this panel, and a reference bound when main called it would spend the rest
+    // of the frame editing the road the author just clicked away from.
+    RoadSystem&  road() const { return roads.active(); }
     bool&        editMode;  // viewport handle editing (owns the left mouse button)
     int&         sel;       // selected control point, -1 = none
     int&         sel2;      // shift-clicked second point (a bridge's far end)
@@ -36,6 +42,16 @@ struct PanelState {
     std::function<void()> build;
     // Erase a control point, fixing up the bridges that name points by index.
     std::function<void(int)> removePoint;
+
+    // --- The road list -------------------------------------------------------
+    // Add a road / delete the one at `i`, as one undoable step each. main owns
+    // the history and the viewport's selection state, so it does both -- the
+    // panel only says which.
+    std::function<void()>    addRoad;
+    std::function<void(int)> deleteRoad;
+    // Select road `i`, clearing the control-point selection with it: point #3 of
+    // the road you just left is not point #3 of this one.
+    std::function<void(int)> selectRoad;
 
     // --- Prefabs along the road (see RoadPrefab.hpp) -------------------------
     // Tool settings, not scene data: they live in main and are not saved with the

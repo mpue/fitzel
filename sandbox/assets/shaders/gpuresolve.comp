@@ -1,0 +1,86 @@
+#version 430 core
+
+// The preview's picture, made on the card.
+//
+// The tracer keeps SUMS in a float image; a screen wants eight bits through the
+// tonemap and the colour grade. That conversion used to happen on the CPU: read
+// the whole float image back, divide, tonemap a million pixels, upload the
+// result. It cost about thirty milliseconds and, worse, it BLOCKED -- reading a
+// texture the compute shader has just written waits for the card to finish
+// everything queued behind it. So the preview could only afford to do it about
+// four times a second, and every one of those was a hitch.
+//
+// Here it is a dispatch that writes straight into the texture the viewport
+// draws. Nothing comes back over the bus, nothing stalls, and the picture can be
+// refreshed every frame.
+//
+// THE CURVE IS NOT A NEW ONE. It is composite.frag's -- the same ACES constants,
+// the same gamma, the same grade in the same order -- which is also what
+// pathtrace::tonemap transcribes for the offline still. Three copies of one
+// curve is two too many, so gpucheck holds this one against the CPU's over a
+// spread of values and fails if they part company. A preview graded differently
+// from the still it is previewing is worse than no preview.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba32f, binding = 0) readonly  uniform image2D uAccum;  // sums
+layout(rgba8,   binding = 1) writeonly uniform image2D uOut;    // what is shown
+
+uniform ivec2 uSize;
+uniform int   uSampleCount;   // what to divide the sums by
+uniform float uExposure;
+uniform float uHueShift;      // degrees
+uniform float uSaturation;
+uniform float uValue;
+uniform float uWarmth;        // white balance: + warms, - cools
+uniform float uContrast;      // S-curve around mid grey
+
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+
+vec3 aces(vec3 x) {
+    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+}
+
+vec3 colorGrade(vec3 c) {
+    // White balance, then the contrast S-curve, then hue/saturation/value. The
+    // ORDER is part of the look: grading saturation before contrast gives a
+    // visibly different picture from the same numbers.
+    c *= vec3(1.0 + uWarmth * 0.5, 1.0 + uWarmth * 0.06, 1.0 - uWarmth * 0.45);
+    c = clamp((c - 0.5) * (1.0 + uContrast) + 0.5, 0.0, 1.0);
+
+    vec3 hsv = rgb2hsv(c);
+    hsv.x = fract(hsv.x + uHueShift / 360.0);
+    hsv.y = clamp(hsv.y * uSaturation, 0.0, 1.0);
+    hsv.z = hsv.z * uValue;
+    return hsv2rgb(hsv);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    if (px.x >= uSize.x || px.y >= uSize.y) return;
+
+    vec3 col = imageLoad(uAccum, px).rgb / float(max(uSampleCount, 1));
+
+    // Bounded BEFORE the tonemap: ACES divides one polynomial by another, so an
+    // infinity going in comes out a NaN and no clamp afterwards rescues it.
+    col = min(col, vec3(50000.0));
+    if (any(isnan(col))) col = vec3(0.0);
+
+    col = aces(col * uExposure);
+    col = pow(col, vec3(1.0 / 2.2));
+    col = colorGrade(col);
+    imageStore(uOut, px, vec4(clamp(col, 0.0, 1.0), 1.0));
+}

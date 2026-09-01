@@ -635,6 +635,9 @@ const std::vector<Property>& VehicleComponent::properties() {
         ch.speed = 0.05f;
         ch.field = [](void* o) -> void* { return &static_cast<VehicleComponent*>(o)->chassisHalf; };
         p.push_back(std::move(ch));
+        // Reads next to "Chassis half" because the pair is size + position: how
+        // big the box is, and how high it rides on its springs.
+        addFloat("Chassis Y",     "chassisY",  &VehicleComponent::chassisY,  false, 0.05f, 2.0f, "%.2f m");
         addFloat("Half track",    "halfTrack", &VehicleComponent::halfTrack, false, 0.1f, 5.0f,   "%.2f m");
         addFloat("Front axle Z",  "frontZ",    &VehicleComponent::frontZ,    false, -10.0f, 10.0f, "%.2f m");
         addFloat("Rear axle Z",   "rearZ",     &VehicleComponent::rearZ,     false, -10.0f, 10.0f, "%.2f m");
@@ -1476,6 +1479,18 @@ void MeshComponent::save(nlohmann::json& j) const {
         for (int i : f) fs << i << ' ';
     }
     j["faces"] = fs.str();
+    // Per-face materials, only where a face wears one of its own: "face guid",
+    // sparse for the same reason the paint is -- most faces wear the object's
+    // material, and saying so face by face would put a GUID in every scene file
+    // to say nothing.
+    if (mesh.dressed()) {
+        std::ostringstream ms;
+        for (std::size_t i = 0; i < mesh.faceMat.size(); ++i) {
+            if (!mesh.faceMat[i].valid()) continue;
+            ms << i << ' ' << mesh.faceMat[i].toString() << ' ';
+        }
+        j["faceMats"] = ms.str();
+    }
     // Texture paint, only where there is any: "corner w0 w1 w2 w3", sparse. Most
     // meshes are never painted and most corners of a painted one are not, so a
     // dense array would put four numbers per corner into every scene file to say
@@ -1510,6 +1525,7 @@ void MeshComponent::save(nlohmann::json& j) const {
 void MeshComponent::load(const nlohmann::json& j) {
     mesh.verts.clear();
     mesh.faces.clear();
+    mesh.faceMat.clear();
     if (j.contains("verts") && j["verts"].is_string()) {
         std::istringstream vs(j["verts"].get<std::string>());
         glm::vec3 v;
@@ -1536,6 +1552,16 @@ void MeshComponent::load(const nlohmann::json& j) {
     }
     // A scene that stored nothing usable still has to draw something.
     if (mesh.faces.empty()) mesh = EditMesh::box(glm::vec3(0.5f));
+    mesh.syncFaceMat();
+    if (j.contains("faceMats") && j["faceMats"].is_string()) {
+        std::istringstream ms(j["faceMats"].get<std::string>());
+        std::size_t f = 0;
+        std::string guid;
+        while (ms >> f >> guid) {
+            if (f >= mesh.faceMat.size()) break;  // corrupt stream: stop, don't guess
+            mesh.faceMat[f] = fitzel::AssetId::fromString(guid);
+        }
+    }
     mesh.syncPaint();
     if (j.contains("paint") && j["paint"].is_string()) {
         std::istringstream ps(j["paint"].get<std::string>());

@@ -27,9 +27,11 @@ struct PanelState {
     bool& scatterMode;
 
     // Brush parameters (owned by main, shared with the viewport application code).
-    int&   tool;          // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve
+    int&   tool;          // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve 8 pull
     float& radius;
     float& strength;
+    float& pullFalloff;   // proportional pull: skirt shape (1 = the smooth bell)
+    float& pullHeight;    // ...and how far one click pulls (m); the drag adjusts it
     float& flattenHeight; // flatten target (grabbed from the surface on press)
     int&   stampShape;    // 0 dome 1 cone 2 plateau 3 crater 4 ridge 5 range
     float& stampHeight;

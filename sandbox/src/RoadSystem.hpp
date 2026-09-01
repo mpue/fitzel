@@ -167,10 +167,13 @@ public:
         std::vector<roadside::Line>  sideObjects;
         std::vector<city::Biome>     biomes;
         std::vector<roaddecal::Decal> decalRules;
+        // The label too: renaming a road is an edit like any other, and one that
+        // is easy to do by accident in a list of them.
+        std::string                  label;
     };
     Shape shape() const {
         return {roadPts, ptLift, ptBank, bridges, tunnels, loops, closed,
-                sideLines, biomes, decals};
+                sideLines, biomes, decals, name};
     }
     void  setShape(const Shape& s) {
         roadPts = s.points;
@@ -185,6 +188,7 @@ public:
         sideLines = s.sideObjects;
         biomes    = s.biomes;
         decals    = s.decalRules;
+        name      = s.label;
         needsBuild = true;
         rebuildSideObjects(); // reflect a side-object undo/redo immediately
         rebuildCity();        // ...and a biome one
@@ -348,6 +352,9 @@ public:
     const std::vector<float>&         centerlineBank() const { return m_centerlineBank; }
 
     // --- Editor state the viewport handles + panel drive directly ------------
+    // What this road is called in the road list (see RoadSet). A label and
+    // nothing else: nothing is looked up by it, so two roads may share one.
+    std::string              name = "Road";
     std::vector<glm::vec2>   roadPts;          // control points (world x,z)
     // Per-point height offset in metres above the graded ground, one entry per
     // control point. 0 (the default, and what an older scene loads as) means

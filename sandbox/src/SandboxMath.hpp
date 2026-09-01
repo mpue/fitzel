@@ -11,9 +11,20 @@
 float vhash2(float x, float z);
 float valNoise2(float x, float z);
 
+// A point that ENDS one run of a polyline and starts the next, so several
+// separate lines can travel as one flat vector<vec2> -- which is what the
+// vegetation's tile workers need (they take a copy and read it from another
+// thread, so a vector-of-vectors would cost them a second allocation each).
+//
+// Without it, joining two roads' centrelines end to end would invent a segment
+// between them and mow a strip of grass along a road that is not there.
+constexpr glm::vec2 kLineBreak{3.0e38f, 3.0e38f};
+inline bool isLineBreak(const glm::vec2& p) { return p.x >= 1.0e38f; }
+
 // Squared distance from (x,z) to a polyline in the XZ plane. Returns a huge
 // value for an empty/degenerate line, so callers can test "< clearance^2"
-// unconditionally. Used to keep vegetation off the road.
+// unconditionally. Used to keep vegetation off the road. Segments that touch a
+// kLineBreak point are skipped -- see above.
 float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z);
 
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.

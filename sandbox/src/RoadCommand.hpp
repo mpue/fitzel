@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "Command.hpp"
+#include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 
 // Road shape edits as undoable commands, so placing, dragging, raising and
@@ -45,6 +46,7 @@ public:
                m_before.biomes      == m_after.biomes &&
                m_before.decalRules  == m_after.decalRules &&
                m_before.loops   == m_after.loops  &&
+               m_before.label   == m_after.label  &&
                m_before.bridges.size() == m_after.bridges.size() &&
                std::equal(m_before.bridges.begin(), m_before.bridges.end(),
                           m_after.bridges.begin(),
@@ -58,4 +60,30 @@ private:
     RoadSystem*        m_road;
     RoadSystem::Shape  m_before, m_after;
     const char*        m_label; // static string ("Move point", ...)
+};
+
+// Adding or deleting a whole road. The road itself is not in here and does not
+// need to be: RoadSet never destroys one (see its header), so putting a deleted
+// road back is a flag and not a rebuild -- which is also what makes redo cheap
+// enough to be free, and what keeps the RoadSystem* every RoadShapeCmd in the
+// history borrows valid across the delete of the road it names.
+//
+// The id, not the list index: an undo further down the stack can put an earlier
+// road back and shift every index after it.
+class RoadListCmd : public Command {
+public:
+    // `added` is what THIS command did: true for "a road was added" (redo puts it
+    // in, undo takes it out), false for a delete.
+    RoadListCmd(RoadSet& roads, int id, bool added, const char* label)
+        : m_roads(&roads), m_id(id), m_added(added), m_label(label) {}
+
+    void redo(Document&) override { m_roads->setAlive(m_id,  m_added); }
+    void undo(Document&) override { m_roads->setAlive(m_id, !m_added); }
+    const char* name() const override { return m_label; }
+
+private:
+    RoadSet*    m_roads;
+    int         m_id;
+    bool        m_added;
+    const char* m_label;   // static string ("Add road", "Delete road")
 };

@@ -29,6 +29,7 @@ float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z) {
     float best = 1e30f;
     for (size_t i = 0; i + 1 < line.size(); ++i) {
         const glm::vec2 a = line[i], b = line[i + 1];
+        if (isLineBreak(a) || isLineBreak(b)) continue;  // one road ends here
         const glm::vec2 ab = b - a;
         const float len2 = glm::dot(ab, ab);
         float t = len2 > 1e-8f ? glm::dot(p - a, ab) / len2 : 0.0f;

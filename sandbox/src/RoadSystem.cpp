@@ -556,6 +556,7 @@ void RoadSystem::save(nlohmann::json& j) const {
     }
 
     j = {
+        {"name",      name},
         {"points",    rs.str()},
         {"lifts",     ls.str()},
         {"banks",     bs.str()},
@@ -619,6 +620,10 @@ void RoadSystem::save(nlohmann::json& j) const {
 void RoadSystem::load(const nlohmann::json& j) {
     // Every field defaults to what a fresh road has, so a scene saved before a
     // param existed loads as the road it was built as.
+    //
+    // The name is one of those: a scene from before roads were plural has none,
+    // and comes back "" so RoadSet can number it by position instead.
+    name = j.value("name", std::string());
     roadPts.clear();
     ptLift.clear();
     if (j.contains("points") && j["points"].is_string()) {

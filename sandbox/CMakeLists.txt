@@ -29,6 +29,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/VegetationSystem.cpp
     src/TiledScatter.cpp
     src/RoadSystem.cpp
+    src/RoadSet.cpp
     src/RoadBridge.cpp
     src/RoadTunnel.cpp
     src/RoadLoop.cpp
@@ -99,6 +100,7 @@ set(SANDBOX_RUNTIME_SOURCES
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
     src/Profiler.cpp
+    src/GpuTimer.cpp
     # Loading a baked light grid and lighting from it. Runtime by definition:
     # it is what the shipped game does with the editor's bake.
     src/LightGrid.cpp
@@ -165,6 +167,7 @@ set(SANDBOX_EDITOR_SOURCES
     # runtime, below, so a shipped game lights from a bake without linking a
     # line of the renderer that made it.
     src/LightGridBake.cpp
+    src/VehicleGizmo.cpp
     src/VehicleTool.cpp
     src/GliderTool.cpp)
 
@@ -274,6 +277,33 @@ add_executable(meshpaintcheck tools/meshpaintcheck.cpp src/MeshPaint.cpp
 target_compile_definitions(meshpaintcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(meshpaintcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# modelcheck (sandbox/tools/modelcheck.cpp): the loop cut and the per-face
+# materials. Both fail without looking like failures -- a cut that lost track of
+# which way round an edge it was measuring still splits every face and still
+# draws, only the new edge zigzags; a face material is one array beside another,
+# and an operation that moves one without the other puts a material on the wrong
+# face several edits later. This measures the two things a screenshot cannot: that
+# the cut is planar and leaves the surface closed, and that a dressing survives
+# every operation and the scene file.
+#   build/release/bin/modelcheck.exe
+add_executable(modelcheck tools/modelcheck.cpp src/EditMesh.cpp
+                          src/SandboxMath.cpp src/CameraPath.cpp
+                          src/Component.cpp src/Primitives.cpp
+                          src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(modelcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(modelcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# importcheck (sandbox/tools/importcheck.cpp): a model authored as many objects
+# has to arrive as many objects. This one fails without any symptom at all -- a
+# structured import that silently collapses still draws the right picture, it is
+# just one entity where there should be twenty, and you find out when you try to
+# select a wheel and get the car. Checks that a .glb yields its nodes, that the
+# textures living inside the file reach them, and that each part's reported
+# centre puts it back where the flat import has it.
+#   build/release/bin/importcheck.exe [model.glb ...]
+add_executable(importcheck tools/importcheck.cpp)
+target_link_libraries(importcheck PRIVATE fitzel)
+
 # softcheck (sandbox/tools/softcheck.cpp): drops each kind of soft body on a
 # floor and measures the wobble. A soft body has no transform to inspect -- it is
 # a cloud of particles -- so "it simulated" and "it silently handed back its rest
@@ -328,6 +358,28 @@ add_executable(rivercheck tools/rivercheck.cpp src/RiverGen.cpp src/RiverSystem.
                           src/SandboxMath.cpp src/CameraPath.cpp)
 target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
                                          stb_headers nlohmann_json::nlohmann_json)
+
+# roadcheck (sandbox/tools/roadcheck.cpp): a scene holds SEVERAL roads, and
+# every way that can quietly collapse back into one is invisible in the viewport
+# -- only the last road's corridor graded, a second Build sinking a road a little
+# further, the ground query answering for one of them, a save that keeps one, a
+# delete that frees a road the undo history still points at, or the vegetation
+# mowing the gap between two of them because their centrelines arrived joined.
+# So it measures all six against real RoadSystems (a GL context is opened for the
+# materials; nothing is drawn).
+#   build/release/bin/roadcheck.exe [shaderDir]
+add_executable(roadcheck tools/roadcheck.cpp
+                         src/RoadSet.cpp src/RoadSystem.cpp src/RoadBridge.cpp
+                         src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadSide.cpp
+                         src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp
+                         src/SandboxMath.cpp)
+target_compile_definitions(roadcheck PRIVATE FITZEL_PLAYER
+    FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content"
+    FITZEL_TEXTURE_DIR="${CMAKE_SOURCE_DIR}/content/textures")
+target_link_libraries(roadcheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+                                        nlohmann_json::nlohmann_json)
 
 # The multishot check (sandbox/tools/shotcheck.cpp): runs the shot director over
 # a parked car, a fast one, a lorry and a slope, and measures what a camera fault
@@ -405,6 +457,16 @@ target_link_libraries(capturecheck PRIVATE fitzel stb_headers)
 # Windows declines to read; the export reports success either way and the file
 # shows the default sheet. Exits non-zero if Windows will not use the icon.
 #   build/release/bin/iconcheck.exe [image] [exe]
+# The sculpt check (sandbox/tools/sculptcheck.cpp): the proportional Pull tool
+# writes the ground ABSOLUTELY -- the caller keeps its running total and hands
+# over the difference -- so a gesture that wanders and comes back leaves the
+# height it stopped at and nothing else. That contract lives half in the engine
+# and half in the viewport loop, and a hill 30% too tall still looks like a hill,
+# so it is measured rather than looked at. Pure arithmetic on a height field: no
+# GL, no window, no assets.
+add_executable(sculptcheck tools/sculptcheck.cpp)
+target_link_libraries(sculptcheck PRIVATE fitzel glm::glm)
+
 add_executable(iconcheck tools/iconcheck.cpp src/IconEmbed.cpp)
 # stb_headers for the decode/resize IconEmbed does (the IMPLEMENTATION TU is in
 # the engine, so the symbols arrive with fitzel); shell32 for ExtractIconEx,

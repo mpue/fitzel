@@ -43,7 +43,13 @@ struct State {
     float scale        = 0.5f;
     int   samples      = 128;   // the ceiling; it is watchable long before it
     int   maxBounces   = 4;
-    float settleTime   = 0.25f; // seconds of stillness before a restart
+    // Seconds of stillness before a restart. Short, because a restart is cheap:
+    // a camera move re-aims the scene it already has (the harvest is what costs,
+    // and only an edit pays for one), and the first picture of the new view is
+    // on the screen the same frame the restart happens. It is not zero, and must
+    // not be: restarting on every frame of a drag is not a live preview, it is a
+    // stutter with nothing ever converging.
+    float settleTime   = 0.10f;
     // Where the compute kernel lives, resolved the way every other shader in
     // the editor is: relative to the working directory. A field rather than a
     // constant inside service() so a harness can point at the repo's copy
@@ -65,7 +71,12 @@ struct State {
     gputrace::Tracer gpu;
     bool  gpuTried = false;   // init() attempted (it is tried once, not per frame)
     bool  gpuReady = false;
-    int   gpuPerFrame = 2;    // samples per frame, the interactivity dial
+    // Samples per frame. Not a setting: it is re-derived every frame from what a
+    // sample actually costs on this card (see service()), so the same preview
+    // converges as fast as the machine allows without the editor's own frame
+    // rate being the price. The budget below is the dial.
+    int   gpuPerFrame = 2;
+    float gpuFrameBudgetMs = 8.0f; // of the frame, given to the tracer
     pathcapture::Report report;
     fitzel::Texture     image;
     int         texW = 0, texH = 0;
@@ -78,6 +89,12 @@ struct State {
     glm::mat4   lastView{0.0f};
     int         lastW = 0, lastH = 0;
     bool        needCapture = true;  // harvest afresh on the next restart
+    // How many times the picture has been started over. Only ever read: it is
+    // the one piece of evidence that a restart HAPPENED which does not depend on
+    // how fast the machine is. Watching the sample count fall instead works only
+    // while a preview takes more than one frame to reach its target -- which
+    // stopped being true the day the tracer got quick.
+    int         restarts = 0;
     bool        restartRequested = true; // somebody asked for one (not: something moved)
     bool        restartDue  = false;
     double      restartAt   = 0.0;

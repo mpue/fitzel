@@ -242,8 +242,12 @@ PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,
         w->mPosition            = JPH::Vec3(wp[i].x, wy, wp[i].z);
         w->mRadius              = wheelRadius;
         w->mWidth               = wheelWidth;
-        w->mSuspensionMinLength = 0.3f;
-        w->mSuspensionMaxLength = 0.6f;
+        // Travel around the rest length the caller asked for. The 0.75/1.5 span
+        // reproduces the old fixed 0.30/0.60 at the default rest of 0.4 exactly,
+        // so a car tuned before this was adjustable rides where it always did.
+        const float rest = glm::max(tuning.suspensionRest, 0.05f);
+        w->mSuspensionMinLength = rest * 0.75f;
+        w->mSuspensionMaxLength = rest * 1.5f;
         // A stiffer, well-damped suspension resists body roll and settles the
         // weight transfer instead of letting it pitch the car over.
         w->mSuspensionSpring.mFrequency = glm::max(tuning.suspensionFreq, 0.1f);

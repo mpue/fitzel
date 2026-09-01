@@ -171,6 +171,49 @@ void storePixels(unsigned char* px, int w, int h,
     stbi_image_free(px);
 }
 
+// Does this base-colour map cut holes in the surface it dresses?
+//
+// A material is supposed to SAY so -- glTF has alphaMode, FBX has an opacity
+// below one -- and most do. Plenty of exported foliage does not: an RGBA leaf
+// atlas under a material marked OPAQUE is one of the commonest things to find in
+// a downloaded tree (content/models/tree2.glb is one), and there is nothing in
+// the file to go on. Drawn as declared, every leaf card is a rectangle of
+// background colour. That is the whole of the bug this answers: "my tree has no
+// transparency".
+//
+// So when the material claims to be opaque, the pixels get a vote -- but only a
+// clear one, because base-colour alpha is not always alpha. Unity-style packs
+// put SMOOTHNESS in it, and honouring that would punch holes in a car door. The
+// two are easy to tell apart without knowing which is which: a cut-out mask is
+// almost binary (transparent or solid, with a thin anti-aliased rim), while a
+// data channel is a continuous ramp. Hence the three-way count:
+//
+//   holes  a < 16   -- more than a tenth of the image, or this is not a mask
+//                      (incidental transparency in an atlas runs a few percent;
+//                      foliage runs 30-90). Under 99%, because an all-zero alpha
+//                      channel is a broken export, and obeying it would make the
+//                      model vanish rather than merely look wrong.
+//   mid            -- under a sixth, or the channel is carrying something that
+//                      is not coverage.
+//
+// Sampled, not scanned: every seventh texel is far more than a ratio this coarse
+// needs, and it keeps a 4k atlas to a few hundred thousand reads.
+bool alphaCutsHoles(const std::vector<std::uint8_t>& rgba) {
+    const std::size_t texels = rgba.size() / 4;
+    if (texels < 64) return false;
+    std::size_t seen = 0, holes = 0, mid = 0;
+    for (std::size_t i = 0; i < texels; i += 7) {
+        const std::uint8_t a = rgba[i * 4 + 3];
+        ++seen;
+        if      (a < 16)  ++holes;
+        else if (a < 240) ++mid;
+    }
+    if (seen == 0) return false;
+    const float holeFrac = static_cast<float>(holes) / static_cast<float>(seen);
+    const float midFrac  = static_cast<float>(mid)   / static_cast<float>(seen);
+    return holeFrac > 0.10f && holeFrac < 0.99f && midFrac < 0.15f;
+}
+
 // Name an encoded image's container from its magic bytes, so an undecodable
 // embedded texture reports WHAT it is (stb can't read WebP/KTX2/etc.).
 const char* imageFormat(const unsigned char* p, std::size_t n) {
@@ -235,6 +278,168 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     const std::string file = (std::filesystem::path(baseDir) / uri.c_str())
                                  .generic_string();
     storePixels(decodeImageFile(file, w, h, ch), w, h, outPix, outW, outH);
+}
+
+// Where a skinned primitive's joint indices point. `skin` is the node's glTF
+// skin, `index` maps a joint node to its slot in ModelData::skeleton, and
+// `active` says a skeleton was actually built -- the structured import (which
+// bakes transforms and keeps no skeleton) leaves this false and gets static
+// vertices out of the same code the animated path uses.
+struct GltfSkinCtx {
+    const cgltf_skin*                                 skin   = nullptr;
+    const std::unordered_map<const cgltf_node*, int>* index  = nullptr;
+    bool                                              active = false;
+};
+
+// Convert one glTF triangle primitive into a ModelPrimitive: its material and
+// maps, KHR_texture_transform baked into the UVs, positions/normals pushed
+// through `model`, and -- when `sk` is active and the primitive carries
+// JOINTS/WEIGHTS -- the per-vertex skin binding. Returns an empty primitive for
+// anything that isn't a triangle list with positions, so callers skip on
+// vertexCount() == 0. Shared by loadGltf (one flat model) and loadGltfNodes (one
+// entry per node), which differ only in how they group the results.
+ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model,
+                             const std::string& baseDir, const GltfSkinCtx& sk) {
+    ModelPrimitive mp;
+    if (prim.type != cgltf_primitive_type_triangles) return mp;
+
+    const cgltf_accessor* pos = nullptr;
+    const cgltf_accessor* nrm = nullptr;
+    const cgltf_accessor* jnt = nullptr;
+    const cgltf_accessor* wgt = nullptr;
+    // Keep every UV set (TEXCOORD_n) indexed by n: a material's base-colour
+    // texture chooses which one it samples, and multi-material models often
+    // route different materials through different sets.
+    const cgltf_accessor* uvSets[8] = {};
+    for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
+        const cgltf_attribute& at = prim.attributes[ai];
+        switch (at.type) {
+            case cgltf_attribute_type_position: pos = at.data; break;
+            case cgltf_attribute_type_normal:   nrm = at.data; break;
+            case cgltf_attribute_type_texcoord:
+                if (at.index >= 0 && at.index < 8 && !uvSets[at.index])
+                    uvSets[at.index] = at.data;
+                break;
+            case cgltf_attribute_type_joints:   if (!jnt) jnt = at.data; break;
+            case cgltf_attribute_type_weights:  if (!wgt) wgt = at.data; break;
+            default: break;
+        }
+    }
+    if (!pos) return mp;
+    const bool primSkinned = sk.active && jnt && wgt && sk.skin && sk.index;
+
+    const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(model)));
+
+    // UV routing for this primitive's base-colour texture: which TEXCOORD set it
+    // samples, and the KHR_texture_transform (offset/rotation/scale) that remaps
+    // the coords -- both fixed per material. Atlas-packed multi-material models
+    // rely on the transform to place each material in its own atlas tile;
+    // ignoring it maps every material to the same region. Baked into the UVs
+    // below so the render path stays uniform.
+    int   uvSet       = 0;
+    bool  uvHasXform  = false;
+    float uvOffset[2] = {0.0f, 0.0f};
+    float uvScale[2]  = {1.0f, 1.0f};
+    float uvRotation  = 0.0f;
+
+    if (prim.material) {
+        const cgltf_material* mat = prim.material;
+        if (mat->name) mp.materialName = mat->name;
+        mp.alphaCutout = (mat->alpha_mode != cgltf_alpha_mode_opaque);
+        // Support both PBR workflows: metallic-roughness base colour and the KHR
+        // spec-gloss diffuse (older exporters). Whichever provides the colour
+        // texture wins -- a model mixing them keeps all its maps.
+        const cgltf_texture*      colorTex  = nullptr;
+        const cgltf_texture_view* colorView = nullptr;
+        if (mat->has_pbr_metallic_roughness) {
+            const auto& pbr = mat->pbr_metallic_roughness;
+            for (int c = 0; c < 4; ++c) mp.baseColor[c] = pbr.base_color_factor[c];
+            colorTex  = pbr.base_color_texture.texture;
+            colorView = &pbr.base_color_texture;
+        }
+        if (!colorTex && mat->has_pbr_specular_glossiness) {
+            const auto& sg = mat->pbr_specular_glossiness;
+            for (int c = 0; c < 4; ++c) mp.baseColor[c] = sg.diffuse_factor[c];
+            colorTex  = sg.diffuse_texture.texture;
+            colorView = &sg.diffuse_texture;
+        }
+        // The base-colour view drives the vertex UVs (base colour, normal and
+        // emission share one set in every workflow we target).
+        if (colorView && colorView->texture) {
+            uvSet = colorView->texcoord;
+            if (colorView->has_transform) {
+                const cgltf_texture_transform& tr = colorView->transform;
+                uvHasXform  = true;
+                uvOffset[0] = tr.offset[0]; uvOffset[1] = tr.offset[1];
+                uvScale[0]  = tr.scale[0];  uvScale[1]  = tr.scale[1];
+                uvRotation  = tr.rotation;
+                if (tr.has_texcoord) uvSet = tr.texcoord; // may override the set
+            }
+        }
+        if (colorTex)
+            decodeImage(colorTex->image, baseDir,
+                        mp.texPixels, mp.texWidth, mp.texHeight, mp.materialName);
+        // ...and if the material claimed to be opaque, let the pixels answer:
+        // foliage that ships as OPAQUE with a leaf mask is common (see
+        // alphaCutsHoles), and taking it at its word draws the leaf cards solid.
+        if (!mp.alphaCutout && alphaCutsHoles(mp.texPixels)) mp.alphaCutout = true;
+        // Tangent-space normal map (KHR standard normal_texture).
+        if (mat->normal_texture.texture)
+            decodeImage(mat->normal_texture.texture->image, baseDir,
+                        mp.normalPixels, mp.normalWidth, mp.normalHeight,
+                        mp.materialName);
+    }
+
+    // Resolve the UV accessor for the chosen set, falling back to the first
+    // available set when the requested one is absent.
+    const cgltf_accessor* uv = (uvSet >= 0 && uvSet < 8) ? uvSets[uvSet] : nullptr;
+    if (!uv)
+        for (const cgltf_accessor* a : uvSets) if (a) { uv = a; break; }
+
+    const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
+    mp.vertices.reserve(count * 8);
+    if (primSkinned) mp.skin.reserve(count);
+    for (cgltf_size i = 0; i < count; ++i) {
+        const cgltf_size idx =
+            prim.indices ? cgltf_accessor_read_index(prim.indices, i) : i;
+
+        float p[3] = {0, 0, 0}, n[3] = {0, 1, 0}, t[2] = {0, 0};
+        cgltf_accessor_read_float(pos, idx, p, 3);
+        if (nrm) cgltf_accessor_read_float(nrm, idx, n, 3);
+        if (uv)  cgltf_accessor_read_float(uv,  idx, t, 2);
+        if (uvHasXform) { // KHR_texture_transform: scale, then rotate, then offset
+            const float u = t[0], v = t[1];
+            const float cs = std::cos(uvRotation), sn = std::sin(uvRotation);
+            t[0] = uvScale[0] * u * cs - uvScale[1] * v * sn + uvOffset[0];
+            t[1] = uvScale[0] * u * sn + uvScale[1] * v * cs + uvOffset[1];
+        }
+
+        const glm::vec3 wp = glm::vec3(model * glm::vec4(p[0], p[1], p[2], 1.0f));
+        const glm::vec3 wn = glm::normalize(normalM * glm::vec3(n[0], n[1], n[2]));
+
+        mp.vertices.insert(mp.vertices.end(),
+            {wp.x, wp.y, wp.z, wn.x, wn.y, wn.z, t[0], t[1]});
+
+        if (primSkinned) {
+            cgltf_uint ji[4] = {0, 0, 0, 0};
+            float      jw[4] = {0, 0, 0, 0};
+            cgltf_accessor_read_uint(jnt, idx, ji, 4);
+            cgltf_accessor_read_float(wgt, idx, jw, 4);
+            VertexSkin vs;
+            for (int k = 0; k < 4; ++k) {
+                int mapped = 0;
+                const int local = static_cast<int>(ji[k]);
+                if (local >= 0 && local < static_cast<int>(sk.skin->joints_count)) {
+                    auto mit = sk.index->find(sk.skin->joints[local]);
+                    if (mit != sk.index->end()) mapped = mit->second;
+                }
+                vs.joints[k]  = mapped;
+                vs.weights[k] = jw[k];
+            }
+            mp.skin.push_back(vs);
+        }
+    }
+    return mp;
 }
 
 } // namespace
@@ -346,147 +551,17 @@ ModelData loadGltf(const std::string& path) {
         cgltf_node_transform_world(&node, wm);
         // Skinned meshes ignore the node transform (joints place them); static
         // meshes bake the node world transform into their vertices.
-        const glm::mat4 model   = skinnedNode ? glm::mat4(1.0f) : glm::make_mat4(wm);
-        const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(model)));
-        const cgltf_skin* nskin = node.skin;
+        const glm::mat4 model = skinnedNode ? glm::mat4(1.0f) : glm::make_mat4(wm);
+        const GltfSkinCtx sk{node.skin, &jointIndex,
+                             skinnedNode && !out.skeleton.empty()};
 
         for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
-            const cgltf_primitive& prim = node.mesh->primitives[pi];
-            if (prim.type != cgltf_primitive_type_triangles) continue;
-
-            const cgltf_accessor* pos = nullptr;
-            const cgltf_accessor* nrm = nullptr;
-            const cgltf_accessor* jnt = nullptr;
-            const cgltf_accessor* wgt = nullptr;
-            // Keep every UV set (TEXCOORD_n) indexed by n: a material's base-colour
-            // texture chooses which one it samples, and multi-material models often
-            // route different materials through different sets.
-            const cgltf_accessor* uvSets[8] = {};
-            for (cgltf_size ai = 0; ai < prim.attributes_count; ++ai) {
-                const cgltf_attribute& at = prim.attributes[ai];
-                switch (at.type) {
-                    case cgltf_attribute_type_position: pos = at.data; break;
-                    case cgltf_attribute_type_normal:   nrm = at.data; break;
-                    case cgltf_attribute_type_texcoord:
-                        if (at.index >= 0 && at.index < 8 && !uvSets[at.index])
-                            uvSets[at.index] = at.data;
-                        break;
-                    case cgltf_attribute_type_joints:   if (!jnt) jnt = at.data; break;
-                    case cgltf_attribute_type_weights:  if (!wgt) wgt = at.data; break;
-                    default: break;
-                }
-            }
-            if (!pos) continue;
-            const bool primSkinned = skinnedNode && jnt && wgt && nskin && !out.skeleton.empty();
-
-            // UV routing for this primitive's base-colour texture: which TEXCOORD
-            // set it samples, and the KHR_texture_transform (offset/rotation/scale)
-            // that remaps the coords -- both fixed per material. Atlas-packed
-            // multi-material models rely on the transform to place each material in
-            // its own atlas tile; ignoring it maps every material to the same
-            // region. Baked into the UVs below so the render path stays uniform.
-            int   uvSet       = 0;
-            bool  uvHasXform  = false;
-            float uvOffset[2] = {0.0f, 0.0f};
-            float uvScale[2]  = {1.0f, 1.0f};
-            float uvRotation  = 0.0f;
-
-            ModelPrimitive mp;
-            if (prim.material) {
-                const cgltf_material* mat = prim.material;
-                if (mat->name) mp.materialName = mat->name;
-                mp.alphaCutout = (mat->alpha_mode != cgltf_alpha_mode_opaque);
-                // Support both PBR workflows: metallic-roughness base colour and
-                // the KHR spec-gloss diffuse (older exporters). Whichever provides
-                // the colour texture wins -- a model mixing them keeps all its maps.
-                const cgltf_texture*      colorTex  = nullptr;
-                const cgltf_texture_view* colorView = nullptr;
-                if (mat->has_pbr_metallic_roughness) {
-                    const auto& pbr = mat->pbr_metallic_roughness;
-                    for (int c = 0; c < 4; ++c) mp.baseColor[c] = pbr.base_color_factor[c];
-                    colorTex  = pbr.base_color_texture.texture;
-                    colorView = &pbr.base_color_texture;
-                }
-                if (!colorTex && mat->has_pbr_specular_glossiness) {
-                    const auto& sg = mat->pbr_specular_glossiness;
-                    for (int c = 0; c < 4; ++c) mp.baseColor[c] = sg.diffuse_factor[c];
-                    colorTex  = sg.diffuse_texture.texture;
-                    colorView = &sg.diffuse_texture;
-                }
-                // The base-colour view drives the vertex UVs (base colour, normal
-                // and emission share one set in every workflow we target).
-                if (colorView && colorView->texture) {
-                    uvSet = colorView->texcoord;
-                    if (colorView->has_transform) {
-                        const cgltf_texture_transform& tr = colorView->transform;
-                        uvHasXform  = true;
-                        uvOffset[0] = tr.offset[0]; uvOffset[1] = tr.offset[1];
-                        uvScale[0]  = tr.scale[0];  uvScale[1]  = tr.scale[1];
-                        uvRotation  = tr.rotation;
-                        if (tr.has_texcoord) uvSet = tr.texcoord; // may override the set
-                    }
-                }
-                if (colorTex)
-                    decodeImage(colorTex->image, baseDir,
-                                mp.texPixels, mp.texWidth, mp.texHeight, mp.materialName);
-                // Tangent-space normal map (KHR standard normal_texture).
-                if (mat->normal_texture.texture)
-                    decodeImage(mat->normal_texture.texture->image, baseDir,
-                                mp.normalPixels, mp.normalWidth, mp.normalHeight,
-                                mp.materialName);
-            }
-
-            // Resolve the UV accessor for the chosen set, falling back to the first
-            // available set when the requested one is absent.
-            const cgltf_accessor* uv =
-                (uvSet >= 0 && uvSet < 8) ? uvSets[uvSet] : nullptr;
-            if (!uv)
-                for (const cgltf_accessor* a : uvSets) if (a) { uv = a; break; }
-
-            const cgltf_size count = prim.indices ? prim.indices->count : pos->count;
-            mp.vertices.reserve(count * 8);
-            if (primSkinned) mp.skin.reserve(count);
-            for (cgltf_size i = 0; i < count; ++i) {
-                const cgltf_size idx =
-                    prim.indices ? cgltf_accessor_read_index(prim.indices, i) : i;
-
-                float p[3] = {0, 0, 0}, n[3] = {0, 1, 0}, t[2] = {0, 0};
-                cgltf_accessor_read_float(pos, idx, p, 3);
-                if (nrm) cgltf_accessor_read_float(nrm, idx, n, 3);
-                if (uv)  cgltf_accessor_read_float(uv,  idx, t, 2);
-                if (uvHasXform) { // KHR_texture_transform: scale, then rotate, then offset
-                    const float u = t[0], v = t[1];
-                    const float cs = std::cos(uvRotation), sn = std::sin(uvRotation);
-                    t[0] = uvScale[0] * u * cs - uvScale[1] * v * sn + uvOffset[0];
-                    t[1] = uvScale[0] * u * sn + uvScale[1] * v * cs + uvOffset[1];
-                }
-
-                const glm::vec3 wp = glm::vec3(model * glm::vec4(p[0], p[1], p[2], 1.0f));
-                const glm::vec3 wn = glm::normalize(normalM * glm::vec3(n[0], n[1], n[2]));
-
-                mp.vertices.insert(mp.vertices.end(),
-                    {wp.x, wp.y, wp.z, wn.x, wn.y, wn.z, t[0], t[1]});
-                lo = glm::min(lo, wp.y);
-                hi = glm::max(hi, wp.y);
-
-                if (primSkinned) {
-                    cgltf_uint ji[4] = {0, 0, 0, 0};
-                    float      jw[4] = {0, 0, 0, 0};
-                    cgltf_accessor_read_uint(jnt, idx, ji, 4);
-                    cgltf_accessor_read_float(wgt, idx, jw, 4);
-                    VertexSkin vs;
-                    for (int k = 0; k < 4; ++k) {
-                        int mapped = 0;
-                        const int local = static_cast<int>(ji[k]);
-                        if (local >= 0 && local < static_cast<int>(nskin->joints_count)) {
-                            auto mit = jointIndex.find(nskin->joints[local]);
-                            if (mit != jointIndex.end()) mapped = mit->second;
-                        }
-                        vs.joints[k]  = mapped;
-                        vs.weights[k] = jw[k];
-                    }
-                    mp.skin.push_back(vs);
-                }
+            ModelPrimitive mp =
+                gltfPrimitive(node.mesh->primitives[pi], model, baseDir, sk);
+            if (mp.vertexCount() == 0) continue;
+            for (int i = 1; i + 6 < static_cast<int>(mp.vertices.size()); i += 8) {
+                lo = glm::min(lo, mp.vertices[i]);
+                hi = glm::max(hi, mp.vertices[i]);
             }
             out.primitives.push_back(std::move(mp));
         }
@@ -494,6 +569,73 @@ ModelData loadGltf(const std::string& path) {
 
     cgltf_free(data);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
+    return out;
+}
+
+std::vector<ModelNode> loadGltfNodes(const std::string& path) {
+    std::vector<ModelNode> out;
+
+    cgltf_options options = gltfOptions();
+    cgltf_data*   data    = nullptr;
+    if (cgltf_parse_file(&options, path.c_str(), &data) != cgltf_result_success) {
+        std::fprintf(stderr, "[Fitzel] failed to parse glTF '%s'\n", path.c_str());
+        return out;
+    }
+    if (cgltf_load_buffers(&options, data, path.c_str()) != cgltf_result_success) {
+        std::fprintf(stderr, "[Fitzel] failed to load glTF buffers '%s'\n", path.c_str());
+        cgltf_free(data);
+        return out;
+    }
+    const std::string baseDir =
+        std::filesystem::path(path).parent_path().generic_string();
+
+    for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+        const cgltf_node& node = data->nodes[ni];
+        if (!node.mesh) continue;
+
+        // Every node bakes its world transform, skinned ones included: this
+        // import keeps no skeleton, so nothing else would ever place those
+        // vertices. (A rigged model is routed to loadGltf by the caller.)
+        float wm[16];
+        cgltf_node_transform_world(&node, wm);
+        const glm::mat4 world = glm::make_mat4(wm);
+
+        ModelNode mn;
+        mn.name = node.name         ? node.name
+                  : node.mesh->name ? node.mesh->name
+                                    : "part";
+
+        glm::vec3 lo(1e30f), hi(-1e30f);
+        for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
+            ModelPrimitive mp =
+                gltfPrimitive(node.mesh->primitives[pi], world, baseDir, {});
+            if (mp.vertexCount() == 0) continue;
+            for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
+                const glm::vec3 v(mp.vertices[i], mp.vertices[i + 1], mp.vertices[i + 2]);
+                lo = glm::min(lo, v);
+                hi = glm::max(hi, v);
+            }
+            mn.data.primitives.push_back(std::move(mp));
+        }
+        if (mn.data.primitives.empty()) continue;
+
+        // Recentre on this node's own AABB so the part sits at the origin, and
+        // report where that origin belongs -- the same contract collectStructuredNode
+        // gives the assimp path, so one entity per node lands in the right place.
+        const glm::vec3 c = 0.5f * (lo + hi);
+        for (ModelPrimitive& p : mn.data.primitives)
+            for (int i = 0; i + 7 < static_cast<int>(p.vertices.size()); i += 8) {
+                p.vertices[i]     -= c.x;
+                p.vertices[i + 1] -= c.y;
+                p.vertices[i + 2] -= c.z;
+            }
+        mn.data.minY = lo.y - c.y;
+        mn.data.maxY = hi.y - c.y;
+        mn.center    = c;
+        out.push_back(std::move(mn));
+    }
+
+    cgltf_free(data);
     return out;
 }
 
@@ -825,6 +967,11 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
         loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
                                              UnityRole::Emission),
                             mp.emissionPixels, mp.emissionWidth, mp.emissionHeight);
+        // The same last word the glTF path gives the pixels: an FBX/OBJ material
+        // with full opacity and a cut-out leaf map is the same tree, exported by
+        // a different tool. alphaCutsHoles is what keeps a Unity albedo whose
+        // alpha carries SMOOTHNESS out of this.
+        if (!mp.alphaCutout && alphaCutsHoles(mp.texPixels)) mp.alphaCutout = true;
     }
     const bool hasN  = mesh->HasNormals();
     const bool hasUV = mesh->HasTextureCoords(0);
@@ -1091,6 +1238,16 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         collectStructuredNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV, out);
 }
 
+// True for the two glTF spellings. Those always take the cgltf path: assimp is
+// built without its glTF importer, and even with it the textures a GLB keeps
+// inside itself would not survive the trip.
+bool isGltfPath(const std::string& path) {
+    std::string e = std::filesystem::path(path).extension().string();
+    for (char& c : e)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return e == ".glb" || e == ".gltf";
+}
+
 } // namespace
 
 ModelData loadCollada(const std::string& path, bool flipV) {
@@ -1177,6 +1334,12 @@ ModelData loadSkinnedModel(const std::string& path, bool flipV) {
 }
 
 std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV) {
+    // glTF carries both its structure and its textures, and cgltf reads them; the
+    // assimp path below cannot. `flipV` is not offered there because glTF fixes
+    // the UV origin at top-left like our upload -- the toggle exists only for the
+    // FBX/DAE exporters that disagree about it.
+    if (isGltfPath(path)) return loadGltfNodes(path);
+
     std::vector<ModelNode> out;
     Assimp::Importer imp;
     useVfs(imp);

@@ -12,10 +12,11 @@
 // pass on the two frames somebody thought to write down.
 //
 // WHAT IS BEING COMPARED: the whole path -- bounces, next-event estimation,
-// MIS, glass, Russian roulette, the firefly clamp. What the kernel still does
-// not have is textures and an HDRI, so the frames here carry neither, and the
-// environment is the gradient both sides fall back to. See gputrace.comp's
-// header for the standing list.
+// MIS, glass, Russian roulette, the firefly clamp -- plus base-colour maps with
+// their tints and alpha modes, and the terrain's layers. What the kernel still
+// does not have is an HDRI and depth of field, so the frames here carry neither
+// and the environment is the gradient both sides fall back to. See
+// gputrace.comp's header for the standing list.
 //
 // The two will never be bit-identical and are not asked to be: different random
 // sequences, different orders of summation, and 32-bit floats. They are asked
@@ -210,6 +211,23 @@ int main(int argc, char** argv) {
         // the refraction path at all. Wider bands, because a near-mirror lit by
         // a small sun is where two random sequences disagree most.
         {"look",    tracescenes::lookScene(),      0.06, 0.40},
+        // The textured frame: a tiled map whose UVs run past 1, a tint, and a
+        // cutout that has to cut for the camera and for the sun alike. This is
+        // the frame that tells a kernel sampling its own way from one sampling
+        // the CPU's way -- every other frame here is flat colours, on which a
+        // texture unit that reads the wrong texel is invisible.
+        {"texture", tracescenes::textureScene(),   0.03, 0.20},
+        // And the ground: layers claimed by height and slope, projected down
+        // three axes, jittered by a noise field and overridden by paint. The
+        // terrain is most of what a scene here is made of, and none of the
+        // frames above touches any of that machinery.
+        {"terrain", tracescenes::terrainScene(),   0.03, 0.20},
+        // The same ground over fifty thousand triangles instead of a thousand.
+        // Every frame above walks a tree about sixteen deep, and the kernel is
+        // built with a stack cut to the tree it is given -- so without one frame
+        // whose tree is deeper, the case where that arithmetic is wrong is the
+        // case nothing here renders.
+        {"dense",   tracescenes::terrainScene(160), 0.03, 0.20},
     };
 
     for (const Frame& f : frames) {
@@ -221,18 +239,34 @@ int main(int argc, char** argv) {
         const double cpuSecs = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - cpuStart).count();
 
-        const auto gpuStart = std::chrono::steady_clock::now();
+        // Setup: the BVH build, the kernel built for this tree's depth, and the
+        // buffers. Once per scene, and timed apart from the tracing so that
+        // neither number hides the other.
+        const auto setupStart = std::chrono::steady_clock::now();
         bool ok = gpu.upload(*scene) && gpu.resize(s.width, s.height);
+        glFinish();
+        const double setupSecs = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - setupStart).count();
+
+        const auto gpuStart = std::chrono::steady_clock::now();
         // In batches, never in one dispatch: Windows kills a driver whose
         // single command takes longer than a couple of seconds, and "the screen
         // went black" is a poor way to learn that a scene got bigger.
         for (int done = 0; ok && done < s.samples; done += s.batch)
             ok = gpu.accumulate(std::min(s.batch, s.samples - done));
+        glFinish();
+        const double traceSecs = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - gpuStart).count();
+
+        // Reading the picture back off the card, timed on its own. It is not
+        // tracing and it is not free: the preview does it to put a picture on
+        // the screen, and what it costs decides how often it can.
+        const auto readStart = std::chrono::steady_clock::now();
         std::vector<float> gpuImg;
         ok = ok && gpu.snapshotHdr(gpuImg);
         glFinish();
-        const double gpuSecs = std::chrono::duration<double>(
-            std::chrono::steady_clock::now() - gpuStart).count();
+        const double readSecs = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - readStart).count();
 
         if (!ok) {
             check(false, "the GPU rendered it", gpu.error());
@@ -258,6 +292,51 @@ int main(int argc, char** argv) {
                       err, f.maxRms);
         check(err < f.maxRms, "and it arrives in the same places", detail);
 
+        // --- The picture the preview actually shows ------------------------
+        // The tracer's sums are turned into eight bits by a compute pass on the
+        // card (gpuresolve.comp) so the preview never reads anything back. That
+        // is a THIRD copy of one tonemap curve -- composite.frag's, which
+        // pathtrace::tonemap already transcribes for the still -- and three
+        // copies of anything drift. So it is checked, not trusted: the same
+        // radiance through both, and they have to land on the same byte.
+        {
+            const float exposure = scene->exposure;
+            std::vector<unsigned char> ldr(
+                static_cast<std::size_t>(s.width) * s.height * 4, 0);
+            const bool resolved = gpu.resolve(exposure, scene->grade) &&
+                                  gpu.ldrTexture() != 0;
+            if (resolved) {
+                glBindTexture(GL_TEXTURE_2D, gpu.ldrTexture());
+                glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, ldr.data());
+                glBindTexture(GL_TEXTURE_2D, 0);
+            }
+            int    worst = 0;
+            double sumAbs = 0.0;
+            for (std::size_t i = 0, n = static_cast<std::size_t>(s.width) * s.height;
+                 resolved && i < n; ++i) {
+                const glm::vec3 c = pathtrace::tonemap(
+                    glm::vec3(gpuImg[i * 3], gpuImg[i * 3 + 1], gpuImg[i * 3 + 2]),
+                    exposure, scene->grade);
+                for (int k = 0; k < 3; ++k) {
+                    const int want = static_cast<int>(
+                        std::clamp(c[k], 0.0f, 1.0f) * 255.0f + 0.5f);
+                    const int got = ldr[i * 4 + k];
+                    worst  = std::max(worst, std::abs(want - got));
+                    sumAbs += std::abs(want - got);
+                }
+            }
+            const double avg = sumAbs / std::max<double>(
+                static_cast<double>(s.width) * s.height * 3.0, 1.0);
+            check(resolved, "the preview's picture is made on the card", gpu.error());
+            // Two levels: the two round a float to a byte in slightly different
+            // places, and a pixel that lands on the boundary can go either way.
+            // A curve that had actually drifted would be nowhere near this.
+            std::snprintf(detail, sizeof detail,
+                          "worst channel off by %d, average %.3f", worst, avg);
+            check(resolved && worst <= 2 && avg < 0.2,
+                  "...through the same curve as the still", detail);
+        }
+
         if (std::strcmp(f.name, "furnace") == 0) {
             // The same band pathcheck holds the CPU to. The excess above 1 is
             // the dielectric specular lobe sitting on a full-albedo diffuse
@@ -268,9 +347,24 @@ int main(int argc, char** argv) {
             check(mg > 0.97 && mg < 1.12, "the GPU conserves energy too", detail);
         }
 
-        std::printf("       cpu %.2fs (%d threads) vs gpu %.2fs -- %.1fx, %lld tris\n",
+        // Tracing and getting ready to trace, apart. They answer different
+        // questions and mixing them hides both: the setup is a BVH build, a
+        // kernel compiled for this tree's depth and a few buffers, paid once per
+        // scene, while the trace is what every frame of a preview costs. A
+        // change that made the kernel twice as fast would be invisible in one
+        // number that also carried a compile.
+        //
+        // The depth and the stack are in the line because they ARE the speed:
+        // the stack is per-thread scratch memory chosen from this scene's own
+        // tree, and a frame that suddenly costs more is usually a tree that got
+        // deeper rather than a kernel that got slower.
+        std::printf("       cpu %.2fs (%d threads) vs gpu %.2fs -- %.1fx"
+                    " | %lld tris, depth %d, stack %d, %.3f ms/sample,"
+                    " setup %.2fs, readback %.0f ms\n",
                     cpuSecs, static_cast<int>(std::thread::hardware_concurrency()),
-                    gpuSecs, cpuSecs / std::max(gpuSecs, 1e-6), gpu.triangleCount());
+                    traceSecs, cpuSecs / std::max(traceSecs, 1e-6),
+                    gpu.triangleCount(), gpu.bvhDepth(), gpu.stackSize(),
+                    gpu.msPerSample(), setupSecs, readSecs * 1000.0);
 
         writePng(outDir / (std::string("gpucheck-") + f.name + "-cpu.png"),
                  cpu, s.width, s.height);

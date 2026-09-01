@@ -122,6 +122,26 @@ struct TerrainEditField {
     void stamp  (glm::vec2 center, float radius, float height, int shape,
                  float rotation = 0.0f);
 
+    // Pull the ground out under the brush, the way a proportional edit does: the
+    // point at the centre moves by `amount` and the ground around it comes along,
+    // less and less, out to the rim.
+    //
+    // It is not raise() with a different curve, even though the arithmetic looks
+    // the same, because of how the CALLER uses it. raise() is a dab: it is meant
+    // to be applied over and over while a button is held, and how high the ground
+    // ends up depends on how long that was. This one is meant to be applied
+    // ABSOLUTELY -- the caller keeps the total it has already put in and hands
+    // over the difference -- so the ground follows the gesture instead of
+    // accumulating from it, and a hand that wobbles up and down leaves nothing
+    // behind but the height it stopped at.
+    //
+    // `falloff` shapes the skirt: 1 is the smooth bell every other brush here
+    // uses, above that pulls a spike out of a small area, below that lifts a
+    // broad shoulder that turns down sharply near the rim. Clamped at 0.5,
+    // because below it the rim's own slope goes to infinity and the edit leaves a
+    // visible ring where it stops.
+    void pull   (glm::vec2 center, float radius, float amount, float falloff);
+
     // Roughen: add signed fBm noise under the brush to break up smooth ground.
     // `amount` scales the bump height this call; `frequency` sets the feature
     // size; `seed` decorrelates successive dabs so holding layers detail rather

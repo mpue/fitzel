@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -75,7 +76,11 @@ struct Context {
 // caller owns them and lets them die at the end of its frame.
 struct Scratch {
     std::vector<fitzel::Material> gpuMats;   // one per library material
-    std::vector<fitzel::Material> paintMats; // per painted mesh (its own slots)
+    // Per DRAWN PIECE of a painted mesh (its own slots). A deque, not a vector:
+    // a mesh dressed face by face contributes one of these per material it wears,
+    // so there is no count to reserve up front -- and a vector that outgrew its
+    // reservation would move every material already handed to the renderer.
+    std::deque<fitzel::Material>  paintMats;
     std::vector<fitzel::Material> lightMats; // per light marker (its own glow)
 
     void clear() { gpuMats.clear(); paintMats.clear(); lightMats.clear(); }

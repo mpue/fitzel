@@ -1,6 +1,7 @@
 #include "RoadPanel.hpp"
 
 #include <algorithm>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -37,8 +38,8 @@ namespace {
 // for, not a substitute for building: the Build prompt stays lit, because a
 // bridge still needs its corridor cut and its abutments ramped.
 void showAtOnce(const PanelState& s) {
-    s.road.rebuildMesh();
-    s.road.needsBuild = true;
+    s.road().rebuildMesh();
+    s.road().needsBuild = true;
 }
 
 // The bridge list + its style sliders. A bridge names the two control points the
@@ -51,15 +52,15 @@ bool bridgeSection(const PanelState& s) {
     const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
     // Already bridged? Then offer to take it away again instead.
     int existing = -1;
-    for (int i = 0; pair && i < static_cast<int>(s.road.bridges.size()); ++i)
-        if ((s.road.bridges[i].a == s.sel && s.road.bridges[i].b == s.sel2) ||
-            (s.road.bridges[i].a == s.sel2 && s.road.bridges[i].b == s.sel))
+    for (int i = 0; pair && i < static_cast<int>(s.road().bridges.size()); ++i)
+        if ((s.road().bridges[i].a == s.sel && s.road().bridges[i].b == s.sel2) ||
+            (s.road().bridges[i].a == s.sel2 && s.road().bridges[i].b == s.sel))
             existing = i;
 
     ImGui::BeginDisabled(!pair || existing >= 0);
     if (ImGui::Button("Create bridge", ImVec2(-1.0f, 0.0f))) {
         s.beginEdit();
-        s.road.bridges.push_back({s.sel, s.sel2});
+        s.road().bridges.push_back({s.sel, s.sel2});
         s.endEdit("Create bridge");
         showAtOnce(s);
         rc = true;
@@ -75,14 +76,14 @@ bool bridgeSection(const PanelState& s) {
     // would otherwise be the SAME widget as far as ImGui is concerned: it reports
     // the clash as an ID conflict, and a click on one of them acts on the other.
     ImGui::PushID("bridges");
-    for (int i = 0; i < static_cast<int>(s.road.bridges.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(s.road().bridges.size()); ++i) {
         ImGui::PushID(i);
-        ImGui::Text("Bridge #%d \xE2\x86\x92 #%d", s.road.bridges[i].a,
-                    s.road.bridges[i].b);
+        ImGui::Text("Bridge #%d \xE2\x86\x92 #%d", s.road().bridges[i].a,
+                    s.road().bridges[i].b);
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) {
             s.beginEdit();
-            s.road.bridges.erase(s.road.bridges.begin() + i);
+            s.road().bridges.erase(s.road().bridges.begin() + i);
             s.endEdit("Remove bridge");
             showAtOnce(s);
             rc = true;
@@ -92,10 +93,10 @@ bool bridgeSection(const PanelState& s) {
         ImGui::PopID();
     }
     ImGui::PopID(); // "bridges"
-    if (s.road.bridges.empty()) ImGui::TextDisabled("No bridges");
+    if (s.road().bridges.empty()) ImGui::TextDisabled("No bridges");
 
     ImGui::Separator();
-    rc |= roadbridge::panel(s.road.bridgeStyle);
+    rc |= roadbridge::panel(s.road().bridgeStyle);
     return rc;
 }
 
@@ -108,15 +109,15 @@ bool tunnelSection(const PanelState& s) {
 
     const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
     int existing = -1;
-    for (int i = 0; pair && i < static_cast<int>(s.road.tunnels.size()); ++i)
-        if ((s.road.tunnels[i].a == s.sel && s.road.tunnels[i].b == s.sel2) ||
-            (s.road.tunnels[i].a == s.sel2 && s.road.tunnels[i].b == s.sel))
+    for (int i = 0; pair && i < static_cast<int>(s.road().tunnels.size()); ++i)
+        if ((s.road().tunnels[i].a == s.sel && s.road().tunnels[i].b == s.sel2) ||
+            (s.road().tunnels[i].a == s.sel2 && s.road().tunnels[i].b == s.sel))
             existing = i;
 
     ImGui::BeginDisabled(!pair || existing >= 0);
     if (ImGui::Button("Create tunnel", ImVec2(-1.0f, 0.0f))) {
         s.beginEdit();
-        s.road.tunnels.push_back({s.sel, s.sel2});
+        s.road().tunnels.push_back({s.sel, s.sel2});
         s.endEdit("Create tunnel");
         showAtOnce(s);
         rc = true;
@@ -128,14 +129,14 @@ bool tunnelSection(const PanelState& s) {
         ImGui::TextDisabled("#%d \xE2\x86\x92 #%d is already a tunnel", s.sel, s.sel2);
 
     ImGui::PushID("tunnels");   // own ID scope -- see the note in bridgeSection
-    for (int i = 0; i < static_cast<int>(s.road.tunnels.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(s.road().tunnels.size()); ++i) {
         ImGui::PushID(i);
-        ImGui::Text("Tunnel #%d \xE2\x86\x92 #%d", s.road.tunnels[i].a,
-                    s.road.tunnels[i].b);
+        ImGui::Text("Tunnel #%d \xE2\x86\x92 #%d", s.road().tunnels[i].a,
+                    s.road().tunnels[i].b);
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) {
             s.beginEdit();
-            s.road.tunnels.erase(s.road.tunnels.begin() + i);
+            s.road().tunnels.erase(s.road().tunnels.begin() + i);
             s.endEdit("Remove tunnel");
             showAtOnce(s);
             rc = true;
@@ -145,10 +146,10 @@ bool tunnelSection(const PanelState& s) {
         ImGui::PopID();
     }
     ImGui::PopID(); // "tunnels"
-    if (s.road.tunnels.empty()) ImGui::TextDisabled("No tunnels");
+    if (s.road().tunnels.empty()) ImGui::TextDisabled("No tunnels");
 
     ImGui::Separator();
-    rc |= roadtunnel::panel(s.road.tunnelStyle);
+    rc |= roadtunnel::panel(s.road().tunnelStyle);
     return rc;
 }
 
@@ -165,9 +166,9 @@ bool loopSection(const PanelState& s) {
     // Only on the frame the selection changes, so the section can still be shut.
     const bool pair = s.sel >= 0 && s.sel2 >= 0 && s.sel != s.sel2;
     int existing = -1;
-    for (int i = 0; pair && i < static_cast<int>(s.road.loops.size()); ++i)
-        if ((s.road.loops[i].a == s.sel && s.road.loops[i].b == s.sel2) ||
-            (s.road.loops[i].a == s.sel2 && s.road.loops[i].b == s.sel))
+    for (int i = 0; pair && i < static_cast<int>(s.road().loops.size()); ++i)
+        if ((s.road().loops[i].a == s.sel && s.road().loops[i].b == s.sel2) ||
+            (s.road().loops[i].a == s.sel2 && s.road().loops[i].b == s.sel))
             existing = i;
     static int lastPair[2] = {-2, -2};
     const bool picked = (s.sel != lastPair[0] || s.sel2 != lastPair[1]);
@@ -188,7 +189,7 @@ bool loopSection(const PanelState& s) {
         s.beginEdit();
         roadloop::Spec sp;
         sp.a = s.sel; sp.b = s.sel2;
-        s.road.loops.push_back(sp);
+        s.road().loops.push_back(sp);
         s.endEdit("Create loop");
         showAtOnce(s);
         rc = true;
@@ -200,7 +201,7 @@ bool loopSection(const PanelState& s) {
         ImGui::TextDisabled("#%d \xE2\x86\x92 #%d already loops", s.sel, s.sel2);
 
     ImGui::PushID("loops");   // own ID scope -- see the note in bridgeSection
-    for (int i = 0; i < static_cast<int>(s.road.loops.size()); ++i) {
+    for (int i = 0; i < static_cast<int>(s.road().loops.size()); ++i) {
         ImGui::PushID(i);
         // The row for the loop the viewport has selected is coloured and scrolled
         // to, so "I clicked that one" and "this is the radius I am about to
@@ -210,12 +211,12 @@ bool loopSection(const PanelState& s) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.82f, 0.24f, 1.0f));
             if (picked) ImGui::SetScrollHereY(0.5f);
         }
-        ImGui::Text("Loop #%d \xE2\x86\x92 #%d", s.road.loops[i].a, s.road.loops[i].b);
+        ImGui::Text("Loop #%d \xE2\x86\x92 #%d", s.road().loops[i].a, s.road().loops[i].b);
         if (here) ImGui::PopStyleColor();
         ImGui::SameLine();
         if (ImGui::SmallButton("Remove")) {
             s.beginEdit();
-            s.road.loops.erase(s.road.loops.begin() + i);
+            s.road().loops.erase(s.road().loops.begin() + i);
             s.endEdit("Remove loop");
             showAtOnce(s);
             ImGui::PopID();
@@ -223,7 +224,7 @@ bool loopSection(const PanelState& s) {
             return true; // the list just shifted under us
         }
         ImGui::SetNextItemWidth(-70.0f);
-        if (ImGui::DragFloat("Radius", &s.road.loops[i].radius, 0.1f, 3.0f, 120.0f,
+        if (ImGui::DragFloat("Radius", &s.road().loops[i].radius, 0.1f, 3.0f, 120.0f,
                              "%.1f m"))
             rc = true;
         if (ImGui::IsItemActivated())            s.beginEdit();
@@ -238,7 +239,7 @@ bool loopSection(const PanelState& s) {
         ImGui::PopID();
     }
     ImGui::PopID(); // "loops"
-    if (s.road.loops.empty()) ImGui::TextDisabled("No loops");
+    if (s.road().loops.empty()) ImGui::TextDisabled("No loops");
     return rc;
 }
 
@@ -254,7 +255,7 @@ void sideSection(const PanelState& s) {
     // one is picked, so adding then choosing reads naturally.
     auto add = [&](roadside::Kind k) {
         s.beginEdit();
-        s.road.sideLines.push_back(roadside::preset(k));
+        s.road().sideLines.push_back(roadside::preset(k));
         s.endEdit("Add side object");
     };
     if (ImGui::Button("+ Guard rail")) add(roadside::Kind::GuardRail);
@@ -270,18 +271,18 @@ void sideSection(const PanelState& s) {
                           "the road, and they stand on the asphalt (or the bridge\n"
                           "deck), not on the ground beneath it.");
 
-    if (s.road.sideLines.empty()) {
+    if (s.road().sideLines.empty()) {
         ImGui::TextDisabled("None. Add a rail, curb or posts.");
         return;
     }
-    if (s.road.verts() == 0)
+    if (s.road().verts() == 0)
         ImGui::TextDisabled("Build the road to see them placed.");
 
     bool changed = false; // re-derive instances this frame (live preview)
 
     ImGui::PushID("sideobjects");   // own ID scope -- see the note in bridgeSection
-    for (int i = 0; i < static_cast<int>(s.road.sideLines.size()); ++i) {
-        roadside::Line& L = s.road.sideLines[i];
+    for (int i = 0; i < static_cast<int>(s.road().sideLines.size()); ++i) {
+        roadside::Line& L = s.road().sideLines[i];
         ImGui::PushID(i);
         ImGui::Separator();
 
@@ -298,7 +299,7 @@ void sideSection(const PanelState& s) {
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.0f);
         if (ImGui::SmallButton("X")) {
             s.beginEdit();
-            s.road.sideLines.erase(s.road.sideLines.begin() + i);
+            s.road().sideLines.erase(s.road().sideLines.begin() + i);
             s.endEdit("Remove side object");
             ImGui::PopID();
             changed = true;
@@ -379,7 +380,7 @@ void sideSection(const PanelState& s) {
                 : "Distance beyond the road edge (added to the half-width).");
         if (L.onRoad) {
             ImGui::SameLine();
-            ImGui::TextDisabled("(edge at %.2f m)", s.road.width * 0.5f);
+            ImGui::TextDisabled("(edge at %.2f m)", s.road().width * 0.5f);
         }
         drag("Spacing", &L.spacing, 0.05f, 0.25f, 60.0f, "%.2f m", "Side spacing");
         if (ImGui::IsItemHovered())
@@ -436,7 +437,7 @@ void sideSection(const PanelState& s) {
     }
     ImGui::PopID(); // "sideobjects"
 
-    if (changed) s.road.rebuildSideObjects();
+    if (changed) s.road().rebuildSideObjects();
 }
 
 // Prefabs along the road: the same placement rule as a side object, but what it
@@ -462,10 +463,10 @@ void decalSection(const PanelState& s) {
         roaddecal::Decal d = roaddecal::preset(b);
         // Drop it where the road can actually show it: the middle of what is
         // built, rather than at metre zero on top of whatever is already there.
-        d.dist = s.road.roadLength() * 0.5f;
-        s.road.decals.push_back(d);
+        d.dist = s.road().roadLength() * 0.5f;
+        s.road().decals.push_back(d);
         s.endEdit("Add decal");
-        s.road.rebuildDecals();
+        s.road().rebuildDecals();
     };
     if (ImGui::Button("+ Marking")) add(roaddecal::Blend::Cutout);
     if (ImGui::IsItemHovered())
@@ -485,12 +486,12 @@ void decalSection(const PanelState& s) {
                           "stretch, full start grid. The whole rectangle is\n"
                           "painted; the image's alpha is ignored.");
 
-    if (s.road.decals.empty()) {
+    if (s.road().decals.empty()) {
         ImGui::TextDisabled("None. Add a marking, stain or patch.");
         return;
     }
-    const float roadLen = s.road.roadLength();
-    if (s.road.verts() == 0 || roadLen <= 0.0f)
+    const float roadLen = s.road().roadLength();
+    if (s.road().verts() == 0 || roadLen <= 0.0f)
         ImGui::TextDisabled("Build the road to see them placed.");
     else
         ImGui::TextDisabled("Road is %.0f m long.", roadLen);
@@ -498,8 +499,8 @@ void decalSection(const PanelState& s) {
     bool changed = false; // re-derive the patches this frame (live preview)
 
     ImGui::PushID("decals");        // own ID scope -- see the note in bridgeSection
-    for (int i = 0; i < static_cast<int>(s.road.decals.size()); ++i) {
-        roaddecal::Decal& d = s.road.decals[i];
+    for (int i = 0; i < static_cast<int>(s.road().decals.size()); ++i) {
+        roaddecal::Decal& d = s.road().decals[i];
         ImGui::PushID(i);
         ImGui::Separator();
 
@@ -519,7 +520,7 @@ void decalSection(const PanelState& s) {
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 20.0f);
         if (ImGui::SmallButton("X")) {
             s.beginEdit();
-            s.road.decals.erase(s.road.decals.begin() + i);
+            s.road().decals.erase(s.road().decals.begin() + i);
             s.endEdit("Remove decal");
             ImGui::PopID();
             changed = true;
@@ -532,7 +533,7 @@ void decalSection(const PanelState& s) {
         const std::string preview = d.texture.empty() ? "(pick an image)" : d.texture;
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::BeginCombo("##image", preview.c_str())) {
-            for (const std::string& f : s.road.emisFiles)
+            for (const std::string& f : s.road().emisFiles)
                 if (ImGui::Selectable(f.c_str(), d.texture == f)) {
                     const std::string old = d.texture;
                     d.texture = old;               // snapshot pre-change
@@ -541,7 +542,7 @@ void decalSection(const PanelState& s) {
                     s.endEdit("Decal image");
                     changed = true;
                 }
-            if (s.road.emisFiles.empty())
+            if (s.road().emisFiles.empty())
                 ImGui::TextDisabled("No images found (drop a .png in the project)");
             ImGui::EndCombo();
         }
@@ -585,7 +586,7 @@ void decalSection(const PanelState& s) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Metres right of the middle of the road (negative =\n"
                               "left). The carriageway edge is at %.2f m.",
-                              s.road.width * 0.5f);
+                              s.road().width * 0.5f);
         drag("Length", &d.length, 0.05f, 0.1f, 200.0f, "%.2f m", "Decal length");
         drag("Width",  &d.width,  0.05f, 0.1f, 200.0f, "%.2f m", "Decal width");
         drag("Turn",   &d.spin,   1.0f, -180.0f, 180.0f, "%+.0f deg", "Decal turn");
@@ -656,7 +657,7 @@ void decalSection(const PanelState& s) {
     }
     ImGui::PopID();
 
-    if (changed) s.road.rebuildDecals();
+    if (changed) s.road().rebuildDecals();
 }
 
 void prefabSection(const PanelState& s) {
@@ -696,7 +697,7 @@ void prefabSection(const PanelState& s) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(c.onRoad
             ? "Distance from the middle of the road (the edge is at %.2f m)."
-            : "Distance beyond the road edge.", s.road.width * 0.5f);
+            : "Distance beyond the road edge.", s.road().width * 0.5f);
     ImGui::DragFloat("Spacing##prefab", &c.spacing, 0.05f, 0.5f, 200.0f, "%.2f m");
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Metres between copies. Watch the count below before\n"
@@ -718,9 +719,9 @@ void prefabSection(const PanelState& s) {
 
     // What the button would do, before it does it: the real placement walk, so
     // the count cannot disagree with the result.
-    const int n = static_cast<int>(s.road.placeLine(roadprefab::asLine(c)).size());
+    const int n = static_cast<int>(s.road().placeLine(roadprefab::asLine(c)).size());
     const bool ready = !c.path.empty() && n > 0;
-    if (s.road.verts() == 0)
+    if (s.road().verts() == 0)
         ImGui::TextDisabled("Build the road first -- placements follow a built centreline.");
     else if (c.path.empty())
         ImGui::TextDisabled("Pick a prefab to place.");
@@ -746,15 +747,15 @@ void scratchFileSection(const PanelState& s) {
         std::ofstream f("road.txt");
         // "x z height" per line -- an older two-column road.txt still loads, its
         // points just come back sitting on the terrain.
-        for (int i = 0; i < static_cast<int>(s.road.roadPts.size()); ++i)
-            f << s.road.roadPts[i].x << ' ' << s.road.roadPts[i].y << ' '
-              << s.road.liftOf(i) << '\n';
+        for (int i = 0; i < static_cast<int>(s.road().roadPts.size()); ++i)
+            f << s.road().roadPts[i].x << ' ' << s.road().roadPts[i].y << ' '
+              << s.road().liftOf(i) << '\n';
     }
     ImGui::SameLine();
     if (ImGui::Button("Load")) {
         std::ifstream f("road.txt");
         if (f) {
-            s.road.clearPoints();
+            s.road().clearPoints();
             std::string line;
             while (std::getline(f, line)) {
                 std::istringstream ls(line);
@@ -762,7 +763,7 @@ void scratchFileSection(const PanelState& s) {
                 float h = 0.0f;
                 if (!(ls >> p.x >> p.y)) continue;
                 ls >> h; // absent in the old format -> stays 0
-                s.road.insertPoint(static_cast<int>(s.road.roadPts.size()), p, h);
+                s.road().insertPoint(static_cast<int>(s.road().roadPts.size()), p, h);
             }
             s.sel = -1;
         }
@@ -776,7 +777,68 @@ void scratchFileSection(const PanelState& s) {
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
     if (ImGui::Begin("Roads", &s.show)) {
-        ImGui::Checkbox("Show roads", &s.road.enabled);
+        // --- The roads in this scene -----------------------------------------
+        // A scene holds as many roads as the author draws (see RoadSet), the way
+        // it holds as many watercourses. This picker says which one every control
+        // below edits; the checkbox beside each row hides it without deleting it.
+        //
+        // The row checkbox is deliberately NOT bracketed for undo, like the "Show
+        // roads" toggle it replaces: it changes what you can see, not what the
+        // scene is.
+        {
+            RoadSet& rs = s.roads;
+            ui::sectionText("Roads");
+            const float rows = static_cast<float>(rs.count() < 3 ? 3 : rs.count());
+            if (ImGui::BeginChild("roadlist",
+                                  ImVec2(0.0f, ImGui::GetFrameHeightWithSpacing() *
+                                                   (rows > 6.0f ? 6.0f : rows) + 6.0f),
+                                  true)) {
+                for (int i = 0; i < rs.count(); ++i) {
+                    RoadSystem& r = rs.at(i);
+                    ImGui::PushID(i);
+                    ImGui::Checkbox("##on", &r.enabled);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Draw this road (and drive on it).");
+                    ImGui::SameLine();
+                    char row[160];
+                    std::snprintf(row, sizeof(row), "%s  (%d pts%s)",
+                                  r.name.c_str(),
+                                  static_cast<int>(r.roadPts.size()),
+                                  r.needsBuild ? ", not built" : "");
+                    if (ImGui::Selectable(row, i == rs.selected()) && s.selectRoad)
+                        s.selectRoad(i);
+                    ImGui::PopID();
+                }
+            }
+            ImGui::EndChild();
+
+            if (ImGui::Button("Add road") && s.addRoad) s.addRoad();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("A second carriageway with its own width, surface,\n"
+                                  "rails and city -- drawn and built on its own.");
+            ImGui::SameLine();
+            // The last road cannot go: the viewport handles, this panel and the
+            // whole editor are written against "the road being edited" (see
+            // RoadSet). Clearing its points is what emptying the scene looks like.
+            ImGui::BeginDisabled(rs.count() < 2);
+            if (ImGui::Button("Delete road") && s.deleteRoad)
+                s.deleteRoad(rs.selected());
+            ImGui::EndDisabled();
+            if (rs.count() < 2 && ImGui::IsItemHovered())
+                ImGui::SetTooltip("The scene always has one road. Use Clear below\n"
+                                  "to empty this one.");
+            ImGui::SameLine();
+            {
+                char buf[64];
+                std::snprintf(buf, sizeof(buf), "%s", s.road().name.c_str());
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::InputText("##roadname", buf, sizeof(buf)))
+                    s.road().name = buf;
+                if (ImGui::IsItemActivated())            s.beginEdit();
+                if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Rename road");
+            }
+        }
+
         if (ImGui::Checkbox("Edit mode", &s.editMode) && s.editMode) s.grabLMB();
         if (s.editMode) {
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
@@ -792,7 +854,7 @@ void drawPanel(const PanelState& s) {
         } else {
             ImGui::TextDisabled("Enable edit mode to place and drag handles");
         }
-        ImGui::Text("Points: %d", static_cast<int>(s.road.roadPts.size()));
+        ImGui::Text("Points: %d", static_cast<int>(s.road().roadPts.size()));
         ImGui::SameLine();
         if (s.sel >= 0 && s.sel2 >= 0)
             ImGui::Text("| selected #%d \xE2\x86\x92 #%d", s.sel, s.sel2);
@@ -802,11 +864,11 @@ void drawPanel(const PanelState& s) {
         // --- Selected point: its height above the graded ground ---------------
         // Editing it here rather than only by Ctrl+drag is what makes a level
         // crossing or a fixed embankment height reproducible.
-        if (s.sel >= 0 && s.sel < static_cast<int>(s.road.roadPts.size())) {
-            float lift = s.road.liftOf(s.sel);
+        if (s.sel >= 0 && s.sel < static_cast<int>(s.road().roadPts.size())) {
+            float lift = s.road().liftOf(s.sel);
             ImGui::SetNextItemWidth(-90.0f);
             if (ImGui::DragFloat("Height##pt", &lift, 0.05f, -50.0f, 50.0f, "%+.2f m"))
-                s.road.setLift(s.sel, lift);
+                s.road().setLift(s.sel, lift);
             // Bracket the whole drag: activation is the frame the grab starts,
             // before any value change, so the snapshot is the pre-edit height.
             if (ImGui::IsItemActivated())            s.beginEdit();
@@ -820,7 +882,7 @@ void drawPanel(const PanelState& s) {
             ImGui::BeginDisabled(lift == 0.0f);
             if (ImGui::SmallButton("Ground")) {
                 s.beginEdit();
-                s.road.setLift(s.sel, 0.0f);
+                s.road().setLift(s.sel, 0.0f);
                 s.endEdit("Point to ground");
             }
             ImGui::EndDisabled();
@@ -831,10 +893,10 @@ void drawPanel(const PanelState& s) {
             // Banking is a per-point value ramped along the road exactly like the
             // height, so a corner is banked by setting its apex and letting the
             // entry and exit ease into it -- not by tilting a whole stretch.
-            float bank = s.road.bankOf(s.sel);
+            float bank = s.road().bankOf(s.sel);
             ImGui::SetNextItemWidth(-90.0f);
             if (ImGui::DragFloat("Tilt##pt", &bank, 0.2f, -60.0f, 60.0f, "%+.1f deg"))
-                s.road.setBank(s.sel, bank);
+                s.road().setBank(s.sel, bank);
             if (ImGui::IsItemActivated())            s.beginEdit();
             if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Point tilt");
             if (ImGui::IsItemHovered())
@@ -850,7 +912,7 @@ void drawPanel(const PanelState& s) {
             ImGui::BeginDisabled(bank == 0.0f);
             if (ImGui::SmallButton("Level")) {
                 s.beginEdit();
-                s.road.setBank(s.sel, 0.0f);
+                s.road().setBank(s.sel, 0.0f);
                 s.endEdit("Point level");
             }
             ImGui::EndDisabled();
@@ -862,44 +924,51 @@ void drawPanel(const PanelState& s) {
         // Editing only updates the preview; Build grades the road into the ground
         // (flush + smooth) and lofts the drivable mesh + collider.
         ImGui::Separator();
-        if (s.road.needsBuild)
+        if (s.road().needsBuild)
             ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.30f, 1.0f),
                                "Preview \xE2\x80\x93 not built yet");
-        else if (s.road.verts() > 0)
+        else if (s.road().verts() > 0)
             ImGui::TextColored(ImVec4(0.45f, 0.90f, 0.55f, 1.0f),
                                "Built \xE2\x80\x93 embedded in terrain");
         else
             ImGui::TextDisabled("No road built");
-        ImGui::BeginDisabled(s.road.roadPts.size() < 2);
-        if (ImGui::Button(s.road.needsBuild ? "Build road into terrain" : "Rebuild road",
+        ImGui::BeginDisabled(s.road().roadPts.size() < 2);
+        if (ImGui::Button(s.road().needsBuild ? "Build road into terrain" : "Rebuild road",
                           ImVec2(-1.0f, 0.0f)))
             s.build();
         ImGui::EndDisabled();
+        // One button, every road: the corridors share the height field, and one
+        // cut against ground another road had already graded is a crossing that
+        // moves every time either half is touched (see RoadSet::buildAll). Said
+        // out loud only when there is a second road waiting, so a scene with one
+        // reads exactly as it used to.
+        if (s.roads.count() > 1 && s.roads.anyNeedsBuild())
+            ui::hint("Builds all %d roads.", s.roads.count());
         ImGui::Separator();
 
         // Everything that changes the road's shape or the corridor it grades feeds
         // `rc`, and `rc` is what marks it dirty -- so a tunable can't quietly take
         // effect on some frames and not others.
         bool rc = false;
-        if (ImGui::Checkbox("Closed loop", &s.road.closed)) {
+        if (ImGui::Checkbox("Closed loop", &s.road().closed)) {
             // Toggled already; bracket around the value it had before.
-            s.road.closed = !s.road.closed;
+            s.road().closed = !s.road().closed;
             s.beginEdit();
-            s.road.closed = !s.road.closed;
+            s.road().closed = !s.road().closed;
             s.endEdit("Closed loop");
             rc = true;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Join the last control point back to the first\n"
                               "(needs at least 3 points).");
-        rc |= ImGui::SliderFloat("Width", &s.road.width, 1.0f, 20.0f, "%.1f m");
+        rc |= ImGui::SliderFloat("Width", &s.road().width, 1.0f, 20.0f, "%.1f m");
 
         // Raised edges: a wall along both sides, part of the carriageway rather
         // than scenery beside it. Live-previewed like the rest of the section, so
         // the two sliders can be dialled in against the craft they are for.
         const bool edgeChanged =
-            ImGui::SliderFloat("Edge height", &s.road.edgeWidth, 0.0f, 6.0f, "%.2f m") |
-            ImGui::SliderFloat("Edge angle", &s.road.edgeAngle, 0.0f, 90.0f, "%.0f deg");
+            ImGui::SliderFloat("Edge height", &s.road().edgeWidth, 0.0f, 6.0f, "%.2f m") |
+            ImGui::SliderFloat("Edge angle", &s.road().edgeAngle, 0.0f, 90.0f, "%.0f deg");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("0 = flat (no edge at all), 90 = a vertical wall.\n"
                               "In between it is a bank a craft can ride up and be\n"
@@ -908,20 +977,20 @@ void drawPanel(const PanelState& s) {
             rc = true;
             showAtOnce(s);   // the section changed: show it, don't wait for Build
         }
-        if (s.road.edgeWidth > 0.001f)
+        if (s.road().edgeWidth > 0.001f)
             ui::hint("The road is %.1f m wide across everything, and the lip\n"
                      "stands %.2f m proud of the carriageway.",
-                     s.road.surfaceHalf() * 2.0f, s.road.edgeRise());
+                     s.road().surfaceHalf() * 2.0f, s.road().edgeRise());
 
-        rc |= ImGui::SliderFloat("Smoothing", &s.road.grade, 0.0f, 1.0f, "%.2f");
+        rc |= ImGui::SliderFloat("Smoothing", &s.road().grade, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How much the road grade is flattened along its\n"
                               "length (higher = smoother/steadier slope).");
-        rc |= ImGui::SliderFloat("Shoulder", &s.road.shoulder, 0.0f, 12.0f, "%.1f m");
+        rc |= ImGui::SliderFloat("Shoulder", &s.road().shoulder, 0.0f, 12.0f, "%.1f m");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Width of the terrain blend beyond the road edge\n"
                               "that eases back into the natural ground.");
-        rc |= ImGui::SliderFloat("Texture tile", &s.road.texTile, 2.0f, 24.0f, "%.1f m");
+        rc |= ImGui::SliderFloat("Texture tile", &s.road().texTile, 2.0f, 24.0f, "%.1f m");
 
         ImGui::Separator();
         rc |= bridgeSection(s);
@@ -930,7 +999,7 @@ void drawPanel(const PanelState& s) {
         ImGui::Separator();
         rc |= loopSection(s);
 
-        if (rc) s.road.needsBuild = true;
+        if (rc) s.road().needsBuild = true;
 
         // Side objects manage their own (cheap) re-derive and undo, independent of
         // the terrain-grading rebuild `rc` tracks -- so they stay out of it.
@@ -946,14 +1015,14 @@ void drawPanel(const PanelState& s) {
 
         // Edge fade is a pure shader effect (alpha taper at the ribbon edges) -- it
         // needs no rebuild, so it's deliberately kept out of `rc`.
-        ImGui::SliderFloat("Edge fade", &s.road.fadeWidth, 0.0f, s.road.width * 0.5f,
+        ImGui::SliderFloat("Edge fade", &s.road().fadeWidth, 0.0f, s.road().width * 0.5f,
                            "%.1f m");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Fade the road to transparent over this many metres\n"
                               "at each edge, blending it into the terrain (0 = off).");
 
         // Also a pure shader effect -- no rebuild, so out of `rc` like the fade.
-        ImGui::SliderFloat("Rain rings", &s.road.rainRings, 0.0f, 3.0f, "%.2fx");
+        ImGui::SliderFloat("Rain rings", &s.road().rainRings, 0.0f, 3.0f, "%.2fx");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How hard rain drops dent the wet road (0 = off).\n"
                               "Only shows while it is actually raining AND the\n"
@@ -961,14 +1030,14 @@ void drawPanel(const PanelState& s) {
 
         // The road's own wetness, weather or no weather. Same shader path as the
         // rain's, so what this shows at 1.0 is exactly what a downpour shows.
-        ImGui::SliderFloat("Wetness", &s.road.wetness, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Wetness", &s.road().wetness, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How wet the carriageway looks with NO rain: darker\n"
                               "tarmac and a sharper sheen, the higher it goes.\n"
                               "Rain adds on top (the wetter of the two wins), so\n"
                               "this is a floor, not an override. 0 = weather only.");
 
-        ImGui::SliderFloat("Wet reflection", &s.road.wetReflect, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Wet reflection", &s.road().wetReflect, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How much the wet road mirrors its surroundings.\n"
                               "0 = only the sun's sheen (and no cubemap capture,\n"
@@ -978,13 +1047,13 @@ void drawPanel(const PanelState& s) {
 
         // Where that wetness stands. Any greyscale image works as the mask, so
         // the picker is the wide list (the same one the glow map uses).
-        const std::string wetLabel = s.road.wetMap.empty() ? "(none)" : s.road.wetMap;
+        const std::string wetLabel = s.road().wetMap.empty() ? "(none)" : s.road().wetMap;
         if (ImGui::BeginCombo("Wet map", wetLabel.c_str())) {
-            if (ImGui::Selectable("(none)", s.road.wetMap.empty()))
-                s.road.setWetMap(std::string());
-            for (const std::string& f : s.road.emisFiles)
-                if (ImGui::Selectable(f.c_str(), s.road.wetMap == f))
-                    s.road.setWetMap(f);
+            if (ImGui::Selectable("(none)", s.road().wetMap.empty()))
+                s.road().setWetMap(std::string());
+            for (const std::string& f : s.road().emisFiles)
+                if (ImGui::Selectable(f.c_str(), s.road().wetMap == f))
+                    s.road().setWetMap(f);
             ImGui::EndCombo();
         }
         if (ImGui::IsItemHovered())
@@ -994,25 +1063,25 @@ void drawPanel(const PanelState& s) {
                               "the finer variant). Without one the whole road is\n"
                               "equally wet, which reflects like plastic.");
         // Both are pure shader parameters -- no rebuild, like the fade above.
-        ImGui::BeginDisabled(s.road.wetMap.empty());
-        ImGui::SliderFloat("Puddle size", &s.road.wetTile, 3.0f, 150.0f, "%.0f m");
+        ImGui::BeginDisabled(s.road().wetMap.empty());
+        ImGui::SliderFloat("Puddle size", &s.road().wetTile, 3.0f, 150.0f, "%.0f m");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Metres of road one tile of the map covers.\n"
                               "Small = frequent patches, large = long wet and\n"
                               "dry stretches.");
-        ImGui::SliderFloat("Puddle depth", &s.road.wetVar, 0.0f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Puddle depth", &s.road().wetVar, 0.0f, 1.0f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How much of the map to believe. 0 = even sheen\n"
                               "(as if there were no map), 1 = the dry parts of\n"
                               "the mask go fully matte.");
-        ImGui::SliderFloat("Puddle edge", &s.road.wetShore, 0.02f, 0.60f, "%.2f");
+        ImGui::SliderFloat("Puddle edge", &s.road().wetShore, 0.02f, 0.60f, "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How sharp the shoreline is. The map is read as a\n"
                               "height field that the rain fills up, so a small\n"
                               "value gives puddles a visible rim (they read as\n"
                               "water) and a large one fades them out into damp\n"
                               "tarmac. The wetter it gets, the further they grow.");
-        ImGui::SliderFloat("Puddle stretch", &s.road.wetStretch, 1.0f, 4.0f, "%.1fx");
+        ImGui::SliderFloat("Puddle stretch", &s.road().wetStretch, 1.0f, 4.0f, "%.1fx");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("How far the patches are drawn out along the drive.\n"
                               "1 = round. Real puddles run downhill and get\n"
@@ -1023,18 +1092,18 @@ void drawPanel(const PanelState& s) {
         // Surface texture picker (any diffuse texture in textures/). Picking one
         // brings its matching normal map along, so the common case needs no second
         // trip to the combo below -- but the combo is there to override or clear it.
-        if (!s.road.texFiles.empty() &&
-            ImGui::BeginCombo("Surface", s.road.texFiles[s.road.texSel].c_str())) {
-            for (int i = 0; i < static_cast<int>(s.road.texFiles.size()); ++i) {
-                const bool sel = (i == s.road.texSel);
-                if (ImGui::Selectable(s.road.texFiles[i].c_str(), sel)) {
-                    s.road.setSurface(s.road.texFiles[i]);
-                    s.road.texSel = i;
-                    const std::string n = s.road.normalFor(s.road.texFiles[i]);
-                    s.road.setNormal(n); // "" clears it: a pack without one stays flat
-                    s.road.normSel = -1;
-                    for (int k = 0; k < static_cast<int>(s.road.normFiles.size()); ++k)
-                        if (s.road.normFiles[k] == n) s.road.normSel = k;
+        if (!s.road().texFiles.empty() &&
+            ImGui::BeginCombo("Surface", s.road().texFiles[s.road().texSel].c_str())) {
+            for (int i = 0; i < static_cast<int>(s.road().texFiles.size()); ++i) {
+                const bool sel = (i == s.road().texSel);
+                if (ImGui::Selectable(s.road().texFiles[i].c_str(), sel)) {
+                    s.road().setSurface(s.road().texFiles[i]);
+                    s.road().texSel = i;
+                    const std::string n = s.road().normalFor(s.road().texFiles[i]);
+                    s.road().setNormal(n); // "" clears it: a pack without one stays flat
+                    s.road().normSel = -1;
+                    for (int k = 0; k < static_cast<int>(s.road().normFiles.size()); ++k)
+                        if (s.road().normFiles[k] == n) s.road().normSel = k;
                 }
                 if (sel) ImGui::SetItemDefaultFocus();
             }
@@ -1043,20 +1112,20 @@ void drawPanel(const PanelState& s) {
 
         // Normal map: the asphalt's grain. Without one the ribbon is lit by its
         // geometry normal alone and reads as painted on, especially under a low sun.
-        const char* curN = (s.road.normSel >= 0 &&
-                            s.road.normSel < static_cast<int>(s.road.normFiles.size()))
-                               ? s.road.normFiles[s.road.normSel].c_str()
+        const char* curN = (s.road().normSel >= 0 &&
+                            s.road().normSel < static_cast<int>(s.road().normFiles.size()))
+                               ? s.road().normFiles[s.road().normSel].c_str()
                                : "(none)";
         if (ImGui::BeginCombo("Normal", curN)) {
-            if (ImGui::Selectable("(none)", s.road.normSel < 0)) {
-                s.road.setNormal(std::string());
-                s.road.normSel = -1;
+            if (ImGui::Selectable("(none)", s.road().normSel < 0)) {
+                s.road().setNormal(std::string());
+                s.road().normSel = -1;
             }
-            for (int i = 0; i < static_cast<int>(s.road.normFiles.size()); ++i) {
-                const bool sel = (i == s.road.normSel);
-                if (ImGui::Selectable(s.road.normFiles[i].c_str(), sel)) {
-                    s.road.setNormal(s.road.normFiles[i]);
-                    s.road.normSel = i;
+            for (int i = 0; i < static_cast<int>(s.road().normFiles.size()); ++i) {
+                const bool sel = (i == s.road().normSel);
+                if (ImGui::Selectable(s.road().normFiles[i].c_str(), sel)) {
+                    s.road().setNormal(s.road().normFiles[i]);
+                    s.road().normSel = i;
                 }
                 if (sel) ImGui::SetItemDefaultFocus();
             }
@@ -1070,30 +1139,30 @@ void drawPanel(const PanelState& s) {
         // Glow: self-illumination on top of the lit surface, so the track stays
         // bright at night. Pure shader state -- no rebuild, like the fade above.
         ui::sectionText("Glow");
-        ImGui::SliderFloat("Glow strength", &s.road.emissionStrength, 0.0f, 6.0f,
+        ImGui::SliderFloat("Glow strength", &s.road().emissionStrength, 0.0f, 6.0f,
                            "%.2f");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("0 = off. Emission is added after lighting, so the\n"
                               "road keeps glowing at night and through fog.\n"
                               "Push past 1 for a hard neon look.");
-        ImGui::BeginDisabled(s.road.emissionStrength <= 0.0f);
-        ImGui::ColorEdit3("Glow colour", &s.road.emission.x);
+        ImGui::BeginDisabled(s.road().emissionStrength <= 0.0f);
+        ImGui::ColorEdit3("Glow colour", &s.road().emission.x);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Multiplies the glow map. With no map the whole\n"
                               "carriageway glows in this colour.");
 
-        const char* curE = (s.road.emisSel >= 0 &&
-                            s.road.emisSel < static_cast<int>(s.road.emisFiles.size()))
-                               ? s.road.emisFiles[s.road.emisSel].c_str()
+        const char* curE = (s.road().emisSel >= 0 &&
+                            s.road().emisSel < static_cast<int>(s.road().emisFiles.size()))
+                               ? s.road().emisFiles[s.road().emisSel].c_str()
                                : "(whole road)";
         if (ImGui::BeginCombo("Glow map", curE)) {
-            if (ImGui::Selectable("(whole road)", s.road.emisSel < 0))
-                s.road.setEmission(std::string());
-            for (int i = 0; i < static_cast<int>(s.road.emisFiles.size()); ++i) {
-                const bool sel = (i == s.road.emisSel);
-                if (ImGui::Selectable(s.road.emisFiles[i].c_str(), sel)) {
-                    s.road.setEmission(s.road.emisFiles[i]);
-                    s.road.emisSel = i;
+            if (ImGui::Selectable("(whole road)", s.road().emisSel < 0))
+                s.road().setEmission(std::string());
+            for (int i = 0; i < static_cast<int>(s.road().emisFiles.size()); ++i) {
+                const bool sel = (i == s.road().emisSel);
+                if (ImGui::Selectable(s.road().emisFiles[i].c_str(), sel)) {
+                    s.road().setEmission(s.road().emisFiles[i]);
+                    s.road().emisSel = i;
                 }
                 if (sel) ImGui::SetItemDefaultFocus();
             }
@@ -1105,8 +1174,8 @@ void drawPanel(const PanelState& s) {
                               "road width exactly once, left to right, whatever\n"
                               "the surface tiling is: paint a stripe down the\n"
                               "middle of the image and it lands on the centre line.");
-        ImGui::BeginDisabled(s.road.emisSel < 0);
-        ImGui::SliderFloat("Glow repeat", &s.road.emissionTile, 1.0f, 200.0f,
+        ImGui::BeginDisabled(s.road().emisSel < 0);
+        ImGui::SliderFloat("Glow repeat", &s.road().emissionTile, 1.0f, 200.0f,
                            "%.0f m");
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Metres of road per repeat of the glow map along\n"
@@ -1114,19 +1183,19 @@ void drawPanel(const PanelState& s) {
         ImGui::EndDisabled();
         ImGui::EndDisabled();
 
-        ImGui::BeginDisabled(s.sel < 0 || s.sel >= static_cast<int>(s.road.roadPts.size()));
+        ImGui::BeginDisabled(s.sel < 0 || s.sel >= static_cast<int>(s.road().roadPts.size()));
         if (ImGui::Button("Delete selected")) s.removePoint(s.sel);
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImGui::BeginDisabled(s.road.roadPts.empty());
+        ImGui::BeginDisabled(s.road().roadPts.empty());
         // No "Undo point" button here: it only ever dropped the *last* point,
         // which is not what you did when you just moved or raised one. Road edits
         // are on the editor's real undo stack now (Ctrl+Z / Edit menu).
         if (ImGui::Button("Clear")) {
             s.beginEdit();
-            s.road.clearPoints();
-            s.road.bridges.clear();
-            s.road.tunnels.clear();
+            s.road().clearPoints();
+            s.road().bridges.clear();
+            s.road().tunnels.clear();
             s.sel = s.sel2 = -1;
             s.endEdit("Clear road");
         }

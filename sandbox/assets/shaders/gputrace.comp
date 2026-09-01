@@ -18,16 +18,35 @@
 //
 // WHAT IT DOES NOT DO YET, and the harness says so rather than the picture
 // quietly disagreeing:
-//   * no textures. Materials are their flat albedo and tint, so an alpha
-//     CUTOUT has nothing to test and a blend goes by the scalar alone.
 //   * no HDRI. The environment is the three-stop gradient fallback -- which is
 //     also why there is no environment importance sampling here: the CPU only
 //     builds that sampler for a MAP, and without one it does not aim at the sky
 //     either. On a scene with a panorama the two would part company, and
 //     gpucheck's frames deliberately have none.
-//   * no terrain layers, no depth of field.
+//   * no depth of field. The camera is a pinhole here whatever aperture the
+//     scene carries, so a frame with one out-of-focus foreground is the one
+//     place the two pictures differ by design.
 // Every one of those is a stage of its own, and each is measurable against the
 // CPU the day it lands.
+//
+// WHAT IS HERE that a reader of an older version of this file would not expect:
+// base-colour maps, tints and the three alpha modes (one blob of RGBA8 for the
+// whole scene, sampled by Image::sample's own wrap-then-bilinear arithmetic),
+// and the terrain -- its layers claimed by height and slope, projected down
+// three axes, jittered by the same noise, overridden by the same paint.
+
+// How deep the traversal stack goes. Injected by the host, which knows the
+// actual depth of the tree it is about to hand over -- and this number is the
+// single biggest dial on how fast this kernel runs. It is per-thread scratch
+// memory, tens of thousands of threads are in flight, and how many of them the
+// card can keep in flight at once is decided by how much of it each one asks
+// for. Measured on one frame at 1280x960: 64 entries 0.48s, 32 entries 0.27s,
+// 16 entries 0.21s. So it is not rounded up "to be safe" -- being safe is the
+// host's job (Tracer::upload measures the tree), and rounding up here costs
+// half the speed.
+#ifndef TRAVERSAL_STACK
+#define TRAVERSAL_STACK 64
+#endif
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -41,8 +60,10 @@ layout(rgba32f, binding = 0) uniform image2D uAccum;
 // tighter, and the tightest layout is where a GPU port spends its debugging
 // time: a vec3 in an array is 16 bytes here and 12 on the host, and the picture
 // that comes out of getting that wrong looks like a broken BVH.
+// What a hit needs once it has been FOUND. The corners are not in here: they are
+// in `tripos` below, on their own, because the traversal reads nothing but
+// corners and reads them constantly.
 struct Tri {
-    vec4 p0, p1, p2;   // .w unused
     vec4 n0, n1, n2;
     vec4 uv01;         // uv0.xy, uv1.xy
     vec4 uv2mat;       // uv2.xy, z = material index
@@ -57,7 +78,18 @@ struct Mat {
     vec4  albedoRough;  // rgb albedo (sRGB, as authored), a = roughness
     vec4  emissionRefl; // rgb emission (sRGB), a = reflectivity
     vec4  misc;         // x opacity, y emissionStrength, z alphaCutoff, w glass
-    ivec4 alphaMode;    // x = AlphaMode (0 opaque, 1 cutout, 2 blend)
+    vec4  tint;         // rgb multiplies the base-colour map, a = detail scale
+    ivec4 modeTex;      // x = AlphaMode (0 opaque, 1 cutout, 2 blend)
+                        // y = base-colour map, -1 for none
+                        // z,w = first terrain layer and how many (0 = not terrain)
+};
+
+// One terrain layer: the height/slope window it covers, how it tiles, and which
+// map it is. All the scene's layers lie end to end and a material names its run
+// (Mat.modeTex.zw), because std430 does not hand over an array of arrays.
+struct Layer {
+    vec4 band;      // height start/end, slope start/end (degrees)
+    vec4 scaleTex;  // x = world->texture scale, y = texture index, as a float
 };
 
 struct Lamp {
@@ -72,12 +104,31 @@ layout(std430, binding = 2) readonly buffer Nodes  { Node nodes[]; };
 layout(std430, binding = 3) readonly buffer Index  { int  index[]; };
 layout(std430, binding = 4) readonly buffer Mats   { Mat  mats[];  };
 layout(std430, binding = 5) readonly buffer Lamps  { Lamp lamps[]; };
+// The scene's base-colour maps: where each one sits in the blob (offset in
+// TEXELS, width, height) and the blob itself, one RGBA8 texel per uint in the
+// order Image::pixels holds them. One buffer rather than an array of samplers,
+// because the map to read is chosen by the material index at a hit -- a value
+// the shader computes, and GLSL will not index a sampler array with one of
+// those without a core extension.
+layout(std430, binding = 6) readonly buffer TexMeta { ivec4 texMeta[]; };
+layout(std430, binding = 7) readonly buffer TexData { uint  texels[];  };
+// The terrain's layers, and the weights somebody painted on it: three per
+// triangle, in the triangles' own order, so a hit reaches them by its triangle
+// index alone -- the same table paintAt() reads on the CPU.
+layout(std430, binding = 8) readonly buffer Layers  { Layer layers[]; };
+layout(std430, binding = 9) readonly buffer Paints  { vec4  vpaint[]; };
+// The triangles' corners, as p0/e1/e2: three vec4 per triangle, contiguous, and
+// the only place they are held. Splitting them out of Tri costs nothing per
+// triangle and changes how many cache lines a leaf full of them touches.
+layout(std430, binding = 10) readonly buffer TriPos { vec4 tripos[]; };
 
 uniform ivec2 uSize;
 uniform int   uSampleBase;   // samples already in the accumulator (seeds the RNG)
 uniform int   uSamples;      // how many to add in this dispatch
 uniform int   uSeed;
 uniform int   uLampCount;
+uniform int   uTexCount;
+uniform int   uHavePaint;
 
 uniform vec3  uCamPos, uCamFwd, uCamUp, uCamRight;
 uniform float uHalfU, uHalfV;
@@ -213,11 +264,165 @@ float misWeight(float a, float b) {
     return a2 / max(a2 + b2, 1e-9);
 }
 
+// --- Textures ---------------------------------------------------------------
+// Image::sample(), transliterated: wrap, then bilinear, on RGBA8 read straight
+// out of the blob. Wrapping and not clamping because that is what the GL
+// textures do and what the CPU tracer does -- a tiled road map read with clamped
+// edges shows a stretched border exactly where the tile repeats.
+
+// A texel index wrapped into [0, n). Through mod() on floats rather than the
+// integer %, whose sign for a negative operand GLSL does not pin down -- and the
+// indices here go negative all the time, because a mesh's UVs are metres and the
+// texel coordinate of a point half a map away is a large negative number.
+int wrapTexel(int a, int n) { return int(mod(float(a), float(n))); }
+
+vec4 texelAt(ivec4 md, int x, int y) {
+    uint p = texels[md.x + y * md.y + x];
+    return vec4(float( p        & 0xFFu), float((p >>  8) & 0xFFu),
+                float((p >> 16) & 0xFFu), float((p >> 24) & 0xFFu)) * (1.0 / 255.0);
+}
+
+vec4 sampleTex(int t, vec2 uv) {
+    if (t < 0 || t >= uTexCount) return vec4(1.0);
+    ivec4 md = texMeta[t];
+    if (md.y <= 0 || md.z <= 0) return vec4(1.0);
+    float x = uv.x * float(md.y) - 0.5;
+    float y = uv.y * float(md.z) - 0.5;
+    int   x0 = int(floor(x)), y0 = int(floor(y));
+    float fx = x - float(x0), fy = y - float(y0);
+    int xs0 = wrapTexel(x0, md.y), xs1 = wrapTexel(x0 + 1, md.y);
+    int ys0 = wrapTexel(y0, md.z), ys1 = wrapTexel(y0 + 1, md.z);
+    vec4 c00 = texelAt(md, xs0, ys0), c10 = texelAt(md, xs1, ys0);
+    vec4 c01 = texelAt(md, xs0, ys1), c11 = texelAt(md, xs1, ys1);
+    return mix(mix(c00, c10, fx), mix(c01, c11, fx), fy);
+}
+
+// The UV at a hit, from the triangle's three corners.
+vec2 uvAt(Tri t, float u, float v) {
+    float w = 1.0 - u - v;
+    return t.uv01.xy * w + t.uv01.zw * u + t.uv2mat.xy * v;
+}
+
+// How much of a surface a ray actually meets, following AlphaMode exactly as
+// SceneTypes.hpp defines it and coverageAt() implements it on the CPU:
+//   Opaque - the map's alpha is IGNORED. Not "usually 1": ignored. Plenty of
+//            opaque materials carry an atlas whose alpha means nothing, and
+//            reading it as transparency puts holes through solid paintwork.
+//   Cutout - a texel below the cutoff is a hole, the rest is solid, and the
+//            comparison is against the TEXTURE's alpha alone.
+//   Blend  - texture alpha and scalar opacity multiply.
+// One function, because the camera walk and the shadow walk have to agree: a
+// leaf transparent to the eye and opaque to the sun is a bug that only ever
+// shows up as a shadow with nothing above it.
+float coverageOf(Mat m, float texA) {
+    if (m.modeTex.x == 0) return m.misc.x;
+    if (m.modeTex.x == 1) return texA < m.misc.z ? 0.0 : m.misc.x;
+    return texA * m.misc.x;
+}
+
+// --- The terrain ------------------------------------------------------------
+// terrainColorAt() on the CPU, which is itself lit.frag's terrainSurface(). A
+// terrain has no UVs worth the name -- it is a heightfield, and a texture laid
+// on it by its vertices stretches wherever the ground gets steep -- so the
+// ground is coloured by WHERE IT IS: each layer claims the surfaces whose height
+// and slope fall inside its band, and the layers cross-fade where bands overlap.
+//
+// Transcribed rather than approximated. A ground that is nearly the viewport's
+// is a ground somebody has to make a decision about, every time they look at it.
+float hash21(vec2 p0) {
+    vec2 p = fract(p0 * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash21(i),              hash21(i + vec2(1, 0)), u.x),
+               mix(hash21(i + vec2(0, 1)), hash21(i + vec2(1, 1)), u.x), u.y);
+}
+
+float detailFbm(vec2 p) {
+    float sum = 0.0, amp = 0.5;
+    for (int i = 0; i < 4; ++i) { sum += amp * vnoise(p); p *= 2.0; amp *= 0.5; }
+    return sum;
+}
+
+// A soft window: fully inside between start and end, feathered at both edges.
+// Written out rather than through smoothstep(), whose behaviour where the two
+// edges meet is not the CPU's max(e1 - e0, 1e-6).
+float softStep(float e0, float e1, float v) {
+    float t = clamp((v - e0) / max(e1 - e0, 1e-6), 0.0, 1.0);
+    return t * t * (3.0 - 2.0 * t);
+}
+float bandOf(float x, float start, float end, float feather) {
+    return softStep(start - feather, start + feather, x) *
+           (1.0 - softStep(end - feather, end + feather, x));
+}
+
+// One map projected down all three axes and blended by the normal, so a cliff
+// face gets the same material as the flat beside it without a seam.
+vec3 triplanar(int t, vec3 wp, vec3 n, float scale) {
+    vec3 bw = abs(n);
+    bw = bw * bw * bw * bw;                     // pow(|n|, 4): a tight blend
+    bw /= max(bw.x + bw.y + bw.z, 1e-6);
+    return sampleTex(t, vec2(wp.z, wp.y) * scale).rgb * bw.x +
+           sampleTex(t, vec2(wp.x, wp.z) * scale).rgb * bw.y +
+           sampleTex(t, vec2(wp.x, wp.y) * scale).rgb * bw.z;
+}
+
+// False where no layer covers the point -- the shader's "gap between bands"
+// case, which falls back to the flat base colour exactly as lit.frag does.
+bool terrainColorAt(Mat m, vec3 wp, vec3 n, vec4 paint, out vec3 outColor) {
+    int count = m.modeTex.w;
+    if (count <= 0) return false;
+    int first = m.modeTex.z;
+
+    // The height-edge jitter, at full strength: a path tracer takes tens of
+    // samples per pixel with the ray jittered inside it, so this noise is
+    // AVERAGED rather than pointed at -- the one place the offline picture gets
+    // a better answer than the shader for free rather than for effort.
+    float detail = m.tint.a > 0.0 ? detailFbm(vec2(wp.x, wp.z) * m.tint.a) : 0.5;
+    float h        = wp.y + (detail - 0.5) * 3.0;
+    float slopeDeg = degrees(acos(clamp(n.y, -1.0, 1.0)));
+
+    // Hand-painted layers override the automatic height/slope blend where they
+    // cover, and leave it untouched where they do not.
+    vec4  p     = clamp(paint, vec4(0.0), vec4(1.0));
+    float cover = clamp(p.x + p.y + p.z + p.w, 0.0, 1.0);
+
+    vec3  acc  = vec3(0.0);
+    float wsum = 0.0;
+    for (int i = 0; i < count; ++i) {
+        Layer L = layers[first + i];
+        float autoW = bandOf(h, L.band.x, L.band.y, 1.5) *
+                      bandOf(slopeDeg, L.band.z, L.band.w, 6.0);
+        float pw = i < 4 ? p[i] : 0.0;
+        float w  = autoW * (1.0 - cover) + pw;
+        if (w <= 0.0) continue;
+        acc  += triplanar(int(L.scaleTex.y), wp, n, L.scaleTex.x) * w;
+        wsum += w;
+    }
+    if (wsum < 1e-4) return false;
+    outColor = acc / wsum;
+    return true;
+}
+
+// The painted weights at a hit, zero where the scene carries none -- the same
+// answer an unpainted terrain gives, so nothing downstream has to know whether
+// the side table exists.
+vec4 paintAt(int tri, float u, float v) {
+    if (uHavePaint == 0) return vec4(0.0);
+    float w = 1.0 - u - v;
+    return vpaint[tri * 3] * w + vpaint[tri * 3 + 1] * u + vpaint[tri * 3 + 2] * v;
+}
+
 // --- The surface ------------------------------------------------------------
-// Surface::* on the CPU. No textures yet, so `base` is the flat albedo -- but
-// the sRGB->linear step is here and at the same point, because skipping it is
-// the classic way to end up with a render that is washed out beside the
-// viewport and no obvious reason why.
+// Surface::* on the CPU: the base colour comes from the map where there is one,
+// tinted, and from the flat albedo where there is not. The sRGB->linear step is
+// here and at the same point, because skipping it is the classic way to end up
+// with a render that is washed out beside the viewport and no obvious reason
+// why.
 struct Surface {
     vec3  baseColor;  // linear, and the tint a pane of glass carries
     vec3  diffuse;
@@ -229,10 +434,22 @@ struct Surface {
     bool  glass;
 };
 
-Surface surfaceOf(int mi) {
+// `n` is the GEOMETRIC normal, not the one turned to face the eye: the slope a
+// terrain band tests is the ground's.
+Surface surfaceOf(int mi, vec2 uv, vec3 wp, vec3 n, vec4 paint, out float texA) {
     Mat m = mats[mi];
     Surface s;
-    vec3 base = pow(max(m.albedoRough.rgb, vec3(0.0)), vec3(2.2));
+    vec3 base = m.albedoRough.rgb;
+    texA = 1.0;
+    vec3 terrain;
+    if (terrainColorAt(m, wp, n, paint, terrain)) {
+        base = terrain;
+    } else if (m.modeTex.y >= 0) {
+        vec4 t = sampleTex(m.modeTex.y, uv);
+        base = t.rgb * m.tint.rgb;
+        texA = t.a;
+    }
+    base = pow(max(base, vec3(0.0)), vec3(2.2));
     float refl = clamp(m.emissionRefl.a, 0.0, 1.0);
     s.baseColor = base;
     s.diffuse   = base * (1.0 - refl);
@@ -242,10 +459,8 @@ Surface surfaceOf(int mi) {
     float r     = clamp(m.albedoRough.a, 0.03, 1.0);
     s.alpha     = r * r;
     s.emission  = pow(max(m.emissionRefl.rgb, vec3(0.0)), vec3(2.2)) * m.misc.y;
-    // Without textures every AlphaMode collapses to the same answer: the map's
-    // alpha is 1, so a cutout never cuts and a blend blends by the scalar.
-    s.coverage  = m.misc.x;
-    s.alphaMode = int(m.alphaMode.x);
+    s.coverage  = coverageOf(m, texA);
+    s.alphaMode = m.modeTex.x;
     s.glass     = m.misc.w > 0.5;
     return s;
 }
@@ -301,15 +516,21 @@ bool slab(vec4 lo, vec4 hi, vec3 o, vec3 invD, float tMax, out float tNear) {
 // of scene geometry is single-sided in the raster path only because backface
 // culling hides it, and honouring the winding would put holes where the
 // viewport shows a surface.
-bool intersectTri(Tri t, vec3 o, vec3 d, float tMax,
+// Takes the triangle's INDEX, not the triangle: the corners live in their own
+// tight buffer (tripos), and the 128-byte Tri is only opened at the one hit a
+// ray actually shades. Handing the struct over by value would ask the compiler
+// to prove the other eighty bytes are dead before it stops fetching them, and
+// the inner loop of a traversal is the last place to rely on that.
+bool intersectTri(int ti, vec3 o, vec3 d, float tMax,
                   out float outT, out float outU, out float outV) {
-    vec3 e1 = t.p1.xyz - t.p0.xyz;
-    vec3 e2 = t.p2.xyz - t.p0.xyz;
+    vec3 p0 = tripos[ti * 3    ].xyz;
+    vec3 e1 = tripos[ti * 3 + 1].xyz;
+    vec3 e2 = tripos[ti * 3 + 2].xyz;
     vec3 p  = cross(d, e2);
     float det = dot(e1, p);
     if (abs(det) < 1e-12) return false;
     float inv = 1.0 / det;
-    vec3  s   = o - t.p0.xyz;
+    vec3  s   = o - p0;
     outU = dot(s, p) * inv;
     if (outU < -1e-6 || outU > 1.0 + 1e-6) return false;
     vec3 q = cross(s, e1);
@@ -324,8 +545,7 @@ bool closest(vec3 o, vec3 d, float tMax, out Hit hit) {
     vec3 invD = vec3(1.0) / d;   // inf on an axis-parallel ray, which the slab
                                  // test's min/max then handles exactly right
 
-    int   stack[64];
-    float stackT[64];
+    int   stack[TRAVERSAL_STACK];
     int   sp = 0, node = 0;
     float nodeT;
     if (!slab(nodes[0].lo, nodes[0].hi, o, invD, tMax, nodeT)) return false;
@@ -337,7 +557,7 @@ bool closest(vec3 o, vec3 d, float tMax, out Hit hit) {
             for (int i = 0; i < count; ++i) {
                 int ti = index[first + i];
                 float t, u, v;
-                if (intersectTri(tris[ti], o, d, hit.t, t, u, v)) {
+                if (intersectTri(ti, o, d, hit.t, t, u, v)) {
                     hit.t = t; hit.u = u; hit.v = v; hit.tri = ti;
                 }
             }
@@ -352,20 +572,25 @@ bool closest(vec3 o, vec3 d, float tMax, out Hit hit) {
                 // behind a confirmed hit and never opened at all.
                 int   nearI = tl <= tr ? l  : rr;
                 int   farI  = tl <= tr ? rr : l;
-                float farT  = tl <= tr ? tr : tl;
-                if (sp < 64) { stack[sp] = farI; stackT[sp] = farT; ++sp; }
+                if (sp < TRAVERSAL_STACK) stack[sp++] = farI;
                 node = nearI;
                 continue;
             }
             if (hl) { node = l;  continue; }
             if (hr) { node = rr; continue; }
         }
-        // Pop, discarding anything the closest hit has already overtaken.
+        // Pop, discarding anything the closest hit has already overtaken. The
+        // distance is re-derived from the node rather than carried beside it on
+        // the stack: a second array of the same length is another 256 bytes of
+        // scratch memory per thread, and scratch memory is what a traversal
+        // kernel's occupancy is actually made of.
         bool popped = false;
         while (sp > 0) {
-            --sp;
-            if (stackT[sp] > hit.t) continue;
-            node = stack[sp];
+            int cand = stack[--sp];
+            float candT;
+            if (!slab(nodes[cand].lo, nodes[cand].hi, o, invD, hit.t, candT))
+                continue;
+            node = cand;
             popped = true;
             break;
         }
@@ -374,33 +599,77 @@ bool closest(vec3 o, vec3 d, float tMax, out Hit hit) {
     return hit.tri >= 0;
 }
 
+// What one crossing of a triangle lets through: nothing for an opaque one, a
+// tint for a pane of glass, the uncovered fraction for anything part-way. The
+// CPU's shadowFactor(), and the coverage is the TEXTURED one, so a leaf's cutout
+// casts the shadow of a leaf rather than of the quad it is painted on.
+vec3 shadowFactor(int ti, float u, float v) {
+    int mi = int(tris[ti].uv2mat.z);
+    Mat m  = mats[mi];
+    float cov = coverageOf(m, m.modeTex.y >= 0
+                                  ? sampleTex(m.modeTex.y, uvAt(tris[ti], u, v)).a
+                                  : 1.0);
+    if (m.misc.w > 0.5) {
+        // A pane refracts rather than blocks; the same stand-in for the caustics
+        // nobody is tracing that the CPU uses.
+        vec3 tint = pow(max(m.albedoRough.rgb, vec3(0.0)), vec3(2.2));
+        return mix(vec3(1.0), tint, 0.35) * 0.85;
+    }
+    if (cov >= 0.999) return vec3(0.0);
+    return vec3(1.0 - cov);
+}
+
 // How much light survives the walk to a light. A product rather than a boolean,
 // because the scene has partly transparent things in it and a shadow ray that
 // stopped at the first triangle would put a solid shadow under a windscreen.
-// Without textures there is no cutout to test, so this is the scalar coverage.
+//
+// ONE walk of the tree -- Bvh::transmittance() on the CPU, which is what this
+// should have been transliterated from in the first place. The answer is the
+// same as the closest-hit walk it replaces (a product does not care what order
+// its terms arrive in, and one opaque triangle anywhere along the ray makes the
+// whole thing zero wherever it is found) and the cost is not: a shadow ray is
+// the commonest ray in the picture, most of them meet something solid, and this
+// one gives up the moment it does instead of first proving that the something it
+// met was the nearest.
 vec3 transmittance(vec3 o, vec3 d, float tMax) {
     vec3 tr = vec3(1.0);
-    vec3 org = o;
-    float remaining = tMax;
-    for (int step = 0; step < 16; ++step) {
-        Hit h;
-        if (!closest(org, d, remaining, h)) return tr;
-        int mi = int(tris[h.tri].uv2mat.z);
-        Mat m  = mats[mi];
-        float cov = m.misc.x;
-        if (m.misc.w > 0.5) {
-            // A pane refracts rather than blocks; the same stand-in for the
-            // caustics nobody is tracing that the CPU uses.
-            vec3 tint = pow(max(m.albedoRough.rgb, vec3(0.0)), vec3(2.2));
-            tr *= mix(vec3(1.0), tint, 0.35) * 0.85;
+    vec3 invD = vec3(1.0) / d;
+
+    int  stack[TRAVERSAL_STACK];
+    int  sp = 0, node = 0;
+    float ignored;
+    if (!slab(nodes[0].lo, nodes[0].hi, o, invD, tMax, ignored)) return tr;
+
+    for (int guard = 0; guard < 100000; ++guard) {
+        int count = floatBitsToInt(nodes[node].hi.w);
+        if (count > 0) {
+            int first = floatBitsToInt(nodes[node].lo.w);
+            for (int i = 0; i < count; ++i) {
+                int ti = index[first + i];
+                float t, u, v;
+                if (!intersectTri(ti, o, d, tMax, t, u, v)) continue;
+                tr *= shadowFactor(ti, u, v);
+                if (luminance(tr) < 1e-4) return vec3(0.0);
+            }
         } else {
-            if (cov >= 0.999) return vec3(0.0);
-            tr *= (1.0 - cov);
+            int l  = floatBitsToInt(nodes[node].lo.w);
+            int rr = l + 1;
+            float tl, tr0;
+            bool hl = slab(nodes[l].lo,  nodes[l].hi,  o, invD, tMax, tl);
+            bool hr = slab(nodes[rr].lo, nodes[rr].hi, o, invD, tMax, tr0);
+            // No near-first ordering here and no distance on the stack: nothing
+            // about this walk gets cheaper by arriving somewhere sooner, because
+            // it has to visit everything it crosses either way.
+            if (hl && hr) {
+                if (sp < TRAVERSAL_STACK) stack[sp++] = rr;
+                node = l;
+                continue;
+            }
+            if (hl) { node = l;  continue; }
+            if (hr) { node = rr; continue; }
         }
-        if (luminance(tr) < 1e-4) return vec3(0.0);
-        org = org + d * (h.t + kRayEps);
-        remaining -= h.t + kRayEps;
-        if (remaining <= 0.0) return tr;
+        if (sp == 0) break;
+        node = stack[--sp];
     }
     return tr;
 }
@@ -553,19 +822,27 @@ vec3 radiance(vec3 org, vec3 dir) {
 
         vec3 N = tri.n0.xyz * w + tri.n1.xyz * hit.u + tri.n2.xyz * hit.v;
         if (dot(N, N) < 1e-12)
-            N = normalize(cross(tri.p1.xyz - tri.p0.xyz, tri.p2.xyz - tri.p0.xyz));
+            N = normalize(cross(tripos[hit.tri * 3 + 1].xyz,
+                                tripos[hit.tri * 3 + 2].xyz));   // e1 x e2
         else
             N = normalize(N);
         vec3 gN = N;
         if (dot(N, -dir) < 0.0) N = -N;    // shade the side we can see
 
-        Surface s = surfaceOf(mi);
+        float texA;
+        // gN, not N: the slope a terrain band tests is the ground's, not the one
+        // turned to face the eye.
+        Surface s = surfaceOf(mi, uvAt(tri, hit.u, hit.v), P, gN,
+                              paintAt(hit.tri, hit.u, hit.v), texA);
 
-        // Only a BLEND surface is passed through, and only by its own coverage.
-        // An opaque one is solid whatever its alpha happens to hold.
-        bool blendMiss = !s.glass && s.alphaMode == 2 && s.coverage < 0.999 &&
-                         rnd() > s.coverage;
-        if (blendMiss) {
+        // Cutout and blended surfaces: decide whether this ray sees the surface
+        // at all before doing any shading work. Only a BLEND surface is passed
+        // through by chance, and only by its own coverage -- an opaque one is
+        // solid whatever its map's alpha happens to hold.
+        bool cutoutMiss = s.alphaMode == 1 && texA < mats[mi].misc.z;
+        bool blendMiss  = !s.glass && s.alphaMode == 2 && s.coverage < 0.999 &&
+                          rnd() > s.coverage;
+        if (cutoutMiss || blendMiss) {
             if (++passthrough > 32) break;
             org = P + dir * kRayEps;
             --bounce;                       // a pane is not a bounce

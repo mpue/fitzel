@@ -1,5 +1,8 @@
 #include "ModelingPanel.hpp"
 
+#include <cstdint>
+#include <string>
+
 #include <imgui.h>
 
 #include "Component.hpp"
@@ -17,6 +20,37 @@ float g_extrude = 0.5f;
 float g_move    = 0.25f;
 float g_inset   = 0.1f;
 float g_scale   = 0.75f;
+
+// Where a loop cut falls along the band (0..1 across the faces it crosses) and
+// which of the two bands through the selected face it runs in. A quad belongs to
+// two of them, at right angles, and no amount of pointing says which one is
+// meant -- so it is a button that swaps, with the count of faces each would cut
+// written next to it.
+float g_loopAt  = 0.5f;
+int   g_loopDir = 0;
+
+// How long the two bands through the selected face are, and what that answer was
+// worked out for. Walking a band means deriving the mesh's edges first, and doing
+// that twice per frame for a read-out is a cost that grows with the mesh while
+// the answer only changes when the selection or the geometry does.
+std::uint64_t g_ringRev  = 0;
+int           g_ringFace = -1;
+int           g_ringLen[2] = {0, 0};
+
+// The filter inside the face-material picker. One buffer: only one popup is open
+// at a time, and it starts empty each time so the picker never opens already
+// hiding most of the library.
+char g_matFilter[64] = {};
+
+// The library entry `id` names, or nullptr. Not Document::materialIndex(), which
+// answers 0 -- a real material -- for a GUID it does not know, and a face wearing
+// the object's material has to stay visibly undressed.
+const MaterialDef* findMaterial(const PanelState& s, const fitzel::AssetId& id) {
+    if (!id.valid()) return nullptr;
+    for (const MaterialDef& md : s.materials)
+        if (md.assetId == id) return &md;
+    return nullptr;
+}
 
 // Full-width, tall enough to be aimed at rather than hit precisely. Every one of
 // these is a target for a hand that may not land exactly where it meant to.
@@ -106,6 +140,46 @@ void drawPanel(const PanelState& s) {
                  "then extrude inwards, is a window.");
 
         ui::sectionText("Detail");
+        // Loop cut: the cut that goes all the way round. `dir` is not something
+        // the click can say -- the face lies in two bands at once -- so it is a
+        // button that swaps between them, and both counts are written out so the
+        // choice is made before the cut rather than judged after it.
+        {
+            if (g_ringRev != s.mesh->revision || g_ringFace != face) {
+                g_ringRev   = s.mesh->revision;
+                g_ringFace  = face;
+                g_ringLen[0] = have ? editmesh::loopLength(s.mesh->mesh, face, 0) : 0;
+                g_ringLen[1] = have ? editmesh::loopLength(s.mesh->mesh, face, 1) : 0;
+            }
+            const int nA = g_ringLen[0], nB = g_ringLen[1];
+            const int n  = (g_loopDir & 1) ? nB : nA;
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::SliderFloat("##loopat", &g_loopAt, 0.05f, 0.95f, "Cut at %.2f");
+            if (ImGui::Button(g_loopDir ? "Direction: across##loopdir"
+                                        : "Direction: along##loopdir",
+                              ImVec2(-1.0f, 26.0f)))
+                g_loopDir ^= 1;
+            ImGui::TextDisabled("along: %d face%s | across: %d face%s",
+                                nA, nA == 1 ? "" : "s", nB, nB == 1 ? "" : "s");
+            ImGui::BeginDisabled(n <= 0);
+            if (bigButton(n > 0 ? (std::string("Loop cut (") + std::to_string(n) +
+                                   " faces)").c_str()
+                                : "Loop cut") &&
+                s.edit) {
+                const float t = g_loopAt;
+                const int   d = g_loopDir;
+                s.edit([face, d, t](MeshComponent& m) {
+                    return editmesh::loopCut(m.mesh, face, d, t);
+                }, "Loop cut");
+            }
+            ImGui::EndDisabled();
+            ui::hint("Runs a new edge right around the band the face lies in and\n"
+                     "splits every quad it crosses -- a storey line on a tower,\n"
+                     "a joint to bend a wall at. Only quads: the cut stops\n"
+                     "where the mesh does.");
+        }
+
+        ImGui::Spacing();
         if (bigButton("Subdivide into four") && s.edit)
             s.edit([face](MeshComponent& m) { return editmesh::subdivide(m.mesh, face); },
                    "Subdivide");
@@ -114,7 +188,80 @@ void drawPanel(const PanelState& s) {
             s.edit([face](MeshComponent& m) { return editmesh::deleteFace(m.mesh, face); },
                    "Delete face");
 
+        // --- The face's own material ----------------------------------------
+        // A face can wear a material of its own instead of the object's: brick on
+        // one side, plaster on the other, one object. Picking it here is the
+        // no-drag way in; dropping a material from the Assets browser straight
+        // onto the face in the viewport does the same thing.
+        ui::sectionText("Material");
+        const fitzel::AssetId cur = s.mesh->mesh.faceMaterial(face);
+        const MaterialDef*    md  = findMaterial(s, cur);
+        // What the panel WANTS, applied once it has stopped reading the mesh: the
+        // edit runs host code that re-centres the geometry and banks an undo step,
+        // and a picker still drawing from the component afterwards would be
+        // reading through it as it went.
+        bool            wantSet = false;
+        fitzel::AssetId wantId;
+
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##facemat",
+                              md ? md->name.c_str() : "(the object's material)")) {
+            if (ImGui::IsWindowAppearing()) {
+                g_matFilter[0] = 0;
+                ImGui::SetKeyboardFocusHere();
+            }
+            ui::searchBox("##facematf", g_matFilter, sizeof(g_matFilter));
+            if (ImGui::Selectable("(the object's material)", md == nullptr)) {
+                wantSet = true;
+                wantId  = fitzel::AssetId{};
+            }
+            for (const MaterialDef& cand : s.materials) {
+                // Model-owned materials are not the library's to hand out: they
+                // are re-created by the next import, and a face pointing at one
+                // would be wearing a GUID nobody answers to after a reload.
+                if (cand.fromModel) continue;
+                if (!ui::icontains(cand.name.c_str(), g_matFilter)) continue;
+                const bool sel = (md && md->assetId == cand.assetId);
+                if (ImGui::Selectable(cand.name.c_str(), sel)) {
+                    wantSet = true;
+                    wantId  = cand.assetId;
+                }
+                if (sel) ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        if (md) {
+            if (ImGui::SmallButton("Edit this material") && s.editMaterial)
+                s.editMaterial(cur);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Back to the object's")) {
+                wantSet = true;
+                wantId  = fitzel::AssetId{};
+            }
+        }
+        // How far the dressing has spread. Worth saying: a face wearing its own
+        // material is a second draw call for the object, and the count is the only
+        // place that shows how many of those an afternoon of clicking has made.
+        int dressed = 0;
+        for (int f = 0; f < static_cast<int>(s.mesh->mesh.faces.size()); ++f)
+            if (s.mesh->mesh.faceMaterial(f).valid()) ++dressed;
+        if (dressed > 0)
+            ImGui::TextDisabled("%d of %d faces wear their own material", dressed,
+                                static_cast<int>(s.mesh->mesh.faces.size()));
+        ui::hint("Only this face changes. You can also drag a material from the\n"
+                 "Assets browser straight onto a face in the viewport.");
+
         ImGui::EndDisabled();
+
+        // Outside the disabled block and after every read of the mesh: applying
+        // this replaces the entity the panel is drawing from.
+        if (wantSet && s.edit) {
+            const fitzel::AssetId id = wantId;
+            s.edit([face, id](MeshComponent& m) {
+                m.mesh.setFaceMaterial(face, id);
+                return face;
+            }, "Face material");
+        }
     }
     ImGui::End();
 }

@@ -12,20 +12,20 @@ REM ============================================================================
 setlocal
 
 REM --- Werkzeuge (bundled VS18) ----------------------------------------------
-set "VCVARS=C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
-set "CMAKE=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+set "VCVARS=C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\vcvars64.bat"
+set "CMAKE=C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
 REM  Ninja explizit festnageln: ein von der VS-IDE erzeugter Cache kann sonst
 REM  auf ein Ninja unter einer anderen (evtl. deinstallierten) VS-Installation
 REM  zeigen -> "no such file or directory" beim Build.
-set "NINJA=C:/Program Files/Microsoft Visual Studio/18/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
+set "NINJA=C:/Program Files/Microsoft Visual Studio/18/Insiders/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe"
 REM  NICHT "CL" nennen: cl.exe liest die Umgebungsvariable CL und haengt sie an
 REM  jede Kompiler-Zeile an. Daher VSCL.
-set "VSCL=C:/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe"
+set "VSCL=C:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.51.36231/bin/Hostx64/x64/cl.exe"
 
 REM --- Ins Verzeichnis dieses Skripts wechseln (= Repo-Root) ------------------
 cd /d "%~dp0"
 
-if not exist "%VCVARS%" (
+if not exist "%VCVARS%" (   
     echo [Fehler] vcvars64.bat nicht gefunden:
     echo   %VCVARS%
     exit /b 1
@@ -62,8 +62,8 @@ if errorlevel 1 (
 REM --- Konfigurieren, falls der Build-Baum fehlt oder veraltet ist -----------
 REM  (VS18-Compiler explizit erzwingen, damit nicht versehentlich eine
 REM   VS2022-cl gegen die VS18-STL gemischt wird -> STL1001.)
-REM  Ein vorhandener Cache, der nicht auf VS18 Community zeigt (z.B. von der
-REM  IDE gegen eine spaeter deinstallierte Community-Installation erzeugt),
+REM  Ein vorhandener Cache, der nicht auf VS18 Insiders zeigt (z.B. von der
+REM  IDE gegen eine spaeter deinstallierte Insiders-Installation erzeugt),
 REM  wird verworfen und frisch konfiguriert.
 REM  Kriterium ist build.ninja (nur nach vollstaendig abgeschlossenem Configure
 REM  vorhanden), nicht bloss die CMakeCache.txt - ein abgebrochener Configure
@@ -71,8 +71,8 @@ REM  hinterlaesst sonst einen halben Cache, der faelschlich als fertig gilt.
 set "NEEDCONFIG=0"
 if not exist "build\release\build.ninja" set "NEEDCONFIG=1"
 if exist "build\release\CMakeCache.txt" (
-    findstr /C:"18/Community/" "build\release\CMakeCache.txt" >nul 2>&1 || (
-        echo Veralteter Build-Cache gefunden ^(zeigt nicht auf VS18 Community^) - wird neu erzeugt...
+    findstr /C:"18/Insiders/" "build\release\CMakeCache.txt" >nul 2>&1 || (
+        echo Veralteter Build-Cache gefunden ^(zeigt nicht auf VS18 Insiders^) - wird neu erzeugt...
         rmdir /s /q "build\release"
         set "NEEDCONFIG=1"
     )
@@ -113,8 +113,8 @@ REM  und der Linker meldet LNK1104 -- dann zuerst die laufende Instanz schliesse
 REM  shadercheck kommt mit: das Harness ist nur etwas wert, wenn es zum aktuellen
 REM  Stand der Shader passt -- gebaut wird es in Sekunden, und genau daran ist es
 REM  beim letzten Mal gestorben, dass es niemand mitgebaut hat.
-echo Baue sandbox + player + shadercheck + audiocheck + autosavecheck + meshpaintcheck + softcheck + viewcheck + citycheck + shotcheck + iconcheck + skycheck + fogcheck + pathcheck + capturecheck + rivercheck + gpucheck + tracecheck + fpak ^(Release^)...
-"%CMAKE%" --build build\release --target sandbox player shadercheck audiocheck autosavecheck meshpaintcheck softcheck viewcheck citycheck shotcheck iconcheck skycheck fogcheck pathcheck capturecheck rivercheck gpucheck tracecheck fpak
+echo Baue sandbox + player + shadercheck + audiocheck + autosavecheck + meshpaintcheck + modelcheck + importcheck + softcheck + viewcheck + citycheck + shotcheck + iconcheck + skycheck + fogcheck + pathcheck + capturecheck + rivercheck + roadcheck + sculptcheck + gpucheck + tracecheck + fpak ^(Release^)...
+"%CMAKE%" --build build\release --target sandbox player shadercheck audiocheck autosavecheck meshpaintcheck modelcheck importcheck softcheck viewcheck citycheck shotcheck iconcheck skycheck fogcheck pathcheck capturecheck rivercheck roadcheck sculptcheck gpucheck tracecheck fpak
 if %errorlevel% neq 0 (
     echo [Fehler] Build fehlgeschlagen ^(laeuft die exe noch?^).
     exit /b 1

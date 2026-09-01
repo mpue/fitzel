@@ -201,6 +201,7 @@ void SoftBodySystem::spawn(std::vector<Entity>& entities,
         }
         mc->mesh.verts.assign(static_cast<std::size_t>(count), glm::vec3(0.0f));
         mc->mesh.paint.clear(); // these are not the corners anything was painted on
+        mc->mesh.faceMat.clear(); // nor the faces anything was dressed on
         mc->mesh.faces.clear();
         mc->mesh.faces.reserve(static_cast<std::size_t>(faces) * (twoSided ? 2 : 1));
         for (int f = 0; f < faces; ++f) {

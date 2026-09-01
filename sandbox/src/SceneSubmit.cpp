@@ -71,11 +71,11 @@ void submit(const Context& c, Scratch& scratch) {
         // thing drawn with the same shader.
         m.set("uMeshPaint", 0);
     }
-    // Per-entity copies for the modelled meshes somebody has painted: the
+    // Per-drawn-piece copies for the modelled meshes somebody has painted: the
     // layer textures and the flag are per OBJECT, while scratch.gpuMats is shared
-    // by every entity using that material. Reserved up front so the
-    // references handed to submit() stay valid as it fills.
-    scratch.paintMats.reserve(c.entities.size());
+    // by every entity using that material. A deque holds them, so a mesh dressed
+    // in several materials can add one per piece and the references already
+    // handed to submit() stay where they are (see Scratch).
     scratch.lightMats.reserve(c.entities.size());
     for (const Entity& b : c.entities) {
         if (!b.activeInHierarchy) continue;         // deactivated: hidden
@@ -124,15 +124,16 @@ void submit(const Context& c, Scratch& scratch) {
             const glm::mat4 mm =
                 c.composeModel(b.center, b.rotation, (b.half * 2.0f) / sz);
             const auto* mc = b.components.get<MaterialComponent>();
-            const int   mi = c.document.materialIndex(mc ? mc->material : AssetId{});
+            const int   own = c.document.materialIndex(mc ? mc->material : AssetId{});
             // Painted? Then this object needs a material of its own: its
             // four paint slots, bound on units its own maps do not use
             // (0/1/3), plus the flag that tells the shader vPaint means
             // slot weights here. It cannot go on scratch.gpuMats[mi] -- that one
             // is shared by every entity wearing the same material, and
             // the slots are this object's alone.
-            const Material* useMat = &scratch.gpuMats[mi];
-            if (meshC->mesh.painted()) {
+            const bool painted = meshC->mesh.painted();
+            auto withPaint = [&](int mi) -> const Material* {
+                if (!painted) return &scratch.gpuMats[mi];
                 Material pm = scratch.gpuMats[mi];
                 int filled = 0;
                 for (int k = 0; k < static_cast<int>(meshC->paintSlots.size());
@@ -159,17 +160,32 @@ void submit(const Context& c, Scratch& scratch) {
                 // Nothing to paint with -> draw it as the plain material
                 // rather than as a painted one with every slot switched
                 // off, which is the same picture through more work.
-                if (filled > 0) {
-                    pm.set("uMeshPaint", 1);
-                    scratch.paintMats.push_back(std::move(pm));
-                    useMat = &scratch.paintMats.back();
-                }
+                if (filled == 0) return &scratch.gpuMats[mi];
+                pm.set("uMeshPaint", 1);
+                scratch.paintMats.push_back(std::move(pm));
+                return &scratch.paintMats.back();
+            };
+            // One draw per material the mesh wears: a face dressed in the
+            // Modeling panel is its own piece of geometry, and a mesh nobody has
+            // dressed is the one piece it always was (see editmesh::buildGroups).
+            for (const EditMeshCache::Sub& sub :
+                     c.meshCache.submeshes(b.id, meshC->revision, meshC->mesh)) {
+                // A face's material by GUID -- not through materialIndex(), which
+                // answers 0 for one it does not know. A material deleted from the
+                // library since the face was dressed hands the face back to the
+                // object's own, which is the state it can actually be drawn in.
+                int mi = own;
+                if (sub.material.valid())
+                    for (std::size_t k = 0; k < c.materials.size(); ++k)
+                        if (c.materials[k].assetId == sub.material) {
+                            mi = static_cast<int>(k);
+                            break;
+                        }
+                c.renderer.submit(sub.mesh, *withPaint(mi), mm, true,
+                                isMirror(c.materials[mi]),
+                                c.materials[mi].opacity,
+                                c.materials[mi].alphaMode == AlphaMode::Blend);
             }
-            c.renderer.submit(c.meshCache.mesh(b.id, meshC->revision, meshC->mesh),
-                            *useMat, mm, true,
-                            isMirror(c.materials[mi]),
-                            c.materials[mi].opacity,
-                            c.materials[mi].alphaMode == AlphaMode::Blend);
             continue;
         }
 

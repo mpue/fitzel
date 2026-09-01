@@ -4,7 +4,8 @@
 // (RiverSystem draws it with no model matrix), and everything the fragment stage
 // needs about the channel rides in the attributes every vertex already has:
 //   aUV   = (metres across the channel, metres along it from the source)
-//   aData = (depth fraction, whitewater, half-width in metres, flow multiplier)
+//   aData = (water depth in metres, whitewater, half-width in metres, how far
+//           this water stands clear of the ground -- see Course::air)
 // See RiverGen.hpp for why that packing exists rather than a vertex format of
 // this shader's own.
 

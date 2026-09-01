@@ -56,6 +56,14 @@ public:
         // off roll spin so the assist settles instead of oscillating.
         float uprightAssist  = 6.0f;    // righting torque strength (0 = off)
         float uprightDamp    = 2.5f;    // roll-rate damping for the assist
+        // How far the wheel centres hang below the chassis box at rest (m), i.e.
+        // where the body rides on its springs. The travel either side of it is
+        // derived from it, so the default reproduces the old fixed 0.30/0.60.
+        //
+        // The caller's RENDER offset has to use the same number: the visual model
+        // is placed by assuming the wheels sit this far under the box, so a
+        // mismatch is a car that snaps up or sinks the moment Play starts.
+        float suspensionRest = 0.4f;
     };
     // Spawn a physics car: a dynamic box chassis with four wheels (suspension,
     // engine, steering). One vehicle per world. Forward is the body's +Z; front

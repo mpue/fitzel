@@ -320,9 +320,23 @@ void RiverSystem::cutInto(const Run& r, const Path& p,
             }
 
             if (d > rivergen::reach(p.style, half)) continue;
-            const float surf = glm::mix(c.line[bestK].y, c.line[bestK + 1].y, bestT);
-            const float bed  = glm::mix(c.bed[bestK],    c.bed[bestK + 1],    bestT);
+            float surf = glm::mix(c.line[bestK].y, c.line[bestK + 1].y, bestT);
+            float bed  = glm::mix(c.bed[bestK],    c.bed[bestK + 1],    bestT);
             const float g    = natural(w.x, w.y);
+            // Where the water is flying, the ground under it is not its business.
+            // Over a lip the surface leaves the rock on a parabola (Course::air),
+            // and a section stamped at THAT height would raise the cliff face
+            // metres to meet it -- an earth ramp under the waterfall, which is
+            // both wrong and the sort of wrong that is hard to undo. So a jet
+            // cuts its channel at the ground it is passing over instead: the same
+            // notch the fall had before it was allowed to leave the rock.
+            const float air = (c.air.size() > static_cast<std::size_t>(bestK) + 1)
+                ? glm::mix(c.air[bestK], c.air[bestK + 1], bestT) : 0.0f;
+            if (air > 0.0f) {
+                const float sink = air * std::max(surf - g, 0.0f);
+                surf -= sink;
+                bed  -= sink;
+            }
             const float target = rivergen::sectionHeight(
                 p.kind, p.style, dSigned, half, shift, surf, bed, g);
             const float delta = target - g;

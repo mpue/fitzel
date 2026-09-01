@@ -264,6 +264,17 @@ struct Course {
     std::vector<float>     flow;
     std::vector<float>     white;   // 0..1 whitewater
     std::vector<float>     slope;   // local gradient, m per m (>= 0 downstream)
+    // How far the water at this station stands CLEAR of the ground it came off,
+    // 0 (on the bed) to 1 (in mid air). Only a fall makes it anything else: over
+    // a lip the surface leaves the rock on a parabola and for a few metres it is
+    // genuinely flying (see solve, step 6b).
+    //
+    // Two stages have to know. The carve, because a section stamped under a jet
+    // would RAISE the ground to meet it and build an earth ramp down the cliff.
+    // And the shader, because falling water is not rippled water: it is drawn as
+    // filaments that stretch as they accelerate, and this is what tells it where
+    // to do that.
+    std::vector<float>     air;
 
     // Sample index of each control point, so the editor can mark the stretch a
     // point owns. Already flipped with the course when the flow was reversed.
@@ -311,11 +322,12 @@ inline float reach(const Style& st, float half) { return half + st.bankWidth; }
 // matrix), carrying everything the river shader needs in its vertex attributes.
 //
 // The `paint` attribute -- four floats every mesh vertex already has and which
-// only the terrain otherwise uses -- carries it: x is how deep the water is at
-// that vertex as a fraction of the channel's depth, y is the whitewater factor,
-// z is the distance across the channel (0 mid, 1 at the bank) for the bank foam,
-// w is the local flow multiplier. That is why the river needs no vertex format
-// of its own, and why the fall curtains can be part of the same strip.
+// only the terrain otherwise uses -- carries it: x is the METRES of water under
+// the vertex, y is the whitewater factor, z is the channel's half-width in
+// metres (so the bank foam can sit a fixed distance in from an edge that moves)
+// and w is Course::air, which is what tells the shader it is drawing a falling
+// curtain rather than a surface. That is why the river needs no vertex format of
+// its own, and why the fall curtains can be part of the same strip.
 struct Surface {
     fitzel::MeshData data;
     glm::vec3        lo{0.0f}, hi{0.0f};  // world AABB (culling)

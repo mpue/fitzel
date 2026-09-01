@@ -82,8 +82,27 @@ REM  rivercheck schreibt zwar Bilder, ist aber trotzdem eine Pruefung: die
 REM  Wasserlaeufe schneiden ins Hoehenfeld, und ein kriechendes Bett oder eine
 REM  nicht zurueckgegebene Rinne sieht man an keinem Bild.
 call :run rivercheck "%OUT%" "sandbox\assets\shaders"
+REM  roadcheck misst, dass eine Szene wirklich MEHRERE Strassen haelt: jede
+REM  schneidet ihren Korridor ins gemeinsame Hoehenfeld, jede ist Boden, jede
+REM  steht in der Szenendatei -- und eine geloeschte Strasse wird nicht
+REM  freigegeben, weil die Undo-Historie noch auf sie zeigt.
+call :run roadcheck "sandbox\assets\shaders"
+REM  sculptcheck misst die Zusage des Zieh-Werkzeugs: eine Geste, die
+REM  ueberschiesst und zurueckkommt, hinterlaesst die Hoehe, bei der sie
+REM  aufgehoert hat -- und nicht die Summe aller Zuckungen.
+call :run sculptcheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
+REM  modelcheck misst die beiden Modellier-Werkzeuge, die still danebengehen:
+REM  ein Loop Cut, der die Seite vergisst, von der er misst, schneidet einen
+REM  Zickzack statt einer Linie -- und ein Face-Material ist ein Array neben
+REM  einem anderen, also landet es Schnitte spaeter auf der falschen Flaeche.
+call :run modelcheck
+REM  importcheck misst, ob ein als viele Objekte gebautes Modell auch als
+REM  viele Objekte ankommt. Der Fehler hat kein Symptom: ein Import, der die
+REM  Struktur verliert, zeichnet dasselbe Bild -- er ist nur EIN Objekt statt
+REM  zwanzig, und das merkt man erst beim Anklicken eines Rades.
+call :run importcheck
 call :run softcheck
 call :run shotcheck
 call :run pathcheck "%OUT%"

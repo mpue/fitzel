@@ -453,6 +453,13 @@ public:
     float     wheelRadius  = 0.42f;           // m (all four wheels)
     float     wheelWidth   = 0.30f;
     glm::vec3 chassisHalf{0.9f, 0.35f, 2.0f}; // collision-box half extents
+    // Where the chassis box SITS: how far its underside rides above the wheel
+    // centres (m). Not cosmetic -- this is the suspension rest length, so the
+    // physics springs and the render offset are both derived from it. Raise it
+    // and the body sits higher on its wheels; lower it and it hunkers down.
+    // (Was a hard-coded 0.4 in two places, which is why a car could never be
+    // made to sit right without moving the wheels themselves.)
+    float     chassisY  = 0.4f;
     float     halfTrack = 0.85f;              // half the left-right wheel distance
     float     frontZ    = 1.35f;              // front axle Z (chassis frame, +Z fwd)
     float     rearZ     = -1.35f;             // rear axle Z
