@@ -168,6 +168,33 @@ std::vector<Vertex> makeCylinderYVerts(int seg) {
     return v;
 }
 
+std::vector<Vertex> makePlaneVerts(int cells) {
+    std::vector<Vertex> v;
+    const int  n  = (cells < 1) ? 1 : cells;
+    const float st = 1.0f / static_cast<float>(n);
+    for (int iz = 0; iz < n; ++iz) {
+        for (int ix = 0; ix < n; ++ix) {
+            const float x0 = -0.5f + ix * st, x1 = x0 + st;
+            const float z0 = -0.5f + iz * st, z1 = z0 + st;
+            const glm::vec3 a(x0, 0.0f, z0), b(x1, 0.0f, z0);
+            const glm::vec3 c(x1, 0.0f, z1), d(x0, 0.0f, z1);
+            const glm::vec2 ua(x0 + 0.5f, z0 + 0.5f), ub(x1 + 0.5f, z0 + 0.5f);
+            const glm::vec2 uc(x1 + 0.5f, z1 + 0.5f), ud(x0 + 0.5f, z1 + 0.5f);
+            // Up-facing, then the same quad wound the other way with the normal
+            // flipped -- one mesh that is lit correctly from either side.
+            v.push_back({a, {0, 1, 0}, ua}); v.push_back({d, {0, 1, 0}, ud});
+            v.push_back({c, {0, 1, 0}, uc});
+            v.push_back({a, {0, 1, 0}, ua}); v.push_back({c, {0, 1, 0}, uc});
+            v.push_back({b, {0, 1, 0}, ub});
+            v.push_back({a, {0, -1, 0}, ua}); v.push_back({c, {0, -1, 0}, uc});
+            v.push_back({d, {0, -1, 0}, ud});
+            v.push_back({a, {0, -1, 0}, ua}); v.push_back({b, {0, -1, 0}, ub});
+            v.push_back({c, {0, -1, 0}, uc});
+        }
+    }
+    return v;
+}
+
 std::vector<Vertex> makeSphereVerts(int stacks, int slices) {
     std::vector<Vertex> v;
     const float PI = 3.14159265358979f, TAU = 6.28318530718f, r = 0.5f;

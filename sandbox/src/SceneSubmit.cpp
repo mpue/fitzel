@@ -192,6 +192,7 @@ void submit(const Context& c, Scratch& scratch) {
         const Mesh& mesh = (b.type == EntityType::Ramp)     ? c.ramp
                          : (b.type == EntityType::Cylinder) ? c.cylinder
                          : (b.type == EntityType::Sphere)   ? c.sphere
+                         : (b.type == EntityType::Plane)    ? c.plane
                                                             : c.box;
         const glm::mat4 m = c.composeModel(b.center, b.rotation, b.half * 2.0f);
         if (b.type == EntityType::Light) {

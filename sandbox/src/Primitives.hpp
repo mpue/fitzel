@@ -32,3 +32,14 @@ std::vector<fitzel::Vertex> makeCylinderYVerts(int seg = 20);
 
 // A UV sphere of radius 0.5 centred at the origin. CCW outward winding.
 std::vector<fitzel::Vertex> makeSphereVerts(int stacks = 24, int slices = 32);
+
+// A flat unit quad in the XZ plane: x and z in [-0.5,0.5], y = 0, facing +Y,
+// UV 0..1 across it. Double-sided, like the ramp and the cylinder -- a floor
+// that vanishes when you walk under it is a shape you have to think about, and
+// nothing else in this palette asks that.
+//
+// Subdivided into `cells` x `cells` quads rather than left as two triangles:
+// the lit shader shades per fragment but the WATER level, the fog and the
+// vertex-interpolated terms still read better with a few vertices across a
+// large plane, and a 200 m floor made of two triangles shows it.
+std::vector<fitzel::Vertex> makePlaneVerts(int cells = 8);

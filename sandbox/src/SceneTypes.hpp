@@ -15,14 +15,15 @@
 
 // Editor scene data types, shared across the sandbox translation units.
 
-// A scene entity: a placed, selectable object. Box/Ramp/Cylinder/Sphere are
-// solid, walkable geometry; Model is an imported glTF/GLB; Light is a point
+// A scene entity: a placed, selectable object. Box/Ramp/Cylinder/Sphere/Plane
+// are solid, walkable geometry; Model is an imported glTF/GLB; Light is a point
 // light; Sun is the (singleton) directional light driving the whole sky. Empty
 // is a transform-only node (no geometry) used to group and parent other objects,
 // exactly like an empty GameObject in Unity.
 // New types are appended last so the enum value (== serialized index, palette
 // combo index) of the existing ones is unaffected.
-enum class EntityType { Box, Ramp, Cylinder, Sphere, Light, Sun, Model, Empty };
+enum class EntityType { Box, Ramp, Cylinder, Sphere, Light, Sun, Model, Empty,
+                        Plane };
 
 inline const char* entityTypeName(EntityType t) {
     switch (t) {
@@ -30,12 +31,26 @@ inline const char* entityTypeName(EntityType t) {
         case EntityType::Ramp:     return "Ramp";
         case EntityType::Cylinder: return "Cylinder";
         case EntityType::Sphere:   return "Sphere";
+        case EntityType::Plane:    return "Plane";
         case EntityType::Light:    return "Light";
         case EntityType::Sun:      return "Sun";
         case EntityType::Model:    return "Model";
         case EntityType::Empty:    return "Empty";
     }
     return "Entity";
+}
+
+// Is this one of the built-in solids -- the shapes that have geometry of their
+// own, take a material, and are picked and collided with as themselves?
+//
+// One function rather than the `t == Box || t == Ramp || ...` chain that used to
+// stand in a dozen places: every one of those was a list that a new shape had to
+// be added to by hand, and the ones nobody found kept working -- silently
+// leaving the new shape out of material drops, ground height or wall collision.
+inline bool isSolidPrimitive(EntityType t) {
+    return t == EntityType::Box    || t == EntityType::Ramp ||
+           t == EntityType::Cylinder || t == EntityType::Sphere ||
+           t == EntityType::Plane;
 }
 
 struct Entity {

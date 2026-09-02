@@ -689,6 +689,14 @@ void shape(ImDrawList* dl, EntityType t, ImVec2 c, float r, ImU32 col) {
         case EntityType::Sphere:
             dl->AddCircle(c, r, col, 0, 2.0f);
             break;
+        case EntityType::Plane: {
+            // A quad seen at a shallow angle: the flat thing it is, told apart
+            // from the Box beside it by being flat rather than by a label.
+            const ImVec2 p[4] = {{c.x - r, c.y + r * 0.45f}, {c.x - r * 0.45f, c.y - r * 0.45f},
+                                 {c.x + r, c.y - r * 0.45f}, {c.x + r * 0.45f, c.y + r * 0.45f}};
+            dl->AddPolyline(p, 4, col, ImDrawFlags_Closed, 2.0f);
+            break;
+        }
         case EntityType::Light:
             dl->AddCircleFilled(c, r * 0.45f, col);
             for (int a = 0; a < 8; ++a) {
@@ -2015,6 +2023,7 @@ int main(int argc, char** argv) {
         Mesh rampMesh   = Mesh::create(makeRampVerts());
         Mesh cylMesh    = Mesh::create(makeCylinderYVerts());
         Mesh sphereMesh = Mesh::create(makeSphereVerts());
+        Mesh planeMesh  = Mesh::create(makePlaneVerts());
         // The scene document owns the authored content (entities + materials);
         // `entities`/`materials` below are just aliases so existing code reads
         // unchanged. Every content edit goes through `history` (undo/redo).
@@ -2252,6 +2261,9 @@ int main(int argc, char** argv) {
         // scene with boxes. Esc always steps back out to Select.
         bool      placeMode      = false;
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
+        // Half-thickness a new Plane gets. Not zero: the pick box would be a
+        // sheet nobody can click and the box collider would be degenerate.
+        constexpr float kPlaneHalfY = 0.05f;
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
 
@@ -2600,15 +2612,20 @@ int main(int argc, char** argv) {
             nb.type   = type;
             // Light/Empty are markers with no real geometry: give them a small,
             // fixed half so they still get a clickable pick box in the viewport.
+            // A Plane has no thickness to give, so it gets a thin one: the half
+            // is what the pick box, the gizmo and the collider are all made of,
+            // and a flat quad inside a two-metre cube reads as a bug in every
+            // one of them.
             nb.half   = (type == EntityType::Light) ? glm::vec3(0.3f)
                       : (type == EntityType::Empty) ? glm::vec3(0.5f)
+                      : (type == EntityType::Plane)
+                            ? glm::vec3(entityNewHalf.x, kPlaneHalfY, entityNewHalf.z)
                       : entityNewHalf;
             nb.localCenter = nb.center =
                 glm::vec3(groundPos.x, groundPos.y + nb.half.y, groundPos.z);
             if (type == EntityType::Light)
                 nb.components.items.push_back(std::make_unique<LightComponent>());
-            const bool solid = type == EntityType::Box || type == EntityType::Ramp ||
-                               type == EntityType::Cylinder || type == EntityType::Sphere;
+            const bool solid = isSolidPrimitive(type);
             if (solid && !materials.empty()) {
                 auto mc = std::make_unique<MaterialComponent>();
                 mc->material = materials[glm::clamp(matSel, 0,
@@ -3497,11 +3514,12 @@ int main(int argc, char** argv) {
             nb.type = type;
             nb.half = (type == EntityType::Light) ? glm::vec3(0.3f)
                     : (type == EntityType::Empty) ? glm::vec3(0.5f)
+                    : (type == EntityType::Plane)
+                          ? glm::vec3(entityNewHalf.x, kPlaneHalfY, entityNewHalf.z)
                     : entityNewHalf;
             if (type == EntityType::Light)
                 nb.components.items.push_back(std::make_unique<LightComponent>());
-            const bool solid = type == EntityType::Box || type == EntityType::Ramp ||
-                               type == EntityType::Cylinder || type == EntityType::Sphere;
+            const bool solid = isSolidPrimitive(type);
             if (solid && !materials.empty()) {
                 auto mc = std::make_unique<MaterialComponent>();
                 mc->material = materials[glm::clamp(matSel, 0,
@@ -4996,9 +5014,7 @@ int main(int argc, char** argv) {
                 if (!e.activeInHierarchy) continue;
                 if (ignoreId >= 0 && (e.id == ignoreId || e.parent == ignoreId)) continue;
                 if (isRacerPart(e)) continue;
-                if (e.type != EntityType::Box && e.type != EntityType::Ramp &&
-                    e.type != EntityType::Cylinder && e.type != EntityType::Sphere &&
-                    e.type != EntityType::Model)
+                if (!isSolidPrimitive(e.type) && e.type != EntityType::Model)
                     continue;
                 if (x < e.center.x - e.half.x || x > e.center.x + e.half.x) continue;
                 if (z < e.center.z - e.half.z || z > e.center.z + e.half.z) continue;
@@ -8745,6 +8761,8 @@ int main(int argc, char** argv) {
                     shapeBtn(EntityType::Ramp,     "shapeRamp",     "Ramp");
                     shapeBtn(EntityType::Cylinder, "shapeCylinder", "Cylinder");
                     shapeBtn(EntityType::Sphere,   "shapeSphere",   "Sphere");
+                    shapeBtn(EntityType::Plane,    "shapePlane",
+                             "Plane -- a flat quad, for floors, walls and backdrops");
                     shapeBtn(EntityType::Light,    "shapeLight",    "Light");
                     shapeBtn(EntityType::Empty,    "shapeEmpty",
                              "Empty (transform-only grouping node)");
@@ -9250,10 +9268,7 @@ int main(int argc, char** argv) {
                                 // No face: the nearest solid takes it whole.
                                 float bestT = 1e30f;
                                 for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                    const EntityType t = entities[i].type;
-                                    const bool solid = t == EntityType::Box || t == EntityType::Ramp ||
-                                                       t == EntityType::Cylinder || t == EntityType::Sphere;
-                                    if (!solid) continue;
+                                    if (!isSolidPrimitive(entities[i].type)) continue;
                                     const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
                                                                     entities[i].center + entities[i].half);
                                     if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
@@ -9293,10 +9308,7 @@ int main(int argc, char** argv) {
                             const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
                             int hit = -1; float bestT = 1e30f;
                             for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                const EntityType t = entities[i].type;
-                                const bool solid = t == EntityType::Box || t == EntityType::Ramp ||
-                                                   t == EntityType::Cylinder || t == EntityType::Sphere;
-                                if (!solid) continue;
+                                if (!isSolidPrimitive(entities[i].type)) continue;
                                 const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
                                                                 entities[i].center + entities[i].half);
                                 if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
@@ -11844,6 +11856,7 @@ int main(int argc, char** argv) {
                         case EntityType::Sun:      return IM_COL32(255, 200,  90, 255);
                         case EntityType::Model:    return IM_COL32(150, 200, 255, 255);
                         case EntityType::Sphere:   return IM_COL32(190, 230, 200, 255);
+                        case EntityType::Plane:    return IM_COL32(205, 225, 210, 255);
                         case EntityType::Cylinder: return IM_COL32(200, 210, 235, 255);
                         case EntityType::Empty:    return IM_COL32(170, 175, 185, 255);
                         default:                   return IM_COL32(220, 220, 225, 255);
@@ -11938,6 +11951,8 @@ int main(int argc, char** argv) {
                                     { primChildReq = i; primChildType = EntityType::Cylinder; }
                                 if (ImGui::MenuItem("Sphere"))
                                     { primChildReq = i; primChildType = EntityType::Sphere; }
+                                if (ImGui::MenuItem("Plane"))
+                                    { primChildReq = i; primChildType = EntityType::Plane; }
                                 ImGui::EndMenu();
                             }
                             if (const auto* cc = entities[i].components.get<CameraComponent>()) {
@@ -13921,7 +13936,7 @@ int main(int argc, char** argv) {
             scenesubmit::Scratch submitScratch;
             scenesubmit::submit({entities, materials, document, models, meshCache,
                                  lit, renderer,
-                                 carCube, rampMesh, cylMesh, sphereMesh,
+                                 carCube, rampMesh, cylMesh, sphereMesh, planeMesh,
                                  composeModel, roadWetness, playMode},
                                 submitScratch);
             // One GPU material per library asset -- and the batched geometry

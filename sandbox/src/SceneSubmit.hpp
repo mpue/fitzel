@@ -22,7 +22,7 @@ class Shader;
 
 // Handing the scene's entities to the renderer: one GPU material per library
 // asset, then every visible entity as the geometry it actually is -- an imported
-// model's primitives, a modelled mesh, or one of the four boxes-and-friends.
+// model's primitives, a modelled mesh, or one of the boxes-and-friends.
 //
 // This lived in main() until it was the only copy. That is fine as long as the
 // editor is the only thing that draws a scene, and stops being fine the moment
@@ -62,6 +62,7 @@ struct Context {
     const fitzel::Mesh& ramp;
     const fitzel::Mesh& cylinder;
     const fitzel::Mesh& sphere;
+    const fitzel::Mesh& plane;
 
     ComposeModel composeModel = nullptr;
 

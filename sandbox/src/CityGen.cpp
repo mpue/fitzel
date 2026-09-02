@@ -526,10 +526,12 @@ const fitzel::MeshData& unitMesh(EntityType t) {
     static const fitzel::MeshData cyl    = seq(makeCylinderYVerts(12));
     static const fitzel::MeshData sphere = seq(makeSphereVerts(8, 12));
     static const fitzel::MeshData ramp   = seq(makeRampVerts());
+    static const fitzel::MeshData plane  = seq(makePlaneVerts(1));
     switch (t) {
         case EntityType::Cylinder: return cyl;
         case EntityType::Sphere:   return sphere;
         case EntityType::Ramp:     return ramp;
+        case EntityType::Plane:    return plane;
         default:                   return box;
     }
 }

@@ -10,7 +10,8 @@ namespace {
 using E = EntityType;
 
 constexpr unsigned bit(E t) { return 1u << static_cast<unsigned>(t); }
-const unsigned SOLID    = bit(E::Box) | bit(E::Ramp) | bit(E::Cylinder) | bit(E::Sphere);
+const unsigned SOLID    = bit(E::Box) | bit(E::Ramp) | bit(E::Cylinder) |
+                          bit(E::Sphere) | bit(E::Plane);
 // Everything with an editable world position -- solids, models, lights, and the
 // transform-only Empty grouping node.
 const unsigned MOVABLE  = SOLID | bit(E::Model) | bit(E::Light) | bit(E::Empty);

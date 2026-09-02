@@ -276,6 +276,7 @@ int main(int argc, char** argv) {
     const fitzel::Mesh ramp     = fitzel::Mesh::create(makeRampVerts());
     const fitzel::Mesh cylinder = fitzel::Mesh::create(makeCylinderYVerts());
     const fitzel::Mesh sphere   = fitzel::Mesh::create(makeSphereVerts());
+    const fitzel::Mesh plane    = fitzel::Mesh::create(makePlaneVerts());
     EditMeshCache meshCache;
 
     // --- A camera that finds the scene wherever it was built -----------------
@@ -328,7 +329,7 @@ int main(int argc, char** argv) {
     scenesubmit::Scratch scratch;
     scenesubmit::submit({entities, materials, document, models, meshCache,
                          lit, renderer,
-                         cube, ramp, cylinder, sphere,
+                         cube, ramp, cylinder, sphere, plane,
                          composeModel, /*roadWetness=*/0.0f, /*playMode=*/false},
                         scratch);
     renderer.prepareShadows();
