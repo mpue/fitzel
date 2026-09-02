@@ -60,6 +60,7 @@ uniform float uRipple;       // ripple normal strength
 uniform float uFlowSpeed;    // metres per second the surface pattern travels
 uniform float uFoamWidth;    // metres of foam clinging to each bank
 uniform float uSparkle;      // specular glitter off the ripples
+uniform float uRainRings;    // drop impacts: rain intensity (0 = dry)
 
 // Atmospheric fog (matches lit.frag / water.frag).
 uniform vec3  uFogColor;
@@ -145,6 +146,52 @@ float filaments(vec2 p, float t, float px) {
     vec2 q1 = vec2(p.x * 2.60,        p.y * 0.26 - t * 3.1);
     vec2 q2 = vec2(p.x * 6.30 + 11.0, p.y * 0.52 - t * 4.6);
     return fbm(q1, px * 2.6) * 0.62 + fbm(q2, px * 6.3) * 0.38;
+}
+
+// --- Rain rings ---------------------------------------------------------------
+// Drops landing on the water. The same trick lit.frag plays on wet tarmac, and
+// deliberately the same numbers: a stream running across a wet road has to be
+// taking the same rain as the road, or the two surfaces read as two weathers.
+// World space is cut into cells, each cell drips once per cycle staggered by its
+// own hash, and the wave's radial slope goes straight into the normal rather than
+// into a height field somebody then has to difference. Nothing is stored between
+// frames -- a drop's whole life is a function of the clock and its cell.
+//
+// The one thing it does that the road's version does not is fade itself out by
+// pixel footprint. A river is looked at from three hundred metres as often as
+// from three, and a half-metre pattern sampled by a pixel wider than that is
+// salt-and-pepper that crawls -- the rule every other noise in this shader obeys.
+// `px` is how many metres of world one pixel covers here.
+vec3 rainRings(vec3 N, vec2 wp, float amount, float px, float time) {
+    const float kCell = 0.5;    // metres between drops
+    const float kFreq = 34.0;   // ring wavelength
+    const float kRate = 1.9;    // drops per second per cell
+    const float kTilt = 0.5;    // tilt at full strength
+    amount *= 1.0 - smoothstep(kCell * 0.3, kCell * 1.1, px);
+    if (amount <= 0.002) return N;  // dry, or too far off to resolve
+    vec2 cell = floor(wp / kCell);
+    vec2 tilt = vec2(0.0);
+    // 3x3 neighbourhood: a ring reaches half a cell, so a drop can never expand in
+    // from further out than its neighbours -- no popping at the cell borders.
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2  c     = cell + vec2(x, y);
+            float phase = time * kRate + hash21(c);     // its own schedule
+            float age   = fract(phase);
+            float cyc   = mod(floor(phase), 89.0);      // wrapped: see lit.frag
+            // A new landing spot every drop, not one spot per cell for ever.
+            vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
+                                  hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
+            vec2  d   = wp - at;
+            float r   = length(d);
+            float f   = age * kCell * 0.5;              // the expanding front
+            if (r > f) continue;                         // ahead of it: still flat
+            float w = cos((r - f) * kFreq) * exp(-4.0 * r) * (1.0 - age);
+            tilt += (d / max(r, 1e-4)) * w;
+        }
+    }
+    N.xz += tilt * amount * kTilt;
+    return normalize(N);
 }
 
 void main() {
@@ -234,6 +281,20 @@ void main() {
     float gust = fbm(vec2(across * 0.05, along * 0.045 - t * 0.03), px * 0.05);
     float amp  = uRipple * (1.0 + 3.0 * white) * mix(0.45 + 1.1 * gust, 2.6, falling);
     vec3  N = normalize(Ng - (B * (hx - h) + T * (hy - h)) * amp / e);
+
+    // Rain striking the surface. Nothing to gate it on but the rain itself --
+    // a river is wet by definition, so there is no wetness mask here the way
+    // there is on tarmac -- except how much of this water is still a SURFACE.
+    // A curtain in mid air has no plane for a ring to spread on, and the drops
+    // joining it are lost in the filaments anyway, so the rings fade out with
+    // the same `falling` that fades the ripples out.
+    //
+    // Metres of world per pixel, from the derivatives the frame above already
+    // took. The channel's own `px` is no use for this: `along` is a TIME, not a
+    // distance, so it says nothing about how big a drop ring is on screen.
+    float wpx = max(length(dp1.xz), length(dp2.xz));
+    if (uRainRings > 0.002)
+        N = rainRings(N, vWorldPos.xz, uRainRings * (1.0 - falling), wpx, uTime);
 
     vec3 V = normalize(uCameraPos - vWorldPos);
     vec3 L = normalize(uLightDir);

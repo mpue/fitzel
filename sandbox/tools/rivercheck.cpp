@@ -333,6 +333,13 @@ int main(int argc, char** argv) {
     const fs::path outDir = (argc > 1) ? fs::path(argv[1]) : fs::path(".");
     const fs::path shDir  = (argc > 2) ? fs::path(argv[2])
                                        : fs::path("assets/shaders");
+    // How hard it is raining in the pictures. Off by default -- every existing
+    // shot is a fair-weather shot and has to stay one -- but the rings on running
+    // water have nowhere else to be looked at: they are a normal perturbation,
+    // so they show up in the reflection or they show up nowhere.
+    float rainRings = 0.0f;
+    for (int i = 1; i + 1 < argc; ++i)
+        if (std::string(argv[i]) == "--rain") rainRings = std::strtof(argv[i + 1], nullptr);
     std::error_code ec;
     fs::create_directories(outDir, ec);
 
@@ -1306,6 +1313,7 @@ void main(){
                 f1("uFlowSpeed", st.flowSpeed);
                 f1("uFoamWidth", st.foamWidth);
                 f1("uSparkle", st.sparkle);
+                f1("uRainRings", rainRings);
                 run.mesh.draw();
             }
             glDepthMask(GL_TRUE);

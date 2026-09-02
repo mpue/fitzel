@@ -12,6 +12,7 @@ uniform sampler2D uRefractionDepth; // scene depth behind the water
 uniform float uNear;
 uniform float uFar;
 uniform float uFoamWidth; // world-ish depth over which shoreline foam fades
+uniform float uRainRings; // drop impacts: rain intensity (0 = dry)
 
 uniform vec3  uCameraPos;
 uniform vec3  uLightDir;     // towards the light
@@ -86,6 +87,42 @@ vec3 waterNormal(vec2 p) {
     return normalize(vec3(h - hx, e * 2.0, h - hz));
 }
 
+// --- Rain rings ---------------------------------------------------------------
+// Drops landing on the lake -- the same cells, rate and wavelength river.frag and
+// lit.frag use, so one shower dimples the road, the brook and the water it runs
+// into at the same size and the same rate. See river.frag for what each term is
+// doing; `px` is again metres of world per pixel, and the whole thing fades out
+// once a pixel is wider than the pattern, which on a plane reaching to the
+// horizon is most of the screen.
+vec3 rainRings(vec3 N, vec2 wp, float amount, float px, float time) {
+    const float kCell = 0.5;
+    const float kFreq = 34.0;
+    const float kRate = 1.9;
+    const float kTilt = 0.5;
+    amount *= 1.0 - smoothstep(kCell * 0.3, kCell * 1.1, px);
+    if (amount <= 0.002) return N;
+    vec2 cell = floor(wp / kCell);
+    vec2 tilt = vec2(0.0);
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec2  c     = cell + vec2(x, y);
+            float phase = time * kRate + hash21(c);
+            float age   = fract(phase);
+            float cyc   = mod(floor(phase), 89.0);
+            vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
+                                  hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
+            vec2  d   = wp - at;
+            float r   = length(d);
+            float f   = age * kCell * 0.5;
+            if (r > f) continue;
+            float w = cos((r - f) * kFreq) * exp(-4.0 * r) * (1.0 - age);
+            tilt += (d / max(r, 1e-4)) * w;
+        }
+    }
+    N.xz += tilt * amount * kTilt;
+    return normalize(N);
+}
+
 void main() {
     // Projective UVs from clip-space position. The reflection is rendered with a
     // mirror matrix (view * scale(1,-1,1)), so the texture is already correctly
@@ -96,6 +133,14 @@ void main() {
     // is weighted up a touch so the reflection breaks rather than mirroring.
     vec3  ripple = waterNormal(vWorldPos.xz);
     vec3  N = normalize(vWaveNormal + vec3(ripple.x, 0.0, ripple.z) * 1.4);
+    // Rain striking the lake. Before the Fresnel and the refraction offset below,
+    // because a drop ring is only visible in what it does to those -- the surface
+    // never moves, so if the rings do not bend the reflection they do nothing.
+    if (uRainRings > 0.002) {
+        vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
+        N = rainRings(N, vWorldPos.xz, uRainRings,
+                      max(length(dpx.xz), length(dpy.xz)), uTime);
+    }
     vec3  V = normalize(uCameraPos - vWorldPos);
 
     // Water column thickness = scene depth behind the water minus the surface

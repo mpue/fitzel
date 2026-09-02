@@ -637,9 +637,21 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float time) {
     // from further out than its neighbours -- no popping at the cell borders.
     for (int y = -1; y <= 1; ++y) {
         for (int x = -1; x <= 1; ++x) {
-            vec2  c   = cell + vec2(x, y);
-            float age = fract(time * kRate + hash21(c)); // its own schedule
-            vec2  at  = (c + vec2(hash21(c + 7.1), hash21(c + 3.7))) * kCell;
+            vec2  c     = cell + vec2(x, y);
+            float phase = time * kRate + hash21(c);     // its own schedule
+            float age   = fract(phase);
+            // Which drop of that schedule this is, wrapped to keep the hash's
+            // input small: an unwrapped counter is in the thousands after ten
+            // minutes of uptime, and fract() of a product that large has only a
+            // handful of distinct values left -- the scatter would collapse back
+            // into a pattern exactly when nobody is watching for it any more.
+            float cyc   = mod(floor(phase), 89.0);
+            // Where it lands. The cycle has to be in here: hashing the cell alone
+            // pins every cell's drop to the same square centimetre for ever, so
+            // the rings blink on and off in a fixed grid instead of falling --
+            // which is the one thing rain must never look like.
+            vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
+                                  hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
             vec2  d   = wp - at;
             float r   = length(d);
             float f   = age * kCell * 0.5;               // the expanding front

@@ -13628,6 +13628,11 @@ int main(int argc, char** argv) {
                 water.setFloat("uNear", camera.nearPlane());
                 water.setFloat("uFar", camera.farPlane());
                 water.setFloat("uFoamWidth", foamWidth);
+                // Rain dimpling the lake. Straight off the rain intensity, with
+                // none of the road's wetness gate: open water is wet whether or
+                // not it has been raining, so the rings start and stop with the
+                // drops rather than lagging a soak behind them.
+                water.setFloat("uRainRings", rainIntensity);
                 reflectRT.bindColorTexture(0);
                 refractRT.bindColorTexture(1);
                 refractRT.bindDepthTexture(2);
@@ -13676,6 +13681,11 @@ int main(int argc, char** argv) {
                 renderer.bindEnvProbe(Renderer::kEnvProbeUnit);
                 river.setInt("uEnvProbe", Renderer::kEnvProbeUnit);
                 river.setFloat("uEnvMaxLod", renderer.envProbeMaxLod());
+                // Rain on running water. Same value the lake gets and for the
+                // same reason -- a brook is already wet, so there is nothing to
+                // soak first. The shader decides where it can land; water in mid
+                // air off a fall has no surface for a ring.
+                river.setFloat("uRainRings", rainIntensity);
                 for (std::size_t i = 0; i < rivers.runs().size() &&
                                         i < rivers.paths.size(); ++i) {
                     if (!rivers.paths[i].enabled) continue;
