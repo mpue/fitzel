@@ -82,6 +82,7 @@
 #include "Autosave.hpp"
 #include "GridRenderer.hpp"
 #include "ModelingPanel.hpp"
+#include "UvPanel.hpp"
 #include "ViewportNav.hpp"
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
@@ -2442,6 +2443,7 @@ int main(int argc, char** argv) {
         bool showCursor      = false; // 3D cursor panel
         bool showModeling    = false; // face-modelling panel
         bool showMeshPaint   = false; // painting layers onto a modelled mesh
+        bool showUv          = false; // where a face's texture sits on it
         // Which face of the selected mesh the modelling operations act on. Reset
         // whenever the selection moves to another object: a face index means
         // nothing on a different mesh.
@@ -6020,6 +6022,7 @@ int main(int argc, char** argv) {
             // sweep -- Grid is the construction grid itself, not a panel.
             {"Objects",  "Modeling",           nullptr, &showModeling, false},
             {"Objects",  "Mesh paint",         nullptr, &showMeshPaint},
+            {"Objects",  "UV",                 nullptr, &showUv},
             {"Objects",  nullptr,              nullptr, nullptr},
             {"Objects",  "3D cursor",          nullptr, &showCursor},
             {"Objects",  "Grid",               nullptr, &showGrid, false},
@@ -11716,6 +11719,31 @@ int main(int argc, char** argv) {
                     },
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                     mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
+                });
+            }
+
+            // Where the selected face's texture sits. Shares the Modeling
+            // panel's face selection and its one-undo-step edit callback: this
+            // is the same mesh being shaped, looked at from the texture's side.
+            if (showUv) {
+                MeshComponent* mc = selectedMesh();
+                const bool haveSel = cursorHaveSel();
+                const int  selId   = haveSel ? entities[entitySel].id : -1;
+                if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
+                if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
+                    meshFaceSel = -1;
+                // The material the OBJECT wears: the panel draws the texture the
+                // face is actually seen through, and a face wearing none of its
+                // own is seen through this one.
+                AssetId objMat;
+                if (haveSel)
+                    if (const auto* mcp = entities[entitySel].components.get<MaterialComponent>())
+                        objMat = mcp->material;
+                uvui::drawPanel({
+                    showUv, mc, meshFaceSel, materials, objMat, haveSel,
+                    haveSel && !mc && entities[entitySel].type == EntityType::Box,
+                    [&]{ convertToMesh(); }, applyMeshEdit,
+                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                 });
             }
 

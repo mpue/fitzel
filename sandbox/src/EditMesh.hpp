@@ -77,6 +77,51 @@ struct EditMesh {
     // drawn in several pieces at all -- and whether the scene file carries them.
     bool dressed() const;
 
+    // How one face's texture sits on it. Parallel to `faces`, the same bargain
+    // as faceMat and paint -- and empty on every mesh nobody has opened the UV
+    // panel on, which is exactly the projection this mesh had before any of this
+    // existed. Every default here is chosen so that the derived UVs come out
+    // bit-identical to the old planar projection: an unedited face must not
+    // shift by a texel because the field it never used gained a struct.
+    struct FaceUV {
+        // Which way the texture is projected. 0 lets the face decide (the world
+        // axis it faces most), 1/2/3 force X/Y/Z. Forcing it is how four walls
+        // of a tower get ONE continuous brick course instead of four separately
+        // sensible ones, and it is the only setting here you cannot get to by
+        // nudging numbers.
+        int       axis = 0;
+        // Metres one tile of the texture covers, per UV axis. 1 is the historic
+        // "one texture per metre" -- the unit the projection was always in.
+        glm::vec2 size{1.0f, 1.0f};
+        // Degrees, turned about the FACE's own centre rather than the world
+        // origin: a texture rotated about a point ten metres away does not
+        // rotate, it swings off the face.
+        float     rotate = 0.0f;
+        glm::vec2 offset{0.0f};    // in tiles, added last
+        bool      flipU = false, flipV = false;
+
+        bool isDefault() const {
+            return axis == 0 && size.x == 1.0f && size.y == 1.0f &&
+                   rotate == 0.0f && offset.x == 0.0f && offset.y == 0.0f &&
+                   !flipU && !flipV;
+        }
+    };
+    std::vector<FaceUV> faceUV;
+
+    // The placement of face `f`, the default where the mesh carries none. Read
+    // through this rather than indexing `faceUV`, which is empty on a mesh whose
+    // texture nobody has moved.
+    FaceUV faceUv(int f) const {
+        return (f >= 0 && f < static_cast<int>(faceUV.size())) ? faceUV[f]
+                                                               : FaceUV{};
+    }
+    // Bring `faceUV` up to one entry per face. Cheap and idempotent.
+    void syncFaceUv() { faceUV.resize(faces.size(), FaceUV{}); }
+    void setFaceUv(int f, const FaceUV& u);
+    // Has anyone moved a texture on this mesh? Decides whether the scene file
+    // carries the placements at all.
+    bool unwrapped() const;
+
     bool      validFace(int f) const;
     glm::vec3 faceCenter(int f) const;
     // Newell's normal: correct for any planar polygon and stable for the slivers
@@ -166,9 +211,25 @@ struct Group {
     fitzel::MeshData data;
 };
 
+// The texture coordinate of every corner of `face`, in the face's own loop
+// order -- the same numbers buildGroups uploads.
+//
+// One function rather than two, because the UV panel DRAWS these and the
+// renderer TEXTURES with them: two implementations of the same projection agree
+// until the day one of them is fixed, and then the picture you are editing is
+// not the picture you are looking at.
+std::vector<glm::vec2> faceUvs(const EditMesh& m, int face);
+
+// The same, with a placement the mesh does not carry yet. This is what lets the
+// UV panel show a size or a rotation while it is still being chosen: it draws
+// the result of the number under the cursor, and commits one undo step when the
+// hand comes off the slider.
+std::vector<glm::vec2> faceUvs(const EditMesh& m, int face,
+                               const EditMesh::FaceUV& placement);
+
 // Triangulate for the GPU, split by face material: flat-shaded (one normal per
-// face, so an extruded box has crisp edges instead of a smoothed blob) with a
-// planar UV projection along the face's dominant axis.
+// face, so an extruded box has crisp edges instead of a smoothed blob) with the
+// per-face planar projection faceUvs() derives.
 //
 // A mesh nobody has dressed comes back as exactly one group with an invalid
 // material, which is the same single draw call it always was. The group wearing

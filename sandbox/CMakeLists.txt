@@ -122,6 +122,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/MaterialsPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingPanel.cpp
+    src/UvPanel.cpp
     src/ModelsPanel.cpp
     src/PrefabsPanel.cpp
     src/AssetDrop.cpp

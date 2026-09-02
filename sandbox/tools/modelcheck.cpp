@@ -306,13 +306,136 @@ void checkCarry() {
           "...and every face wearing what it wore");
 }
 
+// --- 4. Where each face's texture sits ---------------------------------------
+//
+// EditMesh::faceUV is the same hazard as faceMat one array further over, with
+// one difference that makes it worse: a texture placement that slipped onto the
+// wrong face still LOOKS like a texture. There is no hole and no missing brick,
+// just a course running the wrong way on one wall, which reads as something the
+// author did.
+//
+// And the first thing to prove is not that the new field works but that it
+// changes nothing until asked: every mesh in every existing scene carries no
+// placements at all, and has to come out of faceUvs() with the exact numbers the
+// old planar projection gave it.
+
+void checkFaceUv() {
+    std::printf("\nTexture placement per face\n");
+
+    EditMesh m = EditMesh::box(glm::vec3(0.5f));
+    check(m.faceUV.empty(), "a fresh mesh carries no placements");
+    check(!m.unwrapped(), "...and says so");
+
+    // The default has to reproduce the projection this mesh was authored with:
+    // metres in the plane the face faces. A face of a unit box is one metre
+    // across, so it spans exactly one tile.
+    const std::vector<glm::vec2> d = editmesh::faceUvs(m, 0);
+    check(d.size() == m.faces[0].size(), "every corner gets one");
+    glm::vec2 lo = d[0], hi = d[0];
+    for (const glm::vec2& q : d) { lo = glm::min(lo, q); hi = glm::max(hi, q); }
+    check(std::abs((hi.x - lo.x) - 1.0f) < 1e-4f &&
+          std::abs((hi.y - lo.y) - 1.0f) < 1e-4f,
+          "a one-metre face spans one tile at the default size");
+
+    // Size is metres per tile, so doubling it halves the span.
+    EditMesh::FaceUV u;
+    u.size = glm::vec2(2.0f);
+    const std::vector<glm::vec2> h = editmesh::faceUvs(m, 0, u);
+    glm::vec2 hlo = h[0], hhi = h[0];
+    for (const glm::vec2& q : h) { hlo = glm::min(hlo, q); hhi = glm::max(hhi, q); }
+    check(std::abs((hhi.x - hlo.x) - 0.5f) < 1e-4f,
+          "a two-metre tile puts half a tile on it");
+
+    // A quarter turn about the face's own centre must not move the face off its
+    // texture -- that is the whole reason the rotation is anchored there.
+    EditMesh::FaceUV r;
+    r.rotate = 90.0f;
+    const std::vector<glm::vec2> t = editmesh::faceUvs(m, 0, r);
+    glm::vec2 dc(0.0f), tc(0.0f);
+    for (const glm::vec2& q : d) dc += q;
+    for (const glm::vec2& q : t) tc += q;
+    dc /= static_cast<float>(d.size());
+    tc /= static_cast<float>(t.size());
+    check(glm::length(dc - tc) < 1e-4f, "a rotation turns the face in place");
+
+    // Every operation that grows the mesh has to carry the placement, or the new
+    // faces start their texture over while their neighbours keep theirs.
+    EditMesh g = EditMesh::box(glm::vec3(0.5f));
+    EditMesh::FaceUV brick;
+    brick.size   = glm::vec2(0.25f);
+    brick.rotate = 30.0f;
+    g.setFaceUv(0, brick);
+    editmesh::extrude(g, 0, 0.5f);
+    check(g.faceUV.size() == g.faces.size(), "extrude keeps the arrays in step");
+    int carried = 0;
+    for (int f = 0; f < static_cast<int>(g.faces.size()); ++f)
+        if (g.faceUv(f).size.x == 0.25f && g.faceUv(f).rotate == 30.0f) ++carried;
+    check(carried == 5, "the cap and its four walls inherit the placement");
+
+    EditMesh c = EditMesh::box(glm::vec3(0.5f));
+    c.setFaceUv(0, brick);
+    editmesh::loopCut(c, 0, 0, 0.3f);
+    check(c.faceUV.size() == c.faces.size(), "a loop cut keeps them in step");
+    check(c.faceUv(0).rotate == 30.0f, "the near half keeps the placement");
+    // Two faces carry it and no more: the cut splits the whole band, so the far
+    // half is somewhere among the appended faces rather than at the end of them,
+    // and what matters is that exactly the two halves of the placed face have it
+    // and none of the band's other new halves picked it up.
+    int halves = 0;
+    for (int f = 0; f < static_cast<int>(c.faces.size()); ++f)
+        if (c.faceUv(f).rotate == 30.0f) ++halves;
+    check(halves == 2, "...and so does the far half, and nothing else does");
+
+    EditMesh s2 = EditMesh::box(glm::vec3(0.5f));
+    s2.setFaceUv(3, brick);
+    const EditMesh::FaceUV kept = s2.faceUv(3);
+    editmesh::deleteFace(s2, 1);
+    check(s2.faceUV.size() == s2.faces.size(), "delete keeps them in step");
+    int placedFaces = 0;
+    for (int f = 0; f < static_cast<int>(s2.faces.size()); ++f)
+        if (!s2.faceUv(f).isDefault()) ++placedFaces;
+    check(placedFaces == 1, "exactly one face still carries a placement");
+    check(s2.faceUv(2).size == kept.size && s2.faceUv(2).rotate == kept.rotate,
+          "...and it is the one that had it, renumbered with the faces");
+
+    // Through the scene file.
+    MeshComponent plain;
+    nlohmann::json jp;
+    plain.save(jp);
+    check(!jp.contains("faceUVs"), "an unplaced mesh writes no placements at all");
+
+    MeshComponent placedMesh;
+    placedMesh.mesh.setFaceUv(2, brick);
+    EditMesh::FaceUV axis;
+    axis.axis   = 2;
+    axis.flipV  = true;
+    axis.offset = glm::vec2(0.25f, -0.5f);
+    placedMesh.mesh.setFaceUv(4, axis);
+    nlohmann::json jd;
+    placedMesh.save(jd);
+    check(jd.contains("faceUVs"), "a placed one writes them");
+
+    MeshComponent back;
+    back.load(jd);
+    check(back.mesh.faceUv(2).size == brick.size &&
+          back.mesh.faceUv(2).rotate == brick.rotate,
+          "size and rotation come back on the same face");
+    check(back.mesh.faceUv(4).axis == 2 && back.mesh.faceUv(4).flipV &&
+          !back.mesh.faceUv(4).flipU &&
+          std::abs(back.mesh.faceUv(4).offset.y + 0.5f) < 1e-4f,
+          "so do the axis, the mirror and the offset");
+    check(back.mesh.faceUv(0).isDefault() && back.mesh.faceUv(5).isDefault(),
+          "and the faces nobody placed are still at the default");
+}
+
 } // namespace
 
 int main() {
-    std::printf("modelcheck -- loop cut and per-face materials\n");
+    std::printf("modelcheck -- loop cut, per-face materials and texture placement\n");
     checkLoopCut();
     checkFaceMaterials();
     checkCarry();
+    checkFaceUv();
     std::printf("\n%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

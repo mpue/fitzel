@@ -1491,6 +1491,23 @@ void MeshComponent::save(nlohmann::json& j) const {
         }
         j["faceMats"] = ms.str();
     }
+    // Where a face's texture sits, only for the faces somebody has moved:
+    // "face axis sizeU sizeV rot offU offV flags", sparse like the materials
+    // above. A mesh nobody has opened the UV panel on writes nothing, and an
+    // older scene that says nothing loads as every face at the default -- which
+    // is the projection it was authored against.
+    if (mesh.unwrapped()) {
+        std::ostringstream us;
+        us.precision(6);
+        for (std::size_t i = 0; i < mesh.faceUV.size(); ++i) {
+            const EditMesh::FaceUV& u = mesh.faceUV[i];
+            if (u.isDefault()) continue;
+            us << i << ' ' << u.axis << ' ' << u.size.x << ' ' << u.size.y << ' '
+               << u.rotate << ' ' << u.offset.x << ' ' << u.offset.y << ' '
+               << ((u.flipU ? 1 : 0) | (u.flipV ? 2 : 0)) << ' ';
+        }
+        j["faceUVs"] = us.str();
+    }
     // Texture paint, only where there is any: "corner w0 w1 w2 w3", sparse. Most
     // meshes are never painted and most corners of a painted one are not, so a
     // dense array would put four numbers per corner into every scene file to say
@@ -1526,6 +1543,7 @@ void MeshComponent::load(const nlohmann::json& j) {
     mesh.verts.clear();
     mesh.faces.clear();
     mesh.faceMat.clear();
+    mesh.faceUV.clear();
     if (j.contains("verts") && j["verts"].is_string()) {
         std::istringstream vs(j["verts"].get<std::string>());
         glm::vec3 v;
@@ -1560,6 +1578,20 @@ void MeshComponent::load(const nlohmann::json& j) {
         while (ms >> f >> guid) {
             if (f >= mesh.faceMat.size()) break;  // corrupt stream: stop, don't guess
             mesh.faceMat[f] = fitzel::AssetId::fromString(guid);
+        }
+    }
+    mesh.syncFaceUv();
+    if (j.contains("faceUVs") && j["faceUVs"].is_string()) {
+        std::istringstream us(j["faceUVs"].get<std::string>());
+        std::size_t       f = 0;
+        EditMesh::FaceUV  u;
+        int               flags = 0;
+        while (us >> f >> u.axis >> u.size.x >> u.size.y >> u.rotate >>
+                     u.offset.x >> u.offset.y >> flags) {
+            if (f >= mesh.faceUV.size()) break;  // corrupt stream: stop, don't guess
+            u.flipU = (flags & 1) != 0;
+            u.flipV = (flags & 2) != 0;
+            mesh.faceUV[f] = u;
         }
     }
     mesh.syncPaint();

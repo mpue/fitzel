@@ -22,14 +22,25 @@ int addVert(EditMesh& m, const glm::vec3& p, const glm::vec4& w) {
     return static_cast<int>(m.verts.size()) - 1;
 }
 
-// Add a face wearing `mat`, the same bargain as addVert one array over: `faceMat`
-// runs parallel to `faces`, so nothing appends to one of them alone. A face grown
-// out of another one inherits its material, which is what makes extruding a brick
-// wall produce brick sides rather than four bare stubs.
-int addFace(EditMesh& m, std::vector<int> loop, const fitzel::AssetId& mat) {
+// Add a face grown out of `src`, the same bargain as addVert two arrays over:
+// `faceMat` and `faceUV` both run parallel to `faces`, so nothing appends to one
+// of them alone. It takes the SOURCE FACE rather than the values, because that
+// is the only signature you cannot call while remembering one array and
+// forgetting the other -- and a face grown out of another inherits both, which
+// is what makes extruding a brick wall produce brick sides at the same brick
+// size rather than four bare stubs with the texture starting over on each.
+//
+// Reading src's values before the push_backs is deliberate: they come out of the
+// very vectors about to grow, and a reference into one of those does not survive
+// the reallocation.
+int addFaceLike(EditMesh& m, std::vector<int> loop, int src) {
+    const fitzel::AssetId  mat = m.faceMaterial(src);
+    const EditMesh::FaceUV uv  = m.faceUv(src);
     m.syncFaceMat();
+    m.syncFaceUv();
     m.faces.push_back(std::move(loop));
     m.faceMat.push_back(mat);
+    m.faceUV.push_back(uv);
     return static_cast<int>(m.faces.size()) - 1;
 }
 
@@ -173,6 +184,18 @@ bool EditMesh::painted() const {
     return false;
 }
 
+void EditMesh::setFaceUv(int f, const FaceUV& u) {
+    if (f < 0 || f >= static_cast<int>(faces.size())) return;
+    syncFaceUv();
+    faceUV[f] = u;
+}
+
+bool EditMesh::unwrapped() const {
+    for (const FaceUV& u : faceUV)
+        if (!u.isDefault()) return true;
+    return false;
+}
+
 void EditMesh::setFaceMaterial(int f, const fitzel::AssetId& id) {
     if (f < 0 || f >= static_cast<int>(faces.size())) return;
     syncFaceMat();
@@ -259,12 +282,11 @@ int extrude(EditMesh& m, int face, float dist) {
     // is the side you look at when you sink a window into a wall. Flipping the
     // order for a negative distance (as this once did) turns the recess
     // inside out and its walls vanish.
-    const fitzel::AssetId mat = m.faceMaterial(face);
     for (std::size_t i = 0; i < loop.size(); ++i) {
         const std::size_t j = (i + 1) % loop.size();
         // The walls wear what the face wore: extruding a brick panel grows brick
         // sides, not four faces in the object's own material.
-        addFace(m, {loop[i], loop[j], cap[j], cap[i]}, mat);
+        addFaceLike(m, {loop[i], loop[j], cap[j], cap[i]}, face);
     }
     m.faces[face] = cap;   // the cap takes the selection with it
     return face;
@@ -326,11 +348,10 @@ int subdivide(EditMesh& m, int face) {
     }
     addVert(m, m.faceCenter(face), pc);
     const int e0 = base, e1 = base + 1, e2 = base + 2, e3 = base + 3, ct = base + 4;
-    const fitzel::AssetId mat = m.faceMaterial(face);
     m.faces[face] = {q[0], e0, ct, e3};
-    addFace(m, {e0, q[1], e1, ct}, mat);
-    addFace(m, {ct, e1, q[2], e2}, mat);
-    addFace(m, {e3, ct, e2, q[3]}, mat);
+    addFaceLike(m, {e0, q[1], e1, ct}, face);
+    addFaceLike(m, {ct, e1, q[2], e2}, face);
+    addFaceLike(m, {e3, ct, e2, q[3]}, face);
     return face;
 }
 
@@ -380,19 +401,21 @@ int loopCut(EditMesh& m, int face, int dir, float t) {
         const int  a   = fwd ? cutOn(w0, w1) : cutOn(w1, w0);
         const int  b   = fwd ? cutOn(w3, w2) : cutOn(w2, w3);
 
-        const fitzel::AssetId mat = m.faceMaterial(st.face);
         m.faces[st.face] = {w0, a, b, w3};
-        addFace(m, {a, w1, w2, b}, mat);
+        addFaceLike(m, {a, w1, w2, b}, st.face);
     }
     return face;
 }
 
 int deleteFace(EditMesh& m, int face) {
     if (face < 0 || face >= static_cast<int>(m.faces.size())) return -1;
-    // The face's material goes with it, or every face after this one would
-    // inherit its neighbour's -- the parallel-array failure, one array over.
+    // The face's material and texture placement go with it, or every face after
+    // this one would inherit its neighbour's -- the parallel-array failure, one
+    // array over, twice.
     m.syncFaceMat();
+    m.syncFaceUv();
     m.faceMat.erase(m.faceMat.begin() + face);
+    m.faceUV.erase(m.faceUV.begin() + face);
     m.faces.erase(m.faces.begin() + face);
 
     // Drop the vertices no face uses any more and renumber, or a long editing
@@ -447,6 +470,58 @@ glm::vec3 recenter(EditMesh& m) {
     return shift;
 }
 
+std::vector<glm::vec2> faceUvs(const EditMesh& m, int face) {
+    return faceUvs(m, face, m.faceUv(face));
+}
+
+std::vector<glm::vec2> faceUvs(const EditMesh& m, int face,
+                               const EditMesh::FaceUV& u) {
+    std::vector<glm::vec2> out;
+    if (!m.validFace(face)) return out;
+    const std::vector<int>& fv = m.faces[face];
+
+    // The direction the texture is projected ALONG. By default the face's own
+    // normal, which is the projection that never collapses; a named axis is the
+    // user saying "these faces belong to one surface, texture them as one".
+    glm::vec3 d = (u.axis == 1)   ? glm::vec3(1, 0, 0)
+                  : (u.axis == 2) ? glm::vec3(0, 1, 0)
+                  : (u.axis == 3) ? glm::vec3(0, 0, 1)
+                                  : m.faceNormal(face);
+    if (glm::dot(d, d) < 1e-12f) d = glm::vec3(0, 1, 0);   // a degenerate face
+    d = glm::normalize(d);
+    const glm::vec3 ad = glm::abs(d);
+    const glm::vec3 up = (ad.y > ad.x && ad.y > ad.z) ? glm::vec3(0, 0, 1)
+                                                      : glm::vec3(0, 1, 0);
+    const glm::vec3 tx = glm::normalize(glm::cross(up, d));
+    const glm::vec3 ty = glm::cross(d, tx);
+
+    // Rotation, flip and size act about the face's own centre in that plane. Not
+    // about the projection's origin: a face twenty metres from it would see a
+    // one-degree turn as a slide of half a metre, which is not what turning a
+    // texture means to anyone.
+    const glm::vec3 c3 = m.faceCenter(face);
+    const glm::vec2 c(glm::dot(c3, tx), glm::dot(c3, ty));
+    const float a  = glm::radians(u.rotate);
+    const float ca = std::cos(a), sa = std::sin(a);
+    // A size of zero is a division by zero and a mesh full of NaN UVs, which
+    // draws as nothing and looks like the geometry broke.
+    const glm::vec2 sz(std::abs(u.size.x) < 1e-4f ? 1e-4f : u.size.x,
+                       std::abs(u.size.y) < 1e-4f ? 1e-4f : u.size.y);
+
+    out.reserve(fv.size());
+    for (int i : fv) {
+        const glm::vec2 p(glm::dot(m.verts[i], tx), glm::dot(m.verts[i], ty));
+        glm::vec2       q = p - c;
+        q = glm::vec2(q.x * ca + q.y * sa, -q.x * sa + q.y * ca);
+        if (u.flipU) q.x = -q.x;
+        if (u.flipV) q.y = -q.y;
+        // At every default this is (p - c + c) / 1 + 0, i.e. p -- the metres-in-
+        // the-projection-plane the mesh has always been textured with.
+        out.push_back((q + c) / sz + u.offset);
+    }
+    return out;
+}
+
 std::vector<Group> buildGroups(const EditMesh& m) {
     std::vector<Group> groups;
     groups.push_back(Group{});   // the object's own material, always first
@@ -465,29 +540,25 @@ std::vector<Group> buildGroups(const EditMesh& m) {
         if (fv.size() < 3) continue;
         fitzel::MeshData& d = groupFor(m.faceMaterial(static_cast<int>(f)));
         const glm::vec3 n = m.faceNormal(static_cast<int>(f));
-        // Planar UVs along whichever axis the face faces least, so the projection
-        // never collapses. Metres per unit UV, so a texture keeps its scale as a
-        // face is extruded rather than stretching with it.
-        const glm::vec3 an = glm::abs(n);
-        const glm::vec3 up = (an.y > an.x && an.y > an.z) ? glm::vec3(0, 0, 1)
-                                                          : glm::vec3(0, 1, 0);
-        const glm::vec3 tx = glm::normalize(glm::cross(up, n));
-        const glm::vec3 ty = glm::cross(n, tx);
-        auto vert = [&](int i) {
+        // The face's texture coordinates, in its own loop order. Indexed by
+        // POSITION in the loop, not by vertex id: corners are shared between
+        // faces and each face places its texture on them itself.
+        const std::vector<glm::vec2> uvs = faceUvs(m, static_cast<int>(f));
+        auto vert = [&](std::size_t k) {
             fitzel::Vertex v;
-            v.position = m.verts[i];
+            v.position = m.verts[fv[k]];
             v.normal   = n;
-            v.uv       = glm::vec2(glm::dot(m.verts[i], tx), glm::dot(m.verts[i], ty));
-            v.paint    = m.paintAt(i);
+            v.uv       = uvs[k];
+            v.paint    = m.paintAt(fv[k]);
             return v;
         };
         // Fan from the first corner. Fine for the convex faces these operations
         // produce; a concave one would fan across itself, which is a limit worth
         // having rather than a triangulator worth writing.
         for (std::size_t i = 1; i + 1 < fv.size(); ++i) {
-            d.vertices.push_back(vert(fv[0]));
-            d.vertices.push_back(vert(fv[i]));
-            d.vertices.push_back(vert(fv[i + 1]));
+            d.vertices.push_back(vert(0));
+            d.vertices.push_back(vert(i));
+            d.vertices.push_back(vert(i + 1));
         }
     }
     // An empty first group means every face wears a material of its own; drawing
