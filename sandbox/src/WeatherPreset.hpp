@@ -113,6 +113,17 @@ struct Preset {
     // value, and before this every hard rain came with lightning whether the
     // author wanted it or not.
     bool  lightning = true;
+    // HOW MUCH is falling, as a multiplier on what the dial derives. The dial
+    // says whether it rains at all and how hard the sky is working; this says how
+    // heavy the fall is, and the two are genuinely different questions -- a gale
+    // with no rain in it and a windless downpour are both weathers, and neither
+    // was reachable while one slider owned both.
+    //
+    // It is a COUNT, not an opacity: at 0.3 there are three tenths as many
+    // streaks and three tenths as many rings on the ground, each the same size
+    // and the same brightness it would have in a downpour. Light rain is fewer
+    // drops, not more transparent ones, and the old fade said the opposite.
+    float rain = 1.0f;   // 0 = dry, 1 = what the dial alone used to give, 2 = twice
 
     // Opt-in: a weather that means a time of day (a dawn mist, a midday sun)
     // moves the clock, and one that does not leaves it where the author put it.
@@ -137,6 +148,7 @@ struct Live {
     float& storm;
     bool&  autoWeather;
     bool&  lightning;
+    float& rain;
     float& timeOfDay;
     Sky&   sky;
     Audio& audio;

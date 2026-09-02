@@ -1313,7 +1313,12 @@ void main(){
                 f1("uFlowSpeed", st.flowSpeed);
                 f1("uFoamWidth", st.foamWidth);
                 f1("uSparkle", st.sparkle);
-                f1("uRainRings", rainRings);
+                // Strength and count, the two halves the shader now takes: a
+                // drop hits water just as hard in a drizzle, what changes is how
+                // many land. Setting only the first would draw no rings at all,
+                // which is the kind of silence a harness exists to prevent.
+                f1("uRainRings", rainRings > 0.0f ? 1.0f : 0.0f);
+                f1("uRainDensity", rainRings);
                 run.mesh.draw();
             }
             glDepthMask(GL_TRUE);

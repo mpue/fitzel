@@ -203,12 +203,19 @@ void drawPanel(const PanelState& s) {
                           "towards a storm's own as it rises, so a preset's deck\n"
                           "is what you see at the bottom of this slider and the\n"
                           "storm's is what you see at the top.");
+    ImGui::SliderFloat("Rain", &s.live.rain, 0.0f, 2.0f, "%.2fx");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How much is falling, on top of what the dial derives.\n"
+                          "A COUNT, not a fade: at 0.3 there are three tenths as\n"
+                          "many streaks and three tenths as many rings, each as\n"
+                          "bright as it would be in a downpour. 0 gives a dry\n"
+                          "gale; 2 gives twice the rain the dial alone can.");
     ImGui::Checkbox("Lightning", &s.live.lightning);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Whether the sky may flash at all. Off, a downpour stays\n"
                           "a downpour however far the dial is pushed -- which is\n"
                           "the difference between heavy rain and a thunderstorm.");
-    ImGui::Text("Rain %.0f%%   Wet %.0f%%   Lightning %s",
+    ImGui::Text("Falling %.0f%%   Wet %.0f%%   Lightning %s",
                 s.rainIntensity * 100.0f, s.roadWetness * 100.0f,
                 (s.live.lightning && s.live.storm > 0.5f) ? "armed" : "off");
 

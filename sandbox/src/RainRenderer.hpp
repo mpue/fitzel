@@ -21,6 +21,14 @@ inline float rainIntensityFor(float weather) {
 // you can walk out of. The vertex shader does the falling -- the buffer is built
 // once and never touched again, and each drop's phase comes from its own start
 // height, so nothing has to be simulated on the CPU.
+//
+// How much is falling is a COUNT, and that is the whole trick here. The buffer
+// holds enough drops for the heaviest rain the dial can ask for, and a lighter
+// one simply draws fewer of them -- the first N, which is a uniform random subset
+// of the box because each drop's position was drawn independently when the buffer
+// was built. Light rain is fewer drops of the same size, which is what light rain
+// is; fading the same fourteen thousand streaks towards transparent (which is
+// what this used to do) makes a drizzle look like a downpour behind gauze.
 class RainRenderer : public RendererBase {
 public:
     RainRenderer() = default;
@@ -37,6 +45,12 @@ public:
     void draw(const FrameContext& ctx) override;
 
     bool enabled = true;
+
+    // How much is falling, as a multiplier on what the storm dial derives. 1 is
+    // the density this always had; the buffer is built for kMaxAmount, so asking
+    // for more than that gets the buffer rather than an assertion.
+    static constexpr float kMaxAmount = 2.0f;
+    float amount = 1.0f;
 
 private:
     fitzel::Shader m_shader;

@@ -643,6 +643,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setInt("uShade", m_shadingMode); // viewport shading; 0 = the material
         s->setFloat("uRoadFade", 0.0f); // baseline: no edge fade (road re-enables)
         s->setFloat("uRainRings", 0.0f); // baseline: no drop impacts (road re-enables)
+        s->setFloat("uRainDensity", 0.0f); // ...and nothing falling on them
         s->setInt("uHasWetMap", 0);      // baseline: even wetness (road re-enables)
         s->setFloat("uWetReflect", 0.0f);// baseline: wet surfaces don't mirror
                                          // (only the road turns this on)

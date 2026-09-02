@@ -12,7 +12,8 @@ uniform sampler2D uRefractionDepth; // scene depth behind the water
 uniform float uNear;
 uniform float uFar;
 uniform float uFoamWidth; // world-ish depth over which shoreline foam fades
-uniform float uRainRings; // drop impacts: rain intensity (0 = dry)
+uniform float uRainRings; // drop impacts: strength (0 = off)
+uniform float uRainDensity; // ...and how many land (0 = nothing falling)
 
 uniform vec3  uCameraPos;
 uniform vec3  uLightDir;     // towards the light
@@ -94,7 +95,7 @@ vec3 waterNormal(vec2 p) {
 // doing; `px` is again metres of world per pixel, and the whole thing fades out
 // once a pixel is wider than the pattern, which on a plane reaching to the
 // horizon is most of the screen.
-vec3 rainRings(vec3 N, vec2 wp, float amount, float px, float time) {
+vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float time) {
     const float kCell = 0.5;
     const float kFreq = 34.0;
     const float kRate = 1.9;
@@ -109,6 +110,11 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float px, float time) {
             float phase = time * kRate + hash21(c);
             float age   = fract(phase);
             float cyc   = mod(floor(phase), 89.0);
+            // Not every cell drips every cycle when the rain is light. Its own
+            // hash, so which drops survive is stable per cell per cycle rather
+            // than flickering; and taken on the CYCLE so a thinned-out rain is
+            // still rain everywhere rather than the same sparse pattern.
+            if (hash21(c * 1.31 + cyc + 11.0) > density) continue;
             vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
                                   hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
             vec2  d   = wp - at;
@@ -136,9 +142,9 @@ void main() {
     // Rain striking the lake. Before the Fresnel and the refraction offset below,
     // because a drop ring is only visible in what it does to those -- the surface
     // never moves, so if the rings do not bend the reflection they do nothing.
-    if (uRainRings > 0.002) {
+    if (uRainRings > 0.002 && uRainDensity > 0.002) {
         vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
-        N = rainRings(N, vWorldPos.xz, uRainRings,
+        N = rainRings(N, vWorldPos.xz, uRainRings, uRainDensity,
                       max(length(dpx.xz), length(dpy.xz)), uTime);
     }
     vec3  V = normalize(uCameraPos - vWorldPos);

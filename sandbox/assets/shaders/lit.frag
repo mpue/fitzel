@@ -252,7 +252,7 @@ uniform float     uTexScale;   // world units -> texture tiling (fallback)
 uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal-map relief
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
 uniform float     uWetness;        // rain wetness 0..1 (sky-facing gets dark+glossy)
-uniform float     uRainRings;      // drop-impact rings 0..1 (0 = off; the road sets it)
+uniform float     uRainRings;      // drop impacts: strength (0 = off; the road sets it)
 uniform float     uTime;           // seconds, for the rings' clock
 // Wetness variation: a greyscale map that says where the water stands. Only the
 // road sets these; every other draw gets uHasWetMap = 0 from the renderer's
@@ -262,6 +262,7 @@ uniform int       uHasWetMap;      // 1 = modulate the wetness by uWetMap
 uniform vec2      uWetMapScale;    // ribbon UV -> map UV (tiles it in metres)
 uniform float     uWetVar;         // 0 = even sheen .. 1 = fully map-driven
 uniform float     uWetReflect;     // how much wetness mirrors the env probe (0 = off)
+uniform float     uRainDensity;    // drop impacts: how many land (0 = none falling)
 uniform float     uWetShore;       // puddle edge width in map units (small = hard rim)
 // x = ribbon u at the left kerb, y = 1/(u across the carriageway). y = 0 switches
 // the road-shaped pooling (gutter + wheel ruts) off, which is what a bridge deck
@@ -621,9 +622,17 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 // term per drop replaces three samples. Nothing is stored between frames: a drop's
 // whole life is a function of the clock and its cell -- hash21 above is the whole
 // state.
-// `amount` is the drop rate times the user's strength dial, so it runs past 1.
-vec3 rainRings(vec3 N, vec2 wp, float amount, float time) {
-    if (amount <= 0.002) return N;      // dry: not a single hash
+// `amount` is how hard a drop hits: the standing water under it times the
+// surface's own strength dial, so it runs past 1.
+// `density` is how many of them there are: the fraction of cells that drip at all
+// in a given cycle. It is a separate number from `amount` on purpose. Amount is
+// how hard a drop hits -- the wetness under it, the surface's own dial -- and
+// density is how much rain is falling, and thinning the RATE is what less rain
+// actually looks like. Fading the same drops towards flat instead (which is what
+// this did while the rain intensity was folded into `amount`) makes a drizzle
+// read as a downpour seen through frosted glass.
+vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float time) {
+    if (amount * density <= 0.002) return N;   // dry: not a single hash
     const float kCell  = 0.5;           // metres between drops
     const float kFreq  = 34.0;          // ring wavelength
     const float kRate  = 1.9;           // drops per second per cell
@@ -646,6 +655,11 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float time) {
             // handful of distinct values left -- the scatter would collapse back
             // into a pattern exactly when nobody is watching for it any more.
             float cyc   = mod(floor(phase), 89.0);
+            // Not every cell drips every cycle when the rain is light. Its own
+            // hash, so which drops survive is stable per cell per cycle rather
+            // than flickering; and taken on the CYCLE so a thinned-out rain is
+            // still rain everywhere rather than the same sparse pattern.
+            if (hash21(c * 1.31 + cyc + 11.0) > density) continue;
             // Where it lands. The cycle has to be in here: hashing the cell alone
             // pins every cell's drop to the same square centimetre for ever, so
             // the rings blink on and off in a fixed grid instead of falling --
@@ -814,11 +828,16 @@ void main() {
     // Drops striking the surface -- only where there is water to ring. After the
     // flattening so the rings sit on the water rather than on the tarmac, and
     // before the lighting so they catch the sheen: that glinting is most of what
-    // sells them, and the geometry never moves. uRainRings already carries the
-    // rain intensity and the wetness, so the gate here is the standing-water mask
-    // and the up-facing normal, NOT the wetness a second time.
-    if (uRainRings > 0.002)
-        N = rainRings(N, vWorldPos.xz, uRainRings * upFace * wetMask, uTime);
+    // sells them, and the geometry never moves.
+    //
+    // uRainRings is the STRENGTH (the wetness and the surface's own dial) and
+    // uRainDensity is HOW MANY. They were one number, which is why turning the
+    // rain down used to flatten the rings instead of thinning them -- and why a
+    // road still wet twenty seconds after a shower had to be kept ringing by an
+    // intensity term that no longer meant anything.
+    if (uRainRings > 0.002 && uRainDensity > 0.002)
+        N = rainRings(N, vWorldPos.xz, uRainRings * upFace * wetMask,
+                      uRainDensity, uTime);
 
     vec3 L = normalize(uLightDir);
     vec3 V = normalize(uViewPos - vWorldPos);

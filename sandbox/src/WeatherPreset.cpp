@@ -75,7 +75,7 @@ bool equalAudio(const Audio& a, const Audio& b) {
 // called.
 bool equalWeather(const Preset& a, const Preset& b) {
     if (!(near(a.storm, b.storm) && a.autoWeather == b.autoWeather &&
-          a.lightning == b.lightning)) return false;
+          a.lightning == b.lightning && near(a.rain, b.rain))) return false;
     if (a.setTimeOfDay != b.setTimeOfDay) return false;
     if (a.setTimeOfDay && !near(a.timeOfDay, b.timeOfDay)) return false;
     if (!equalSky(a.sky, b.sky)) return false;
@@ -165,6 +165,7 @@ Preset readPreset(const nlohmann::json& j) {
     p.storm        = jf(j, "storm", p.storm);
     p.autoWeather  = jb(j, "auto", p.autoWeather);
     p.lightning    = jb(j, "lightning", p.lightning);
+    p.rain         = jf(j, "rain", p.rain);
     p.setTimeOfDay = jb(j, "setTimeOfDay", p.setTimeOfDay);
     p.timeOfDay    = jf(j, "timeOfDay", p.timeOfDay);
     if (const auto it = j.find("sky"); it != j.end() && it->is_object())
@@ -194,6 +195,7 @@ nlohmann::json writePreset(const Preset& p) {
     j["storm"]        = p.storm;
     j["auto"]         = p.autoWeather;
     j["lightning"]    = p.lightning;
+    j["rain"]         = p.rain;
     j["setTimeOfDay"] = p.setTimeOfDay;
     j["timeOfDay"]    = p.timeOfDay;
     j["sky"]          = writeSky(p.sky);
@@ -239,6 +241,10 @@ std::vector<Preset> builtins() {
         // only half a weather.
         p.setMist           = true;
         p.mist.enabled      = false;
+        // Nothing is falling at storm 0 whatever this says; it is here so that
+        // dragging the dial up from a sunny day gives ordinary rain rather than
+        // whatever the last weather was pouring.
+        p.rain              = 1.0f;
         p.audio.rain        = 0.0f;
         p.audio.wind        = 0.0f;
         p.audio.breeze      = 1.0f;
@@ -360,6 +366,10 @@ std::vector<Preset> builtins() {
         p.mist.medium.shafts         = false;
         p.mist.medium.selfShadow     = false;
         p.mist.medium.steps          = 28;
+        // Half again as many streaks as the dial alone would give. This is the
+        // preset the amount exists for: at 0.80 the dial is nearly at its top and
+        // there was no way left to say "harder" without also saying "stormier".
+        p.rain             = 1.5f;
         p.audio.rain       = 1.25f;
         p.audio.wind       = 0.85f;
         p.audio.breeze     = 0.0f;
@@ -388,6 +398,9 @@ std::vector<Preset> builtins() {
         // lightning-lit shadow pass is the wrong place to spend it.
         p.setMist          = true;
         p.mist.enabled     = false;
+        // Less than Heavy rain, and meant: a storm is a gale with rain in it,
+        // and rain driven flat by a gale reads as fewer streaks, not more.
+        p.rain             = 1.15f;
         p.audio.rain       = 1.20f;
         p.audio.wind       = 1.15f;
         p.audio.breeze     = 0.0f;
@@ -458,6 +471,7 @@ void apply(const Preset& p, const Live& live, float groundY) {
     live.storm       = p.storm;
     live.autoWeather = p.autoWeather;
     live.lightning   = p.lightning;
+    live.rain        = p.rain;
     live.sky         = p.sky;
     live.audio       = p.audio;
     if (p.setTimeOfDay) live.timeOfDay = p.timeOfDay;
@@ -481,6 +495,7 @@ Preset capture(const std::string& name, const Live& live,
     p.storm        = live.storm;
     p.autoWeather  = live.autoWeather;
     p.lightning    = live.lightning;
+    p.rain         = live.rain;
     p.setTimeOfDay = setTimeOfDay;
     p.timeOfDay    = live.timeOfDay;
     p.sky          = live.sky;

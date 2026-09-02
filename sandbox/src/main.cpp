@@ -1470,6 +1470,9 @@ int main(int argc, char** argv) {
         // Whether the sky may flash. Used to be implied by the dial alone, which
         // made every hard rain a thunderstorm; a preset can now say no.
         bool  lightning = true;
+        // How much is falling, as a multiplier on what the dial derives. A COUNT
+        // of drops and impacts, not an opacity -- see weather::Preset::rain.
+        float rainAmount = 1.0f;
         // Per-weather gains on the looping sound layers, on top of what the dial
         // derives. See weather::Audio.
         weather::Audio wxGain;
@@ -1491,8 +1494,8 @@ int main(int argc, char** argv) {
         // rather than kept: a Live is all references, so one stored anywhere is a
         // dangling struct waiting for the first thing that outlives its frame.
         auto liveWeather = [&] {
-            return weather::Live{storm, autoWeather, lightning, timeOfDay,
-                                 skySet, wxGain,
+            return weather::Live{storm, autoWeather, lightning, rainAmount,
+                                 timeOfDay, skySet, wxGain,
                                  volFogSet.enabled, volFogSet.followCamera,
                                  volFogSet.center, volFogSet.size,
                                  volFogSet.medium};
@@ -4014,7 +4017,7 @@ int main(int argc, char** argv) {
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
         addB("autoWeather", autoWeather);      addF("weather", storm);
-        addB("lightning", lightning);
+        addB("lightning", lightning);        addF("rainAmount", rainAmount);
         addF("wxRain", wxGain.rain);           addF("wxWind", wxGain.wind);
         addF("wxBreeze", wxGain.breeze);       addF("wxStorm", wxGain.storm);
         addF("wxThunder", wxGain.thunder);
@@ -7405,20 +7408,36 @@ int main(int argc, char** argv) {
             const float effWaveH     = glm::mix(waveHeight, 2.4f, storm);
             const float effWaveC     = glm::mix(waveChoppy, 0.95f, storm);
             const float effFog       = skySet.fogDensity + storm * 0.011f;
-            // Same curve the streaks fall on -- shared so the sound and the road's
-            // wet sheen can't start before there is anything coming down.
-            const float rainIntensity = rainIntensityFor(storm);
+            // How much is coming down: the dial's own curve (the one the streaks
+            // fall on, shared so the sound and the wet sheen cannot start before
+            // there is anything falling) times the weather's amount.
+            //
+            // Two numbers out of it, because they answer different questions. The
+            // FALL runs past 1 and is a count -- twice as many streaks, twice as
+            // many rings. Everything that is a fraction of something (how wet the
+            // road gets, how loud a loop is) takes the clamped one: a road cannot
+            // be twice soaked and a loop cannot be twice full.
+            const float rainFall =
+                rainIntensityFor(storm) * glm::max(rainAmount, 0.0f);
+            const float rainIntensity = glm::min(rainFall, 1.0f);
+            rain.amount = rainAmount;   // the streak count follows it directly
             const float lightDim     = glm::mix(1.0f, 0.30f, storm);
-            // Drop impacts on the carriageway. Tied to the rain, not to `roadWetness`:
-            // the road stays wet for ~20s after a shower and nothing should still be
-            // landing on it then. Needs a wet surface too -- rings on dry tarmac read
-            // as dents. Scaled by the road's own dial (see the Roads panel).
-            // The weather's half of the drop-impact rings. Each road multiplies
-            // its own `rainRings` onto this when it is drawn -- the strength is a
-            // property of the surface, and two roads in one scene do not have to
-            // agree about it.
-            const float ringWeather =
-                rainIntensity * glm::min(roadWetness * 2.0f, 1.0f);
+            // Drop impacts on the carriageway, in two halves.
+            //
+            // This is the STRENGTH one: how much standing water there is to ring,
+            // and nothing at all about how hard it is raining. Each road then
+            // multiplies its own `rainRings` dial onto it when it is drawn -- the
+            // strength is a property of the surface, and two roads in one scene do
+            // not have to agree about it.
+            //
+            // The rain used to be in here too, which is why the comment that stood
+            // here had to explain that rings must stop with the shower rather than
+            // with the puddles: one number was doing both jobs and neither well.
+            // It is `rainDensity` below that stops them now, by landing no drops.
+            const float ringWeather = glm::min(roadWetness * 2.0f, 1.0f);
+            // ...and the COUNT: what fraction of the ground gets hit at all. Zero
+            // the moment nothing is falling, whatever is still lying about.
+            const float rainDensity = rainIntensity;
 
             // Wetness eases toward the rain intensity: quick to soak (~2s), slow to
             // dry (~20s), so surfaces glisten for a while after the rain stops.
@@ -12855,6 +12874,7 @@ int main(int argc, char** argv) {
                     // the puddles. Every other material gets 0 from the Renderer's
                     // baseline, so the effect can't leak off the road.
                     road.material().set("uRainRings", ringAmount);
+                    road.material().set("uRainDensity", rainDensity);
                     road.material().set("uTime", static_cast<float>(now));
                     // Edge fade: pass the fade band + the UV-to-metres mapping, and route
                     // the road through the transparent (alpha-blended) queue when it's on.
@@ -12893,6 +12913,7 @@ int main(int argc, char** argv) {
                     road.bridgeMaterial().set("uWetness", surfaceWet);
                     // A deck is carriageway too: rain hits it like the rest of the road.
                     road.bridgeMaterial().set("uRainRings", ringAmount);
+                    road.bridgeMaterial().set("uRainDensity", rainDensity);
                     road.bridgeMaterial().set("uTime", static_cast<float>(now));
                     renderer.submit(road.bridgeMesh(), road.bridgeMaterial(),
                                     glm::mat4(1.0f), true, /*reflective=*/wetMirror);
@@ -13674,11 +13695,12 @@ int main(int argc, char** argv) {
                 water.setFloat("uNear", camera.nearPlane());
                 water.setFloat("uFar", camera.farPlane());
                 water.setFloat("uFoamWidth", foamWidth);
-                // Rain dimpling the lake. Straight off the rain intensity, with
-                // none of the road's wetness gate: open water is wet whether or
-                // not it has been raining, so the rings start and stop with the
-                // drops rather than lagging a soak behind them.
-                water.setFloat("uRainRings", rainIntensity);
+                // Rain dimpling the lake. Full strength, with none of the road's
+                // wetness gate -- open water is wet whether or not it has been
+                // raining, and a drop hits it just as hard in a drizzle as in a
+                // downpour. What the weather changes is how MANY land.
+                water.setFloat("uRainRings", 1.0f);
+                water.setFloat("uRainDensity", rainDensity);
                 reflectRT.bindColorTexture(0);
                 refractRT.bindColorTexture(1);
                 refractRT.bindDepthTexture(2);
@@ -13727,11 +13749,12 @@ int main(int argc, char** argv) {
                 renderer.bindEnvProbe(Renderer::kEnvProbeUnit);
                 river.setInt("uEnvProbe", Renderer::kEnvProbeUnit);
                 river.setFloat("uEnvMaxLod", renderer.envProbeMaxLod());
-                // Rain on running water. Same value the lake gets and for the
-                // same reason -- a brook is already wet, so there is nothing to
-                // soak first. The shader decides where it can land; water in mid
-                // air off a fall has no surface for a ring.
-                river.setFloat("uRainRings", rainIntensity);
+                // Rain on running water. Same two values the lake gets and for
+                // the same reason -- a brook is already wet, so there is nothing
+                // to soak first. The shader decides where a drop can land; water
+                // in mid air off a fall has no surface for a ring.
+                river.setFloat("uRainRings", 1.0f);
+                river.setFloat("uRainDensity", rainDensity);
                 for (std::size_t i = 0; i < rivers.runs().size() &&
                                         i < rivers.paths.size(); ++i) {
                     if (!rivers.paths[i].enabled) continue;

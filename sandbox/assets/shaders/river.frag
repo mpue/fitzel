@@ -60,7 +60,8 @@ uniform float uRipple;       // ripple normal strength
 uniform float uFlowSpeed;    // metres per second the surface pattern travels
 uniform float uFoamWidth;    // metres of foam clinging to each bank
 uniform float uSparkle;      // specular glitter off the ripples
-uniform float uRainRings;    // drop impacts: rain intensity (0 = dry)
+uniform float uRainRings;    // drop impacts: strength (0 = off)
+uniform float uRainDensity;  // ...and how many land (0 = nothing falling)
 
 // Atmospheric fog (matches lit.frag / water.frag).
 uniform vec3  uFogColor;
@@ -162,7 +163,14 @@ float filaments(vec2 p, float t, float px) {
 // from three, and a half-metre pattern sampled by a pixel wider than that is
 // salt-and-pepper that crawls -- the rule every other noise in this shader obeys.
 // `px` is how many metres of world one pixel covers here.
-vec3 rainRings(vec3 N, vec2 wp, float amount, float px, float time) {
+// `density` is how many of them there are: the fraction of cells that drip at all
+// in a given cycle. It is a separate number from `amount` on purpose. Amount is
+// how hard a drop hits -- the wetness under it, the surface's own dial -- and
+// density is how much rain is falling, and thinning the RATE is what less rain
+// actually looks like. Fading the same drops towards flat instead (which is what
+// this did while the rain intensity was folded into `amount`) makes a drizzle
+// read as a downpour seen through frosted glass.
+vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float time) {
     const float kCell = 0.5;    // metres between drops
     const float kFreq = 34.0;   // ring wavelength
     const float kRate = 1.9;    // drops per second per cell
@@ -179,6 +187,11 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float px, float time) {
             float phase = time * kRate + hash21(c);     // its own schedule
             float age   = fract(phase);
             float cyc   = mod(floor(phase), 89.0);      // wrapped: see lit.frag
+            // Not every cell drips every cycle when the rain is light. Its own
+            // hash, so which drops survive is stable per cell per cycle rather
+            // than flickering; and taken on the CYCLE so a thinned-out rain is
+            // still rain everywhere rather than the same sparse pattern.
+            if (hash21(c * 1.31 + cyc + 11.0) > density) continue;
             // A new landing spot every drop, not one spot per cell for ever.
             vec2  at  = (c + vec2(hash21(c + vec2(7.1, 1.3) + cyc * 0.37),
                                   hash21(c + vec2(3.7, 9.2) + cyc * 0.71))) * kCell;
@@ -293,8 +306,9 @@ void main() {
     // took. The channel's own `px` is no use for this: `along` is a TIME, not a
     // distance, so it says nothing about how big a drop ring is on screen.
     float wpx = max(length(dp1.xz), length(dp2.xz));
-    if (uRainRings > 0.002)
-        N = rainRings(N, vWorldPos.xz, uRainRings * (1.0 - falling), wpx, uTime);
+    if (uRainRings > 0.002 && uRainDensity > 0.002)
+        N = rainRings(N, vWorldPos.xz, uRainRings * (1.0 - falling), uRainDensity,
+                      wpx, uTime);
 
     vec3 V = normalize(uCameraPos - vWorldPos);
     vec3 L = normalize(uLightDir);

@@ -46,6 +46,7 @@ struct World {
     float          storm       = 0.0f;
     bool           autoWeather = false;
     bool           lightning   = true;
+    float          rain        = 1.0f;
     float          timeOfDay   = 12.0f;
     weather::Sky   sky;
     weather::Audio audio;
@@ -56,7 +57,8 @@ struct World {
     FogMedium      mistMedium;
 
     weather::Live live() {
-        return weather::Live{storm, autoWeather, lightning, timeOfDay, sky, audio,
+        return weather::Live{storm, autoWeather, lightning, rain, timeOfDay,
+                             sky, audio,
                              mistOn, mistFollow, mistCenter, mistSize, mistMedium};
     }
 };
@@ -94,13 +96,39 @@ int main() {
             // thing under test here, and a comparison that always returns true
             // would pass the loop above without checking anything.
             if (!near(w.sky.coverage, p.sky.coverage) || !near(w.storm, p.storm) ||
-                !near(w.audio.rain, p.audio.rain)) {
+                !near(w.audio.rain, p.audio.rain) || !near(w.rain, p.rain)) {
                 allBack = false;
                 std::printf("       '%s' did not reach the live state\n", p.name.c_str());
             }
             (void)got;
         }
         ok(allBack, "every built-in applies and captures back unchanged");
+    }
+
+    {
+        // How much falls is a separate question from how hard the sky is working,
+        // and the built-ins have to be able to answer it differently at the same
+        // place on the dial -- which is the whole reason the amount exists.
+        const weather::Preset& heavy = stock[static_cast<std::size_t>(
+            weather::indexOf(stock, "Heavy rain"))];
+        const weather::Preset& gale = stock[static_cast<std::size_t>(
+            weather::indexOf(stock, "Storm"))];
+        ok(heavy.rain > 1.0f, "heavy rain drops more than the dial alone would");
+        ok(heavy.rain > gale.rain,
+           "...and more than the storm, which drives its rain flat");
+    }
+    {
+        // The amount is part of the weather, so moving it must mark the preset
+        // edited exactly like moving a cloud slider does. It is the field most
+        // likely to be left out of a comparison, being the newest.
+        World w;
+        const weather::Preset& heavy = stock[static_cast<std::size_t>(
+            weather::indexOf(stock, "Heavy rain"))];
+        weather::apply(heavy, w.live(), 0.0f);
+        ok(near(w.rain, heavy.rain), "the amount reaches the live state");
+        w.rain = 0.0f;
+        ok(!weather::matches(heavy, w.live()),
+           "...and turning the rain off marks the preset edited");
     }
 
     // --- A moved slider shows up -------------------------------------------
@@ -211,6 +239,7 @@ int main() {
         mine.mist.medium.color    = {0.61f, 0.66f, 0.72f};
         mine.mist.medium.steps    = 37;
         mine.mist.medium.shafts   = false;
+        mine.rain           = 0.42f;
         mine.audio.rain     = 0.11f;
         mine.audio.breeze   = 1.62f;
         shelf.push_back(mine);
