@@ -4018,6 +4018,11 @@ int main(int argc, char** argv) {
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
+        // The opening camera move. The KEYS are a blob written below (a list, not
+        // a tunable); these three are how it behaves once the game starts.
+        addB("camPathOnStart", camPathRec.playOnStart);
+        addB("camPathLoop", camPathRec.loop);
+        addF("camPathSpeed", camPathRec.speed);
         addF("wxRain", wxGain.rain);           addF("wxWind", wxGain.wind);
         addF("wxBreeze", wxGain.breeze);       addF("wxStorm", wxGain.storm);
         addF("wxThunder", wxGain.thunder);
@@ -4172,6 +4177,11 @@ int main(int argc, char** argv) {
             // real edit, so the marker stays true even with no terrain in the
             // scene: an emptied world must not grow ground again on reload.
             j["terrainEntity"] = true;
+            // The camera path: 7 floats per keyframe, same compact-blob scheme as
+            // the painted vegetation below. Scene data now -- an opening flythrough
+            // belongs to the LEVEL, and campath.txt beside the executable (where
+            // the only copy used to live) is in neither the scene nor an export.
+            j["camPath"] = camPathRec.blob();
             // Hand-painted grass: a compact space-separated float blob (7 per
             // blade). Stored as one JSON string so pretty-printing doesn't
             // explode into a line per number.
@@ -4375,6 +4385,10 @@ int main(int argc, char** argv) {
                     if (L.normId.valid()) L.norm = assetDb.loadTexture(L.normId);
                     look.layers.push_back(std::move(L));
                 }
+            // Restore the camera path. Read even when the key is absent: an empty
+            // blob clears the recorder, and it has to, or the last scene's opening
+            // move follows the author into a level that has none of its own.
+            camPathRec.setBlob(j.value("camPath", std::string{}));
             // Restore hand-painted grass (empty for scenes saved before it existed).
             veg.paintedBlades.clear();
             if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
@@ -5525,6 +5539,11 @@ int main(int argc, char** argv) {
             race.energyIdle = 0.0f; race.energyHitFlash = 0.0f;
             race.energyLastHit = 0.0f; race.energyWarnT = 0.0f;
             endPrompt = racehud::EndPrompt{}; // no stale end-of-race question
+            // The scene's opening camera move, if it has one. Before the active
+            // camera is picked below and not instead of it: a path drives the
+            // PLAYER's view, so a scene that also marks a camera active-on-start
+            // gets that camera the moment the move ends or is skipped.
+            camPathRec.beginAutoPlay();
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -7301,6 +7320,24 @@ int main(int argc, char** argv) {
             camAnimating = camFocusing || navMovingCam;
 
             // --- Camera path: record samples or drive playback ----------
+            // An opening move is skippable, and the gesture that skips it is
+            // simply wanting to move: the first step, the first look, the first
+            // press of anything that would have driven the camera. A cutscene you
+            // cannot get out of is the thing nobody forgives, and an explicit
+            // "press Esc to skip" would be one more key to teach and one more
+            // prompt to draw over the shot.
+            //
+            // Only an AUTO-started run is interruptible -- see interrupt().
+            if (camPathRec.autoPlaying()) {
+                const bool wantsToMove =
+                    input.isKeyDown(GLFW_KEY_W) || input.isKeyDown(GLFW_KEY_A) ||
+                    input.isKeyDown(GLFW_KEY_S) || input.isKeyDown(GLFW_KEY_D) ||
+                    input.isKeyDown(GLFW_KEY_Q) || input.isKeyDown(GLFW_KEY_E) ||
+                    input.isKeyDown(GLFW_KEY_SPACE) ||
+                    input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT) ||
+                    input.isMouseButtonDown(GLFW_MOUSE_BUTTON_LEFT);
+                if (wantsToMove) camPathRec.interrupt();
+            }
             camPathRec.update(camera, dt, !vehicleMode && !gliderMode);
 
             // Terrain: adopt the scene's Terrain component (or, with none in the

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <sstream>
 
 #include <imgui.h>
 
@@ -46,6 +47,44 @@ void CameraPathRecorder::append(fitzel::Camera& cam, float t) {
     m_keys.push_back({t, cam.position(), y, cam.pitch(), cam.fov()});
 }
 
+std::string CameraPathRecorder::blob() const {
+    std::ostringstream o;
+    o.precision(7);
+    for (const CamKey& k : m_keys)
+        o << k.t << ' ' << k.pos.x << ' ' << k.pos.y << ' ' << k.pos.z << ' '
+          << k.yaw << ' ' << k.pitch << ' ' << k.fov << ' ';
+    return o.str();
+}
+
+void CameraPathRecorder::setBlob(const std::string& s) {
+    std::istringstream in(s);
+    std::vector<CamKey> loaded;
+    CamKey k;
+    while (in >> k.t >> k.pos.x >> k.pos.y >> k.pos.z >> k.yaw >> k.pitch >> k.fov)
+        loaded.push_back(k);
+    // Replace outright, empty blob included: loading a scene with no path has to
+    // CLEAR the one the last scene had, or an opening move follows the author
+    // from level to level.
+    m_keys     = std::move(loaded);
+    m_playing  = m_recording = false;
+    m_auto     = false;
+    m_time     = 0.0f;
+}
+
+void CameraPathRecorder::beginAutoPlay() {
+    if (!playOnStart || m_keys.size() < 2) return;
+    m_recording = false;
+    m_playing   = true;
+    m_auto      = true;
+    m_time      = 0.0f;
+}
+
+void CameraPathRecorder::interrupt() {
+    if (!m_playing || !m_auto) return;
+    m_playing = false;
+    m_auto    = false;
+}
+
 void CameraPathRecorder::save() const {
     std::ofstream f(kPathFile);
     for (const CamKey& k : m_keys)
@@ -60,7 +99,10 @@ void CameraPathRecorder::load() {
     CamKey k;
     while (f >> k.t >> k.pos.x >> k.pos.y >> k.pos.z >> k.yaw >> k.pitch >> k.fov)
         loaded.push_back(k);
-    if (!loaded.empty()) { m_keys = std::move(loaded); m_playing = false; m_time = 0.0f; }
+    if (!loaded.empty()) {
+        m_keys = std::move(loaded);
+        m_playing = false; m_auto = false; m_time = 0.0f;
+    }
 }
 
 void CameraPathRecorder::update(fitzel::Camera& cam, float dt, bool allowPlay) {
@@ -71,12 +113,18 @@ void CameraPathRecorder::update(fitzel::Camera& cam, float dt, bool allowPlay) {
             m_recordAccum -= m_recordInterval;
             append(cam, m_time);
         }
+    } else if (!allowPlay && m_auto) {
+        // A craft has taken the camera, so the opening move is over. Left
+        // running it would resume from wherever it got to the next time the
+        // player stepped out, halfway through a shot nobody asked for.
+        m_playing = false;
+        m_auto    = false;
     } else if (allowPlay && m_playing && m_keys.size() >= 2) {
-        m_time += dt * m_speed;
+        m_time += dt * speed;
         const float tmax = m_keys.back().t;
         if (m_time >= tmax) {
-            if (m_loop) m_time = std::fmod(m_time, tmax);
-            else { m_time = tmax; m_playing = false; }
+            if (loop) m_time = std::fmod(m_time, tmax);
+            else { m_time = tmax; m_playing = false; m_auto = false; }
         }
         glm::vec3 p; float y, pi, fv;
         samplePath(m_keys, m_time, p, y, pi, fv);
@@ -123,13 +171,30 @@ void CameraPathRecorder::panel(fitzel::Camera& cam) {
     if (ImGui::Button(m_playing ? "Stop" : "Play")) {
         m_playing = !m_playing;
         m_recording = false;
+        m_auto      = false;  // a preview, not the game's opening move
         if (m_playing) m_time = 0.0f;
     }
     ImGui::EndDisabled();
     ImGui::SameLine();
-    ImGui::Checkbox("Loop", &m_loop);
+    ImGui::Checkbox("Loop", &loop);
 
-    ImGui::SliderFloat("Speed", &m_speed, 0.1f, 4.0f, "%.2fx");
+    // The opening move. Saved with the scene like the keys themselves, so it is
+    // a property of the LEVEL rather than of this editor session -- which is what
+    // makes it survive an export.
+    ImGui::BeginDisabled(m_keys.size() < 2);
+    ImGui::Checkbox("Play on start", &playOnStart);
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Run this path the moment the game starts -- an opening\n"
+                          "flythrough, or with Loop on, an attract reel behind a\n"
+                          "menu. Any movement input hands the camera back, so it\n"
+                          "can always be skipped.");
+    if (playOnStart && m_keys.size() >= 2)
+        ImGui::TextDisabled("Play starts on this path (%.1f s%s).",
+                            m_keys.back().t / (speed > 0.01f ? speed : 1.0f),
+                            loop ? ", looping" : "");
+
+    ImGui::SliderFloat("Speed", &speed, 0.1f, 4.0f, "%.2fx");
     ImGui::SliderFloat("Key spacing", &m_keySpacing, 0.5f, 10.0f, "%.1f s");
     ImGui::SliderFloat("Rec interval", &m_recordInterval, 0.05f, 1.0f, "%.2f s");
 
@@ -149,9 +214,17 @@ void CameraPathRecorder::panel(fitzel::Camera& cam) {
     }
 
     ImGui::Separator();
-    if (ImGui::Button("Save")) save();
+    // The path itself is saved with the SCENE. These two are an import/export
+    // between projects -- which is all campath.txt was ever good for, and is
+    // worth keeping for exactly that.
+    if (ImGui::Button("Export")) save();
     ImGui::SameLine();
-    if (ImGui::Button("Load")) load();
+    if (ImGui::Button("Import")) load();
     ImGui::SameLine();
     ImGui::TextDisabled("(%s)", kPathFile);
+    // Plain TextDisabled rather than ui::hint: four check harnesses link this
+    // file without UiStyle.cpp, and a panel footnote is not worth making every
+    // one of them link the editor's typography.
+    ImGui::TextDisabled("The path is saved with the SCENE. These two only move");
+    ImGui::TextDisabled("one between projects.");
 }
