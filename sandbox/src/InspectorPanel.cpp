@@ -310,6 +310,13 @@ void drawPanel(const PanelState& s) {
                     for (const Property& pr : mp->props())
                         if (pr.key != "sound") drawProperty(pr, mp);
                     s.soundPickerCombo("Sound", mp->sound);
+                } else if (auto* ep = dynamic_cast<EnergyPickupComponent*>(c)) {
+                    // Same deal again: energy, radius and respawn from
+                    // metadata, the pickup cue chosen from the Sound
+                    // assets rather than typed.
+                    for (const Property& pr : ep->props())
+                        if (pr.key != "sound") drawProperty(pr, ep);
+                    s.soundPickerCombo("Sound", ep->sound);
                 } else if (auto* pa = dynamic_cast<ParticleComponent*>(c)) {
                     // Everything from metadata except the sprite, which
                     // gets a Texture picker instead of a raw filename.

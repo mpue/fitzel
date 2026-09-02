@@ -7659,18 +7659,22 @@ int main(int argc, char** argv) {
                             if (auto* sp = dynamic_cast<SpinComponent*>(c.get()))
                                 e.localRotation += sp->axis * sp->speed * dt;
 
-                // Missile pickups counting back to their respawn. Deliberately
-                // OUTSIDE the activeInHierarchy loop below: a taken pickup
-                // deactivates itself, and a deactivated entity is skipped there,
-                // so ticking it in that loop would freeze its timer and it would
-                // never come back.
+                // Missile and energy pickups counting back to their respawn.
+                // Deliberately OUTSIDE the activeInHierarchy loop below: a taken
+                // pickup deactivates itself, and a deactivated entity is skipped
+                // there, so ticking it in that loop would freeze its timer and it
+                // would never come back.
                 for (Entity& e : entities) {
                     auto* mp = e.components.get<MissilePickupComponent>();
-                    if (!mp || mp->cooldown <= 0.0f) continue;
-                    mp->cooldown -= dt;
-                    if (mp->cooldown <= 0.0f) {
-                        mp->cooldown = 0.0f;
-                        e.active     = true; // back on the track for the next lap
+                    auto* ep = e.components.get<EnergyPickupComponent>();
+                    float* cd = mp && mp->cooldown > 0.0f ? &mp->cooldown
+                              : ep && ep->cooldown > 0.0f ? &ep->cooldown
+                                                          : nullptr;
+                    if (!cd) continue;
+                    *cd -= dt;
+                    if (*cd <= 0.0f) {
+                        *cd      = 0.0f;
+                        e.active = true; // back on the track for the next lap
                     }
                 }
 
@@ -7719,6 +7723,43 @@ int main(int argc, char** argv) {
                             if (p1 || p2) {
                                 if (!mp->sound.empty()) host.playSound(mp->sound);
                                 mp->cooldown = mp->respawn;
+                                e.active     = false;
+                            }
+                        }
+                        // Energy pickup: on reach, mend the hull and take the
+                        // pickup off the track for `respawn` seconds -- the same
+                        // deactivate-and-return dance the missile pickup does,
+                        // for the same reason (lap two has to be the same track
+                        // as lap one).
+                        //
+                        // A FULL hull takes nothing and leaves it standing, the
+                        // way a full rack leaves the rounds standing. So does a
+                        // craft whose hull is already gone: that run is settled
+                        // and a pickup must not quietly fly it back out of the
+                        // loss.
+                        if (auto* ep = e.components.get<EnergyPickupComponent>()) {
+                            auto take = [&](racesim::RaceState& st) {
+                                if (st.energyOut) return false;
+                                if (st.energy >= st.energyCapacity - 0.01f) return false;
+                                st.energy = glm::min(st.energyCapacity,
+                                                     st.energy + glm::max(ep->amount, 0.0f));
+                                return true;
+                            };
+                            // Whoever gets there first, exactly like the rounds:
+                            // both seats fly the same track. Gated on actually
+                            // flying a glider -- the hull is the craft's, and on
+                            // foot or in the car there is nothing to mend.
+                            const bool p1 = ep->cooldown <= 0.0f &&
+                                            gliderMode && driveGliderId >= 0 &&
+                                            glm::distance(playerC, e.center) <= ep->radius &&
+                                            take(race);
+                            const bool p2 = !p1 && ep->cooldown <= 0.0f &&
+                                            driveGliderId2 >= 0 &&
+                                            glm::distance(race2.gliderPos, e.center) <= ep->radius &&
+                                            take(race2);
+                            if (p1 || p2) {
+                                if (!ep->sound.empty()) host.playSound(ep->sound);
+                                ep->cooldown = ep->respawn;
                                 e.active     = false;
                             }
                         }

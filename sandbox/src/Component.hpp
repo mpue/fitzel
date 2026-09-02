@@ -204,6 +204,47 @@ public:
     }
 };
 
+// --- Built-in component: Energy Pickup (fly over it to mend the hull) --------
+// The counterpart to the Missile Pickup, on the other side of the same trade:
+// the hull only ever recharges slowly and only after a pause, so the one way to
+// buy back a bad lap is to go and fetch it. Laying these off the racing line is
+// what makes a damaged craft choose between the fast way round and the way that
+// gets it home.
+//
+// Taken the same way a missile pickup is -- the entity deactivates and comes
+// back `respawn` seconds later (0 = gone for the rest of the race) -- and for
+// the same reason: a pickup that vanished for good would make lap two of a long
+// race a different track than lap one.
+//
+// A FULL hull takes nothing and leaves it standing, exactly like a full rack
+// leaves a missile pickup standing; so does a craft whose hull is already gone,
+// since that run is settled and a pickup must not quietly revive it.
+class EnergyPickupComponent : public ComponentBase {
+public:
+    float       amount  = 25.0f; // hull energy restored (capped by the craft's)
+    float       radius  = 4.0f;  // how close the craft must pass (metres)
+    float       respawn = 15.0f; // seconds until it returns (0 = never)
+    // Pickup cue: a Sound asset filename, chosen from the project's assets in
+    // the Inspector rather than typed, like the Missile Pickup's. Empty = silent.
+    std::string sound;
+
+    float cooldown = 0.0f;       // runtime: seconds left before it returns
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<EnergyPickupComponent>(*this);
+    }
+    const char* typeId() const override { return "energy_pickup"; }
+    const char* displayName() const override { return "Energy Pickup"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        // Hull green, against the missile pickup's warhead red and the
+        // collectible's gold: which pickup is which has to read at a glance
+        // while laying out a course.
+        g.sphere(c, radius, {0.25f, 1.0f, 0.45f, 0.9f});
+    }
+};
+
 // --- Built-in component: Trigger (a zone that fires an event on entry) --------
 // Data-authored, no scripting: while playing, when the player enters within
 // `radius` the trigger shows `message` on the HUD and/or plays `sound`. `once`
