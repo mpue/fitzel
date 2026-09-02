@@ -77,7 +77,8 @@ struct Node {
 struct Mat {
     vec4  albedoRough;  // rgb albedo (sRGB, as authored), a = roughness
     vec4  emissionRefl; // rgb emission (sRGB), a = reflectivity
-    vec4  misc;         // x opacity, y emissionStrength, z alphaCutoff, w glass
+    vec4  misc;         // x opacity, y emissionStrength, z alphaCutoff,
+                        // w index of refraction (0 = not glass at all)
     vec4  tint;         // rgb multiplies the base-colour map, a = detail scale
     ivec4 modeTex;      // x = AlphaMode (0 opaque, 1 cutout, 2 blend)
                         // y = base-colour map, -1 for none
@@ -432,6 +433,7 @@ struct Surface {
     float coverage;
     int   alphaMode;
     bool  glass;
+    float ior;        // only meaningful where glass is true
 };
 
 // `n` is the GEOMETRIC normal, not the one turned to face the eye: the slope a
@@ -462,6 +464,7 @@ Surface surfaceOf(int mi, vec2 uv, vec3 wp, vec3 n, vec4 paint, out float texA) 
     s.coverage  = coverageOf(m, texA);
     s.alphaMode = m.modeTex.x;
     s.glass     = m.misc.w > 0.5;
+    s.ior       = max(m.misc.w, 1.0);
     return s;
 }
 
@@ -858,7 +861,7 @@ vec3 radiance(vec3 org, vec3 dir) {
             // estimation -- the lobe is a delta, and a shadow ray at a mirror
             // direction would contribute nothing but noise.
             bool entering = dot(gN, dir) < 0.0;
-            float ior  = entering ? (1.0 / 1.5) : 1.5;
+            float ior  = entering ? (1.0 / s.ior) : s.ior;
             float cosI = min(1.0, dot(N, V));
             float sinT2 = ior * ior * (1.0 - cosI * cosI);
             float F;

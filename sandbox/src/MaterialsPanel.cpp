@@ -95,7 +95,14 @@ void drawPanel(const PanelState& s) {
                 ImGui::ColorEdit3("Albedo", &md.albedo.x);
             ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
             ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
+            // Glass decides its own transmission from the index of refraction,
+            // so the slider would be a second answer to a question already
+            // answered -- and the one that used to have to be turned down before
+            // a pane looked like glass at all.
+            ImGui::BeginDisabled(md.glass);
             ImGui::SliderFloat("Opacity", &md.opacity, 0.0f, 1.0f);
+            ImGui::EndDisabled();
+            if (md.glass) ImGui::TextDisabled("(glass transmits by its index, not by this)");
             // Texture-alpha handling ("transparency map"). Cutout
             // masks (hard edges); Blend alpha-blends (soft/glassy).
             const char* alphaModes[] = { "Opaque", "Cutout", "Blend" };
@@ -108,8 +115,26 @@ void drawPanel(const PanelState& s) {
                 ImGui::TextDisabled("(needs a base texture with an alpha channel)");
             ImGui::Checkbox("Glass", &md.glass);
             if (md.glass) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("(clear centre, reflective rim)");
+                ImGui::Indent();
+                // The index of refraction is the whole material: it sets how
+                // much light bounces off head-on (4% at 1.5, 17% at 2.4) and how
+                // far what is behind the pane shifts. One number, both effects,
+                // and it is a number real glass HAS -- which is why the presets
+                // are named after the substance rather than after a look.
+                ImGui::SliderFloat("Index of refraction", &md.ior, 1.0f, 3.0f, "%.3f");
+                const struct { const char* name; float n; } kIor[] = {
+                    {"Water 1.33", 1.333f}, {"Window 1.52", 1.52f},
+                    {"Sapphire 1.77", 1.77f}, {"Diamond 2.42", 2.417f},
+                };
+                for (int i = 0; i < 4; ++i) {
+                    if (i) ImGui::SameLine();
+                    if (ImGui::SmallButton(kIor[i].name)) md.ior = kIor[i].n;
+                }
+                ImGui::SliderFloat("Thickness", &md.thickness, 0.0f, 1.0f, "%.3f m");
+                ImGui::TextDisabled("How far the image behind it shifts. 0 is a\n"
+                                    "pane you look straight through.");
+                ImGui::TextDisabled("Albedo tints what comes through; white is clear.");
+                ImGui::Unindent();
             }
             // Emission: self-illumination (glow). Colour + strength apply
             // to all materials; the optional emission-map slot (below,

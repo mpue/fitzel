@@ -169,7 +169,19 @@ uniform int   uShade;         // 0 textured, 1 solid, 2 solid lit, 3 wireframe
 const vec3 kShadeClay = vec3(0.66, 0.64, 0.61); // one neutral surface for all of them
 const vec3 kShadeWire = vec3(0.80, 0.83, 0.88);
 
-uniform int   uGlass;         // 1 = Fresnel alpha (clear head-on, opaque rim)
+uniform int   uGlass;         // 1 = a dielectric: reflects and refracts by uIor
+// Index of refraction. Only read when uGlass is 1, which is why it needs no
+// baseline from the renderer: a material that turns glass on sets it, and one
+// that does not never looks.
+uniform float uIor;           // 1 air .. 1.52 window .. 2.42 diamond
+uniform float uGlassThickness;// metres the ray travels inside, = how far it shifts
+// The opaque scene, copied out between the opaque and the transparent pass.
+// This is what a refracting surface bends: the environment probe knows the sky
+// and the neighbours, not the wall two metres behind the pane.
+uniform sampler2D uSceneCopy;
+uniform int   uHasSceneCopy;  // 0 = no copy this pass (probe faces, no glass)
+uniform vec4  uSceneCopyRect; // xy = the viewport's corner, zw = its size, in pixels
+uniform mat4  uViewProj;      // declared here too, to place the refracted point
 uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlphaCutoff
 uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
 uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
@@ -916,6 +928,13 @@ void main() {
     // does. Pushed higher, a wet road reads as polished chrome.
     float refl  = uReflectivity;
     float rough = uRoughness;
+    // Glass reflects by its INDEX, not by a slider: the reflectance head-on is
+    // ((n-1)/(n+1))^2 -- 4% for window glass, 17% for diamond -- and it climbs
+    // to 1 at grazing angles all by itself. That single number is what makes a
+    // pane read as glass rather than as a dimmed wall, and it is the same number
+    // that decides the bend below, which is why there is only one of it.
+    float glassN  = max(uIor, 1.0);
+    float glassF0 = pow((glassN - 1.0) / (glassN + 1.0), 2.0);
     //
     // Which half of the wetness mirrors matters more than how much of it there is:
     // the film scatters (blurred and weak), standing water does not (sharp and
@@ -932,6 +951,57 @@ void main() {
     // vector and blend in by a Fresnel term. `refl` raises the base reflectance
     // F0 (0 -> dielectric 4%, 1 -> full mirror); `rough` selects a blurrier mip.
     // Reflection happens before fog so distant mirrors haze too.
+    // What you see THROUGH the glass, and where. Snell's law gives the direction
+    // the ray leaves in; the point it lands on is that direction followed for the
+    // glass's thickness and projected back to the screen -- exact, one matrix
+    // multiply, and no fudge factor on the normal to tune per object.
+    //
+    // This REPLACES the surface's own shaded colour rather than blending over
+    // it, and the alpha goes to 1 below: the background has been composited here
+    // by hand, and letting the blend add it a second time is what makes glass
+    // look like fog.
+    if (uGlass == 1 && uHasSceneCopy == 1) {
+        vec2 uvS = (gl_FragCoord.xy - uSceneCopyRect.xy)
+                 / max(uSceneCopyRect.zw, vec2(1.0));
+        vec3 T = refract(-V, N, 1.0 / glassN);
+        if (dot(T, T) > 0.0 && uGlassThickness > 0.0) {
+            vec4 clip = uViewProj * vec4(vWorldPos + T * uGlassThickness, 1.0);
+            if (clip.w > 0.0) {
+                vec2 bent = (clip.xy / clip.w) * 0.5 + 0.5;
+                // Off the edge of the pane the copy has nothing to say, and a
+                // clamped border smeared across the glass reads as a crack.
+                // Looking straight through is the honest fallback.
+                if (all(greaterThanEqual(bent, vec2(0.0))) &&
+                    all(lessThanEqual(bent, vec2(1.0))))
+                    uvS = bent;
+            }
+        }
+        vec3 behind = textureLod(uSceneCopy, uvS, 0.0).rgb;
+        if (any(isnan(behind)) || any(isinf(behind))) behind = vec3(0.0);
+        // Tinted on the way through: white glass is clear, a green bottle is
+        // green, and how deep the colour runs is the thickness. Beer's law with
+        // the material's own albedo standing in for the absorption, so a glass
+        // is coloured by the same field every other material is.
+        // Beer's law with the albedo standing in for the absorption: one pass
+        // through the tint at zero thickness, deeper as the glass gets thicker.
+        // Gentle on purpose -- a pane a centimetre thick is not a bottle, and a
+        // response steep enough to make one out of the other turns every tinted
+        // material black the moment somebody drags Thickness.
+        behind *= pow(max(albedo, vec3(0.002)),
+                      vec3(1.0 + clamp(uGlassThickness, 0.0, 2.0) * 6.0));
+        color = behind;
+        // The sun's own glint, which the replacement above would otherwise wipe.
+        // Tight and bright: a pane is smooth, and the highlight on one is small
+        // enough to be a shape rather than a sheen.
+        vec3  H    = normalize(L + V);
+        float gsp  = pow(max(dot(N, H), 0.0), 220.0);
+        color += (1.0 - shadow) * uLightColor * gsp * 2.0;
+    }
+
+    // Glass always reflects something, whatever the Reflectivity slider says:
+    // the index decided that, and a dielectric with no reflection at all is not
+    // a material anyone has held.
+    if (uGlass == 1) refl = max(refl, glassF0);
     if (refl > 0.0) {
         vec3  Rv   = reflect(-V, N);
         vec3  env  = textureLod(uEnvProbe, Rv, rough * uEnvMaxLod).rgb;
@@ -943,7 +1013,7 @@ void main() {
         // is the only place this can be contained.
         if (any(isnan(env)) || any(isinf(env))) env = vec3(0.0);
         env = min(env, vec3(64.0));   // a reflection is never brighter than this
-        float F0   = mix(0.04, 1.0, refl);
+        float F0   = (uGlass == 1) ? glassF0 : mix(0.04, 1.0, refl);
         float NoV  = max(dot(N, V), 0.0);
         float fres = F0 + (1.0 - F0) * pow(1.0 - NoV, 5.0);
         color = mix(color, env, clamp(fres, 0.0, 1.0));
@@ -979,9 +1049,19 @@ void main() {
     // (added above via uReflectivity) stays visible -- reads as real glass.
     float outA = uAlpha * texA;
     if (uGlass == 1) {
+        // With a copy of the scene behind it, the transmission was composited
+        // above and this fragment IS the finished picture -- blending it again
+        // would show the wall twice. Without one (a probe face, a pass with no
+        // glass in it) the blend is still the only transmission there is, and
+        // the index decides how much of it gets through: 1 - F.
         float NoV = max(dot(N, V), 0.0);
-        float fr  = pow(1.0 - NoV, 5.0);
-        outA = mix(uAlpha, 1.0, fr) * texA;
+        float F   = glassF0 + (1.0 - glassF0) * pow(1.0 - NoV, 5.0);
+        // The Opacity slider does NOT come into this. On glass, how much gets
+        // through is the index's business -- 4% stopped head-on, all of it at a
+        // grazing angle -- and a pane that needed its opacity turned down as
+        // well was two settings for one idea, with the one named "Glass" doing
+        // the lesser half of it. Colour it with the albedo, not with alpha.
+        outA = (uHasSceneCopy == 1) ? 1.0 : clamp(F, 0.0, 1.0) * texA;
     }
     // Road edge fade: distance (in metres) from the nearest ribbon edge, ramped
     // over uRoadFade. Only active on the road material (uRoadFade > 0).

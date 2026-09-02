@@ -28,6 +28,7 @@ constexpr const char* kRoughness    = "uRoughness";
 constexpr const char* kReflectivity = "uReflectivity";
 constexpr const char* kAlpha        = "uAlpha";
 constexpr const char* kGlass        = "uGlass";
+constexpr const char* kIor          = "uIor";
 constexpr const char* kAlphaCutout  = "uAlphaCutout";
 constexpr const char* kAlphaCutoff  = "uAlphaCutoff";
 constexpr const char* kEmission     = "uEmission";
@@ -265,6 +266,7 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         m.reflectivity = mat->get<float>(kReflectivity, 0.0f);
         m.opacity      = std::min(mat->get<float>(kAlpha, 1.0f), submitOpacity);
         m.glass        = mat->get<int>(kGlass, 0) == 1;
+        m.ior          = std::max(1.0f, mat->get<float>(kIor, 1.5f));
         m.emission     = mat->get<glm::vec3>(kEmission, glm::vec3(0.0f));
         m.emissionStrength = mat->get<float>(kEmissionStr, 1.0f);
         m.alphaCutoff  = mat->get<float>(kAlphaCutoff, 0.5f);

@@ -372,7 +372,10 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         g.misc[0] = m.opacity;
         g.misc[1] = m.emissionStrength;
         g.misc[2] = m.alphaCutoff;
-        g.misc[3] = m.glass ? 1.0f : 0.0f;
+        // The index of refraction doubles as the flag: 0 is "not glass",
+        // and anything above 1 is both "glass" and how much it bends. One
+        // slot, and no way for the two to disagree.
+        g.misc[3] = m.glass ? std::max(1.0f, m.ior) : 0.0f;
         put3(g.tint, m.tint, m.detailScale);
         g.modeTex[0] = m.alphaMode;
         g.modeTex[1] = -1;              // filled below, once the blob is packed

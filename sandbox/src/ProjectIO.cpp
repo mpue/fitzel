@@ -75,6 +75,8 @@ nlohmann::json materialJson(const MaterialDef& md) {
     m["roughness"]    = md.roughness;
     m["opacity"]      = md.opacity;
     m["glass"]        = md.glass;
+    m["ior"]          = md.ior;
+    m["thickness"]    = md.thickness;
     m["alphaMode"]    = static_cast<int>(md.alphaMode);
     m["alphaCutoff"]  = md.alphaCutoff;
     m["emission"]         = vec3Json(md.emission);
@@ -363,6 +365,8 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
         md.roughness    = m.value("roughness", md.roughness);
         md.opacity      = m.value("opacity", md.opacity);
         md.glass        = m.value("glass", md.glass);
+        md.ior          = m.value("ior", md.ior);
+        md.thickness    = m.value("thickness", md.thickness);
         md.alphaMode    = static_cast<AlphaMode>(
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);
@@ -419,6 +423,8 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
         md.roughness    = m.value("roughness", md.roughness);
         md.opacity      = m.value("opacity", md.opacity);
         md.glass        = m.value("glass", md.glass);
+        md.ior          = m.value("ior", md.ior);
+        md.thickness    = m.value("thickness", md.thickness);
         md.alphaMode    = static_cast<AlphaMode>(
                               m.value("alphaMode", static_cast<int>(md.alphaMode)));
         md.alphaCutoff  = m.value("alphaCutoff", md.alphaCutoff);

@@ -379,6 +379,46 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
     m_csm.end(m_vpWidth, m_vpHeight);
 }
 
+void Renderer::captureSceneCopy() {
+    // The rectangle the pass is actually drawing into. Not m_vpWidth/Height at
+    // the origin: with two panes up, player two's viewport starts halfway across
+    // the framebuffer, and copying from (0,0) would hand its glass the other
+    // player's view of the world.
+    GLint vp[4] = {0, 0, 0, 0};
+    glGetIntegerv(GL_VIEWPORT, vp);
+    const int w = vp[2], h = vp[3];
+    if (w <= 0 || h <= 0) { m_sceneCopyW = 0; return; }
+
+    glActiveTexture(GL_TEXTURE0 + kSceneCopyUnit);
+    if (!m_sceneCopy) {
+        glGenTextures(1, &m_sceneCopy);
+        glBindTexture(GL_TEXTURE_2D, m_sceneCopy);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // Clamped, because a refracted lookup that walks off the edge of the
+        // pane should smear the edge rather than wrap the far side of the
+        // screen in -- which reads as a hole in the glass.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        m_sceneCopyW = m_sceneCopyH = 0;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, m_sceneCopy);
+    }
+    // RGBA16F: the scene is HDR at this point, and copying it into an 8-bit
+    // texture would clip every highlight the glass then shows -- a sun behind a
+    // window would come through as flat white.
+    if (w != m_sceneCopyW || h != m_sceneCopyH) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA,
+                     GL_HALF_FLOAT, nullptr);
+        m_sceneCopyW = w;
+        m_sceneCopyH = h;
+    }
+    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], w, h);
+    m_sceneCopyX = vp[0];
+    m_sceneCopyY = vp[1];
+    glActiveTexture(GL_TEXTURE0);
+}
+
 void Renderer::preparePointShadows() {
     // Shadow-casting point lights first, so their indices line up with the
     // cubemaps and with the lit shader's first uShadowCount lights.
@@ -584,6 +624,20 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         s->setFloat("uReflectivity", 0.0f);
         s->setFloat("uAlpha", r.opacity);
         s->setInt("uGlass", 0);
+        // Whether there IS a picture of the scene behind this surface to bend.
+        // Baseline like uGlass, and for the same reason: a program that kept
+        // last pass's 1 would sample a copy taken from another viewport. The
+        // sampler and the rectangle only matter when there is one.
+        const int hasCopy = (m_sceneCopyW > 0 && m_sceneCopy) ? 1 : 0;
+        s->setInt("uHasSceneCopy", hasCopy);
+        if (hasCopy) {
+            s->setInt("uSceneCopy", kSceneCopyUnit);
+            s->setVec4("uSceneCopyRect",
+                       glm::vec4(static_cast<float>(m_sceneCopyX),
+                                 static_cast<float>(m_sceneCopyY),
+                                 static_cast<float>(m_sceneCopyW),
+                                 static_cast<float>(m_sceneCopyH)));
+        }
         s->setInt("uHasNormalMap", 0);
         s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
         s->setInt("uShade", m_shadingMode); // viewport shading; 0 = the material
@@ -726,6 +780,17 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     }
     for (const Renderable* r : opaque) drawOne(*r);
     if (!transparent.empty()) {
+        // Refraction needs the picture behind the glass, and the only moment it
+        // exists is here: the opaque scene is finished and nothing transparent
+        // has been drawn over it yet. Copied only when the frame has a
+        // refracting surface -- every other frame, and every probe face and
+        // water pass without one, pays a scan of a short list.
+        bool refracts = false;
+        for (const Renderable* r : transparent)
+            refracts = refracts || (r->material &&
+                                    r->material->get<int>("uGlass", 0) == 1);
+        if (refracts) captureSceneCopy();
+        else          m_sceneCopyW = 0;   // the shader falls back on its own
         // Sort by where the GEOMETRY is, not by where its model matrix says it
         // is. A mesh baked in world space -- a contrail, a city chunk, the road
         // ribbon -- is submitted with an identity matrix, so model[3] is the
@@ -755,7 +820,19 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
-        for (const Renderable* r : transparent) drawOne(*r);
+        for (const Renderable* r : transparent) {
+            // Glass with a copy behind it composites the background ITSELF and
+            // comes out opaque, so it writes depth like an opaque surface would.
+            // Without that, the far side of a glass sphere paints over the near
+            // side: the sort orders objects, never the triangles inside one, and
+            // with depth writes off whichever half happens to be drawn last is
+            // the half you see. Every other transparent surface still relies on
+            // the sort and must not write.
+            const bool solidGlass = refracts && r->material &&
+                                    r->material->get<int>("uGlass", 0) == 1;
+            glDepthMask(solidGlass ? GL_TRUE : GL_FALSE);
+            drawOne(*r);
+        }
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
     }

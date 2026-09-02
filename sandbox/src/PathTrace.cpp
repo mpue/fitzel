@@ -1229,8 +1229,9 @@ struct Tracer {
                 // A dielectric: reflect or refract, chosen by Fresnel. No next
                 // event estimation -- the lobe is a delta and a shadow ray at a
                 // mirror direction would contribute nothing but noise.
-                const bool entering = glm::dot(gN, ray.d) < 0.0f;
-                const float ior = entering ? (1.0f / 1.5f) : 1.5f;
+                const bool  entering = glm::dot(gN, ray.d) < 0.0f;
+                const float n   = std::max(1.0f, mat.ior);
+                const float ior = entering ? (1.0f / n) : n;
                 const float cosI = std::min(1.0f, glm::dot(N, V));
                 const float sinT2 = ior * ior * (1.0f - cosI * cosI);
                 float F;

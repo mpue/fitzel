@@ -88,6 +88,11 @@ struct Material {
     float     reflectivity = 0.0f; // 0 dielectric (4% F0) .. 1 mirror
     float     opacity      = 1.0f;
     bool      glass        = false; // dielectric with refraction, not blending
+    // Index of refraction, read only when `glass` is on. Was 1.5 hard-coded
+    // here and in the GPU tracer, which meant every dielectric in every
+    // render was window glass -- water read as glass, a gem read as glass,
+    // and the one number that tells them apart was not in the scene at all.
+    float     ior          = 1.5f;
     glm::vec3 emission{0.0f};       // emissive colour, sRGB
     float     emissionStrength = 1.0f; // linear multiplier (>1 for a real glow)
     int       texture      = -1;    // index into Scene::textures, -1 = flat

@@ -18,6 +18,20 @@ using fitzel::AssetId;
 using fitzel::Material;
 using fitzel::Mesh;
 
+namespace {
+// Does this material have to go through the transparent pass?
+//
+// Blend says so outright. Glass has to as well, and used not to: a pane at full
+// opacity landed in the OPAQUE queue and came out a solid wall, so the only way
+// to see through glass was to also turn its opacity down -- two settings for one
+// idea, and the one named "Glass" was the one that did nothing. It matters twice
+// over now, because the copy of the scene a refraction reads is taken between
+// the two passes: a surface drawn in the opaque queue has nothing behind it yet.
+bool isBlended(const MaterialDef& md) {
+    return md.alphaMode == AlphaMode::Blend || md.glass;
+}
+} // namespace
+
 void submit(const Context& c, Scratch& scratch) {
     scratch.clear();
     scratch.gpuMats.reserve(c.materials.size());
@@ -28,6 +42,12 @@ void submit(const Context& c, Scratch& scratch) {
          .set("uReflectivity", md.reflectivity)
          .set("uRoughness", md.roughness)
          .set("uGlass", md.glass ? 1 : 0);
+        // Only written for glass. uGlass is reset to 0 by the renderer's
+        // baseline on every draw, so a material that never turns it on never
+        // reads these -- and the shader's cheapest uniform is the one nobody
+        // uploads.
+        if (md.glass)
+            m.set("uIor", md.ior).set("uGlassThickness", md.thickness);
         if (md.tex)
             m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0)
              .set("uTint", md.tint); // always written (shared program)
@@ -107,7 +127,7 @@ void submit(const Context& c, Scratch& scratch) {
                 c.renderer.submit(lm->meshes[i], scratch.gpuMats[mi], mm, true,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,
-                                c.materials[mi].alphaMode == AlphaMode::Blend);
+                                isBlended(c.materials[mi]));
             }
             continue;
         }
@@ -184,7 +204,7 @@ void submit(const Context& c, Scratch& scratch) {
                 c.renderer.submit(sub.mesh, *withPaint(mi), mm, true,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,
-                                c.materials[mi].alphaMode == AlphaMode::Blend);
+                                isBlended(c.materials[mi]));
             }
             continue;
         }
@@ -216,7 +236,7 @@ void submit(const Context& c, Scratch& scratch) {
             c.renderer.submit(mesh, scratch.gpuMats[mi], m, true,
                             isMirror(c.materials[mi]),
                             c.materials[mi].opacity,
-                            c.materials[mi].alphaMode == AlphaMode::Blend);
+                            isBlended(c.materials[mi]));
         }
     }
 }

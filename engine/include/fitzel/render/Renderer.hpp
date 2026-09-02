@@ -96,6 +96,13 @@ public:
     // that channel's four spherical-harmonic coefficients in RGBA. Units 24-26
     // because the terrain's layer normal maps run to 23.
     static constexpr int kLightGridUnit = 24;
+    // A copy of the opaque scene, taken between the opaque and the transparent
+    // pass, so a refracting surface can look up what is BEHIND it and bend it.
+    // Nothing else can: a transparent draw cannot read the target it is writing,
+    // and the environment probe knows the sky and the neighbours but not the
+    // wall two metres back. Only taken when the frame actually has something
+    // refractive in it (see m_sceneCopy).
+    static constexpr int kSceneCopyUnit = 27;
 
     // Cube-face resolution of the dynamic environment probe.
     static constexpr int kDefaultEnvProbeRes = 256;
@@ -323,6 +330,14 @@ private:
         float           castCutoff;    // cutout threshold (mode 1)
         const Texture*  castTex;       // alpha source for modes 1 and 2
     };
+
+    // The opaque scene, copied out of whatever target is bound just before the
+    // transparent pass. Grown to the viewport on demand and reused; 0 until some
+    // frame has a refracting surface in it.
+    std::uint32_t     m_sceneCopy      = 0;
+    int               m_sceneCopyW     = 0, m_sceneCopyH = 0;
+    int               m_sceneCopyX     = 0, m_sceneCopyY = 0;
+    void captureSceneCopy();
 
     CascadedShadowMap m_csm;
     int               m_shadowDraws    = 0;   // see shadowDraws()

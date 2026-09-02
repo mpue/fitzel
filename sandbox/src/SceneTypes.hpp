@@ -102,7 +102,18 @@ struct MaterialDef {
     float       reflectivity = 0.0f;         // 0 matte .. 1 mirror (env probe)
     float       roughness    = 0.2f;         // reflection blur (0 sharp)
     float       opacity      = 1.0f;         // 1 opaque .. 0 invisible (alpha blend)
-    bool        glass        = false;        // Fresnel alpha: clear centre, reflective rim
+    // A dielectric: what you see through it is bent, and how much of it you see
+    // at all is decided by the angle rather than by a slider. `ior` is the index
+    // of refraction -- 1.0 is air (nothing happens), 1.5 window glass, 1.33
+    // water, 2.42 diamond -- and it drives BOTH halves of that: the reflectance
+    // head-on is ((n-1)/(n+1))^2, and the bend is Snell's law.
+    bool        glass        = false;
+    float       ior          = 1.5f;   // 1..3; only read when `glass` is on
+    // How far a ray travels inside the glass before it leaves, in metres. Not
+    // measured from the geometry: a pane modelled as a single quad has no
+    // thickness to measure, and the number that decides how far the image behind
+    // it shifts is the one the author wants in hand anyway.
+    float       thickness    = 0.02f;
     // How the base-colour texture's alpha channel drives transparency (a
     // "transparency map"). See AlphaMode above. `alphaCutoff` is the Cutout
     // discard threshold (unused for Opaque/Blend).

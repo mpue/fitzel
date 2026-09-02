@@ -4298,6 +4298,8 @@ int main(int argc, char** argv) {
                         {"roughness", md.roughness},
                         {"opacity", md.opacity},
                         {"glass", md.glass},
+                        {"ior", md.ior},
+                        {"thickness", md.thickness},
                         {"alphaMode", static_cast<int>(md.alphaMode)},
                         {"alphaCutoff", md.alphaCutoff},
                         {"emission", {md.emission.x, md.emission.y, md.emission.z}},
@@ -4564,6 +4566,8 @@ int main(int argc, char** argv) {
                         md.roughness     = e.value("roughness", md.roughness);
                         md.opacity       = e.value("opacity", md.opacity);
                         md.glass         = e.value("glass", md.glass);
+                        md.ior           = e.value("ior", md.ior);
+                        md.thickness     = e.value("thickness", md.thickness);
                         md.alphaMode     = static_cast<AlphaMode>(
                             e.value("alphaMode", static_cast<int>(md.alphaMode)));
                         md.alphaCutoff   = e.value("alphaCutoff", md.alphaCutoff);
