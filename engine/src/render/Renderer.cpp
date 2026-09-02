@@ -336,6 +336,9 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
 
+    m_shadowDraws = 0;
+    m_shadowTris  = 0;
+
     const int cascades = m_csm.cascadeCount();
     for (int i = 0; i < cascades; ++i) {
         m_csm.beginCascade(i);   // clears to 1.0, i.e. to "unshadowed"
@@ -367,8 +370,11 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
             uploadCoverage(m_depthShader, r, 0.6180339887f * static_cast<float>(k));
             m_depthShader.setMat4("uModel", r.model);
             r.mesh->draw();
+            ++m_shadowDraws;
+            m_shadowTris += (r.mesh->indexCount() ? r.mesh->indexCount()
+                                                  : r.mesh->vertexCount()) / 3;
         }
-        if (extra) extra(lightSpace);
+        if (extra) extra(lightSpace, i, m_csm.splitDistances()[i]);
     }
     m_csm.end(m_vpWidth, m_vpHeight);
 }

@@ -204,7 +204,16 @@ public:
     // render the shadow cascades once from the stored camera + light. The
     // optional callback is invoked per cascade with that cascade's light-space
     // matrix, so the app can add its own casters (e.g. instanced trees).
-    using ShadowCaster = std::function<void(const glm::mat4& lightSpace)>;
+    //
+    // It is also told WHICH cascade this is and how far that cascade reaches, in
+    // metres from the eye. A caster that is expensive per instance wants both:
+    // the near cascade covers twenty metres and has no use for a forest two
+    // hundred metres out, and the far one spreads its texels so thinly that a
+    // tree's shadow lands on one of them. Without those two numbers every
+    // cascade is handed the same whole scene and the near ones pay for detail
+    // that the far ones cannot show.
+    using ShadowCaster =
+        std::function<void(const glm::mat4& lightSpace, int cascade, float cascadeFar)>;
     void prepareShadows(const ShadowCaster& extra = {});
 
     // The same, fitted to a DIFFERENT eye than the one begin() was given, and
@@ -247,6 +256,14 @@ public:
     // Frustum-culling stats from the most recent renderScene() call.
     int lastDrawn()  const { return m_lastDrawn; }
     int lastCulled() const { return m_lastCulled; }
+
+    // What the cascade pass replayed, summed over every cascade of the most
+    // recent prepareShadows(). The number that matters is the TRIANGLES: a
+    // cascade is culled on four planes only, so the far one covers the whole
+    // shadowed range and redraws almost everything loaded. Four modest-looking
+    // draw counts can still be millions of triangles a frame.
+    int       shadowDraws() const { return m_shadowDraws; }
+    long long shadowTris()  const { return m_shadowTris; }
 
     // What the frame submitted, for a consumer that has to render the scene a
     // SECOND way.
@@ -308,6 +325,8 @@ private:
     };
 
     CascadedShadowMap m_csm;
+    int               m_shadowDraws    = 0;   // see shadowDraws()
+    long long         m_shadowTris     = 0;
     bool              m_shadowsEnabled = true;
     int               m_shadingMode    = 0;
     Shader            m_depthShader;

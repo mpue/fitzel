@@ -85,7 +85,11 @@ public:
                    float waterLevel, float snowLevel);
     void eraseTree(glm::vec2 c, float radius);
     void clearPaintedTrees() { paintedTrees.clear(); rebuildTreeBuffers(); }
-    void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather);
+    // `maxDist` is how far from camXZ a tree may stand and still be drawn into
+    // THIS cascade (0 = no limit). The caller resolves it, because only it knows
+    // which cascade this is -- see Renderer::ShadowCaster.
+    void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather,
+                        glm::vec2 camXZ, float maxDist);
     void drawTrees(const FrameContext& ctx);
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
@@ -97,10 +101,21 @@ public:
     // the forest is being drawn, which is the number that decides the frame.
     int drawnInstances() const { return m_drawnLast; }
 
+    // The same count, and the triangles behind it, for the SHADOW cascades
+    // alone. Split out because that is where a forest is drawn most often (once
+    // per cascade) and least visibly -- a number nobody looks at until the frame
+    // time says the cascade pass is the whole frame.
+    int       shadowInstances() const { return m_shadowInstLast; }
+    long long shadowTriangles() const { return m_shadowTrisLast; }
+
     // Roll the per-frame counters. Call once at the top of a frame, before the
     // shadow cascades -- they are the first pass that draws trees, and they are
     // the reason the count is worth having.
-    void beginFrame() { m_drawnLast = m_drawnInstances; m_drawnInstances = 0; }
+    void beginFrame() {
+        m_drawnLast = m_drawnInstances; m_drawnInstances = 0;
+        m_shadowInstLast = m_shadowInst; m_shadowInst = 0;
+        m_shadowTrisLast = m_shadowTris; m_shadowTris = 0;
+    }
 
     // One detail level of a tree species: a mesh file dropped over the terrain,
     // shown only within [prev.dist, dist) of the camera (the last mesh LOD runs
@@ -108,10 +123,17 @@ public:
     struct TreeLOD {
         std::string   model;         // .glb filename (relative to the model dir)
         float         dist = 40.0f;  // switch to the next level beyond this (m)
+        // `first`/`count` are an offset and a length in the LOD's INDEX buffer,
+        // not the vertex buffer: a tree arrives from glTF as a flat triangle
+        // soup, and drawn that way every triangle pays three fresh vertex
+        // shader runs for corners it shares with its neighbours. At a hundred
+        // thousand triangles an instance, redrawn into every shadow cascade,
+        // that redundancy IS the frame -- so the mesh is welded back into an
+        // indexed one on load (see loadTreeMesh).
         struct Prim { fitzel::Texture tex; bool hasTex = false;
                       int first = 0, count = 0; bool cutout = false; };
         std::vector<Prim> prims;     // per-material draw groups
-        std::uint32_t vao = 0, vbo = 0;
+        std::uint32_t vao = 0, vbo = 0, ibo = 0;
         // Bounding-sphere radius of the loaded mesh in UNIT-HEIGHT units, about
         // the point half a height up -- so an instance's world sphere is
         // (pos + (0, 0.5*scale, 0), boundR * scale). Measured on load rather
@@ -200,6 +222,14 @@ public:
     bool  paintedDirty = false;        // GPU re-upload of painted blades pending
 
     bool      treeEnabled = true;
+    // How far from the camera a tree still casts a sun shadow, in metres
+    // (0 = no limit). The cascades cover the whole streamed terrain, so without
+    // this the far cascade redraws every tree in the world -- at LOD0, with
+    // alpha-cutout leaves, once per cascade. What that buys is a shadow half a
+    // kilometre away, spread over a handful of shadow texels, on ground the fog
+    // has already taken. It is by far the most expensive picture in the frame
+    // per pixel of visible difference.
+    float     treeShadowDistance = 120.0f;
     // Global colour correction for the tree material (mesh + billboard albedo).
     // Identity defaults, so a scene without saved values looks unchanged.
     float     treeBrightness = 1.0f; // multiplier (0..2)
@@ -290,6 +320,8 @@ private:
     // over because it stands in every shadow cascade.
     int                      m_drawnInstances = 0;
     int                      m_drawnLast = 0;
+    int                      m_shadowInst = 0, m_shadowInstLast = 0;
+    long long                m_shadowTris = 0, m_shadowTrisLast = 0;
     std::mt19937             m_trng{555u};
     // Combined positions of every species (5 floats/tree) -- feeds flower
     // clustering around trunks and the treeInstances() accessor.

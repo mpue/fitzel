@@ -36,6 +36,9 @@
 #include <glm/gtc/type_ptr.hpp>
 
 #include <nlohmann/json.hpp>
+#ifndef FITZEL_PLAYER
+#include <stb_image_write.h>  // --profile-shot (editor build only; see BootConfig)
+#endif
 
 #include <fitzel/Fitzel.hpp>
 #include <fitzel/Version.hpp>   // generated: x.y.z.<commits> + git hash
@@ -369,6 +372,15 @@ struct BootConfig {
     // same scene measured twice under the same conditions and the two numbers
     // side by side. This is that.
     std::string profilePath;
+    // Where to drop a PNG of the last measured frame. A benchmark that only
+    // reports milliseconds cannot tell you whether the change that bought them
+    // also removed a shadow -- which, for anything in this area, is the more
+    // likely outcome of the two. Same run, same camera, one picture.
+    //
+    // Editor build only: the PNG writer's implementation lives in the editor's
+    // Render panel, and the player has no reason to carry an image encoder for
+    // a development flag.
+    std::string profileShot;
     double      profileSeconds = 8.0;
 };
 
@@ -389,6 +401,7 @@ BootConfig loadBootConfig(int argc, char** argv) {
         if (a == "--play")            cfg.project     = argv[i + 1];
         else if (a == "--scene")      cfg.scene       = argv[i + 1];
         else if (a == "--profile")    cfg.profilePath = argv[i + 1];
+        else if (a == "--profile-shot") cfg.profileShot = argv[i + 1];
         else if (a == "--profile-seconds")
             cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
     }
@@ -6052,6 +6065,12 @@ int main(int argc, char** argv) {
                     << "  worst " << z->worst << "\n";
             out << "\n" << "scene" << "\n";
             out << "  terrain chunks loaded   " << streamer.loadedChunkCount() << "\n";
+            out << "  shadow caster draws     " << renderer.shadowDraws()
+                << "  (summed over every cascade)" << "\n";
+            out << "  shadow triangles        " << renderer.shadowTris() << "\n";
+            out << "  tree shadow instances   " << veg.shadowInstances()
+                << "  within " << veg.treeShadowDistance << " m" << "\n";
+            out << "  tree shadow triangles   " << veg.shadowTriangles() << "\n";
             out << "  trees in range          " << veg.treeCount << "\n";
             out << "  tree instances drawn    " << veg.drawnInstances()
                 << "  (summed over every pass in one frame)" << "\n";
@@ -14163,8 +14182,37 @@ int main(int argc, char** argv) {
 
             // --- Multi-pass render with sky and planar water ------------
             // Trees cast shadows: drawn into every cascade via this callback.
-            auto treeShadowCaster = [&](const glm::mat4& lightSpace) {
-                veg.drawTreeShadow(lightSpace, now, weather);
+            // Which eye the cascades are being fitted to. Split screen runs the
+            // pass twice with two different cameras, and the tree cull measures
+            // distance from the eye -- fed player one's position both times, the
+            // second pane loses the shadows around itself.
+            glm::vec2 shadowEyeXZ(camera.position().x, camera.position().z);
+            auto treeShadowCaster = [&](const glm::mat4& lightSpace, int,
+                                        float cascadeFar) {
+                // Timed apart from the rest of the cascade pass: "GPU shadows"
+                // is the sum of two very different costs -- the queue (terrain
+                // and objects, plain depth) and the forest (alpha-cutout leaves,
+                // LOD0, once per cascade) -- and which of the two is the bill is
+                // the first thing you need to know when the number is large.
+                // Summed over every cascade, like the zone it sits inside.
+                FZ_GPU_ZONE("GPU shadow trees");
+                // How far past its own reach a cascade still needs casters: a
+                // tree standing between the sun and the slice shades into it,
+                // and the length of that reach is the tree's height over the
+                // tangent of the sun's elevation. Low sun, long shadows, more
+                // trees; noon, almost none. Capped, because at sunrise the
+                // formula runs to the horizon and the shadow it asks for is a
+                // grey smear no one can point at.
+                const float sunY  = std::max(0.05f, light.direction.y);
+                const float sunXZ = std::sqrt(std::max(0.0f, 1.0f - sunY * sunY));
+                const float reach =
+                    cascadeFar + std::min(25.0f * sunXZ / sunY, 60.0f);
+                // The author's own limit still wins: it is the one that decides
+                // whether the far cascades get a forest at all.
+                const float limit = veg.treeShadowDistance > 0.0f
+                                        ? std::min(veg.treeShadowDistance, reach)
+                                        : reach;
+                veg.drawTreeShadow(lightSpace, now, weather, shadowEyeXZ, limit);
             };
             // Cascades for player one. With two panes up the second pane fits
             // its own set inside the loop below -- shadows are cut to a view
@@ -14308,7 +14356,10 @@ int main(int argc, char** argv) {
             // which costs one more cascade pass over the same queue. Everything
             // this pane draws afterwards -- the water passes included -- samples
             // what is bound here, so it has to happen before any of it.
-            if (vi > 0) renderer.prepareShadowsFor(vcam, aspect, treeShadowCaster);
+            if (vi > 0) {
+                shadowEyeXZ = glm::vec2(vcam.position().x, vcam.position().z);
+                renderer.prepareShadowsFor(vcam, aspect, treeShadowCaster);
+            }
 
             // Is the water plane in shot at all? Both passes below push the
             // ENTIRE scene through renderScene a second and third time, purely
@@ -15104,6 +15155,30 @@ int main(int argc, char** argv) {
                     prof::reset();
                 } else if (window.time() - profileStart > boot.profileSeconds) {
                     writeProfileReport();
+#ifndef FITZEL_PLAYER
+                    if (!boot.profileShot.empty()) {
+                        // After the swap: the front buffer holds the finished
+                        // frame, post chain and all, which is what a comparison
+                        // wants to look at. Flipped, because GL counts rows from
+                        // the bottom and every image format here does not.
+                        int sw = 0, sh = 0;
+                        window.framebufferSize(sw, sh);
+                        std::vector<unsigned char> px(
+                            static_cast<std::size_t>(sw) * sh * 4);
+                        glReadBuffer(GL_FRONT);
+                        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                        glReadPixels(0, 0, sw, sh, GL_RGBA, GL_UNSIGNED_BYTE,
+                                     px.data());
+                        std::vector<unsigned char> flipped(px.size());
+                        const std::size_t row = static_cast<std::size_t>(sw) * 4;
+                        for (int y = 0; y < sh; ++y)
+                            std::memcpy(&flipped[static_cast<std::size_t>(y) * row],
+                                        &px[static_cast<std::size_t>(sh - 1 - y) * row],
+                                        row);
+                        stbi_write_png(boot.profileShot.c_str(), sw, sh, 4,
+                                       flipped.data(), static_cast<int>(row));
+                    }
+#endif
                     window.requestClose();
                 }
             }

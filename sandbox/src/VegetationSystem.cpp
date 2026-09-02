@@ -7,9 +7,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <random>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -538,6 +540,7 @@ VegetationSystem::~VegetationSystem() {
     for (TreeSpecies& sp : m_species) {
         for (TreeLOD& lod : sp.lods) {
             if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
+            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
             if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
         }
         if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
@@ -647,9 +650,30 @@ void VegetationSystem::refreshTreeAssets(const std::string& projectDir) {
     }
 }
 
+namespace {
+// One tree vertex as a hashable key: the eight floats exactly as they will be
+// uploaded, compared bit for bit. See loadTreeMesh.
+struct VertexKey {
+    float v[8];
+    bool operator==(const VertexKey& o) const {
+        return std::memcmp(v, o.v, sizeof v) == 0;
+    }
+};
+struct VertexKeyHash {
+    std::size_t operator()(const VertexKey& k) const noexcept {
+        std::size_t h = 1469598103934665603ull; // FNV-1a over the bit pattern
+        std::uint32_t bits[8];
+        std::memcpy(bits, k.v, sizeof bits);
+        for (std::uint32_t b : bits) { h ^= b; h *= 1099511628211ull; }
+        return h;
+    }
+};
+} // namespace
+
 bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod) {
     lod.prims.clear();
     if (lod.vbo) { glDeleteBuffers(1, &lod.vbo); lod.vbo = 0; }
+    if (lod.ibo) { glDeleteBuffers(1, &lod.ibo); lod.ibo = 0; }
     if (lod.vao) { glDeleteVertexArrays(1, &lod.vao); lod.vao = 0; }
 
     // Instanced mesh geometry normalized to unit height (instance scale = size),
@@ -659,34 +683,43 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
         std::fprintf(stderr, "Tree model failed to load: %s\n", path.c_str());
         return false;
     }
-    std::vector<float> verts;
+    std::vector<float>         verts;
+    std::vector<std::uint32_t> indices;
+    // Vertex -> its slot in `verts`, so the second triangle to use a corner
+    // reuses it instead of appending it again. Keyed on the eight floats' exact
+    // bits: two corners that a modelling tool wrote as the same numbers ARE the
+    // same corner, and two that differ in the last bit have different normals or
+    // UVs and must stay apart -- welding those would visibly seam the leaves.
+    std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> unique;
     const float scale = 1.0f / md.height();
     // ...and the sphere that holds the normalized mesh, for the instance culling.
     float boundR2 = 0.0f;
     for (fitzel::ModelPrimitive& p : md.primitives) {
         TreeLOD::Prim tp;
-        tp.first  = static_cast<int>(verts.size() / 8);
+        tp.first  = static_cast<int>(indices.size());
         tp.count  = p.vertexCount();
         tp.cutout = p.alphaCutout;
         tp.hasTex = !p.texPixels.empty();
         if (tp.hasTex)
             tp.tex = Texture::fromPixels(p.texPixels.data(), p.texWidth, p.texHeight, 4);
         for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
-            const float nx = p.vertices[i + 0] * scale;
-            const float ny = (p.vertices[i + 1] - md.minY) * scale;
-            const float nz = p.vertices[i + 2] * scale;
+            VertexKey key{};
+            key.v[0] = p.vertices[i + 0] * scale;
+            key.v[1] = (p.vertices[i + 1] - md.minY) * scale;
+            key.v[2] = p.vertices[i + 2] * scale;
+            for (int k = 3; k < 8; ++k) key.v[k] = p.vertices[i + k];
+            const auto it = unique.find(key);
+            if (it != unique.end()) { indices.push_back(it->second); continue; }
+            const std::uint32_t slot =
+                static_cast<std::uint32_t>(verts.size() / 8);
+            unique.emplace(key, slot);
+            indices.push_back(slot);
             // Around the mesh's mid-height, which is where the instance sphere
             // is centred.
-            const float dy = ny - 0.5f;
-            boundR2 = std::max(boundR2, nx * nx + dy * dy + nz * nz);
-            verts.push_back(nx);
-            verts.push_back(ny);
-            verts.push_back(nz);
-            verts.push_back(p.vertices[i + 3]);
-            verts.push_back(p.vertices[i + 4]);
-            verts.push_back(p.vertices[i + 5]);
-            verts.push_back(p.vertices[i + 6]);
-            verts.push_back(p.vertices[i + 7]);
+            const float dy = key.v[1] - 0.5f;
+            boundR2 = std::max(boundR2,
+                               key.v[0] * key.v[0] + dy * dy + key.v[2] * key.v[2]);
+            verts.insert(verts.end(), key.v, key.v + 8);
         }
         lod.prims.push_back(std::move(tp));
     }
@@ -698,6 +731,13 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
     glBufferData(GL_ARRAY_BUFFER,
                  static_cast<GLsizeiptr>(verts.size() * sizeof(float)),
                  verts.data(), GL_STATIC_DRAW);
+    // The element buffer belongs to the VAO, so it is bound here and never
+    // again -- binding the VAO at draw time brings it along.
+    glGenBuffers(1, &lod.ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lod.ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(indices.size() * sizeof(std::uint32_t)),
+                 indices.data(), GL_STATIC_DRAW);
     const GLsizei ms = 8 * sizeof(float);
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ms, (void*)0);
@@ -749,6 +789,7 @@ void VegetationSystem::removeSpecies(int s) {
     TreeSpecies& sp = m_species[s];
     for (TreeLOD& lod : sp.lods) {
         if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
+            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
         if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
     }
     if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
@@ -787,6 +828,7 @@ void VegetationSystem::removeLOD(int s, int lod) {
     if (lod < 0 || lod >= static_cast<int>(sp.lods.size())) return;
     TreeLOD& L = sp.lods[lod];
     if (L.vbo) glDeleteBuffers(1, &L.vbo);
+    if (L.ibo) glDeleteBuffers(1, &L.ibo);
     if (L.vao) glDeleteVertexArrays(1, &L.vao);
     sp.lods.erase(sp.lods.begin() + lod);
 }
@@ -1038,9 +1080,26 @@ int VegetationSystem::cullInstances(const TreeSpecies& sp, const TreeLOD& lod,
 }
 
 void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
-                                      float weather) {
+                                      float weather, glm::vec2 camXZ,
+                                      float maxDist) {
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
-    glDisable(GL_CULL_FACE);
+    const float shadowDistance = maxDist > 0.0f ? maxDist : 1e9f;
+    // Backfaces are dropped here even though the lit pass keeps them. A leaf
+    // card is two quads' worth of fragments and only the near one decides the
+    // depth the sun sees; the far one writes the same shadow a hair later and is
+    // discarded by the depth test anyway. With an alpha-cutout shader that costs
+    // a texture fetch and a discard per fragment -- which is the pass, not a
+    // detail of it. Trunks are closed, so nothing that was solid becomes hollow.
+    // Saved and put back: this runs INSIDE the renderer's cascade loop, between
+    // that pass's own draws, and the cascade pass inherits a cull face from
+    // whoever ran last (the point-shadow pass leaves GL_FRONT behind). Leaving
+    // ours set would change how the terrain self-shadows -- an acne bug two
+    // files away from anything about trees.
+    const GLboolean prevCull = glIsEnabled(GL_CULL_FACE);
+    GLint prevFace = GL_BACK;
+    glGetIntegerv(GL_CULL_FACE_MODE, &prevFace);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
     m_treeDepth.bind();
     m_treeDepth.setMat4("uLightSpace", lightSpace);
     m_treeDepth.setFloat("uTime", static_cast<float>(time));
@@ -1048,28 +1107,40 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     m_treeDepth.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
     m_treeDepth.setFloat("uTreeHeight", 1.0f); // meshes normalized to unit height
     m_treeDepth.setInt("uTex", 0);
-    // Shadows use LOD0 over every instance (no distance banding) -- but only the
-    // instances THIS cascade can see. A cascade is a slice of the view, and
-    // drawing the whole forest into each of them was the same trees five times
-    // over: it is the single most expensive thing a dense forest did.
+    // Shadows use LOD0 -- but only the instances THIS cascade can see, and only
+    // those within treeShadowDistance of the camera. A cascade is a slice of the
+    // view, and drawing the whole forest into each of them was the same trees
+    // five times over: it is the single most expensive thing a dense forest did.
     for (const TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.count == 0 || sp.lods.empty()) continue;
-        const TreeLOD& lod = sp.lods.front();
+        // The COARSEST level, not the finest. A shadow is a silhouette: the leaf
+        // a lower LOD dropped is worth a texel of the map at best, and this pass
+        // draws more tree geometry than the visible frame does. A species with
+        // one LOD is unchanged -- which is also why adding a coarse one is worth
+        // several times more here than it is in the lit pass.
+        const TreeLOD& lod = sp.lods.back();
         // Four planes, not six: a tree standing between the sun and the slice is
         // outside the box and still casts into it (see sphereVisible).
         const int vis = cullInstances(sp, lod, lightSpace, 4,
-                                      glm::vec2(0.0f), 0.0f, 1e9f);
+                                      camXZ, 0.0f, shadowDistance);
         if (vis == 0) continue;
+        m_shadowInst += vis;
         glBindVertexArray(lod.vao);
         bindTreeInstanceAttribs(m_cullVBO);
         for (const TreeLOD::Prim& tp : lod.prims) {
             if (tp.hasTex) tp.tex.bind(0);
             m_treeDepth.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-            glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, vis);
+            glDrawElementsInstanced(
+                GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
+                reinterpret_cast<const void*>(
+                    static_cast<std::uintptr_t>(tp.first) * sizeof(std::uint32_t)),
+                vis);
+            m_shadowTris += static_cast<long long>(tp.count / 3) * vis;
         }
     }
     glBindVertexArray(0);
-    glEnable(GL_CULL_FACE);
+    glCullFace(prevFace);
+    if (!prevCull) glDisable(GL_CULL_FACE);
 }
 
 void VegetationSystem::drawTrees(const FrameContext& c) {
@@ -1118,7 +1189,11 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
             for (const TreeLOD::Prim& tp : lod.prims) {
                 if (tp.hasTex) tp.tex.bind(0);
                 m_tree.setInt("uAlphaCutout", tp.cutout ? 1 : 0);
-                glDrawArraysInstanced(GL_TRIANGLES, tp.first, tp.count, vis);
+                glDrawElementsInstanced(
+                    GL_TRIANGLES, tp.count, GL_UNSIGNED_INT,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(tp.first) * sizeof(std::uint32_t)),
+                    vis);
             }
         }
     }
@@ -1172,19 +1247,33 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     // cost -- a forest standing in four cascades is drawn five times over -- and
     // it is invisible everywhere else in the editor.
     if (treeEnabled && treeCount > 0) {
-        int verts = 0;
+        int tris = 0;
         for (const TreeSpecies& sp : m_species)
             if (!sp.lods.empty())
                 for (const TreeLOD::Prim& tp : sp.lods.front().prims)
-                    verts = std::max(verts, tp.first + tp.count);
-        ImGui::TextDisabled("%d instances submitted last frame (%d k vertices each)",
-                            m_drawnLast, verts / 1000);
-        if (verts > 60000)
-            ui::hint("That mesh is %d vertices, and every instance pays all of "
+                    tris = std::max(tris, (tp.first + tp.count) / 3);
+        ImGui::TextDisabled("%d instances submitted last frame (%d k triangles each)",
+                            m_drawnLast, tris / 1000);
+        if (tris > 20000)
+            ui::hint("That mesh is %d triangles, and every instance pays all of "
                      "them in every pass it survives. At this size a billboard "
                      "past 60 m and one coarse LOD are worth more than every "
-                     "other setting in this panel put together.", verts);
+                     "other setting in this panel put together.", tris);
     }
+
+    // The one setting in this panel that costs nothing to look at and everything
+    // to leave alone: the cascades cover the whole streamed terrain, so a forest
+    // with no limit here is redrawn once per cascade out to the horizon.
+    ImGui::BeginDisabled(!treeEnabled);
+    ImGui::SliderFloat("Shadow distance", &treeShadowDistance, 0.0f, 600.0f,
+                       treeShadowDistance <= 0.0f ? "no limit" : "%.0f m");
+    ui::hint("How far a tree still casts a sun shadow. Past it the tree is still "
+             "drawn -- it simply stops being redrawn into every cascade, which "
+             "at this mesh size is most of the frame. 0 means no limit.");
+    ImGui::TextDisabled("%d instances into the cascades last frame (%lld k triangles)",
+                        m_shadowInstLast,
+                        static_cast<long long>(m_shadowTrisLast / 1000));
+    ImGui::EndDisabled();
 
     // Source toggles: use generated and/or painted trees, in any combination.
     ImGui::BeginDisabled(!treeEnabled);
@@ -1375,6 +1464,7 @@ void VegetationSystem::serializeTrees(nlohmann::json& j) const {
     j["treeBrightness"] = treeBrightness;
     j["treeContrast"]   = treeContrast;
     j["treeHue"]        = treeHue;
+    j["treeShadowDist"] = treeShadowDistance;
 }
 
 void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
@@ -1383,6 +1473,7 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
     for (TreeSpecies& sp : m_species) {
         for (TreeLOD& lod : sp.lods) {
             if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
+            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
             if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
         }
         if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
@@ -1395,11 +1486,13 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
     treeBrightness = j.value("treeBrightness", 1.0f);
     treeContrast   = j.value("treeContrast", 1.0f);
     treeHue        = j.value("treeHue", 0.0f);
+    treeShadowDistance = j.value("treeShadowDist", 120.0f);
     for (const auto& sj : j["trees"]) {
         const int s = addSpecies();           // mints instVBO/bbVAO + a default LOD
         TreeSpecies& sp = m_species[s];
         for (TreeLOD& lod : sp.lods) {         // drop the default LOD; load from JSON
             if (lod.vbo) glDeleteBuffers(1, &lod.vbo);
+            if (lod.ibo) glDeleteBuffers(1, &lod.ibo);
             if (lod.vao) glDeleteVertexArrays(1, &lod.vao);
         }
         sp.lods.clear();
