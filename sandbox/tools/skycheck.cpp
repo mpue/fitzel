@@ -15,6 +15,13 @@
 //
 //   skycheck [outDir] [shaderDir]
 //   Writes sky_<name>.png -- one per sun angle and look direction.
+//
+//   skycheck --presets [outDir] [shaderDir]
+//   Writes wx_<preset>.png -- one per built-in weather preset, through the same
+//   storm-dial arithmetic main.cpp applies. The presets are a shelf of skies
+//   nobody can compare inside the editor either: picking one replaces the last,
+//   so telling "Overcast" from "Heavy rain" means remembering a picture. Here
+//   they come out side by side in a folder.
 
 #include <cmath>
 #include <cstdio>
@@ -29,6 +36,8 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+
+#include "../src/WeatherPreset.hpp"
 
 // Nothing in the engine writes an image file, so this TU owns the implementation.
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -68,21 +77,59 @@ GLuint compile(GLenum stage, const std::string& src, const char* what) {
 // One frame's worth of sky. Everything the engine feeds sky.frag, given a name
 // so the file it lands in says what it is a picture of.
 struct Shot {
-    const char* name;
+    std::string name;
     float sunHours;      // time of day, the same 0..24 the editor slider uses
     float pitchDeg;      // where the camera looks: up into the layer, or along it
     float yawDeg;        // relative to the sun: 0 = straight at it
-    float coverage;      // the panel's 0..1, not the shader's threshold
-    float cirrus;
-    float contrails;
+    // The rest is a weather::Sky plus the storm dial, because that is what the
+    // engine actually feeds the shader. The hand-written shots below fill in the
+    // defaults for everything they are not about.
+    weather::Sky sky;
+    float storm = 0.0f;
 };
+
+// A shot from the three numbers the hand-written list has always specified,
+// leaving the rest of the sky at its defaults.
+Shot look(const char* name, float hours, float pitch, float yaw,
+          float coverage, float cirrus, float contrails) {
+    Shot s{name, hours, pitch, yaw, {}, 0.0f};
+    s.sky.coverage  = coverage;
+    s.sky.cirrus    = cirrus;
+    s.sky.contrails = contrails;
+    return s;
+}
+
+// One shot per built-in preset, framed the way the "all" shot is: a little above
+// the horizon and well off the sun, which is where a deck reads as a deck.
+std::vector<Shot> presetShots() {
+    std::vector<Shot> out;
+    for (const weather::Preset& p : weather::builtins()) {
+        Shot s{"wx_" + p.name, p.setTimeOfDay ? p.timeOfDay : 12.0f,
+               18.0f, 60.0f, p.sky, p.storm};
+        // Spaces in a filename are a nuisance to type at a prompt, and these are
+        // looked at from one.
+        for (char& c : s.name) if (c == ' ') c = '_';
+        out.push_back(s);
+    }
+    return out;
+}
 
 } // namespace
 
 int main(int argc, char** argv) {
-    const fs::path outDir = (argc > 1) ? fs::path(argv[1]) : fs::path(".");
-    const fs::path shDir  = (argc > 2) ? fs::path(argv[2])
-                                       : fs::path(argv[0]).parent_path() / "assets" / "shaders";
+    // --presets may come first or last: this is a tool run by hand, and an
+    // argument order nobody can remember is an argument nobody uses.
+    bool presetMode = false;
+    std::vector<std::string> pos;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "--presets") presetMode = true;
+        else pos.push_back(a);
+    }
+    const fs::path outDir = !pos.empty() ? fs::path(pos[0]) : fs::path(".");
+    const fs::path shDir  = pos.size() > 1
+                                ? fs::path(pos[1])
+                                : fs::path(argv[0]).parent_path() / "assets" / "shaders";
     if (!glfwInit()) { std::printf("[FAIL] glfw\n"); return 2; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -139,23 +186,23 @@ int main(int argc, char** argv) {
     }
     glViewport(0, 0, kW, kH);
 
-    const Shot shots[] = {
+    const std::vector<Shot> shots = presetMode ? presetShots() : std::vector<Shot>{
         // Midday, looking up into the layer: this is the one that shows whether
         // a cumulus has bulges and a flat base, or is a smear.
-        {"cumulus_noon",     12.0f,  14.0f, 140.0f, 0.55f, 0.0f, 0.0f},
+        look("cumulus_noon",     12.0f,  14.0f, 140.0f, 0.55f, 0.0f, 0.0f),
         // The same field with the sun behind it -- the silver lining case.
-        {"cumulus_backlit",  12.0f,  12.0f,  25.0f, 0.55f, 0.0f, 0.0f},
+        look("cumulus_backlit",  12.0f,  12.0f,  25.0f, 0.55f, 0.0f, 0.0f),
         // Low sun along the layer: the shot a race actually opens on.
-        {"cumulus_evening",  17.2f,   8.0f,  40.0f, 0.45f, 0.0f, 0.0f},
+        look("cumulus_evening",  17.2f,   8.0f,  40.0f, 0.45f, 0.0f, 0.0f),
         // Cirrus on its own, high and thin, with nothing below it.
-        {"cirrus_noon",      12.0f,  38.0f, 120.0f, 0.00f, 0.55f, 0.0f},
-        {"cirrus_evening",   17.2f,  30.0f,  35.0f, 0.00f, 0.65f, 0.0f},
+        look("cirrus_noon",      12.0f,  38.0f, 120.0f, 0.00f, 0.55f, 0.0f),
+        look("cirrus_evening",   17.2f,  30.0f,  35.0f, 0.00f, 0.65f, 0.0f),
         // Contrails on their own, so the straightness can be judged.
-        {"contrails",        11.0f,  45.0f, 100.0f, 0.00f, 0.15f, 0.9f},
+        look("contrails",        11.0f,  45.0f, 100.0f, 0.00f, 0.15f, 0.9f),
         // Everything at once, which is what the sky is meant to look like.
-        {"all",              15.5f,  18.0f,  60.0f, 0.50f, 0.45f, 0.55f},
+        look("all",              15.5f,  18.0f,  60.0f, 0.50f, 0.45f, 0.55f),
         // Overcast, to check the tops build rather than the layer just thickening.
-        {"overcast",         12.0f,  14.0f, 130.0f, 0.95f, 0.20f, 0.0f},
+        look("overcast",         12.0f,  14.0f, 130.0f, 0.95f, 0.20f, 0.0f),
     };
 
     std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
@@ -168,9 +215,15 @@ int main(int argc, char** argv) {
             glm::normalize(glm::vec3(std::cos(phi), std::sin(phi), 0.18f));
         const float dayF  = glm::smoothstep(-0.12f, 0.18f, sunDir.y);
         const float lowSun = 1.0f - glm::clamp(sunDir.y / 0.3f, 0.0f, 1.0f);
+        // ...dimmed by the storm the way main.cpp dims it. Without this every
+        // preset comes out lit like a fair day, and a storm ceiling photographed
+        // in full sun is a picture of the wrong weather. The height haze and the
+        // volumetric mist are still missing from these frames -- both are applied
+        // to the SCENE, and there is no scene here.
+        const float lightDim = glm::mix(1.0f, 0.30f, s.storm);
         const glm::vec3 sunCol =
             glm::mix(glm::vec3(1.0f, 0.97f, 0.9f), glm::vec3(1.0f, 0.55f, 0.26f), lowSun) *
-            (0.12f + 0.95f * dayF) * 3.4f;
+            (0.12f + 0.95f * dayF) * 3.4f * lightDim;
 
         // Look `yawDeg` away from the sun's compass bearing, at `pitchDeg` up.
         const float sunYaw = std::atan2(sunDir.z, sunDir.x);
@@ -194,18 +247,26 @@ int main(int argc, char** argv) {
         v3("uSunDir", sunDir);
         v3("uSunColor", sunCol);
         f("uTime", 12.0f);
+        // The storm dial's own arithmetic, copied from main.cpp because that is
+        // the thing being pictured: a preset's cloud numbers are what you see at
+        // the bottom of the dial and a storm's are what you see at the top, and a
+        // harness that skipped the mix would show a sky the engine never draws.
+        const float effCoverage = glm::mix(s.sky.coverage, 0.97f, s.storm);
+        const float effDensity  = glm::mix(s.sky.density, 2.7f, s.storm);
+        const float effWind     = glm::mix(s.sky.wind, 26.0f, s.storm);
+        const float effBase     = glm::mix(s.sky.base, 80.0f, s.storm);
         // The same mapping main.cpp applies: the panel's coverage is an amount,
         // the shader's is a threshold, and they run opposite ways.
-        f("uCoverage", glm::mix(0.86f, 0.46f, s.coverage));
-        f("uCloudDensity", 1.0f);
-        f("uCloudScale", 0.0009f);
-        f("uCloudSpeed", 5.0f);
-        f("uCloudBottom", 700.0f);
-        f("uCloudTop", 2400.0f);
-        f("uCirrus", s.cirrus);
-        f("uCirrusHeight", 1400.0f);
-        f("uCirrusSpeed", 2.5f);
-        f("uContrails", s.contrails);
+        f("uCoverage", glm::mix(0.86f, 0.46f, effCoverage));
+        f("uCloudDensity", effDensity);
+        f("uCloudScale", s.sky.scale);
+        f("uCloudSpeed", effWind);
+        f("uCloudBottom", effBase);
+        f("uCloudTop", s.sky.top);
+        f("uCirrus", s.sky.cirrus);
+        f("uCirrusHeight", s.sky.cirrusHeight);
+        f("uCirrusSpeed", s.sky.cirrusWind);
+        f("uContrails", s.sky.contrails);
         f("uExposure", 1.0f);
         glUniform1i(glGetUniformLocation(prog, "uTonemap"), 1);
 
@@ -214,7 +275,8 @@ int main(int argc, char** argv) {
         glFinish();
         glReadPixels(0, 0, kW, kH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
 
-        const fs::path out = outDir / (std::string("sky_") + s.name + ".png");
+        const fs::path out =
+            outDir / ((presetMode ? "" : "sky_") + s.name + ".png");
         if (stbi_write_png(out.string().c_str(), kW, kH, 4, px.data(), kW * 4))
             std::printf("wrote %s\n", out.string().c_str());
         else

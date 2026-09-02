@@ -79,6 +79,12 @@ set(SANDBOX_RUNTIME_SOURCES
     src/BuildingGen.cpp
     src/CityGen.cpp
     src/RainRenderer.cpp
+    # Weather presets: the named skies a project keeps in weather.json.
+    # Runtime, not editor-only -- a loaded scene names the preset it is on, and
+    # applying a weather is a thing the shipped game may want to do (a script
+    # switching to Storm for a lap) without a panel in the room. Only the panel
+    # that edits one is editor-only, below.
+    src/WeatherPreset.cpp
     src/SpraySystem.cpp
     src/ParticleSystem.cpp
     src/SkidSystem.cpp
@@ -139,6 +145,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/SplineEdit.cpp
     src/RiverPanel.cpp
     src/RiverEdit.cpp
+    src/WeatherPanel.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp
     src/PaintPanel.cpp
@@ -263,6 +270,17 @@ target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # gone. Built with FITZEL_PLAYER so ProjectIO leaves the exporter (icon writer,
 # installer) out: the harness has no use for it.
 #   build/release/bin/autosavecheck.exe [workDir]
+# weathercheck (sandbox/tools/weathercheck.cpp): the weather presets, without a
+# window. A preset that drops a field on the way through the project file makes a
+# sky that is merely slightly wrong, which is the failure nobody spots until a
+# scene has been authored against it -- so the round trip, the opt-outs and the
+# "an untouched built-in is not written" rule are asserted here instead of looked
+# at. Needs no GL: it is arithmetic and a JSON file.
+#   build/release/bin/weathercheck.exe
+add_executable(weathercheck tools/weathercheck.cpp src/WeatherPreset.cpp)
+target_link_libraries(weathercheck PRIVATE fitzel glm::glm
+                                           nlohmann_json::nlohmann_json)
+
 add_executable(autosavecheck tools/autosavecheck.cpp src/Autosave.cpp
                              src/ProjectIO.cpp src/GameSettings.cpp
                              src/Selection.cpp
@@ -407,8 +425,9 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # on it (behind the panels, above the default pitch, under the fog), so every
 # change to it was previously made by reasoning about noise and hoping.
 #   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
-add_executable(skycheck tools/skycheck.cpp)
-target_link_libraries(skycheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers)
+add_executable(skycheck tools/skycheck.cpp src/WeatherPreset.cpp)
+target_link_libraries(skycheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+                                        stb_headers nlohmann_json::nlohmann_json)
 
 # The fog look (sandbox/tools/fogcheck.cpp): the same idea as skycheck, one layer
 # down. Marches volfog.frag at FULL resolution against a synthetic depth buffer

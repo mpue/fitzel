@@ -107,6 +107,7 @@
 #include "CameraSystem.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
+#include "WeatherPreset.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "Difficulty.hpp"
@@ -118,6 +119,7 @@
 #include "SplineEdit.hpp"
 #include "RiverPanel.hpp"
 #include "RiverEdit.hpp"
+#include "WeatherPanel.hpp"
 #include "SkidSystem.hpp"
 #include "SoftBodySystem.hpp"
 #include "TrailSystem.hpp"
@@ -1455,31 +1457,46 @@ int main(int argc, char** argv) {
         float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
         bool  timePaused = true;   // freeze the time of day where it is
 
-        // Cloud controls.
-        float cloudCoverage = 0.5f;
-        float cloudDensity  = 1.0f;
-        // A cumulus is at least as TALL as it is wide. The old 140..320 slab was
-        // 180 m thick under 400 m features, so every cloud came out a pancake --
-        // and a field of pancakes seen from underneath is a textured ceiling,
-        // which is exactly what it looked like. Base and top now stand roughly
-        // where real ones do, and the feature size grew to match.
-        float cloudScale    = 0.0009f;
-        float cloudSpeed    = 5.0f;
-        float cloudBottom   = 700.0f;
-        float cloudTop      = 2400.0f;
-
-        // The high layer (see sky.frag): ice, well above the cumulus and well
-        // above the weather -- which is why none of this is touched by the storm
-        // slider below. A front rolling in does not blow the cirrus away; it
-        // slides underneath it.
-        float cirrusAmount  = 0.35f;   // 0 = clear, 1 = a milky sheet
-        float cirrusHeight  = 1400.0f; // world units; the whole layer scales with it
-        float cirrusSpeed   = 2.5f;    // the jet stream, not the surface wind
-        float contrailAmount = 0.0f;   // 0 = an empty sky, 1 = four trails
+        // The air: the cumulus deck, the ice above it and the height haze, as
+        // one value rather than fourteen loose floats. Fourteen floats cannot be
+        // copied, compared or written to a file as a unit, which is exactly what
+        // a weather preset has to do with them -- see WeatherPreset.hpp, where
+        // the comments that used to live on each one moved with them.
+        weather::Sky skySet;
 
         // Weather: 0 = clear .. 1 = storm. Drives clouds, light, fog, waves, rain.
-        float weather     = 0.0f;
+        float storm     = 0.0f;
         bool  autoWeather = false;
+        // Whether the sky may flash. Used to be implied by the dial alone, which
+        // made every hard rain a thunderstorm; a preset can now say no.
+        bool  lightning = true;
+        // Per-weather gains on the looping sound layers, on top of what the dial
+        // derives. See weather::Audio.
+        weather::Audio wxGain;
+
+        // The project's named skies. Seeded with the built-ins so a session with
+        // no project open still has a weather to pick; re-read from the project
+        // whenever the open one changes (the panel does it, because the panel is
+        // the one place that runs after every way a project can be opened).
+        std::vector<weather::Preset> weatherPresets = weather::builtins();
+        std::string weatherPresetsFolder;  // which project that list came from
+        // Which preset THIS SCENE is on, and what a save of it should reach.
+        // Scene data, unlike the presets themselves -- see the settings registry.
+        std::string weatherCurrent;
+        bool        weatherSavesTime = false;
+        bool        weatherSavesMist = false;
+        char        weatherNameBuf[64] = "";
+
+        // The live weather, bound for weather::apply/capture. Built on demand
+        // rather than kept: a Live is all references, so one stored anywhere is a
+        // dangling struct waiting for the first thing that outlives its frame.
+        auto liveWeather = [&] {
+            return weather::Live{storm, autoWeather, lightning, timeOfDay,
+                                 skySet, wxGain,
+                                 volFogSet.enabled, volFogSet.followCamera,
+                                 volFogSet.center, volFogSet.size,
+                                 volFogSet.medium};
+        };
         // Ground wetness 0..1: builds while it rains, dries slowly after, so roads
         // and terrain stay shiny for a while once the rain passes.
         float roadWetness = 0.0f;
@@ -3653,10 +3670,6 @@ int main(int argc, char** argv) {
         bool  muted        = false;
         bool  prevFlashOn  = false;
 
-        // Atmospheric fog (subtle by default; aerial perspective, not haze soup).
-        float fogDensity = 0.0045f; // stronger aerial perspective (soft distant haze)
-        float fogFalloff = 0.028f;  // fog reaches higher so distant hills recede
-
         // Depth of field (distance blur). dofMax = 0 disables it.
         float dofMax   = 5.0f;      // max blur radius (pixels)
         float dofNear  = 25.0f;     // sharp up to here (metres)
@@ -4000,7 +4013,17 @@ int main(int argc, char** argv) {
         };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
-        addB("autoWeather", autoWeather);      addF("weather", weather);
+        addB("autoWeather", autoWeather);      addF("weather", storm);
+        addB("lightning", lightning);
+        addF("wxRain", wxGain.rain);           addF("wxWind", wxGain.wind);
+        addF("wxBreeze", wxGain.breeze);       addF("wxStorm", wxGain.storm);
+        addF("wxThunder", wxGain.thunder);
+        // Which preset this scene is on. The NAME travels here, never the
+        // values: those live in the project's weather.json, so editing a preset
+        // changes every scene that uses it -- which is the point of a preset.
+        addS("weatherPreset", weatherCurrent);
+        addB("weatherPresetTime", weatherSavesTime);
+        addB("weatherPresetMist", weatherSavesMist);
         addB("muted", muted);                  addF("volume", masterVolume);
         // Read but not written: see legacyStartVehicle. A no-op save lambda is
         // what "this key is on its way out" looks like in this registry -- the
@@ -4024,17 +4047,17 @@ int main(int argc, char** argv) {
         addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
         addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
-        addF("coverage", cloudCoverage);       addF("cloudDensity", cloudDensity);
-        addF("cloudScale", cloudScale);        addF("cloudWind", cloudSpeed);
-        addF("cloudBottom", cloudBottom);      addF("cloudTop", cloudTop);
-        addF("cirrus", cirrusAmount);          addF("cirrusHeight", cirrusHeight);
-        addF("cirrusWind", cirrusSpeed);
+        addF("coverage", skySet.coverage);     addF("cloudDensity", skySet.density);
+        addF("cloudScale", skySet.scale);      addF("cloudWind", skySet.wind);
+        addF("cloudBottom", skySet.base);      addF("cloudTop", skySet.top);
+        addF("cirrus", skySet.cirrus);         addF("cirrusHeight", skySet.cirrusHeight);
+        addF("cirrusWind", skySet.cirrusWind);
         // NOT "contrails": that name belongs to the vehicle trail toggle a few
         // lines up (addB, a bool). Two settings under one key write over each
         // other in the file, and whichever loses gets read back at the other's
         // type -- which is what threw json::type_error out of a scene load.
-        addF("skyContrails", contrailAmount);
-        addF("fogDensity", fogDensity);        addF("fogFalloff", fogFalloff);
+        addF("skyContrails", skySet.contrails);
+        addF("fogDensity", skySet.fogDensity); addF("fogFalloff", skySet.fogFalloff);
         // Image-based lighting. The panorama travels as its PROJECT-RELATIVE
         // path, not as a GUID and not as an absolute one: it survives a
         // re-import, it reads sensibly to whoever opens the .fitzel, and it is
@@ -7371,21 +7394,21 @@ int main(int argc, char** argv) {
                     0.5f + 0.42f * std::sin(static_cast<float>(now) * 0.018f)
                          + 0.18f * std::sin(static_cast<float>(now) * 0.011f + 2.1f),
                     0.0f, 1.0f);
-                weather += (target - weather) * std::min(1.0f, dt * 0.3f);
+                storm += (target - storm) * std::min(1.0f, dt * 0.3f);
             }
-            weather = glm::clamp(weather, 0.0f, 1.0f);
+            storm = glm::clamp(storm, 0.0f, 1.0f);
 
-            const float effCoverage  = glm::mix(cloudCoverage, 0.97f, weather);
-            const float effDensity   = glm::mix(cloudDensity, 2.7f, weather);
-            const float effWind      = glm::mix(cloudSpeed, 26.0f, weather);
-            const float effCloudBot  = glm::mix(cloudBottom, 80.0f, weather);
-            const float effWaveH     = glm::mix(waveHeight, 2.4f, weather);
-            const float effWaveC     = glm::mix(waveChoppy, 0.95f, weather);
-            const float effFog       = fogDensity + weather * 0.011f;
+            const float effCoverage  = glm::mix(skySet.coverage, 0.97f, storm);
+            const float effDensity   = glm::mix(skySet.density, 2.7f, storm);
+            const float effWind      = glm::mix(skySet.wind, 26.0f, storm);
+            const float effCloudBot  = glm::mix(skySet.base, 80.0f, storm);
+            const float effWaveH     = glm::mix(waveHeight, 2.4f, storm);
+            const float effWaveC     = glm::mix(waveChoppy, 0.95f, storm);
+            const float effFog       = skySet.fogDensity + storm * 0.011f;
             // Same curve the streaks fall on -- shared so the sound and the road's
             // wet sheen can't start before there is anything coming down.
-            const float rainIntensity = rainIntensityFor(weather);
-            const float lightDim     = glm::mix(1.0f, 0.30f, weather);
+            const float rainIntensity = rainIntensityFor(storm);
+            const float lightDim     = glm::mix(1.0f, 0.30f, storm);
             // Drop impacts on the carriageway. Tied to the rain, not to `roadWetness`:
             // the road stays wet for ~20s after a shower and nothing should still be
             // landing on it then. Needs a wet surface too -- rings on dry tarmac read
@@ -7406,13 +7429,16 @@ int main(int argc, char** argv) {
                 roadWetness = glm::clamp(roadWetness, 0.0f, 1.0f);
             }
 
-            // Lightning: brief flashes once the storm is strong.
+            // Lightning: brief flashes once the storm is strong -- and only if
+            // this weather is a thunderstorm at all. Before the flag, every sky
+            // past the halfway mark flashed, so "heavy rain" was not a weather
+            // anyone could ask for.
             float flash = 0.0f;
-            if (weather > 0.5f) {
+            if (lightning && storm > 0.5f) {
                 const float ft  = static_cast<float>(now) * 0.55f;
                 const float rnd = glm::fract(std::sin(std::floor(ft) * 127.1f) * 43758.5f);
                 if (rnd > 0.9f) {
-                    flash = std::exp(-glm::fract(ft) * 7.0f) * (weather - 0.5f) * 2.0f;
+                    flash = std::exp(-glm::fract(ft) * 7.0f) * (storm - 0.5f) * 2.0f;
                 }
             }
 
@@ -7424,16 +7450,21 @@ int main(int argc, char** argv) {
             audio.setMasterVolume(muted ? 0.0f : masterVolume);
             audio.setSfxVolume(mixSfx.gain());
             const float amb = mixAmbient.gain();
-            rainSnd.setVolume(playMode ? rainIntensity * amb : 0.0f);
-            windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, weather) * 0.9f * amb : 0.0f);
-            breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, weather)) * 0.5f * amb : 0.0f);
+            // Each layer's level is the dial's curve times the weather's own
+            // gain: the curve says when rain is falling at all, the gain says how
+            // this particular sky sounds while it does. A downpour is loud rain
+            // and little wind, a squall the other way round, and both sit at the
+            // same place on the slider.
+            rainSnd.setVolume(playMode ? rainIntensity * wxGain.rain * amb : 0.0f);
+            windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, storm) * 0.9f * wxGain.wind * amb : 0.0f);
+            breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, storm)) * 0.5f * wxGain.breeze * amb : 0.0f);
             // Water ambience: louder the deeper the car is submerged (SFX bus).
             waterSnd.setVolume(playMode ? glm::clamp(carWaterSub, 0.0f, 1.0f) * mixSfx.gain() : 0.0f);
             // Storm bed: fades in as the weather peaks (ambient bus).
-            stormSnd.setVolume(playMode ? glm::smoothstep(0.5f, 0.95f, weather) * amb : 0.0f);
+            stormSnd.setVolume(playMode ? glm::smoothstep(0.5f, 0.95f, storm) * wxGain.storm * amb : 0.0f);
             const bool flashOn = flash > 0.25f;
             if (playMode && flashOn && !prevFlashOn) {
-                thunderSnd.setVolume(glm::clamp(weather, 0.3f, 1.0f) * amb);
+                thunderSnd.setVolume(glm::clamp(storm, 0.3f, 1.0f) * wxGain.thunder * amb);
                 thunderSnd.play();
             }
             prevFlashOn = flashOn;
@@ -7532,7 +7563,7 @@ int main(int argc, char** argv) {
                                      glm::vec3(0.12f, 0.14f, 0.18f), dayF);
             // Overcast: dimmer, greyer, cooler ambient.
             light.ambient = glm::mix(light.ambient,
-                                     glm::vec3(0.05f, 0.06f, 0.08f), weather * 0.7f);
+                                     glm::vec3(0.05f, 0.06f, 0.08f), storm * 0.7f);
             // Lightning flash lights the scene briefly.
             light.color   += glm::vec3(0.8f, 0.85f, 1.0f) * (flash * 6.0f);
             light.ambient += glm::vec3(0.5f, 0.55f, 0.7f) * flash;
@@ -7544,7 +7575,7 @@ int main(int argc, char** argv) {
             Fog fog;
             fog.height        = waterLevel;
             fog.density       = effFog;
-            fog.heightFalloff = fogFalloff;
+            fog.heightFalloff = skySet.fogFalloff;
             // Brighter, slightly warmer daytime haze so the distance reads as soft
             // atmosphere (like the reference) rather than a cool blue wash.
             const glm::vec3 hazeDisp =
@@ -11172,31 +11203,43 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
-            if (showWeather) { if (ImGui::Begin("Weather & audio", &showWeather)) {
-                ImGui::Checkbox("Auto weather", &autoWeather);
-                ImGui::SliderFloat("Storm", &weather, 0.0f, 1.0f);
-                ImGui::Text("Rain %.0f%%   Wet %.0f%%   Lightning %s",
-                            rainIntensity * 100.0f, roadWetness * 100.0f,
-                            weather > 0.5f ? "armed" : "off");
-                ImGui::Separator();
-                ImGui::Checkbox("Mute", &muted);
-                ImGui::SameLine();
-                ImGui::SliderFloat("Volume", &masterVolume, 0.0f, 1.0f);
-                if (!audio.ok()) ImGui::TextDisabled("(audio device unavailable)");
+            if (showWeather) {
+                // The presets belong to the PROJECT, so the list is re-read
+                // whenever the open one changes. Here rather than at each of the
+                // four places a project can be opened from (open, recent, crash
+                // recovery, the player's boot): this runs after all of them, and
+                // a string compare per frame is cheaper than four hooks that can
+                // fall out of step.
+                const std::string wxFolder =
+                    currentProject.empty()
+                        ? std::string()
+                        : std::filesystem::path(currentProject)
+                              .parent_path().generic_string();
+                if (wxFolder != weatherPresetsFolder) {
+                    weatherPresetsFolder = wxFolder;
+                    weatherPresets       = weather::load(wxFolder);
+                }
+                const glm::vec3 wxEye = camera.position();
+                weatherui::drawPanel({showWeather, liveWeather(), weatherPresets,
+                                      weatherCurrent, weatherSavesTime,
+                                      weatherSavesMist, wxFolder,
+                                      weatherNameBuf, sizeof(weatherNameBuf),
+                                      rainIntensity, roadWetness,
+                                      streamer.heightAt(wxEye.x, wxEye.z),
+                                      muted, masterVolume, audio.ok()});
             }
-            ImGui::End(); }
 
             if (showSky) { if (ImGui::Begin("Sky & atmosphere", &showSky)) {
                 ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
                 ImGui::SameLine();
                 ImGui::Checkbox("Pause", &timePaused);
                 ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
-                ImGui::SliderFloat("Coverage",    &cloudCoverage, 0.0f, 1.0f);
-                ImGui::SliderFloat("Density",     &cloudDensity, 0.0f, 3.0f);
-                ImGui::SliderFloat("Cloud scale", &cloudScale, 0.0003f, 0.005f, "%.4f");
-                ImGui::SliderFloat("Wind",        &cloudSpeed, 0.0f, 20.0f);
-                ImGui::SliderFloat("Cloud base",  &cloudBottom, 100.0f, 3000.0f, "%.0f m");
-                ImGui::SliderFloat("Cloud top",   &cloudTop, 300.0f, 7000.0f, "%.0f m");
+                ImGui::SliderFloat("Coverage",    &skySet.coverage, 0.0f, 1.0f);
+                ImGui::SliderFloat("Density",     &skySet.density, 0.0f, 3.0f);
+                ImGui::SliderFloat("Cloud scale", &skySet.scale, 0.0003f, 0.005f, "%.4f");
+                ImGui::SliderFloat("Wind",        &skySet.wind, 0.0f, 20.0f);
+                ImGui::SliderFloat("Cloud base",  &skySet.base, 100.0f, 3000.0f, "%.0f m");
+                ImGui::SliderFloat("Cloud top",   &skySet.top, 300.0f, 7000.0f, "%.0f m");
                 ui::hint("Base, top and scale decide whether the sky reads as\n"
                          "weather or as a ceiling. A cumulus is at least as\n"
                          "TALL as it is wide, so a thin slab under wide\n"
@@ -11210,10 +11253,10 @@ int main(int argc, char** argv) {
                 // above everything the storm slider touches, and a sky with no
                 // cumulus in it at all can still have this.
                 if (ui::header("Cirrus & contrails")) {
-                    ImGui::SliderFloat("Cirrus",   &cirrusAmount, 0.0f, 1.0f);
-                    ImGui::SliderFloat("Height",   &cirrusHeight, 400.0f, 6000.0f, "%.0f m");
-                    ImGui::SliderFloat("Jet wind", &cirrusSpeed, 0.0f, 12.0f);
-                    ImGui::SliderFloat("Contrails", &contrailAmount, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Cirrus",   &skySet.cirrus, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Height",   &skySet.cirrusHeight, 400.0f, 6000.0f, "%.0f m");
+                    ImGui::SliderFloat("Jet wind", &skySet.cirrusWind, 0.0f, 12.0f);
+                    ImGui::SliderFloat("Contrails", &skySet.contrails, 0.0f, 1.0f);
                     ui::hint("Ice, drawn into streaks by a wind that has nothing\n"
                              "to do with the one below. Contrails come in one at\n"
                              "a time as the slider rises, each older than the\n"
@@ -11221,8 +11264,11 @@ int main(int argc, char** argv) {
                              "Everything up here scales with Height, so raising\n"
                              "the layer does not turn aircraft into motorways.");
                 }
-                ImGui::SliderFloat("Fog density", &fogDensity, 0.0f, 0.02f, "%.4f");
-                ImGui::SliderFloat("Fog falloff", &fogFalloff, 0.005f, 0.1f, "%.3f");
+                ImGui::SliderFloat("Fog density", &skySet.fogDensity, 0.0f, 0.02f, "%.4f");
+                ImGui::SliderFloat("Fog falloff", &skySet.fogFalloff, 0.005f, 0.1f, "%.3f");
+                ui::hint("Everything in this panel down to the volumetric fog is\n"
+                         "part of a weather preset. Weather & audio is where a\n"
+                         "sky gets a name and is kept.");
 
                 // --- Volumetric fog: the world-wide volume ----------------
                 // Folded away by default, and deliberately sitting right under
@@ -13326,7 +13372,7 @@ int main(int argc, char** argv) {
                 const float limit = veg.treeShadowDistance > 0.0f
                                         ? std::min(veg.treeShadowDistance, reach)
                                         : reach;
-                veg.drawTreeShadow(lightSpace, now, weather, shadowEyeXZ, limit);
+                veg.drawTreeShadow(lightSpace, now, storm, shadowEyeXZ, limit);
             };
             // Cascades for player one. With two panes up the second pane fits
             // its own set inside the loop below -- shadows are cut to a view
@@ -13353,14 +13399,14 @@ int main(int argc, char** argv) {
                 sky.setFloat("uTime", static_cast<float>(now));
                 sky.setFloat("uCoverage", glm::mix(0.86f, 0.46f, effCoverage));
                 sky.setFloat("uCloudDensity", effDensity);
-                sky.setFloat("uCloudScale", cloudScale);
+                sky.setFloat("uCloudScale", skySet.scale);
                 sky.setFloat("uCloudSpeed", effWind);
                 sky.setFloat("uCloudBottom", effCloudBot);
-                sky.setFloat("uCloudTop", cloudTop);
-                sky.setFloat("uCirrus", cirrusAmount);
-                sky.setFloat("uCirrusHeight", cirrusHeight);
-                sky.setFloat("uCirrusSpeed", cirrusSpeed);
-                sky.setFloat("uContrails", contrailAmount);
+                sky.setFloat("uCloudTop", skySet.top);
+                sky.setFloat("uCirrus", skySet.cirrus);
+                sky.setFloat("uCirrusHeight", skySet.cirrusHeight);
+                sky.setFloat("uCirrusSpeed", skySet.cirrusWind);
+                sky.setFloat("uContrails", skySet.contrails);
                 sky.setFloat("uExposure", exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
@@ -13522,7 +13568,7 @@ int main(int argc, char** argv) {
                                      glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
                 glCullFace(GL_BACK);
                 {   // trees mirror in the water (reflected view/eye)
-                    veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, weather,
+                    veg.drawTrees(makeFrameContext(proj * reflView, reflEye, now, storm,
                                                    light, fog));
                 }
 
@@ -13566,7 +13612,7 @@ int main(int argc, char** argv) {
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
             const FrameContext gctx =
-                makeFrameContext(mainVP, camPos, now, weather, light, fog);
+                makeFrameContext(mainVP, camPos, now, storm, light, fog);
 
             // Vegetation and birds only in Textured. Grass and trees are
             // vertex-shader geometry with shaders of their own, none of which
@@ -13913,7 +13959,7 @@ int main(int argc, char** argv) {
                 grid.viewportPx    = glm::vec2(fbW, fbH);
                 grid.sceneDepthUnit = 0;
                 hdrRT.bindDepthTexture(0);
-                grid.draw(makeFrameContext(mainVP, camPos, now, weather, light, fog));
+                grid.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog));
             }
 #endif
 
