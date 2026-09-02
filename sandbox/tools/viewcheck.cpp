@@ -185,7 +185,8 @@ int main(int argc, char** argv) {
     std::vector<MaterialDef>& materials = document.materials();
     ModelLibrary              models;
     fitzel::AssetDatabase     assetDb{opt.content};
-    int         matSel = 0, entityCounter = 1, entitySel = -1;
+    int         matSel = 0, entityCounter = 1;
+    Selection   sel(entities);
     std::string currentProject, prefLocation, exportStatus, uiFontFamily;
     char        projName[128] = {};
     std::vector<std::string> recentProjects;
@@ -195,7 +196,7 @@ int main(int argc, char** argv) {
     std::function<void()>                      afterSceneLoad = []{};
 
     projectio::Context ctx{
-        entities, materials, matSel, entityCounter, entitySel,
+        entities, materials, matSel, entityCounter, sel,
         currentProject, projName, sizeof(projName), prefLocation,
         recentProjects, (fs::path(opt.project) / "editor.json").generic_string(),
         exportStatus, uiFontSize, uiFontFamily,

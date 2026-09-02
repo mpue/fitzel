@@ -155,7 +155,8 @@ void checkRoundTrip(const fs::path& work) {
 
     std::vector<Entity>      entities;
     std::vector<MaterialDef> materials;
-    int matSel = 0, entityCounter = 0, entitySel = -1;
+    int matSel = 0, entityCounter = 0;
+    Selection sel(entities);
     std::string currentProject, prefLocation, exportStatus, uiFontFamily;
     std::vector<std::string> recentProjects;
     char  projName[64] = "";
@@ -166,7 +167,7 @@ void checkRoundTrip(const fs::path& work) {
     std::function<void()>                      afterSceneLoad;
 
     projectio::Context ctx{
-        entities, materials, matSel, entityCounter, entitySel,
+        entities, materials, matSel, entityCounter, sel,
         currentProject, projName, sizeof(projName), prefLocation,
         recentProjects, (work / "editor.json").generic_string(), exportStatus,
         uiFontSize, uiFontFamily,

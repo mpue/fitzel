@@ -523,7 +523,7 @@ static void finalizeSceneLoad(Context& ctx, int maxId) {
     } else if (!sunE->components.get<SunComponent>()) {
         sunE->components.items.push_back(std::make_unique<SunComponent>());
     }
-    ctx.entitySel = -1;
+    ctx.sel.clear();
     // Last: give the host its migration pass. The id counter is correct by now, so
     // it may add entities (the terrain migration does exactly that).
     if (ctx.afterSceneLoad) ctx.afterSceneLoad();
@@ -1028,7 +1028,7 @@ void newProject(Context& ctx) {
     sun.type = EntityType::Sun; sun.name = "Sun"; sun.id = ctx.entityCounter++;
     sun.components.items.push_back(std::make_unique<SunComponent>());
     ctx.entities.push_back(std::move(sun));
-    ctx.entitySel = -1;
+    ctx.sel.clear();
     ctx.currentProject.clear();
     ctx.projNameBuf[0] = '\0';
     ctx.assetDb.unmountProjects();
@@ -1071,7 +1071,7 @@ std::string newSceneInProject(Context& ctx, const std::string& folder,
     sun.type = EntityType::Sun; sun.name = "Sun"; sun.id = ctx.entityCounter++;
     sun.components.items.push_back(std::make_unique<SunComponent>());
     ctx.entities.push_back(std::move(sun));
-    ctx.entitySel = -1;
+    ctx.sel.clear();
     saveScene(ctx, path);
     ctx.currentProject = path;
     return path;

@@ -9,6 +9,7 @@
 #include <nlohmann/json.hpp>
 
 #include "SceneTypes.hpp"
+#include "Selection.hpp"
 
 namespace fitzel { class AssetDatabase; }
 
@@ -31,7 +32,9 @@ struct Context {
     std::vector<MaterialDef>& materials;
     int&                      matSel;
     int&                      entityCounter;
-    int&                      entitySel;
+    // Loading a scene invalidates whatever was selected; ProjectIO only
+    // ever clears it, so it takes the selection rather than a raw index.
+    Selection&                sel;
 
     // Project + editor-prefs state.
     std::string&              currentProject;   // path of the open .fitzel ("" = none)

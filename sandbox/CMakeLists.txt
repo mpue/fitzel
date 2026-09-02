@@ -103,6 +103,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/GpuTimer.cpp
     # Loading a baked light grid and lighting from it. Runtime by definition:
     # it is what the shipped game does with the editor's bake.
+    # What is selected, and the invariant tying the active object to the
+    # set. Shared with the player: ProjectIO clears the selection on load.
+    src/Selection.cpp
     src/LightGrid.cpp
     src/DebugOverlay.cpp)
 
@@ -119,6 +122,10 @@ set(SANDBOX_EDITOR_SOURCES
     # the player has a game to look at, not a viewport to navigate.
     src/ViewportNav.cpp
     src/MeshPaint.cpp
+    # The scene tree and the selected entity's fields -- the editor's two
+    # always-open panels. Editor-only: the player has no scene to edit.
+    src/HierarchyPanel.cpp
+    src/InspectorPanel.cpp
     src/MaterialsPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingPanel.cpp
@@ -258,6 +265,7 @@ target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 #   build/release/bin/autosavecheck.exe [workDir]
 add_executable(autosavecheck tools/autosavecheck.cpp src/Autosave.cpp
                              src/ProjectIO.cpp src/GameSettings.cpp
+                             src/Selection.cpp
                              src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                              src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(autosavecheck PRIVATE FITZEL_PLAYER)
@@ -329,6 +337,7 @@ target_link_libraries(softcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp
                          src/SceneGraph.cpp
                          src/ProjectIO.cpp src/GameSettings.cpp
+                         src/Selection.cpp
                          src/ModelLibrary.cpp src/Component.cpp
                          src/Primitives.cpp src/EditMesh.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -465,6 +474,17 @@ target_link_libraries(capturecheck PRIVATE fitzel stb_headers)
 # and half in the viewport loop, and a hill 30% too tall still looks like a hill,
 # so it is measured rather than looked at. Pure arithmetic on a height field: no
 # GL, no window, no assets.
+# selcheck -- the selection's invariant (active object + set) under every
+# operation, including the awkward ones: toggling the active object away, a set
+# collapsing back to one, entities deleted out from under a stale selection.
+# Nothing in the editor fails visibly when this breaks, so it is measured rather
+# than looked at. Pure bookkeeping on a list: no GL, no window, no assets.
+add_executable(selcheck tools/selcheck.cpp src/Selection.cpp src/Component.cpp
+                        src/Primitives.cpp src/EditMesh.cpp src/PropertyMeta.cpp
+                        src/MultiShot.cpp)
+target_link_libraries(selcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(selcheck PRIVATE FITZEL_PLAYER)
+
 add_executable(sculptcheck tools/sculptcheck.cpp)
 target_link_libraries(sculptcheck PRIVATE fitzel glm::glm)
 

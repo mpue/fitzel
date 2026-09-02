@@ -72,8 +72,11 @@
 #include "RainRenderer.hpp"
 #include "EditMesh.hpp"
 #include "MeshPaint.hpp"
+#include "Selection.hpp"
 #include "SceneGraph.hpp"
 #include "SceneSubmit.hpp"
+#include "HierarchyPanel.hpp"
+#include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
 #include "MeshPaintPanel.hpp"
 #include "ModelsPanel.hpp"
@@ -955,11 +958,10 @@ struct EditMenuCtx {
     CommandStack&        history;
     Document&            document;
     std::vector<Entity>& entities;
-    int&                 entitySel;
+    Selection&           sel;
     char*                prefabNameBuf;
     std::size_t          prefabNameCap;
     bool&                showPrefabs;
-    std::function<std::vector<int>()> selectedIds;
     std::function<void()>             clampRoadSel;
     std::function<void()>             clampSplineSel;
     // Also re-cuts the watercourse beds: an undo puts different PATHS back and
@@ -1104,18 +1106,17 @@ void drawEditMenu(const EditMenuCtx& c) {
     const std::string redoLbl = c.history.canRedo()
         ? std::string("Redo ") + c.history.redoName() : "Redo";
     if (ImGui::MenuItem(undoLbl.c_str(), "Ctrl+Z", false, c.history.canUndo())) {
-        c.history.undo(c.document); c.entitySel = -1; c.clampRoadSel(); c.clampSplineSel();
+        c.history.undo(c.document); c.sel.clear(); c.clampRoadSel(); c.clampSplineSel();
         c.clampRiverSel();
     }
     if (ImGui::MenuItem(redoLbl.c_str(), "Ctrl+Y", false, c.history.canRedo())) {
-        c.history.redo(c.document); c.entitySel = -1; c.clampRoadSel(); c.clampSplineSel();
+        c.history.redo(c.document); c.sel.clear(); c.clampRoadSel(); c.clampSplineSel();
         c.clampRiverSel();
     }
     ImGui::Separator();
-    const bool hasSel = c.entitySel >= 0 &&
-        c.entitySel < static_cast<int>(c.entities.size()) &&
-        c.entities[c.entitySel].type != EntityType::Sun;
-    const int selCount = static_cast<int>(c.selectedIds().size());
+    const bool hasSel = c.sel.valid() &&
+        c.entities[c.sel.index()].type != EntityType::Sun;
+    const int selCount = static_cast<int>(c.sel.count());
     const char* dupLbl = selCount > 1 ? "Duplicate selection" : "Duplicate";
     const char* delLbl = selCount > 1 ? "Delete selection"    : "Delete";
     if (ImGui::MenuItem(dupLbl, nullptr, false, hasSel))
@@ -1125,7 +1126,7 @@ void drawEditMenu(const EditMenuCtx& c) {
     if (ImGui::MenuItem("Save as Prefab...", nullptr, false, hasSel)) {
         // Seed the name field from the selection and open the panel;
         // the panel's "Create" button does the actual save.
-        const std::string nm = c.entities[c.entitySel].name;
+        const std::string nm = c.entities[c.sel.index()].name;
         std::snprintf(c.prefabNameBuf, c.prefabNameCap, "%s",
                       nm.c_str());
         c.showPrefabs = true;
@@ -1135,7 +1136,7 @@ void drawEditMenu(const EditMenuCtx& c) {
         c.entities.erase(std::remove_if(c.entities.begin(), c.entities.end(),
             [](const Entity& e){ return e.type != EntityType::Sun; }),
             c.entities.end());
-        c.entitySel = -1;
+        c.sel.clear();
         c.history.clear(); // bulk reset -> drop history
     }
     ImGui::EndMenu();
@@ -2233,16 +2234,9 @@ int main(int argc, char** argv) {
         bool                   uiEditOpen = false;
 
         std::vector<Entity>& entities = document.entities();
-        int       entitySel      = -1;
-        // Multi-selection. `entitySel` stays the ACTIVE object (drives the
-        // Inspector and every existing single-object path); `multiSel` holds the
-        // full set of selected entity IDs when more than one is picked, and is
-        // empty for a plain single selection. Invariant (kept by normalizeSelection
-        // each frame): if non-empty it contains the active object's id and only
-        // ids that still exist -- so any code path that just sets `entitySel`
-        // collapses the multi-set automatically. IDs (not indices) so they survive
-        // reordering/undo.
-        std::vector<int> multiSel;
+        // What is selected: the active object plus, when more than one is picked,
+        // the whole set -- and the invariant tying them together. See Selection.hpp.
+        Selection sel(entities);
         // Box-select (Ctrl + left-drag in the viewport): in-progress rectangle.
         bool      boxSelecting  = false;
         ImVec2    boxStart{0.0f, 0.0f};
@@ -2637,7 +2631,7 @@ int main(int argc, char** argv) {
             nb.id     = entityCounter++;
             nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
             history.push(std::make_unique<AddEntityCmd>(nb), document);
-            entitySel = document.indexOf(nb.id);
+            sel.select(nb.id);
         };
         // World-space half-extents of a placed model (its local AABB * scale).
         auto modelHalf = [&](const LoadedModel& lm, float sc) {
@@ -2670,7 +2664,7 @@ int main(int argc, char** argv) {
             nb.id     = entityCounter++;
             nb.name   = lm->name + " " + std::to_string(nb.id);
             history.push(std::make_unique<AddEntityCmd>(nb), document);
-            entitySel = document.indexOf(nb.id);
+            sel.select(nb.id);
         };
         // Structure-preserving import: one entity per model node under a group
         // root, so each element is separately selectable/movable in the scene.
@@ -2720,7 +2714,7 @@ int main(int argc, char** argv) {
                 ch.id          = entityCounter++;
                 history.push(std::make_unique<AddEntityCmd>(ch), document);
             }
-            entitySel = document.indexOf(rootId);
+            sel.select(rootId);
         };
         // --- Object scatter helpers (the brush application lives in the
         //     viewport block; panel + placement math live in ScatterTool) -----
@@ -2803,7 +2797,7 @@ int main(int argc, char** argv) {
             for (const Entity& e : entities)
                 if (e.parent == groupId) ids.push_back(e.id);
             history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            entitySel = -1;
+            sel.clear();
         };
 #endif // !FITZEL_PLAYER
         // Decide whether a model imports as a hierarchy (one entity per node,
@@ -2829,7 +2823,7 @@ int main(int argc, char** argv) {
         // the existing call sites (menus, wizard, player boot) unchanged.
         std::string exportStatus; // shown under the File menu after an export
         projectio::Context pio{
-            entities, materials, matSel, entityCounter, entitySel,
+            entities, materials, matSel, entityCounter, sel,
             currentProject, projNameBuf, sizeof(projNameBuf), prefLocation,
             recentProjects, prefsPath, exportStatus, uiFontSize, uiFontFamily,
             assetDb, contentRoot, modelDir,
@@ -3025,7 +3019,7 @@ int main(int argc, char** argv) {
 
         // --- 3D-cursor snap operations (shared by the panel + the Shift+S popup) --
         auto cursorHaveSel = [&] {
-            return entitySel >= 0 && entitySel < static_cast<int>(entities.size());
+            return sel.valid();
         };
         auto snapToGrid = [&](glm::vec3 p) {
             const float g = cursorGrid;
@@ -3037,23 +3031,23 @@ int main(int argc, char** argv) {
         // truth, so it respects any parent -- same path the gizmo/inspector use).
         auto moveSelectionTo = [&](const glm::vec3& wPos) {
             if (!cursorHaveSel()) return;
-            Entity& b = entities[entitySel];
+            Entity& b = entities[sel.index()];
             const glm::mat4 pw = parentWorldMat(b);
             setWorld(b, wPos, b.rotation, b.parent >= 0 ? &pw : nullptr);
         };
         auto snapCursorToOrigin    = [&] { cursor3D = glm::vec3(0.0f); };
         auto snapCursorToGrid      = [&] { cursor3D = snapToGrid(cursor3D); };
         auto snapCursorToTerrain   = [&] { cursor3D.y = streamer.heightAt(cursor3D.x, cursor3D.z); };
-        auto snapCursorToSelection = [&] { if (cursorHaveSel()) cursor3D = entities[entitySel].center; };
+        auto snapCursorToSelection = [&] { if (cursorHaveSel()) cursor3D = entities[sel.index()].center; };
         auto snapSelectionToCursor = [&] { moveSelectionTo(cursor3D); };
-        auto snapSelectionToGrid   = [&] { if (cursorHaveSel()) moveSelectionTo(snapToGrid(entities[entitySel].center)); };
+        auto snapSelectionToGrid   = [&] { if (cursorHaveSel()) moveSelectionTo(snapToGrid(entities[sel.index()].center)); };
 
 #ifndef FITZEL_PLAYER
         // --- Face modelling ---------------------------------------------------
         // The editable mesh on the selected object, if it has one.
         auto selectedMesh = [&]() -> MeshComponent* {
             if (!cursorHaveSel()) return nullptr;
-            return entities[entitySel].components.get<MeshComponent>();
+            return entities[sel.index()].components.get<MeshComponent>();
         };
         // Turn the selected box into an editable mesh of exactly the same size --
         // built at the object's real dimensions, so a metre in the modelling
@@ -3062,7 +3056,7 @@ int main(int argc, char** argv) {
         // same collider.
         auto convertToMesh = [&] {
             if (!cursorHaveSel()) return;
-            Entity& e = entities[entitySel];
+            Entity& e = entities[sel.index()];
             if (e.type != EntityType::Box || e.components.get<MeshComponent>()) return;
             const Entity before = e;
             auto mc = std::make_unique<MeshComponent>();
@@ -3106,7 +3100,7 @@ int main(int argc, char** argv) {
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
                                  const char* /*label*/) {
             if (!cursorHaveSel()) return;
-            Entity& e = entities[entitySel];
+            Entity& e = entities[sel.index()];
             MeshComponent* mc = e.components.get<MeshComponent>();
             if (!mc || !op) return;
             const Entity    before = e;
@@ -3154,7 +3148,7 @@ int main(int argc, char** argv) {
                 for (const Entity& e : entities)
                     if (e.parent == ids[k]) ids.push_back(e.id);
             history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            entitySel = -1;
+            sel.clear();
         };
         // Duplicate an entity as one undoable step: an offset copy that KEEPS its
         // parent.
@@ -3179,7 +3173,7 @@ int main(int argc, char** argv) {
             nb.id     = entityCounter++;
             nb.name  += " copy";
             history.push(std::make_unique<AddEntityCmd>(nb), document);
-            entitySel = document.indexOf(nb.id);
+            sel.select(nb.id);
         };
 #ifndef FITZEL_PLAYER
         // --- Prefabs (reusable object templates; see PrefabSystem.hpp) ----------
@@ -3193,14 +3187,14 @@ int main(int argc, char** argv) {
         // Save the selected entity's subtree as a new .fprefab in the project. The
         // outcome (name saved, or why not) goes to the status line.
         auto createPrefabFromSelection = [&](const std::string& name) -> bool {
-            if (entitySel < 0 || entitySel >= static_cast<int>(entities.size()))
+            if (!sel.valid())
                 return false;
             const std::string dir = prefabDir();
             if (dir.empty()) {
                 exportStatus = "Open a project first to save prefabs.";
                 return false;
             }
-            auto p = prefab::fromSubtree(entities, entities[entitySel].id, name);
+            auto p = prefab::fromSubtree(entities, entities[sel.index()].id, name);
             if (!p) { exportStatus = "Can't make a prefab from this object."; return false; }
             if (!prefab::save(pio, *p, dir)) {
                 exportStatus = "Failed to write prefab.";
@@ -3223,7 +3217,7 @@ int main(int argc, char** argv) {
             const int rootId = spawn.empty() ? -1 : spawn.front().id;
             history.push(std::make_unique<AddEntitiesCmd>(std::move(spawn), "Prefab"),
                          document);
-            if (rootId >= 0) entitySel = document.indexOf(rootId);
+            if (rootId >= 0) sel.select(rootId);
         };
         // --- Prefabs along the road (see RoadPrefab.hpp) -----------------------
         // Tool settings only; what they place is ordinary entities, so nothing
@@ -3318,7 +3312,7 @@ int main(int argc, char** argv) {
             buildingLiveId = es.front().id;
             history.push(std::make_unique<AddEntitiesCmd>(std::move(es), "Building"),
                          document);
-            entitySel = document.indexOf(buildingLiveId);
+            sel.select(buildingLiveId);
             exportStatus = "Generated building.";
         };
         // Re-generate the live building with the current parameters, keeping its
@@ -3341,14 +3335,14 @@ int main(int argc, char** argv) {
             history.push(std::make_unique<ReplaceEntitiesCmd>(document, ids,
                                                               std::move(es), "Building"),
                          document);
-            entitySel = document.indexOf(buildingLiveId);
+            sel.select(buildingLiveId);
         };
         // Save the live building as a prefab (the same path as the Prefabs panel,
         // just aimed at the generated root instead of the current selection).
         auto saveBuildingPrefab = [&]() {
             const int idx = document.indexOf(buildingLiveId);
             if (idx < 0) { exportStatus = "Generate a building first."; return; }
-            entitySel = idx;
+            sel.selectIndex(idx);
             createPrefabFromSelection(buildingNameBuf);
         };
         // Lift the derived building nearest the camera out of the city and into
@@ -3377,86 +3371,22 @@ int main(int argc, char** argv) {
             buildingLiveId = es.front().id;
             history.push(std::make_unique<AddEntitiesCmd>(std::move(es), "Bake building"),
                          document);
-            entitySel = document.indexOf(buildingLiveId);
+            sel.select(buildingLiveId);
             exportStatus = "Baked the nearest city building into the scene.";
         };
 #endif // !FITZEL_PLAYER
 
 #ifndef FITZEL_PLAYER
-        // --- Multi-selection helpers (see the multiSel declaration) -------------
-        // The effective selection as entity IDs: the multi-set if any, else just
-        // the active object (empty if nothing is selected).
-        auto selectedIds = [&]() -> std::vector<int> {
-            if (!multiSel.empty()) return multiSel;
-            if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
-                return { entities[entitySel].id };
-            return {};
-        };
-        auto isSelectedId = [&](int id) {
-            if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
-                entities[entitySel].id == id)
-                return true;
-            return std::find(multiSel.begin(), multiSel.end(), id) != multiSel.end();
-        };
-        // Reconcile the multi-set with the active object each frame: drop ids that
-        // no longer exist, and collapse to single if a single-select code path
-        // moved `entitySel` outside the set. Keeps the invariant without having to
-        // touch the ~40 sites that assign entitySel directly.
-        auto normalizeSelection = [&]() {
-            multiSel.erase(std::remove_if(multiSel.begin(), multiSel.end(),
-                [&](int id){ return document.indexOf(id) < 0; }), multiSel.end());
-            const int activeId =
-                (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
-                    ? entities[entitySel].id : -1;
-            if (activeId < 0) { multiSel.clear(); return; }
-            if (!multiSel.empty() &&
-                std::find(multiSel.begin(), multiSel.end(), activeId) == multiSel.end())
-                multiSel.clear();
-            if (multiSel.size() == 1) multiSel.clear(); // one item == plain single
-        };
-        // Plain click: select exactly `id` (clears any multi-set).
-        auto selectSingle = [&](int id) {
-            entitySel = document.indexOf(id);
-            multiSel.clear();
-        };
-        // Ctrl+click: toggle `id` in/out of the selection; the clicked object
-        // becomes active. Removing the active picks another survivor.
-        auto selectToggle = [&](int id) {
-            if (id < 0) return;
-            if (multiSel.empty() && entitySel >= 0 &&
-                entitySel < static_cast<int>(entities.size()))
-                multiSel = { entities[entitySel].id }; // seed from current active
-            auto it = std::find(multiSel.begin(), multiSel.end(), id);
-            if (it != multiSel.end()) {
-                multiSel.erase(it);
-                entitySel = multiSel.empty() ? -1
-                                             : document.indexOf(multiSel.back());
-            } else {
-                multiSel.push_back(id);
-                entitySel = document.indexOf(id);
-            }
-            if (multiSel.size() == 1) multiSel.clear();
-        };
-        // Add a batch of ids to the selection (box-select), keeping the current
-        // ones; the last one becomes active.
-        auto selectAddMany = [&](const std::vector<int>& ids) {
-            if (ids.empty()) return;
-            if (multiSel.empty() && entitySel >= 0 &&
-                entitySel < static_cast<int>(entities.size()))
-                multiSel = { entities[entitySel].id };
-            for (int id : ids)
-                if (std::find(multiSel.begin(), multiSel.end(), id) == multiSel.end())
-                    multiSel.push_back(id);
-            if (!multiSel.empty()) entitySel = document.indexOf(multiSel.back());
-            if (multiSel.size() == 1) multiSel.clear();
-        };
+        // --- Selection-wide operations (see Selection.hpp for the set itself) ---
+        // The two that stay here: both are one UNDOABLE STEP over the document,
+        // and the history and the id counter are main's, not the selection's.
         // Delete every selected object's subtree as one undoable step (falls back
         // to the single-object delete when only one is selected).
         auto deleteSelection = [&]() {
-            const std::vector<int> sel = selectedIds();
-            if (sel.size() <= 1) { deleteEntity(entitySel); return; }
+            const std::vector<int> chosen = sel.ids();
+            if (chosen.size() <= 1) { deleteEntity(sel.index()); return; }
             std::vector<int> ids;
-            for (int rootId : sel) {
+            for (int rootId : chosen) {
                 const Entity* e = document.find(rootId);
                 if (!e || e->type == EntityType::Sun) continue;
                 for (int id : collectSubtreeIds(rootId))
@@ -3465,7 +3395,7 @@ int main(int argc, char** argv) {
             }
             if (ids.empty()) return;
             history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            entitySel = -1; multiSel.clear();
+            sel.clear();
         };
         // Duplicate every selected object as one undoable step; the copies become
         // the selection. Parents are kept, exactly as the single Duplicate does
@@ -3477,12 +3407,12 @@ int main(int argc, char** argv) {
         // together gives you a second craft whose thrusters are still bolted to
         // the first one.
         auto duplicateSelection = [&]() {
-            const std::vector<int> sel = selectedIds();
-            if (sel.size() <= 1) { duplicateEntity(entitySel); return; }
+            const std::vector<int> chosen = sel.ids();
+            if (chosen.size() <= 1) { duplicateEntity(sel.index()); return; }
             std::vector<Entity> copies;
             std::vector<int>    newIds;
             std::unordered_map<int, int> remap;   // original id -> copy id
-            for (int id : sel) {
+            for (int id : chosen) {
                 const Entity* src = document.find(id);
                 if (!src || src->type == EntityType::Sun) continue;
                 Entity nb = *src;
@@ -3500,9 +3430,8 @@ int main(int argc, char** argv) {
             if (copies.empty()) return;
             history.push(std::make_unique<AddEntitiesCmd>(std::move(copies), "Duplicate"),
                          document);
-            multiSel  = newIds;
-            entitySel = newIds.empty() ? -1 : document.indexOf(newIds.back());
-            if (multiSel.size() == 1) multiSel.clear();
+            sel.clear();
+            sel.addMany(newIds);
         };
 #endif // !FITZEL_PLAYER
 
@@ -3565,13 +3494,13 @@ int main(int argc, char** argv) {
             if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
             const Entity& n = entities[idx];
             const int id = spawnChild(n.id, EntityType::Empty, n.center, n.rotation);
-            entitySel = document.indexOf(id);
+            sel.select(id);
         };
         auto addPrimitiveChild = [&](int idx, EntityType type) {
             if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
             const Entity& n = entities[idx];
             const int id = spawnChild(n.id, type, n.center, glm::vec3(0.0f));
-            entitySel = document.indexOf(id);
+            sel.select(id);
         };
         // A camera that SHOOTS the picked object: an Empty carrying a Camera in
         // Multishot mode, aimed at that object by id (see MultiShot.hpp).
@@ -3602,7 +3531,7 @@ int main(int argc, char** argv) {
             cc->shotTarget = n.id;
             cam.components.items.push_back(std::move(cc));
             history.push(std::make_unique<AddEntityCmd>(cam), document);
-            entitySel = document.indexOf(cam.id);
+            sel.select(cam.id);
         };
         // Insert a new Empty between `idx` and its current parent, then reparent
         // `idx` under it -- keeping the node put. Groups the node under a fresh
@@ -3622,7 +3551,7 @@ int main(int argc, char** argv) {
                 const glm::mat4 pw = worldOf(*emp);
                 rebaseLocal(*node, &pw); // keep the child where it was
             }
-            entitySel = document.indexOf(emptyId);
+            sel.select(emptyId);
         };
         // Attach car lights to a vehicle entity: two forward spot headlights at the
         // nose and two red point taillights (no shadows) at the tail, all parented so
@@ -3676,7 +3605,7 @@ int main(int argc, char** argv) {
             makeLight("Taillight R", {-xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
             history.push(std::make_unique<AddEntitiesCmd>(std::move(batch), "Add headlights"),
                          document);
-            entitySel = document.indexOf(vehId);
+            sel.select(vehId);
         };
 
 
@@ -4002,7 +3931,7 @@ int main(int argc, char** argv) {
                 if (e.components.get<TerrainComponent>()) return e.id;
             const Entity t = makeTerrainEntity(uiSettings);
             history.push(std::make_unique<AddEntityCmd>(t), document);
-            entitySel = document.indexOf(t.id);
+            sel.select(t.id);
             return t.id;
         };
         // Did the scene being loaded come from a version that stores its terrain as
@@ -4814,14 +4743,10 @@ int main(int argc, char** argv) {
         };
         // Exported script parameters (module-level globals), cached per file and
         // re-scanned when the .lua changes on disk -- so editing a script and
-        // returning to the Inspector shows the current set. `ok`/`err` report a
-        // parse/run failure (the fields are then unknown, not empty-by-choice).
-        struct ScriptParamScan {
-            std::filesystem::file_time_type mtime{};
-            std::vector<ScriptParam>        defs;
-            bool                            ok = false;
-            std::string                     err;
-        };
+        // returning to the Inspector shows the current set. The struct lives in
+        // InspectorPanel.hpp: the Inspector is what renders these, and a
+        // function-local struct cannot be named across a header.
+        using inspectorui::ScriptParamScan;
         std::unordered_map<std::string, ScriptParamScan> scriptParamCache;
         auto scanScriptParams = [&](const std::string& file) -> const ScriptParamScan& {
             const std::string path = scriptPath(file);
@@ -5549,7 +5474,7 @@ int main(int argc, char** argv) {
             playPrevEdit  = entityEditMode;
             entityEditMode = false;
             placeMode      = false;
-            entitySel      = -1;
+            sel.clear();
             vehicleMode    = false;
             gliderMode     = false;
             // Fresh race: no laps timed until the glider crosses the start line.
@@ -5917,7 +5842,7 @@ int main(int argc, char** argv) {
             camera.moveSpeed = playMoveSpeed;
             camera.setFov(playCamFov);
             entityEditMode = playPrevEdit;
-            entitySel = -1;
+            sel.clear();
         };
 
         showProgress(0.95f, "Generating world...");
@@ -5991,9 +5916,9 @@ int main(int argc, char** argv) {
             saveSceneFile, loadSceneAsync, listScenesIn,
         };
         EditMenuCtx editMenu{
-            history, document, entities, entitySel,
+            history, document, entities, sel,
             prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
-            selectedIds, clampRoadSel, clampSplineSel, clampRiverSel,
+            clampRoadSel, clampSplineSel, clampRiverSel,
             duplicateSelection, deleteSelection,
         };
         // The View menu, as data (see PanelEntry). "Close all panels" walks this
@@ -6376,11 +6301,10 @@ int main(int argc, char** argv) {
                         const glm::vec3 p = camera.position();
                         camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
                     }
-                } else if (!fpsMode && entitySel >= 0 &&
-                           entitySel < static_cast<int>(entities.size())) {
+                } else if (!fpsMode && sel.valid()) {
                     // Focus: keep the view direction, back off to fit the object,
                     // and glide there smoothly (applied each frame below).
-                    const Entity& e = entities[entitySel];
+                    const Entity& e = entities[sel.index()];
                     const float radius = glm::max(glm::length(e.half), 0.25f);
                     const float fov    = glm::radians(glm::max(camera.fov(), 1.0f));
                     const float dist   = radius / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f;
@@ -6651,7 +6575,7 @@ int main(int argc, char** argv) {
                 else if (riverEditMode && riverPtSel >= 0) { riverPtSel = -1; }
                 else if (placeMode) { placeMode = false; }
                 else if (entityEditMode) { entityEditMode = false; }
-                else if (entitySel >= 0) { entitySel = -1; }
+                else if (sel.valid()) { sel.clear(); }
             }
             prevEsc = escDown;
 
@@ -6688,8 +6612,8 @@ int main(int argc, char** argv) {
                 const bool y = input.isKeyDown(GLFW_KEY_Y);
                 const bool wantUndo = ctrl && z && !shift;
                 const bool wantRedo = ctrl && ((z && shift) || y);
-                if (wantUndo && !prevUndo) { history.undo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); clampRiverSel(); }
-                if (wantRedo && !prevRedo) { history.redo(document); entitySel = -1; clampRoadSel(); clampSplineSel(); clampRiverSel(); }
+                if (wantUndo && !prevUndo) { history.undo(document); sel.clear(); clampRoadSel(); clampSplineSel(); clampRiverSel(); }
+                if (wantRedo && !prevRedo) { history.redo(document); sel.clear(); clampRoadSel(); clampSplineSel(); clampRiverSel(); }
                 prevUndo = wantUndo;
                 prevRedo = wantRedo;
             } else {
@@ -7308,9 +7232,9 @@ int main(int argc, char** argv) {
                                     !ImGui::GetIO().WantTextInput;
                     nav.looking   = mouseLook;
                     nav.viewportH = static_cast<float>(viewH);
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
+                    if (sel.valid()) {
                         nav.haveSelection   = true;
-                        nav.selectionCenter = entities[entitySel].center;
+                        nav.selectionCenter = entities[sel.index()].center;
                     }
                     nav.groundY = streamer.heightAt(camera.position().x,
                                                     camera.position().z);
@@ -9150,7 +9074,7 @@ int main(int argc, char** argv) {
                     1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
                 // Keep the multi-selection consistent with the active object before
                 // any panel/viewport consumes it this frame.
-                normalizeSelection();
+                sel.normalize();
                 viewportClicked = viewportHovered &&
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
@@ -9299,7 +9223,7 @@ int main(int argc, char** argv) {
                                     nc->material = gid;
                                     e.components.items.push_back(std::move(nc));
                                 }
-                                entitySel = hit;
+                                sel.selectIndex(hit);
                                 matSel    = mi;
                                 auto cmd = std::make_unique<ModifyEntitiesCmd>(
                                     before, snapshotEntities(ids));
@@ -9342,7 +9266,7 @@ int main(int argc, char** argv) {
                                     c->material = nm.assetId;
                                     e.components.items.push_back(std::move(c));
                                 }
-                                entitySel = hit;
+                                sel.selectIndex(hit);
                                 auto cmd = std::make_unique<ModifyEntitiesCmd>(
                                     before, snapshotEntities(ids));
                                 if (!cmd->trivial()) history.pushApplied(std::move(cmd));
@@ -9883,9 +9807,8 @@ int main(int argc, char** argv) {
                 //     the left button off the transform gizmo has to be asked for.
                 //     The tool is in VehicleGizmo.cpp.
                 vehGizmoOwnsMouse = false;
-                if (!playMode && entitySel >= 0 &&
-                    entitySel < static_cast<int>(entities.size())) {
-                    Entity& ve = entities[entitySel];
+                if (!playMode && sel.valid()) {
+                    Entity& ve = entities[sel.index()];
                     if (auto* gvc = ve.components.get<VehicleComponent>()) {
                         const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                         vehiclegizmo::Context gc{*gvc, worldOf(ve),
@@ -10385,7 +10308,7 @@ int main(int argc, char** argv) {
                         // on it invisibly.
                         meshPaintMode = false;
                     } else {
-                        Entity& me = entities[entitySel];
+                        Entity& me = entities[sel.index()];
                         // The matrix the mesh is DRAWN through, so the brush
                         // measures metres where the user sees them even on an
                         // object somebody scaled.
@@ -10587,7 +10510,7 @@ int main(int argc, char** argv) {
                     if (showModeling && !playMode) {
                         if (const MeshComponent* mc = selectedMesh()) {
                             const std::vector<glm::vec3> fw =
-                                meshFaceWorld(entities[entitySel], *mc, meshFaceSel);
+                                meshFaceWorld(entities[sel.index()], *mc, meshFaceSel);
                             std::vector<ImVec2> pts;
                             bool onScreen = !fw.empty();
                             for (const glm::vec3& p : fw) {
@@ -10661,9 +10584,9 @@ int main(int argc, char** argv) {
                             if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                         }
                     }
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
-                        entities[entitySel].type != EntityType::Sun) {
-                        Entity& b = entities[entitySel];
+                    if (sel.valid() &&
+                        entities[sel.index()].type != EntityType::Sun) {
+                        Entity& b = entities[sel.index()];
                         const int selId = b.id;
                         float t[3] = {b.center.x, b.center.y, b.center.z};
                         float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
@@ -10759,7 +10682,7 @@ int main(int argc, char** argv) {
                             const bool gizmoUsing = ImGuizmo::IsUsing();
                             if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtrees
                                 gizmoActive = true;
-                                gizmoRoots  = selectedIds();
+                                gizmoRoots  = sel.ids();
                                 gizmoIds.clear();
                                 for (int rid : gizmoRoots)
                                     for (int id : collectSubtreeIds(rid))
@@ -10834,7 +10757,7 @@ int main(int argc, char** argv) {
                         };
                         // Other selected objects first (dim) so the active box (bright)
                         // draws on top.
-                        for (int sid : multiSel) {
+                        for (int sid : sel.multi()) {
                             if (sid == selId) continue;
                             if (const Entity* se = document.find(sid))
                                 wireBox(*se, IM_COL32(255, 170, 40, 150), 1.4f);
@@ -10993,7 +10916,7 @@ int main(int argc, char** argv) {
                                                           std::abs(cur.y - boxStart.y));
                             if (dragPx < 4.0f) { // no drag -> toggle the object clicked
                                 const std::vector<int> ids = rayPickIds();
-                                if (!ids.empty()) selectToggle(ids[0]);
+                                if (!ids.empty()) sel.toggle(ids[0]);
                             } else {             // box -> add every centre inside the rect
                                 std::vector<int> inBox;
                                 for (const Entity& e : entities) {
@@ -11008,7 +10931,7 @@ int main(int argc, char** argv) {
                                         sc.y >= a.y && sc.y <= b2.y)
                                         inBox.push_back(e.id);
                                 }
-                                selectAddMany(inBox);
+                                sel.addMany(inBox);
                             }
                         }
                     }
@@ -11025,7 +10948,7 @@ int main(int argc, char** argv) {
                         float faceT   = 1e30f;
                         if (showModeling) {
                             if (const MeshComponent* mc = selectedMesh()) {
-                                const Entity& me = entities[entitySel];
+                                const Entity& me = entities[sel.index()];
                                 const glm::mat4 inv = glm::inverse(vp);
                                 glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
                                 glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
@@ -11056,17 +10979,17 @@ int main(int argc, char** argv) {
                             if (ids == pickStack)
                                 pickIdx = (pickIdx + 1) % static_cast<int>(ids.size());
                             else { pickStack = ids; pickIdx = 0; }
-                            selectSingle(ids[pickIdx]);
+                            sel.select(ids[pickIdx]);
                         } else if (placeMode) {
                             glm::vec3 h; // Create mode: empty ground -> drop a new block
                             if (roadPickTerrain(viewportMouseNdc, vp, h)) addEntity(h, entityNewType);
                         } else {
-                            entitySel = -1; multiSel.clear(); // empty click clears it
+                            sel.clear(); // empty click clears it
                             pickStack.clear(); pickIdx = -1;
                         }
                         }
                     }
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size()) &&
+                    if (sel.valid() &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
                         deleteSelection();
                     }
@@ -11111,14 +11034,9 @@ int main(int argc, char** argv) {
                             camera.position().x, camera.position().y, camera.position().z);
                 ImGui::Text("Chunks: %d loaded, %d pending",
                             streamer.loadedChunkCount(), streamer.pendingChunkCount());
-                // `multiSel` is empty for a plain single selection, so fall back
-                // to entitySel for the "selected" count.
-                const int selCount =
-                    !multiSel.empty() ? static_cast<int>(multiSel.size())
-                    : (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) ? 1
-                                                                                        : 0;
                 ImGui::Text("Entities: %d (%d selected)",
-                            static_cast<int>(entities.size()), selCount);
+                            static_cast<int>(entities.size()),
+                            static_cast<int>(sel.count()));
                 ImGui::Text("Draws: %d visible, %d culled",
                             renderer.lastDrawn(), renderer.lastCulled());
                 ImGui::Separator();
@@ -11705,13 +11623,13 @@ int main(int argc, char** argv) {
                 // A face index belongs to one object's mesh and to one version of
                 // it: drop it when the selection moves, or when an undo left the
                 // mesh with fewer faces than the index.
-                const int selId = haveSel ? entities[entitySel].id : -1;
+                const int selId = haveSel ? entities[sel.index()].id : -1;
                 if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
                 if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
                     meshFaceSel = -1;
                 modelui::drawPanel({
                     showModeling, mc, meshFaceSel, materials, haveSel,
-                    haveSel && !mc && entities[entitySel].type == EntityType::Box,
+                    haveSel && !mc && entities[sel.index()].type == EntityType::Box,
                     [&]{ convertToMesh(); }, applyMeshEdit,
                     // "Edit this material" on a face: the surface itself is a
                     // material, and the place to change one is the Materials
@@ -11732,7 +11650,7 @@ int main(int argc, char** argv) {
             if (showUv) {
                 MeshComponent* mc = selectedMesh();
                 const bool haveSel = cursorHaveSel();
-                const int  selId   = haveSel ? entities[entitySel].id : -1;
+                const int  selId   = haveSel ? entities[sel.index()].id : -1;
                 if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
                 if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
                     meshFaceSel = -1;
@@ -11741,11 +11659,11 @@ int main(int argc, char** argv) {
                 // own is seen through this one.
                 AssetId objMat;
                 if (haveSel)
-                    if (const auto* mcp = entities[entitySel].components.get<MaterialComponent>())
+                    if (const auto* mcp = entities[sel.index()].components.get<MaterialComponent>())
                         objMat = mcp->material;
                 uvui::drawPanel({
                     showUv, mc, meshFaceSel, materials, objMat, haveSel,
-                    haveSel && !mc && entities[entitySel].type == EntityType::Box,
+                    haveSel && !mc && entities[sel.index()].type == EntityType::Box,
                     [&]{ convertToMesh(); }, applyMeshEdit,
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                 });
@@ -11774,7 +11692,7 @@ int main(int argc, char** argv) {
                     materials, meshPaintSlot, meshPaintRadius, meshPaintStrength,
                     meshPaintDetail, meshPaintErase,
                     mc, haveSel,
-                    haveSel && !mc && entities[entitySel].type == EntityType::Box,
+                    haveSel && !mc && entities[sel.index()].type == EntityType::Box,
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0, painted,
                     slotEdit,
                     [&]{ convertToMesh(); },
@@ -11797,7 +11715,7 @@ int main(int argc, char** argv) {
                 // a slot needs no touch(): the geometry did not move, only what its
                 // weights are drawn with.
                 if (MeshComponent* m = selectedMesh()) {
-                    Entity&      e      = entities[entitySel];
+                    Entity&      e      = entities[sel.index()];
                     const Entity before = e;
                     bool         did    = false;
                     if (slotEdit.slot >= 0 &&
@@ -11862,926 +11780,34 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
-            if (ImGui::Begin("Hierarchy")) {
-                ImGui::BeginDisabled(entitySel < 0 || entitySel >= static_cast<int>(entities.size()));
-                if (ImGui::Button("Duplicate")) duplicateEntity(entitySel);
-                ImGui::SameLine();
-                if (ImGui::Button("Delete")) deleteEntity(entitySel);
-                ImGui::EndDisabled();
+            // The scene tree: selection, inline rename, drag-to-reparent and the
+            // create/duplicate/delete menu (see HierarchyPanel.cpp).
+            hierarchyui::drawPanel({entities, document, sel,
+                                    renameId, renameBuf, sizeof(renameBuf), renameFocus,
+                                    duplicateEntity, deleteEntity,
+                                    duplicateSelection, deleteSelection,
+                                    addEmptyParent, addEmptyChild, addPrimitiveChild,
+                                    addShotCamera, addVehicleLights, setMainCamera,
+                                    isUnderId, worldOf, rebaseLocal,
+                                    prefabNameBuf, sizeof(prefabNameBuf), showPrefabs});
 
-                ui::sectionText("Scene");
-                // A proper tree control: roots first, children nested; the tree
-                // fills the panel and scrolls. Single click selects, arrow/double-
-                // click expands; drag a node onto another to reparent (onto empty
-                // space to unparent); right-click for Duplicate/Delete.
-                int reparentSrc = -1, reparentTo = -2; // -2 = none, -1 = root
-                int dupReq = -1, delReq = -1;
-                // Deferred context-menu creation requests (applied after the tree
-                // is drawn, so entities isn't mutated mid-iteration).
-                int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
-                int shotCamReq = -1;   // "Shoot this": a multishot camera on this object
-                int vehicleLightsReq = -1;
-                EntityType primChildType = EntityType::Box;
-                auto typeColor = [](EntityType t) -> ImU32 {
-                    switch (t) {
-                        case EntityType::Light:    return IM_COL32(255, 224, 130, 255);
-                        case EntityType::Sun:      return IM_COL32(255, 200,  90, 255);
-                        case EntityType::Model:    return IM_COL32(150, 200, 255, 255);
-                        case EntityType::Sphere:   return IM_COL32(190, 230, 200, 255);
-                        case EntityType::Plane:    return IM_COL32(205, 225, 210, 255);
-                        case EntityType::Cylinder: return IM_COL32(200, 210, 235, 255);
-                        case EntityType::Empty:    return IM_COL32(170, 175, 185, 255);
-                        default:                   return IM_COL32(220, 220, 225, 255);
-                    }
-                };
-                std::function<void(int)> drawNode = [&](int i) {
-                    ImGui::PushID(entities[i].id);           // stable id
-                    bool hasChildren = false;
-                    for (const Entity& c : entities)
-                        if (c.parent == entities[i].id) { hasChildren = true; break; }
-                    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow
-                                             | ImGuiTreeNodeFlags_OpenOnDoubleClick
-                                             | ImGuiTreeNodeFlags_SpanFullWidth
-                                             | ImGuiTreeNodeFlags_DefaultOpen;
-                    if (isSelectedId(entities[i].id)) flags |= ImGuiTreeNodeFlags_Selected;
-                    if (!hasChildren)   flags |= ImGuiTreeNodeFlags_Leaf;
-                    const char* nm = entities[i].name.empty() ? "(unnamed)"
-                                                              : entities[i].name.c_str();
-                    // Start renaming this node: seed the buffer and grab focus.
-                    auto beginRename = [&] {
-                        renameId = entities[i].id;
-                        std::snprintf(renameBuf, sizeof(renameBuf), "%s",
-                                      entities[i].name.c_str());
-                        renameFocus = true;
-                    };
-                    const bool renaming = (entities[i].id == renameId);
-
-                    // Dim the label when the object is effectively off (itself or an
-                    // ancestor deactivated), so a hidden subtree reads at a glance.
-                    // The Active toggle itself lives in the Inspector.
-                    ImU32 col = typeColor(entities[i].type);
-                    if (!entities[i].activeInHierarchy)
-                        col = (col & 0x00FFFFFF) | 0x66000000; // ~40% alpha
-                    ImGui::PushStyleColor(ImGuiCol_Text, col);
-                    // While renaming, draw the row with a blank label and overlay an
-                    // edit field, keeping the tree's arrow + indentation intact.
-                    const bool open = ImGui::TreeNodeEx("##n", flags, "%s",
-                                                        renaming ? "" : nm);
-                    ImGui::PopStyleColor();
-
-                    if (renaming) {
-                        ImGui::SameLine();
-                        if (renameFocus) { ImGui::SetKeyboardFocusHere(); renameFocus = false; }
-                        ImGui::SetNextItemWidth(-1.0f);
-                        const bool enter = ImGui::InputText("##rename", renameBuf,
-                            sizeof(renameBuf), ImGuiInputTextFlags_EnterReturnsTrue |
-                                               ImGuiInputTextFlags_AutoSelectAll);
-                        const bool esc = ImGui::IsKeyPressed(ImGuiKey_Escape);
-                        // Commit on Enter or when the field loses focus; Escape cancels.
-                        if (enter || (ImGui::IsItemDeactivated() && !esc)) {
-                            entities[i].name = renameBuf;
-                            renameId = -1;
-                        } else if (esc) {
-                            renameId = -1;
-                        }
-                    } else {
-                        // Ctrl+click toggles this row in/out of the selection; a plain
-                        // click selects just it.
-                        if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen()) {
-                            if (ImGui::GetIO().KeyCtrl) selectToggle(entities[i].id);
-                            else                        selectSingle(entities[i].id);
-                        }
-                        // F2 on the active node (or a double-click on its label)
-                        // starts an inline rename, Unity-style.
-                        if (i == entitySel && ImGui::IsWindowFocused() &&
-                            ImGui::IsKeyPressed(ImGuiKey_F2))
-                            beginRename();
-                        if (ImGui::IsItemHovered() && !ImGui::IsItemToggledOpen() &&
-                            ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-                            beginRename();
-                        if (ImGui::BeginPopupContextItem()) {
-                            // Right-clicking an unselected row selects just it; if it's
-                            // already part of a multi-selection, keep the whole set so
-                            // Duplicate/Delete act on all of it.
-                            if (!isSelectedId(entities[i].id)) selectSingle(entities[i].id);
-                            if (ImGui::MenuItem("Rename", "F2")) beginRename();
-                            if (ImGui::MenuItem("Duplicate")) dupReq = i;
-                            if (ImGui::MenuItem("Save as Prefab...")) {
-                                std::snprintf(prefabNameBuf, sizeof(prefabNameBuf),
-                                              "%s", entities[i].name.c_str());
-                                showPrefabs = true;
-                            }
-                            ImGui::Separator();
-                            if (ImGui::MenuItem("Create Empty Parent")) emptyParentReq = i;
-                            if (ImGui::MenuItem("Create Empty Child"))  emptyChildReq = i;
-                            if (ImGui::BeginMenu("Add Primitive")) {
-                                if (ImGui::MenuItem("Box"))
-                                    { primChildReq = i; primChildType = EntityType::Box; }
-                                if (ImGui::MenuItem("Ramp"))
-                                    { primChildReq = i; primChildType = EntityType::Ramp; }
-                                if (ImGui::MenuItem("Cylinder"))
-                                    { primChildReq = i; primChildType = EntityType::Cylinder; }
-                                if (ImGui::MenuItem("Sphere"))
-                                    { primChildReq = i; primChildType = EntityType::Sphere; }
-                                if (ImGui::MenuItem("Plane"))
-                                    { primChildReq = i; primChildType = EntityType::Plane; }
-                                ImGui::EndMenu();
-                            }
-                            if (const auto* cc = entities[i].components.get<CameraComponent>()) {
-                                ImGui::Separator();
-                                if (ImGui::MenuItem("Set as Main Camera", nullptr,
-                                                    cc->activeOnStart))
-                                    setMainCamera(entities[i].id);
-                            }
-                            ImGui::Separator();
-                            if (ImGui::MenuItem("Shoot this (Multishot camera)"))
-                                shotCamReq = i;
-                            if (entities[i].components.get<VehicleComponent>()) {
-                                ImGui::Separator();
-                                if (ImGui::MenuItem("Add headlights")) vehicleLightsReq = i;
-                            }
-                            ImGui::Separator();
-                            ImGui::BeginDisabled(entities[i].type == EntityType::Sun);
-                            if (ImGui::MenuItem("Delete")) delReq = i;
-                            ImGui::EndDisabled();
-                            ImGui::EndPopup();
-                        }
-                        if (ImGui::BeginDragDropSource()) {
-                            const int sid = entities[i].id;
-                            ImGui::SetDragDropPayload("SOLID_ID", &sid, sizeof(int));
-                            ImGui::Text("%s", nm);
-                            ImGui::EndDragDropSource();
-                        }
-                        if (ImGui::BeginDragDropTarget()) {
-                            if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
-                                reparentSrc = *static_cast<const int*>(pl->Data);
-                                reparentTo  = entities[i].id;
-                            }
-                            ImGui::EndDragDropTarget();
-                        }
-                    }
-                    if (open) {
-                        if (hasChildren)
-                            for (int c = 0; c < static_cast<int>(entities.size()); ++c)
-                                if (entities[c].parent == entities[i].id) drawNode(c);
-                        ImGui::TreePop();
-                    }
-                    ImGui::PopID();
-                };
-                ImGui::BeginChild("##tree", ImVec2(0.0f, 0.0f), true);
-                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
-                    if (entities[i].parent < 0) drawNode(i);
-                // Empty space in the tree unparents a node dropped onto it.
-                ImGui::Dummy(ImVec2(-1.0f, ImGui::GetContentRegionAvail().y));
-                if (ImGui::BeginDragDropTarget()) {
-                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("SOLID_ID")) {
-                        reparentSrc = *static_cast<const int*>(pl->Data);
-                        reparentTo  = -1;
-                    }
-                    ImGui::EndDragDropTarget();
-                }
-                ImGui::EndChild();
-                // Duplicate/Delete act on the whole selection when the acted-on row
-                // is part of a multi-selection, otherwise on just that row.
-                auto reqIsMultiSelected = [&](int idx) {
-                    return idx >= 0 && idx < static_cast<int>(entities.size()) &&
-                           isSelectedId(entities[idx].id) && selectedIds().size() > 1;
-                };
-                if (dupReq >= 0) {
-                    if (reqIsMultiSelected(dupReq)) duplicateSelection();
-                    else                            duplicateEntity(dupReq);
-                }
-                else if (delReq >= 0) {
-                    if (reqIsMultiSelected(delReq)) deleteSelection();
-                    else                            deleteEntity(delReq);
-                }
-                else if (emptyParentReq >= 0) addEmptyParent(emptyParentReq);
-                else if (emptyChildReq >= 0)  addEmptyChild(emptyChildReq);
-                else if (primChildReq >= 0)   addPrimitiveChild(primChildReq, primChildType);
-                else if (shotCamReq >= 0)     addShotCamera(shotCamReq);
-                else if (vehicleLightsReq >= 0) addVehicleLights(vehicleLightsReq);
-                // Apply a requested reparent (rejecting cycles).
-                if (reparentSrc >= 0 && reparentTo != -2) {
-                    int si = -1;
-                    for (int k = 0; k < static_cast<int>(entities.size()); ++k)
-                        if (entities[k].id == reparentSrc) { si = k; break; }
-                    if (si >= 0 && reparentSrc != reparentTo &&
-                        (reparentTo < 0 || !isUnderId(reparentTo, reparentSrc))) {
-                        entities[si].parent = reparentTo;
-                        // Keep the child put: rebase its local onto the new parent.
-                        Entity* np = (reparentTo >= 0) ? document.find(reparentTo) : nullptr;
-                        const glm::mat4 pw = np ? worldOf(*np) : glm::mat4(1.0f);
-                        rebaseLocal(entities[si], np ? &pw : nullptr);
-                    }
-                }
-
-            }
-            ImGui::End();
-
-            if (ImGui::Begin("Inspector")) {
-                if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
-                    Entity& b = entities[entitySel];
-                    // Undo transaction: snapshot this entity's subtree before any
-                    // widget below mutates it (committed at the block's end).
-                    const std::vector<int> inspFrameIds   = collectSubtreeIds(b.id);
-                    std::vector<Entity>    inspFrameStart = snapshotEntities(inspFrameIds);
-                    // Set true when the Camera branch below sets the Main Camera via
-                    // setMainCamera(): that pushes its own multi-camera undo step, so
-                    // the per-entity edit wrapper must not also log this frame.
-                    bool                   mainCamJustSet = false;
-                    ui::sectionText(entityTypeName(b.type));
-
-                    // Auto-generated fields: the property table (PropertyMeta.hpp)
-                    // declares each field once -> the right widget, range and
-                    // visibility fall out here. Adding a field is a table entry.
-                    for (const Property& pr : entityProperties()) {
-                        if (!(pr.typeMask & typeBit(b.type))) continue;
-                        if (pr.visible && !pr.visible(&b)) continue;
-                        // Children follow center/rotation edits automatically
-                        // (resolveHierarchy); no per-field side effects left.
-                        drawProperty(pr, &b);
-                    }
-
-                    if (b.type == EntityType::Sun) {
-                        ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
-                        ImGui::SameLine();
-                        ImGui::Checkbox("Pause", &timePaused);
-                        ImGui::TextDisabled("The sun drives the sky and casts shadows.");
-                    } else {
-                        // --- Bespoke fields (enumerate project state) ------------
-                        if (auto* mdl = b.components.get<ModelComponent>()) {
-                            LoadedModel* lm = models.byId(mdl->modelId);
-                            ImGui::Text("Model: %s", lm ? lm->name.c_str() : "(missing)");
-                        }
-                        ImGui::Text("Parent: %s",
-                                    b.parent < 0 ? "(root)" : ("id " + std::to_string(b.parent)).c_str());
-                        if (ImGui::Button("Drop to ground"))
-                        {
-                            const glm::mat4 pw = parentWorldMat(b);
-                            setWorld(b, glm::vec3(b.center.x,
-                                streamer.heightAt(b.center.x, b.center.z) + b.half.y,
-                                b.center.z), b.rotation, b.parent >= 0 ? &pw : nullptr);
-                        }
-                        ImGui::SameLine();
-                        ImGui::BeginDisabled(b.parent < 0);
-                        if (ImGui::Button("Unparent")) { b.parent = -1; rebaseLocal(b, nullptr); }
-                        ImGui::EndDisabled();
-                        ImGui::SameLine();
-                        if (ImGui::Button("Delete##insp")) deleteEntity(entitySel);
-                    }
-                    // Components: optional attached capabilities. Each renders from
-                    // its own metadata; add/remove is open via the type registry.
-                    // (Re-fetch: Delete##insp above may have cleared the selection.)
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
-                        Entity& be = entities[entitySel];
-                        ui::sectionText("Components");
-                        for (std::size_t ci = 0; ci < be.components.items.size(); ++ci) {
-                            ComponentBase* c = be.components.items[ci].get();
-                            ImGui::PushID(static_cast<int>(ci));
-                            // Each component is a collapsible card: a semibold
-                            // header bar you can fold away (its background makes the
-                            // component's extent obvious), with a right-aligned X to
-                            // detach it. Folding keeps a busy inspector readable.
-                            bool addable = true;
-                            for (const auto& t : components::registry())
-                                if (t.typeId == c->typeId()) { addable = t.addable; break; }
-                            const bool open = ui::header(c->displayName(),
-                                ImGuiTreeNodeFlags_DefaultOpen | ImGuiTreeNodeFlags_AllowOverlap);
-                            // X (detach) sitting on the right of the header bar.
-                            // Engine-managed components (Sun) can't be removed.
-                            bool remove = false;
-                            if (addable) {
-                                const float xW = ImGui::GetFrameHeight();
-                                ImGui::SameLine(ImGui::GetContentRegionMax().x - xW);
-                                remove = ImGui::SmallButton("X");
-                                if (ImGui::IsItemHovered())
-                                    ImGui::SetTooltip("Remove this component");
-                            }
-                            if (open) {
-                                ImGui::Indent();
-                            if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
-                                // Bespoke picker: enumerate the project's .lua files.
-                                std::vector<std::string> luaFiles = listScripts();
-                                const std::string cur = sc->file.empty() ? "(none)" : sc->file;
-                                ImGui::SetNextItemWidth(-60.0f);
-                                if (ImGui::BeginCombo("##scriptfile", cur.c_str())) {
-                                    if (ImGui::Selectable("(none)", sc->file.empty())) sc->file.clear();
-                                    for (const std::string& f : luaFiles)
-                                        if (ImGui::Selectable(f.c_str(), sc->file == f)) sc->file = f;
-                                    ImGui::EndCombo();
-                                }
-                                ImGui::SameLine();
-                                ImGui::BeginDisabled(sc->file.empty());
-                                if (ImGui::Button("Edit##scr")) openScript(sc->file);
-                                ImGui::EndDisabled();
-                                const bool scriptMissing = !sc->file.empty() &&
-                                    std::find(luaFiles.begin(), luaFiles.end(), sc->file) == luaFiles.end();
-                                if (scriptMissing)
-                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                        "Missing: scripts/%s", sc->file.c_str());
-                                else if (!scripts.lastError().empty())
-                                    ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-                                                       "Script error: %s", scripts.lastError().c_str());
-                                // --- Exported parameters: the script's module-level
-                                // globals (see ScriptParam). Each is a persisted,
-                                // editable field whose value overrides the script's
-                                // default when Play starts.
-                                if (!sc->file.empty() && !scriptMissing) {
-                                    const ScriptParamScan& scan = scanScriptParams(sc->file);
-                                    if (!scan.ok) {
-                                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                            "Parameters unavailable: %s", scan.err.c_str());
-                                    } else if (!scan.defs.empty()) {
-                                        ImGui::Separator();
-                                        ImGui::TextDisabled("Script parameters");
-                                        // Reconcile the stored overrides with the
-                                        // current globals: keep a matching value, seed
-                                        // a new one from its default, drop the gone.
-                                        // (Idempotent, so it doesn't churn undo.)
-                                        std::vector<ScriptParam> merged;
-                                        merged.reserve(scan.defs.size());
-                                        for (const ScriptParam& def : scan.defs) {
-                                            const ScriptParam* prev = nullptr;
-                                            for (const ScriptParam& sp : sc->params)
-                                                if (sp.sameShape(def)) { prev = &sp; break; }
-                                            merged.push_back(prev ? *prev : def);
-                                        }
-                                        sc->params = std::move(merged);
-                                        for (ScriptParam& sp : sc->params) {
-                                            ImGui::PushID(sp.name.c_str());
-                                            switch (sp.type) {
-                                                case ScriptParam::Type::Number: {
-                                                    float v = static_cast<float>(sp.num);
-                                                    if (ImGui::DragFloat(sp.name.c_str(), &v, 0.1f))
-                                                        sp.num = v;
-                                                    break;
-                                                }
-                                                case ScriptParam::Type::Bool:
-                                                    ImGui::Checkbox(sp.name.c_str(), &sp.b);
-                                                    break;
-                                                case ScriptParam::Type::String: {
-                                                    char buf[128];
-                                                    std::snprintf(buf, sizeof(buf), "%s", sp.str.c_str());
-                                                    if (ImGui::InputText(sp.name.c_str(), buf, sizeof(buf)))
-                                                        sp.str = buf;
-                                                    break;
-                                                }
-                                                case ScriptParam::Type::Vec3:
-                                                    ImGui::DragFloat3(sp.name.c_str(), &sp.vec.x, 0.1f);
-                                                    break;
-                                                case ScriptParam::Type::Color:
-                                                    ImGui::ColorEdit3(sp.name.c_str(), &sp.vec.x);
-                                                    break;
-                                            }
-                                            ImGui::PopID();
-                                        }
-                                        if (ImGui::SmallButton("Reset to defaults"))
-                                            sc->params = scan.defs;
-                                    }
-                                }
-                            } else if (auto* mc = dynamic_cast<MaterialComponent*>(c)) {
-                                // Bespoke picker: pick from the material library.
-                                const int mi = document.materialIndex(mc->material);
-                                // "##pick": the component header above is also
-                                // labelled "Material" -> same ID stack, same hash.
-                                if (ImGui::BeginCombo("Material##pick", materials[mi].name.c_str())) {
-                                    // A search box at the top of the popup, focused
-                                    // as it opens: on a library of dozens, typing
-                                    // three letters beats scrolling to the right
-                                    // row. One shared buffer across the pickers is
-                                    // enough -- only one popup is open at a time --
-                                    // and it starts empty every time so a popup
-                                    // never opens already hiding most of the list.
-                                    if (ImGui::IsWindowAppearing()) {
-                                        matPickFilter[0] = 0;
-                                        ImGui::SetKeyboardFocusHere();
-                                    }
-                                    ui::searchBox("##matpickf", matPickFilter,
-                                                  sizeof(matPickFilter));
-                                    for (int i = 0; i < static_cast<int>(materials.size()); ++i) {
-                                        if (!ui::icontains(materials[i].name.c_str(),
-                                                           matPickFilter)) continue;
-                                        const bool sel = (i == mi);
-                                        if (ImGui::Selectable(materials[i].name.c_str(), sel)) {
-                                            mc->material = materials[i].assetId;
-                                            matSel = i;
-                                        }
-                                        if (sel) ImGui::SetItemDefaultFocus();
-                                    }
-                                    ImGui::EndCombo();
-                                }
-                                ImGui::SameLine();
-                                if (ImGui::SmallButton("Edit##mat")) { matSel = mi; showMaterials = true; }
-                            } else if (auto* mdl = dynamic_cast<ModelComponent*>(c)) {
-                                // Scale drives the pick box (half) for the model.
-                                if (ImGui::SliderFloat("Scale", &mdl->scale, 0.05f, 20.0f, "%.2f"))
-                                    if (LoadedModel* lm = models.byId(mdl->modelId))
-                                        be.half = modelHalf(*lm, mdl->scale);
-                                // Which material each part of the model uses, and a
-                                // picker to point it somewhere else. An imported
-                                // model brings its own materials and nothing in the
-                                // editor ever said so: the Materials panel lists
-                                // them among all the others with no clue which mesh
-                                // they belong to, and there was no way to put a part
-                                // on a material of your own at all.
-                                //
-                                // Per MODEL, not per instance: primMaterialId lives
-                                // on the LoadedModel, so this repoints every entity
-                                // instancing it. Said out loud below rather than
-                                // discovered by editing one lamppost and watching
-                                // forty others change.
-                                if (LoadedModel* lm = models.byId(mdl->modelId)) {
-                                    const int nParts =
-                                        static_cast<int>(lm->primMaterialId.size());
-                                    char hdr[64];
-                                    std::snprintf(hdr, sizeof(hdr),
-                                                  "Materials (%d)###modelmats", nParts);
-                                    if (nParts > 0 && ImGui::CollapsingHeader(hdr)) {
-                                        ImGui::TextDisabled(
-                                            "Applies to every instance of this model.");
-                                        for (int pi = 0; pi < nParts; ++pi) {
-                                            const int pm = document.materialIndex(
-                                                lm->primMaterialId[pi]);
-                                            char lbl[48], btn[32];
-                                            std::snprintf(lbl, sizeof(lbl), "Part %d##pm%d",
-                                                          pi + 1, pi);
-                                            std::snprintf(btn, sizeof(btn), "Edit##pmb%d", pi);
-                                            ImGui::SetNextItemWidth(-72.0f);
-                                            if (ImGui::BeginCombo(
-                                                    lbl, pm >= 0 ? materials[pm].name.c_str()
-                                                                 : "(missing)")) {
-                                                if (ImGui::IsWindowAppearing()) {
-                                                    matPickFilter[0] = 0;
-                                                    ImGui::SetKeyboardFocusHere();
-                                                }
-                                                ui::searchBox("##pmpickf", matPickFilter,
-                                                              sizeof(matPickFilter));
-                                                for (int i = 0;
-                                                     i < static_cast<int>(materials.size());
-                                                     ++i) {
-                                                    if (!ui::icontains(
-                                                            materials[i].name.c_str(),
-                                                            matPickFilter)) continue;
-                                                    const bool sel = (i == pm);
-                                                    // Names repeat across a library, and
-                                                    // two Selectables sharing a label are
-                                                    // one widget to ImGui -- hence the ##.
-                                                    char it[160];
-                                                    std::snprintf(it, sizeof(it), "%s##pm%d_%d",
-                                                                  materials[i].name.c_str(),
-                                                                  pi, i);
-                                                    if (ImGui::Selectable(it, sel))
-                                                        lm->primMaterialId[pi] =
-                                                            materials[i].assetId;
-                                                    if (sel) ImGui::SetItemDefaultFocus();
-                                                }
-                                                ImGui::EndCombo();
-                                            }
-                                            ImGui::SameLine();
-                                            if (ImGui::SmallButton(btn) && pm >= 0) {
-                                                matSel = pm; showMaterials = true;
-                                            }
-                                        }
-                                    }
-                                }
-                            } else if (auto* col = dynamic_cast<CollectibleComponent*>(c)) {
-                                // Points + radius from metadata; Sound is a picker
-                                // over the Sound assets (chosen, not typed).
-                                for (const Property& pr : col->props())
-                                    if (pr.key != "sound") drawProperty(pr, col);
-                                soundPickerCombo("Sound", col->sound);
-                            } else if (auto* mp = dynamic_cast<MissilePickupComponent*>(c)) {
-                                // Same deal as the Collectible: rounds, radius and
-                                // respawn from metadata, the pickup cue chosen from
-                                // the Sound assets rather than typed.
-                                for (const Property& pr : mp->props())
-                                    if (pr.key != "sound") drawProperty(pr, mp);
-                                soundPickerCombo("Sound", mp->sound);
-                            } else if (auto* pa = dynamic_cast<ParticleComponent*>(c)) {
-                                // Everything from metadata except the sprite, which
-                                // gets a Texture picker instead of a raw filename.
-                                for (const Property& pr : pa->props())
-                                    if (pr.key != "sprite") drawProperty(pr, pa);
-                                texturePickerCombo("Sprite", pa->sprite);
-                                // Where the speed glow gets its speed from. Shown
-                                // because the link is invisible otherwise: the
-                                // craft is usually an ANCESTOR, and an emitter
-                                // parented to the wrong thing would just never
-                                // flare, with nothing on screen to say why.
-                                if (pa->speedGlowMin != pa->speedGlowMax) {
-                                    float top = 0.0f;
-                                    std::string src;
-                                    if (ParticleSystem::speedSource(entities, be, top, src))
-                                        ImGui::TextDisabled("Speed from %s (top %.0f m/s)",
-                                                            src.c_str(), top);
-                                    else
-                                        ImGui::TextColored(
-                                            ImVec4(1.0f, 0.72f, 0.25f, 1.0f),
-                                            "No Glider or Opponent here or above -- "
-                                            "the speed glow does nothing.");
-                                }
-                                if (ImGui::Button("Restart burst")) {
-                                    particles.restart(be.id);
-                                    pa->playing = true;
-                                }
-                                ImGui::SameLine();
-                                ImGui::TextDisabled("%d live / %d emitters",
-                                                    particles.liveCount(),
-                                                    particles.emitterCount());
-                            } else if (auto* bp = dynamic_cast<BoostPadComponent*>(c)) {
-                                // Speed/accel/direction from metadata; the punch SFX
-                                // is a Sound picker (with volume/pitch already drawn
-                                // as sliders above), plus a Preview to audition it.
-                                for (const Property& pr : bp->props())
-                                    if (pr.key != "sound") drawProperty(pr, bp);
-                                soundPickerCombo("Punch sound", bp->sound);
-                                ImGui::BeginDisabled(bp->sound.empty());
-                                if (ImGui::Button("Preview punch")) playBoostPunch(*bp);
-                                ImGui::EndDisabled();
-                            } else if (auto* fl = dynamic_cast<FinishLineComponent*>(c)) {
-                                // Laps + gate size from metadata; the three start
-                                // samples are Sound pickers with one Preview each,
-                                // so the sequence can be auditioned while placing it.
-                                for (const Property& pr : fl->props())
-                                    if (pr.key != "soundReady" && pr.key != "soundSet" &&
-                                        pr.key != "soundGo")
-                                        drawProperty(pr, fl);
-                                auto startCue = [&](const char* label, const char* btn,
-                                                    std::string& field) {
-                                    soundPickerCombo(label, field);
-                                    ImGui::BeginDisabled(field.empty());
-                                    if (ImGui::Button(btn)) playCue(field, fl->soundGain, 1.0f);
-                                    ImGui::EndDisabled();
-                                };
-                                startCue("Ready sound", "Preview##ready", fl->soundReady);
-                                startCue("Set sound",   "Preview##set",   fl->soundSet);
-                                startCue("Go sound",    "Preview##go",    fl->soundGo);
-                                // Session type, the roster of who is in it, and the
-                                // grid (see RaceGrid). Folded into THIS branch
-                                // rather than added as another `else if` further
-                                // down -- the chain stops at the first match, so a
-                                // second branch for the same component type would
-                                // never run.
-                                racegrid::inspector(*fl, entities, roads.active());
-                            } else if (auto* cp = dynamic_cast<CheckpointComponent*>(c)) {
-                                // Gate size from metadata; the pass SFX is a picker
-                                // with volume/pitch sliders and a Preview, like the
-                                // boost pad's punch.
-                                for (const Property& pr : cp->props())
-                                    if (pr.key != "sound") drawProperty(pr, cp);
-                                soundPickerCombo("Gate sound", cp->sound);
-                                ImGui::BeginDisabled(cp->sound.empty());
-                                if (ImGui::Button("Preview gate"))
-                                    playCue(cp->sound, cp->soundGain, cp->soundPitch);
-                                ImGui::EndDisabled();
-                            } else if (auto* tr = dynamic_cast<TriggerComponent*>(c)) {
-                                // Radius/once/message from metadata; Sound is a picker.
-                                for (const Property& pr : tr->props())
-                                    if (pr.key != "sound") drawProperty(pr, tr);
-                                soundPickerCombo("Sound", tr->sound);
-                            } else if (auto* stc = dynamic_cast<SceneTriggerComponent*>(c)) {
-                                // Radius/once from metadata; Scene is a picker over the
-                                // project's other scenes (chosen, not typed).
-                                for (const Property& pr : stc->props())
-                                    if (pr.key != "scene") drawProperty(pr, stc);
-                                const std::string folder =
-                                    std::filesystem::path(currentProject).parent_path().string();
-                                const std::string label = stc->scene.empty() ? "(none)" : stc->scene;
-                                if (ImGui::BeginCombo("Scene", label.c_str())) {
-                                    if (ImGui::Selectable("(none)", stc->scene.empty()))
-                                        stc->scene.clear();
-                                    for (const auto& [n, path] : listScenesIn(folder)) {
-                                        (void)path;
-                                        if (ImGui::Selectable(n.c_str(), stc->scene == n))
-                                            stc->scene = n;
-                                    }
-                                    ImGui::EndCombo();
-                                }
-                            } else if (auto* sr = dynamic_cast<ShowroomComponent*>(c)) {
-                                // Stage + camera from metadata; the three cues are
-                                // Sound pickers with a Preview each, so the picker's
-                                // feel can be tuned while it is being built.
-                                for (const Property& pr : sr->props())
-                                    if (pr.key != "soundMove" && pr.key != "soundSelect" &&
-                                        pr.key != "soundStart")
-                                        drawProperty(pr, sr);
-                                auto shCue = [&](const char* label, const char* btn,
-                                                 std::string& field) {
-                                    soundPickerCombo(label, field);
-                                    ImGui::BeginDisabled(field.empty());
-                                    if (ImGui::Button(btn)) playCue(field, sr->soundGain, 1.0f);
-                                    ImGui::EndDisabled();
-                                };
-                                shCue("Move sound",   "Preview##shmove", sr->soundMove);
-                                shCue("Select sound", "Preview##shsel",  sr->soundSelect);
-                                shCue("Start sound",  "Preview##shgo",   sr->soundStart);
-                            } else if (auto* tec = dynamic_cast<TrackEntryComponent*>(c)) {
-                                // Everything from metadata except the scene, which is
-                                // a picker over the project's scenes (chosen, not
-                                // typed) -- same rule as the Scene Trigger's.
-                                for (const Property& pr : tec->props())
-                                    if (pr.key != "scene") drawProperty(pr, tec);
-                                const std::string tfolder =
-                                    std::filesystem::path(currentProject).parent_path().string();
-                                const std::string tlabel =
-                                    tec->scene.empty() ? "(none)" : tec->scene;
-                                if (ImGui::BeginCombo("Scene", tlabel.c_str())) {
-                                    if (ImGui::Selectable("(none)", tec->scene.empty()))
-                                        tec->scene.clear();
-                                    for (const auto& [n, path] : listScenesIn(tfolder)) {
-                                        (void)path;
-                                        if (ImGui::Selectable(n.c_str(), tec->scene == n))
-                                            tec->scene = n;
-                                    }
-                                    ImGui::EndCombo();
-                                }
-                            } else if (auto* sw = dynamic_cast<SpawnerComponent*>(c)) {
-                                // Prefab is a picker over the project's prefabs
-                                // (chosen, not typed); picking one hides the
-                                // primitive "Spawns" enum -- a prefab brings its
-                                // own shape. Everything else from metadata.
-                                const std::string pdir = currentProject.empty()
-                                    ? std::string()
-                                    : prefab::prefabsDirIn(
-                                          std::filesystem::path(currentProject)
-                                              .parent_path().generic_string());
-                                const auto prefabs = prefab::list(pdir);
-                                const char* kNoPrefab = "(none - spawn a solid)";
-                                const std::string plabel =
-                                    sw->prefab.empty() ? kNoPrefab : sw->prefab;
-                                if (ImGui::BeginCombo("Prefab", plabel.c_str())) {
-                                    if (ImGui::Selectable(kNoPrefab, sw->prefab.empty()))
-                                        sw->prefab.clear();
-                                    for (const auto& [pn, ppath] : prefabs) {
-                                        (void)ppath;
-                                        if (ImGui::Selectable(pn.c_str(), sw->prefab == pn))
-                                            sw->prefab = pn;
-                                    }
-                                    ImGui::EndCombo();
-                                }
-                                // A renamed/deleted prefab would silently spawn
-                                // nothing, so say so where it's authored.
-                                if (!sw->prefab.empty() &&
-                                    std::none_of(prefabs.begin(), prefabs.end(),
-                                                 [&](const auto& np) {
-                                                     return np.first == sw->prefab;
-                                                 }))
-                                    ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                                       "Missing: %s", sw->prefab.c_str());
-                                for (const Property& pr : sw->props()) {
-                                    if (pr.key == "prefab") continue;
-                                    if (pr.visible && !pr.visible(sw)) continue;
-                                    drawProperty(pr, sw);
-                                }
-                                if (!sw->prefab.empty())
-                                    ImGui::TextDisabled("Launch speed only moves the\n"
-                                                        "instance if its root has a\n"
-                                                        "dynamic Physics component.");
-                            } else if (auto* ts = dynamic_cast<TriggerSoundComponent*>(c)) {
-                                // Radius/volume/loop/once from metadata; Sound picker.
-                                for (const Property& pr : ts->props()) drawProperty(pr, ts);
-                                soundPickerCombo("Sound", ts->sound);
-                            } else if (auto* as = dynamic_cast<AudioSourceComponent*>(c)) {
-                                // Volume/loop/play-on-start/spatial from metadata;
-                                // Sound is a picker over the project's Sound assets.
-                                for (const Property& pr : as->props())
-                                    if (pr.key != "sound") drawProperty(pr, as);
-                                soundPickerCombo("Sound", as->sound);
-                                // Editor preview: audition the sound right here
-                                // without entering Play (uses the same voice path).
-                                ImGui::BeginDisabled(as->sound.empty());
-                                if (ImGui::Button("Preview")) startAudioSource(be.id);
-                                ImGui::SameLine();
-                                if (ImGui::Button("Stop##audiosrc")) stopAudioSource(be.id);
-                                ImGui::EndDisabled();
-                            } else if (auto* cam = dynamic_cast<CameraComponent*>(c)) {
-                                // FOV from metadata; the Main Camera button marks this
-                                // the view Play and the exported game start from,
-                                // clearing the flag on every other camera. (The raw
-                                // activeOnStart bool is hidden: set it here so exactly
-                                // one camera can ever be the main one.)
-                                for (const Property& pr : cam->props())
-                                    if (pr.key != "activeOnStart") drawProperty(pr, cam);
-                                if (cam->activeOnStart) {
-                                    ImGui::TextColored(ImVec4(0.5f, 0.85f, 1.0f, 1.0f),
-                                                       "* Main Camera");
-                                    ImGui::SameLine();
-                                    if (ImGui::SmallButton("Clear")) {
-                                        setMainCamera(-1); mainCamJustSet = true;
-                                    }
-                                } else if (ImGui::Button("Set as Main Camera")) {
-                                    setMainCamera(be.id); mainCamJustSet = true;
-                                }
-                                // --- Multishot -------------------------------
-                                // The two things the property metadata cannot
-                                // carry: WHAT is being shot (an entity
-                                // reference) and WHICH MOVES are in the rotation
-                                // (a bool per shot, which as thirteen inspector
-                                // rows would bury every number above it).
-                                if (cam->mode == CameraComponent::Multishot) {
-                                    ImGui::Separator();
-                                    const Entity* subj = document.find(
-                                        cam->shotTarget >= 0 ? cam->shotTarget : be.parent);
-                                    const std::string slabel =
-                                        subj ? subj->name
-                                             : (cam->shotTarget < 0 ? "(parent -- none)"
-                                                                    : "(missing)");
-                                    if (ImGui::BeginCombo("Subject", slabel.c_str())) {
-                                        if (ImGui::Selectable("(parent)", cam->shotTarget < 0))
-                                            cam->shotTarget = -1;
-                                        for (const Entity& se : entities) {
-                                            if (se.id == be.id) continue;   // not itself
-                                            if (ImGui::Selectable(se.name.c_str(),
-                                                                  cam->shotTarget == se.id))
-                                                cam->shotTarget = se.id;
-                                        }
-                                        ImGui::EndCombo();
-                                    }
-                                    if (!subj)
-                                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f),
-                                                           "Pick an object to shoot.");
-
-                                    // What is on screen right now, and the speed
-                                    // the shot list is choosing against -- the two
-                                    // numbers that explain why it picked what it
-                                    // picked. Without them a rotation that leans
-                                    // on travelling shots looks like a bug rather
-                                    // than a parked car.
-                                    if (auto* dir = cams.director(be.id)) {
-                                        ImGui::Text("Now: %s  %.1fs left  (%.0f km/h)",
-                                                    multishot::shotName(dir->shot()),
-                                                    dir->remaining(), dir->speed() * 3.6f);
-                                        if (ImGui::Button("Cut")) dir->cut();
-                                        ImGui::SameLine();
-                                    } else {
-                                        ImGui::TextDisabled("Not running -- preview or play.");
-                                    }
-                                    // Preview drives the viewport from this camera
-                                    // without entering Play, which is the only way
-                                    // to judge a shot: framing is not a number, it
-                                    // is a picture.
-                                    if (activeCam == be.id) {
-                                        if (ImGui::Button("Stop preview")) activeCam = -1;
-                                    } else if (ImGui::Button("Preview")) {
-                                        activeCam = be.id;
-                                    }
-
-                                    if (ImGui::TreeNodeEx("Shots",
-                                                          ImGuiTreeNodeFlags_DefaultOpen)) {
-                                        if (ImGui::SmallButton("All"))
-                                            for (bool& u : cam->shots.use) u = true;
-                                        ImGui::SameLine();
-                                        if (ImGui::SmallButton("None"))
-                                            for (bool& u : cam->shots.use) u = false;
-                                        ImGui::SameLine();
-                                        ImGui::TextDisabled("(? per shot)");
-                                        for (int i = 0; i < multishot::ShotCount; ++i) {
-                                            ImGui::PushID(i);
-                                            ImGui::Checkbox(multishot::shotName(i),
-                                                            &cam->shots.use[i]);
-                                            if (ImGui::IsItemHovered())
-                                                ImGui::SetTooltip("%s", multishot::shotHint(i));
-                                            // Audition one move now, instead of
-                                            // waiting for the rotation to offer it.
-                                            if (auto* dir = cams.director(be.id)) {
-                                                ImGui::SameLine(ImGui::GetWindowWidth() - 40.0f);
-                                                if (ImGui::SmallButton(">")) dir->play(i);
-                                                if (ImGui::IsItemHovered())
-                                                    ImGui::SetTooltip("Play this shot now");
-                                            }
-                                            ImGui::PopID();
-                                        }
-                                        ImGui::TreePop();
-                                    }
-                                }
-                            } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
-                                // Radius from metadata; Target is a picker over the
-                                // scene's Camera entities (plus the player view).
-                                for (const Property& pr : cs->props()) drawProperty(pr, cs);
-                                const Entity* cur = document.find(cs->target);
-                                const std::string label = cur ? cur->name : "(Player view)";
-                                if (ImGui::BeginCombo("Target", label.c_str())) {
-                                    if (ImGui::Selectable("(Player view)", cs->target < 0))
-                                        cs->target = -1;
-                                    for (const Entity& ce : entities)
-                                        if (ce.components.get<CameraComponent>())
-                                            if (ImGui::Selectable(ce.name.c_str(), cs->target == ce.id))
-                                                cs->target = ce.id;
-                                    ImGui::EndCombo();
-                                }
-                            } else if (auto* an = dynamic_cast<AnimationComponent*>(c)) {
-                                // Speed/playing/loop from metadata; Clip is a picker
-                                // over the model's animation clip names.
-                                for (const Property& pr : an->props()) drawProperty(pr, an);
-                                const auto* mc = be.components.get<ModelComponent>();
-                                LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
-                                if (lm && lm->animData && !lm->animData->animations.empty()) {
-                                    const auto& clips = lm->animData->animations;
-                                    an->clip = glm::clamp(an->clip, 0,
-                                                          static_cast<int>(clips.size()) - 1);
-                                    if (ImGui::BeginCombo("Clip", clips[an->clip].name.c_str())) {
-                                        for (int i = 0; i < static_cast<int>(clips.size()); ++i)
-                                            if (ImGui::Selectable(clips[i].name.c_str(), an->clip == i))
-                                                { an->clip = i; an->time = 0.0f; }
-                                        ImGui::EndCombo();
-                                    }
-                                } else {
-                                    ImGui::TextDisabled("No animated model on this entity.");
-                                }
-                            } else if (auto* at = dynamic_cast<AnimationTriggerComponent*>(c)) {
-                                // Radius/once from metadata; Target = a picker over
-                                // the scene's entities that have an Animation.
-                                for (const Property& pr : at->props()) drawProperty(pr, at);
-                                const Entity* cur = document.find(at->target);
-                                const std::string label = cur ? cur->name : "(none)";
-                                if (ImGui::BeginCombo("Target", label.c_str())) {
-                                    if (ImGui::Selectable("(none)", at->target < 0))
-                                        at->target = -1;
-                                    for (const Entity& te : entities)
-                                        if (te.components.get<AnimationComponent>())
-                                            if (ImGui::Selectable(te.name.c_str(), at->target == te.id))
-                                                at->target = te.id;
-                                    ImGui::EndCombo();
-                                }
-                            } else if (auto* dop = dynamic_cast<DoorOpenerComponent*>(c)) {
-                                // Radius/stayOpen from metadata; Target = a Door
-                                // entity ((self) for the door this is attached to).
-                                for (const Property& pr : dop->props()) drawProperty(pr, dop);
-                                const Entity* cur = document.find(dop->target);
-                                const std::string label = cur ? cur->name : "(self)";
-                                if (ImGui::BeginCombo("Target door", label.c_str())) {
-                                    if (ImGui::Selectable("(self)", dop->target < 0))
-                                        dop->target = -1;
-                                    for (const Entity& te : entities)
-                                        if (te.components.get<DoorComponent>())
-                                            if (ImGui::Selectable(te.name.c_str(), dop->target == te.id))
-                                                dop->target = te.id;
-                                    ImGui::EndCombo();
-                                }
-                            } else if (auto* vh = dynamic_cast<VehicleComponent*>(c)) {
-                                // Props + wheel-slot pickers + re-detect
-                                // (see VehicleTool).
-                                vehicleui::inspector(*vh, be, document);
-                            } else if (auto* gl = dynamic_cast<GliderComponent*>(c)) {
-                                // Grouped flight tuning + drive hint (see GliderTool).
-                                // The crash/alarm samples get the same Sound picker
-                                // every other sound field in the editor uses.
-                                gliderui::inspector(*gl, be, document,
-                                                    [&](const char* lbl, std::string& f) {
-                                                        soundPickerCombo(lbl, f);
-                                                    });
-                            } else {
-                                for (const Property& pr : c->props()) drawProperty(pr, c);
-                            }
-                                ImGui::Unindent();
-                            } // if (open): collapsed cards render just their header
-                            ImGui::PopID();
-                            ImGui::Spacing();        // gap between cards
-                            if (remove) {
-                                be.components.items.erase(be.components.items.begin() + ci);
-                                break;
-                            }
-                        }
-                        if (ImGui::Button("Add Component")) ImGui::OpenPopup("addcomp");
-                        if (ImGui::BeginPopup("addcomp")) {
-                            for (const components::TypeInfo& t : components::registry())
-                                if (t.addable && ImGui::Selectable(t.displayName.c_str()))
-                                    be.components.items.push_back(t.make());
-                            ImGui::EndPopup();
-                        }
-                    }
-                    // Commit the inspector interaction as one undoable step. Begin
-                    // when a field is first touched, commit when nothing is active.
-                    // (Re-check selection: Delete##insp above may have cleared it.)
-                    if (entitySel >= 0 && entitySel < static_cast<int>(entities.size())) {
-                        const int  selId      = entities[entitySel].id;
-                        const bool inspActive = ImGui::IsAnyItemActive();
-                        if (mainCamJustSet) {
-                            // setMainCamera() already pushed its own undo step (over
-                            // all cameras); don't let this wrapper log a duplicate.
-                            inspEditId = -1;
-                        } else if (inspActive && inspEditId != selId) {
-                            inspEditId     = selId;
-                            inspEditIds    = inspFrameIds;
-                            inspEditBefore = inspFrameStart;
-                        } else if (!inspActive && inspEditId == selId) {
-                            inspEditId = -1;
-                            auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                inspEditBefore, snapshotEntities(inspEditIds));
-                            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                        }
-                    }
-                } else {
-                    ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
-                }
-                ui::sectionText("New block defaults");
-                ImGui::SliderFloat3("Size", &entityNewHalf.x, 0.25f, 12.0f, "%.2f m");
-                if (ImGui::Button("Materials...")) showMaterials = true;
-                ImGui::SameLine();
-                if (ImGui::Button("Models...")) showModels = true;
-                ImGui::TextDisabled("Walk into blocks in FPS mode (F).");
-            }
-            ImGui::End();
+            // The Inspector: the selected entity's fields and its components,
+            // each card rendering from its own metadata (see InspectorPanel.cpp).
+            inspectorui::drawPanel({entities, document, history, materials, sel,
+                                    models, particles, scripts, cams, roads, streamer,
+                                    timeOfDay, timePaused,
+                                    parentWorldMat, setWorld, rebaseLocal, modelHalf,
+                                    deleteEntity, setMainCamera,
+                                    collectSubtreeIds, snapshotEntities,
+                                    inspEditId, inspEditIds, inspEditBefore,
+                                    soundPickerCombo, texturePickerCombo,
+                                    listScripts, openScript, scanScriptParams,
+                                    currentProject, listScenesIn,
+                                    playCue, playBoostPunch,
+                                    startAudioSource, stopAudioSource,
+                                    matSel, matPickFilter, sizeof(matPickFilter),
+                                    showMaterials, showModels, activeCam,
+                                    entityNewHalf});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.
@@ -12801,7 +11827,7 @@ int main(int argc, char** argv) {
             // folder. Make one from the current selection, or click a saved prefab
             // to drop an instance into the scene (on the ground in front of the
             // camera). See PrefabSystem.hpp.
-            prefabsui::drawPanel({showPrefabs, prefabDir, entities, entitySel,
+            prefabsui::drawPanel({showPrefabs, prefabDir, entities, sel,
                                   prefabNameBuf, sizeof(prefabNameBuf),
                                   createPrefabFromSelection,
                                   instantiatePrefabFile});
@@ -13493,10 +12519,10 @@ int main(int argc, char** argv) {
                     return rep;
                 };
                 const int selId =
-                    (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
-                        ? entities[entitySel].id : -1;
+                    (sel.valid())
+                        ? entities[sel.index()].id : -1;
                 const int pick = vehicleui::panelSection(document, selId, makeDrivable);
-                if (pick >= 0) entitySel = document.indexOf(pick);
+                if (pick >= 0) sel.select(pick);
 
                 ui::sectionText("Setup gizmo");
                 ImGui::Checkbox("Edit setup in viewport", &vehGizmoEdit);
@@ -13551,10 +12577,10 @@ int main(int argc, char** argv) {
                     return rep;
                 };
                 const int selId =
-                    (entitySel >= 0 && entitySel < static_cast<int>(entities.size()))
-                        ? entities[entitySel].id : -1;
+                    (sel.valid())
+                        ? entities[sel.index()].id : -1;
                 const int pick = gliderui::panelSection(document, selId, makeGlider);
-                if (pick >= 0) entitySel = document.indexOf(pick);
+                if (pick >= 0) sel.select(pick);
 
                 if (gliderMode && driveGliderId >= 0)
                     ImGui::Text("Speed: %.0f km/h",

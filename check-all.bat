@@ -91,6 +91,10 @@ REM  sculptcheck misst die Zusage des Zieh-Werkzeugs: eine Geste, die
 REM  ueberschiesst und zurueckkommt, hinterlaesst die Hoehe, bei der sie
 REM  aufgehoert hat -- und nicht die Summe aller Zuckungen.
 call :run sculptcheck
+REM  selcheck prueft die Invariante der Auswahl: das aktive Objekt und die
+REM  Menge muessen zusammenpassen. Bricht das, kopiert Duplizieren still ein
+REM  Objekt, das der Autor nie angeklickt hat -- am Bildschirm sieht man nichts.
+call :run selcheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
 REM  modelcheck misst die beiden Modellier-Werkzeuge, die still danebengehen:

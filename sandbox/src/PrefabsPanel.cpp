@@ -19,9 +19,8 @@ if (dir.empty()) {
         "the project's prefabs/ folder.");
 } else {
     const bool hasSel =
-        s.entitySel >= 0 &&
-        s.entitySel < static_cast<int>(s.entities.size()) &&
-        s.entities[s.entitySel].type != EntityType::Sun;
+        s.sel.valid() &&
+        s.entities[s.sel.index()].type != EntityType::Sun;
     ImGui::TextDisabled("New prefab from the selected object:");
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##prefabName", s.nameBuf,

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "Selection.hpp"
 #include "SceneTypes.hpp" // Entity
 
 // The editor's "Prefabs" panel: the reusable object templates in the project's
@@ -24,7 +25,7 @@ struct PanelState {
     std::function<std::string()> prefabDir;
 
     const std::vector<Entity>& entities;  // to know whether the selection can be one
-    int                        entitySel;
+    const Selection&           sel;
 
     char*       nameBuf;   // the new prefab's name, kept between frames
     std::size_t nameCap;
