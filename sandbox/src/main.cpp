@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <future>
 #include <random>
@@ -1420,6 +1421,21 @@ int main(int argc, char** argv) {
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
         // panel's content region, so the scene renders at the viewport's pixels.
         RenderTarget viewportRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
+        // The target the viewport panel was resized AWAY from, kept alive until
+        // the frame it still appears in has been drawn.
+        //
+        // WHY. The panel's image is recorded into Dear ImGui's draw list while
+        // the UI is built -- as a bare GL texture NAME -- and that draw list is
+        // not issued until gui.endFrame(), at the very bottom of the frame. The
+        // resize below sits between the two. Delete the texture there and the
+        // draw call at the end binds a name that no longer belongs to us: GL
+        // hands it to whatever grabbed it next, which in practice is Dear ImGui's
+        // own font atlas, and the viewport fills with giant letters for exactly
+        // as long as the panel is being dragged. Outliving the frame costs one
+        // target for a few milliseconds and the panel shows its previous picture
+        // stretched into the new rectangle, which is what a resize looks like
+        // everywhere else.
+        std::optional<RenderTarget> retiredRT;
         // Chase-cam speed blur: the world point the camera follows (the driven
         // car/glider) is the streak focus, and its speed drives the streak length,
         // so the craft stays sharp while the surroundings smear past it.
@@ -13650,8 +13666,10 @@ int main(int argc, char** argv) {
             // The one target that stays FULL width: it is the finished image
             // both panes are blitted into (and what the editor shows in its
             // viewport panel).
-            if (viewportRT.width() != fbW || viewportRT.height() != fbH)
+            if (viewportRT.width() != fbW || viewportRT.height() != fbH) {
+                retiredRT  = std::move(viewportRT);   // still named in this frame's draw list
                 viewportRT = RenderTarget(fbW, fbH, RenderTarget::Format::RGBA8);
+            }
             hdrRT.bind();
             // A plain mode gets a flat ground to stand on rather than a sky: the
             // sky is a material too, and a wireframe read against a sunset is
@@ -14360,6 +14378,9 @@ int main(int argc, char** argv) {
                 FZ_ZONE("imgui draw");
                 gui.endFrame();
             }
+            // The draw list that named it has been issued: the target the
+            // viewport was resized away from can go now.
+            retiredRT.reset();
             {   // The buffer swap. With vsync on, this is where the wait for the
                 // display lands -- so it is normally the largest number here and
                 // that is healthy. What matters is whether it *spikes* while
