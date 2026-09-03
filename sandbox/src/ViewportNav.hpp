@@ -5,8 +5,8 @@
 namespace fitzel { class Camera; class Input; }
 
 // The editor viewport's navigation that is NOT free flight: the axis-aligned
-// standard views (front / back / left / right / top / bottom) and middle-mouse
-// panning.
+// standard views (front / back / left / right / top / bottom), middle-mouse
+// panning and the mouse wheel (dolly, and the field of view with Ctrl).
 //
 // WHY THIS IS ITS OWN FILE. The free camera in main's loop is one branch of a
 // chain that already handles the physics car, the arcade car, the glider and the
@@ -76,9 +76,24 @@ public:
     float panSpeed = 1.0f;      // multiplier on the 1:1 drag
     float glideTime = 0.28f;    // seconds for a view change
 
+    // A wheel notch moves the camera a FRACTION OF THE WAY to what it is
+    // pointed at, not a fixed number of metres. That is the whole of "precise":
+    // stepping 12% of the remaining distance is a stride when the target is a
+    // hill on the horizon and a nudge when it is a kerb under the nose, and the
+    // approach never overshoots -- which is the point for an editor meant to be
+    // driven without a steady hand. A fixed step can only be right at one
+    // distance and is wrong (unusably slow, or straight through the ground) at
+    // every other.
+    float dollyStep = 0.12f;    // fraction of the distance to the pivot, per notch
+    float fovStep   = 2.0f;     // degrees of field of view per notch, with Ctrl
+
 private:
-    // Where the camera swings around this frame.
-    glm::vec3 pivot(const fitzel::Camera& cam, const Env& env) const;
+    // Where the camera swings around this frame. `aimed` reports whether that
+    // is a real thing out there (a selection, or ground the view actually meets)
+    // rather than the fallback distance -- the dolly must not brake in front of
+    // a pivot that was only ever a guess.
+    glm::vec3 pivot(const fitzel::Camera& cam, const Env& env,
+                    bool* aimed = nullptr) const;
     void      finishGlide(fitzel::Camera& cam);
 
     StdView m_view    = StdView::User;

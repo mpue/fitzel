@@ -7247,7 +7247,13 @@ int main(int argc, char** argv) {
                     const glm::vec2 d = input.mouseDelta();
                     camera.processMouse(d.x, d.y);
                 }
+#ifdef FITZEL_PLAYER
+                // The player ships without the editor's viewport navigation, so
+                // the wheel keeps its plain meaning here: the field of view.
                 if (viewportHovered || presentMode) camera.processScroll(input.scrollDelta());
+#endif
+                // (In the editor the wheel dollies, and Ctrl+wheel is the field
+                // of view -- ViewportNav below owns both.)
                 // WASD/QE fly only while looking (right mouse held), so Q/W/E stay
                 // free as the transform-tool shortcuts the rest of the time.
                 if (mouseLook && !gui.wantsKeyboard()) {

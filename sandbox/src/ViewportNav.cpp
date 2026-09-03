@@ -24,6 +24,19 @@ constexpr float kPolePitch = 89.9f;
 // How far ahead the pivot sits when there is nothing better to go on.
 constexpr float kDefaultPivotDist = 20.0f;
 
+// The dolly's stride, in metres, whatever the fraction of the distance works out
+// to. The floor keeps the last approach to something right in front of the lens
+// from stalling into nothing; the ceiling keeps one notch over a whole valley
+// from being a teleport you then have to find your way back from.
+constexpr float kMinDolly = 0.05f;
+constexpr float kMaxDolly = 25.0f;
+
+// How far in front of the pivot the dolly stops. Coming to rest ON the target
+// puts it exactly at the near plane -- the thing you were zooming towards
+// vanishes and the next notch has you inside it -- so the approach keeps a hand's
+// width and you go the rest of the way, if you want to, by flying.
+constexpr float kStopShort = 0.35f;
+
 // The camera's yaw/pitch for each standard view. Yaw follows Camera's
 // convention (front = cos(yaw)cos(pitch), sin(pitch), sin(yaw)cos(pitch)), so
 // -90 looks down -Z, which is where the default camera already points -- the
@@ -92,7 +105,8 @@ const char* label(StdView v) {
     return nullptr;
 }
 
-glm::vec3 Nav::pivot(const fitzel::Camera& cam, const Env& env) const {
+glm::vec3 Nav::pivot(const fitzel::Camera& cam, const Env& env, bool* aimed) const {
+    if (aimed) *aimed = true;
     if (env.haveSelection) return env.selectionCenter;
 
     // No selection: take the ground the view is aimed at. That matters more than
@@ -106,6 +120,9 @@ glm::vec3 Nav::pivot(const fitzel::Camera& cam, const Env& env) const {
     if (f.y < -0.05f) {                        // looking down at all
         const float t = (env.groundY - p.y) / f.y;
         if (t > 0.5f) dist = std::min(t, 400.0f);
+        else if (aimed) *aimed = false;
+    } else if (aimed) {
+        *aimed = false;                        // level or up: nothing is aimed at
     }
     return p + f * dist;
 }
@@ -181,6 +198,44 @@ void Nav::update(fitzel::Camera& cam, const fitzel::Input& in, const Env& env, f
             // (Input::mouseDelta already has y pointing up.)
             cam.setPosition(cam.position() -
                             (cam.right() * d.x + cam.up() * d.y) * wpp * panSpeed);
+        }
+    }
+
+    // --- Mouse wheel: dolly, and the field of view with Ctrl ---------------
+    // Two ways of getting closer that are worth keeping apart. The dolly WALKS
+    // the camera in and the parallax comes with it, which is how you judge where
+    // something sits; the field of view only narrows the cone from where you
+    // already stand, which is how you frame a shot. Rolling the wheel is the
+    // first (the common one, so it is the bare gesture) and Ctrl is the second.
+    //
+    // CTRL, NOT SHIFT. Windows hands a Shift-held wheel to the application as a
+    // HORIZONTAL wheel -- the notch arrives on an axis GLFW reports separately
+    // and this engine does not read, so a Shift+wheel gesture would simply do
+    // nothing at all. Ctrl comes through as an ordinary wheel, and is the
+    // zoom modifier everywhere else besides.
+    const float wheel = env.viewportHovered ? in.scrollDelta() : 0.0f;
+    if (wheel != 0.0f) {
+        const bool ctrl = in.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                          in.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+        if (ctrl) {
+            // Wheel forward narrows the angle, i.e. the view closes in -- the
+            // same direction of travel as the dolly, so the two do not disagree
+            // about which way "in" is. (Camera clamps to a sane 1..90 degrees.)
+            cam.processScroll(wheel * fovStep);
+        } else {
+            // A dolly during a view change lands it at once, for the reason the
+            // pan does: half a glide plus a move is a position neither asked
+            // for. Moving straight down the view axis leaves a standard view
+            // standing, so unlike a look, this does not drop back to User.
+            finishGlide(cam);
+
+            bool aimed = false;
+            const glm::vec3 piv  = pivot(cam, env, &aimed);
+            const float     dist = glm::length(cam.position() - piv);
+            float step = std::clamp(dist * dollyStep, kMinDolly, kMaxDolly) * wheel;
+            if (aimed && step > 0.0f)
+                step = std::min(step, std::max(dist - kStopShort, 0.0f));
+            cam.setPosition(cam.position() + cam.front() * step);
         }
     }
 
