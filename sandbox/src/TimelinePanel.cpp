@@ -205,13 +205,18 @@ void drawPanel(const PanelState& s) {
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    {   // Renaming in place. The name is how a clip is referred to from outside
-        // the panel, so it is edited where it is read rather than in a dialog.
+    {   // Renaming in place: an Animator points at a clip BY NAME, so the rename
+        // has to travel to the components that chose it or they would quietly
+        // stop finding it.
         char buf[64];
         std::snprintf(buf, sizeof(buf), "%s", c.name.c_str());
         ImGui::SetNextItemWidth(pickW);
         if (ImGui::InputText("Name##clipname", buf, sizeof(buf))) {
+            const std::string was = c.name;
             c.name = buf;
+            for (Entity& e : s.entities)
+                if (auto* an = e.components.get<AnimatorComponent>())
+                    if (an->clip == was) an->clip = c.name;
             s.markDirty();
         }
     }

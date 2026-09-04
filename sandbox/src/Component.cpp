@@ -155,6 +155,39 @@ const std::vector<Property>& SpinComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& AnimatorComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+
+        // The clip is a Text property so it SERIALIZES here like any other
+        // field; the Inspector draws it as a picker over the scene's clips
+        // instead of a text box (see InspectorPanel), the same way the Script
+        // card turns a filename into a list of the project's .lua files. A name
+        // rather than an index, so reordering the clips cannot silently re-point
+        // every Animator in the scene at the wrong animation.
+        Property clip;
+        clip.label = "Clip"; clip.key = "clip"; clip.kind = PropKind::Text;
+        clip.field = [](void* o) -> void* { return &static_cast<AnimatorComponent*>(o)->clip; };
+        p.push_back(std::move(clip));
+
+        Property onStart;
+        onStart.label = "Play on start"; onStart.key = "playOnStart";
+        onStart.kind = PropKind::Bool;
+        onStart.field = [](void* o) -> void* {
+            return &static_cast<AnimatorComponent*>(o)->playOnStart; };
+        p.push_back(std::move(onStart));
+
+        Property loop;
+        loop.label = "Loop"; loop.key = "loop"; loop.kind = PropKind::Bool;
+        loop.field = [](void* o) -> void* {
+            return &static_cast<AnimatorComponent*>(o)->loop; };
+        p.push_back(std::move(loop));
+
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& CollectibleComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -1710,6 +1743,8 @@ struct AutoRegister {
     AutoRegister() {
         components::registerType({"spin", "Spin",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
+        components::registerType({"animator", "Animator",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimatorComponent>()); }});
         components::registerType({"collectible", "Collectible",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
         components::registerType({"missile_pickup", "Missile Pickup",

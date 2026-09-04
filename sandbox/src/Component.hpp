@@ -141,6 +141,37 @@ public:
     static const std::vector<Property>& properties();
 };
 
+// --- Built-in component: Animator (play one of the scene's animations) -------
+// Hang it on an object and pick a clip: when the game starts, that clip runs.
+//
+// WHAT IT IS AND IS NOT. It is a trigger, not a rig. The clip's tracks already
+// name the objects they move by id, so the Animator does not retarget anything
+// onto the entity it sits on -- it says WHICH of the scene's animations plays
+// and when. That is deliberately less than Unity's Animator (no state machine,
+// no blending, no per-object retarget) and it is the part that earns its keep on
+// its own: an animated door needs "run the Door Opens clip", not a graph.
+//
+// Attaching it to the object the clip actually moves is a convention, not a
+// rule, and a good one -- it puts the animation where somebody looking at the
+// door will find it.
+class AnimatorComponent : public ComponentBase {
+public:
+    std::string clip;                 // the clip's NAME (see AnimSystem.hpp)
+    bool        playOnStart = true;   // run it the moment the game starts
+    // Overrides the clip's own loop flag when set, because looping is a property
+    // of THIS use of the animation: the same walk cycle loops on the guard and
+    // plays once on the cutscene.
+    bool        loop        = false;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<AnimatorComponent>(*this);
+    }
+    const char* typeId() const override { return "animator"; }
+    const char* displayName() const override { return "Animator"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
 // --- Built-in component: Collectible (a pickup -- walk into it in Play) -------
 // A game mechanic authored as data, no scripting: while playing, when the player
 // comes within `radius` of this entity it awards `points` to the score, plays an

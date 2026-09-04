@@ -748,6 +748,28 @@ void drawPanel(const PanelState& s) {
                                         [&](const char* lbl, std::string& f) {
                                             s.soundPickerCombo(lbl, f);
                                         });
+                } else if (auto* am = dynamic_cast<AnimatorComponent*>(c)) {
+                    // Bespoke because the clip is chosen from the scene's own
+                    // animations, which metadata cannot enumerate. Everything
+                    // else on the card is ordinary property metadata.
+                    const std::string cur = am->clip.empty() ? "(none)" : am->clip;
+                    if (ImGui::BeginCombo("Clip", cur.c_str())) {
+                        if (ImGui::Selectable("(none)", am->clip.empty())) am->clip.clear();
+                        for (const anim::Clip& ac : s.clips)
+                            if (ImGui::Selectable(ac.name.c_str(), am->clip == ac.name))
+                                am->clip = ac.name;
+                        ImGui::EndCombo();
+                    }
+                    // A clip named here that the scene no longer has is the one
+                    // failure of this component that is otherwise invisible: the
+                    // game simply plays nothing.
+                    if (!am->clip.empty() && anim::findClip(s.clips, am->clip) < 0)
+                        ImGui::TextDisabled("This scene has no clip called \"%s\".",
+                                            am->clip.c_str());
+                    for (const Property& pr : am->props())
+                        if (pr.key != "clip") animProp(s, pr, am, c->typeId());
+                    ui::hint("Keyframe animation from the Timeline panel, not a "
+                             "model's own animation.");
                 } else {
                     for (const Property& pr : c->props()) animProp(s, pr, c, c->typeId());
                 }

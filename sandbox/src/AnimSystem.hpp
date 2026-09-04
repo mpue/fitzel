@@ -170,6 +170,15 @@ bool isKeyedAt(const Clip& c, int entityId, const char* comp, const Property& p,
 // animation they did not know they needed.
 int findClip(const std::vector<Clip>& clips, const std::string& name); // -1 if none
 
+// One clip running: which one, and where its playhead is. The game holds a list
+// of these -- one per Animator that started -- so two objects can be animated by
+// two clips at once. The editor's own preview is a single Player instead: it is
+// looking at the clip being edited, not running the scene.
+struct Playback {
+    int    clip = 0;
+    Player player;
+};
+
 // --- Persistence ------------------------------------------------------------
 // Written under one "anim" object in the scene, as a list of clips. The keys
 // themselves are a compact space-separated blob per track (t v t v ...), the

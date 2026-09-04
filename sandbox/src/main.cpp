@@ -3783,6 +3783,11 @@ int main(int argc, char** argv) {
         std::vector<anim::Clip> animClips{anim::Clip{}};
         int          animEditClip = 0;
         anim::Player animPlay;
+        // What is running in the game: one playback per Animator that started,
+        // so two objects can be moving to two different clips at once. Empty in
+        // the editor, where the single animPlay above previews the clip being
+        // edited instead.
+        std::vector<anim::Playback> animRuntime;
         // The clip the Timeline edits and previews. Clamped rather than trusted:
         // deleting a clip leaves the index one past the end for a frame.
         auto animEdited = [&]() -> anim::Clip& {
@@ -4438,6 +4443,7 @@ int main(int argc, char** argv) {
             if (animClips.empty()) animClips.push_back(anim::Clip{});
             animEditClip = 0;
             animPlay = anim::Player{};   // a new scene, a playhead back at zero
+            animRuntime.clear();
             // Restore hand-painted grass (empty for scenes saved before it existed).
             veg.paintedBlades.clear();
             if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
@@ -5600,18 +5606,30 @@ int main(int argc, char** argv) {
             // and so the two of them are never both writing the same property.
             if (animPlay.preview) anim::endPreview(animEdited(), entities, animPlay);
             animPlay.time    = 0.0f;
-            // A clip marked Play on start runs with the game, the way the camera
-            // path's own flag works. Only one of them: there is nothing yet that
-            // says WHICH clip a given object should run.
-            animEditClip = 0;
-            for (int ci = 0; ci < static_cast<int>(animClips.size()); ++ci)
-                if (animClips[ci].playOnStart && !animClips[ci].empty()) {
-                    animEditClip = ci;
-                    break;
-                }
-            animPlay.playing = !animClips.empty() &&
-                               animClips[animEditClip].playOnStart &&
-                               !animClips[animEditClip].empty();
+            animPlay.playing = false;
+            // Every Animator that says so starts its clip, plus any clip marked
+            // Play on start in the Timeline -- the shortcut for a scene with one
+            // animation and no object worth hanging a component on. A clip named
+            // by two Animators runs twice, which is harmless: both playbacks
+            // write the same values at the same times.
+            animRuntime.clear();
+            for (const Entity& e : entities) {
+                const auto* an = e.components.get<AnimatorComponent>();
+                if (!an || !an->playOnStart || an->clip.empty()) continue;
+                const int ci = anim::findClip(animClips, an->clip);
+                if (ci < 0) continue;          // names a clip this scene lost
+                anim::Playback pb;
+                pb.clip = ci;
+                pb.player.playing = true;
+                animRuntime.push_back(pb);
+            }
+            for (int ci = 0; ci < static_cast<int>(animClips.size()); ++ci) {
+                if (!animClips[ci].playOnStart || animClips[ci].empty()) continue;
+                anim::Playback pb;
+                pb.clip = ci;
+                pb.player.playing = true;
+                animRuntime.push_back(pb);
+            }
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -5930,6 +5948,7 @@ int main(int argc, char** argv) {
             driveGliderId = -1;
             gliderDriveActive = false; gliderBackup.clear(); // Play restore owns the transform
             animPlay.playing = false;  // the clip stops with the game it was running in
+            animRuntime.clear();
             skids.clear();          // drop skid marks so they don't linger in the editor
             trails.clear();         // and the contrails
             weapons.reset();        // and anything the launcher still had in the air
@@ -8813,6 +8832,17 @@ int main(int argc, char** argv) {
             // the playhead shows the pose at that moment rather than waiting for
             // Play. resolveHierarchy() further down turns the animated LOCAL
             // transforms into world ones, so a keyed parent carries its children.
+            for (anim::Playback& pb : animRuntime) {
+                if (!pb.player.playing) continue;
+                if (pb.clip < 0 || pb.clip >= static_cast<int>(animClips.size())) continue;
+                anim::Clip run = animClips[pb.clip];
+                // An Animator's Loop overrides the clip's own: whether a walk
+                // cycle repeats belongs to the thing walking, not to the walk.
+                for (const Entity& e : entities)
+                    if (const auto* an = e.components.get<AnimatorComponent>())
+                        if (an->clip == run.name && an->playOnStart) { run.loop = an->loop; break; }
+                if (!anim::advance(run, entities, pb.player, dt)) pb.player.playing = false;
+            }
             if (animPlay.playing) {
                 if (!anim::advance(animEdited(), entities, animPlay, dt))
                     animPlay.playing = false;
