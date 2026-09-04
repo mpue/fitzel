@@ -8,6 +8,7 @@
 
 #include <glm/glm.hpp>
 
+#include "AnimSystem.hpp"  // the clip a property is keyed into
 #include "Component.hpp"   // ScriptParam
 #include "Selection.hpp"
 #include "SceneTypes.hpp"  // Entity, MaterialDef, LoadedModel
@@ -121,6 +122,18 @@ struct PanelState {
 
     // New-block defaults, edited at the bottom of the panel.
     glm::vec3&  entityNewHalf;
+
+    // --- Keyframing ----------------------------------------------------------
+    // Every field the panel draws from property metadata gets a key diamond
+    // beside it, because the Inspector is WHERE a property is set: making the
+    // author find the same field again in another panel to record the value they
+    // just dialled in is the step that stops people animating anything. The
+    // panel needs the clip to write into, the playhead to write at, and whether
+    // an ordinary edit should record itself.
+    std::vector<anim::Clip>& clips;    // the scene's animations (never empty)
+    int&          editClip;            // the one the Timeline is on
+    anim::Player& animPlayer;
+    bool&         autoKey;
 };
 
 void drawPanel(const PanelState& s);

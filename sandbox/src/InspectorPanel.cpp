@@ -23,11 +23,69 @@
 #include "RaceGrid.hpp"
 #include "RoadSet.hpp"
 #include "ScriptSystem.hpp"
+#include "TimelinePanel.hpp"   // the key diamond, shared with the Timeline
 #include <fitzel/world/Terrain.hpp>
 #include "UiStyle.hpp"
 #include "VehicleTool.hpp"
 
 namespace inspectorui {
+
+namespace {
+
+// One metadata-driven field, with its keyframe diamond in front of it.
+//
+// The diamond leads rather than trails because it is a column: down the length
+// of a component card the marks line up, and which properties are animated is
+// one glance rather than a read. `comp` is the component's typeId, or "" when
+// the field belongs to the entity itself.
+// The clip the diamonds write into: whichever the Timeline is showing.
+anim::Clip& editedClip(const PanelState& s) {
+    if (s.clips.empty()) s.clips.push_back(anim::Clip{});
+    s.editClip = std::clamp(s.editClip, 0, static_cast<int>(s.clips.size()) - 1);
+    return s.clips[s.editClip];
+}
+
+void animProp(const PanelState& s, const Property& pr, void* owner, const char* comp) {
+    anim::Clip& clip = editedClip(s);
+    const bool keyable = anim::isAnimatable(pr.kind) && s.sel.valid();
+    int eid = -1;
+    if (keyable) {
+        eid = s.entities[s.sel.index()].id;
+        const bool animated = anim::isAnimated(clip, eid, comp, pr);
+        const bool keyed    = animated &&
+                              anim::isKeyedAt(clip, eid, comp, pr, s.animPlayer.time);
+        if (timelineui::keyDiamond(pr.key.c_str(), animated, keyed)) {
+            if (keyed) anim::unkeyProperty(clip, eid, comp, pr, s.animPlayer.time);
+            else       anim::keyProperty(clip, eid, comp, pr, owner, s.animPlayer.time);
+            s.history.touch();
+        }
+        ImGui::SameLine();
+    } else {
+        // Text has no in-between value and so cannot be keyed. It still gets the
+        // gutter: a field that shifted left by twenty pixels would read as a
+        // different kind of field rather than as one you cannot animate.
+        ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()));
+        ImGui::SameLine();
+    }
+
+    const bool edited = drawProperty(pr, owner);
+
+    // Auto-key: an edit to an ALREADY ANIMATED property is the keyframe.
+    //
+    // Both halves of that matter. Recording the edit is what makes posing work
+    // at all: with the timeline previewing, the clip owns the property and would
+    // otherwise overwrite the drag before it was drawn -- the object springing
+    // back to its keyed pose with nothing on screen to explain it. And limiting
+    // it to properties that are already animated is what makes it safe to leave
+    // on: nudging a slider can re-pose a move that exists, never start one by
+    // accident. Beginning an animation stays a deliberate press of the diamond.
+    if (edited && keyable && s.autoKey && anim::isAnimated(clip, eid, comp, pr)) {
+        anim::keyProperty(clip, eid, comp, pr, owner, s.animPlayer.time);
+        s.history.touch();
+    }
+}
+
+} // namespace
 
 void drawPanel(const PanelState& s) {
     if (!ImGui::Begin("Inspector")) { ImGui::End(); return; }
@@ -52,7 +110,7 @@ void drawPanel(const PanelState& s) {
             if (pr.visible && !pr.visible(&b)) continue;
             // Children follow center/rotation edits automatically
             // (resolveHierarchy); no per-field side effects left.
-            drawProperty(pr, &b);
+            animProp(s, pr, &b, "");
         }
 
         if (b.type == EntityType::Sun) {
@@ -301,27 +359,27 @@ void drawPanel(const PanelState& s) {
                     // Points + radius from metadata; Sound is a picker
                     // over the Sound assets (chosen, not typed).
                     for (const Property& pr : col->props())
-                        if (pr.key != "sound") drawProperty(pr, col);
+                        if (pr.key != "sound") animProp(s, pr, col, c->typeId());
                     s.soundPickerCombo("Sound", col->sound);
                 } else if (auto* mp = dynamic_cast<MissilePickupComponent*>(c)) {
                     // Same deal as the Collectible: rounds, radius and
                     // respawn from metadata, the pickup cue chosen from
                     // the Sound assets rather than typed.
                     for (const Property& pr : mp->props())
-                        if (pr.key != "sound") drawProperty(pr, mp);
+                        if (pr.key != "sound") animProp(s, pr, mp, c->typeId());
                     s.soundPickerCombo("Sound", mp->sound);
                 } else if (auto* ep = dynamic_cast<EnergyPickupComponent*>(c)) {
                     // Same deal again: energy, radius and respawn from
                     // metadata, the pickup cue chosen from the Sound
                     // assets rather than typed.
                     for (const Property& pr : ep->props())
-                        if (pr.key != "sound") drawProperty(pr, ep);
+                        if (pr.key != "sound") animProp(s, pr, ep, c->typeId());
                     s.soundPickerCombo("Sound", ep->sound);
                 } else if (auto* pa = dynamic_cast<ParticleComponent*>(c)) {
                     // Everything from metadata except the sprite, which
                     // gets a Texture picker instead of a raw filename.
                     for (const Property& pr : pa->props())
-                        if (pr.key != "sprite") drawProperty(pr, pa);
+                        if (pr.key != "sprite") animProp(s, pr, pa, c->typeId());
                     s.texturePickerCombo("Sprite", pa->sprite);
                     // Where the speed glow gets its speed from. Shown
                     // because the link is invisible otherwise: the
@@ -353,7 +411,7 @@ void drawPanel(const PanelState& s) {
                     // is a Sound picker (with volume/pitch already drawn
                     // as sliders above), plus a Preview to audition it.
                     for (const Property& pr : bp->props())
-                        if (pr.key != "sound") drawProperty(pr, bp);
+                        if (pr.key != "sound") animProp(s, pr, bp, c->typeId());
                     s.soundPickerCombo("Punch sound", bp->sound);
                     ImGui::BeginDisabled(bp->sound.empty());
                     if (ImGui::Button("Preview punch")) s.playBoostPunch(*bp);
@@ -365,7 +423,7 @@ void drawPanel(const PanelState& s) {
                     for (const Property& pr : fl->props())
                         if (pr.key != "soundReady" && pr.key != "soundSet" &&
                             pr.key != "soundGo")
-                            drawProperty(pr, fl);
+                            animProp(s, pr, fl, c->typeId());
                     auto startCue = [&](const char* label, const char* btn,
                                         std::string& field) {
                         s.soundPickerCombo(label, field);
@@ -388,7 +446,7 @@ void drawPanel(const PanelState& s) {
                     // with volume/pitch sliders and a Preview, like the
                     // boost pad's punch.
                     for (const Property& pr : cp->props())
-                        if (pr.key != "sound") drawProperty(pr, cp);
+                        if (pr.key != "sound") animProp(s, pr, cp, c->typeId());
                     s.soundPickerCombo("Gate sound", cp->sound);
                     ImGui::BeginDisabled(cp->sound.empty());
                     if (ImGui::Button("Preview gate"))
@@ -397,13 +455,13 @@ void drawPanel(const PanelState& s) {
                 } else if (auto* tr = dynamic_cast<TriggerComponent*>(c)) {
                     // Radius/once/message from metadata; Sound is a picker.
                     for (const Property& pr : tr->props())
-                        if (pr.key != "sound") drawProperty(pr, tr);
+                        if (pr.key != "sound") animProp(s, pr, tr, c->typeId());
                     s.soundPickerCombo("Sound", tr->sound);
                 } else if (auto* stc = dynamic_cast<SceneTriggerComponent*>(c)) {
                     // Radius/once from metadata; Scene is a picker over the
                     // project's other scenes (chosen, not typed).
                     for (const Property& pr : stc->props())
-                        if (pr.key != "scene") drawProperty(pr, stc);
+                        if (pr.key != "scene") animProp(s, pr, stc, c->typeId());
                     const std::string folder =
                         std::filesystem::path(s.currentProject).parent_path().string();
                     const std::string label = stc->scene.empty() ? "(none)" : stc->scene;
@@ -424,7 +482,7 @@ void drawPanel(const PanelState& s) {
                     for (const Property& pr : sr->props())
                         if (pr.key != "soundMove" && pr.key != "soundSelect" &&
                             pr.key != "soundStart")
-                            drawProperty(pr, sr);
+                            animProp(s, pr, sr, c->typeId());
                     auto shCue = [&](const char* label, const char* btn,
                                      std::string& field) {
                         s.soundPickerCombo(label, field);
@@ -440,7 +498,7 @@ void drawPanel(const PanelState& s) {
                     // a picker over the project's scenes (chosen, not
                     // typed) -- same rule as the Scene Trigger's.
                     for (const Property& pr : tec->props())
-                        if (pr.key != "scene") drawProperty(pr, tec);
+                        if (pr.key != "scene") animProp(s, pr, tec, c->typeId());
                     const std::string tfolder =
                         std::filesystem::path(s.currentProject).parent_path().string();
                     const std::string tlabel =
@@ -491,7 +549,7 @@ void drawPanel(const PanelState& s) {
                     for (const Property& pr : sw->props()) {
                         if (pr.key == "prefab") continue;
                         if (pr.visible && !pr.visible(sw)) continue;
-                        drawProperty(pr, sw);
+                        animProp(s, pr, sw, c->typeId());
                     }
                     if (!sw->prefab.empty())
                         ImGui::TextDisabled("Launch speed only moves the\n"
@@ -499,13 +557,13 @@ void drawPanel(const PanelState& s) {
                                             "dynamic Physics component.");
                 } else if (auto* ts = dynamic_cast<TriggerSoundComponent*>(c)) {
                     // Radius/volume/loop/once from metadata; Sound picker.
-                    for (const Property& pr : ts->props()) drawProperty(pr, ts);
+                    for (const Property& pr : ts->props()) animProp(s, pr, ts, c->typeId());
                     s.soundPickerCombo("Sound", ts->sound);
                 } else if (auto* as = dynamic_cast<AudioSourceComponent*>(c)) {
                     // Volume/loop/play-on-start/spatial from metadata;
                     // Sound is a picker over the project's Sound assets.
                     for (const Property& pr : as->props())
-                        if (pr.key != "sound") drawProperty(pr, as);
+                        if (pr.key != "sound") animProp(s, pr, as, c->typeId());
                     s.soundPickerCombo("Sound", as->sound);
                     // Editor preview: audition the sound right here
                     // without entering Play (uses the same voice path).
@@ -521,7 +579,7 @@ void drawPanel(const PanelState& s) {
                     // activeOnStart bool is hidden: set it here so exactly
                     // one camera can ever be the main one.)
                     for (const Property& pr : cam->props())
-                        if (pr.key != "activeOnStart") drawProperty(pr, cam);
+                        if (pr.key != "activeOnStart") animProp(s, pr, cam, c->typeId());
                     if (cam->activeOnStart) {
                         ImGui::TextColored(ImVec4(0.5f, 0.85f, 1.0f, 1.0f),
                                            "* Main Camera");
@@ -617,7 +675,7 @@ void drawPanel(const PanelState& s) {
                 } else if (auto* cs = dynamic_cast<CameraSwitcherComponent*>(c)) {
                     // Radius from metadata; Target is a picker over the
                     // scene's Camera entities (plus the player view).
-                    for (const Property& pr : cs->props()) drawProperty(pr, cs);
+                    for (const Property& pr : cs->props()) animProp(s, pr, cs, c->typeId());
                     const Entity* cur = s.document.find(cs->target);
                     const std::string label = cur ? cur->name : "(Player view)";
                     if (ImGui::BeginCombo("Target", label.c_str())) {
@@ -632,7 +690,7 @@ void drawPanel(const PanelState& s) {
                 } else if (auto* an = dynamic_cast<AnimationComponent*>(c)) {
                     // Speed/playing/loop from metadata; Clip is a picker
                     // over the model's animation clip names.
-                    for (const Property& pr : an->props()) drawProperty(pr, an);
+                    for (const Property& pr : an->props()) animProp(s, pr, an, c->typeId());
                     const auto* mc = be.components.get<ModelComponent>();
                     LoadedModel* lm = mc ? s.models.byId(mc->modelId) : nullptr;
                     if (lm && lm->animData && !lm->animData->animations.empty()) {
@@ -651,7 +709,7 @@ void drawPanel(const PanelState& s) {
                 } else if (auto* at = dynamic_cast<AnimationTriggerComponent*>(c)) {
                     // Radius/once from metadata; Target = a picker over
                     // the scene's entities that have an Animation.
-                    for (const Property& pr : at->props()) drawProperty(pr, at);
+                    for (const Property& pr : at->props()) animProp(s, pr, at, c->typeId());
                     const Entity* cur = s.document.find(at->target);
                     const std::string label = cur ? cur->name : "(none)";
                     if (ImGui::BeginCombo("Target", label.c_str())) {
@@ -666,7 +724,7 @@ void drawPanel(const PanelState& s) {
                 } else if (auto* dop = dynamic_cast<DoorOpenerComponent*>(c)) {
                     // Radius/stayOpen from metadata; Target = a Door
                     // entity ((self) for the door this is attached to).
-                    for (const Property& pr : dop->props()) drawProperty(pr, dop);
+                    for (const Property& pr : dop->props()) animProp(s, pr, dop, c->typeId());
                     const Entity* cur = s.document.find(dop->target);
                     const std::string label = cur ? cur->name : "(self)";
                     if (ImGui::BeginCombo("Target door", label.c_str())) {
@@ -691,7 +749,7 @@ void drawPanel(const PanelState& s) {
                                             s.soundPickerCombo(lbl, f);
                                         });
                 } else {
-                    for (const Property& pr : c->props()) drawProperty(pr, c);
+                    for (const Property& pr : c->props()) animProp(s, pr, c, c->typeId());
                 }
                     ImGui::Unindent();
                 } // if (open): collapsed cards render just their header

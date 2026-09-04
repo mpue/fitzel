@@ -74,6 +74,13 @@ public:
     }
     void clear() { m_undo.clear(); m_redo.clear(); ++m_revision; }
 
+    // Say that the scene changed WITHOUT an undoable step behind it. For edits
+    // that are not entity state and have no command of their own -- the keyframe
+    // timeline is the first -- so the autosave still notices them. It is not a
+    // way around the command stack for anything that edits entities: those go
+    // through push()/pushApplied() and stay reversible.
+    void touch() { ++m_revision; }
+
     // A counter bumped by every edit that passes through here (and by clear(),
     // which replaces the document wholesale). It never resets, so anyone who
     // remembers a value can ask "has the scene changed since?" with one integer

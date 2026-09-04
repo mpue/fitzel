@@ -95,6 +95,11 @@ REM  selcheck prueft die Invariante der Auswahl: das aktive Objekt und die
 REM  Menge muessen zusammenpassen. Bricht das, kopiert Duplizieren still ein
 REM  Objekt, das der Autor nie angeklickt hat -- am Bildschirm sieht man nichts.
 call :run selcheck
+REM  animcheck prueft die Keyframe-Spuren. Eine Spur sucht ihre Eigenschaft bei
+REM  jedem Abspielen ueber Id und Name neu; greift sie daneben, schreibt sie eine
+REM  plausible Zahl an eine plausible Stelle, und findet sie nichts, passiert gar
+REM  nichts -- beides sieht am Bildschirm aus wie "noch nichts keyframed".
+call :run animcheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
 REM  modelcheck misst die beiden Modellier-Werkzeuge, die still danebengehen:

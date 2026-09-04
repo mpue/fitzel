@@ -61,6 +61,7 @@
 #include "Profiler.hpp"
 #include "DebugOverlay.hpp"
 #include "SandboxMath.hpp"
+#include "AnimSystem.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
 #include "ScriptBridge.hpp"
@@ -88,6 +89,7 @@
 #include "ModelingPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
+#include "TimelinePanel.hpp"
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
 #endif
@@ -906,7 +908,7 @@ void buildDefaultDockLayout(ImGuiID dockId) {
             "Vegetation", "Scatter",
             "Roads", "City", "Buildings",
             "Materials", "Models", "Prefabs", "Assets",
-            "UI Overlay", "Camera path", "Camera", "3D Cursor", "Render",
+            "UI Overlay", "Camera path", "Timeline", "Camera", "3D Cursor", "Render",
             "Vehicle", "Glider", "Voxels", "Mixer", "Scripts",
             "Performance", "Stats"})
         ImGui::DockBuilderDockWindow(w, tools);
@@ -2468,6 +2470,7 @@ int main(int argc, char** argv) {
         bool showBuildings   = false;
         bool showCity        = false;
         bool showCamPath     = false;
+        bool showTimeline    = false;
         bool showRoads       = false;
         bool showUiOverlay   = false; // scene 2D UI overlay editor
         bool showCursor      = false; // 3D cursor panel
@@ -3771,6 +3774,28 @@ int main(int argc, char** argv) {
 
         // Camera path recorder/player (record/play/scrub + save, in CameraPath).
         CameraPathRecorder camPathRec;
+        // Keyframe animation over inspector properties (AnimSystem.hpp). The
+        // clip is scene data; the player is where its playhead is right now, in
+        // a Timeline preview or in a running game.
+        // The scene's animations, and which one the Timeline is editing. Never
+        // empty: an editor with no clip has nowhere to put the first key, so one
+        // is kept the way the material library keeps a Default.
+        std::vector<anim::Clip> animClips{anim::Clip{}};
+        int          animEditClip = 0;
+        anim::Player animPlay;
+        // The clip the Timeline edits and previews. Clamped rather than trusted:
+        // deleting a clip leaves the index one past the end for a frame.
+        auto animEdited = [&]() -> anim::Clip& {
+            if (animClips.empty()) animClips.push_back(anim::Clip{});
+            animEditClip = std::clamp(animEditClip, 0,
+                                      static_cast<int>(animClips.size()) - 1);
+            return animClips[animEditClip];
+        };
+        // On by default: it only ever re-keys a property that is ALREADY
+        // animated (see the Inspector), so it cannot start an animation by
+        // accident -- and without it, posing an object while the timeline
+        // previews is a fight the author loses every frame.
+        bool         animAutoKey = true;
 
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
@@ -4198,6 +4223,10 @@ int main(int argc, char** argv) {
             // belongs to the LEVEL, and campath.txt beside the executable (where
             // the only copy used to live) is in neither the scene nor an export.
             j["camPath"] = camPathRec.blob();
+            // The property animation: one "anim" object holding the clip's
+            // settings and a compact key blob per track. Scene data for the same
+            // reason the camera path is -- the shipped player plays it.
+            anim::save(j, animClips);
             // Hand-painted grass: a compact space-separated float blob (7 per
             // blade). Stored as one JSON string so pretty-printing doesn't
             // explode into a line per number.
@@ -4405,6 +4434,10 @@ int main(int argc, char** argv) {
             // blob clears the recorder, and it has to, or the last scene's opening
             // move follows the author into a level that has none of its own.
             camPathRec.setBlob(j.value("camPath", std::string{}));
+            anim::load(j, animClips);
+            if (animClips.empty()) animClips.push_back(anim::Clip{});
+            animEditClip = 0;
+            animPlay = anim::Player{};   // a new scene, a playhead back at zero
             // Restore hand-painted grass (empty for scenes saved before it existed).
             veg.paintedBlades.clear();
             if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
@@ -5560,6 +5593,25 @@ int main(int argc, char** argv) {
             // PLAYER's view, so a scene that also marks a camera active-on-start
             // gets that camera the moment the move ends or is skipped.
             camPathRec.beginAutoPlay();
+            // The scene's keyframe animation, on the same terms as the camera
+            // move. A preview running in the Timeline is ended first (its restore
+            // hands the authored values back) so the game starts from the scene
+            // as saved, not from wherever the editor's playhead was parked --
+            // and so the two of them are never both writing the same property.
+            if (animPlay.preview) anim::endPreview(animEdited(), entities, animPlay);
+            animPlay.time    = 0.0f;
+            // A clip marked Play on start runs with the game, the way the camera
+            // path's own flag works. Only one of them: there is nothing yet that
+            // says WHICH clip a given object should run.
+            animEditClip = 0;
+            for (int ci = 0; ci < static_cast<int>(animClips.size()); ++ci)
+                if (animClips[ci].playOnStart && !animClips[ci].empty()) {
+                    animEditClip = ci;
+                    break;
+                }
+            animPlay.playing = !animClips.empty() &&
+                               animClips[animEditClip].playOnStart &&
+                               !animClips[animEditClip].empty();
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -5877,6 +5929,7 @@ int main(int argc, char** argv) {
             gliderMode = false;     // stop flying; the scene restore un-flies the craft
             driveGliderId = -1;
             gliderDriveActive = false; gliderBackup.clear(); // Play restore owns the transform
+            animPlay.playing = false;  // the clip stops with the game it was running in
             skids.clear();          // drop skid marks so they don't linger in the editor
             trails.clear();         // and the contrails
             weapons.reset();        // and anything the launcher still had in the air
@@ -6026,6 +6079,7 @@ int main(int argc, char** argv) {
             {"Presentation", "UI Overlay",     nullptr, &showUiOverlay},
             {"Presentation", "Camera",         nullptr, &showCamera},
             {"Presentation", "Camera path",    nullptr, &showCamPath},
+            {"Presentation", "Timeline",       nullptr, &showTimeline},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
             {"Inspect",  "Performance",        "F3",    &showPerf},
@@ -8744,6 +8798,27 @@ int main(int argc, char** argv) {
             // few ms per frame so the editor keeps rendering (and the progress modal
             // below stays live) instead of freezing on a big scene.
             if (sceneLoad.active) projectio::stepLoad(pio, sceneLoad, 8.0);
+
+            // --- Keyframe animation ---------------------------------------
+            // BEFORE the UI, not after, and that ordering is the whole of how
+            // editing an animated property works. The clip writes its pose here;
+            // the Inspector's widget then draws that value, and an edit made in
+            // it stands for the rest of the frame -- so dragging a keyed
+            // position is something you can see happening. Next frame the clip
+            // writes again: with Auto-key on that is the value you just set
+            // (it was recorded), and without it the property springs back, which
+            // is the true answer to "who owns this number".
+            //
+            // A running clip advances; a parked one is still applied, so moving
+            // the playhead shows the pose at that moment rather than waiting for
+            // Play. resolveHierarchy() further down turns the animated LOCAL
+            // transforms into world ones, so a keyed parent carries its children.
+            if (animPlay.playing) {
+                if (!anim::advance(animEdited(), entities, animPlay, dt))
+                    animPlay.playing = false;
+            } else if (animPlay.preview) {
+                anim::apply(animEdited(), entities, animPlay.time);
+            }
 
             // --- UI ------------------------------------------------------
             const long long fzUiMark = prof::mark();
@@ -11730,6 +11805,17 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
+            // The keyframe timeline. Open, it previews the clip (the scene shows
+            // the pose at the playhead); closed, the scene goes back to the
+            // values the author typed -- which is why the close is handled here
+            // rather than inside the panel, whose own code does not run once it
+            // is shut.
+            timelineui::drawPanel({showTimeline, animClips, animEditClip, animPlay,
+                                   entities, sel, animAutoKey,
+                                   [&]{ history.touch(); }});
+            if (!showTimeline && animPlay.preview)
+                anim::endPreview(animEdited(), entities, animPlay);
+
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
             roadui::drawPanel({showRoads, roads, roadEditMode, roadSel, roadSel2, assetDb,
@@ -11972,7 +12058,8 @@ int main(int argc, char** argv) {
                                     startAudioSource, stopAudioSource,
                                     matSel, matPickFilter, sizeof(matPickFilter),
                                     showMaterials, showModels, activeCam,
-                                    entityNewHalf});
+                                    entityNewHalf,
+                                    animClips, animEditClip, animPlay, animAutoKey});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

@@ -112,6 +112,10 @@ set(SANDBOX_RUNTIME_SOURCES
     # What is selected, and the invariant tying the active object to the
     # set. Shared with the player: ProjectIO clears the selection on load.
     src/Selection.cpp
+    # Keyframe animation over inspector properties. Runtime, not editor-only:
+    # the shipped player plays a scene's clip, the same way it plays its
+    # opening camera move.
+    src/AnimSystem.cpp
     src/LightGrid.cpp
     src/DebugOverlay.cpp)
 
@@ -127,6 +131,9 @@ set(SANDBOX_EDITOR_SOURCES
     # Standard views + middle-mouse pan for the editor viewport. Editor-only:
     # the player has a game to look at, not a viewport to navigate.
     src/ViewportNav.cpp
+    # The keyframe timeline. Editor-only: the player has an animation to run,
+    # not one to author.
+    src/TimelinePanel.cpp
     src/MeshPaint.cpp
     # The scene tree and the selected entity's fields -- the editor's two
     # always-open panels. Editor-only: the player has no scene to edit.
@@ -503,6 +510,19 @@ add_executable(selcheck tools/selcheck.cpp src/Selection.cpp src/Component.cpp
                         src/MultiShot.cpp)
 target_link_libraries(selcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(selcheck PRIVATE FITZEL_PLAYER)
+
+# animcheck -- keyframe tracks: that a property read comes back the same, that
+# sampling lands where the arithmetic says, that a bool steps instead of ramping,
+# that the ends of a clip clamp, and that a clip saved and reloaded still finds
+# the same fields. A track resolves its property by id and string every time it
+# plays, so a wrong lookup writes a plausible number somewhere plausible and a
+# missing one does nothing at all -- neither of which looks like a bug on screen.
+# Arithmetic and a lookup: no GL, no window, no assets.
+add_executable(animcheck tools/animcheck.cpp src/AnimSystem.cpp src/Component.cpp
+                         src/Primitives.cpp src/EditMesh.cpp src/PropertyMeta.cpp
+                         src/MultiShot.cpp)
+target_link_libraries(animcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(animcheck PRIVATE FITZEL_PLAYER)
 
 add_executable(sculptcheck tools/sculptcheck.cpp)
 target_link_libraries(sculptcheck PRIVATE fitzel glm::glm)
