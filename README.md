@@ -13,8 +13,9 @@ splines laid across streamed procedural terrain, with bridges, tunnels, loops, k
 and guard rails *derived* from those splines rather than placed by hand; a district
 generator fills the sides with buildings that keep out of the road; and a race sim, a
 car, a glider, a HUD, opponents and a leaderboard come with it instead of having to be
-written first. Gameplay behaviour is Lua -- one script per entity, on a fresh VM every
-time Play starts (see [docs/lua-scripting.md](docs/lua-scripting.md)). The tools
+written first. Gameplay behaviour is Lua -- any number of scripts per entity, each in
+its own environment, on a fresh VM every time Play starts (see
+[docs/lua-scripting.md](docs/lua-scripting.md)). The tools
 themselves stay C++, deliberately: a broken script must never be able to take an
 editing session with it.
 

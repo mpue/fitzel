@@ -886,10 +886,10 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <h2 class="en">Tools in C++. Behaviour in Lua.</h2>
 
       <div class="prose de">
-        <p>Jede Entity darf ein Skript tragen; beim Start von Play entsteht eine <strong>frische Lua-VM</strong>, alles l&#228;dt neu und <code>start()</code> l&#228;uft wieder. Jedes Skript hat seine eigene Umgebung &#8212; zwei Objekte mit demselben Skript teilen keinen Zustand. Ein Laufzeitfehler wird einmal gemeldet und deaktiviert <em>nur dieses eine</em> Skript bis zum n&#228;chsten Play.</p>
+        <p>Ein Objekt darf beliebig viele Skripte tragen; beim Start von Play entsteht eine <strong>frische Lua-VM</strong>, alles l&#228;dt neu und <code>start()</code> l&#228;uft wieder. Jedes Skript hat seine eigene Umgebung &#8212; zwei Objekte mit demselben Skript teilen keinen Zustand, und zwei Skripte auf einem Objekt auch nicht. Ein Laufzeitfehler wird einmal gemeldet und deaktiviert <em>nur dieses eine</em> Skript bis zum n&#228;chsten Play; die Nachbarn auf demselben Objekt laufen weiter.</p>
       </div>
       <div class="prose en">
-        <p>Any entity can carry a script; pressing Play creates a <strong>fresh Lua VM</strong>, everything reloads and <code>start()</code> runs again. Each script has its own environment &#8212; two objects with the same script share no state. A runtime error is reported once and disables <em>only that one</em> script until the next Play.</p>
+        <p>An object can carry as many scripts as it needs; pressing Play creates a <strong>fresh Lua VM</strong>, everything reloads and <code>start()</code> runs again. Each script has its own environment &#8212; two objects with the same script share no state, and neither do two scripts on one object. A runtime error is reported once and disables <em>only that one</em> script until the next Play; its neighbours on the same object keep running.</p>
       </div>
 
       <div class="code">

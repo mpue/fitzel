@@ -27,10 +27,14 @@ end
 - `dt` — Sekunden seit dem letzten Frame (Delta-Zeit)
 - `t` — Sekunden seit Play-Start (Uhr)
 
+Ein Objekt darf **mehrere Script-Komponenten** tragen — eine für das, was es tut,
+eine für das, wie es aussieht. Sie laufen in der Reihenfolge, in der die
+Komponenten angelegt wurden; schreiben zwei auf dasselbe Feld, gewinnt die letzte.
+
 Jedes Skript läuft in seiner **eigenen Umgebung**: `local`- und globale Variablen
-im Skript sind pro Entity isoliert. Zwei Objekte mit demselben Skript teilen also
-**keinen** Zustand. Gemeinsamer Zustand läuft über den Host (`game.addScore` /
-`game.getScore` / `game.setHud`).
+sind pro (Objekt, Datei) isoliert. Zwei Objekte mit demselben Skript teilen also
+**keinen** Zustand — und zwei Skripte auf einem Objekt ebensowenig. Gemeinsamer
+Zustand läuft über den Host (`game.addScore` / `game.getScore` / `game.setHud`).
 
 Ein Laufzeitfehler wird **einmal** gemeldet (in die Konsole + Editor-UI) und
 **deaktiviert nur dieses eine Skript** bis zum nächsten Play-Start.
@@ -518,11 +522,13 @@ skript-übergreifende Kommunikation. Siehe die Dateien direkt.
 - **Frische VM bei jedem Play:** kein Zustand überlebt einen Play-Stop.
 - **`spawn`/`destroy` sind deferred** — die ID ist sofort gültig, das Objekt kommt
   aber erst nächsten Frame; verlasse dich im selben Frame nicht auf seine Existenz.
-- **Isolierte Umgebungen:** globale Variablen sind pro Entity, nicht global über die
-  ganze Szene. Geteilter Zustand nur über den Host (Score/HUD) — oder ohnehin
-  bewusst gehalten.
-- **Fehler = Skript still deaktiviert** bis zum nächsten Play. Konsole/Editor-UI
-  zeigt die letzte Fehlermeldung.
+- **Isolierte Umgebungen:** globale Variablen gelten pro (Objekt, Skriptdatei) —
+  nicht szenenweit, und auch nicht zwischen zwei Skripten auf demselben Objekt.
+  Geteilter Zustand nur über den Host (Score/HUD) — oder ohnehin bewusst gehalten.
+- **Fehler = Skript still deaktiviert** bis zum nächsten Play — nur dieses eine;
+  weitere Skripte auf demselben Objekt laufen weiter. Konsole/Editor-UI zeigt die
+  letzte Fehlermeldung. Ein Skript, das gar nichts tut, hat meist dort seinen
+  Grund: nach dem ersten Fehler wird es nicht mehr aufgerufen.
 - **Nur numerische Transform-Felder werden zurückgeschrieben** (`x/y/z`, `rx/ry/rz`,
   `sx/sy/sz`). `e.name`/`e.id`/`e.type`/`e.parent`/`e.active` schreiben wirkt nicht.
 - **Material- und Asset-Änderungen im Play-Modus sind flüchtig.** Play macht vorher
