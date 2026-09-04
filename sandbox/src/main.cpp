@@ -7881,12 +7881,25 @@ int main(int argc, char** argv) {
                                         static_cast<float>(viewH));
                 // Scripts and behaviours just write the entity's world transform;
                 // children follow via resolveHierarchy (below), no propagation.
-                for (Entity& e : entities)
-                    if (e.type != EntityType::Sun && e.activeInHierarchy)
-                        if (auto* sc = e.components.get<ScriptComponent>();
+                // EVERY script component on the object, not the first.
+                // `get<ScriptComponent>()` returns one, and for a long time that
+                // was the whole rule: a second script card could be attached, it
+                // looked complete, and it never ran. Each one now has its own
+                // environment (ScriptSystem keys them by entity AND file), so
+                // two scripts on one object are two independent behaviours --
+                // which is how an object ends up with both "what it does" and
+                // "what it looks like" without either being folded into the
+                // other. They run in the order the components were added, and
+                // the last write to a shared field wins, as it does between two
+                // objects' scripts today.
+                for (Entity& e : entities) {
+                    if (e.type == EntityType::Sun || !e.activeInHierarchy) continue;
+                    for (const auto& comp : e.components.items)
+                        if (auto* sc = dynamic_cast<ScriptComponent*>(comp.get());
                             sc && !sc->file.empty())
-                            scripts.update(e, scriptPath(sc->file), dt,
+                            scripts.update(e, *sc, scriptPath(sc->file), dt,
                                            static_cast<float>(now));
+                }
 
                 // Built-in component behaviours (data-authored, no code): Spin.
                 // Writes LOCAL rotation; the scene-graph derives world (so a

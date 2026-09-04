@@ -898,20 +898,31 @@ void ScriptSystem::installApi() {
     lua_setglobal(L, "game");
 }
 
-void ScriptSystem::removeEntity(int id) {
-    auto it = m_env.find(id);
-    if (it != m_env.end()) {
-        luaL_unref(m_lua, LUA_REGISTRYINDEX, it->second);
-        m_env.erase(it);
-    }
-    m_failed.erase(id);
+std::string ScriptSystem::keyOf(int id, const std::string& file) {
+    return std::to_string(id) + "|" + file;
 }
 
-void ScriptSystem::fail(int id, const char* what) {
-    m_failed.insert(id);
+void ScriptSystem::removeEntity(int id) {
+    // Every script on it, not one: an object may carry several, and a reused id
+    // that inherited a leftover environment would wake up mid-behaviour.
+    const std::string prefix = std::to_string(id) + "|";
+    for (auto it = m_env.begin(); it != m_env.end();) {
+        if (it->first.rfind(prefix, 0) == 0) {
+            luaL_unref(m_lua, LUA_REGISTRYINDEX, it->second);
+            it = m_env.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (auto it = m_failed.begin(); it != m_failed.end();)
+        it = (it->rfind(prefix, 0) == 0) ? m_failed.erase(it) : std::next(it);
+}
+
+void ScriptSystem::fail(const std::string& key, int id, const char* what) {
+    m_failed.insert(key);
     m_lastError = what ? what : "unknown Lua error";
-    std::fprintf(stderr, "[Fitzel] script error (entity %d): %s\n", id,
-                 m_lastError.c_str());
+    std::fprintf(stderr, "[Fitzel] script error (entity %d, %s): %s' + chr(92) + 'n", id,
+                 key.c_str(), m_lastError.c_str());
 }
 
 void ScriptSystem::pushEntityTable(const Entity& e) {
@@ -943,15 +954,17 @@ void ScriptSystem::readEntityTable(Entity& e) {
     e.half.z     = getNum(L, "sz", e.half.z);
 }
 
-bool ScriptSystem::loadFor(const Entity& e, const std::string& path) {
+bool ScriptSystem::loadFor(const Entity& e, const ScriptComponent& sc,
+                           const std::string& key, const std::string& path) {
     lua_State* L = m_lua;
     if (loadLuaChunk(L, path) != LUA_OK) {
-        fail(e.id, lua_tostring(L, -1));
+        fail(key, e.id, lua_tostring(L, -1));
         lua_pop(L, 1);
         return false;
     }
     // Give the chunk its own environment (with the global table as a read
-    // fallback), so each entity's script state is isolated.
+    // fallback), so each script's state is isolated -- from other entities, and
+    // from the object's own other scripts.
     lua_newtable(L);                 // env
     lua_newtable(L);                 // metatable
     lua_pushglobaltable(L);
@@ -961,25 +974,24 @@ bool ScriptSystem::loadFor(const Entity& e, const std::string& path) {
     const int envRef = luaL_ref(L, LUA_REGISTRYINDEX);
     lua_setupvalue(L, -2, 1);        // chunk's _ENV = env
     if (lua_pcall(L, 0, 0, 0) != LUA_OK) { // run chunk (defines start/update)
-        fail(e.id, lua_tostring(L, -1));
+        fail(key, e.id, lua_tostring(L, -1));
         lua_pop(L, 1);
         luaL_unref(L, LUA_REGISTRYINDEX, envRef);
         return false;
     }
-    m_env[e.id] = envRef;
-    applyParams(envRef, e); // inspector overrides win over the module defaults
+    m_env[key] = envRef;
+    applyParams(envRef, sc); // inspector overrides win over the module defaults
     return true;
 }
 
 // Push each ScriptComponent override into the entity's environment as a global,
 // after the chunk (which set the defaults) has run and before start() sees them.
-void ScriptSystem::applyParams(int envRef, const Entity& e) {
-    const auto* sc = e.components.get<ScriptComponent>();
-    if (!sc || sc->params.empty()) return;
+void ScriptSystem::applyParams(int envRef, const ScriptComponent& sc) {
+    if (sc.params.empty()) return;
     lua_State* L = m_lua;
     lua_rawgeti(L, LUA_REGISTRYINDEX, envRef); // env at -1
     const int env = lua_gettop(L);
-    for (const ScriptParam& p : sc->params) {
+    for (const ScriptParam& p : sc.params) {
         switch (p.type) {
             case ScriptParam::Type::Number: lua_pushnumber(L, p.num); break;
             case ScriptParam::Type::Bool:   lua_pushboolean(L, p.b);  break;
@@ -1004,9 +1016,10 @@ void ScriptSystem::applyParams(int envRef, const Entity& e) {
     lua_pop(L, 1); // env
 }
 
-bool ScriptSystem::callFunction(Entity& e, const char* fn, float dt, float time) {
+bool ScriptSystem::callFunction(Entity& e, const std::string& key, const char* fn,
+                               float dt, float time) {
     lua_State* L = m_lua;
-    lua_rawgeti(L, LUA_REGISTRYINDEX, m_env[e.id]); // env
+    lua_rawgeti(L, LUA_REGISTRYINDEX, m_env[key]); // env
     lua_getfield(L, -1, fn);
     if (!lua_isfunction(L, -1)) {
         lua_pop(L, 2);
@@ -1020,7 +1033,7 @@ bool ScriptSystem::callFunction(Entity& e, const char* fn, float dt, float time)
     lua_pushnumber(L, dt);
     lua_pushnumber(L, time);
     if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
-        fail(e.id, lua_tostring(L, -1));
+        fail(key, e.id, lua_tostring(L, -1));
         lua_pop(L, 2); // error message + env
         luaL_unref(L, LUA_REGISTRYINDEX, argRef);
         return false;
@@ -1032,14 +1045,18 @@ bool ScriptSystem::callFunction(Entity& e, const char* fn, float dt, float time)
     return true;
 }
 
-void ScriptSystem::update(Entity& e, const std::string& scriptPath,
-                          float dt, float time) {
-    if (m_failed.count(e.id)) return;
-    if (!m_env.count(e.id)) {
-        if (!loadFor(e, scriptPath)) return;
-        if (!callFunction(e, "start", dt, time)) return;
+void ScriptSystem::update(Entity& e, const ScriptComponent& sc,
+                          const std::string& scriptPath, float dt, float time) {
+    // The running script is the (entity, file) pair, so an object's second and
+    // third scripts are their own machines with their own environments -- and a
+    // broken one disables itself rather than its neighbours.
+    const std::string key = keyOf(e.id, sc.file);
+    if (m_failed.count(key)) return;
+    if (!m_env.count(key)) {
+        if (!loadFor(e, sc, key, scriptPath)) return;
+        if (!callFunction(e, key, "start", dt, time)) return;
     }
-    callFunction(e, "update", dt, time);
+    callFunction(e, key, "update", dt, time);
 }
 
 namespace {

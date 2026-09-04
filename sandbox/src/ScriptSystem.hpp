@@ -12,9 +12,9 @@
 
 struct lua_State;
 
-// Lua entity scripting for play mode. Each scripted entity loads its script
-// file into its own environment (so globals and chunk locals are per-entity)
-// inside one shared VM. Scripts may define:
+// Lua entity scripting for play mode. Each script COMPONENT loads its file into
+// its own environment (so globals and chunk locals are private to that script on
+// that object) inside one shared VM. Scripts may define:
 //
 //   function start(e)         -- once, on first update after Play
 //   function update(e, dt, t) -- every frame while playing
@@ -32,12 +32,24 @@ public:
     // Fresh VM: all scripts reload and start() runs again (call on Play).
     void reset();
 
-    // Run the entity's script update (loading + start() on first call).
-    // Errors are reported once per entity and disable that script until reset().
-    void update(Entity& e, const std::string& scriptPath, float dt, float time);
+    // Run one script component's update (loading + start() on first call).
+    //
+    // AN OBJECT MAY CARRY SEVERAL. It used to be one per entity -- the caller
+    // asked for the first ScriptComponent and the environment was keyed by
+    // entity id -- so a second script card could be attached, looked complete,
+    // and silently never ran. The component is passed in rather than looked up
+    // because it decides two things this cannot guess: which file to load, and
+    // whose inspector parameters to apply.
+    //
+    // An error is reported once per (entity, file) and disables THAT script
+    // until reset(), leaving the object's other scripts running: one broken
+    // script should not take its neighbours with it.
+    void update(Entity& e, const ScriptComponent& sc, const std::string& scriptPath,
+                float dt, float time);
 
-    // Drop an entity's script state (call when the entity is destroyed at
-    // runtime) so its environment ref is freed and a reused id can't inherit it.
+    // Drop an entity's script state -- every script on it (call when the entity
+    // is destroyed at runtime) so the environment refs are freed and a reused id
+    // cannot inherit them.
     void removeEntity(int id);
 
     // The host bridge backing the Lua `game` table. Set once after construction;
@@ -59,17 +71,24 @@ public:
                                         std::string* err = nullptr);
 
 private:
+    // One running script is an (entity, file) pair, spelled "<id>|<file>". A
+    // string key rather than a pair so the two maps stay plain unordered ones;
+    // ids never contain the separator.
+    static std::string keyOf(int id, const std::string& file);
+
     void installApi();                                      // build global `game`
-    bool loadFor(const Entity& e, const std::string& path); // chunk -> env, start()
-    void applyParams(int envRef, const Entity& e);          // overrides -> env globals
-    bool callFunction(Entity& e, const char* fn, float dt, float time);
+    bool loadFor(const Entity& e, const ScriptComponent& sc,
+                 const std::string& key, const std::string& path);
+    void applyParams(int envRef, const ScriptComponent& sc); // overrides -> globals
+    bool callFunction(Entity& e, const std::string& key, const char* fn,
+                      float dt, float time);
     void pushEntityTable(const Entity& e);
     void readEntityTable(Entity& e); // reads the table at the stack top
-    void fail(int id, const char* what);
+    void fail(const std::string& key, int id, const char* what);
 
     lua_State*  m_lua  = nullptr;
-    ScriptHost* m_host = nullptr;          // host bridge for the `game` table
-    std::unordered_map<int, int> m_env;    // entity id -> registry ref of its env
-    std::unordered_set<int>      m_failed; // scripts disabled by an error
-    std::string                  m_lastError;
+    ScriptHost* m_host = nullptr;                  // host bridge for `game`
+    std::unordered_map<std::string, int> m_env;    // "<id>|<file>" -> env ref
+    std::unordered_set<std::string>      m_failed; // scripts disabled by an error
+    std::string                          m_lastError;
 };
