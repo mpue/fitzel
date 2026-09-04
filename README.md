@@ -177,8 +177,11 @@ the valleys. The renderer exposes both a one-call path
 (`prepareShadows()` + `renderScene(view, proj, eye, clipPlane)`), which is what the
 reflection and refraction passes are built out of.
 
-Editor camera: WASD + Q/E to move, hold right mouse to look, scroll to zoom. `F` frames
-the selected object; `Shift+F` toggles walking through the scene in first person.
+Editor camera: WASD + Q/E to move, hold right mouse to look. The wheel dollies in and
+out -- a notch is a fraction of the distance to whatever the view is aimed at, so it is
+a stride across a valley and a nudge at a kerb, and `Ctrl`+wheel changes the field of
+view instead. `F` frames the selected object; `Shift+F` toggles walking through the
+scene in first person.
 
 ![The editor: hierarchy, inspector, asset browser and the frame-time panel](images/editor.png)
 
@@ -354,6 +357,55 @@ for n in ["coast_sand_01","aerial_rocks_01","rocky_terrain_02","snow_02"]:
   by Fresnel, with animated noise ripples distorting the projective lookups and a
   specular sun glint. A world-space clip plane (`uClipPlane` in `lit.vert`,
   `GL_CLIP_DISTANCE0`) drives the clipping.
+
+### Animation: a timeline, and a state machine over it
+
+Anything the Inspector shows can be keyframed, and no field had to be registered for
+that to be true. Every editor field is already declared once as a *property* -- a
+label, a kind, and an accessor to the field itself -- so a track is stored as "entity 7,
+component `light`, key `range`, channel 0" and resolved against the live scene when it
+plays. Nothing in the animation system knows what a light or a spin is, and a component
+added next month is animatable the day it gets its property table.
+
+![The timeline, the animation graph and a script driving it](images/animation-graph.png)
+
+The **Timeline** panel holds the scene's clips. A diamond sits in front of every
+animatable field in the Inspector -- hollow, amber when the property is animated, filled
+when a key sits at the playhead -- and one click records the value already dialled in.
+Everything the panel does has a button as well as a gesture: the playhead moves with
+transport keys and a number field, every written time snaps to the clip's grid so two
+keys meant to line up actually do, and a key is selected by a click and then nudged a
+frame at a time. Moving the playhead turns the preview on by itself, and an edit to an
+already-animated property is *recorded* rather than fought -- which is the answer to who
+owns an animated number while you are posing it.
+
+The **Animation graph** panel is the state machine over those clips: states that each
+name a clip, arrows between them, and parameters -- triggers, bools and numbers -- that
+the game sets to move it along. Conditions on an arrow are AND; "either" is a second
+arrow, which is also the version you can see. `Any State` exists so "hit" or "die" does
+not need an arrow out of every node. There is no blending: a transition cuts, on
+purpose, and that is written down in `sandbox/src/AnimGraph.hpp` rather than left to be
+rediscovered.
+
+An object runs one through an **Animation Graph** component; a script moves it along:
+
+```lua
+game.animTrigger(id, "open")        -- fire a trigger (it stays set until an arrow reads it)
+game.animBool(id, "locked", true)
+game.animNumber(id, "speed", 2.5)
+game.animState(id)                  -- the state's name, for waiting on it
+```
+
+`sandbox/scripts/door.lua` is a worked example: a door that opens when you walk up to
+it, with the whole scene-side setup written at the top. For the simple case -- one clip,
+played when the game starts -- there is an **Animator** component instead, which is
+three fields and no graph.
+
+While the game runs, the node the selected object is in lights up and its parameters can
+be fired by hand from the panel. That is how you find out the graph is wrong, rather
+than reading the arrows and hoping. Both halves are measured by harnesses that need no
+window: `animcheck` (sampling, clamping, step interpolation, save/load) and `graphcheck`
+(triggers consumed, `Any State` outranking a state's own arrow, exit time, ordering).
 
 ### Multishot camera
 
@@ -545,6 +597,8 @@ one thing.
 | Tool | What it answers |
 | ---- | --------------- |
 | `shadercheck <shaders>` | Does every shader still compile? A broken one costs its effect *silently* -- the Release editor is `/SUBSYSTEM:WINDOWS` and has nowhere to print a compile error to. Exits non-zero. |
+| `animcheck` | Do keyframe tracks hold the value they were given, and find their property again after a save? A track resolves its field by id and string every time it plays: aim it wrong and it writes a plausible number into a plausible place, lose it and it does nothing -- and both look, on screen, like an author who has not keyed anything yet. Sampling, clamping at the ends, discrete properties stepping, the snap grid, and a clip written to JSON and read back binding to the same fields. |
+| `graphcheck` | Does the animation state machine go where its arrows say? An FSM fails by SITTING somewhere: a trigger never cleared races through every arrow that tests it, an exit time measured against the wrong length holds a door shut forever, and both look like a graph nobody finished drawing. Plays out machines built in code -- triggers fired and consumed, `Any State` outranking a state's own arrow, ordering deciding between two ready arrows, a graph saved and reloaded behaving identically. |
 | `viewcheck <project> [out.png]` | What does the scene actually LOOK like? Loads a project and renders its objects offscreen to a PNG, through `scenesubmit::submit` -- the same code the editor draws through, which is the whole reason that function was lifted out of `main()`. No terrain, sky, water or post chain yet: this is the objects on a flat ground colour, which is the view for a question about a material, a mesh or a stroke of paint. Prints what it drew and what it skipped, with each object's material, because the first question about a surprising picture is always whether the scene is what you think it is. |
 | `skycheck <out> <shaders>` | What does the sky actually look like? Renders `sky.frag` alone, from cameras pointed where the clouds are. |
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |

@@ -410,6 +410,7 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <a href="#editor"><span class="de">Editor</span><span class="en">Editor</span></a>
       <a href="#bild"><span class="de">Bild</span><span class="en">Picture</span></a>
       <a href="#offline"><span class="de">Offline</span><span class="en">Offline</span></a>
+      <a href="#animation"><span class="de">Animation</span><span class="en">Animation</span></a>
       <a href="#pruefen"><span class="de">Pr&#252;fen</span><span class="en">Checks</span></a>
       <a href="#ausliefern"><span class="de">Ausliefern</span><span class="en">Shipping</span></a>
     </nav>
@@ -823,6 +824,56 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
     </div>
   </section>
 
+  <!-- ============ ANIMATION ============ -->
+  <section class="sec reveal" id="animation">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Animation</p><p class="eyebrow en">Animation</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Alles, was der Inspector zeigt, l&#228;sst sich keyframen.</h2>
+      <h2 class="en">Anything the Inspector shows can be keyframed.</h2>
+
+      <div class="prose de">
+        <p>Daf&#252;r musste kein einziges Feld angemeldet werden. Jedes Editor-Feld ist ohnehin einmal als <em>Eigenschaft</em> beschrieben &#8212; Beschriftung, Art, Zugriff auf das Feld selbst &#8212; und das ist bereits eine vollst&#228;ndige Adresse f&#252;r eine Zahl in der Szene. Eine Spur steht als &#8222;Objekt 7, Komponente <code>light</code>, Schl&#252;ssel <code>range</code>, Kanal 0" in der Datei und wird beim Abspielen gegen die lebende Szene aufgel&#246;st. Das Animationssystem wei&#223; nicht, was eine Lampe ist &#8212; und eine Komponente, die es n&#228;chsten Monat gibt, ist an dem Tag animierbar, an dem sie ihre Eigenschaftstabelle bekommt.</p>
+        <p>Vor jedem animierbaren Feld sitzt eine Raute: hohl, bernstein sobald die Eigenschaft animiert ist, gef&#252;llt wenn genau am Abspielkopf ein Key liegt. Ein Klick nimmt den Wert auf, der ohnehin schon eingestellt ist &#8212; das Feld noch einmal in einem anderen Panel suchen zu m&#252;ssen ist der Schritt, an dem das Animieren aufh&#246;rt.</p>
+      </div>
+      <div class="prose en">
+        <p>No field had to be registered for that to be true. Every editor field is already declared once as a <em>property</em> &#8212; a label, a kind, and an accessor to the field itself &#8212; which is a complete address for a number in the scene. A track is stored as "entity 7, component <code>light</code>, key <code>range</code>, channel 0" and resolved against the live scene when it plays. The animation system does not know what a light is, and a component added next month is animatable the day it gets its property table.</p>
+        <p>A diamond sits in front of every animatable field: hollow, amber once the property is animated, filled when a key sits at the playhead. One click records the value already dialled in &#8212; having to find the same field again in another panel is the step at which people stop animating anything.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/animgraph.jpg" alt="Timeline, Animationsgraph und ein Lua-Skript, das ihn steuert" loading="lazy">
+        <figcaption class="de">Links die Zeitleiste mit den Keys einer Position, rechts die Zustandsmaschine dar&#252;ber, oben rechts das Skript, das sie weiterschaltet. Der Startzustand sagt es in Worten, und w&#228;hrend das Spiel l&#228;uft leuchtet der Knoten, in dem das gew&#228;hlte Objekt gerade steckt.</figcaption>
+        <figcaption class="en">The timeline with a position's keys on the left, the state machine over those clips on the right, and the script that moves it along above. The entry state says so in words, and while the game runs the node the selected object is in lights up.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Zust&#228;nde, Pfeile, Parameter</b><b class="en">States, arrows, parameters</b>
+          <span class="de">Ein Zustand nennt einen Clip, ein Pfeil f&#252;hrt weiter, sobald seine Bedingungen zutreffen. Bedingungen sind UND; &#8222;oder" ist ein zweiter Pfeil &#8212; und das ist zugleich die Fassung, die man sehen kann.</span>
+          <span class="en">A state names a clip; an arrow leads on when its conditions hold. Conditions are AND &#8212; "either" is a second arrow, which is also the version you can see.</span></li>
+        <li><b class="de">Ein Trigger klingelt einmal</b><b class="en">A trigger rings once</b>
+          <span class="de">Er bleibt gesetzt, bis der Pfeil ihn liest, der ihn pr&#252;ft. Ein Skript darf in einem beliebigen Frame feuern, ohne zu wissen, wann die Maschine das n&#228;chste Mal schrittet.</span>
+          <span class="en">It stays set until the arrow that tests it is taken, so a script may fire on any frame without knowing when the machine next steps.</span></li>
+        <li><b class="de">Kein Blending &#8212; mit Absicht</b><b class="en">No blending &#8212; on purpose</b>
+          <span class="de">Ein &#220;bergang schneidet. Das ist ehrlich und es ist das, was eine T&#252;r, ein Aufzug, eine Lampe und ein Signal wollen; die Entscheidung steht im Header, statt sp&#228;ter wiederentdeckt zu werden.</span>
+          <span class="en">A transition cuts. That is honest, and it is what a door, a lift, a lamp and a signal all want; the decision is written in the header rather than left to be rediscovered.</span></li>
+        <li><b class="de">Jede Geste hat einen Knopf daneben</b><b class="en">Every gesture has a button beside it</b>
+          <span class="de">Keys rasten auf ein Raster, der Abspielkopf l&#228;uft auf Knopfdruck von Key zu Key, Knoten lassen sich ziehen &#8212; oder per &#8222;Lay out" ganz ohne Ziehen anordnen. Ein Pfeil entsteht am Port oder aus zwei Auswahllisten.</span>
+          <span class="en">Keys snap to a grid, the playhead steps key to key by button, nodes can be dragged &#8212; or arranged by "Lay out" without dragging at all. An arrow is drawn from a port, or made from two dropdowns.</span></li>
+      </ul>
+
+      <div class="prose de">
+        <p>Ein Objekt f&#252;hrt einen Graphen &#252;ber eine Komponente aus; ein Skript schaltet ihn weiter: <code>game.animTrigger(id, "open")</code>, <code>game.animBool</code>, <code>game.animNumber</code>, <code>game.animState(id)</code>. F&#252;r den einfachen Fall &#8212; ein Clip, der beim Spielstart l&#228;uft &#8212; gibt es stattdessen eine Animator-Komponente mit drei Feldern und ohne Graph.</p>
+      </div>
+      <div class="prose en">
+        <p>An object runs a graph through a component; a script moves it along: <code>game.animTrigger(id, "open")</code>, <code>game.animBool</code>, <code>game.animNumber</code>, <code>game.animState(id)</code>. For the simple case &#8212; one clip, played when the game starts &#8212; there is an Animator component instead: three fields, no graph.</p>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ SPIEL ============ -->
   <section class="sec reveal" id="spiel">
     <div class="rail"><div class="rail-in">
@@ -909,6 +960,7 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
             <tr><td>pathcheck</td><td><span class="de">Rechnet der Pathtracer Licht richtig? Szenen, deren Antwort vorher feststeht &#8212; ein wei&#223;er Ofen, der bei Radiance 1 zur&#252;ckkommen muss; ein Schatten, dessen Position Arithmetik ist; Rauschen, das mit 1/&#8730;n fallen muss.</span><span class="en">Does the path tracer compute light correctly? Scenes whose answer is known in advance &#8212; a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, noise that must fall as 1/&#8730;n.</span></td></tr>
             <tr><td>capturecheck</td><td><span class="de">Bekommt der Tracer die Szene, die tats&#228;chlich gezeichnet wurde? Baut sie &#252;ber die echten Engine-Typen, erntet sie wie das Render-Panel und pr&#252;ft, wo Vertices landen und wohin Normalen unter nicht-uniformer Skalierung zeigen.</span><span class="en">Is the tracer handed the scene that was actually drawn? Builds it through the real engine types, harvests it as the Render panel does, and checks where vertices landed and which way normals point under non-uniform scale.</span></td></tr>
             <tr><td>shotcheck</td><td><span class="de">Beh&#228;lt die Multishot-Kamera ihr Motiv im Bild und ihr Auge aus dem Boden &#8212; &#252;ber einem geparkten Auto, einem schnellen, einem Lastwagen und einem Hang? Das ist der eine Fehler, den man im Editor nicht sehen kann, weil der Editor das Bild von <em>innerhalb</em> des Fehlers zeigt.</span><span class="en">Does the multishot camera keep its subject in frame and its eye out of the ground &#8212; over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from <em>inside</em> the mistake.</span></td></tr>
+            <tr><td>animcheck &#183; graphcheck</td><td><span class="de">Halten die Keyframe-Spuren den Wert, den sie bekommen haben, und finden sie ihre Eigenschaft nach dem Speichern wieder? Und geht die Zustandsmaschine dahin, wo ihre Pfeile hinzeigen? Beides f&#228;llt still aus: eine Spur, die danebengreift, schreibt eine plausible Zahl an eine plausible Stelle, und ein FSM f&#228;llt aus, indem es <em>sitzenbleibt</em> &#8212; am Bildschirm sieht beides aus wie ein Graph, den niemand fertig gezeichnet hat.</span><span class="en">Do keyframe tracks hold the value they were given, and find their property again after a save? And does the state machine go where its arrows say? Both fail quietly: a track that resolves wrongly writes a plausible number into a plausible place, and an FSM fails by <em>sitting</em> somewhere &#8212; on screen both look like a graph nobody finished drawing.</span></td></tr>
             <tr><td>citycheck</td><td><span class="de">Ragt ein generiertes Haus &#252;ber den Bordstein? Ein Turm &#252;ber der Stra&#223;e ist eine Wand, in die man bei Tempo f&#228;hrt, auf einem Abschnitt, der frei aussah.</span><span class="en">Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear.</span></td></tr>
             <tr><td>iconcheck</td><td><span class="de">Benutzt Windows wirklich das Icon, das &#8222;Export Game" ins Exe geschrieben hat?</span><span class="en">Will Windows really use the icon "Export Game" wrote into the exe?</span></td></tr>
             <tr><td>audiocheck</td><td><span class="de">Gibt das Ger&#228;t der Engine mehr als einen Ausgabekanal? Ein Mono-Ausgang ist der wahrscheinlichste Grund f&#252;r eine Welt ohne Richtung.</span><span class="en">Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it.</span></td></tr>
