@@ -748,6 +748,31 @@ void drawPanel(const PanelState& s) {
                                         [&](const char* lbl, std::string& f) {
                                             s.soundPickerCombo(lbl, f);
                                         });
+                } else if (auto* ag = dynamic_cast<AnimGraphComponent*>(c)) {
+                    // A picker over the scene's graphs, plus a readout of where
+                    // this object's machine actually IS while the game runs --
+                    // which is the one thing about a state machine you cannot
+                    // work out by looking at the scene.
+                    const std::string cur = ag->graph.empty() ? "(none)" : ag->graph;
+                    if (ImGui::BeginCombo("Graph", cur.c_str())) {
+                        if (ImGui::Selectable("(none)", ag->graph.empty())) ag->graph.clear();
+                        for (const animgraph::Graph& g : s.graphs)
+                            if (ImGui::Selectable(g.name.c_str(), ag->graph == g.name))
+                                ag->graph = g.name;
+                        ImGui::EndCombo();
+                    }
+                    const int gi = animgraph::findGraph(s.graphs, ag->graph);
+                    if (!ag->graph.empty() && gi < 0)
+                        ImGui::TextDisabled("This scene has no graph called \"%s\".",
+                                            ag->graph.c_str());
+                    if (gi >= 0 && ag->runtime.state >= 0 &&
+                        ag->runtime.state < static_cast<int>(s.graphs[gi].states.size()))
+                        ui::hint("Now in: %s  (%.2f s)",
+                                 s.graphs[gi].states[ag->runtime.state].name.c_str(),
+                                 ag->runtime.time);
+                    else
+                        ui::hint("Not running -- the machine starts with the game.");
+                    if (gi >= 0 && ImGui::Button("Edit graph...")) s.showGraphEditor = true;
                 } else if (auto* am = dynamic_cast<AnimatorComponent*>(c)) {
                     // Bespoke because the clip is chosen from the scene's own
                     // animations, which metadata cannot enumerate. Everything

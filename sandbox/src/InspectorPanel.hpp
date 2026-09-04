@@ -8,6 +8,7 @@
 
 #include <glm/glm.hpp>
 
+#include "AnimGraph.hpp"   // the graph an Animation Graph component picks
 #include "AnimSystem.hpp"  // the clip a property is keyed into
 #include "Component.hpp"   // ScriptParam
 #include "Selection.hpp"
@@ -134,6 +135,10 @@ struct PanelState {
     int&          editClip;            // the one the Timeline is on
     anim::Player& animPlayer;
     bool&         autoKey;
+    // The scene's state machines, for the Animation Graph card's picker, and the
+    // way its "Edit graph..." button reaches the editor that draws them.
+    std::vector<animgraph::Graph>& graphs;
+    bool&         showGraphEditor;
 };
 
 void drawPanel(const PanelState& s);

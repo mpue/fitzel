@@ -116,6 +116,10 @@ set(SANDBOX_RUNTIME_SOURCES
     # the shipped player plays a scene's clip, the same way it plays its
     # opening camera move.
     src/AnimSystem.cpp
+    # The animation state machine: which clip an object plays and what moves it
+    # to the next. Runtime, like the clips it names -- the shipped player runs
+    # the graph, the editor only draws it.
+    src/AnimGraph.cpp
     src/LightGrid.cpp
     src/DebugOverlay.cpp)
 
@@ -134,6 +138,9 @@ set(SANDBOX_EDITOR_SOURCES
     # The keyframe timeline. Editor-only: the player has an animation to run,
     # not one to author.
     src/TimelinePanel.cpp
+    # The animation state machine, drawn. Editor-only: the player runs a graph,
+    # it does not draw one.
+    src/GraphPanel.cpp
     src/MeshPaint.cpp
     # The scene tree and the selected entity's fields -- the editor's two
     # always-open panels. Editor-only: the player has no scene to edit.
@@ -523,6 +530,14 @@ add_executable(animcheck tools/animcheck.cpp src/AnimSystem.cpp src/Component.cp
                          src/MultiShot.cpp)
 target_link_libraries(animcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(animcheck PRIVATE FITZEL_PLAYER)
+
+# graphcheck -- the animation state machine: triggers fired and consumed, Any
+# State outranking a state's own arrow, exit time waiting for the clip and then
+# letting go, ordering deciding between two ready arrows, and a graph saved and
+# reloaded behaving identically. An FSM fails by SITTING somewhere, which looks
+# exactly like a graph the author has not finished drawing.
+add_executable(graphcheck tools/graphcheck.cpp src/AnimGraph.cpp)
+target_link_libraries(graphcheck PRIVATE glm::glm nlohmann_json::nlohmann_json)
 
 add_executable(sculptcheck tools/sculptcheck.cpp)
 target_link_libraries(sculptcheck PRIVATE fitzel glm::glm)

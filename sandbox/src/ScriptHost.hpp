@@ -170,6 +170,18 @@ struct ScriptHost {
     std::function<void(int, const std::string&)>    setName;
     std::function<void(int, bool)>                  setActive;
     std::function<void(int, int)>                   setParent;    // -1 = detach
+
+    // --- Animation state machines (AnimGraph.hpp) -------------------------
+    // Driving an object's graph from a script: this is the point of the graph
+    // having parameters at all. A trigger rings once and is cleared by the
+    // transition that reads it, so a script may fire it on any frame without
+    // knowing when the machine next steps.
+    std::function<void(int, const std::string&)>          animTrigger;
+    std::function<void(int, const std::string&, bool)>    animSetBool;
+    std::function<void(int, const std::string&, float)>   animSetNumber;
+    // The name of the state the object is in ("" when it has no graph running),
+    // so a script can wait for a door to have finished opening.
+    std::function<std::string(int)>                       animState;
     std::function<std::vector<int>(int)>            children;
 
     // --- Physics on a dynamic body (by entity id). No-ops on unknown ids. ------

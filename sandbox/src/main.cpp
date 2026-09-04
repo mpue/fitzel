@@ -61,6 +61,7 @@
 #include "Profiler.hpp"
 #include "DebugOverlay.hpp"
 #include "SandboxMath.hpp"
+#include "AnimGraph.hpp"
 #include "AnimSystem.hpp"
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
@@ -89,6 +90,7 @@
 #include "ModelingPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
+#include "GraphPanel.hpp"
 #include "TimelinePanel.hpp"
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
@@ -908,7 +910,8 @@ void buildDefaultDockLayout(ImGuiID dockId) {
             "Vegetation", "Scatter",
             "Roads", "City", "Buildings",
             "Materials", "Models", "Prefabs", "Assets",
-            "UI Overlay", "Camera path", "Timeline", "Camera", "3D Cursor", "Render",
+            "UI Overlay", "Camera path", "Timeline", "Animation graph",
+            "Camera", "3D Cursor", "Render",
             "Vehicle", "Glider", "Voxels", "Mixer", "Scripts",
             "Performance", "Stats"})
         ImGui::DockBuilderDockWindow(w, tools);
@@ -2471,6 +2474,7 @@ int main(int argc, char** argv) {
         bool showCity        = false;
         bool showCamPath     = false;
         bool showTimeline    = false;
+        bool showGraphEditor = false;
         bool showRoads       = false;
         bool showUiOverlay   = false; // scene 2D UI overlay editor
         bool showCursor      = false; // 3D cursor panel
@@ -3788,6 +3792,10 @@ int main(int argc, char** argv) {
         // the editor, where the single animPlay above previews the clip being
         // edited instead.
         std::vector<anim::Playback> animRuntime;
+        // The scene's animation state machines. The graphs are shared data; each
+        // AnimGraphComponent holds its own run of one (see AnimGraph.hpp).
+        std::vector<animgraph::Graph> animGraphs;
+        int animEditGraph = 0;      // which one the graph editor is showing
         // The clip the Timeline edits and previews. Clamped rather than trusted:
         // deleting a clip leaves the index one past the end for a frame.
         auto animEdited = [&]() -> anim::Clip& {
@@ -4232,6 +4240,7 @@ int main(int argc, char** argv) {
             // settings and a compact key blob per track. Scene data for the same
             // reason the camera path is -- the shipped player plays it.
             anim::save(j, animClips);
+            animgraph::save(j, animGraphs);
             // Hand-painted grass: a compact space-separated float blob (7 per
             // blade). Stored as one JSON string so pretty-printing doesn't
             // explode into a line per number.
@@ -4440,6 +4449,8 @@ int main(int argc, char** argv) {
             // move follows the author into a level that has none of its own.
             camPathRec.setBlob(j.value("camPath", std::string{}));
             anim::load(j, animClips);
+            animgraph::load(j, animGraphs);
+            animEditGraph = 0;
             if (animClips.empty()) animClips.push_back(anim::Clip{});
             animEditClip = 0;
             animPlay = anim::Player{};   // a new scene, a playhead back at zero
@@ -5475,6 +5486,42 @@ int main(int argc, char** argv) {
         };
         host.setCamFov = [&](float f){ camera.setFov(glm::clamp(f, 10.0f, 140.0f)); };
         host.setActiveCamera = [&](int id){ activeCam = id; };
+        // Driving an object's state machine from Lua. Each one resolves the
+        // entity and its graph fresh: a script may name an object that has no
+        // graph (or none at all), and that has to be a no-op rather than a
+        // reason for the whole script to stop.
+        {
+            auto machineOf = [&](int id, animgraph::Graph const** g)
+                -> animgraph::Instance* {
+                Entity* e = document.find(id);
+                if (!e) return nullptr;
+                auto* ag = e->components.get<AnimGraphComponent>();
+                if (!ag) return nullptr;
+                const int gi = animgraph::findGraph(animGraphs, ag->graph);
+                if (gi < 0) return nullptr;
+                *g = &animGraphs[gi];
+                return &ag->runtime;
+            };
+            host.animTrigger = [&, machineOf](int id, const std::string& p) {
+                const animgraph::Graph* g = nullptr;
+                if (auto* in = machineOf(id, &g)) animgraph::fire(*g, *in, p);
+            };
+            host.animSetBool = [&, machineOf](int id, const std::string& p, bool v) {
+                const animgraph::Graph* g = nullptr;
+                if (auto* in = machineOf(id, &g)) animgraph::setBool(*g, *in, p, v);
+            };
+            host.animSetNumber = [&, machineOf](int id, const std::string& p, float v) {
+                const animgraph::Graph* g = nullptr;
+                if (auto* in = machineOf(id, &g)) animgraph::setNumber(*g, *in, p, v);
+            };
+            host.animState = [&, machineOf](int id) -> std::string {
+                const animgraph::Graph* g = nullptr;
+                animgraph::Instance* in = machineOf(id, &g);
+                if (!in || !g || in->state < 0 ||
+                    in->state >= static_cast<int>(g->states.size())) return {};
+                return g->states[static_cast<std::size_t>(in->state)].name;
+            };
+        }
         // The data-driven half of the API (assets, models, materials, entity
         // queries, world helpers) lives in ScriptBridge; it only needs the few
         // hooks below that depend on main's own state.
@@ -5630,6 +5677,14 @@ int main(int argc, char** argv) {
                 pb.player.playing = true;
                 animRuntime.push_back(pb);
             }
+            // Every state machine starts in its entry state with its parameters
+            // at their defaults. Here rather than on load: a machine holds where
+            // the GAME got to, and Play is when the game begins.
+            for (Entity& e : entities)
+                if (auto* ag = e.components.get<AnimGraphComponent>()) {
+                    const int gi = animgraph::findGraph(animGraphs, ag->graph);
+                    if (gi >= 0) animgraph::start(animGraphs[gi], ag->runtime);
+                }
             // Start from the camera marked active-on-start, else the player view.
             activeCam = -1;
             for (const Entity& e : entities)
@@ -6099,6 +6154,7 @@ int main(int argc, char** argv) {
             {"Presentation", "Camera",         nullptr, &showCamera},
             {"Presentation", "Camera path",    nullptr, &showCamPath},
             {"Presentation", "Timeline",       nullptr, &showTimeline},
+            {"Presentation", "Animation graph", nullptr, &showGraphEditor},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
             {"Inspect",  "Performance",        "F3",    &showPerf},
@@ -8842,6 +8898,34 @@ int main(int argc, char** argv) {
                     if (const auto* an = e.components.get<AnimatorComponent>())
                         if (an->clip == run.name && an->playOnStart) { run.loop = an->loop; break; }
                 if (!anim::advance(run, entities, pb.player, dt)) pb.player.playing = false;
+            }
+            // The state machines. Each one asks its graph what should be playing
+            // and how far in, then the named clip is applied -- the graph never
+            // touches an entity itself, which is what keeps it a machine over
+            // clip NAMES and testable without a scene.
+            if (playMode || playerMode) {
+                for (Entity& e : entities) {
+                    auto* ag = e.components.get<AnimGraphComponent>();
+                    if (!ag) continue;
+                    const int gi = animgraph::findGraph(animGraphs, ag->graph);
+                    if (gi < 0) continue;
+                    const animgraph::Graph& g = animGraphs[gi];
+                    if (ag->runtime.state < 0) animgraph::start(g, ag->runtime);
+                    // The length of the clip the CURRENT state names, which is
+                    // what loops it and what exit time is measured against.
+                    float len = 0.0f;
+                    if (ag->runtime.state >= 0 &&
+                        ag->runtime.state < static_cast<int>(g.states.size())) {
+                        const int ci = anim::findClip(
+                            animClips, g.states[ag->runtime.state].clip);
+                        if (ci >= 0) len = animClips[ci].lastKeyTime();
+                    }
+                    std::string clipName;
+                    float clipTime = 0.0f;
+                    animgraph::step(g, ag->runtime, dt, len, clipName, clipTime);
+                    const int ci = anim::findClip(animClips, clipName);
+                    if (ci >= 0) anim::apply(animClips[ci], entities, clipTime);
+                }
             }
             if (animPlay.playing) {
                 if (!anim::advance(animEdited(), entities, animPlay, dt))
@@ -11846,6 +11930,13 @@ int main(int argc, char** argv) {
             if (!showTimeline && animPlay.preview)
                 anim::endPreview(animEdited(), entities, animPlay);
 
+            // The state machines, drawn. It reads the clip library (a state IS a
+            // clip) and the scene (to light the node the selected object is in),
+            // and it is the only place a graph is authored.
+            graphui::drawPanel({showGraphEditor, animGraphs, animEditGraph, animClips,
+                                entities, sel, playMode || playerMode,
+                                [&]{ history.touch(); }});
+
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
             roadui::drawPanel({showRoads, roads, roadEditMode, roadSel, roadSel2, assetDb,
@@ -12089,7 +12180,8 @@ int main(int argc, char** argv) {
                                     matSel, matPickFilter, sizeof(matPickFilter),
                                     showMaterials, showModels, activeCam,
                                     entityNewHalf,
-                                    animClips, animEditClip, animPlay, animAutoKey});
+                                    animClips, animEditClip, animPlay, animAutoKey,
+                                    animGraphs, showGraphEditor});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

@@ -100,6 +100,11 @@ REM  jedem Abspielen ueber Id und Name neu; greift sie daneben, schreibt sie ein
 REM  plausible Zahl an eine plausible Stelle, und findet sie nichts, passiert gar
 REM  nichts -- beides sieht am Bildschirm aus wie "noch nichts keyframed".
 call :run animcheck
+REM  graphcheck prueft die Animations-Zustandsmaschine. Ein FSM faellt aus,
+REM  indem es SITZENBLEIBT: ein Trigger, der nicht geloescht wird, jagt durch
+REM  jeden Pfeil; eine Exit-Zeit gegen die falsche Laenge haelt eine Tuer fuer
+REM  immer zu. Beides sieht aus wie ein halb gezeichneter Graph.
+call :run graphcheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
 REM  modelcheck misst die beiden Modellier-Werkzeuge, die still danebengehen:

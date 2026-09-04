@@ -15,6 +15,7 @@
 #include <fitzel/asset/AssetId.hpp>
 #include <fitzel/world/Terrain.hpp>   // TerrainSettings, held by TerrainComponent
 
+#include "AnimGraph.hpp"              // animgraph::Instance, held by AnimGraphComponent
 #include "EditMesh.hpp"               // EditMesh, held by MeshComponent
 #include "FogMedium.hpp"              // FogMedium, held by VolumetricFogComponent
 #include "MultiShot.hpp"              // multishot::Settings, held by CameraComponent
@@ -168,6 +169,39 @@ public:
     }
     const char* typeId() const override { return "animator"; }
     const char* displayName() const override { return "Animator"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+};
+
+// --- Built-in component: Animation Graph (a state machine of clips) ----------
+// Hang it on an object and pick a graph: the object plays whichever clip the
+// graph's current state names, and moves between states when their conditions
+// come true.
+//
+// It is the Animator's bigger sibling and the two are different jobs, not two
+// sizes of one. An Animator plays ONE clip when the game starts -- a door that
+// simply opens, a windmill that turns -- and that is most of what a scene needs.
+// This is for the object whose animation has a shape over time: idle, open,
+// hold, close, and something the game says to move it along. Keeping them apart
+// means the simple case stays a component with three fields.
+//
+// The graph is shared; the RUNNING of it is not. Two doors on one graph are two
+// machines with their own current state and their own parameter values, which is
+// why the instance lives on the component rather than in the graph.
+class AnimGraphComponent : public ComponentBase {
+public:
+    std::string graph;                 // the graph's NAME (see AnimGraph.hpp)
+
+    // Where this object is in its machine. NOT serialized and not a property:
+    // it is where the game got to, not something the author wrote, and saving it
+    // would mean a scene opened half-way through its own door animation.
+    animgraph::Instance runtime;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<AnimGraphComponent>(*this);
+    }
+    const char* typeId() const override { return "anim_graph"; }
+    const char* displayName() const override { return "Animation Graph"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
 };

@@ -188,6 +188,21 @@ const std::vector<Property>& AnimatorComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& AnimGraphComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        // Text so it serializes; the Inspector draws it as a picker over the
+        // scene's graphs, the same as the Animator's clip.
+        Property graph;
+        graph.label = "Graph"; graph.key = "graph"; graph.kind = PropKind::Text;
+        graph.field = [](void* o) -> void* {
+            return &static_cast<AnimGraphComponent*>(o)->graph; };
+        p.push_back(std::move(graph));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& CollectibleComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -1745,6 +1760,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<SpinComponent>()); }});
         components::registerType({"animator", "Animator",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimatorComponent>()); }});
+        components::registerType({"anim_graph", "Animation Graph",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimGraphComponent>()); }});
         components::registerType({"collectible", "Collectible",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CollectibleComponent>()); }});
         components::registerType({"missile_pickup", "Missile Pickup",

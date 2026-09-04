@@ -597,6 +597,39 @@ int l_setActive(lua_State* L) {
     if (h && h->setActive) h->setActive(id, on);
     return 0;
 }
+// game.animTrigger(id, "open") / animBool(id, "isOpen", true) /
+// animNumber(id, "speed", 2.5) / animState(id) -> "Opening"
+int l_animTrigger(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* p = luaL_checkstring(L, 2);
+    if (h && h->animTrigger) h->animTrigger(id, p);
+    return 0;
+}
+int l_animBool(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* p = luaL_checkstring(L, 2);
+    const bool v = lua_isnone(L, 3) ? true : lua_toboolean(L, 3) != 0;
+    if (h && h->animSetBool) h->animSetBool(id, p, v);
+    return 0;
+}
+int l_animNumber(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* p = luaL_checkstring(L, 2);
+    const float v = static_cast<float>(luaL_checknumber(L, 3));
+    if (h && h->animSetNumber) h->animSetNumber(id, p, v);
+    return 0;
+}
+int l_animState(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (!h || !h->animState) { lua_pushnil(L); return 1; }
+    const std::string n = h->animState(id);
+    if (n.empty()) lua_pushnil(L); else lua_pushstring(L, n.c_str());
+    return 1;
+}
 int l_isActive(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
@@ -809,6 +842,9 @@ void ScriptSystem::installApi() {
     fn("getScale", l_getScale);       fn("setScale", l_setScale);
     fn("getName", l_getName);         fn("setName", l_setName);
     fn("setActive", l_setActive);     fn("isActive", l_isActive);
+    // Animation state machines
+    fn("animTrigger", l_animTrigger); fn("animBool", l_animBool);
+    fn("animNumber", l_animNumber);   fn("animState", l_animState);
     fn("setParent", l_setParent);     fn("getParent", l_getParent);
     fn("children", l_children);
     // Physics
