@@ -110,6 +110,7 @@ Settings load(const std::string& projectFolder) {
     s.icon         = j.value("icon", std::string{});
     s.startScene   = j.value("startScene", std::string{});
     s.startMode    = startModeFromKey(j.value("startMode", std::string("fps")));
+    s.startModeSet = j.contains("startMode");
     s.exportScenes = j.value("exportScenes", std::vector<std::string>{});
     s.trimAssets   = j.value("trimAssets", false);
     s.packContent  = j.value("packContent", true);

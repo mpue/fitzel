@@ -231,6 +231,13 @@ int main() {
         mine.sky.coverage   = 0.71f;
         mine.sky.base       = 210.0f;
         mine.sky.fogDensity = 0.0091f;
+        // The sheet layers, each with different numbers on it. matches() goes
+        // through equalSky, so this one assertion is what stops a seventh cloud
+        // type being added to the struct and forgotten in the file.
+        mine.sky.stratus       = {true,  0.62f,  540.0f, 1.7f,  3.1f, -0.8f};
+        mine.sky.altocumulus   = {true,  0.41f, 3150.0f, 0.9f,  6.2f,  1.4f};
+        mine.sky.cirrus        = {false, 0.22f, 7300.0f, 1.1f,  2.2f,  0.0f};
+        mine.sky.contrails     = {true,  0.55f, 9800.0f, 0.4f,  0.9f,  2.1f};
         mine.setMist        = true;
         mine.mist.enabled   = true;
         mine.mist.span      = 812.0f;
@@ -287,6 +294,39 @@ int main() {
         ok(written == 2, "the file holds only what was decided (2 presets)");
         if (written != 2) std::printf("       wrote %d\n", written);
     }
+    {
+        // A preset written before the sky had layers: one plane carrying both
+        // the ice and the traffic, as four loose floats. Those files are out
+        // there in projects, and the numbers in them are the only record of
+        // what that sky looked like -- so they have to land on the two layers
+        // that replaced them rather than being silently dropped for defaults.
+        std::FILE* f = std::fopen((folder + "/weather.json").c_str(), "wb");
+        const char* legacy =
+            "{ \"presets\": [ {\"name\":\"Old sky\",\"storm\":0.2,\"sky\":{"
+            "\"coverage\":0.4,\"cirrus\":0.62,\"cirrusHeight\":1550,"
+            "\"cirrusWind\":1.9,\"contrails\":0.45}} ] }";
+        std::fwrite(legacy, 1, std::strlen(legacy), f);
+        std::fclose(f);
+        const std::vector<weather::Preset> back = weather::load(folder);
+        const int oi = weather::indexOf(back, "Old sky");
+        ok(oi >= 0, "a preset from before the layers still loads");
+        if (oi >= 0) {
+            const weather::Sky& sky = back[static_cast<std::size_t>(oi)].sky;
+            ok(sky.cirrus.on && near(sky.cirrus.amount, 0.62f) &&
+                   near(sky.cirrus.height, 1550.0f) &&
+                   near(sky.cirrus.wind, 1.9f),
+               "...its cirrus lands on the cirrus layer");
+            // The old contrails had no height of their own -- they were drawn
+            // on the cirrus plane. Putting them at the cirrus height is not a
+            // guess about what the author wanted, it is what the shader did.
+            ok(sky.contrails.on && near(sky.contrails.amount, 0.45f) &&
+                   near(sky.contrails.height, 1550.0f),
+               "...its contrails get their own layer, at the height they were drawn at");
+            ok(!sky.stratus.on && !sky.altocumulus.on,
+               "...and the types that did not exist yet stay off");
+        }
+    }
+
     {
         // A file with a preset the editor has never heard of, and a corrupt one.
         // Neither may take the shelf down: a project edited by hand, or by a

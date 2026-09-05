@@ -36,12 +36,27 @@ bool near(const glm::vec3& a, const glm::vec3& b) {
     return near(a.x, b.x) && near(a.y, b.y) && near(a.z, b.z);
 }
 
+// A layer that is OFF is equal to any other layer that is off, whatever numbers
+// it is carrying. Otherwise switching a stratus on, moving it, and switching it
+// back off again would leave a preset marked modified for a deck nobody can see
+// -- and the modified marker is only worth anything while it means something.
+bool equalSheet(const Sheet& a, const Sheet& b) {
+    if (a.on != b.on) return false;
+    if (!a.on) return true;
+    return near(a.amount, b.amount) && near(a.height, b.height) &&
+           near(a.scale, b.scale) && near(a.wind, b.wind) && near(a.dir, b.dir);
+}
+
 bool equalSky(const Sky& a, const Sky& b) {
     return near(a.coverage, b.coverage) && near(a.density, b.density) &&
            near(a.scale, b.scale)       && near(a.wind, b.wind) &&
            near(a.base, b.base)         && near(a.top, b.top) &&
-           near(a.cirrus, b.cirrus)     && near(a.cirrusHeight, b.cirrusHeight) &&
-           near(a.cirrusWind, b.cirrusWind) && near(a.contrails, b.contrails) &&
+           equalSheet(a.stratus, b.stratus) &&
+           equalSheet(a.stratocumulus, b.stratocumulus) &&
+           equalSheet(a.altocumulus, b.altocumulus) &&
+           equalSheet(a.cirrus, b.cirrus) &&
+           equalSheet(a.cirrocumulus, b.cirrocumulus) &&
+           equalSheet(a.contrails, b.contrails) &&
            near(a.fogDensity, b.fogDensity) && near(a.fogFalloff, b.fogFalloff);
 }
 
@@ -104,6 +119,27 @@ nlohmann::json v3(const glm::vec3& v) {
     return nlohmann::json::array({v.x, v.y, v.z});
 }
 
+// A layer, as an object under its own name. Nested rather than flattened into
+// "cirrusHeight"-style keys because there are six of them with five fields each:
+// thirty keys in one flat object is a file nobody can read, and the nesting is
+// what lets a seventh cloud type be one more line here rather than five.
+void readSheet(const nlohmann::json& j, const char* name, Sheet& sh) {
+    const auto it = j.find(name);
+    if (it == j.end() || !it->is_object()) return;
+    const nlohmann::json& o = *it;
+    const auto on = o.find("on");
+    if (on != o.end() && on->is_boolean()) sh.on = on->get<bool>();
+    sh.amount = jf(o, "amount", sh.amount);
+    sh.height = jf(o, "height", sh.height);
+    sh.scale  = jf(o, "scale", sh.scale);
+    sh.wind   = jf(o, "wind", sh.wind);
+    sh.dir    = jf(o, "dir", sh.dir);
+}
+nlohmann::json writeSheet(const Sheet& sh) {
+    return {{"on", sh.on}, {"amount", sh.amount}, {"height", sh.height},
+            {"scale", sh.scale}, {"wind", sh.wind}, {"dir", sh.dir}};
+}
+
 Sky readSky(const nlohmann::json& j) {
     Sky s;
     s.coverage     = jf(j, "coverage", s.coverage);
@@ -112,10 +148,30 @@ Sky readSky(const nlohmann::json& j) {
     s.wind         = jf(j, "wind", s.wind);
     s.base         = jf(j, "base", s.base);
     s.top          = jf(j, "top", s.top);
-    s.cirrus       = jf(j, "cirrus", s.cirrus);
-    s.cirrusHeight = jf(j, "cirrusHeight", s.cirrusHeight);
-    s.cirrusWind   = jf(j, "cirrusWind", s.cirrusWind);
-    s.contrails    = jf(j, "contrails", s.contrails);
+    readSheet(j, "stratus", s.stratus);
+    readSheet(j, "stratocumulus", s.stratocumulus);
+    readSheet(j, "altocumulus", s.altocumulus);
+    readSheet(j, "cirrus", s.cirrus);
+    readSheet(j, "cirrocumulus", s.cirrocumulus);
+    readSheet(j, "contrails", s.contrails);
+    // Presets written before the sky had layers. Back then there was one plane
+    // carrying both the ice and the traffic, as four loose floats -- so a file
+    // with "cirrusHeight" in it is old, and the numbers next to it are the only
+    // record of what that sky looked like. They are read into the two layers
+    // that replaced them.
+    //
+    // Note the height: the old contrails had none of their own, they were drawn
+    // on the cirrus plane. Giving them the cirrus height here is not a guess,
+    // it is what the old shader actually did.
+    if (j.contains("cirrusHeight")) {
+        s.cirrus.amount = jf(j, "cirrus", s.cirrus.amount);
+        s.cirrus.height = jf(j, "cirrusHeight", s.cirrus.height);
+        s.cirrus.wind   = jf(j, "cirrusWind", s.cirrus.wind);
+        s.cirrus.on     = s.cirrus.amount > 0.0f;
+        s.contrails.amount = jf(j, "contrails", 0.0f);
+        s.contrails.height = s.cirrus.height;
+        s.contrails.on     = s.contrails.amount > 0.0f;
+    }
     s.fogDensity   = jf(j, "fogDensity", s.fogDensity);
     s.fogFalloff   = jf(j, "fogFalloff", s.fogFalloff);
     return s;
@@ -123,8 +179,12 @@ Sky readSky(const nlohmann::json& j) {
 nlohmann::json writeSky(const Sky& s) {
     return {{"coverage", s.coverage}, {"density", s.density}, {"scale", s.scale},
             {"wind", s.wind}, {"base", s.base}, {"top", s.top},
-            {"cirrus", s.cirrus}, {"cirrusHeight", s.cirrusHeight},
-            {"cirrusWind", s.cirrusWind}, {"contrails", s.contrails},
+            {"stratus", writeSheet(s.stratus)},
+            {"stratocumulus", writeSheet(s.stratocumulus)},
+            {"altocumulus", writeSheet(s.altocumulus)},
+            {"cirrus", writeSheet(s.cirrus)},
+            {"cirrocumulus", writeSheet(s.cirrocumulus)},
+            {"contrails", writeSheet(s.contrails)},
             {"fogDensity", s.fogDensity}, {"fogFalloff", s.fogFalloff}};
 }
 
@@ -231,9 +291,12 @@ std::vector<Preset> builtins() {
         p.sky.wind          = 4.0f;
         p.sky.base          = 900.0f;
         p.sky.top           = 2600.0f;
-        p.sky.cirrus        = 0.18f;
-        p.sky.cirrusHeight  = 1600.0f;
-        p.sky.contrails     = 0.15f;
+        // Fine strands of ice at a real cirrus height, and the traffic ABOVE
+        // them rather than painted on the same plane -- which is what a busy
+        // corridor on a clear afternoon actually looks like, and what a single
+        // shared high layer could not draw at all.
+        p.sky.cirrus        = {true, 0.18f, 8000.0f, 1.0f, 2.5f, 0.0f};
+        p.sky.contrails     = {true, 0.35f, 10500.0f, 0.5f, 1.0f, 0.5f};
         p.sky.fogDensity    = 0.0032f;
         p.sky.fogFalloff    = 0.030f;
         // Says the mist is OFF rather than saying nothing about it: picking a
@@ -268,10 +331,12 @@ std::vector<Preset> builtins() {
         p.sky.wind         = 2.0f;
         p.sky.base         = 380.0f;
         p.sky.top          = 1500.0f;
-        p.sky.cirrus       = 0.30f;
-        p.sky.cirrusHeight = 1500.0f;
-        p.sky.cirrusWind   = 1.6f;
-        p.sky.contrails    = 0.0f;
+        // Two decks and a valley full of mist. The stratocumulus is what the
+        // dawn light comes in UNDER: it catches the sun on its rolls long
+        // before anything at ground level does, and it is the reason this
+        // preset reads as early rather than merely dim.
+        p.sky.stratocumulus = {true, 0.45f, 1100.0f, 1.2f, 2.0f, 0.5f};
+        p.sky.cirrus        = {true, 0.30f, 7500.0f, 1.0f, 1.6f, 0.2f};
         p.sky.fogDensity   = 0.0075f;
         p.sky.fogFalloff   = 0.045f;
         p.setMist                     = true;
@@ -317,8 +382,12 @@ std::vector<Preset> builtins() {
         p.sky.wind         = 9.0f;
         p.sky.base         = 520.0f;
         p.sky.top          = 2200.0f;
-        p.sky.cirrus       = 0.0f;   // nothing to see through a full deck
-        p.sky.contrails    = 0.0f;
+        // The lid, UNDER the cumulus deck. This is the layer an overcast day
+        // actually is, and until the sky was an order it could not be drawn:
+        // the one sheet there was sat above the clouds, so "overcast" had to be
+        // faked by turning cumulus coverage up until it closed over -- which
+        // gives a lumpy ceiling, not a grey one.
+        p.sky.stratus      = {true, 0.85f, 620.0f, 1.8f, 7.0f, 0.4f};
         p.sky.fogDensity   = 0.0065f;
         p.sky.fogFalloff   = 0.026f;
         p.setMist          = true;
@@ -345,8 +414,9 @@ std::vector<Preset> builtins() {
         p.sky.wind         = 16.0f;
         p.sky.base         = 280.0f;
         p.sky.top          = 2600.0f;
-        p.sky.cirrus       = 0.0f;
-        p.sky.contrails    = 0.0f;
+        // Lower and closed: a rain deck has no gaps in it, and the base comes
+        // down as the front does.
+        p.sky.stratus      = {true, 0.97f, 330.0f, 2.2f, 13.0f, 0.4f};
         p.sky.fogDensity   = 0.0100f;
         p.sky.fogFalloff   = 0.022f;
         p.setMist                    = true;
@@ -389,8 +459,8 @@ std::vector<Preset> builtins() {
         p.sky.wind         = 24.0f;
         p.sky.base         = 140.0f;
         p.sky.top          = 3000.0f;
-        p.sky.cirrus       = 0.0f;
-        p.sky.contrails    = 0.0f;
+        // Right down on the deck and completely shut.
+        p.sky.stratus      = {true, 1.0f, 200.0f, 2.6f, 20.0f, 0.4f};
         p.sky.fogDensity   = 0.0130f;
         p.sky.fogFalloff   = 0.020f;
         // Off, and meant: a gale scours the air near the ground, and marching a

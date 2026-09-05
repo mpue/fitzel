@@ -34,9 +34,41 @@
 //    and that is what the preset carries.
 namespace weather {
 
+// --- One sheet layer --------------------------------------------------------
+// Every cloud type except the cumulus. They are sheets and not volumes because
+// that is what they physically are: a stratus is two hundred metres of uniform
+// grey, an altocumulus is one element thick, and a cirrus has no measurable
+// underside at all. Marching any of them spends sixty samples arriving at the
+// number the first one already had, and the cumulus march is already the most
+// expensive thing in the frame -- so exactly one layer is marched and the rest
+// are decided where the ray meets their plane.
+//
+// One struct for all of them rather than a field set per type: what differs
+// between a mackerel sky and a fibrous cirrus is the MASK and how it takes
+// light, and both of those live in the shader. Up here they are the same five
+// numbers, which is what lets the panel, the preset file and the uniform upload
+// each handle them in one loop instead of six copies.
+struct Sheet {
+    bool  on     = false;
+    float amount = 0.5f;      // how much sky it takes, 0..1
+    float height = 2000.0f;   // metres
+    // Feature size, as a multiplier. Elements are sized in METRES, not in
+    // degrees -- raise a layer and it gets finer, which is most of why a
+    // cirrocumulus looks like grain and a stratocumulus looks like rolls. This
+    // is the author's thumb on top of that.
+    //
+    // On the contrail layer it means something else, and deliberately: how far
+    // the traffic has SPREAD. Nothing about a line has a feature size, and
+    // "sharp lines or old smears" is the one thing that slider needs to say.
+    float scale  = 1.0f;
+    float wind   = 3.0f;      // metres/second, along `dir`
+    float dir    = 0.0f;      // heading in radians, measured in the XZ plane
+};
+
 // --- The air ----------------------------------------------------------------
 // Everything the Sky & atmosphere panel edits about the atmosphere itself: the
-// cumulus deck, the ice above it, and the height haze. Gathered into a struct for
+// marched cumulus deck, the sheet layer per cloud type above and below it, and
+// the height haze. Gathered into a struct for
 // one reason -- a preset is a copy of one of these, and a dozen loose floats in
 // main() cannot be copied, compared or written to a file as a unit.
 //
@@ -53,13 +85,19 @@ struct Sky {
     float base     = 700.0f;   // metres
     float top      = 2400.0f;  // metres
 
-    // The high layer: ice, above everything the storm dial touches. A front
-    // rolling in does not blow the cirrus away, it slides underneath it -- which
-    // is why a preset has to carry this separately instead of deriving it.
-    float cirrus       = 0.35f;
-    float cirrusHeight = 1400.0f;
-    float cirrusWind   = 2.5f;   // the jet stream, not the surface wind
-    float contrails    = 0.0f;
+    // The sheet layers, one per cloud type, each on its own and at its own
+    // height. See Sheet above for why they are separate slots rather than a
+    // list, and why the cumulus is not one of them.
+    //
+    // The defaults are the sky the editor has always opened with: a little
+    // cirrus and nothing else, so a project made before there were layers looks
+    // the same after this as it did before.
+    Sheet stratus       = {false, 0.60f,  600.0f, 1.6f,  4.0f, 0.0f};
+    Sheet stratocumulus = {false, 0.55f, 1200.0f, 1.0f,  5.0f, 0.6f};
+    Sheet altocumulus   = {false, 0.50f, 3400.0f, 1.0f,  7.0f, 1.1f};
+    Sheet cirrus        = {true,  0.35f, 1400.0f, 1.0f,  2.5f, 0.0f};
+    Sheet cirrocumulus  = {false, 0.45f, 5200.0f, 1.0f,  9.0f, 0.3f};
+    Sheet contrails     = {false, 0.40f, 1800.0f, 0.6f,  1.2f, 0.4f};
 
     // The height haze: aerial perspective, everywhere, with no shape.
     float fogDensity = 0.0045f;

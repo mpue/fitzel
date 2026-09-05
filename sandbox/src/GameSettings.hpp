@@ -49,6 +49,12 @@ struct Settings {
     std::string icon;                       // icon source image, project-relative ("" = none)
     std::string startScene;                 // scene stem the game boots into ("" = default scene)
     StartMode   startMode = StartMode::Fps; // ...and what the player is when it does
+    // Did the file actually SAY startMode, or is the field just its default?
+    // The two are not the same question: "on foot" is the default value, so
+    // without this a game deliberately set to on foot is indistinguishable from
+    // a project that never opened the dialog -- and the per-scene flags this
+    // setting replaced would keep overriding it forever (see startPlay).
+    bool        startModeSet = false;
     std::vector<std::string> exportScenes;  // scene stems to bundle (empty = all scenes)
     bool trimAssets = false;                 // export only assets the project references
     // Bundle content/, project/ and assets/ into one encrypted game.fpak next to

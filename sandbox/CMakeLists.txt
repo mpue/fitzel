@@ -85,6 +85,11 @@ set(SANDBOX_RUNTIME_SOURCES
     # switching to Storm for a lap) without a panel in the room. Only the panel
     # that edits one is editor-only, below.
     src/WeatherPreset.cpp
+    # The sky as a stack of layers: the ordering and the uniform upload. Runtime
+    # for the same reason WeatherPreset is -- the shipped player draws the sky.
+    # (The panel that edits the layers is in here too, behind the same ImGui
+    # guard every other editor panel uses.)
+    src/SkyLayers.cpp
     src/SpraySystem.cpp
     src/ParticleSystem.cpp
     src/SkidSystem.cpp
@@ -160,6 +165,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/RiverPanel.cpp
     src/RiverEdit.cpp
     src/WeatherPanel.cpp
+    src/SkyLayersPanel.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp
     src/PaintPanel.cpp
@@ -439,7 +445,7 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # on it (behind the panels, above the default pitch, under the fog), so every
 # change to it was previously made by reasoning about noise and hoping.
 #   build/release/bin/skycheck.exe <outDir> sandbox/assets/shaders
-add_executable(skycheck tools/skycheck.cpp src/WeatherPreset.cpp)
+add_executable(skycheck tools/skycheck.cpp src/WeatherPreset.cpp src/SkyLayers.cpp)
 target_link_libraries(skycheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
                                         stb_headers nlohmann_json::nlohmann_json)
 

@@ -113,6 +113,7 @@
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
+#include "SkyLayers.hpp"
 #include "RaceHud.hpp"
 #include "Showroom.hpp"
 #include "Difficulty.hpp"
@@ -4112,13 +4113,39 @@ int main(int argc, char** argv) {
         addF("coverage", skySet.coverage);     addF("cloudDensity", skySet.density);
         addF("cloudScale", skySet.scale);      addF("cloudWind", skySet.wind);
         addF("cloudBottom", skySet.base);      addF("cloudTop", skySet.top);
-        addF("cirrus", skySet.cirrus);         addF("cirrusHeight", skySet.cirrusHeight);
-        addF("cirrusWind", skySet.cirrusWind);
-        // NOT "contrails": that name belongs to the vehicle trail toggle a few
-        // lines up (addB, a bool). Two settings under one key write over each
-        // other in the file, and whichever loses gets read back at the other's
-        // type -- which is what threw json::type_error out of a scene load.
-        addF("skyContrails", skySet.contrails);
+        // The sheet layers. Prefixed "sky<Type>", six keys each, flat rather
+        // than nested because that is what this whole settings block is -- and
+        // note "skyContrails" and not "contrails": that name belongs to the
+        // vehicle trail toggle a few lines up (addB, a bool). Two settings
+        // under one key write over each other in the file, and whichever loses
+        // gets read back at the other's type, which is what threw
+        // json::type_error out of a scene load once already.
+        //
+        // The adders above keep the key as a POINTER, so a name built here has
+        // to outlive this scope -- hence the pool. A `(prefix + "Wind").c_str()`
+        // would compile, read correctly for as long as the temporary happened
+        // not to be overwritten, and then start losing settings.
+        {
+            static std::deque<std::string> skyKeys;
+            const auto addSheet = [&](const char* prefix, weather::Sheet& sh) {
+                const auto key = [&](const char* suffix) -> const char* {
+                    skyKeys.push_back(std::string(prefix) + suffix);
+                    return skyKeys.back().c_str();
+                };
+                addB(key("On"), sh.on);
+                addF(key("Amount"), sh.amount);
+                addF(key("Height"), sh.height);
+                addF(key("Scale"), sh.scale);
+                addF(key("Wind"), sh.wind);
+                addF(key("Dir"), sh.dir);
+            };
+            addSheet("skyStratus", skySet.stratus);
+            addSheet("skyStratocumulus", skySet.stratocumulus);
+            addSheet("skyAltocumulus", skySet.altocumulus);
+            addSheet("skyCirrus", skySet.cirrus);
+            addSheet("skyCirrocumulus", skySet.cirrocumulus);
+            addSheet("skyContrails", skySet.contrails);
+        }
         addF("fogDensity", skySet.fogDensity); addF("fogFalloff", skySet.fogFalloff);
         // Image-based lighting. The panorama travels as its PROJECT-RELATIVE
         // path, not as a GUID and not as an absolute one: it survives a
@@ -5710,14 +5737,76 @@ int main(int argc, char** argv) {
             prevUiKey  = true; // the key that started Play must be released first
             resolveHierarchy(); // world transforms fresh before bodies are created
 
+            // --- What the game starts as, and where ---------------------------
+            // Both answered HERE, before the ground exists, because the ground is
+            // built around ONE point (see refitTerrainCollision): a finite patch,
+            // 768 m across. Deciding where the player stands after the ground was
+            // poured puts a PlayerStart further away than half a span over the
+            // void -- and the recentre in the physics step cannot rescue it,
+            // because falling straight down never moves the focus in XZ.
+            //
+            // Read from the project's game.json rather than from the copy the
+            // dialog edits, for the same reason the loading screen is re-read on
+            // every level change: it is one small file, and reading it here means
+            // a change in the dialog is in effect on the very next Play instead
+            // of after a restart.
+            game::StartMode startAs   = game::StartMode::Fps;
+            bool            startAsSet = false;
+            if (!currentProject.empty()) {
+                const game::Settings gs =
+                    game::load(std::filesystem::path(currentProject)
+                                   .parent_path().generic_string());
+                startAs    = gs.startMode;
+                startAsSet = gs.startModeSet;
+            }
+            // A scene from before the setting moved (see legacyStartVehicle).
+            // Only while the game says nothing at all -- asking whether the mode
+            // is Fps would not be that question: "on foot" is the default value,
+            // so a game deliberately set to it would be overruled by its own
+            // scene's leftover flag and the dialog could never say "on foot".
+            if (!startAsSet) {
+                if (legacyStartVehicle)     startAs = game::StartMode::Vehicle;
+                else if (legacyStartGlider) startAs = game::StartMode::Glider;
+            }
+            // Where the walking player stands: the first entity carrying a
+            // PlayerStart component (adopting its facing and move speed),
+            // otherwise the edit camera.
+            glm::vec3 startPos     = camera.position();
+            bool      havePlayerStart = false;
+            for (const Entity& e : entities)
+                if (const auto* ps = e.components.get<PlayerStartComponent>()) {
+                    startPos         = e.center;
+                    havePlayerStart  = true;
+                    camera.setYaw(e.rotation.y);
+                    camera.moveSpeed = ps->moveSpeed;
+                    break;
+                }
+            // ...and say so when there is none. Falling back to the edit camera is
+            // the right behaviour and the wrong silence: from inside the game the
+            // two are indistinguishable, so a scene where the marker was never
+            // finished looks exactly like a setting that does not work. The marker
+            // is the COMPONENT -- an entity merely NAMED "playerStart" is a box
+            // with a name, which is the easy mistake this line exists to catch.
+            if (startAs == game::StartMode::Fps && !havePlayerStart)
+                host.hud = "No Player Start in this scene -- spawning at the "
+                           "editor camera. Select the marker and use "
+                           "Add Component > Player Start.";
+
             // Physics: fresh world with the terrain as a static heightfield
             // ground, plus a rigid body per physics-tagged entity.
             physics = std::make_unique<PhysicsWorld>();
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             // Fresh world: the previous collider id is void. Build the terrain
-            // heightfield around the start position; it follows the focus below.
+            // heightfield around wherever the game opens -- the PlayerStart when
+            // the player walks out of it, the camera otherwise (a vehicle or a
+            // watching camera is placed relative to the view, not to a marker the
+            // scene may also carry) -- and it follows the focus from there.
             terrainCollId = 0;
-            refitTerrainCollision(glm::vec2(camera.position().x, camera.position().z));
+            const glm::vec2 groundCenter =
+                (startAs == game::StartMode::Fps && havePlayerStart)
+                    ? glm::vec2(startPos.x, startPos.z)
+                    : glm::vec2(camera.position().x, camera.position().z);
+            refitTerrainCollision(groundCenter);
             // Roads: every one in the scene, each with its own collider, its own
             // rails and posts and its own city. A hidden road is not there to be
             // driven on either, which is what makes the checkbox in the road list
@@ -5859,25 +5948,28 @@ int main(int argc, char** argv) {
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
             softBodies.spawn(entities, *physics);
-            // The player is a physics capsule (~1.8 m tall). It spawns at the
-            // first entity carrying a PlayerStart component (adopting its facing
-            // and move speed); otherwise at the edit camera.
-            glm::vec3 startPos = camera.position();
-            for (const Entity& e : entities)
-                if (const auto* ps = e.components.get<PlayerStartComponent>()) {
-                    startPos = e.center;
-                    camera.setYaw(e.rotation.y);
-                    camera.moveSpeed = ps->moveSpeed;
-                    break;
-                }
+            // The player is a physics capsule (~1.8 m tall), standing on the
+            // ground that was built around startPos above.
+            //
+            // Which height that is, is not simply the terrain's. The marker's own
+            // Y counts whenever it is ABOVE the ground: a PlayerStart on a roof, a
+            // platform or a bridge is a decision, and in a scene with no terrain at
+            // all the marker is the only answer there is (heightAt says 0 there,
+            // which is how a terrainless scene used to swallow the setting whole).
+            // Below the ground the ground wins -- a marker nudged into the hillside
+            // is a placement slip, not a request to spawn inside the rock. Without
+            // a marker there is no Y worth trusting: startPos is then the edit
+            // camera, which is usually in the air.
+            const float ground = streamer.heightAt(startPos.x, startPos.z);
+            const float feetY  = havePlayerStart ? std::max(startPos.y, ground)
+                                                 : ground;
             physics->spawnCharacter(0.3f, 0.6f,
-                glm::vec3(startPos.x, streamer.heightAt(startPos.x, startPos.z), startPos.z));
+                glm::vec3(startPos.x, feetY, startPos.z));
 
             fpsMode        = true; // play as the walking player
             input.setCursorLocked(true);
             fpsVelY = 0.0f;
-            camera.setPosition({startPos.x,
-                streamer.heightAt(startPos.x, startPos.z) + eyeHeight, startPos.z});
+            camera.setPosition({startPos.x, feetY + eyeHeight, startPos.z});
 
             // Auto-start every AudioSource flagged play-on-start (music/ambient),
             // unless the object (or an ancestor) is deactivated.
@@ -5886,29 +5978,15 @@ int main(int argc, char** argv) {
                     a && a->playOnStart && e.activeInHierarchy)
                     startAudioSource(e.id);
 
-            // --- What the game starts as -------------------------------------
-            // The walking player is set up above and is the fallback for
-            // everything here, which is deliberate: every other mode needs the
-            // scene to provide something (a vehicle, a glider, a camera), and a
-            // game that cannot start the way it was configured should start in
-            // the way that always works rather than not start at all.
+            // --- ...and the game becomes it ----------------------------------
+            // `startAs` was decided before the world was built (it had to be: it
+            // chooses where the ground goes). The walking player is set up above
+            // and is the fallback for everything here, which is deliberate: every
+            // other mode needs the scene to provide something (a vehicle, a
+            // glider, a camera), and a game that cannot start the way it was
+            // configured should start in the way that always works rather than
+            // not start at all.
             //
-            // Read from the project's game.json rather than from the copy the
-            // dialog edits, for the same reason the loading screen is re-read on
-            // every level change: it is one small file, and reading it here means
-            // a change in the dialog is in effect on the very next Play instead
-            // of after a restart.
-            game::StartMode startAs = game::StartMode::Fps;
-            if (!currentProject.empty())
-                startAs = game::load(std::filesystem::path(currentProject)
-                                         .parent_path().generic_string()).startMode;
-            // A scene from before the setting moved (see legacyStartVehicle).
-            // Only while the game says nothing else, so the dialog always wins.
-            if (startAs == game::StartMode::Fps) {
-                if (legacyStartVehicle)     startAs = game::StartMode::Vehicle;
-                else if (legacyStartGlider) startAs = game::StartMode::Glider;
-            }
-
             // The camera the watching modes hand the frame to. Multishot asks for
             // the first camera that cuts its own shots; both fall back to the one
             // marked Main Camera (already in `activeCam` from the loop above), and
@@ -11528,22 +11606,19 @@ int main(int argc, char** argv) {
                          "Coverage does two jobs: how much sky is taken, and\n"
                          "how far the tops build into it.");
 
-                // --- The high layer -----------------------------------------
-                // Its own section because it is its own weather. Cirrus sits
-                // above everything the storm slider touches, and a sky with no
-                // cumulus in it at all can still have this.
-                if (ui::header("Cirrus & contrails")) {
-                    ImGui::SliderFloat("Cirrus",   &skySet.cirrus, 0.0f, 1.0f);
-                    ImGui::SliderFloat("Height",   &skySet.cirrusHeight, 400.0f, 6000.0f, "%.0f m");
-                    ImGui::SliderFloat("Jet wind", &skySet.cirrusWind, 0.0f, 12.0f);
-                    ImGui::SliderFloat("Contrails", &skySet.contrails, 0.0f, 1.0f);
-                    ui::hint("Ice, drawn into streaks by a wind that has nothing\n"
-                             "to do with the one below. Contrails come in one at\n"
-                             "a time as the slider rises, each older than the\n"
-                             "last -- wider, softer and more broken up.\n"
-                             "Everything up here scales with Height, so raising\n"
-                             "the layer does not turn aircraft into motorways.");
-                }
+                // --- The other layers ---------------------------------------
+                // One section per cloud type, each with its own height, wind
+                // and direction, drawn in SkyLayers.cpp. The sliders above are
+                // the cumulus, which is the one layer that is raymarched and so
+                // the one that needs a base, a top and a density rather than a
+                // height; everything below is a sheet.
+                ui::sectionText("Layers");
+                ui::hint("Each type is its own deck at its own height, and they\n"
+                         "stack in that order -- a stratus under the cumulus\n"
+                         "hides it, one above it does not. The cumulus above is\n"
+                         "the only layer with real depth; the rest are sheets,\n"
+                         "which is what they are in the air as well.");
+                skylayers::drawPanel(skySet);
                 ImGui::SliderFloat("Fog density", &skySet.fogDensity, 0.0f, 0.02f, "%.4f");
                 ImGui::SliderFloat("Fog falloff", &skySet.fogFalloff, 0.005f, 0.1f, "%.3f");
                 ui::hint("Everything in this panel down to the volumetric fog is\n"
@@ -13705,10 +13780,23 @@ int main(int argc, char** argv) {
                 sky.setFloat("uCloudSpeed", effWind);
                 sky.setFloat("uCloudBottom", effCloudBot);
                 sky.setFloat("uCloudTop", skySet.top);
-                sky.setFloat("uCirrus", skySet.cirrus);
-                sky.setFloat("uCirrusHeight", skySet.cirrusHeight);
-                sky.setFloat("uCirrusSpeed", skySet.cirrusWind);
-                sky.setFloat("uContrails", skySet.contrails);
+                // The layer stack, highest first, with the cumulus already in
+                // its place in the order -- see SkyLayers.hpp. The march is one
+                // entry in this list rather than a step after it, which is what
+                // lets a stratus deck sit UNDER the cumulus and hide it.
+                const std::vector<skylayers::Packed> layers =
+                    skylayers::order(skySet, effCloudBot, skySet.top);
+                sky.setInt("uLayerCount", static_cast<int>(layers.size()));
+                for (std::size_t li = 0; li < layers.size(); ++li) {
+                    const skylayers::Packed& L = layers[li];
+                    char nm[40];
+                    std::snprintf(nm, sizeof(nm), "uLayerKind[%zu]", li);
+                    sky.setInt(nm, L.kind);
+                    std::snprintf(nm, sizeof(nm), "uLayerA[%zu]", li);
+                    sky.setVec4(nm, glm::vec4(L.amount, L.height, L.scale, L.wind));
+                    std::snprintf(nm, sizeof(nm), "uLayerDir[%zu]", li);
+                    sky.setVec2(nm, glm::vec2(L.dirX, L.dirZ));
+                }
                 sky.setFloat("uExposure", exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();

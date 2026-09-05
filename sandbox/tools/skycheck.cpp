@@ -37,6 +37,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "../src/SkyLayers.hpp"
 #include "../src/WeatherPreset.hpp"
 
 // Nothing in the engine writes an image file, so this TU owns the implementation.
@@ -88,14 +89,26 @@ struct Shot {
     float storm = 0.0f;
 };
 
-// A shot from the three numbers the hand-written list has always specified,
-// leaving the rest of the sky at its defaults.
+// A shot with the cumulus coverage set and every sheet layer OFF: the base a
+// hand-written shot starts from, so a picture of one layer is a picture of that
+// layer and nothing else. `sheet` below adds them back one at a time.
 Shot look(const char* name, float hours, float pitch, float yaw,
-          float coverage, float cirrus, float contrails) {
+          float coverage) {
     Shot s{name, hours, pitch, yaw, {}, 0.0f};
-    s.sky.coverage  = coverage;
-    s.sky.cirrus    = cirrus;
-    s.sky.contrails = contrails;
+    s.sky.coverage = coverage;
+    s.sky.stratus.on = s.sky.stratocumulus.on = s.sky.altocumulus.on =
+        s.sky.cirrus.on = s.sky.cirrocumulus.on = s.sky.contrails.on = false;
+    return s;
+}
+
+// Switch one layer on, at an amount and a height. Chained onto look() so a shot
+// reads as the sentence it is: "cumulus at 0.5, with a mackerel deck at 3400".
+Shot& sheet(Shot& s, weather::Sheet weather::Sky::*which, float amount,
+            float height) {
+    weather::Sheet& sh = s.sky.*which;
+    sh.on     = true;
+    sh.amount = amount;
+    sh.height = height;
     return s;
 }
 
@@ -112,6 +125,35 @@ std::vector<Shot> presetShots() {
         out.push_back(s);
     }
     return out;
+}
+
+// A shot of ONE sheet layer with no cumulus under it.
+Shot sheetShot(const char* name, float hours, float pitch, float yaw,
+               weather::Sheet weather::Sky::*which, float amount, float height) {
+    Shot s = look(name, hours, pitch, yaw, 0.0f);
+    sheet(s, which, amount, height);
+    return s;
+}
+
+// Four decks at four heights, which is the picture the whole layer system is
+// for: until this existed the sky could hold a cumulus field and one thing above
+// it, and no arrangement of two sliders makes that look like weather.
+Shot stacked() {
+    Shot s = look("all", 15.5f, 18.0f, 60.0f, 0.45f);
+    sheet(s, &weather::Sky::stratocumulus, 0.35f, 1400.0f);
+    sheet(s, &weather::Sky::altocumulus,   0.45f, 3600.0f);
+    sheet(s, &weather::Sky::cirrus,        0.45f, 8000.0f);
+    sheet(s, &weather::Sky::contrails,     0.55f, 10500.0f);
+    return s;
+}
+
+// A grey lid beneath a cumulus field: the compositing ORDER under test. If the
+// stratus is drawn in the right place the cumulus is invisible behind it; if the
+// order is wrong the clouds float in front of their own ceiling.
+Shot overcastShot() {
+    Shot s = look("overcast", 12.0f, 14.0f, 130.0f, 0.85f);
+    sheet(s, &weather::Sky::stratus, 0.85f, 620.0f);
+    return s;
 }
 
 } // namespace
@@ -189,20 +231,30 @@ int main(int argc, char** argv) {
     const std::vector<Shot> shots = presetMode ? presetShots() : std::vector<Shot>{
         // Midday, looking up into the layer: this is the one that shows whether
         // a cumulus has bulges and a flat base, or is a smear.
-        look("cumulus_noon",     12.0f,  14.0f, 140.0f, 0.55f, 0.0f, 0.0f),
+        look("cumulus_noon",     12.0f,  14.0f, 140.0f, 0.55f),
         // The same field with the sun behind it -- the silver lining case.
-        look("cumulus_backlit",  12.0f,  12.0f,  25.0f, 0.55f, 0.0f, 0.0f),
+        look("cumulus_backlit",  12.0f,  12.0f,  25.0f, 0.55f),
         // Low sun along the layer: the shot a race actually opens on.
-        look("cumulus_evening",  17.2f,   8.0f,  40.0f, 0.45f, 0.0f, 0.0f),
-        // Cirrus on its own, high and thin, with nothing below it.
-        look("cirrus_noon",      12.0f,  38.0f, 120.0f, 0.00f, 0.55f, 0.0f),
-        look("cirrus_evening",   17.2f,  30.0f,  35.0f, 0.00f, 0.65f, 0.0f),
+        look("cumulus_evening",  17.2f,   8.0f,  40.0f, 0.45f),
+        // One shot per sheet layer, each ALONE. That is the whole reason this
+        // harness exists: a mackerel sky and a fibrous cirrus are different
+        // masks, and the only way to know whether one of them actually reads as
+        // itself is to look at it with nothing else in the frame.
+        sheetShot("stratus",       12.0f,  20.0f, 130.0f, &weather::Sky::stratus,       0.75f,  600.0f),
+        sheetShot("stratocumulus", 12.0f,  24.0f, 120.0f, &weather::Sky::stratocumulus, 0.60f, 1200.0f),
+        sheetShot("altocumulus",   12.0f,  40.0f, 120.0f, &weather::Sky::altocumulus,   0.55f, 3400.0f),
+        sheetShot("cirrus_noon",   12.0f,  38.0f, 120.0f, &weather::Sky::cirrus,        0.55f, 8000.0f),
+        sheetShot("cirrus_evening",17.2f,  30.0f,  35.0f, &weather::Sky::cirrus,        0.65f, 8000.0f),
+        sheetShot("cirrocumulus",  12.0f,  42.0f, 110.0f, &weather::Sky::cirrocumulus,  0.55f, 5600.0f),
         // Contrails on their own, so the straightness can be judged.
-        look("contrails",        11.0f,  45.0f, 100.0f, 0.00f, 0.15f, 0.9f),
-        // Everything at once, which is what the sky is meant to look like.
-        look("all",              15.5f,  18.0f,  60.0f, 0.50f, 0.45f, 0.55f),
-        // Overcast, to check the tops build rather than the layer just thickening.
-        look("overcast",         12.0f,  14.0f, 130.0f, 0.95f, 0.20f, 0.0f),
+        sheetShot("contrails",     11.0f,  45.0f, 100.0f, &weather::Sky::contrails,     0.90f,10000.0f),
+        // The whole stack at once, which is what the sky is meant to look like
+        // -- and the shot that says whether the ORDER is right: the deck should
+        // cut the ice above it, not the other way round.
+        stacked(),
+        // Overcast: a stratus lid UNDER the cumulus. The case the old two-layer
+        // sky could not draw at all, so it is the one worth a picture.
+        overcastShot(),
     };
 
     std::vector<unsigned char> px(static_cast<std::size_t>(kW) * kH * 4);
@@ -263,10 +315,24 @@ int main(int argc, char** argv) {
         f("uCloudSpeed", effWind);
         f("uCloudBottom", effBase);
         f("uCloudTop", s.sky.top);
-        f("uCirrus", s.sky.cirrus);
-        f("uCirrusHeight", s.sky.cirrusHeight);
-        f("uCirrusSpeed", s.sky.cirrusWind);
-        f("uContrails", s.sky.contrails);
+        // The layer stack, through the engine's own ordering code rather than a
+        // copy of it -- see SkyLayers.hpp. A harness that sorted its layers
+        // differently would be a picture of a sky that does not ship.
+        const std::vector<skylayers::Packed> layers =
+            skylayers::order(s.sky, effBase, s.sky.top);
+        glUniform1i(glGetUniformLocation(prog, "uLayerCount"),
+                    static_cast<int>(layers.size()));
+        for (std::size_t li = 0; li < layers.size(); ++li) {
+            const skylayers::Packed& L = layers[li];
+            char nm[40];
+            std::snprintf(nm, sizeof(nm), "uLayerKind[%zu]", li);
+            glUniform1i(glGetUniformLocation(prog, nm), L.kind);
+            std::snprintf(nm, sizeof(nm), "uLayerA[%zu]", li);
+            glUniform4f(glGetUniformLocation(prog, nm), L.amount, L.height,
+                        L.scale, L.wind);
+            std::snprintf(nm, sizeof(nm), "uLayerDir[%zu]", li);
+            glUniform2f(glGetUniformLocation(prog, nm), L.dirX, L.dirZ);
+        }
         f("uExposure", 1.0f);
         glUniform1i(glGetUniformLocation(prog, "uTonemap"), 1);
 
