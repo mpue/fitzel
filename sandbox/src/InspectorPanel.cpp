@@ -555,6 +555,49 @@ void drawPanel(const PanelState& s) {
                         ImGui::TextDisabled("Launch speed only moves the\n"
                                             "instance if its root has a\n"
                                             "dynamic Physics component.");
+                } else if (auto* gp = dynamic_cast<GridPositionComponent*>(c)) {
+                    // Same picker as the Spawner's, for the same reason: a prefab
+                    // name that is typed is a prefab name that is mistyped, and a
+                    // grid that quietly builds nothing looks exactly like a grid
+                    // whose rivals have not been authored yet.
+                    for (const Property& pr : gp->props())
+                        if (pr.key != "prefab") animProp(s, pr, gp, c->typeId());
+                    const std::string pdir = s.currentProject.empty()
+                        ? std::string()
+                        : prefab::prefabsDirIn(
+                              std::filesystem::path(s.currentProject)
+                                  .parent_path().generic_string());
+                    const auto prefabs = prefab::list(pdir);
+                    const char* kNoRival = "(none - a craft from the scene)";
+                    const std::string plabel =
+                        gp->prefab.empty() ? kNoRival : gp->prefab;
+                    if (ImGui::BeginCombo("Rival prefab", plabel.c_str())) {
+                        if (ImGui::Selectable(kNoRival, gp->prefab.empty()))
+                            gp->prefab.clear();
+                        for (const auto& [pn, ppath] : prefabs) {
+                            (void)ppath;
+                            if (ImGui::Selectable(pn.c_str(), gp->prefab == pn))
+                                gp->prefab = pn;
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (!gp->prefab.empty() &&
+                        std::none_of(prefabs.begin(), prefabs.end(),
+                                     [&](const auto& np) {
+                                         return np.first == gp->prefab;
+                                     }))
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                           "Missing: %s", gp->prefab.c_str());
+                    ImGui::TextDisabled(
+                        gp->prefab.empty()
+                            ? "Empty: this slot waits for a craft the\n"
+                              "scene already holds."
+                        : gp->player
+                            ? "This slot is the player's, so this is the\n"
+                              "craft YOU fly -- built here when the scene\n"
+                              "holds no glider of its own."
+                            : "A rival, built at the start of a race -- as\n"
+                              "many as the start screen's field asks for.");
                 } else if (auto* ts = dynamic_cast<TriggerSoundComponent*>(c)) {
                     // Radius/volume/loop/once from metadata; Sound picker.
                     for (const Property& pr : ts->props()) animProp(s, pr, ts, c->typeId());

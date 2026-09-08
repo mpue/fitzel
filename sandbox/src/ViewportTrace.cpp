@@ -141,6 +141,17 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
             opt.hdriIntensity = look.hdriIntensity;
             opt.grade         = look.grade;
             st.scene       = pathcapture::capture(renderer, camera, opt, &st.report);
+            // ...and the grass on top, which the harvest cannot see (see
+            // GrassTrace.hpp). The preview keeps a smaller field than a finished
+            // render: this one is re-traced every time the view settles, and the
+            // blades are by far the most triangles per metre in the scene.
+            if (look.grass) {
+                grassfield::TraceOptions gopt;
+                gopt.centerXZ = glm::vec2(camera.position().x, camera.position().z);
+                gopt.radius   = glm::min(look.grassRadius, 24.0f);
+                gopt.windTime = look.grassWindTime;
+                grassfield::appendToScene(*st.scene, *look.grass, gopt);
+            }
             st.needCapture = false;
         }
         // Cancel() has joined the workers, so nothing else is holding the scene

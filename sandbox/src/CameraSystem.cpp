@@ -9,6 +9,7 @@
 #include "Component.hpp"
 #include "MultiShot.hpp"     // the multishot camera's director
 #include "SandboxMath.hpp"   // sceneHeading()
+#include "SceneGraph.hpp"    // compose() -- the scene's own Euler convention
 #include "SceneTypes.hpp"
 
 namespace camerasys {
@@ -20,6 +21,54 @@ const Entity* findById(const std::vector<Entity>& entities, int id) {
     for (const Entity& e : entities)
         if (e.id == id) return &e;
     return nullptr;
+}
+
+// An entity's world transform, composed from the LOCAL chain HERE AND NOW --
+// not read out of the cached `center`/`rotation` the way everything else does.
+//
+// THIS IS WHY A CAMERA BOLTED TO A CRAFT JUDDERED. The cached world values are
+// written by the scene-graph resolve, and that runs late in the frame, long
+// after the cameras have been placed. The craft itself is fine either way: the
+// flight model writes its own world transform directly, so it is already this
+// frame's when a follow camera asks for it. Its CHILDREN are not -- their world
+// is still the one the resolve derived LAST frame, from where the craft was
+// then. So a camera parented into the cockpit sits one frame behind the craft
+// it is screwed to.
+//
+// One frame behind is not a constant offset you could tune away. The gap is
+// speed x the LAST frame's length, so it breathes with every long and short
+// frame the compositor hands out: at 80 m/s with frames wandering between 8 and
+// 35 ms, the craft swims back and forth by about two metres in front of an eye
+// that is supposed to be rigidly attached to it -- and the eye is the steady
+// thing, so what you see is the CRAFT juddering. That is why it gets looked for
+// in the flight model, where it is not.
+//
+// Composing the chain gives exactly the numbers the resolve will write later
+// this frame (local is the source of truth -- see SceneGraph.hpp), so the seat
+// is where the craft is, to the bit.
+glm::mat4 liveWorld(const std::vector<Entity>& entities, const Entity& e) {
+    glm::mat4 m = scenegraph::compose(e.localCenter, e.localRotation, glm::vec3(1.0f));
+    const Entity* p = findById(entities, e.parent);
+    // Depth-capped: a cycle in the hierarchy is a bug somewhere else, but a hang
+    // in here would be blamed on the camera.
+    for (int depth = 0; p && depth < 64; ++depth) {
+        m = scenegraph::compose(p->localCenter, p->localRotation, glm::vec3(1.0f)) * m;
+        p = findById(entities, p->parent);
+    }
+    return m;
+}
+
+// The pose a transform looks from: -Z forward, +Y up, which is the convention
+// the camera gizmo already draws its frustum along. Taken off the matrix rather
+// than rebuilt from the Euler triple on purpose -- glm's quat(vec3) composes in
+// a DIFFERENT order from the scene (see attitudeEuler), and the two disagree
+// exactly when the camera is rolled, which in a cockpit is all the time.
+void poseFrom(const glm::mat4& w, Pose& p) {
+    p.position = glm::vec3(w[3]);
+    const glm::vec3 f = -glm::vec3(w[2]);
+    const glm::vec3 u =  glm::vec3(w[1]);
+    if (glm::length(f) > 1e-6f) p.front = glm::normalize(f);
+    if (glm::length(u) > 1e-6f) p.up    = glm::normalize(u);
 }
 
 } // namespace
@@ -75,13 +124,48 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
         }
         m_shots.erase(e.id);       // ...and the other way round
 
+        if (cc->mode == CameraComponent::Cockpit) {
+            // Cockpit: BOLTED to the parent. Where the entity sits and how it is
+            // turned in the parent's frame is the whole shot -- no easing, no
+            // aiming at anything, no level horizon. The craft rolls, you roll.
+            //
+            // It is the one shot the follow camera deliberately refuses to give,
+            // and refuses for good reasons: smoothing, an aim point and a horizon
+            // that stays put are what make a view of a craft readable. From
+            // inside the craft there is nothing to keep in frame and nothing to
+            // catch up with -- the seat is not a shot of the craft, it is the
+            // craft -- so every one of those becomes a lie between the window and
+            // the world. `rollWith` on a follow camera goes most of the way to
+            // this and stops short at exactly that point (see CameraComponent).
+            //
+            // No parent, no cockpit: leave it out of the frame's set the way a
+            // parentless follow camera is left out, rather than have it stare
+            // from the world origin (see below).
+            if (!findById(entities, e.parent)) continue;
+            poseFrom(liveWorld(entities, e), p);
+            m_pose[e.id] = p;
+            m_chase.erase(e.id);   // rigid: nothing eased to keep
+            continue;
+        }
+
         if (cc->mode != CameraComponent::Follow) {
             // Static: the entity's own transform IS the pose. -Z is forward, the
             // convention the camera gizmo already draws its frustum along.
-            const glm::quat q(glm::radians(e.rotation));
-            p.position = e.center;
-            p.front    = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
-            p.up       = glm::normalize(q * glm::vec3(0.0f, 1.0f, 0.0f));
+            //
+            // Standing still, the cached world transform says that. Hung on
+            // something that MOVES, it says where that thing was last frame --
+            // which is how a static camera parented to a craft came to judder
+            // (see liveWorld). Parented, it is composed live; a root camera keeps
+            // reading the cached value, which for a root is its local transform
+            // anyway.
+            if (e.parent >= 0) {
+                poseFrom(liveWorld(entities, e), p);
+            } else {
+                const glm::quat q(glm::radians(e.rotation));
+                p.position = e.center;
+                p.front    = glm::normalize(q * glm::vec3(0.0f, 0.0f, -1.0f));
+                p.up       = glm::normalize(q * glm::vec3(0.0f, 1.0f, 0.0f));
+            }
             m_pose[e.id] = p;
             m_chase.erase(e.id);   // no eased state to keep while it stands still
             continue;

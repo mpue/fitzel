@@ -49,6 +49,7 @@ struct PanelState {
     std::function<void(int)>                 addEmptyChild;
     std::function<void(int, EntityType)>     addPrimitiveChild;
     std::function<void(int)>                 addShotCamera;     // "Shoot this"
+    std::function<void(int)>                 addCockpitCamera;  // "Sit in this"
     std::function<void(int)>                 addVehicleLights;
     std::function<void(int)>                 setMainCamera;     // by entity id
 

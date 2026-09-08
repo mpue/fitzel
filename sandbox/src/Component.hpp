@@ -1097,6 +1097,103 @@ public:
     }
 };
 
+// --- Built-in component: Grid position (one authored slot on the start grid) ---
+// Attach to an EMPTY and that empty becomes one place on the starting grid: at
+// the start of a race the field is stood on these markers instead of on the rows
+// measured back from the Start/Finish line.
+//
+// WHY AUTHORED SLOTS AT ALL. The computed grid (gridBack / gridRow / gridLane
+// over on FinishLineComponent) is rows of two straight back along the road,
+// which is right for a circuit and wrong for everything else: a start on a wide
+// apron, craft staggered around an obstacle, a launch off a hillside, a straight
+// too narrow to take two abreast. None of that is three numbers. The other way
+// out -- dragging every craft into place by hand -- is precisely the sort of
+// exact work this editor exists to avoid; placing a marker is not, because a
+// marker can be nudged, duplicated and snapped, and it stays put while the field
+// standing on it changes size.
+//
+// WHERE THE CRAFT ENDS UP. The marker is the spot ON THE GROUND, and the craft
+// is stood its own ride height above it, facing the marker's +Z (a model built
+// nose-backwards carries `forward` and is turned to match). Marking where the
+// belly goes rather than where the centre goes is what lets one grid serve craft
+// that hover at different heights -- and it means a marker dropped on the ground
+// is already right, rather than needing to be lifted by an amount you cannot see.
+//
+// HOW MANY GET USED is the field's business, not the grid's: the lowest `slot`s
+// are filled first, so a race started against two rivals stands three craft on
+// the front three markers and leaves the rest bare. That is what makes one
+// authored grid serve every field size the start screen can ask for. More craft
+// than markers and the overflow falls back to the computed rows -- a grid that
+// is too short loses its shape rather than losing racers.
+//
+// WHERE THE RIVALS COME FROM. A marker can name a `prefab`, and then it BUILDS
+// its own rival at the start of a race instead of waiting for one the scene
+// already holds. That turns the start screen's field size into a real number
+// rather than an upper bound: a circuit no longer has to be authored with the
+// biggest field anyone might ever ask for, with the rest switched off. It is per
+// marker rather than per circuit so that one grid can mix machines -- the works
+// team on the front row, privateers behind -- which is a grid you can read at a
+// glance instead of six of the same craft in different colours.
+//
+// The prefab's root wants an Opponent component (that is what makes it race);
+// one that has none is given a default, so a plain craft prefab still works.
+// Empty means the marker is a PARKING SPACE for a craft already in the scene,
+// which is how a hand-placed field is lined up -- both kinds can sit on one grid.
+class GridPositionComponent : public ComponentBase {
+public:
+    // Pole is the LOWEST number. Ties keep scene order, so a grid whose markers
+    // are all left at 0 lines up in the order they were created -- which is
+    // usually the order they were placed.
+    int  slot = 0;
+    // Reserve this one for the player. With none ticked -- the default -- the
+    // player's slot is DRAWN AT RANDOM from the ones in use, which is most of the
+    // reason to author a grid instead of a row: a start that cannot be learned by
+    // heart, and a race that is not the same race every time. The rivals fill in
+    // around whatever the draw leaves.
+    bool player = false;
+    // The craft to build here, by name (as in the project's prefabs/ folder).
+    // Empty leaves the slot for a craft the scene already holds.
+    //
+    // On an ordinary marker that is a RIVAL. On the one that reserves the
+    // player's slot it is the craft YOU fly -- built there when the scene holds
+    // no glider of its own, which is the ordinary state of a circuit whose craft
+    // normally arrives from the start screen. That is what makes "Play as:
+    // flying the glider" work on a track opened straight out of the editor.
+    std::string prefab;
+
+    // Runtime: the craft this marker built for the race being run, so a grid that
+    // is lined up twice in one session does not end up with two fields on it.
+    // Not saved -- Play restores the scene it snapshotted, spawned craft included.
+    int spawnedId = 0;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<GridPositionComponent>(*this);
+    }
+    const char* typeId() const override { return "grid_position"; }
+    const char* displayName() const override { return "Grid Position"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    // A bay on the ground with a nose arrow: where the craft stands and which way
+    // it points. Drawn at the marker itself, because that is the ground -- the
+    // craft floats above it by its own ride height, which this cannot know.
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat& rot) const override {
+        const glm::vec4 col = player ? glm::vec4(1.0f, 0.85f, 0.2f, 0.95f)
+                                     : glm::vec4(0.35f, 0.9f, 1.0f, 0.9f);
+        const glm::vec3 X = rot * glm::vec3(1.2f, 0.0f, 0.0f);   // half width
+        const glm::vec3 Z = rot * glm::vec3(0.0f, 0.0f, 2.2f);   // half length
+        const glm::vec3 b0 = c - X - Z, b1 = c + X - Z,
+                        b2 = c + X + Z, b3 = c - X + Z;
+        g.line(b0, b1, col); g.line(b1, b2, col);
+        g.line(b2, b3, col); g.line(b3, b0, col);
+        // The nose: an arrow out of the front edge, so a marker turned the wrong
+        // way is visible from across the scene rather than at the first start.
+        const glm::vec3 tip = c + Z * 1.6f;
+        g.line(c + Z, tip, col);
+        g.line(tip, c + Z * 1.15f + X * 0.35f, col);
+        g.line(tip, c + Z * 1.15f - X * 0.35f, col);
+    }
+};
+
 // --- Built-in component: Checkpoint (must be passed for a lap to count) --------
 // Attach to gates along the track: while playing, a lap only counts at the
 // Start/Finish line once the glider has passed EVERY checkpoint since the lap
@@ -1337,8 +1434,10 @@ public:
     // What kind of eye this is. Static stands where it is put (a cutscene angle,
     // a fixed trackside shot); Follow trails the object it hangs on; Multishot
     // SHOOTS one -- it cuts between the moves an advert is made of instead of
-    // holding a single angle (see MultiShot.hpp).
-    enum Mode { Static = 0, Follow = 1, Multishot = 2 };
+    // holding a single angle (see MultiShot.hpp); Cockpit is BOLTED to the thing
+    // it hangs on -- no easing, no aiming, no level horizon, the view from the
+    // seat.
+    enum Mode { Static = 0, Follow = 1, Multishot = 2, Cockpit = 3 };
 
     int   mode          = Static;
     float fov           = 60.0f; // vertical field of view (degrees)
@@ -1374,6 +1473,19 @@ public:
     // parented to the craft, which does bank with it -- and gives up the
     // smoothing, the aim-at-the-craft logic and the loop handling to get there.
     float rollWith   = 0.0f;  // 0 = level horizon .. 1 = fully attached
+    // ...and at 1 it is still a shot OF the craft, taken from behind it. The view
+    // FROM it is the Cockpit mode, which has no knobs at all: see below.
+
+    // --- Cockpit ----------------------------------------------------------------
+    // Nothing to set, and that is the point. Where the camera sits in its parent's
+    // frame is the seat, its own rotation is which way the pilot's head is turned,
+    // and both are the entity's local transform -- so the shot is composed by
+    // dragging the camera about in the viewport, not by numbers in here.
+    //
+    // None of the follow knobs above apply. From inside the craft there is nothing
+    // to catch up with (stiffness), nothing to keep in frame (lookHeight) and no
+    // horizon to hold level (rollWith): the window and the world have to agree
+    // exactly, or the craft appears to slide about inside its own cockpit.
 
     // --- Multishot ------------------------------------------------------------
     // WHOSE camera this is, is a QUESTION AGAIN here, and it has to be, because

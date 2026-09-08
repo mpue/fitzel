@@ -95,6 +95,23 @@ struct Material {
     float     ior          = 1.5f;
     glm::vec3 emission{0.0f};       // emissive colour, sRGB
     float     emissionStrength = 1.0f; // linear multiplier (>1 for a real glow)
+    // How much of the diffuse albedo leaves through the FAR side of the surface
+    // rather than the near one. 0 is an ordinary opaque material; 1 is a sheet
+    // that passes everything through and reflects nothing.
+    //
+    // This is what a leaf is, and it is not a detail. A blade of grass is a thin
+    // sheet with a dark albedo: treated as opaque it can only ever be as bright
+    // as the light falling on the side facing you, and a meadow rendered that
+    // way comes out nearly black however the sun is placed -- while the real one
+    // is bright precisely because most of what you see is sunlight that went
+    // THROUGH the blades. The raster path fakes it with a wrap term in
+    // grass.frag; here it is the surface's own description, so it also thins the
+    // shadow a canopy casts on itself rather than only brightening what you see.
+    //
+    // Energy is conserved: the diffuse lobe is SPLIT between the two sides, not
+    // duplicated. A translucent surface is not a brighter one, it is one whose
+    // light comes out somewhere else.
+    float     translucency = 0.0f;
     int       texture      = -1;    // index into Scene::textures, -1 = flat
     // 0 opaque / 1 cutout / 2 blend, matching AlphaMode in SceneTypes.hpp.
     int       alphaMode    = 0;

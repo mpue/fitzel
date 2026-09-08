@@ -40,6 +40,14 @@ float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z) {
     return best;
 }
 
+bool inDiscs(const std::vector<glm::vec3>& discs, float x, float z) {
+    for (const glm::vec3& d : discs) {
+        const float dx = x - d.x, dz = z - d.y;
+        if (dx * dx + dz * dz < d.z * d.z) return true;
+    }
+    return false;
+}
+
 float rayAABB(const glm::vec3& ro, const glm::vec3& rd,
               const glm::vec3& bmin, const glm::vec3& bmax) {
     float tmin = 0.0f, tmax = 1e30f;

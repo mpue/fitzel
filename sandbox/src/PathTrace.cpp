@@ -207,6 +207,9 @@ struct Surface {
     glm::vec3 emission{0.0f};
     float     coverage = 1.0f; // texture alpha * opacity
     bool      glass = false;
+    // The share of the diffuse lobe that leaves through the far side. See
+    // Material::translucency -- the diffuse lobe is split, never duplicated.
+    float     translucency = 0.0f;
     glm::vec3 baseColor{1.0f};
 };
 
@@ -815,6 +818,16 @@ struct Tracer {
     glm::vec3 shadowFactor(int tri, float u, float v) const {
         const Material& m = sc.materials[sc.triangles[tri].material];
         const float a = coverageAt(m, uvAt(tri, u, v));
+        if (m.translucency > 0.0f && !m.glass) {
+            // A leaf between a point and the sun does not black it out; it
+            // dims and tints what gets past, and a canopy is mostly this. The
+            // tint is the leaf's own colour, linearised as everywhere else --
+            // which is why light under grass is green rather than merely less.
+            const glm::vec3 tint = glm::pow(glm::max(m.albedo, glm::vec3(0.0f)),
+                                            glm::vec3(2.2f));
+            const float t = glm::clamp(m.translucency, 0.0f, 1.0f);
+            return glm::mix(glm::vec3(1.0f - a), tint, t);
+        }
         if (a >= 0.999f && !m.glass) return glm::vec3(0.0f);
         if (m.glass) {
             // A pane refracts rather than blocks; treating it as a partial
@@ -904,6 +917,7 @@ struct Tracer {
                                glm::vec3(2.2f)) * m.emissionStrength;
         s.coverage  = coverageAt(m, uv);
         s.glass     = m.glass;
+        s.translucency = glm::clamp(m.translucency, 0.0f, 1.0f);
         return s;
     }
 
@@ -914,13 +928,22 @@ struct Tracer {
                        const glm::vec3& L, float specScale = 1.0f) const {
         const float NoL = glm::dot(N, L);
         const float NoV = glm::dot(N, V);
-        if (NoL <= 0.0f || NoV <= 0.0f) return glm::vec3(0.0f);
+        if (NoV <= 0.0f) return glm::vec3(0.0f);
+        if (NoL <= 0.0f) {
+            // The far side. Diffuse only: light that went through a leaf has
+            // forgotten which way it came in, and a specular highlight seen
+            // through a surface is not a thing a thin sheet does.
+            if (s.translucency <= 0.0f) return glm::vec3(0.0f);
+            return s.diffuse * (s.translucency * (1.0f / kPi));
+        }
         const glm::vec3 H = glm::normalize(V + L);
         const float NoH = std::max(0.0f, glm::dot(N, H));
         const float VoH = std::max(0.0f, glm::dot(V, H));
         const glm::vec3 spec = fresnel(s.F0, VoH) *
                                (ggxD(NoH, s.alpha) * smithVis(NoV, NoL, s.alpha));
-        return s.diffuse * (1.0f / kPi) + spec * specScale;
+        // The near side keeps whatever the far side did not take.
+        return s.diffuse * ((1.0f - s.translucency) * (1.0f / kPi))
+             + spec * specScale;
     }
 
     // The pdf the sampler below would have used for this direction. Needed
@@ -930,12 +953,18 @@ struct Tracer {
                   const glm::vec3& L, float pSpec) const {
         const float NoL = glm::dot(N, L);
         const float NoV = glm::dot(N, V);
-        if (NoL <= 0.0f || NoV <= 0.0f) return 0.0f;
+        if (NoV <= 0.0f) return 0.0f;
+        if (NoL <= 0.0f) {
+            // The far-side lobe, chosen inside the diffuse branch with
+            // probability `translucency` and cosine-distributed about -N.
+            if (s.translucency <= 0.0f) return 0.0f;
+            return (1.0f - pSpec) * s.translucency * (-NoL) * (1.0f / kPi);
+        }
         const glm::vec3 H = glm::normalize(V + L);
         const float NoH = std::max(0.0f, glm::dot(N, H));
         const float pdfSpec = ggxD(NoH, s.alpha) * smithG1(NoV, s.alpha) /
                               std::max(4.0f * NoV, 1e-6f);
-        const float pdfDiff = NoL * (1.0f / kPi);
+        const float pdfDiff = (1.0f - s.translucency) * NoL * (1.0f / kPi);
         return pSpec * pdfSpec + (1.0f - pSpec) * pdfDiff;
     }
 
@@ -959,16 +988,22 @@ struct Tracer {
             const glm::vec3 dir = sunPdf > 0.0f ? sampleCone(sunAxis, sunCosMax, rng)
                                                 : sunAxis;
             const float NoL = glm::dot(N, dir);
-            if (NoL > 0.0f) {
+            // A light behind a translucent surface reaches it through the far
+            // side -- which for a meadow is most of the light there is. The ray
+            // then has to leave from the OTHER face, or it starts inside the
+            // leaf it is trying to see past.
+            const bool behind = NoL < 0.0f && s.translucency > 0.0f;
+            if (NoL > 0.0f || behind) {
                 Ray sr;
-                sr.o = P + N * kRayEps;
+                sr.o = P + (behind ? -N : N) * kRayEps;
                 sr.d = dir;
                 sr.prepare();
                 const glm::vec3 tr = bvh.transmittance(sr, kInf, alphaFn);
                 if (luminance(tr) > 1e-4f) {
                     // sun.color is already radiance divided by this sampler's
                     // own pdf, which is why it appears here unscaled.
-                    glm::vec3 c = sc.sun.color * tr * evalBsdf(s, N, V, dir) * NoL;
+                    glm::vec3 c = sc.sun.color * tr * evalBsdf(s, N, V, dir)
+                                * std::fabs(NoL);
                     // A disc can also be found by bouncing into it, so this
                     // strategy only claims its share. A hard-edged sun cannot
                     // be hit at all, and keeps the lot.
@@ -991,9 +1026,10 @@ struct Tracer {
             // the arithmetic after it stops being arithmetic. A direction the
             // sampler considers this unlikely contributes nothing worth the
             // risk.
-            if (pdfE > 1e-4f && NoL > 0.0f) {
+            const bool envBehind = NoL < 0.0f && s.translucency > 0.0f;
+            if (pdfE > 1e-4f && (NoL > 0.0f || envBehind)) {
                 Ray sr;
-                sr.o = P + N * kRayEps;
+                sr.o = P + (envBehind ? -N : N) * kRayEps;
                 sr.d = dir;
                 sr.prepare();
                 const glm::vec3 tr = bvh.transmittance(sr, kInf, alphaFn);
@@ -1001,7 +1037,7 @@ struct Tracer {
                     const glm::vec3 Le = sc.env.sample(dir) * sc.env.intensity;
                     const float wgt = misWeight(pdfE, pdfBsdf(s, N, V, dir, pSpec));
                     const glm::vec3 c = Le * tr * evalBsdf(s, N, V, dir) *
-                                        (NoL * wgt / pdfE);
+                                        (std::fabs(NoL) * wgt / pdfE);
                     // Checked rather than trusted. Every other term here is
                     // bounded by construction; this one is a quotient, and a
                     // quotient is where a renderer stops being able to promise
@@ -1275,14 +1311,19 @@ struct Tracer {
                 const glm::vec3 H  = glm::normalize(t * Hl.x + b * Hl.y + N * Hl.z);
                 nextDir = glm::reflect(ray.d, H);
             } else {
-                nextDir = cosineHemisphere(N, rng);
+                // The diffuse lobe covers the whole sphere on a translucent
+                // surface: `translucency` of the time the path carries on out
+                // the far side, which is how light gets through a canopy at all.
+                const bool through = s.translucency > 0.0f &&
+                                     rng.uniform() < s.translucency;
+                nextDir = cosineHemisphere(through ? -N : N, rng);
             }
             const float NoL = glm::dot(N, nextDir);
-            if (NoL <= 0.0f) break;
+            if (std::fabs(NoL) <= 0.0f) break;
 
             const float pdf = pdfBsdf(s, N, V, nextDir, pSpec);
             if (pdf < 1e-6f) break;
-            beta *= evalBsdf(s, N, V, nextDir) * (NoL / pdf);
+            beta *= evalBsdf(s, N, V, nextDir) * (std::fabs(NoL) / pdf);
             if (luminance(beta) < 1e-5f) break;
             lastPdf   = pdf;
             lastDelta = false;
@@ -1297,7 +1338,7 @@ struct Tracer {
                 beta /= q;
             }
 
-            ray.o = P + N * kRayEps;
+            ray.o = P + (glm::dot(N, nextDir) < 0.0f ? -N : N) * kRayEps;
             ray.d = nextDir;
         }
 

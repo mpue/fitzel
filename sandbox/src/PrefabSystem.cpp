@@ -1,5 +1,7 @@
 #include "PrefabSystem.hpp"
 
+#include <cctype>
+
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
@@ -151,6 +153,66 @@ std::vector<std::pair<std::string, std::string>> list(const std::string& dir) {
     }
     std::sort(out.begin(), out.end());
     return out;
+}
+
+std::string renameTo(const std::string& path, const std::string& newName,
+                     std::string& err) {
+    std::string name = newName;
+    // Trim, because a trailing space is invisible in the field it was typed in
+    // and would come back as a filename with a space on the end.
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front())))
+        name.erase(name.begin());
+    while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back())))
+        name.pop_back();
+    if (name.empty()) { err = "A prefab needs a name."; return {}; }
+
+    const std::string body = fitzel::vfs::readText(path);
+    if (body.empty()) { err = "Cannot read " + path; return {}; }
+    nlohmann::json j;
+    try { j = nlohmann::json::parse(body); }
+    catch (const nlohmann::json::exception&) { err = "Not a readable prefab."; return {}; }
+    if (!j.contains("prefab") || !j["prefab"].is_object()) {
+        err = "Not a readable prefab.";
+        return {};
+    }
+    j["prefab"]["name"] = name;
+
+    // The filename carries the name AND the first 8 of the GUID, so it moves with
+    // the rename -- but the GUID half is read back out of the file rather than
+    // parsed off the old filename, which would go wrong the first time a prefab
+    // was renamed by hand.
+    const AssetId guid = AssetId::fromString(j["prefab"].value("guid", std::string()));
+    const std::filesystem::path old(path);
+    std::filesystem::path fresh = old.parent_path() /
+        (projectio::safeName(name) +
+         (guid.valid() ? "-" + guid.toString().substr(0, 8) : std::string()) +
+         ".fprefab");
+    std::error_code ec;
+    // A name that lands on a file that already exists is a different prefab about
+    // to be overwritten. Refuse; the panel says so and the old file stays.
+    if (fresh != old && std::filesystem::exists(fresh, ec)) {
+        err = "A prefab file of that name is already there.";
+        return {};
+    }
+    {
+        std::ofstream f(fresh);
+        if (!f) { err = "Cannot write " + fresh.generic_string(); return {}; }
+        f << j.dump(2) << '\n';
+    }
+    // Written first, removed second: a crash between the two leaves two good
+    // files rather than none.
+    if (fresh != old) std::filesystem::remove(old, ec);
+    return fresh.generic_string();
+}
+
+bool deleteFile(const std::string& path, std::string& err) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return true;
+    if (!std::filesystem::remove(path, ec)) {
+        err = ec ? ec.message() : std::string("Cannot delete ") + path;
+        return false;
+    }
+    return true;
 }
 
 std::vector<Entity> instantiate(const Prefab& p, int& entityCounter,

@@ -481,12 +481,42 @@ const std::vector<Property>& AudioSourceComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& GridPositionComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property slot;
+        slot.label = "Slot"; slot.key = "slot"; slot.kind = PropKind::Int;
+        slot.slider = true; slot.min = 0.0f; slot.max = 31.0f;
+        slot.field = [](void* o) -> void* {
+            return &static_cast<GridPositionComponent*>(o)->slot;
+        };
+        p.push_back(std::move(slot));
+        Property who;
+        who.label = "Player starts here"; who.key = "player"; who.kind = PropKind::Bool;
+        who.field = [](void* o) -> void* {
+            return &static_cast<GridPositionComponent*>(o)->player;
+        };
+        p.push_back(std::move(who));
+        // Drawn by the inspector as a picker over the project's prefabs (chosen,
+        // not typed -- see the Spawner, which does the same); the metadata is here
+        // so it saves and loads like any other field.
+        Property pre;
+        pre.label = "Rival prefab"; pre.key = "prefab"; pre.kind = PropKind::Text;
+        pre.field = [](void* o) -> void* {
+            return &static_cast<GridPositionComponent*>(o)->prefab;
+        };
+        p.push_back(std::move(pre));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& CameraComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
         Property mode;
         mode.label = "Mode"; mode.key = "mode"; mode.kind = PropKind::EnumInt;
-        mode.enumLabels = {"Static", "Follow parent", "Multishot"};
+        mode.enumLabels = {"Static", "Follow parent", "Multishot", "Cockpit"};
         mode.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->mode; };
         p.push_back(std::move(mode));
         // Only a follow camera has anything to catch up with; on a static one
@@ -1794,6 +1824,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<OpponentComponent>()); }});
         components::registerType({"finish_line", "Start/Finish",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<FinishLineComponent>()); }});
+        components::registerType({"grid_position", "Grid Position",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<GridPositionComponent>()); }});
         components::registerType({"checkpoint", "Checkpoint",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<CheckpointComponent>()); }});
         components::registerType({"showroom", "Showroom",

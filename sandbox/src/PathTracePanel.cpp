@@ -416,6 +416,27 @@ void service(State& st, lightgrid::Runtime& light,
         pathcapture::capture(renderer, camera, opt, &st.report);
     st.reportLine = st.report.summary();
 
+    // Grass, which the harvest cannot see. Added after capture() rather than
+    // inside it: capture() reads the render queue, and the field is not in it.
+    if (look.grass) {
+        grassfield::TraceOptions gopt;
+        gopt.centerXZ = glm::vec2(camera.position().x, camera.position().z);
+        gopt.radius   = look.grassRadius;
+        gopt.windTime = look.grassWindTime;
+        grassfield::TraceReport grep;
+        grassfield::appendToScene(*scenePtr, *look.grass, gopt, &grep);
+        if (grep.blades > 0) {
+            char buf[192];
+            std::snprintf(buf, sizeof(buf),
+                          "grass: %lld blades, %lld triangles, %d colours%s",
+                          grep.blades, grep.triangles, grep.materials,
+                          grep.truncated ? " (hit the triangle ceiling)" : "");
+            st.report.notes.emplace_back(buf);
+            st.report.triangles += grep.triangles;
+        }
+        st.reportLine = st.report.summary();
+    }
+
     if (scenePtr->triangles.empty()) {
         (wantBake ? st.gridStatus : st.status) =
             "nothing to work with: the frame has no geometry the tracer can "

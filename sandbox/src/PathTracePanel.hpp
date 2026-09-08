@@ -11,6 +11,7 @@
 #include <fitzel/graphics/Texture3D.hpp>
 
 #include "LightGrid.hpp"
+#include "GrassTrace.hpp"
 #include "PathTrace.hpp"
 #include "PathTraceCapture.hpp"
 
@@ -113,6 +114,17 @@ struct SceneLook {
     std::string      hdriPath;        // "" = the scene has no environment map
     float            hdriIntensity = 1.0f;
     pathtrace::Grade grade;
+
+    // The grass field, or null when the scene has none / it is switched off.
+    // Grass reaches the tracer through here rather than through the harvest,
+    // because there is nothing in the render queue to harvest: the blades are
+    // instance data plus a vertex shader. It is regenerated from these
+    // parameters instead -- see GrassTrace.hpp. A pointer because the field owns
+    // its road and brook lists and a render is not worth copying them for; the
+    // capture is synchronous, so it only has to outlive the call.
+    const grassfield::Field* grass = nullptr;
+    float grassRadius = 40.0f;  // metres of field around the camera
+    float grassWindTime = 0.0f; // the instant of wind the still is taken at
 };
 
 // Fulfil a pending request. Call once per frame from the render loop, AFTER the

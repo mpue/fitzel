@@ -16,6 +16,7 @@
 #include <fitzel/world/Terrain.hpp>
 
 #include "FrameRender.hpp"  // FrameContext -- the per-frame lighting/fog the draws take
+#include "GrassTrace.hpp"  // the field's definition, shared with the path tracer
 #include "TiledScatter.hpp" // per-tile streamed instance buffers (grass field)
 
 namespace fitzel { class Camera; }
@@ -216,6 +217,11 @@ public:
     float grassChaos   = 1.0f;  // 0 = even lawn, 1 = wild meadow, >1 = unruly
     float grassRadius  = 46.0f;
     glm::vec3 grassTint{1.0f, 1.0f, 1.0f};
+
+    // The grass field as data, for the path tracer: what the streamed tiles were
+    // generated from, plus the tint the shader multiplies in. Valid after the
+    // first updateGrass; before that it describes an empty field.
+    const grassfield::Field& traceField() const { return m_field; }
     int   grassCount   = 0;
     bool  grassDirty   = true;         // request a (re)grow of the procedural field
     std::vector<float> paintedBlades;  // 7 floats/blade, world space (saved)
@@ -289,6 +295,11 @@ private:
     fitzel::Shader        m_grass;
     fitzel::InstancedMesh m_paintedGrass;
     TiledScatter          m_grassTiles;
+    // The parameters the resident tiles were generated from. Held rather than
+    // rebuilt on demand because the tracer must render the field the viewport is
+    // SHOWING: a second assembly of the same numbers would be right until one of
+    // them was added in only one of the two places.
+    grassfield::Field     m_field;
     std::uint32_t m_grassBaseVAO = 0, m_grassBaseVBO = 0;
     glm::vec2     m_grassCenter{1e9f}; // last flower-regrow center (camera follow)
     // Cached generator inputs; a change re-places the whole field (invalidate).

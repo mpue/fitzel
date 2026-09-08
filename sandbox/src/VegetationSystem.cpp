@@ -24,6 +24,7 @@
 #include <fitzel/world/Model.hpp>
 #include <fitzel/world/Terrain.hpp>
 
+#include "GrassTrace.hpp"
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "UiStyle.hpp"
@@ -202,17 +203,6 @@ void VegetationSystem::panelBirdsFireflies() {
 
 // Cheap stable hash of a road centerline, so the grass field only re-places when
 // the road actually moved (not every frame the polyline is passed in).
-// Is (x,z) in one of the keep-out discs? Linear, because the list is a few
-// hundred entries at most and this is called from inside a placement loop that
-// is already doing four terrain height samples per candidate.
-static bool inWet(const std::vector<glm::vec3>& wet, float x, float z) {
-    for (const glm::vec3& d : wet) {
-        const float dx = x - d.x, dz = z - d.y;
-        if (dx * dx + dz * dz < d.z * d.z) return true;
-    }
-    return false;
-}
-
 static std::uint32_t wetHashOf(const std::vector<glm::vec3>& w) {
     std::uint32_t h = 2166136261u ^ static_cast<std::uint32_t>(w.size());
     auto mix = [&](float f) {
@@ -240,80 +230,6 @@ static std::uint32_t roadHashOf(const std::vector<glm::vec2>& r) {
     return h;
 }
 
-// Deterministic per-tile grass placement. Runs on a TiledScatter worker thread,
-// so it only touches its by-value inputs. Same filters + multi-scale meadow
-// patchiness as the old whole-field pass, but seeded from the tile coords (so a
-// tile looks identical each time it streams in) and without the field-centre
-// falloff -- the streaming ring bounds reach, and a camera-distance thin belongs
-// in the shader, not baked into a cached tile.
-static void grassTileGen(std::int32_t tx, std::int32_t tz, glm::vec2 origin,
-                         float size, const TerrainSettings& s, float waterLvl,
-                         float snowLvl, float gHeight, float gDensity, float chaos,
-                         const std::vector<glm::vec2>& road, float roadClear,
-                         const std::vector<glm::vec3>& wet,
-                         std::vector<float>& out) {
-    std::uint32_t seed = static_cast<std::uint32_t>(tx) * 73856093u
-                       ^ static_cast<std::uint32_t>(tz) * 19349663u ^ 0x9E3779B9u;
-    std::mt19937 rng(seed);
-    std::uniform_real_distribution<float> u(0.0f, 1.0f);
-    const float spacing = 0.6f; // sampling grid (one ground query per cell)
-    const int   per = std::max(1, static_cast<int>(120.0f * gDensity));
-    for (float lz = 0.0f; lz < size; lz += spacing) {
-        for (float lx = 0.0f; lx < size; lx += spacing) {
-            const float wx = origin.x + lx, wz = origin.y + lz;
-            if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
-            if (inWet(wet, wx, wz)) continue;   // in a brook, not beside one
-            const float h = terrainHeight(s, wx, wz);
-            if (h < waterLvl + 0.5f || h > snowLvl - 1.5f) continue;
-            const float e = 1.0f;
-            const glm::vec3 n = glm::normalize(glm::vec3(
-                terrainHeight(s, wx - e, wz) - terrainHeight(s, wx + e, wz),
-                2.0f * e,
-                terrainHeight(s, wx, wz - e) - terrainHeight(s, wx, wz + e)));
-            if (n.y < 0.82f) continue;
-            const float lush = glm::clamp(
-                terrainMoisture(s, wx, wz)
-                    - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
-                0.0f, 1.0f);
-            if (lush < 0.22f) continue;
-            // Meadow patchiness at several scales. `chaos` scales how much each
-            // irregularity kicks in: 0 = near-uniform lawn, 1 = wild meadow,
-            // higher piles on taller outliers and more gaps.
-            const float patch  = valNoise2(wx * 0.05f, wz * 0.05f);
-            const float patch2 = valNoise2(wx * 0.17f + 60.0f, wz * 0.17f + 60.0f);
-            const float bare   = valNoise2(wx * 0.13f + 19.0f, wz * 0.13f + 7.0f);
-            const float bare2  = valNoise2(wx * 0.31f + 3.0f,  wz * 0.31f + 23.0f);
-            // Broad bare patches always apply; the finer holes only with chaos.
-            if (bare < 0.26f || bare2 < 0.12f * chaos) continue;
-            const float densJit = 1.0f + (glm::mix(0.55f, 1.20f, patch2) - 1.0f) * chaos;
-            const float dens    = glm::mix(0.25f, 1.25f, patch) * densJit;
-            // Per-cell count jitter breaks the even grid density (chaos-scaled).
-            const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * chaos;
-            const int   count = static_cast<int>(per * dens
-                                * glm::mix(0.35f, 1.0f, lush) * cellJit);
-            // Height clumps have their OWN frequency (independent of density), so
-            // tall tufts and low turf don't line up with thick/thin.
-            const float tuft = valNoise2(wx * 0.11f + 40.0f, wz * 0.11f + 40.0f);
-            const float jitPos = spacing * (2.2f + 0.4f * chaos);
-            for (int b = 0; b < count; ++b) {
-                const float tuftF = 1.0f + (glm::mix(0.50f, 1.40f, tuft) - 1.0f) * chaos;
-                const float jitF  = 1.0f + (glm::mix(0.65f, 1.30f, u(rng)) - 1.0f) * chaos;
-                float bh = gHeight * glm::max(0.15f, tuftF * jitF);
-                // A few stalks shoot well above the canopy (grass gone to seed).
-                if (u(rng) < 0.05f * chaos) bh *= glm::mix(1.4f, 2.0f, u(rng));
-                out.insert(out.end(), {
-                    wx + (u(rng) - 0.5f) * jitPos, h,
-                    wz + (u(rng) - 0.5f) * jitPos,
-                    u(rng) * 6.2831f,
-                    bh,
-                    u(rng) * 6.2831f,
-                    glm::clamp(lush + (patch - 0.5f) * 0.4f
-                                    + (u(rng) - 0.5f) * 0.12f, 0.0f, 1.0f)});
-            }
-        }
-    }
-}
-
 void VegetationSystem::stampGrass(glm::vec2 c, float radius, std::mt19937& rng,
                                   float brushDensity, float waterLevel, float snowLevel) {
     std::uniform_real_distribution<float> u(0.0f, 1.0f);
@@ -328,7 +244,7 @@ void VegetationSystem::stampGrass(glm::vec2 c, float radius, std::mt19937& rng,
         const float wz  = c.y + std::sin(ang) * rad;
         const float h   = m_streamer.heightAt(wx, wz);
         if (h < waterLevel + 0.5f || h > snowLevel - 1.5f) continue;
-        if (inWet(wet, wx, wz)) continue;
+        if (inDiscs(wet, wx, wz)) continue;
         const float e = 1.0f;
         const glm::vec3 n = glm::normalize(glm::vec3(
             m_streamer.heightAt(wx - e, wz) - m_streamer.heightAt(wx + e, wz),
@@ -382,20 +298,32 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         waterLevel != m_gWater || snowLevel != m_gSnow ||
         roadClear != m_gRoadClear || rh != m_gRoadHash ||
         wetHashOf(wet) != m_gWetHash) {
-        const TerrainSettings s = m_streamer.settings();
         const float water = waterLevel, snow = snowLevel, gh = grassHeight;
         const float gd = grassDensity, gc = grassChaos, rc = roadClear;
-        std::vector<glm::vec2> roadCopy = road;
-        std::vector<glm::vec3> wetCopy  = wet;
+        // The field, as one value. Kept as a member so the path tracer can ask
+        // what the viewport is showing (see traceField) instead of a second
+        // place assembling the same parameters and getting one of them wrong.
+        m_field.terrain    = m_streamer.settings();
+        m_field.waterLevel = water;
+        m_field.snowLevel  = snow;
+        m_field.height     = gh;
+        m_field.density    = gd;
+        m_field.chaos      = gc;
+        m_field.road       = road;
+        m_field.roadClear  = rc;
+        m_field.wet        = wet;
         // The "Grass range" slider (m) maps to a tile radius over the 12 m grid.
         const int tileR = std::clamp(
-            static_cast<int>(std::lround(grassRadius / 12.0f)), 1, 12);
+            static_cast<int>(std::lround(grassRadius / grassfield::Field::kTileSize)),
+            1, 12);
+        // Copied into the lambda, not captured by reference: the generator runs
+        // on TiledScatter's workers, which outlive no particular frame.
+        const grassfield::Field fieldCopy = m_field;
         m_grassTiles.configure(
-            {12.0f, tileR, 7, 2, 0},
-            [=](std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size,
-                std::vector<float>& out) {
-                grassTileGen(tx, tz, origin, size, s, water, snow, gh, gd, gc,
-                             roadCopy, rc, wetCopy, out);
+            {grassfield::Field::kTileSize, tileR, 7, 2, 0},
+            [fieldCopy](std::int32_t tx, std::int32_t tz, glm::vec2 origin,
+                        float size, std::vector<float>& out) {
+                grassfield::generateTile(tx, tz, origin, size, fieldCopy, out);
             });
         m_grassTiles.invalidate();
         m_gDensity = gd; m_gChaos = gc; m_gHeight = gh; m_gRadius = grassRadius;
@@ -403,6 +331,10 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         m_gWetHash = wetHashOf(wet);
         grassDirty = false;
     }
+
+    // The tint is a shader uniform, not a placement input: changing it moves no
+    // blade, so it is not in the dirty test above and is refreshed here instead.
+    m_field.tint = grassTint;
 
     if (grassEnabled) m_grassTiles.update(camXZ);
     grassCount = m_grassTiles.instanceCount();
@@ -940,7 +872,7 @@ void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& ro
                 const float dx = wx - cc.x, dz = wz - cc.y;
                 if (dx * dx + dz * dz > R2) continue;
                 if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
-                if (inWet(wet, wx, wz)) continue;
+                if (inDiscs(wet, wx, wz)) continue;
                 const float h = m_streamer.heightAt(wx, wz);
                 if (h < waterLevel + 0.8f || h > snowLevel - 2.0f) continue;
                 const float e = 1.5f;

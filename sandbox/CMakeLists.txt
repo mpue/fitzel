@@ -27,6 +27,10 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Component.cpp
     src/PrefabSystem.cpp
     src/VegetationSystem.cpp
+    # The grass field as data: where the blades are (shared with the streamer)
+    # and what one looks like as triangles (the path tracer's half). Runtime,
+    # because VegetationSystem is.
+    src/GrassTrace.cpp
     src/TiledScatter.cpp
     src/RoadSystem.cpp
     src/RoadSet.cpp
@@ -157,6 +161,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/UvPanel.cpp
     src/ModelsPanel.cpp
     src/PrefabsPanel.cpp
+    # Editing a prefab away from the scene: a mode, and therefore editor-only.
+    src/PrefabEdit.cpp
     src/AssetDrop.cpp
     src/VideoImport.cpp
     src/RoadPanel.cpp
@@ -438,6 +444,56 @@ target_link_libraries(roadcheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
 add_executable(shotcheck tools/shotcheck.cpp src/MultiShot.cpp)
 target_link_libraries(shotcheck PRIVATE glm::glm)
 
+# prefabeditcheck -- editing a prefab away from the scene. The one mode that
+# swaps the document out from under everything: it has to hand the scene and its
+# undo history back exactly as they were, and it has to save over the prefab's own
+# file under the prefab's own GUID. A fresh GUID would orphan every instance
+# already placed, and neither fault says anything at the time. Runs the real
+# save/load path; no GL, no window.
+#   build/release/bin/prefabeditcheck.exe
+add_executable(prefabeditcheck tools/prefabeditcheck.cpp
+                               src/PrefabEdit.cpp src/PrefabSystem.cpp
+                               src/ProjectIO.cpp src/GameSettings.cpp
+                               src/SceneGraph.cpp src/Selection.cpp
+                               src/ModelLibrary.cpp src/Component.cpp
+                               src/Primitives.cpp src/EditMesh.cpp
+                               src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(prefabeditcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(prefabeditcheck PRIVATE fitzel imgui stb_headers
+                                              nlohmann_json::nlohmann_json)
+
+# gridcheck -- the starting grid: are the right craft in the right places?
+# The grid is built in the half second between pressing start and the lights, it
+# is different every race (the player's slot is drawn), and every way it can go
+# wrong -- a rival on the player's slot, a small field spread over the whole grid,
+# a marker's heading read off the wrong Euler component -- looks from the cockpit
+# like one plausible grid. So it is counted rather than looked at. Measures
+# against a plain centreline instead of a RoadSystem, so no GL, no window, no
+# assets.
+#   build/release/bin/gridcheck.exe
+add_executable(gridcheck tools/gridcheck.cpp src/RaceGrid.cpp src/SandboxMath.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(gridcheck PRIVATE fitzel glm::glm
+                                        nlohmann_json::nlohmann_json)
+target_compile_definitions(gridcheck PRIVATE FITZEL_PLAYER)
+
+# camcheck -- a camera bolted to a craft: does the eye actually sit in the seat?
+# Runs the camera system in the frame ORDER the game runs it (sim writes the
+# craft, cameras are placed, scene-graph resolve last) over frame times that
+# jitter the way vsync'd ones do, and measures the gap between where the eye was
+# put and where the seat ended up. That gap is the one the cockpit view lives or
+# dies on, it is worth metres at racing speed, and it reads on screen as the
+# CRAFT juddering -- so it cannot be found by looking, only by measuring. No GL,
+# no window, no assets.
+#   build/release/bin/camcheck.exe
+add_executable(camcheck tools/camcheck.cpp src/CameraSystem.cpp src/SceneGraph.cpp
+                        src/SandboxMath.cpp src/Component.cpp src/Primitives.cpp
+                        src/EditMesh.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(camcheck PRIVATE fitzel imgui glm::glm
+                                       nlohmann_json::nlohmann_json)
+target_compile_definitions(camcheck PRIVATE FITZEL_PLAYER)
+
 # The sky look (sandbox/tools/skycheck.cpp): renders sky.vert/sky.frag on its own
 # into an offscreen buffer, from a camera pointed where the clouds actually are,
 # and writes the frames out as PNGs. Not a test -- nothing passes or fails. The
@@ -471,7 +527,8 @@ target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers
 # test owns. Needs the editor-only preview and everything under it.
 add_executable(tracecheck tools/tracecheck.cpp
                           src/ViewportTrace.cpp src/GpuTrace.cpp
-                          src/PathTrace.cpp src/PathTraceCapture.cpp)
+                          src/PathTrace.cpp src/PathTraceCapture.cpp
+                          src/GrassTrace.cpp src/SandboxMath.cpp)
 target_link_libraries(tracecheck PRIVATE fitzel imgui glfw glad_gl_core_43
                                          glm::glm stb_headers)
 
@@ -485,6 +542,15 @@ target_link_libraries(gpucheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
 #   build/release/bin/pathcheck.exe [outDir]
 add_executable(pathcheck tools/pathcheck.cpp src/PathTrace.cpp)
 target_link_libraries(pathcheck PRIVATE glm::glm stb_headers)
+
+# grasscheck: the path tracer's grass -- the placement it shares with the
+# streamer, and the blade it re-implements from grass.vert. Asserts on what has
+# an answer and writes a picture for what does not. No GL either: the whole
+# point of generating the field on the CPU is that it needs no context.
+#   build/release/bin/grasscheck.exe [outDir]
+add_executable(grasscheck tools/grasscheck.cpp src/GrassTrace.cpp
+                          src/PathTrace.cpp src/SandboxMath.cpp)
+target_link_libraries(grasscheck PRIVATE fitzel glm::glm stb_headers)
 
 # The capture check (sandbox/tools/capturecheck.cpp): builds a small scene
 # through the real engine types, submits it to a real Renderer, and harvests it

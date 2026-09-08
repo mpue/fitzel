@@ -27,6 +27,12 @@ inline bool isLineBreak(const glm::vec2& p) { return p.x >= 1.0e38f; }
 // kLineBreak point are skipped -- see above.
 float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z);
 
+// Is (x,z) inside one of a list of keep-out discs, given as (x, z, radius)? The
+// brooks and ponds vegetation must not stand in. Linear, because the list is a
+// few hundred entries at most and every caller is already doing several terrain
+// height samples per candidate.
+bool inDiscs(const std::vector<glm::vec3>& discs, float x, float z);
+
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
 float rayAABB(const glm::vec3& ro, const glm::vec3& rd,
               const glm::vec3& bmin, const glm::vec3& bmax);

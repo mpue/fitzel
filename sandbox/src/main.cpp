@@ -85,6 +85,9 @@
 #include "ModelsPanel.hpp"
 #include "PrefabsPanel.hpp"
 #ifndef FITZEL_PLAYER
+#include "PrefabEdit.hpp"
+#endif
+#ifndef FITZEL_PLAYER
 #include "Autosave.hpp"
 #include "GridRenderer.hpp"
 #include "ModelingPanel.hpp"
@@ -1427,6 +1430,70 @@ int main(int argc, char** argv) {
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
         // panel's content region, so the scene renders at the viewport's pixels.
         RenderTarget viewportRT(hdrW, hdrH, RenderTarget::Format::RGBA8);
+        // What THIS SCENE starts as. -1 = whatever the game says (game.json), and
+        // a showroom scene then opens its start screen as usual.
+        //
+        // Per scene, because that is where the answer differs: a start screen is
+        // watched, a circuit is flown, a walkable level is walked, and one
+        // project-wide setting can only be one of those. game.json still names
+        // what the GAME opens as; this says what a scene is when it is played,
+        // wherever it was reached from -- a level change, the start screen, or
+        // Play pressed on it in the editor. That last one is why it exists: a
+        // track being edited is played thirty times an hour, and going through
+        // the start screen each time to pick a craft is the right route for a
+        // player and an absurd one for the author.
+        //
+        // Scene data, so it travels in the .fitzel and the shipped game obeys it
+        // too -- it is not an editor shortcut bolted to the side.
+        int          sceneStartMode = -1;
+        // --- The camera trace (F4) ----------------------------------------
+        // Judder is never diagnosed by looking at it. The eye cannot tell a craft
+        // moving unevenly from a camera moving unevenly -- they look identical,
+        // and the two live in completely different parts of the frame (the sim's
+        // fixed step, the camera's placement, the present). So it gets written
+        // down instead: one row a frame, both positions and the offset between
+        // them, and the answer is then arithmetic rather than opinion.
+        //
+        // The last time something juddered here, this is what settled it: the
+        // eye's offset from the craft was breathing by 30 cm a frame while the
+        // world was perfectly steady.
+        int                      camTraceLeft = 0;
+        std::vector<std::string> camTraceRows;
+        bool                     prevF4 = false;
+#ifndef FITZEL_PLAYER
+        // What the SELECTED camera sees, drawn small into the corner of the
+        // viewport. Aiming a camera by flying to it, looking through it, flying
+        // back and doing it again is how it worked before -- and it is the kind of
+        // back-and-forth that makes people give up on placing cameras at all.
+        //
+        // Its own target, kept between frames rather than made per frame: an
+        // ImGui image is drawn at the END of the frame, so a texture freed when
+        // this scope closed would be the font atlas by the time it was sampled
+        // (that mistake has already been made here once).
+        RenderTarget camPreviewRT(384, 216, RenderTarget::Format::RGBA8);
+        bool         showCamPreview = true;
+        // Which camera the corner is showing, and what to call it. Written by the
+        // render pass and read by the UI pass, which runs EARLIER in the frame --
+        // so the corner shows the previous frame's picture, exactly as the main
+        // viewport image does. One frame is not visible; two code paths for the
+        // same picture would be.
+        int          camPreviewId = -1;
+        std::string  camPreviewName;
+        // When the corner may draw itself again, and which camera it last drew.
+        //
+        // The preview is a SECOND full traversal of the scene -- the same draw
+        // list, seen from somewhere else -- and this renderer is CPU/driver-bound
+        // rather than fill-bound (see the render notes), so its cost sits in the
+        // draw calls and not in the 384x216 it fills. At sixty frames a second
+        // that is a second scene's worth of CPU every frame, for a picture the
+        // size of a postage stamp, while the thing being aimed at is a craft
+        // doing 80 m/s -- which is exactly what longer, unevener frames spoil.
+        //
+        // Twenty a second is plenty for a corner that shows where a camera
+        // points.
+        double       camPreviewNext = 0.0;
+        int          camPreviewLast = -1;
+#endif
         // The target the viewport panel was resized AWAY from, kept alive until
         // the frame it still appears in has been drawn.
         //
@@ -1963,6 +2030,20 @@ int main(int argc, char** argv) {
 
         bool  vehicleMode = false;
         bool  prevV       = false;
+        // WHICH of the craft's own cameras is being looked through -- a counter,
+        // stepped by C (or the pad's Y), taken modulo however many the craft
+        // carries. A counter rather than an id, because the craft changes under
+        // it: a restart, a different machine off the start screen, watching a
+        // rival. "The second camera on whatever I am flying" survives all of
+        // that; a remembered entity id does not.
+        //
+        // This is how a chase view and a cockpit view live on one craft: hang two
+        // Camera children on it (Follow and Cockpit) and the key steps between
+        // them. Nothing here knows what they are -- three cameras work, and so
+        // does one.
+        int   viewCam     = 0;
+        bool  prevViewKey = false;
+        bool  prevViewPad = false;
         PhysicsBodyId physCarId = 0;   // Jolt vehicle chassis (Play-mode drive)
         bool  carPlaced   = false;
         bool  showVehicle = true;
@@ -2545,6 +2626,12 @@ int main(int argc, char** argv) {
         // player too.
         std::unordered_map<std::string, prefab::Prefab> prefabCache;
         char              projNameBuf[64] = "";
+#ifndef FITZEL_PLAYER
+        // The Prefabs panel's rename/delete state. Here rather than in the panel
+        // because it has to outlive the frames a modal is open (see PanelState).
+        char        prefabRenameBuf[96] = "";
+        std::string prefabSelPath, prefabSelName;   // the picked prefab, by file
+#endif
         std::string       prefLocation = defaultProjectsRoot; // wizard default dir
         std::vector<std::string> recentProjects;              // folders, newest first
         const std::string prefsPath = "editor.json";
@@ -2866,6 +2953,23 @@ int main(int argc, char** argv) {
         // references and callbacks, built once here. Thin forwarding lambdas keep
         // the existing call sites (menus, wizard, player boot) unchanged.
         std::string exportStatus; // shown under the File menu after an export
+#ifndef FITZEL_PLAYER
+        // Editing a prefab on its own (see PrefabEdit.hpp). Declared HERE, above
+        // every lambda that saves or replaces the document, because while a
+        // session is up the document is not the scene and all of those have to
+        // refuse -- a "Save Project" during one would write the prefab's stage
+        // over the track.
+        prefabedit::Session prefabEdit;
+        auto prefabEditBusy = [&](const char* what) {
+            if (!prefabEdit.active) return false;
+            exportStatus = std::string(what) +
+                           " is not available while a prefab is open for editing.";
+            return true;
+        };
+#else
+        struct { bool active = false; } prefabEdit;
+        auto prefabEditBusy = [](const char*) { return false; };
+#endif
         projectio::Context pio{
             entities, materials, matSel, entityCounter, sel,
             currentProject, projNameBuf, sizeof(projNameBuf), prefLocation,
@@ -2902,16 +3006,16 @@ int main(int argc, char** argv) {
 #endif
         auto safeName             = [&](const std::string& s){ return projectio::safeName(s); };
         auto loadProjectMaterials = [&](const std::string& d){ projectio::loadProjectMaterials(pio, d); };
-        auto saveProjectTo        = [&](const std::string& f){ projectio::saveProjectTo(pio, f); noteSaved(); };
-        auto saveCurrent          = [&](){ projectio::saveCurrent(pio); noteSaved(); };
-        auto exportGame           = [&](const std::string& o){ projectio::exportGame(pio, o); };
+        auto saveProjectTo        = [&](const std::string& f){ if (prefabEditBusy("Saving the project")) return; projectio::saveProjectTo(pio, f); noteSaved(); };
+        auto saveCurrent          = [&](){ if (prefabEditBusy("Saving the project")) return; projectio::saveCurrent(pio); noteSaved(); };
+        auto exportGame           = [&](const std::string& o){ if (prefabEditBusy("Exporting the game")) return; projectio::exportGame(pio, o); };
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
         // Loading/creating a project replaces the document, so the undo history
         // must not survive the boundary.
         // Rescan road-surface textures and tree assets to include the project being
         // opened before the scene loads (loadScene restores the saved surface/trees
         // by name, so the project's files must already be in the lists by then).
-        auto newProject           = [&](){ projectio::newProject(pio); history.clear(); prefabCache.clear(); roads.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
+        auto newProject           = [&](){ if (prefabEditBusy("Starting a project")) return; projectio::newProject(pio); history.clear(); prefabCache.clear(); roads.refreshTextures(std::string()); veg.refreshTreeAssets(std::string()); };
 
         // Non-blocking editor loads: kick off an incremental scene load, then step
         // it each frame (below) so the UI keeps drawing with a progress bar. The
@@ -2920,11 +3024,13 @@ int main(int argc, char** argv) {
         // below) -- they need the scene complete before continuing.
         projectio::SceneLoad sceneLoad;
         auto openProjectAsync = [&](const std::string& f){
+            if (prefabEditBusy("Opening a project")) return false;
             roads.refreshTextures(f); veg.refreshTreeAssets(f);
             history.clear(); prefabCache.clear();
             return projectio::beginOpenProject(pio, sceneLoad, f);
         };
         auto loadSceneAsync = [&](const std::string& p){
+            if (prefabEditBusy("Opening a scene")) return false;
             history.clear(); prefabCache.clear();
             return projectio::beginLoadScene(pio, sceneLoad, p);
         };
@@ -2944,9 +3050,9 @@ int main(int argc, char** argv) {
         // Scenes within the open project. Switching/creating replaces the document,
         // so the undo history is cleared at the boundary (like opening a project).
         auto listScenesIn         = [&](const std::string& f){ return projectio::listScenesIn(f); };
-        auto saveSceneFile        = [&](const std::string& p){ projectio::saveScene(pio, p); noteSaved(); };
-        auto loadSceneFile        = [&](const std::string& p){ const bool ok = projectio::loadSceneFile(pio, p); history.clear(); prefabCache.clear(); return ok; };
-        auto newSceneInProject    = [&](const std::string& f, const std::string& n){ auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
+        auto saveSceneFile        = [&](const std::string& p){ if (prefabEditBusy("Saving the scene")) return; projectio::saveScene(pio, p); noteSaved(); };
+        auto loadSceneFile        = [&](const std::string& p){ if (prefabEditBusy("Opening a scene")) return false; const bool ok = projectio::loadSceneFile(pio, p); history.clear(); prefabCache.clear(); return ok; };
+        auto newSceneInProject    = [&](const std::string& f, const std::string& n){ if (prefabEditBusy("Starting a scene")) return std::string(); auto p = projectio::newSceneInProject(pio, f, n); history.clear(); return p; };
         auto renameScene          = [&](const std::string& p, const std::string& n){ return projectio::renameScene(pio, p, n); };
         auto deleteSceneFile      = [&](const std::string& p){ return projectio::deleteSceneFile(p); };
 
@@ -3263,6 +3369,36 @@ int main(int argc, char** argv) {
                          document);
             if (rootId >= 0) sel.select(rootId);
         };
+
+#ifndef FITZEL_PLAYER
+        // Rename a prefab file. The GUID is kept, so instances already placed in
+        // scenes still resolve; the spawn cache is dropped because it is keyed by
+        // NAME, and the old key would go on handing out the old file.
+        auto renamePrefabFile = [&](const std::string& path,
+                                    const std::string& newName) {
+            std::string err;
+            const std::string fresh = prefab::renameTo(path, newName, err);
+            if (fresh.empty()) {
+                exportStatus = "Rename failed: " + err;
+                return;
+            }
+            prefabCache.clear();
+            exportStatus = "Renamed prefab to: " + newName;
+        };
+        // ...and delete one. The panel asks first -- a file is not in the undo
+        // history, so this is the one prefab operation Ctrl+Z cannot walk back.
+        auto deletePrefabFile = [&](const std::string& path) {
+            std::string err;
+            if (!prefab::deleteFile(path, err)) {
+                exportStatus = "Delete failed: " + err;
+                return;
+            }
+            prefabCache.clear();
+            exportStatus = "Deleted prefab: " +
+                           std::filesystem::path(path).stem().generic_string();
+        };
+#endif
+
         // --- Prefabs along the road (see RoadPrefab.hpp) -----------------------
         // Tool settings only; what they place is ordinary entities, so nothing
         // here is saved with the scene.
@@ -3574,6 +3710,54 @@ int main(int argc, char** argv) {
             cc->mode       = CameraComponent::Multishot;
             cc->shotTarget = n.id;
             cam.components.items.push_back(std::move(cc));
+            history.push(std::make_unique<AddEntityCmd>(cam), document);
+            sel.select(cam.id);
+        };
+        // A camera that SITS IN the picked object: a Camera child in Cockpit mode,
+        // seated at the front of its bounding box and TURNED TO FACE THE NOSE.
+        //
+        // That half turn is the whole reason this menu item exists. A camera looks
+        // down its own -Z; a craft's nose is its +Z. So a camera child left at
+        // zero rotation -- which is what dropping one in gives you -- looks out of
+        // the BACK of the craft, and the obvious conclusion is that the mode is
+        // broken rather than that it is facing the wrong way. The turn is not done
+        // inside the camera system, where it would make the frustum the gizmo
+        // draws a lie; it is done once, here, on a camera the author can then
+        // freely turn any way they like.
+        //
+        // Which end the nose is at, the craft already says: Vehicle and Glider both
+        // carry `forward` for models built the other way round.
+        auto addCockpitCamera = [&](int idx) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            const Entity& n = entities[idx];
+            const auto* gc = n.components.get<GliderComponent>();
+            const auto* vc = n.components.get<VehicleComponent>();
+            const bool noseBack = (gc && gc->forward == 1) || (vc && vc->forward == 1);
+            const float nose = noseBack ? -1.0f : 1.0f;
+
+            Entity cam;
+            cam.type   = EntityType::Empty;
+            cam.half   = glm::vec3(0.5f);
+            cam.id     = entityCounter++;
+            cam.parent = n.id;
+            cam.name   = n.name + " Cockpit";
+            // A seat, not a pose: forward of centre and above it, in fractions of
+            // the craft's own size so it lands sensibly on a glider and on a lorry.
+            // The author drags it to the actual canopy from there -- which is the
+            // one thing only they can know.
+            cam.localCenter   = glm::vec3(0.0f, n.half.y * 0.35f,
+                                          nose * n.half.z * 0.35f);
+            cam.localRotation = glm::vec3(0.0f, noseBack ? 0.0f : 180.0f, 0.0f);
+            auto cc = std::make_unique<CameraComponent>();
+            cc->mode = CameraComponent::Cockpit;
+            cam.components.items.push_back(std::move(cc));
+            // World transform for the rest of this frame; the scene-graph resolve
+            // takes it over from here (local is the source of truth).
+            glm::vec3 sc;
+            scenegraph::decompose(worldOf(n) * composeModel(cam.localCenter,
+                                                            cam.localRotation,
+                                                            glm::vec3(1.0f)),
+                                  cam.center, cam.rotation, sc);
             history.push(std::make_unique<AddEntityCmd>(cam), document);
             sel.select(cam.id);
         };
@@ -4208,6 +4392,26 @@ int main(int argc, char** argv) {
         addF("waterIor", waterIor);
         addF("cursorX", cursor3D.x); addF("cursorY", cursor3D.y); addF("cursorZ", cursor3D.z);
         addF("cursorGrid", cursorGrid);
+#ifndef FITZEL_PLAYER
+        addB("camPreview", showCamPreview);    // editor-only: the player has no viewport corner
+#endif
+        // What this scene is played as. Registered by hand rather than through
+        // addI, because the generic reader leaves a missing key ALONE -- which is
+        // right for a tunable with a sensible default and wrong for this one: a
+        // scene that says nothing would inherit whatever the last scene said, and
+        // the setting would behave as if it were global. Absent means -1 here,
+        // every time.
+        //
+        // NOT inside the editor-only guard: the shipped player reads scene
+        // settings through the same registry, and a scene that says how it is
+        // played has to be obeyed there most of all.
+        tunables.push_back({"startMode",
+            [&](nlohmann::json& j){ j["startMode"] = sceneStartMode; },
+            [&](const nlohmann::json& j){
+                const auto it = j.find("startMode");
+                sceneStartMode = (it != j.end() && it->is_number_integer())
+                                     ? it->get<int>() : -1;
+            }});
         addB("showGrid", showGrid);            addF("gridFade", gridFade);
         addF("terrHeight", uiSettings.heightScale);   addF("terrRidge", uiSettings.ridgeScale);
         addF("terrContinent", uiSettings.continentAmp); addF("terrBiome", uiSettings.biomeFreq);
@@ -4743,6 +4947,79 @@ int main(int argc, char** argv) {
         // first-person walk mode; Stop restores the snapshot and the edit camera
         // exactly, so play-time changes never leak into the edited scene.
         bool playMode = false;
+#ifndef FITZEL_PLAYER
+        // Open a prefab on a stage of its own: the scene steps aside and the
+        // prefab becomes the document, edited with the editor's own tools (see
+        // PrefabEdit.hpp). The eye is parked and framed on it; closing puts both
+        // the scene and the eye back where they were.
+        auto openPrefabForEdit = [&](const std::string& path) {
+            if (playMode) {
+                exportStatus = "Stop Play before editing a prefab.";
+                return;
+            }
+            // On the ground at the origin, so there is a floor under it rather
+            // than a void -- the terrain is not an entity and stays.
+            const glm::vec3 at(0.0f, streamer.heightAt(0.0f, 0.0f), 0.0f);
+            // The eye and the edit mode are remembered BEFORE the swap, because
+            // after it there is no scene left to read them back out of.
+            const glm::vec3 wasPos   = camera.position();
+            const float     wasYaw   = camera.yaw();
+            const float     wasPitch = camera.pitch();
+            const bool      wasEdit  = entityEditMode;
+            std::string status;
+            if (!prefabedit::open(prefabEdit, pio, path, entities, history,
+                                  entityCounter, at, status)) {
+                exportStatus = status;
+                return;
+            }
+            prefabEdit.camPos = wasPos;
+            prefabEdit.camYaw = wasYaw;
+            prefabEdit.camPitch = wasPitch;
+            prefabEdit.entityEdit = wasEdit;
+            exportStatus = status;
+            sel.clear();
+            entityEditMode = false;   // a fresh stage, not the last mesh edit
+            placeMode      = false;
+            resolveHierarchy();
+            glm::vec3 eye(0.0f), look(0.0f);
+            if (prefabedit::frame(prefabEdit, entities, camera.fov(), eye, look)) {
+                camera.setPosition(eye);
+                const glm::vec3 d = look - eye;
+                if (glm::length(d) > 1e-4f)
+                    camera.setBasis(glm::normalize(d), glm::vec3(0.0f, 1.0f, 0.0f));
+            }
+            if (prefabEdit.rootId >= 0) sel.select(prefabEdit.rootId);
+        };
+        // Put the scene back. The prefab's file is whatever the last Save left --
+        // this does not write one, which is what makes Discard mean discard.
+        auto closePrefabEdit = [&]() {
+            if (!prefabEdit.active) return;
+            const glm::vec3 pos = prefabEdit.camPos;
+            const float yaw = prefabEdit.camYaw, pitch = prefabEdit.camPitch;
+            const bool edit = prefabEdit.entityEdit;
+            prefabedit::close(prefabEdit, entities, history);
+            camera.setPosition(pos);
+            camera.setYaw(yaw);
+            camera.setPitch(pitch);
+            entityEditMode = edit;
+            sel.clear();
+            resolveHierarchy();
+        };
+        // Save the stage back over the prefab's own file, keeping its GUID so
+        // every instance already in a scene still points at it. The spawn cache
+        // is dropped for that name, or the next rival built from it would be the
+        // version this just replaced.
+        auto savePrefabEdit = [&]() {
+            std::string status;
+            if (prefabedit::saveBack(prefabEdit, pio, entities, prefabDir(), status)) {
+                std::string key = prefabEdit.name;
+                for (char& c : key)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                prefabCache.erase(key);
+            }
+            exportStatus = status;
+        };
+#endif
         // The scene's UI overlay is open as a menu right now (see UiOverlay's
         // menu mode): the game is running but the overlay owns mouse + keyboard,
         // so no walking, driving or script input this frame.
@@ -5197,6 +5474,70 @@ int main(int argc, char** argv) {
                 }
             return -1;
         };
+        // A prefab by name, loaded once and kept. Shared by the script host's
+        // spawnPrefab and by the starting grid, which builds its field out of
+        // prefabs too -- one lookup, one cache, one place a typo is reported.
+        auto findPrefab = [&](const std::string& name) -> const prefab::Prefab* {
+            if (currentProject.empty() || name.empty()) return nullptr;
+            std::string key = name;
+            for (char& c : key)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            auto it = prefabCache.find(key);
+            if (it != prefabCache.end()) return &it->second;
+            // Resolve the name to a .fprefab in the project's prefabs/ folder.
+            const std::string dir = prefab::prefabsDirIn(
+                std::filesystem::path(currentProject).parent_path().generic_string());
+            std::string path;
+            for (const auto& np : prefab::list(dir)) {
+                std::string ln = np.first;
+                for (char& c : ln)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (ln == key) { path = np.second; break; }
+            }
+            if (path.empty()) {
+                std::fprintf(stderr, "[Fitzel] no prefab named '%s'\n", name.c_str());
+                return nullptr;
+            }
+            auto loaded = prefab::load(pio, path);
+            if (!loaded || loaded->entities.empty()) {
+                std::fprintf(stderr, "[Fitzel] failed to load prefab '%s'\n",
+                             name.c_str());
+                return nullptr;
+            }
+            return &prefabCache.emplace(std::move(key), std::move(*loaded))
+                        .first->second;
+        };
+
+        // The starting grid builds its own field: every Grid Position marker that
+        // names a prefab makes the rival that stands on it (see racegrid::populate
+        // and GridPositionComponent).
+        //
+        // PLAY ONLY, and that is not a detail. This puts craft INTO the scene, and
+        // the only thing that takes them out again is Play's snapshot being
+        // restored on Stop. Run in the editor it would silently breed a field into
+        // the .fitzel on disk -- the same rule every other race override follows.
+        //
+        // Straight into `entities`, not through the script host's deferred spawn
+        // queue: the grid is lined up on the very next line, and a craft that only
+        // exists at the end of the tick would miss it and start in the paddock.
+        auto buildGridField = [&](int playerId, int playerId2, int rivalsWanted) {
+            if (!playMode) return;
+            racegrid::populate(
+                entities, rivalsWanted, playerId,
+                [&](const std::string& name, const glm::vec3& pos,
+                    float yawDeg) -> int {
+                    const prefab::Prefab* pf = findPrefab(name);
+                    if (!pf) return -1;
+                    std::vector<Entity> inst =
+                        prefab::instantiate(*pf, entityCounter, pos, yawDeg);
+                    if (inst.empty()) return -1;
+                    const int rootId = inst.front().id;  // the root comes first
+                    for (Entity& ne : inst) entities.push_back(std::move(ne));
+                    return rootId;
+                },
+                playerId2);
+        };
+
         // Enter glider mode (G key / Glider-panel checkbox): fly the nearest glider
         // entity. Arcade in both editor and Play, so no physics body is created.
         auto enterGliderMode = [&] {
@@ -5213,9 +5554,13 @@ int main(int argc, char** argv) {
             // race distance from where it stands, and the drive reads the craft's
             // position, so the grid has to exist first or everyone starts from
             // wherever they were parked.
-            if (g >= 0 && playMode)
+            if (g >= 0 && playMode) {
+                // The grid builds its field first, or there is nothing to line up
+                // but the craft the author happened to park.
+                buildGridField(g, driveGliderId2, sessionRaceField);
                 racegrid::lineUp(entities, roads.active(), g, /*applyParticipation=*/true,
                                  driveGliderId2);
+            }
             if (g >= 0) beginGliderDrive(g);
             else        gliderMode = false; // nothing to fly
             // Seat player two only once the grid has moved its craft: the state
@@ -5346,37 +5691,10 @@ int main(int argc, char** argv) {
         // is loaded (and its models imported) once, then cached by name.
         host.spawnPrefab = [&](const std::string& name, glm::vec3 pos,
                                float yaw) -> int {
-            if (currentProject.empty() || name.empty()) return 0;
-            std::string key = name;
-            for (char& c : key)
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            auto it = prefabCache.find(key);
-            if (it == prefabCache.end()) {
-                // Resolve the name to a .fprefab in the project's prefabs/ folder.
-                const std::string dir = prefab::prefabsDirIn(
-                    std::filesystem::path(currentProject).parent_path().generic_string());
-                std::string path;
-                for (const auto& np : prefab::list(dir)) {
-                    std::string ln = np.first;
-                    for (char& c : ln)
-                        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                    if (ln == key) { path = np.second; break; }
-                }
-                if (path.empty()) {
-                    std::fprintf(stderr,
-                        "[Fitzel] game.spawnPrefab: no prefab named '%s'\n", name.c_str());
-                    return 0;
-                }
-                auto loaded = prefab::load(pio, path);
-                if (!loaded || loaded->entities.empty()) {
-                    std::fprintf(stderr,
-                        "[Fitzel] game.spawnPrefab: failed to load '%s'\n", name.c_str());
-                    return 0;
-                }
-                it = prefabCache.emplace(std::move(key), std::move(*loaded)).first;
-            }
+            const prefab::Prefab* pf = findPrefab(name);
+            if (!pf) return 0;
             std::vector<Entity> inst =
-                prefab::instantiate(it->second, entityCounter, pos, yaw);
+                prefab::instantiate(*pf, entityCounter, pos, yaw);
             if (inst.empty()) return 0;
             const int rootId = inst.front().id; // instantiate emits the root first
             for (Entity& e : inst) pendingSpawns.push_back(std::move(e));
@@ -5628,8 +5946,58 @@ int main(int argc, char** argv) {
             terrainCollCenter = centerXZ;
         };
 
+        // The craft the PLAYER flies, when the scene holds none.
+        //
+        // A circuit does not have to contain a glider: the one being flown
+        // normally arrives from the start screen, which is exactly what a forced
+        // "Play as: flying the glider" skips. So the grid answers instead -- the
+        // marker that reserves the player's slot names the craft that stands on
+        // it, and this builds that one, there.
+        //
+        // A craft already in the scene WINS. An author who parked one on the grid
+        // meant it, and quietly building a second beside it would be two craft on
+        // one slot and a race against yourself.
+        //
+        // Play only, like everything else that puts objects into the scene: what
+        // takes them out again is Play's snapshot being restored on Stop.
+        auto ensurePlayerCraft = [&]() -> int {
+            if (!playMode) return -1;
+            for (const Entity& e : entities)
+                if (e.activeInHierarchy && e.components.get<GliderComponent>() &&
+                    !e.components.get<OpponentComponent>())
+                    return e.id;    // already something to fly
+            const int mk = racegrid::playerMarker(entities);
+            const std::string name = racegrid::playerMarkerPrefab(entities);
+            if (mk < 0 || name.empty()) return -1;
+            const Entity* m = document.find(mk);
+            if (!m) return -1;
+            const glm::vec3 at = m->center;
+            const prefab::Prefab* pf = findPrefab(name);
+            if (!pf) {
+                host.hud = "The player's grid position names a prefab that is not "
+                           "there: \"" + name + "\".";
+                return -1;
+            }
+            // Yaw 0: the line-up that follows turns it to the marker's own facing
+            // and lifts it to its ride height, and it knows about a model whose
+            // nose is the other way round. Turning it here as well would be the
+            // same rotation applied twice.
+            std::vector<Entity> inst = prefab::instantiate(*pf, entityCounter, at, 0.0f);
+            if (inst.empty()) return -1;
+            const int rootId = inst.front().id;
+            for (Entity& ne : inst) entities.push_back(std::move(ne));
+            // Deliberately WITHOUT an Opponent component: this one is flown, not
+            // raced by the AI, and populate() counts entered opponents to decide
+            // how many rivals to build.
+            resolveHierarchy();
+            return rootId;
+        };
+
         auto startPlay = [&] {
             if (playMode) return;
+            // Play runs the SCENE, and the scene is stashed. Refusing beats the
+            // alternative, which is a game made of one prefab and no way back.
+            if (prefabEditBusy("Play")) return;
             endEditorDrive(); // a test-drive must not leak into the Play backup
             endGliderDrive(); // ...nor a test-flight
             playMode      = true;
@@ -5767,6 +6135,14 @@ int main(int argc, char** argv) {
             if (!startAsSet) {
                 if (legacyStartVehicle)     startAs = game::StartMode::Vehicle;
                 else if (legacyStartGlider) startAs = game::StartMode::Glider;
+            }
+            // ...and the SCENE's own answer beats both, because it is the most
+            // specific one there is: game.json says what the game opens as, this
+            // says what this level is. A scene that says nothing (-1) leaves the
+            // game's setting standing.
+            if (sceneStartMode >= 0) {
+                startAs    = static_cast<game::StartMode>(sceneStartMode);
+                startAsSet = true;
             }
             // Where the walking player stands: the first entity carrying a
             // PlayerStart component (adopting its facing and move speed),
@@ -6012,7 +6388,9 @@ int main(int argc, char** argv) {
                 break;
             case game::StartMode::Glider:
                 // enterGliderMode flies the nearest glider entity (no-op if the
-                // scene has none, which then leaves the walking player).
+                // scene has none, which then leaves the walking player) -- so
+                // first make sure there IS one, out of the grid's player slot.
+                ensurePlayerCraft();
                 gliderMode = true;
                 enterGliderMode();
                 break;
@@ -6043,11 +6421,51 @@ int main(int argc, char** argv) {
                 break;   // the walking player, already standing up
             }
 
+            // ...and say so when the mode found nothing to be. Every case above
+            // falls back to the walking player, which is the right behaviour and
+            // the wrong silence -- exactly the trap the missing PlayerStart
+            // message exists for. It bites hardest on a FORCED mode: the answer
+            // was given a second ago in the viewport corner, so a game that
+            // quietly opens on foot instead reads as the picker not working.
+            //
+            // A circuit with no craft parked on it is the ordinary case here, not
+            // a broken scene: the craft normally arrives from the start screen,
+            // which is the very thing being skipped.
+            if (sceneStartMode >= 0) {
+                const char* missing = nullptr;
+                switch (startAs) {
+                case game::StartMode::Glider:
+                    if (!gliderMode)
+                        missing = "no Glider in this scene, and the grid position "
+                                  "marked \"Player starts here\" names no prefab to "
+                                  "build one from.";
+                    break;
+                case game::StartMode::Vehicle:
+                    if (!vehicleMode)
+                        missing = "no Vehicle in this scene.";
+                    break;
+                case game::StartMode::MainCamera:
+                case game::StartMode::Multishot:
+                    if (activeCam < 0)
+                        missing = "no camera in this scene to watch through.";
+                    break;
+                default: break;
+                }
+                if (missing)
+                    host.hud = std::string("Play as \"") +
+                               game::startModeName(startAs) + "\": " + missing +
+                               " Standing here on foot instead.";
+            }
+
             // A showroom scene is a start screen, not a level: no walking player
             // and no locked cursor -- the picker owns the frame, and it takes the
             // scene over from here (arranging the craft, driving the camera).
             // Checked last so it overrules whichever start mode ran above.
-            if (showroom::Showroom::isShowroomScene(entities)) {
+            // A scene that names its own mode means "this is what I am", and a
+            // start screen is the one thing that would not be: it takes the scene
+            // over and asks which craft and which circuit. So naming a mode skips
+            // it -- which is also how a showroom scene is tested as a level.
+            if (sceneStartMode < 0 && showroom::Showroom::isShowroomScene(entities)) {
                 fpsMode = false;
                 vehicleMode = gliderMode = false;
                 input.setCursorLocked(false);
@@ -6235,6 +6653,7 @@ int main(int argc, char** argv) {
             {"Presentation", "Animation graph", nullptr, &showGraphEditor},
             {"Presentation", "Render",         nullptr, &pathRender.open},
             {"Presentation", "Mixer",          nullptr, &showMixer},
+            {"Inspect",  "Camera preview",     nullptr, &showCamPreview, false},
             {"Inspect",  "Performance",        "F3",    &showPerf},
             {"Inspect",  "Stats",              nullptr, &showStats},
         };
@@ -6339,7 +6758,7 @@ int main(int argc, char** argv) {
             // snapshotting over the very file being offered would eat it.
             autoSave.tick(window.time(),
                           !playMode && !playerMode && !sceneLoad.active &&
-                              !pendingSnapshot.valid(),
+                              !prefabEdit.active && !pendingSnapshot.valid(),
                           currentProject, history.revision(),
                           [&](const std::string& path){
                               return projectio::saveSceneWithMaterials(pio, path);
@@ -6412,15 +6831,27 @@ int main(int argc, char** argv) {
             // answer -- better than inventing an eye nobody placed.
             auto applyViewCamera = [&] {
                 cams.update(entities, dt);
-                // The camera child of `owner`, or -1. First one wins; a craft with
-                // two is an authoring mistake, not a mode.
-                const auto childCam = [&](int owner) {
-                    if (owner < 0) return -1;
+                // The camera children of `owner`, in scene order. A craft with
+                // two is not an authoring mistake any more -- it is a chase view
+                // and a cockpit view, and `viewCam` says which one is up.
+                const auto childCams = [&](int owner) {
+                    std::vector<int> ids;
+                    if (owner < 0) return ids;
                     for (const Entity& e : entities)
                         if (e.parent == owner && e.activeInHierarchy &&
                             e.components.get<CameraComponent>())
-                            return e.id;
-                    return -1;
+                            ids.push_back(e.id);
+                    return ids;
+                };
+                // ...and the one being looked through. Modulo, so the counter can
+                // run on forever and every craft answers with a camera it
+                // actually has: step past the end of a two-camera craft and you
+                // are back on its first, while a rival carrying one is simply
+                // never anything else.
+                const auto childCam = [&](int owner) {
+                    const std::vector<int> ids = childCams(owner);
+                    if (ids.empty()) return -1;
+                    return ids[static_cast<std::size_t>(viewCam) % ids.size()];
                 };
                 const int driven = gliderMode ? driveGliderId
                                  : vehicleMode ? driveVehicleId : -1;
@@ -6515,7 +6946,21 @@ int main(int argc, char** argv) {
             // Hot reload: pick up on-disk asset edits ~twice a second. Textures
             // and models reload in place (existing handles update automatically);
             // edited/added/removed materials refresh the project's library.
-            if (now >= nextAssetPoll) {
+            //
+            // NOT WHILE PLAYING, and that is a frame-pacing decision rather than a
+            // tidiness one. The scan walks the project's asset tree, and on a real
+            // project it costs up to 12 ms -- measured, in a frame budget of 16.7.
+            // Twice a second that is a dropped frame twice a second, at a fixed
+            // interval, which is the worst kind of judder to look at: regular
+            // enough to feel like a rhythm and small enough that nobody suspects
+            // a file scan. It bites hardest in a cockpit view, where the whole
+            // image is rigid with the craft and has nothing to hide behind.
+            //
+            // Nothing is lost: hot reload exists so an edit made in Photoshop
+            // shows up while you work, and while Play is running you are not
+            // editing files -- Stop picks up everything that changed meanwhile on
+            // the very next scan.
+            if (now >= nextAssetPoll && !playMode) {
                 FZ_ZONE("assets (0.5s poll)");
                 nextAssetPoll = now + 0.5;
                 const std::vector<AssetChange> changes = assetDb.pollChanges();
@@ -6553,6 +6998,22 @@ int main(int argc, char** argv) {
                 const bool f3 = input.isKeyDown(GLFW_KEY_F3);
                 if (f3 && !prevF3) showPerf = !showPerf;
                 prevF3 = f3;
+            }
+            // F4 writes the next 300 frames of "where is the craft, where is the
+            // eye" to camtrace.csv beside the project. A bare function key for the
+            // same reason as F3: the moment worth measuring is while something is
+            // being flown, and that is the one moment there are no menus.
+            {
+                const bool f4 = input.isKeyDown(GLFW_KEY_F4);
+                if (f4 && !prevF4 && camTraceLeft == 0) {
+                    camTraceLeft = 300;
+                    camTraceRows.clear();
+                    camTraceRows.push_back(
+                        "frame,dt_ms,steps,alpha,craftX,craftY,craftZ,"
+                        "simX,simY,simZ,camX,camY,camZ,offset,camId");
+                    exportStatus = "Camera trace: recording 300 frames...";
+                }
+                prevF4 = f4;
             }
 
             // --- Input ---------------------------------------------------
@@ -6623,6 +7084,29 @@ int main(int argc, char** argv) {
                 }
             }
             prevV = vDown;
+
+            // C (or the pad's Y) steps through the cameras of whatever is being
+            // driven: chase, cockpit, and anything else hung on it.
+            //
+            // The switch is a COUNTER over the craft's own children rather than a
+            // named mode, so what the key offers is whatever the author hung on
+            // that craft -- and a craft with one camera simply has nothing to
+            // step to. It applies to the second pane and to a rival being watched
+            // as well: one person is pressing it, and having their own view
+            // change while the other pane stayed behind would read as a fault.
+            //
+            // Only while something is being driven. Loose in the editor it would
+            // be a key that does nothing visible, and those are the ones people
+            // press twice.
+            {
+                const bool cDown = input.isKeyDown(GLFW_KEY_C);
+                const bool pad   = input.gamepadButton(GLFW_GAMEPAD_BUTTON_Y);
+                if (((cDown && !prevViewKey) || (pad && !prevViewPad)) &&
+                    (gliderMode || vehicleMode) && !ImGui::GetIO().WantTextInput)
+                    ++viewCam;
+                prevViewKey = cDown;
+                prevViewPad = pad;
+            }
 
             // G toggles the fly-a-glider mode: take the nearest glider (a model
             // with a Glider component) and fly it with the arcade hover sim, in
@@ -8580,6 +9064,55 @@ int main(int argc, char** argv) {
             // camera has to follow there or a test flight is done blind.
             if (!playMode) applyViewCamera();
 
+            // One row of the trace, taken HERE: the sim has written the craft's
+            // interpolated pose for this frame and applyViewCamera has just
+            // placed the eye from it, so the two numbers are the same frame's --
+            // which is the whole point. Sampled anywhere later and a difference
+            // could be the sampling rather than the fault.
+            if (camTraceLeft > 0) {
+                const int driven = gliderMode ? driveGliderId
+                                 : vehicleMode ? driveVehicleId : -1;
+                const Entity* dce = (driven >= 0) ? document.find(driven) : nullptr;
+                const glm::vec3 craft = dce ? dce->center : glm::vec3(0.0f);
+                const glm::vec3 simP  = gliderMode ? race.gliderPos : carPos;
+                const glm::vec3 eye   = camera.position();
+                char row[256];
+                std::snprintf(row, sizeof row,
+                    "%d,%.3f,%d,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+                    "%.4f,%.4f,%.4f,%.4f,%d",
+                    301 - camTraceLeft, dt * 1000.0f, simSteps, simAlpha,
+                    craft.x, craft.y, craft.z, simP.x, simP.y, simP.z,
+                    eye.x, eye.y, eye.z, glm::length(eye - craft), activeCam);
+                camTraceRows.push_back(row);
+                if (--camTraceLeft == 0) {
+                    const std::string out =
+                        (currentProject.empty()
+                             ? std::string("camtrace.csv")
+                             : std::filesystem::path(currentProject)
+                                   .parent_path().generic_string() + "/camtrace.csv");
+                    std::ofstream f(out);
+                    for (const std::string& r : camTraceRows) f << r << '\n';
+                    // ...and where the frame went, in a file beside it. The
+                    // positions say WHETHER the motion is smooth; they cannot say
+                    // why a frame took 19 ms -- and that is the other half of
+                    // judder, because motion that is perfect on paper still
+                    // judders when it is presented at the wrong cadence.
+                    const std::string zout =
+                        out.substr(0, out.size() - 4) + "_zones.csv";
+                    std::ofstream zf(zout);
+                    const prof::FrameStats fs = prof::frameStats();
+                    zf << "# frame ms: last " << fs.last << " avg " << fs.avg
+                       << " worst " << fs.worst << " low1_fps " << fs.low1
+                       << " spikes " << fs.spikes << '\n';
+                    zf << "zone,last_ms,avg_ms,worst_ms\n";
+                    for (const prof::ZoneStat& z : prof::zones())
+                        zf << (z.name ? z.name : "?") << ',' << z.last << ','
+                           << z.avg << ',' << z.worst << '\n';
+                    exportStatus = "Camera trace written: " + out;
+                    host.hud     = "Camera trace written: " + out;
+                }
+            }
+
             // Deferred scene load a SceneTrigger asked for this frame. Done here,
             // outside the play tick, so the entity list is swapped between frames --
             // never mid-iteration. The name resolves to a .fitzel in the current
@@ -8838,23 +9371,30 @@ int main(int argc, char** argv) {
                     // own camera keeps it -- then the author has said what they
                     // want and nobody should overrule it.
                     if (rootId >= 0 && slot >= 0) {
-                        const auto childCam = [&](int parentId) {
-                            for (Entity& e : entities)
+                        // ALL of them, not the first: a craft that offers a chase
+                        // view and a cockpit view is two camera children, and
+                        // handing over one of them would leave the C key stepping
+                        // between a view and nothing.
+                        const auto childCamIds = [&](int parentId) {
+                            std::vector<int> ids;
+                            for (const Entity& e : entities)
                                 if (e.parent == parentId &&
                                     e.components.get<CameraComponent>())
-                                    return &e;
-                            return static_cast<Entity*>(nullptr);
+                                    ids.push_back(e.id);
+                            return ids;
                         };
-                        if (!childCam(rootId))
-                            if (Entity* sc = childCam(slot)) sc->parent = rootId;
-                        // Player two needs an eye of its own, and there is only
-                        // one camera to hand: copy player one's onto its craft.
-                        // Without this the second pane has nothing to draw from
-                        // and the screen quietly stays whole -- which would look
-                        // like the start screen's two-player choice being
-                        // ignored.
-                        if (rootId2 >= 0 && !childCam(rootId2))
-                            if (const Entity* src = childCam(rootId)) {
+                        if (childCamIds(rootId).empty())
+                            for (int id : childCamIds(slot))
+                                if (Entity* sc = document.find(id)) sc->parent = rootId;
+                        // Player two needs eyes of its own, and there is only one
+                        // set to hand: copy player one's onto its craft. Without
+                        // this the second pane has nothing to draw from and the
+                        // screen quietly stays whole -- which would look like the
+                        // start screen's two-player choice being ignored.
+                        if (rootId2 >= 0 && childCamIds(rootId2).empty())
+                            for (int id : childCamIds(rootId)) {
+                                const Entity* src = document.find(id);
+                                if (!src) continue;
                                 Entity cam2 = *src;          // components deep-copy
                                 cam2.id     = entityCounter++;
                                 cam2.parent = rootId2;
@@ -8901,6 +9441,18 @@ int main(int argc, char** argv) {
                             else                  op->entered = false;
                         }
                     }
+                    // ...and the rest of it is BUILT, where the circuit's grid
+                    // says so. This is what makes the start screen's field size a
+                    // number rather than a ceiling: a marker carrying a prefab
+                    // makes its own rival, so a circuit no longer has to be
+                    // authored with the biggest field anyone might ask for.
+                    //
+                    // After the trim (its craft count the same as hand-placed
+                    // ones) and BEFORE the difficulty ladder, or a built rival
+                    // would race at the circuit's tuning while the rest of the
+                    // field ran at the step the player chose.
+                    buildGridField(rootId, rootId2, raceField);
+
                     // ...and how hard they push, which is the whole ladder in one
                     // call (see Difficulty.hpp). Unconditional, unlike the
                     // overrides above: every race is run at SOME step, and PRO is
@@ -9059,6 +9611,21 @@ int main(int argc, char** argv) {
                     ImGui::PopStyleColor();
                 }
                 ImGui::EndMainMenuBar();
+            }
+
+            // The prefab-editing banner, above the toolbar so it is the first
+            // thing the eye lands on: while it is up the document is not the
+            // scene, every save is refused, and Play will not start. A mode this
+            // consequential is not allowed to be a subtle one.
+            switch (prefabedit::banner(prefabEdit, entities)) {
+                case prefabedit::Action::Save:      savePrefabEdit(); break;
+                case prefabedit::Action::SaveClose: savePrefabEdit();
+                                                    closePrefabEdit(); break;
+                case prefabedit::Action::Discard:   closePrefabEdit();
+                                                    exportStatus =
+                                                        "Prefab left as it was on disk.";
+                                                    break;
+                case prefabedit::Action::None:      break;
             }
 
             // --- Toolbar strip under the menu bar: primitive-creation icons.
@@ -9480,6 +10047,106 @@ int main(int argc, char** argv) {
                                         static_cast<float>(viewH)),
                                  ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
                 }
+                // THE IMAGE'S OWN rect and hover, taken the moment it is drawn.
+                //
+                // Everything below draws over it, and "the last item" stops being
+                // the picture the instant one of those overlays is a real widget
+                // rather than a draw-list call. Reading IsItemHovered() at the
+                // bottom then asks whether the mouse is over that widget -- so the
+                // viewport answers "no" nearly everywhere and the scene cannot be
+                // navigated or picked at all. That is exactly what the Play-as
+                // picker did the day it was added.
+                //
+                // Held in named values instead, so an overlay added later is a
+                // drawing decision and not a trap.
+                const ImVec2 sceneMin = ImGui::GetItemRectMin();
+                const ImVec2 sceneMax = ImGui::GetItemRectMax();
+                bool sceneHovered = ImGui::IsItemHovered();
+                // The selected camera's own view, bottom right, over the scene.
+                // Drawn into this window's draw list rather than as a floating
+                // window: it belongs to the viewport, has to move with it, and
+                // must never be something you can drag away and lose.
+                if (camPreviewId >= 0 && showCamPreview && !traced) {
+                    const ImVec2 vmin = sceneMin, vmax = sceneMax;
+                    // A sixth of the viewport's width, kept in the preview's own
+                    // aspect and clamped so it stays a corner rather than a
+                    // second view: on a wide screen it must not grow into one.
+                    const float pw = glm::clamp((vmax.x - vmin.x) / 6.0f, 160.0f, 420.0f);
+                    const float ph = pw * static_cast<float>(camPreviewRT.height()) /
+                                          static_cast<float>(camPreviewRT.width());
+                    const float pad = 12.0f;
+                    const ImVec2 p1(vmax.x - pad, vmax.y - pad);
+                    const ImVec2 p0(p1.x - pw, p1.y - ph);
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    dl->AddRectFilled(ImVec2(p0.x - 3.0f, p0.y - 3.0f),
+                                      ImVec2(p1.x + 3.0f, p1.y + 3.0f),
+                                      IM_COL32(0, 0, 0, 170), 3.0f);
+                    // GL textures are bottom-up: flip V, like the viewport image.
+                    dl->AddImage((ImTextureID)(intptr_t)camPreviewRT.colorTexture(),
+                                 p0, p1, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
+                    dl->AddRect(p0, p1, IM_COL32(255, 225, 140, 200), 0.0f, 0, 1.5f);
+                    const std::string cap =
+                        camPreviewName.empty() ? std::string("Camera") : camPreviewName;
+                    dl->AddText(ImVec2(p0.x + 6.0f, p0.y - ImGui::GetTextLineHeight() - 4.0f),
+                                IM_COL32(255, 225, 140, 230), cap.c_str());
+                }
+
+                // Top right: what Play will start as. In the viewport rather than
+                // in the Game Settings dialog because it is not a setting about
+                // the game -- it is about this next Play, in this scene, now --
+                // and because a shortcut you have to go and find is one you stop
+                // taking. It reads back what it is doing at all times: an
+                // override left on for a week must not be a mystery.
+                if (!playMode) {
+                    const ImVec2 vmin = sceneMin, vmax = sceneMax;
+                    const float  cw   = 230.0f;
+                    ImGui::SetCursorScreenPos(ImVec2(vmax.x - cw - 12.0f, vmin.y + 10.0f));
+                    ImGui::SetNextItemWidth(cw);
+                    const std::string label =
+                        sceneStartMode < 0
+                            ? std::string("This scene: the game's own start")
+                            : std::string("This scene: ") +
+                              game::startModeName(
+                                  static_cast<game::StartMode>(sceneStartMode));
+                    // Amber while it is forcing something, so the corner reads as
+                    // "this is not how the game opens" at a glance.
+                    const bool forcing = sceneStartMode >= 0;
+                    if (forcing)
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg,
+                                              ImVec4(0.32f, 0.24f, 0.05f, 0.95f));
+                    const int wasMode = sceneStartMode;
+                    if (ImGui::BeginCombo("##playas", label.c_str())) {
+                        if (ImGui::Selectable("The game's own start", sceneStartMode < 0))
+                            sceneStartMode = -1;
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("What game.json says -- and a showroom\n"
+                                              "scene opens its start screen.");
+                        ImGui::Separator();
+                        for (int m = 0; m <= static_cast<int>(game::StartMode::Multishot); ++m)
+                            if (ImGui::Selectable(
+                                    game::startModeName(static_cast<game::StartMode>(m)),
+                                    sceneStartMode == m))
+                                sceneStartMode = m;
+                        ImGui::EndCombo();
+                    }
+                    // It is scene data, so changing it is an edit: say so, or the
+                    // autosave sits on its hands and the scene closes without it.
+                    // touch() rather than a command -- there is no object to undo
+                    // (see CommandStack::touch).
+                    if (sceneStartMode != wasMode) history.touch();
+                    if (forcing) ImGui::PopStyleColor();
+                    // While the pointer is on the picker it is NOT on the scene:
+                    // without this a click would open the combo and pick an object
+                    // behind it in the same breath.
+                    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+                        sceneHovered = false;
+                    if (ImGui::IsItemHovered() && forcing)
+                        ImGui::SetTooltip("Saved with the scene: it opens this way\n"
+                                          "wherever it is reached from, in the\n"
+                                          "editor and in the shipped game, and no\n"
+                                          "start screen comes first.");
+                }
+
                 // What the tracer is doing, over its own picture. A progressive
                 // render that says nothing is indistinguishable from a stuck
                 // one, and this one restarts whenever the camera moves -- so
@@ -9487,15 +10154,17 @@ int main(int argc, char** argv) {
                 // to say.
                 if (viewShade == kShadePathTraced && !playMode &&
                     !viewTrace.status.empty()) {
-                    const ImVec2 rm = ImGui::GetItemRectMin();
                     ImGui::GetWindowDrawList()->AddText(
-                        ImVec2(rm.x + 10.0f, rm.y + 8.0f),
+                        ImVec2(sceneMin.x + 10.0f, sceneMin.y + 8.0f),
                         IM_COL32(255, 225, 140, 230), viewTrace.status.c_str());
                 }
-                viewportHovered = ImGui::IsItemHovered();
+                viewportHovered = sceneHovered;
                 // Cursor position inside the image, mapped to NDC (for picking).
-                const ImVec2 rmin = ImGui::GetItemRectMin();
-                const ImVec2 rsz  = ImGui::GetItemRectSize();
+                // The IMAGE's rect again, not the last item's -- see above: this
+                // is what turns a mouse position into a ray, so an overlay's rect
+                // here would aim every pick at whatever the overlay covers.
+                const ImVec2 rmin = sceneMin;
+                const ImVec2 rsz(sceneMax.x - sceneMin.x, sceneMax.y - sceneMin.y);
                 viewportRectMin  = glm::vec2(rmin.x, rmin.y); // for the play crosshair
                 viewportRectSize = glm::vec2(rsz.x, rsz.y);
                 const ImVec2 mp   = ImGui::GetIO().MousePos;
@@ -12247,7 +12916,8 @@ int main(int argc, char** argv) {
                                     duplicateEntity, deleteEntity,
                                     duplicateSelection, deleteSelection,
                                     addEmptyParent, addEmptyChild, addPrimitiveChild,
-                                    addShotCamera, addVehicleLights, setMainCamera,
+                                    addShotCamera, addCockpitCamera,
+                                    addVehicleLights, setMainCamera,
                                     isUnderId, worldOf, rebaseLocal,
                                     prefabNameBuf, sizeof(prefabNameBuf), showPrefabs});
 
@@ -12292,7 +12962,12 @@ int main(int argc, char** argv) {
             prefabsui::drawPanel({showPrefabs, prefabDir, entities, sel,
                                   prefabNameBuf, sizeof(prefabNameBuf),
                                   createPrefabFromSelection,
-                                  instantiatePrefabFile});
+                                  instantiatePrefabFile,
+                                  openPrefabForEdit,
+                                  [&]{ return prefabEdit.active; },
+                                  renamePrefabFile, deletePrefabFile,
+                                  prefabRenameBuf, sizeof(prefabRenameBuf),
+                                  prefabSelPath, prefabSelName});
 
             // Import Unity asset: browse an asset folder, preview which textures
             // map by Unity naming convention, then import the FBX as a hierarchy
@@ -13706,6 +14381,13 @@ int main(int argc, char** argv) {
             ptLook.grade.value      = valueGain;
             ptLook.grade.warmth     = warmth;
             ptLook.grade.contrast   = contrast;
+            // The grass, which the harvest cannot see: the tracer regenerates it
+            // from the same parameters the streamed field was built from.
+            if (veg.grassEnabled) {
+                ptLook.grass       = &veg.traceField();
+                ptLook.grassRadius = veg.grassRadius;
+                ptLook.grassWindTime = static_cast<float>(glfwGetTime());
+            }
             pathpanel::service(pathRender, lightGrid, renderer, camera, ptLook,
                                currentProject.empty()
                                    ? std::filesystem::path()
@@ -14326,6 +15008,74 @@ int main(int argc, char** argv) {
             // not be looking at a split screen in the first place.
             const glm::vec3 camPos = camera.position();
             const glm::mat4 mainVP = proj * camera.viewMatrix();
+
+#ifndef FITZEL_PLAYER
+            // --- What the selected camera sees ------------------------------
+            // One more pass over the scene that was already submitted, from
+            // somewhere else. Cheap for that reason: the draw list, the shadow
+            // map and the environment are the frame's, and only the view changes
+            // -- the same trick the water reflection plays.
+            //
+            // Sky, terrain, objects and trees. NOT grass, water or the post
+            // chain: grass and water are streamed and composited around the MAIN
+            // camera and would show that camera's neighbourhood from this one's
+            // angle, which is worse than leaving them out. The corner says so.
+            camPreviewId = -1;
+            if (showCamPreview && !playMode && !presentMode && sel.valid()) {
+                const Entity& se = entities[sel.index()];
+                camerasys::Pose pv;
+                if (se.components.get<CameraComponent>() && cams.pose(se.id, pv)) {
+                    camPreviewId   = se.id;
+                    camPreviewName = se.name;
+                }
+                // Redrawn at 20 Hz -- but AT ONCE when the selection moved to a
+                // different camera: a corner that went on showing the last one
+                // for another twentieth of a second reads as the wrong camera
+                // being previewed, which is worse than a stutter in the corner.
+                const bool camPreviewDue =
+                    camPreviewId >= 0 &&
+                    (camPreviewId != camPreviewLast || now >= camPreviewNext);
+                if (camPreviewDue) {
+                    camPreviewLast = camPreviewId;
+                    camPreviewNext = now + 0.05;
+                    const float pa = static_cast<float>(camPreviewRT.width()) /
+                                     static_cast<float>(camPreviewRT.height());
+                    const glm::mat4 pvProj =
+                        glm::perspective(glm::radians(glm::clamp(pv.fov, 5.0f, 150.0f)),
+                                         pa, camera.nearPlane(), camera.farPlane());
+                    const glm::mat4 pvView =
+                        glm::lookAt(pv.position, pv.position + pv.front, pv.up);
+                    FZ_ZONE("camera preview");           // the draw calls (CPU)
+                    FZ_GPU_ZONE("GPU camera preview");   // ...and the card's share
+                    camPreviewRT.bind();
+                    glClearColor(0.05f, 0.06f, 0.07f, 1.0f);
+                    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                    // Tonemapped in the shader: this target is LDR and never
+                    // reaches the post chain, so it has to arrive finished.
+                    drawBackground(glm::inverse(pvProj * pvView), pv.position, true);
+                    renderer.renderScene(pvView, pvProj, pv.position,
+                                         Renderer::kNoClip, true);
+                    const FrameContext pctx = makeFrameContext(pvProj * pvView,
+                                                               pv.position, now, storm,
+                                                               light, fog);
+                    veg.drawTrees(pctx);
+                    // The billboards' right vector. Taken from the pose's own up
+                    // rather than from world up: a camera looking straight down --
+                    // which a trackside shot may well be -- has no right axis
+                    // against the sky, and normalizing that zero would turn every
+                    // distant tree into a NaN.
+                    glm::vec3 pRight = glm::cross(pv.front, pv.up);
+                    if (glm::length(pRight) < 1e-4f)
+                        pRight = glm::cross(pv.front, glm::vec3(0.0f, 0.0f, 1.0f));
+                    if (glm::length(pRight) > 1e-4f)
+                        veg.drawTreeBillboards(pctx, glm::normalize(pRight));
+                    // ...and back to the image everything after this draws into.
+                    viewportRT.bind();
+                    int fullW = fbW, fullH = fbH;
+                    glViewport(0, 0, fullW, fullH);
+                }
+            }
+#endif
 
 #ifndef FITZEL_PLAYER
             // --- The construction grid, onto the finished image ---------------

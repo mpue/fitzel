@@ -34,6 +34,7 @@ void drawPanel(const PanelState& s) {
     // is drawn, so entities isn't mutated mid-iteration).
     int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
     int shotCamReq = -1;   // "Shoot this": a multishot camera on this object
+    int seatCamReq = -1;   // "Sit in this": a cockpit camera inside it
     int vehicleLightsReq = -1;
     EntityType primChildType = EntityType::Box;
     auto typeColor = [](EntityType t) -> ImU32 {
@@ -150,6 +151,8 @@ void drawPanel(const PanelState& s) {
                 ImGui::Separator();
                 if (ImGui::MenuItem("Shoot this (Multishot camera)"))
                     shotCamReq = i;
+                if (ImGui::MenuItem("Sit in this (Cockpit camera)"))
+                    seatCamReq = i;
                 if (s.entities[i].components.get<VehicleComponent>()) {
                     ImGui::Separator();
                     if (ImGui::MenuItem("Add headlights")) vehicleLightsReq = i;
@@ -213,6 +216,7 @@ void drawPanel(const PanelState& s) {
     else if (emptyChildReq >= 0)  s.addEmptyChild(emptyChildReq);
     else if (primChildReq >= 0)   s.addPrimitiveChild(primChildReq, primChildType);
     else if (shotCamReq >= 0)     s.addShotCamera(shotCamReq);
+    else if (seatCamReq >= 0)     s.addCockpitCamera(seatCamReq);
     else if (vehicleLightsReq >= 0) s.addVehicleLights(vehicleLightsReq);
     // Apply a requested reparent (rejecting cycles).
     if (reparentSrc >= 0 && reparentTo != -2) {

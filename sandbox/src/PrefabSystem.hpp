@@ -58,6 +58,29 @@ std::optional<Prefab> load(projectio::Context& ctx, const std::string& path);
 // Every .fprefab in `dir` as (display name, full path), sorted by name.
 std::vector<std::pair<std::string, std::string>> list(const std::string& dir);
 
+// Rename the prefab at `path`, file and stored name both. Returns its new path,
+// or "" with a reason in `err`.
+//
+// Done as a JSON patch and a move rather than a load-and-save on purpose: a
+// round trip through load() would re-import every model the prefab references
+// just to change a string, and a prefab whose model file has since gone missing
+// would come back diminished -- a rename is not the moment to lose a wheel.
+//
+// The GUID does not change, so every instance already placed in every scene
+// still points at this file. What DOES break is anything that names it: a
+// script's game.spawnPrefab("old name"), a Grid Position marker's rival. Callers
+// are expected to say so; this cannot fix them.
+std::string renameTo(const std::string& path, const std::string& newName,
+                     std::string& err);
+
+// Delete the .fprefab at `path`. Returns true when the file is gone (including
+// when it was already), false with a reason in `err`.
+//
+// Instances already in a scene are unaffected -- an instance is a plain copy, and
+// nothing loads the file to draw it. What stops working is, again, everything
+// that names it.
+bool deleteFile(const std::string& path, std::string& err);
+
 // Instantiate `p` into a scene: deep-copy its entities, mint fresh ids from
 // `entityCounter`, re-root the copy at world position `pos` (adding `yawDeg` to
 // the root's yaw), and tag every entity with a PrefabComponent(source, localId).
