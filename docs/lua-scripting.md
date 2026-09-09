@@ -515,6 +515,29 @@ umgeworfene Dosen geben einen Punkt. Zeigt zusammen so ziemlich die ganze API:
 Eingabe, Kamera, `spawn`/`destroy`, Physik-Velocity, Sound, Score/HUD und
 skript-übergreifende Kommunikation. Siehe die Dateien direkt.
 
+### `sokoban.lua` — Sokoban, ein ganzes Spiel in einer Datei
+Skript auf **ein** Objekt legen — am besten ein **Empty**, denn das Spielbrett
+wird um dessen Position herum gebaut — und Play drücken. Pfeiltasten/WASD laufen
+und schieben, `Z`/Backspace nimmt einen Zug zurück (bis zurück zum Levelanfang),
+`R` startet das Level neu, `Q`/`E` drehen die Ansicht in 90°-Schritten (die
+Steuerung dreht mit), `N`/`P` blättern durch die zwölf Level.
+
+Sonst muss **nichts** in der Szene stehen: Boden, Wände, Kisten, Ziele und die
+Spielfigur entstehen alle per `game.spawn` (mit `physics = game.PHYSICS_NONE` —
+ein Schiebe-Puzzle will keine Physik) und verschwinden beim Levelwechsel wieder
+per `game.destroy`. Eine Kiste, die auf einem Ziel steht, färbt `game.setColor`
+grün. Die Kamera hängt an `setCameraPos`/`Dir`/`Fov` und rahmt das Brett anhand
+seiner Grösse ein — also **keine** Camera-Entity „active on start" (§3.12).
+
+Inspector-Felder: `startLevel`, `cellSize`, `stepTime`, `repeatDelay`,
+`repeatRate`, `camPitch`, `camZoom`, `sound`, `snapToGround`.
+
+Zwei Stellen darin sind es wert, nachgelesen zu werden: die Kisten bekommen ihre
+Farbe **einen Frame später** (der `spawn` von eben existiert noch nicht, ein
+`setColor` darauf wäre ein No-op — §3.3), und die Bewegungsrichtungen werden aus
+der Ansichtsdrehung gerechnet statt fest verdrahtet, damit „hoch" nach dem Drehen
+immer noch heisst, was der Spieler sieht.
+
 ---
 
 ## 7. Gut zu wissen (Fallstricke)
