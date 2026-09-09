@@ -155,6 +155,40 @@ void drawPanel(const PanelState& s) {
         changed |= ImGui::SliderFloat("Window glow", &c.windowGlow, 0.0f, 8.0f, "%.2f");
         ImGui::EndDisabled();
 
+        ui::sectionText("Signage");
+        changed |= stepInt("Signs", c.signs, 0, 12);
+        ImGui::SetItemTooltip("Lit banners and screens on the facades. This is "
+                              "what turns a tower at night into a street: a "
+                              "skyline of glazing reads as architecture, the "
+                              "same skyline with names down its corners reads as "
+                              "a city.");
+        ImGui::BeginDisabled(c.signs <= 0);
+        changed |= ImGui::Checkbox("Screens", &c.screens);
+        ImGui::SetItemTooltip("Allow the wide screen kind, not only vertical "
+                              "banners. Screens sit low, where they can be read "
+                              "from the street.");
+        ImGui::EndDisabled();
+        changed |= ImGui::Checkbox("Lit ground floor", &c.shopfronts);
+        ImGui::SetItemTooltip("A lit band around the podium. One object, and the "
+                              "only thing that puts light where a person would "
+                              "stand -- without it a district is lit from the "
+                              "windows up and pitch dark at street level.");
+        changed |= ImGui::Checkbox("Roof sign", &c.roofSign);
+        ImGui::SetItemTooltip("A lit sign on a frame on the roof: the silhouette "
+                              "half of the same idea, for the distance where no "
+                              "facade is legible any more.");
+        changed |= ImGui::ColorEdit3("Ground floor", &c.shopColor.x);
+        ImGui::SetItemTooltip("Interior light, not a sign. It is the biggest lit "
+                              "surface at eye level, so it decides what colour "
+                              "the STREET is -- keep it warm unless you want the "
+                              "whole district that colour.");
+        changed |= ImGui::ColorEdit3("Sign A", &c.signColorA.x);
+        changed |= ImGui::ColorEdit3("Sign B", &c.signColorB.x);
+        ImGui::SetItemTooltip("Two colours besides the neon accent. Three is what "
+                              "reads as a city -- two look like a scheme, five "
+                              "like a toy.");
+        changed |= ImGui::SliderFloat("Sign glow", &c.signGlow, 0.0f, 12.0f, "%.1f");
+
         ui::sectionText("Wear");
         changed |= ImGui::SliderFloat("Weathering", &c.weathering, 0.0f, 1.0f, "%.2f");
         ImGui::SetItemTooltip("0 = new curtain wall, 1 = derelict concrete. Drops "

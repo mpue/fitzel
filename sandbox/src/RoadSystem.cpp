@@ -94,6 +94,17 @@ bool isRoadNormal(const std::string& filename) {
     return false;
 }
 
+// Cumulative arc length along a sampled centreline, one entry per sample. What
+// a junction is measured in: the sample spacing is not uniform (sampleSpline
+// gives a short span at least six subdivisions), so anything that means "this
+// far along the road" has to count metres rather than samples.
+std::vector<float> arcLengths(const std::vector<glm::vec2>& center) {
+    std::vector<float> arc(center.size(), 0.0f);
+    for (std::size_t i = 1; i < center.size(); ++i)
+        arc[i] = arc[i - 1] + glm::length(center[i] - center[i - 1]);
+    return arc;
+}
+
 // Squared distance from point p to segment [a,b], plus the projection param t.
 float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
     const glm::vec2 ab = b - a;
@@ -107,7 +118,7 @@ float distToSeg(glm::vec2 p, glm::vec2 a, glm::vec2 b, float& t) {
 RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
                        fitzel::TerrainStreamer& streamer, const std::string& texDir)
     : m_assetDb(assetDb), m_streamer(streamer), m_texDir(texDir), m_mat(lit),
-      m_bridgeMat(lit) {
+      m_bridgeMat(lit), m_junctionMat(lit) {
     // uTint is written for the same reason as uRoadFade below: the shared lit
     // program keeps the last draw's tint otherwise.
     m_mat.set("uColorMode", 2).set("uTint", glm::vec3(1.0f));
@@ -144,9 +155,52 @@ RoadSystem::RoadSystem(fitzel::Shader& lit, fitzel::AssetDatabase& assetDb,
     m_bridgeTex = m_assetDb.loadTexture(m_texDir + "/cracked_concrete_02_diff_4k.jpg");
     if (m_bridgeTex) m_bridgeMat.setTexture("uTexture", *m_bridgeTex, 0);
 
-    // Same reasoning as applyEmission above: no puddle map yet, but both
+    // A junction apron is the same asphalt as the road, but it is not the road's
+    // MESH: its UVs are world space, not across-and-along the carriageway. So it
+    // gets its own material, pinned like the deck's -- uRoadFade in particular,
+    // because the ribbon's edge fade is a function of the across-road u and would
+    // dissolve the apron in stripes on any road that uses it.
+    m_junctionMat.set("uColorMode", 2).set("uRoadFade", 0.0f)
+                 .set("uTint", glm::vec3(1.0f));
+    syncJunctionSurface();
+
+    // Same reasoning as applyEmission above: no puddle map yet, but all three
     // materials say so themselves rather than inheriting it from a neighbour.
     applyWetness();
+}
+
+void RoadSystem::syncJunctionSurface() {
+    // Without an image of its own the apron follows the carriageway's surface --
+    // it IS the carriageway where two of them meet, and asphalt that changed on
+    // one and not the other would show as a patch. Re-bound from the road's own
+    // handles rather than loaded again, so the two share one texture.
+    const bool fitted = m_junctionTex != nullptr;
+    if (fitted)         m_junctionMat.setTexture("uTexture", *m_junctionTex, 0);
+    else if (m_tex)     m_junctionMat.setTexture("uTexture", *m_tex, 0);
+    // The grain, but only while the apron is tiled like the road. A fitted image
+    // spans the whole plate in one repeat of its UVs, and the road's normal map
+    // stretched across ten metres of that is not grain, it is a smear.
+    if (!fitted && m_normTex) m_junctionMat.setTexture("uNormalMap", *m_normTex, 1);
+    m_junctionMat.set("uHasNormalMap", (!fitted && m_normTex) ? 1 : 0);
+    if (m_wetTex)  m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
+    if (m_junctionGlowTex)
+        m_junctionMat.setTexture("uEmissionMap", *m_junctionGlowTex, 3);
+    applyEmission();
+}
+
+void RoadSystem::setJunctionTex(const std::string& file) {
+    junctionTex = file;
+    if (file.empty()) m_junctionTex.reset();
+    else if (auto t = m_assetDb.loadTexture(resolveTexPath(file))) m_junctionTex = t;
+    syncJunctionSurface();
+}
+
+void RoadSystem::setJunctionGlow(const std::string& file) {
+    junctionGlow = file;
+    if (file.empty()) m_junctionGlowTex.reset();
+    else if (auto t = m_assetDb.loadTexture(resolveTexPath(file)))
+        m_junctionGlowTex = t;
+    syncJunctionSurface();
 }
 
 void RoadSystem::refreshTextures(const std::string& projectDir) {
@@ -269,10 +323,34 @@ std::string RoadSystem::normalFor(const std::string& file) const {
     return std::string();
 }
 
+std::string RoadSystem::crossingFor(const std::string& file) const {
+    // Searched in the WIDE list, not the surface list: a junction sheet is a
+    // painted image far more often than it is a tileable albedo, and the wide
+    // list is the one that keeps those (see refreshTextures).
+    const std::string stem = std::filesystem::path(file).stem().string();
+    auto named = [&](const std::string& want) {
+        for (const std::string& f : emisFiles)
+            if (std::filesystem::path(f).stem().string() == want) return f;
+        return std::string();
+    };
+    if (std::string hit = named(stem + "_crossing"); !hit.empty()) return hit;
+    for (const char* colour : {"_diff", "_diffuse", "_albedo", "_basecolor", "_col"}) {
+        const std::size_t at = stem.find(colour);
+        if (at == std::string::npos) continue;
+        // Keep the tail, so a 4k sheet lands on a 4k surface -- the same reason
+        // normalFor matches it rather than taking the first partial hit.
+        std::string hit = named(stem.substr(0, at) + "_crossing" +
+                                stem.substr(at + std::strlen(colour)));
+        if (!hit.empty()) return hit;
+    }
+    return std::string();
+}
+
 void RoadSystem::setNormal(const std::string& file) {
     if (file.empty()) {
         m_normTex.reset();
         m_mat.set("uHasNormalMap", 0);
+        syncJunctionSurface();
         normSel = -1;
         return;
     }
@@ -284,6 +362,7 @@ void RoadSystem::setNormal(const std::string& file) {
         m_normTex = t;
         m_mat.setTexture("uNormalMap", *m_normTex, 1); // unit 1: uTexture holds 0
         m_mat.set("uHasNormalMap", 1);
+        syncJunctionSurface();
     }
 }
 
@@ -330,6 +409,7 @@ void RoadSystem::setWetMap(const std::string& file) {
         // different material -- units only have to be unique within one draw.)
         m_mat.setTexture("uWetMap", *m_wetTex, 4);
         m_bridgeMat.setTexture("uWetMap", *m_wetTex, 4);
+        m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
     }
     applyWetness();
 }
@@ -367,6 +447,13 @@ void RoadSystem::applyWetness() {
                .set("uWetMapScale", scale).set("uWetReflect", refl)
                .set("uWetShore", std::max(wetShore, 0.01f))
                .set("uWetLat", glm::vec2(0.0f, 0.0f));
+    // The apron is asphalt and pools like it, but its UVs are world space rather
+    // than across-and-along, so it takes the noise without the road-shaped
+    // gutters -- the same bargain the deck makes one line up.
+    m_junctionMat.set("uHasWetMap", has).set("uWetVar", var)
+                 .set("uWetMapScale", scale).set("uWetReflect", refl)
+                 .set("uWetShore", std::max(wetShore, 0.01f))
+                 .set("uWetLat", glm::vec2(0.0f, 0.0f));
 }
 
 void RoadSystem::applyEmission() {
@@ -380,6 +467,15 @@ void RoadSystem::applyEmission() {
     const float uScale = (width > 1e-4f) ? texTile / width : 1.0f;
     const float vScale = (emissionTile > 1e-4f) ? texTile / emissionTile : 1.0f;
     m_mat.set("uEmissionUVScale", glm::vec2(uScale, vScale));
+    // The apron glows through its OWN map or not at all -- see junctionGlow. The
+    // map is already fitted across the plate by the geometry, so the scale here
+    // is 1: one repeat, which is the whole point of a fitted image.
+    const bool jglow = m_junctionGlowTex != nullptr;
+    m_junctionMat.set("uEmission", emission)
+                 .set("uEmissionStrength", jglow ? std::max(emissionStrength, 0.0f)
+                                                 : 0.0f)
+                 .set("uHasEmissionMap", jglow ? 1 : 0)
+                 .set("uEmissionUVScale", glm::vec2(1.0f));
 }
 
 void RoadSystem::setSurface(const std::string& file) {
@@ -393,6 +489,7 @@ void RoadSystem::setSurface(const std::string& file) {
     if (auto t = m_assetDb.loadTexture(path)) {
         m_tex = t;
         m_mat.setTexture("uTexture", *m_tex, 0);
+        syncJunctionSurface();
     }
 }
 
@@ -607,6 +704,17 @@ void RoadSystem::save(nlohmann::json& j) const {
             {"pierWidth",   bridgeStyle.pierWidth},
             {"abutment",    bridgeStyle.abutment},
         }},
+        {"junctionStyle", {
+            {"enabled",     junctionStyle.enabled},
+            {"clearance",   junctionStyle.clearance},
+            {"blend",       junctionStyle.blend},
+            {"margin",      junctionStyle.margin},
+            {"minAngleDeg", junctionStyle.minAngleDeg},
+        }},
+        // By NAME, like every other texture on the road: the picker lists are
+        // rescanned each run, so an index would not survive a project change.
+        {"junctionTex",  junctionTex},
+        {"junctionGlow", junctionGlow},
         {"sideObjects", side_},
         {"decals",      decals_},
         {"cityEnabled", cityEnabled},
@@ -753,6 +861,30 @@ void RoadSystem::load(const nlohmann::json& j) {
         bridgeStyle.abutment    = st->value("abutment",    bd.abutment);
     }
 
+    // Junctions. Absent in every scene saved before they existed, and the
+    // defaults are deliberately what those scenes should get: a figure-of-eight
+    // drawn back then was drivable, so its two branches already clear the 2.5 m
+    // that keeps a crossing an over/under, and it loads unchanged. Two roads that
+    // genuinely met on the level did not work before this and will now.
+    const roadjunction::Params jd;
+    junctionStyle = jd;
+    if (const auto st = j.find("junctionStyle"); st != j.end()) {
+        junctionStyle.enabled     = st->value("enabled",     jd.enabled);
+        junctionStyle.clearance   = st->value("clearance",   jd.clearance);
+        junctionStyle.blend       = st->value("blend",       jd.blend);
+        junctionStyle.margin      = st->value("margin",      jd.margin);
+        junctionStyle.minAngleDeg = st->value("minAngleDeg", jd.minAngleDeg);
+    }
+    // The junction's own sheet, on the same tri-state as the normal map above:
+    // absent (a scene from before this existed) means take the one that matches
+    // the carriageway by name, which is what the author would have picked; an
+    // explicit "" means they chose plain asphalt, and that is honoured.
+    if (const auto jt = j.find("junctionTex"); jt != j.end() && jt->is_string())
+        setJunctionTex(jt->get<std::string>());
+    else
+        setJunctionTex(crossingFor(surf));
+    setJunctionGlow(j.value("junctionGlow", std::string()));
+
     // Side objects. Absent in scenes saved before they existed -> none, which is
     // how those roads looked. Each field defaults to its Kind's preset, so a blob
     // written by an older/leaner build still loads as a sensible line.
@@ -895,7 +1027,8 @@ std::vector<glm::vec2> RoadSystem::sampleCenterlineXZ(
 void RoadSystem::loft(const std::vector<glm::vec2>& center,
                       const std::vector<float>& height,
                       const std::vector<float>& bank,
-                      const std::vector<roadloop::Loop>& loops) {
+                      const std::vector<roadloop::Loop>& loops,
+                      const std::vector<char>& jcut) {
     fitzel::MeshData md;
     m_centerline = center; // flat centre for vegetation masking
     m_centerlineY = height; // road surface height per sample (deck top over bridges)
@@ -988,8 +1121,16 @@ void RoadSystem::loft(const std::vector<glm::vec2>& center,
     // straight through the middle of the turn, which is what made a loop read as a
     // hoop parked beside the road. The centreline itself is untouched: the grading,
     // the lap timing, the roadside instancing and the rivals all still follow it.
+    //
+    // A junction apron is left out for the same reason and answered by the same
+    // predicate: the crossing IS the road there, and two ribbons plus a plate over
+    // one patch of ground is two surfaces too many. `jcut` is a per-sample flag
+    // rather than a run because a road can meet several others, and because it is
+    // read here per SAMPLE it survives the UV wrap below -- which pushes two rungs
+    // for one sample -- without knowing about it.
     auto standsOnEnd = [&](std::size_t i) {
         const int k = static_cast<int>(i);
+        if (i < jcut.size() && jcut[i]) return true;
         for (const roadloop::Loop& lp : loops)
             if (lp.sa >= 0 && k >= lp.sa && k < lp.sb) return true;
         return false;
@@ -1083,6 +1224,24 @@ void RoadSystem::buildLoops(const Layout& lo) {
     for (std::uint32_t i : md.indices) m_collIndices.push_back(base + i);
 }
 
+void RoadSystem::buildJunctions(const roadjunction::Plan& jp) {
+    // Every crossing this road takes part in is remembered, drawn or not: the
+    // panel and the viewport want to list what was found, and the road that does
+    // not own the apron is still standing in the junction.
+    m_junctions = jp.grade;
+    fitzel::MeshData md;
+    roadjunction::build(jp.plates, texTile, !junctionTex.empty(), md);
+    m_junctionVerts = static_cast<int>(md.vertices.size());
+    m_junctionMesh  = fitzel::Mesh::create(md);
+    syncJunctionSurface();
+    if (md.vertices.empty()) return;
+    // Merged into the collider the same way the decks and the loops are, so the
+    // apron is something a craft stands on and not just something it sees.
+    const auto base = static_cast<std::uint32_t>(m_collVerts.size());
+    for (const fitzel::Vertex& v : md.vertices) m_collVerts.push_back(v.position);
+    for (std::uint32_t i : md.indices) m_collIndices.push_back(base + i);
+}
+
 void RoadSystem::buildConcrete(const Layout& lo) {
     fitzel::MeshData md;
     // The deck carries the whole section: with raised edges the carriageway is
@@ -1139,7 +1298,7 @@ std::vector<float> RoadSystem::pointRamp(const std::vector<float>& perPoint,
     return off;
 }
 
-RoadSystem::Layout RoadSystem::layout() const {
+RoadSystem::Layout RoadSystem::layout(const roadjunction::Plan* jp) const {
     Layout lo;
     std::vector<int> ptSample;
     lo.center = sampleCenterlineXZ(&ptSample);
@@ -1233,11 +1392,48 @@ RoadSystem::Layout RoadSystem::layout() const {
     // entrance isn't a bump. A straight chord is a fixed point of this filter, so
     // only the tangents move.
     if (!lo.spans.empty() || !lo.bores.empty()) smooth(lo.prof, passesFor(5.0f));
+
+    // Junctions last, and deliberately AFTER that final smoothing: the ramp is
+    // specified in metres, and a filter run over it afterwards would quietly turn
+    // it into a different length. The two never actually meet anyway -- a crossing
+    // on a deck or in a bore is refused while it is still being detected.
+    if (jp && !jp->empty()) {
+        const std::vector<float> arc = arcLengths(lo.center);
+        std::vector<float> off, fade;
+        roadjunction::profile(*jp, lo.center, lo.prof, arc, surfaceHalf(), closed,
+                              off, fade, lo.jcut);
+        for (std::size_t i = 0; i < lo.prof.size() && i < off.size(); ++i)
+            lo.prof[i] += off[i];
+        // The apron is one flat polygon at one height. A branch still banked
+        // under it would grade a tilted bed, poke out of its low side and
+        // contradict the other branch's cross-fall where the two overlap.
+        for (std::size_t i = 0; i < lo.bank.size() && i < fade.size(); ++i)
+            lo.bank[i] *= fade[i];
+    }
     return lo;
 }
 
+roadjunction::Trace RoadSystem::trace() const {
+    roadjunction::Trace t;
+    const Layout lo = layout();          // unpulled, always: RoadJunction.hpp rule 1
+    t.center = lo.center;
+    t.prof   = lo.prof;
+    t.gradeW = lo.gradeW;
+    t.arc    = arcLengths(lo.center);
+    t.standing.assign(lo.center.size(), 0);
+    for (const roadloop::Loop& lp : lo.loops)
+        for (int k = std::max(lp.sa, 0);
+             k < lp.sb && k < static_cast<int>(t.standing.size()); ++k)
+            t.standing[k] = 1;
+    t.half    = surfaceHalf();
+    t.closed  = closed;
+    t.enabled = enabled;
+    t.params  = junctionStyle;
+    return t;
+}
+
 bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY,
-                                 float maxY) const {
+                                 float maxY, float* outDist2) const {
     const std::size_t n = m_centerline.size();
     if (n < 2 || m_centerlineY.size() != n) return false;
     const std::size_t segs = closed ? n : n - 1;
@@ -1297,7 +1493,10 @@ bool RoadSystem::surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& ou
         if (y > maxY) continue;                       // out of reach overhead
         if (!found || d2 < bestD2) { bestD2 = d2; bestY = y; found = true; }
     }
-    if (found) outY = bestY;
+    if (found) {
+        outY = bestY;
+        if (outDist2) *outDist2 = bestD2;
+    }
     return found;
 }
 
@@ -1306,6 +1505,8 @@ void RoadSystem::clearGeometry() {
     m_bridgeMesh = fitzel::Mesh(); m_bridgeVerts = 0;
     m_loopMesh = fitzel::Mesh(); m_loopVerts = 0;
     m_loops.clear();
+    m_junctionMesh = fitzel::Mesh(); m_junctionVerts = 0;
+    m_junctions.clear();
     m_collVerts.clear(); m_collIndices.clear(); m_centerline.clear();
     m_centerlineY.clear();
     m_centerlineBank.clear();
@@ -1423,9 +1624,9 @@ void RoadSystem::rebuildCity() {
     }
 }
 
-void RoadSystem::rebuildMesh() {
+void RoadSystem::rebuildMeshWith(const roadjunction::Plan& jp) {
     needsBuild = false;
-    const Layout lo = layout();
+    const Layout lo = layout(&jp);
     if (lo.center.size() < 2) { clearGeometry(); return; }
 
     // Loft the ribbon on the road's own profile (+ a hair), exactly as build()
@@ -1442,21 +1643,23 @@ void RoadSystem::rebuildMesh() {
     std::vector<float> h(lo.center.size());
     for (std::size_t i = 0; i < lo.center.size(); ++i)
         h[i] = lo.prof[i] + 0.06f; // lifted a touch so the ribbon reads above the ground
-    loft(lo.center, h, lo.bank, lo.loops);
+    loft(lo.center, h, lo.bank, lo.loops, lo.jcut);
     buildConcrete(lo);
     buildLoops(lo);
+    buildJunctions(jp);
     rebuildSideObjects();
     rebuildCity();
     rebuildDecals();
 }
 
-bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
-                       glm::vec2& outMax) {
+bool RoadSystem::buildWith(const roadjunction::Plan& jp,
+                           fitzel::TerrainEditField& edit, glm::vec2& outMin,
+                           glm::vec2& outMax) {
     needsBuild = false;
     vegDirty   = true; // vegetation must re-evaluate against the new road
 
     // 1) The road's profile over the bare terrain, and the gaps it has to span.
-    const Layout L = layout();
+    const Layout L = layout(&jp);
     if (L.center.size() < 2) { clearGeometry(); return false; }
 
     const fitzel::TerrainSettings& s = m_streamer.settings();
@@ -1465,9 +1668,10 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
     //    then hang the decks under wherever it crosses a gap.
     std::vector<float> surf(L.prof.size());
     for (std::size_t i = 0; i < L.prof.size(); ++i) surf[i] = L.prof[i] + 0.06f;
-    loft(L.center, surf, L.bank, L.loops);
+    loft(L.center, surf, L.bank, L.loops, L.jcut);
     buildConcrete(L);
     buildLoops(L);
+    buildJunctions(jp);
     // Side objects are generated by the caller AFTER it republishes the graded
     // terrain (rebuildSideObjects), so posts drape on the corridor this build
     // just cut -- not on the pre-grade ground. loft() has set m_centerline for it.
@@ -1492,6 +1696,14 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
         lo = glm::min(lo, c); hi = glm::max(hi, c);
     }
     lo -= glm::vec2(reach); hi += glm::vec2(reach);
+    // An apron at a shallow crossing reaches well past this road's own corridor,
+    // and ground outside the swept rectangle is never visited -- so the natural
+    // terrain would rise straight through the plate's far corners.
+    for (const roadjunction::Crossing& x : jp.grade)
+        for (const glm::vec2& p : x.plate) {
+            lo = glm::min(lo, p - glm::vec2(shoulder));
+            hi = glm::max(hi, p + glm::vec2(shoulder));
+        }
 
     const float cell = edit.cell;
     const int ix0 = static_cast<int>(std::floor(lo.x / cell));
@@ -1545,6 +1757,22 @@ bool RoadSystem::build(fitzel::TerrainEditField& edit, glm::vec2& outMin,
                 ownD2   = d2;
                 if (under) owned = true;
                 else       bestD2 = d2;
+            }
+            // A junction apron owns every cell it covers outright, flat and level
+            // at its own height. Both roads of a crossing are handed the SAME
+            // polygon and the SAME height (roadjunction::Plan::grade), so whichever
+            // of them happens to write this cell last writes the same number --
+            // which makes the ground under a junction independent of the order the
+            // list is built in, and not merely repeatable.
+            for (const roadjunction::Crossing& x : jp.grade) {
+                if (!roadjunction::insidePlate(x.plate, w)) continue;
+                if (owned && x.y >= roadH) continue;   // lowest wins, as above
+                roadH   = x.y;
+                gradeW  = 1.0f;
+                bankDeg = 0.0f;
+                lateral = 0.0f;
+                ownD2   = 0.0f;
+                owned   = true;
             }
             if (!owned && bestD2 > reach * reach) continue; // outside the corridor
             const float d = std::sqrt(ownD2);

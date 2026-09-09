@@ -896,6 +896,17 @@ District generate(const std::vector<glm::vec2>& center,
             // dead building gets no glowing blade over the street either.
             const bool lit = B.neon && unit(hashU(h0 ^ 0xe1U)) >= B.deadNeon;
             bp.neon       = lit;
+            // The facade signage rides on the same coin: a building whose neon is
+            // dead has dead signs too. Anything else gives a derelict block a
+            // brand new advertising hoarding, which is the one detail that would
+            // make the whole street read as generated.
+            bp.signs      = lit ? B.facadeSigns : 0;
+            bp.shopfronts = lit;
+            // A roof sign is for the skyline, so only where there IS a silhouette:
+            // on a five-storey block it is a hat, not a landmark. Every third tall
+            // one, so a district has landmarks rather than a row of them.
+            bp.roofSign   = lit && bp.floors >= 18 &&
+                            unit(hashU(h0 ^ 0x77U)) < 0.34f;
             bp.weathering = B.weathering;
             bp.grime      = B.grime;
             // Clutter varies per roof so the district isn't uniformly littered --

@@ -73,12 +73,21 @@ void RoadSet::setAlive(int id, bool alive) {
     relist();
 }
 
+std::vector<roadjunction::Plan> RoadSet::planJunctions() {
+    std::vector<roadjunction::Trace> traces;
+    traces.reserve(m_live.size());
+    for (const RoadSystem* r : m_live) traces.push_back(r->trace());
+    m_junctions = roadjunction::find(traces);
+    return roadjunction::assign(m_junctions, traces);
+}
+
 bool RoadSet::buildAll(fitzel::TerrainEditField& edit, glm::vec2& outMin,
                        glm::vec2& outMax) {
+    const std::vector<roadjunction::Plan> plans = planJunctions();
     bool any = false;
-    for (RoadSystem* r : m_live) {
+    for (std::size_t i = 0; i < m_live.size(); ++i) {
         glm::vec2 mn, mx;
-        if (!r->build(edit, mn, mx)) continue;
+        if (!m_live[i]->buildWith(plans[i], edit, mn, mx)) continue;
         if (!any) { outMin = mn; outMax = mx; any = true; }
         else      { outMin = glm::min(outMin, mn); outMax = glm::max(outMax, mx); }
     }
@@ -86,7 +95,13 @@ bool RoadSet::buildAll(fitzel::TerrainEditField& edit, glm::vec2& outMin,
 }
 
 void RoadSet::rebuildMeshes() {
-    for (RoadSystem* r : m_live) r->rebuildMesh();
+    // The junctions are planned here too, not only in buildAll. A scene load
+    // comes through this path and never touches the terrain (the graded corridor
+    // rides in with the scene's terrain edits), so a plan made only by Build would
+    // mean every junction vanished on reload and came back on the next Build.
+    const std::vector<roadjunction::Plan> plans = planJunctions();
+    for (std::size_t i = 0; i < m_live.size(); ++i)
+        m_live[i]->rebuildMeshWith(plans[i]);
 }
 
 void RoadSet::rebuildSideObjects() {
@@ -110,13 +125,14 @@ void RoadSet::markNeedsBuild() {
 }
 
 bool RoadSet::surfaceHeightAt(const glm::vec2& xz, float& outY, float maxY) const {
-    bool  hit  = false;
-    float best = 0.0f;
+    bool  hit    = false;
+    float best   = 0.0f;
+    float bestD2 = 0.0f;
     for (const RoadSystem* r : m_live) {
         if (!r->enabled) continue;
-        float y = 0.0f;
-        if (!r->surfaceHeightAt(xz, r->surfaceHalf(), y, maxY)) continue;
-        if (!hit || y > best) { best = y; hit = true; }
+        float y = 0.0f, d2 = 0.0f;
+        if (!r->surfaceHeightAt(xz, r->surfaceHalf(), y, maxY, &d2)) continue;
+        if (!hit || d2 < bestD2) { best = y; bestD2 = d2; hit = true; }
     }
     if (hit) outY = best;
     return hit;
@@ -207,6 +223,7 @@ void RoadSet::clear() {
     first.rebuildSideObjects();
     first.rebuildCity();
     first.rebuildDecals();
+    m_junctions.clear();
     relist();
     m_sel = 0;
 }

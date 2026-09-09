@@ -81,6 +81,7 @@
 #include "HierarchyPanel.hpp"
 #include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
+#include "MixerPanel.hpp"
 #include "MeshPaintPanel.hpp"
 #include "ModelsPanel.hpp"
 #include "PrefabsPanel.hpp"
@@ -122,6 +123,10 @@
 #include "Difficulty.hpp"
 #include "Leaderboard.hpp"
 #include "GraphicsMenu.hpp"
+#include <chrono>
+#include <future>
+
+#include "LevelPanel.hpp"
 #include "RoadPanel.hpp"
 #include "RoadPrefab.hpp"
 #include "SplinePanel.hpp"
@@ -2182,9 +2187,19 @@ int main(int argc, char** argv) {
             RoadSystem& road = *roadUndoTarget;
             auto cmd = std::make_unique<RoadShapeCmd>(road, roadUndoBefore,
                                                       road.shape(), label);
+            const bool changed = !cmd->trivial();
             // push(), not pushApplied(): RoadShapeCmd::redo does more than
             // assign -- it flags the rebuild the committed shape needs.
-            if (!cmd->trivial()) history.push(std::move(cmd), document);
+            if (changed) history.push(std::move(cmd), document);
+            // Re-loft every road once the gesture is over -- on release, not
+            // per frame. A junction is a fact about two roads and is worked out
+            // by the pass in RoadSet (see RoadJunction.hpp), so dragging a road
+            // across another one produced nothing at all until the next Build:
+            // the crossing was there on the ground and not in the scene, which
+            // reads as the feature being broken rather than as being deferred.
+            // Bridges and loops get away with waiting because the panel button
+            // that creates one re-lofts on the spot; a junction has no button.
+            if (changed) roads.rebuildMeshes();
         };
         // --- The road list, as undoable steps --------------------------------
         // Adding or deleting a whole road. Deleting does not destroy it (see
@@ -2558,6 +2573,7 @@ int main(int argc, char** argv) {
         bool showTimeline    = false;
         bool showGraphEditor = false;
         bool showRoads       = false;
+        bool showLevelGen    = false;
         bool showUiOverlay   = false; // scene 2D UI overlay editor
         bool showCursor      = false; // 3D cursor panel
         bool showModeling    = false; // face-modelling panel
@@ -2604,12 +2620,12 @@ int main(int argc, char** argv) {
         bool        unityFlipV = true;   // mirror V on import (FBX UV convention)
         std::string unityStatus;         // last import result, shown in the panel
 
-        // The audio mixer. Master (masterVolume/muted below)
-        // scales everything via the device; Ambient scales the looping weather/
-        // zone voices; SFX scales the one-shot bus. Each channel: level + mute.
-        struct MixChannel { float level = 1.0f; bool mute = false;
-                            float gain() const { return mute ? 0.0f : level; } };
-        MixChannel mixAmbient, mixSfx;
+        // The audio mixer. The desk itself lives in MixerPanel.hpp: Master
+        // scales everything via the device, Ambient the looping weather/zone
+        // voices, SFX the one-shot bus and the vehicles. What a fader is worth
+        // right now is mix.ambientGain()/sfxGain()/masterGain() -- they are the
+        // only place mute and solo are read.
+        mixerui::Desk mix;
 
         // Projects: a project is a folder chosen by the user (New Project wizard)
         // containing <name>.fitzel + materials/. currentProject is the open
@@ -3877,8 +3893,6 @@ int main(int argc, char** argv) {
         glm::vec3 listenerPrev{0.0f};
         glm::vec3 listenerVel{0.0f};
         bool      listenerHasPrev = false;
-        float masterVolume = 0.8f;
-        bool  muted        = false;
         bool  prevFlashOn  = false;
 
         // Depth of field (distance blur). dofMax = 0 disables it.
@@ -4271,7 +4285,7 @@ int main(int argc, char** argv) {
         addS("weatherPreset", weatherCurrent);
         addB("weatherPresetTime", weatherSavesTime);
         addB("weatherPresetMist", weatherSavesMist);
-        addB("muted", muted);                  addF("volume", masterVolume);
+        addB("muted", mix.master.mute);        addF("volume", mix.master.level);
         // Read but not written: see legacyStartVehicle. A no-op save lambda is
         // what "this key is on its way out" looks like in this registry -- the
         // value keeps working until the scene is next saved, and then it is gone.
@@ -4291,8 +4305,10 @@ int main(int argc, char** argv) {
         addB("contrails", trails.enabled);     addF("trailLife", trails.life);
         addF("trailWidth", trails.width);      addF("trailOpacity", trails.opacity);
         addF("trailGlow", trails.glow);
-        addF("mixAmbient", mixAmbient.level);   addB("mixAmbientMute", mixAmbient.mute);
-        addF("mixSfx", mixSfx.level);           addB("mixSfxMute", mixSfx.mute);
+        addF("mixAmbient", mix.ambient.level);  addB("mixAmbientMute", mix.ambient.mute);
+        addF("mixSfx", mix.sfx.level);          addB("mixSfxMute", mix.sfx.mute);
+        // Solo is deliberately NOT kept: it is a listening state, not a mix, and
+        // a scene that opens with one bus soloed sounds broken.
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
         addF("coverage", skySet.coverage);     addF("cloudDensity", skySet.density);
         addF("cloudScale", skySet.scale);      addF("cloudWind", skySet.wind);
@@ -5508,6 +5524,314 @@ int main(int argc, char** argv) {
                         .first->second;
         };
 
+        // --- The level generator -------------------------------------------
+        // The generator itself is pure (see LevelGen.hpp): it lays a circuit on a
+        // landscape it is handed a sampler for and returns a description. This is
+        // the half that turns a description into a world, and it lives here
+        // because it needs findPrefab, one line up.
+        levelgen::Params levelParams;
+        levelgen::Report levelReport;
+        bool levelReportValid = false;
+        bool levelDiscardPaint = false;
+
+        // --- Asynchronous, in two different ways -----------------------------
+        // Laying a circuit out is arithmetic on data nobody else can see, so it
+        // goes on a real thread and the sliders never wait for it. Putting one
+        // INTO the world cannot: the corridor grading writes the shared height
+        // field and every ribbon it lofts is a GL upload. That half is stepped
+        // one phase per frame behind a modal instead -- the same bargain
+        // ProjectIO makes for a scene load, and for the same reason.
+        std::future<levelgen::Level> levelJob;
+        bool levelJobRunning = false;
+        bool levelJobStale   = false;   // the sliders moved while one was in flight
+        levelgen::Level levelMade;      // the last circuit the thread finished
+        int   levelStep     = -1;       // -1 = not applying
+        float levelProgress = 0.0f;
+        const char* levelLabel = "";
+
+        auto startLevelJob = [&] {
+            if (levelJobRunning) { levelJobStale = true; return; }
+            // Captured BY VALUE. The thread must not read a slider the user is
+            // still dragging, and the generator is a pure function of exactly
+            // this -- plus a ground sampler, which is thread-safe by contract.
+            const levelgen::Params snapshot = levelParams;
+            levelJob = std::async(std::launch::async, [snapshot] {
+                return levelgen::generate(snapshot, [](const TerrainSettings& ts,
+                                                       float x, float z) {
+                    return terrainBaseHeight(ts, x, z);
+                });
+            });
+            levelJobRunning = true;
+            levelJobStale   = false;
+        };
+        auto previewLevel = [&] { startLevelJob(); };
+        auto applyLevel   = [&] { levelStep = 0; levelProgress = 0.0f; };
+
+        // One phase of putting a generated circuit into the world, called once a
+        // frame while an apply is running -- so the modal behind it is PAINTED
+        // between phases. The corridor phase is still one long hitch; what the
+        // slicing buys is that the dialog saying so is on screen before it
+        // starts, instead of the desktop's own white rectangle.
+        auto stepLevelApply = [&] {
+            switch (levelStep) {
+            case 0: {
+                levelLabel = "Landscape";
+                // The ground has to be announced BEFORE anything asks how high it
+                // is: terrainBaseHeight answers 0 everywhere while
+                // terrainPresent() is false, so a circuit laid out first would sit
+                // on a flat void -- no gradient, no bridge and no tunnel anywhere,
+                // which reads as the feature working badly rather than as a flag
+                // nobody set.
+                fitzel::setTerrainPresent(true);
+                streamer.setEnabled(true);
+                startLevelJob();
+                levelStep = 1;
+                levelProgress = 0.10f;
+                break;
+            }
+            case 1: {
+                levelLabel = "Laying out the circuit";
+                if (levelJobRunning) break;          // still on the other thread
+                const levelgen::Level& lvl = levelMade;
+                streamer.settings() = lvl.terrain;
+                uiSettings          = lvl.terrain;
+                streamer.rebuild();
+                if (Entity* te = document.find(terrainEntity)) {
+                    if (auto* tc = te->components.get<TerrainComponent>())
+                        tc->settings = lvl.terrain;
+                } else {
+                    entities.push_back(makeTerrainEntity(lvl.terrain));
+                    terrainEntity = entities.back().id;
+                }
+                // Close syncTerrainEntity's loop by hand. Without this the next
+                // frame sees a component it does not recognise, "adopts" the
+                // terrain it already has and calls markNeedsBuild -- so a freshly
+                // generated circuit opens with the Roads panel nagging to build it.
+                compMirror    = lvl.terrain;
+                uiMirror      = lvl.terrain;
+                terrainOn     = true;
+                terrainSynced = true;
+                levelStep = 2;
+                levelProgress = 0.30f;
+                break;
+            }
+            case 2: {
+                levelLabel = "Roads";
+                const levelgen::Level& lvl = levelMade;
+                // Give the old corridor back. buildAll writes deltas only inside
+                // the NEW circuit's swept rectangle, so anything the old track cut
+                // outside it would stay behind as a trench -- and those deltas are
+                // measured against a base terrain that no longer exists.
+                sculptWork.deltas.clear();
+                publishSculpt();
+                if (levelDiscardPaint) { paintWork.weights.clear(); publishPaint(); }
+
+                // One road, and it is index 0: the race reads roads.active(), and
+                // a scene load selects 0 whatever the editor was pointing at.
+                // clear(), not remove(): the slots stay alive for the RoadShapeCmds
+                // that borrow them, and slot 0 is the one onCreate already wired
+                // with the city palettes.
+                roads.clear();
+                roads.select(0);
+                RoadSystem& r = roads.at(0);
+                r.name      = "Circuit";
+                r.width     = lvl.track.width;
+                r.grade     = lvl.track.grade;
+                r.shoulder  = lvl.track.shoulder;
+                r.edgeWidth = lvl.track.edgeWidth;
+                r.edgeAngle = lvl.track.edgeAngle;
+                r.bridgeStyle   = roadbridge::Params{};
+                r.tunnelStyle   = roadtunnel::Params{};
+                r.junctionStyle = roadjunction::Params{};
+                // setShape keeps roadPts, ptLift and ptBank in lockstep AND
+                // re-derives the side objects, the city and the decals.
+                RoadSystem::Shape sh;
+                sh.points = lvl.track.points;
+                sh.lifts  = lvl.track.lift;
+                sh.banks  = lvl.track.bank;
+                sh.closed = lvl.track.closed;
+                for (const levelgen::Span& b : lvl.track.bridges)
+                    sh.bridges.push_back({b.a, b.b});
+                for (const levelgen::Span& t : lvl.track.tunnels)
+                    sh.tunnels.push_back({t.a, t.b});
+                sh.loops       = lvl.track.loops;
+                sh.sideObjects = lvl.sideLines;
+                sh.decalRules  = lvl.decals;
+                sh.biomes      = lvl.biomes;
+                sh.label       = "Circuit";
+                r.setShape(sh);
+                levelStep = 3;
+                levelProgress = 0.45f;
+                break;
+            }
+            case 3: {
+                levelLabel = "Cutting the corridor";
+                glm::vec2 mn, mx;
+                if (roads.buildAll(sculptWork, mn, mx)) {
+                    publishSculpt();
+                    streamer.editsChanged(mn, mx);
+                }
+                levelStep = 4;
+                levelProgress = 0.75f;
+                break;
+            }
+            case 4: {
+                levelLabel = "Rails, kerbs and the city";
+                // Only now: all of it stands on the ground the corridor just cut.
+                for (RoadSystem* rr : roads) {
+                    rr->rebuildSideObjects();
+                    rr->rebuildCity();
+                }
+                // The ground moved under every watercourse; phase 2 took the beds
+                // with it.
+                carveRivers();
+                levelStep = 5;
+                levelProgress = 0.90f;
+                break;
+            }
+            case 5: {
+                levelLabel = "Race objects";
+                const levelgen::Level& lvl = levelMade;
+            // 6) The race objects, as one batch. Old ones out, new ones in.
+            std::vector<int> old;
+            for (const Entity& e : entities)
+                if (e.components.get<FinishLineComponent>() ||
+                    e.components.get<CheckpointComponent>() ||
+                    e.components.get<GridPositionComponent>()) {
+                    // A gate's component sits on a CHILD of the prefab root, and
+                    // it is the whole subtree that has to go.
+                    int root = e.id;
+                    for (int guard = 0; guard < 8; ++guard) {
+                        const Entity* pe = document.find(root);
+                        if (!pe || pe->parent < 0) break;
+                        root = pe->parent;
+                    }
+                    if (std::find(old.begin(), old.end(), root) == old.end())
+                        old.push_back(root);
+                }
+            std::vector<int> oldAll;
+            for (int id : old)
+                for (int sub : collectSubtreeIds(id))
+                    if (std::find(oldAll.begin(), oldAll.end(), sub) == oldAll.end())
+                        oldAll.push_back(sub);
+
+            std::vector<Entity> add;
+            for (const levelgen::Marker& m : lvl.markers) {
+                const glm::vec3 rot(0.0f, m.headingDeg, 0.0f);
+                auto attach = [&](Entity& e) {
+                    if (m.kind == levelgen::Marker::Kind::Finish) {
+                        auto* fl = e.components.get<FinishLineComponent>();
+                        if (!fl) {
+                            e.components.items.push_back(
+                                std::make_unique<FinishLineComponent>());
+                            fl = e.components.get<FinishLineComponent>();
+                        }
+                        fl->laps = levelParams.laps; fl->mode = 0;
+                        fl->gridBack = 14.0f; fl->gridRow = 8.0f;
+                        fl->gridLane = std::min(2.6f, lvl.track.width * 0.18f);
+                        fl->playerPole = false;
+                        fl->width = m.gateW; fl->height = m.gateH; fl->depth = m.gateD;
+                        fl->yaw = 0.0f;
+                    } else if (m.kind == levelgen::Marker::Kind::Checkpoint) {
+                        auto* cp = e.components.get<CheckpointComponent>();
+                        if (!cp) {
+                            e.components.items.push_back(
+                                std::make_unique<CheckpointComponent>());
+                            cp = e.components.get<CheckpointComponent>();
+                        }
+                        cp->width = m.gateW; cp->height = m.gateH; cp->depth = m.gateD;
+                        cp->yaw = 0.0f;
+                    } else {
+                        auto* gp = e.components.get<GridPositionComponent>();
+                        if (!gp) {
+                            e.components.items.push_back(
+                                std::make_unique<GridPositionComponent>());
+                            gp = e.components.get<GridPositionComponent>();
+                        }
+                        gp->slot = m.slot; gp->player = m.player; gp->prefab = m.prefab;
+                    }
+                };
+                // A grid slot is always a bare Empty -- that is what a hand-made
+                // one is, and a marker that cannot fail is better than one that
+                // can. The gates take their prefab when it resolves.
+                const prefab::Prefab* pf =
+                    (m.kind == levelgen::Marker::Kind::Grid || m.prefab.empty())
+                        ? nullptr : findPrefab(m.prefab);
+                if (pf) {
+                    std::vector<Entity> inst =
+                        prefab::instantiate(*pf, entityCounter, m.pos, m.headingDeg);
+                    if (!inst.empty()) {
+                        // ASSIGN the rotation, do not add to it: instantiate adds
+                        // the yaw to whatever the prefab's root was authored at,
+                        // and the start line prefab is authored three degrees off.
+                        inst.front().localRotation = inst.front().rotation = rot;
+                        // The gate component lives on a CHILD; put it where the
+                        // marker asked, and let the root follow.
+                        Entity* carrier = nullptr;
+                        for (Entity& e : inst)
+                            if (e.components.get<CheckpointComponent>() ||
+                                e.components.get<FinishLineComponent>()) carrier = &e;
+                        attach(carrier ? *carrier : inst.front());
+                        for (Entity& e : inst) add.push_back(std::move(e));
+                        continue;
+                    }
+                }
+                Entity e;
+                e.type = EntityType::Empty;
+                e.id   = entityCounter++;
+                e.name = (m.kind == levelgen::Marker::Kind::Finish) ? "Start/Finish"
+                       : (m.kind == levelgen::Marker::Kind::Checkpoint)
+                             ? ("Checkpoint " + std::to_string(add.size()))
+                             : ("GridPosition" + std::to_string(m.slot + 1));
+                e.half = glm::vec3(0.5f);
+                e.localCenter = e.center = m.pos;
+                e.localRotation = e.rotation = rot;
+                e.parent = -1;
+                attach(e);
+                add.push_back(std::move(e));
+            }
+            history.push(std::make_unique<ReplaceEntitiesCmd>(document, oldAll,
+                                                              std::move(add),
+                                                              "Generate level"),
+                         document);
+            // World transforms NOW, not next frame: racegrid and racesim read the
+            // derived center/rotation, and an autosave in between would catch
+            // every marker sitting at the origin.
+            resolveHierarchy();
+
+            // A world-replacing operation is a boundary, like a scene load. The
+            // corridor it just cut is not on the undo stack -- nothing in the
+            // editor puts a sculpt there -- and an operation that is half
+            // undoable is worse than one that is honestly not.
+            sel.clear();
+            history.clear();
+            prefabCache.clear();
+            levelStep = -1;
+            levelProgress = 1.0f;
+            break;
+            }
+            default: levelStep = -1; break;
+            }
+        };
+
+        // Collect what the thread finished, and drive an apply if one is running.
+        auto pumpLevel = [&] {
+            if (levelJobRunning &&
+                levelJob.wait_for(std::chrono::seconds(0)) ==
+                    std::future_status::ready) {
+                levelMade        = levelJob.get();
+                levelReport      = levelMade.report;
+                levelReportValid = true;
+                levelJobRunning  = false;
+                // The sliders moved while it was working, so what came back is
+                // already out of date -- ask again rather than show it. Unless an
+                // apply is waiting on this one, which must get the circuit it
+                // asked for and not a newer one.
+                if (levelJobStale && levelStep < 0) startLevelJob();
+            }
+            if (levelStep >= 0) stepLevelApply();
+        };
+
         // The starting grid builds its own field: every Grid Position marker that
         // names a prefab makes the rival that stands on it (see racegrid::populate
         // and GridPositionComponent).
@@ -5740,7 +6064,10 @@ int main(int argc, char** argv) {
             }
             return soundDir + "/" + n;
         };
-        host.playSound = [&](const std::string& n){ audio.playOneShot(resolveSoundPath(n)); };
+        host.playSound = [&](const std::string& n){
+            audio.playOneShot(resolveSoundPath(n));
+            mix.sfx.hit(mix.sfxGain());   // a one-shot the mixer's meter can see
+        };
         // One-shot SFX voices, cached by sound file: boost punches, the Ready/Set/Go
         // samples, checkpoint gates. CRUCIAL: each file is loaded once and only
         // re-played (seek+start) -- never re-created while it may still be sounding.
@@ -5758,7 +6085,7 @@ int main(int argc, char** argv) {
                         Sound::fromFile(audio, resolveSoundPath(file), false)).first;
             Sound& voice = it->second;
             if (!voice.isValid()) return;
-            voice.setVolume(muted ? 0.0f : masterVolume * glm::clamp(gain, 0.0f, 2.0f));
+            voice.setVolume(mix.masterGain() * glm::clamp(gain, 0.0f, 2.0f));
             voice.setPitch(glm::clamp(pitch, 0.2f, 3.0f));
             voice.play(); // seek-to-0 + start: safe to retrigger a live voice
         };
@@ -5800,7 +6127,7 @@ int main(int argc, char** argv) {
                              a->sound.c_str(), path.c_str());
                 return;
             }
-            v.setVolume(a->volume * mixAmbient.gain());
+            v.setVolume(a->volume * mix.ambientGain());
             v.play();
         };
         auto stopAudioSource = [&](int id) {
@@ -6623,6 +6950,7 @@ int main(int argc, char** argv) {
             {"Track",    "Roads",              nullptr, &showRoads},
             {"Track",    "Splines",            nullptr, &showSplines},
             {"Track",    "City",               nullptr, &showCity},
+            {"Track",    "Level generator",    nullptr, &showLevelGen},
             {"Track",    "Buildings",          nullptr, &showBuildings},
             {"Track",    nullptr,              nullptr, nullptr},
             {"Track",    "Vehicle",            nullptr, &showVehiclePanel},
@@ -7679,7 +8007,7 @@ int main(int argc, char** argv) {
                     // Splash once on entry, scaled a touch by impact speed.
                     if (!carInWater) {
                         splashSnd.setVolume(glm::clamp(
-                            0.5f + std::abs(vel.y) * 0.15f, 0.5f, 1.0f) * mixSfx.gain());
+                            0.5f + std::abs(vel.y) * 0.15f, 0.5f, 1.0f) * mix.sfxGain());
                         splashSnd.play();
                         carInWater = true;
                     }
@@ -8216,25 +8544,39 @@ int main(int argc, char** argv) {
             // stays silent.
             // Mixer routing: Master to the device, SFX to the one-shot bus,
             // Ambient scales the looping weather layers.
-            audio.setMasterVolume(muted ? 0.0f : masterVolume);
-            audio.setSfxVolume(mixSfx.gain());
-            const float amb = mixAmbient.gain();
+            audio.setMasterVolume(mix.masterGain());
+            audio.setSfxVolume(mix.sfxGain());
+            const float amb = mix.ambientGain();
             // Each layer's level is the dial's curve times the weather's own
             // gain: the curve says when rain is falling at all, the gain says how
             // this particular sky sounds while it does. A downpour is loud rain
             // and little wind, a squall the other way round, and both sit at the
             // same place on the slider.
-            rainSnd.setVolume(playMode ? rainIntensity * wxGain.rain * amb : 0.0f);
-            windSnd.setVolume(playMode ? glm::smoothstep(0.15f, 1.0f, storm) * 0.9f * wxGain.wind * amb : 0.0f);
-            breezeSnd.setVolume(playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, storm)) * 0.5f * wxGain.breeze * amb : 0.0f);
+            // Named rather than set inline, because the mixer's meters read
+            // them: what a bus is asked for is the loudest voice on it, and
+            // there is nowhere else to find that out (nothing taps the device).
+            const float vRain   = playMode ? rainIntensity * wxGain.rain * amb : 0.0f;
+            const float vWind   = playMode ? glm::smoothstep(0.15f, 1.0f, storm) * 0.9f * wxGain.wind * amb : 0.0f;
+            const float vBreeze = playMode ? (1.0f - glm::smoothstep(0.0f, 0.5f, storm)) * 0.5f * wxGain.breeze * amb : 0.0f;
+            const float vStorm  = playMode ? glm::smoothstep(0.5f, 0.95f, storm) * wxGain.storm * amb : 0.0f;
             // Water ambience: louder the deeper the car is submerged (SFX bus).
-            waterSnd.setVolume(playMode ? glm::clamp(carWaterSub, 0.0f, 1.0f) * mixSfx.gain() : 0.0f);
+            const float vWater  = playMode ? glm::clamp(carWaterSub, 0.0f, 1.0f) * mix.sfxGain() : 0.0f;
+            rainSnd.setVolume(vRain);
+            windSnd.setVolume(vWind);
+            breezeSnd.setVolume(vBreeze);
+            waterSnd.setVolume(vWater);
             // Storm bed: fades in as the weather peaks (ambient bus).
-            stormSnd.setVolume(playMode ? glm::smoothstep(0.5f, 0.95f, storm) * wxGain.storm * amb : 0.0f);
+            stormSnd.setVolume(vStorm);
+            mix.ambient.ask = std::max(std::max(vRain, vWind),
+                                       std::max(vBreeze, vStorm));
+            mix.sfx.ask     = vWater;
             const bool flashOn = flash > 0.25f;
             if (playMode && flashOn && !prevFlashOn) {
-                thunderSnd.setVolume(glm::clamp(storm, 0.3f, 1.0f) * wxGain.thunder * amb);
+                const float vThunder =
+                    glm::clamp(storm, 0.3f, 1.0f) * wxGain.thunder * amb;
+                thunderSnd.setVolume(vThunder);
                 thunderSnd.play();
+                mix.ambient.hit(vThunder);   // a clap has no voice to read after
             }
             prevFlashOn = flashOn;
 
@@ -8243,7 +8585,8 @@ int main(int argc, char** argv) {
             if (engineDriving) {
                 if (!carAudio.running()) carAudio.start();
                 carAudio.update(dt, engineSpeedMps, engineThrottle, engineWheelR,
-                                mixSfx.gain());
+                                mix.sfxGain());
+                mix.sfx.ask = std::max(mix.sfx.ask, mix.sfxGain());
             } else if (carAudio.running()) {
                 carAudio.stop();
             }
@@ -8253,7 +8596,7 @@ int main(int argc, char** argv) {
             if (gliderAudioActive) {
                 if (!gliderAudio.running()) gliderAudio.start();
                 gliderAudio.update(dt, gliderSpeedMps, gliderTopSpeed, gliderThrottle,
-                                   mixSfx.gain());
+                                   mix.sfxGain());
             } else if (gliderAudio.running()) {
                 gliderAudio.stop();
             }
@@ -8278,7 +8621,7 @@ int main(int argc, char** argv) {
                                   entities,
                                   roads.active().enabled ? &roads.active().district()
                                                          : nullptr,
-                                  driveGliderId, driveGliderId2, mixSfx.gain());
+                                  driveGliderId, driveGliderId2, mix.sfxGain());
             } else if (listenerHasPrev) {
                 worldAudio.reset();
                 listenerHasPrev = false;
@@ -8298,7 +8641,7 @@ int main(int argc, char** argv) {
                 for (const RiverSystem::Audible& a :
                      rivers.audible(camera.position(), WorldAudio::kAmbienceVoices))
                     amb.push_back({a.pos, a.gain, a.pitch, a.range});
-                worldAudio.setAmbience(amb, mixSfx.gain());
+                worldAudio.setAmbience(amb, mix.sfxGain());
             } else {
                 worldAudio.setAmbience({}, 0.0f);
             }
@@ -8619,7 +8962,7 @@ int main(int argc, char** argv) {
                                             audio, resolveSoundPath(ts->sound), true);
                                     if (!ts->insideLast) voice.play(); // (re)start on entry
                                     const float fall = glm::clamp(1.0f - dist / glm::max(ts->radius, 0.01f), 0.0f, 1.0f);
-                                    voice.setVolume(ts->volume * fall * mixAmbient.gain());
+                                    voice.setVolume(ts->volume * fall * mix.ambientGain());
                                 } else if (voice.isValid()) {
                                     voice.stop();
                                 }
@@ -8637,7 +8980,7 @@ int main(int argc, char** argv) {
                         if (const auto* as = e.components.get<AudioSourceComponent>()) {
                             auto it = audioVoices.find(e.id);
                             if (it != audioVoices.end() && it->second.isValid()) {
-                                float vol = as->volume * mixAmbient.gain();
+                                float vol = as->volume * mix.ambientGain();
                                 if (as->spatial) {
                                     const float dist = glm::distance(playerC, e.center);
                                     vol *= glm::clamp(1.0f - dist / glm::max(as->radius, 0.01f),
@@ -10687,6 +11030,51 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    // --- Junctions -------------------------------------------
+                    // Nothing about a junction is authored, so this is the only
+                    // place the author gets to see what the build FOUND: the apron
+                    // it laid and which road it belongs to. A fourth colour,
+                    // because a junction is neither a deck, a bore nor a turn --
+                    // and the ones this road is not part of are drawn faint rather
+                    // than not at all, since "why is there no junction here?" is
+                    // answered by seeing where the others are.
+                    for (const roadjunction::Crossing& jx : roads.junctions()) {
+                        if (jx.plate.size() < 3) continue;
+                        const int me = roads.selected();
+                        const bool mine = (jx.roadA == me || jx.roadB == me);
+                        const ImU32 col = mine ? IM_COL32(120, 240, 190, 235)
+                                               : IM_COL32(120, 240, 190, 165);
+                        ImVec2 prev; bool have = false;
+                        for (std::size_t i = 0; i <= jx.plate.size(); ++i) {
+                            const glm::vec2& p = jx.plate[i % jx.plate.size()];
+                            ImVec2 sp;
+                            if (!toScreen(glm::vec3(p.x, jx.y + 0.10f, p.y), sp)) {
+                                have = false;
+                                continue;
+                            }
+                            if (have) dl->AddLine(prev, sp, col, mine ? 2.5f : 1.5f);
+                            prev = sp; have = true;
+                        }
+                        ImVec2 sp;
+                        if (!mine || !toScreen(glm::vec3(jx.at.x, jx.y + 0.10f, jx.at.y), sp))
+                            continue;
+                        const int other = (jx.roadA == me) ? jx.roadB : jx.roadA;
+                        const float deg = glm::degrees(
+                            std::asin(glm::clamp(jx.sinAngle, 0.0f, 1.0f)));
+                        char lb[96];
+                        if (other == me)
+                            std::snprintf(lb, sizeof(lb), "%s  with itself  %.0f\xC2\xB0",
+                                          jx.tee ? "T" : "Junction", deg);
+                        else if (other >= 0 && other < roads.count())
+                            std::snprintf(lb, sizeof(lb), "%s  %s  %.0f\xC2\xB0",
+                                          jx.tee ? "T" : "Junction",
+                                          roads.at(other).name.c_str(), deg);
+                        else
+                            continue;
+                        shadowText(ImVec2(sp.x + 8.0f, sp.y - 9.0f),
+                                   IM_COL32(180, 255, 225, 245), lb);
+                    }
+
                     // What "Create loop" would give you, drawn before it is asked
                     // for: with two points picked and no loop on them yet, the turn
                     // that button would build is ghosted in. Planned by the SAME
@@ -12201,34 +12589,12 @@ int main(int argc, char** argv) {
             }
             ImGui::End(); }
 
-            // The audio mixer, as a strip of vertical faders.
-            if (showMixer) { if (ImGui::Begin("Mixer", &showMixer)) {
-                ImGui::TextDisabled("Master scales the device; Ambient the weather "
-                                    "loops, SFX the one-shots");
-                ImGui::Separator();
-                auto fader = [&](const char* name, float* level, bool* mute) {
-                    ImGui::PushID(name);
-                    ImGui::BeginGroup();
-                    ImGui::TextUnformatted(name);
-                    if (*mute) ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(185, 65, 60, 255));
-                    if (ImGui::Button("Mute", ImVec2(46.0f, 0.0f))) *mute = !*mute;
-                    if (*mute) ImGui::PopStyleColor();
-                    ImGui::VSliderFloat("##v", ImVec2(46.0f, 150.0f), level, 0.0f, 1.0f, "");
-                    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-                        ImGui::SetTooltip("%.0f%%", *level * 100.0f);
-                    ImGui::Text("%3.0f%%", *level * 100.0f);
-                    ImGui::EndGroup();
-                    ImGui::PopID();
-                    ImGui::SameLine();
-                };
-                fader("Master",  &masterVolume,     &muted);
-                fader("Ambient", &mixAmbient.level, &mixAmbient.mute);
-                fader("SFX",     &mixSfx.level,     &mixSfx.mute);
-                ImGui::NewLine();
-                ImGui::TextDisabled("Master feeds the device; Ambient the weather/\n"
-                                    "zone loops; SFX the one-shot bus.");
-            }
-            ImGui::End(); }
+            // The audio mixer. The desk is drawn in MixerPanel.cpp; what it
+            // needs from here is the state, the frame time (the meters have
+            // ballistics) and whether anything is playing at all.
+            if (showMixer)
+                mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
+                                    audio.ok(), playMode});
 
             if (showWeather) {
                 // The presets belong to the PROJECT, so the list is re-read
@@ -12253,7 +12619,8 @@ int main(int argc, char** argv) {
                                       weatherNameBuf, sizeof(weatherNameBuf),
                                       rainIntensity, roadWetness,
                                       streamer.heightAt(wxEye.x, wxEye.z),
-                                      muted, masterVolume, audio.ok()});
+                                      mix.master.mute, mix.master.level,
+                                      audio.ok()});
             }
 
             if (showSky) { if (ImGui::Begin("Sky & atmosphere", &showSky)) {
@@ -12745,6 +13112,31 @@ int main(int argc, char** argv) {
                                    bakeNearestBuilding,
                                    beginRoadEdit, commitRoadEdit,
                                    exportStatus});
+
+            // A whole race scene from a seed (see LevelGen.hpp). Pumped whether
+            // the panel is open or not: a circuit already being put into the
+            // world has to finish, and closing the window is not a way to stop
+            // it half way.
+            pumpLevel();
+            if (showLevelGen)
+                levelui::drawPanel({showLevelGen, levelParams, levelReport,
+                                    levelReportValid, levelDiscardPaint,
+                                    static_cast<int>(sculptWork.deltas.size()),
+                                    static_cast<int>(paintWork.weights.size()),
+                                    levelJobRunning, levelStep >= 0,
+                                    previewLevel, applyLevel});
+            // Painted BETWEEN the phases, which is what the slicing is for -- and
+            // being modal it also stops a half-built world from being clicked at.
+            if (levelStep >= 0 && !ImGui::IsPopupOpen("Generating level"))
+                ImGui::OpenPopup("Generating level");
+            if (ImGui::BeginPopupModal("Generating level", nullptr,
+                                       ImGuiWindowFlags_AlwaysAutoResize |
+                                       ImGuiWindowFlags_NoTitleBar)) {
+                ImGui::TextUnformatted(levelLabel);
+                ImGui::ProgressBar(levelProgress, ImVec2(360.0f, 0.0f));
+                if (levelStep < 0) ImGui::CloseCurrentPopup();
+                ImGui::EndPopup();
+            }
 
             if (showModeling) {
                 MeshComponent* mc = selectedMesh();
@@ -13957,6 +14349,15 @@ int main(int argc, char** argv) {
                 if (road.enabled && road.hasLoops())
                     renderer.submit(road.loopMesh(), road.material(), glm::mat4(1.0f),
                                     true, /*reflective=*/wetMirror);
+
+                // Junction aprons: the flat plates where this road meets another,
+                // or itself, on the level (see RoadJunction.hpp). Their own
+                // material rather than the road's, because the carriageway's edge
+                // fade is a function of the across-road U and an apron's U is
+                // world space -- sharing would dissolve it in stripes.
+                if (road.enabled && road.hasJunctions())
+                    renderer.submit(road.junctionMesh(), road.junctionMaterial(),
+                                    glm::mat4(1.0f), true, /*reflective=*/wetMirror);
 
                 // Decals painted ON the carriageway -- start grids, arrows, boost
                 // pads, oil stains -- lofted onto the road's own surface from the

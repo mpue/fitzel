@@ -37,6 +37,11 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RoadBridge.cpp
     src/RoadTunnel.cpp
     src/RoadLoop.cpp
+    # Where two carriageways meet on the level. Runtime, and for a sharper reason
+    # than the rest: a junction is not saved, it is DETECTED from the roads on
+    # every build and on every scene load -- so a player that could not find them
+    # would load a track whose crossings were holes.
+    src/RoadJunction.cpp
     # Decals on the carriageway. Runtime, like the side objects: the scene
     # file holds the rules and the patches are lofted from them on load, so
     # the shipped player has to be able to build them too.
@@ -156,6 +161,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/HierarchyPanel.cpp
     src/InspectorPanel.cpp
     src/MaterialsPanel.cpp
+    # The audio mixer's desk. Editor-only, like every other panel --
+    # the desk's STATE is a header (MixerPanel.hpp) the player compiles
+    # too, because the gains are read in the frame loop either way.
+    src/MixerPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingPanel.cpp
     src/UvPanel.cpp
@@ -165,6 +174,11 @@ set(SANDBOX_EDITOR_SOURCES
     src/PrefabEdit.cpp
     src/AssetDrop.cpp
     src/VideoImport.cpp
+    # The level generator: the pure core that lays a whole race scene out from
+    # one seed, and its panel. Editor-only -- a generated circuit is saved as an
+    # ordinary scene, so the shipped player has nothing to generate.
+    src/LevelGen.cpp
+    src/LevelPanel.cpp
     src/RoadPanel.cpp
     src/SplinePanel.cpp
     src/SplineEdit.cpp
@@ -379,6 +393,7 @@ target_link_libraries(softcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # it, and a second implementation would be a picture of a slightly different scene.
 #   build/release/bin/viewcheck.exe <projectFolder> [out.png] [--size WxH]
 add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp
+                         src/BuildingGen.cpp
                          src/SceneGraph.cpp
                          src/ProjectIO.cpp src/GameSettings.cpp
                          src/Selection.cpp
@@ -392,6 +407,15 @@ target_compile_definitions(viewcheck PRIVATE FITZEL_PLAYER
     FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
 target_link_libraries(viewcheck PRIVATE fitzel imgui stb_headers
                                         nlohmann_json::nlohmann_json)
+
+# mixercheck (sandbox/tools/mixercheck.cpp): draws the Mixer panel and writes a
+# picture of it. viewcheck's trick applied to a panel -- it calls the editor's own
+# mixerui::drawPanel through the editor's own Gui, so what comes out of it is the
+# panel and not a drawing of one. Opening the editor to look at a fader cap costs
+# four steps and a Play; this costs one command.
+#   build/release/bin/mixercheck.exe [out.png] [--size WxH]
+add_executable(mixercheck tools/mixercheck.cpp src/MixerPanel.cpp src/UiStyle.cpp)
+target_link_libraries(mixercheck PRIVATE fitzel imgui stb_headers)
 
 # rivercheck (sandbox/tools/rivercheck.cpp): the water is the only thing here
 # that both READS the terrain and WRITES it, and that pairing fails in two ways
@@ -413,18 +437,59 @@ add_executable(rivercheck tools/rivercheck.cpp src/RiverGen.cpp src/RiverSystem.
 target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
                                          stb_headers nlohmann_json::nlohmann_json)
 
+# levelcheck (sandbox/tools/levelcheck.cpp): one seed, one whole race scene.
+# Everything a level generator can get wrong is invisible from a screenshot and
+# expensive to find by driving -- a corner tighter than the craft can hold looks
+# like a corner you keep crashing in; a checkpoint whose centre is off the road
+# is dropped from the opponents' list while the player still has to fly it (a
+# lap nobody can complete); one the AI's racing line cannot reach is never
+# satisfied (a field that never finishes one); a flipped banking sign grades the
+# corridor as the mirror image of the road above it; a span naming a control
+# point that does not exist is skipped in silence, so the bridge is just absent;
+# and a seed that is plumbed through and then ignored takes twenty rerolls to
+# notice. So the generator is measured instead -- and over a few hundred seeds,
+# because "works for seed 1, undrivable for seed 137" has no other way of being
+# found.
+#
+# No GL and no window: levelgen takes plain data and gives plain data back,
+# which is the whole reason it is split from the apply step.
+#   build/release/bin/levelcheck.exe
+add_executable(levelcheck tools/levelcheck.cpp
+                          src/LevelGen.cpp src/SandboxMath.cpp
+                          src/RoadSide.cpp src/RoadLoop.cpp
+                          src/CityGen.cpp src/BuildingGen.cpp
+                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                          src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(levelcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(levelcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+
 # roadcheck (sandbox/tools/roadcheck.cpp): a scene holds SEVERAL roads, and
 # every way that can quietly collapse back into one is invisible in the viewport
 # -- only the last road's corridor graded, a second Build sinking a road a little
-# further, the ground query answering for one of them, a save that keeps one, a
-# delete that frees a road the undo history still points at, or the vegetation
-# mowing the gap between two of them because their centrelines arrived joined.
-# So it measures all six against real RoadSystems (a GL context is opened for the
-# materials; nothing is drawn).
+# further, the ground query answering for one of them (or for the flyover
+# overhead), a save that keeps one, a delete that frees a road the undo history
+# still points at, or the vegetation mowing the gap between two of them because
+# their centrelines arrived joined.
+#
+# ...and then what happens where two of them MEET: a crossing is detected rather
+# than authored (see RoadJunction.hpp), so the harness also measures that one
+# meeting is reported once and not four times, that both branches really do come
+# to the same height and only near the junction, that lifting a branch past the
+# clearance still gives an over/under, that a ring does not meet itself at its
+# own start line while a figure-of-eight does meet itself once, that a road
+# ending alongside another is not read as a T while one ending head-on is, that
+# the apron is collided and not merely drawn, that a scene load re-derives every
+# junction without a Build -- and, the one the two-pass build is most likely to
+# have broken, that a second Build over a junction is still identical.
+#
+# All of it against real RoadSystems (a GL context is opened for the materials;
+# nothing is drawn).
 #   build/release/bin/roadcheck.exe [shaderDir]
 add_executable(roadcheck tools/roadcheck.cpp
+                         src/LevelGen.cpp
                          src/RoadSet.cpp src/RoadSystem.cpp src/RoadBridge.cpp
-                         src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadSide.cpp
+                         src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
+                         src/RoadSide.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp

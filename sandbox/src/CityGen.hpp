@@ -119,6 +119,15 @@ struct Biome {
     float skywayHeight = 40.0f;  // metres above the carriageway
     float skywayWidth  = 6.0f;
     float signChance   = 0.35f;  // 0..1 chance a building carries a projecting sign
+    // Lit banners and screens ON the facades (the projecting blade above is a
+    // different thing: it hangs over the road). Per building, so a canyon lights
+    // itself from its own walls rather than only from the street furniture.
+    //
+    // A COUNT and not a chance, because the look of a street is the difference
+    // between one sign and four on the same wall -- and because it is the knob
+    // that has to come down when a district gets too expensive: every sign is a
+    // piece, and a district is thousands of them.
+    int   facadeSigns  = 2;      // per building (0 = none)
 
     // --- Look ----------------------------------------------------------------
     // Generated buildings share ONE material set per `palette` slot, so a whole

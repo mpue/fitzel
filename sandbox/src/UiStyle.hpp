@@ -17,6 +17,11 @@ namespace ui {
 // the regular weight.
 void setBoldFont(ImFont* bold);
 
+// The semibold cut ui::title and friends draw with, or null if none was set.
+// For the few places that draw text through an ImDrawList and still want the
+// editor's heading weight (the mixer's channel plates).
+ImFont* boldFont();
+
 // A collapsing section heading, drawn semibold. Drop-in replacement for
 // ImGui::CollapsingHeader(label, flags) -- returns true when open.
 bool header(const char* label, ImGuiTreeNodeFlags flags = 0);

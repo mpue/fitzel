@@ -406,10 +406,15 @@ vec3 windowEmission(vec3 wp, vec3 n) {
     // floor slab, and it is that dark border which makes a window a window.
     // Edges softened by their own screen-space width: these are hard rectangles
     // on a facade crossed at 500 km/h, and unfiltered they crawl with sparkle.
-    float pane = smoothstep(0.16 - w.x, 0.16 + w.x, f.x)
-               * (1.0 - smoothstep(0.84 - w.x, 0.84 + w.x, f.x))
-               * smoothstep(0.22 - w.y, 0.22 + w.y, f.y)
-               * (1.0 - smoothstep(0.82 - w.y, 0.82 + w.y, f.y));
+    //
+    // Thinner margins than the first version: a curtain wall is mostly glass with
+    // a slim mullion, and the fat borders that were here turned a facade into a
+    // chequerboard of white blocks -- which is what a generated tower looks like
+    // and a photographed one never does.
+    float pane = smoothstep(0.10 - w.x, 0.10 + w.x, f.x)
+               * (1.0 - smoothstep(0.90 - w.x, 0.90 + w.x, f.x))
+               * smoothstep(0.15 - w.y, 0.15 + w.y, f.y)
+               * (1.0 - smoothstep(0.88 - w.y, 0.88 + w.y, f.y));
 
     vec3 warm = pow(uWindowColor, vec3(2.2));
     vec3 cold = vec3(0.55, 0.68, 0.95);   // fluorescent office white
@@ -418,19 +423,42 @@ vec3 windowEmission(vec3 wp, vec3 n) {
     // a per-ROW draw on top of the per-window one, because fully independent
     // windows read as television static rather than as a building at dusk.
     float rowLit = step(0.12, hash21(vec2(id.y, uWindowSeed * 7.13)));
-    float lit    = step(hash21(id + uWindowSeed), uWindowLit) * rowLit;
+    // ...and whole COLUMNS: a building has stairs, lifts and risers in it, and
+    // they run the full height with no windows worth lighting. Without this the
+    // grid is uniform in one axis and reads as wallpaper; with it a facade has
+    // vertical structure, which is most of what the eye reads off a real one.
+    float colLit = step(0.14, hash21(vec2(uWindowSeed * 3.31, id.x)));
+    // Every so often a floor is lit end to end -- a trading floor, a lobby, a
+    // cleaning shift. One bright band across an otherwise speckled facade is the
+    // single most convincing detail in a night photograph of an office block.
+    float rowFull = step(0.955, hash21(vec2(id.y * 1.7, uWindowSeed * 5.1)));
+    float lit    = max(rowFull,
+                       step(hash21(id + uWindowSeed), uWindowLit) * rowLit * colLit);
 
     // Per-window variation in brightness and colour temperature, keyed off the
-    // same cell through different bands of the hash.
+    // same cell through different bands of the hash. The spread is narrower than
+    // it was: at 0.45..1.30 the bright windows blew out and the dim ones read as
+    // holes, and a facade of holes is the chequerboard again.
     float v    = hash21(id.yx + uWindowSeed * 3.7);
     float cool = hash21(id * 1.37 + uWindowSeed * 11.9);
-    vec3  near = mix(warm, cold, cool * 0.55) * (0.45 + 0.85 * v) * lit * pane;
+    // An unlit pane is not black. Glass at night carries the city around it --
+    // a faint, cold reflection -- and that floor of light is what stops the grid
+    // reading as punched holes in a wall.
+    // Contrast, restored. The finer pitch and the slimmer mullions put roughly
+    // twice as much glass on a facade as before, so the levels that used to read
+    // as "some windows are on" now read as "the wall is a lamp": every value here
+    // came down when the grid got denser, and they have to move together.
+    float level = mix(0.028, 0.34 + 0.34 * v, lit);
+    vec3  near  = mix(warm, cold, mix(0.75, cool * 0.55, lit)) * level * pane;
 
     // Beyond the distance where a cell covers a pixel, stop resolving individual
     // windows and fade to what the grid integrates to (mean brightness * lit
     // fraction * pane area * the rows that stayed lit). A distant facade should
     // be an even glow, and asking for per-window detail there buys only aliasing.
-    vec3  avg = mix(warm, cold, 0.28) * 0.875 * uWindowLit * 0.408 * 0.88;
+    // What the grid integrates to, for the distance where a cell is smaller than
+    // a pixel: mean brightness x lit fraction x pane area, plus the floor the
+    // unlit panes now carry (see `level`).
+    vec3  avg = mix(warm, cold, 0.28) * (0.51 * uWindowLit + 0.028) * 0.58 * 0.86;
     float far = clamp(max(w.x, w.y) * 1.6 - 0.35, 0.0, 1.0);
     return mix(near, avg, far) * uWindowGlow * wall;
 }

@@ -87,6 +87,13 @@ REM  schneidet ihren Korridor ins gemeinsame Hoehenfeld, jede ist Boden, jede
 REM  steht in der Szenendatei -- und eine geloeschte Strasse wird nicht
 REM  freigegeben, weil die Undo-Historie noch auf sie zeigt.
 call :run roadcheck "sandbox\assets\shaders"
+REM  levelcheck wuerfelt ganze Rennszenen: fuenfhundert Kurse ueber den ganzen
+REM  Reglerraum, und misst an jedem, was man sonst nur durch Fahren faende --
+REM  eine Kurve, die enger ist als das Fahrzeug halten kann, ein Checkpoint,
+REM  den die Gegner nie zaehlen (oder nie erreichen koennen), eine gespiegelte
+REM  Querneigung, ein Bauwerk auf Kontrollpunkten, die es nicht gibt, und ein
+REM  Seed, der zwar durchgereicht, aber nirgends benutzt wird.
+call :run levelcheck
 REM  sculptcheck misst die Zusage des Zieh-Werkzeugs: eine Geste, die
 REM  ueberschiesst und zurueckkommt, hinterlaesst die Hoehe, bei der sie
 REM  aufgehoert hat -- und nicht die Summe aller Zuckungen.
@@ -144,6 +151,11 @@ if "%WANT_ALL%"=="1" (
     call :run audiocheck
     call :run skycheck  "%OUT%"
     call :run fogcheck  "%OUT%"
+    REM  mixercheck zeichnet das Mixer-Panel und schreibt ein Bild davon. Wie
+    REM  skycheck kann es nicht durchfallen: ein Panel ist etwas, das man
+    REM  ANSIEHT -- ob die Fader-Kappe auf dem richtigen Dezibel sitzt, sagt
+    REM  keine Zahl.
+    call :run mixercheck "%OUT%\mixer.png"
 )
 
 echo.
@@ -152,7 +164,7 @@ if %FAILED% GTR 0 (
     exit /b 1
 )
 echo Alles gruen - %RAN% Pruefungen.
-if "%WANT_ALL%"=="0" echo Nicht gelaufen: audiocheck ^(16 s Ton^), skycheck, fogcheck ^(Bilder^) - mit --all.
+if "%WANT_ALL%"=="0" echo Nicht gelaufen: audiocheck ^(16 s Ton^), skycheck, fogcheck, mixercheck ^(Bilder^) - mit --all.
 exit /b 0
 
 REM --- eine Pruefung -------------------------------------------------------

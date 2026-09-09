@@ -18,6 +18,7 @@
 #include "CityGen.hpp"
 #include "RoadBridge.hpp"
 #include "RoadDecal.hpp"
+#include "RoadJunction.hpp"
 #include "RoadLoop.hpp"
 #include "RoadSide.hpp"
 #include "RoadTunnel.hpp"
@@ -53,12 +54,27 @@ public:
     // profile. Fills [outMin,outMax] with the world-space rectangle whose terrain
     // changed (already padded for the chunk rebuild) and returns true when the
     // terrain was modified. Clears everything and returns false for < 2 points.
-    bool build(fitzel::TerrainEditField& edit, glm::vec2& outMin, glm::vec2& outMax);
+    bool build(fitzel::TerrainEditField& edit, glm::vec2& outMin, glm::vec2& outMax) {
+        return buildWith({}, edit, outMin, outMax);
+    }
+
+    // The same, told what junctions this road takes part in (see RoadJunction.hpp
+    // and RoadSet::planJunctions, which is the only thing that knows them --
+    // a crossing is a fact about two roads and no road can see the other).
+    // With an empty plan this is build(), down to the byte.
+    bool buildWith(const roadjunction::Plan& jp, fitzel::TerrainEditField& edit,
+                   glm::vec2& outMin, glm::vec2& outMax);
+
+    // How the road sees itself before any junction is applied: the centreline and
+    // the profile layout() settled from the BASE terrain. Pass 1 of the two-pass
+    // build. Deliberately unpulled -- see rule 1 in RoadJunction.hpp.
+    roadjunction::Trace trace() const;
 
     // Rebuild only the render mesh + collider from the *current* terrain heights,
     // without touching the terrain. Used after a scene load, where the graded
     // corridor is already baked into the restored terrain edits.
-    void rebuildMesh();
+    void rebuildMesh() { rebuildMeshWith({}); }
+    void rebuildMeshWith(const roadjunction::Plan& jp);
 
     // Editor preview: the smoothed spline draped on the current terrain, as three
     // world-space polylines (centre + left/right edges). Empty for < 2 points.
@@ -93,8 +109,15 @@ public:
     // uphill slips in and out as the craft bobs, the ground moves by the
     // gradient, and the hover spring chases it. That version shipped once and
     // made gliders judder on every slope.
+    //
+    // `outDist2`, when asked for, comes back with the squared plan distance from
+    // `xz` to the centreline of the stretch that answered. It exists so a caller
+    // holding SEVERAL roads can choose between their answers by the same rule
+    // this function uses within one -- see RoadSet::surfaceHeightAt. Choosing by
+    // height there is the same mistake as choosing by height here, one level up:
+    // it hands a craft driving under a flyover the deck overhead.
     bool surfaceHeightAt(const glm::vec2& xz, float halfWidth, float& outY,
-                         float maxY = 1.0e9f) const;
+                         float maxY = 1.0e9f, float* outDist2 = nullptr) const;
 
     // The raised edge resolved into the two numbers everything downstream wants:
     // how far out it reaches across the section, and how high it climbs. Derived
@@ -135,6 +158,10 @@ public:
     // not as colour -- so it is picked from the same wide list as the glow map.
     // Pass "" for none, which puts the surface back to an even sheen.
     void setWetMap(const std::string& file);
+    // The apron's own surface and its glow map (see junctionTex/junctionGlow).
+    // "" for either puts that half back to the default described there.
+    void setJunctionTex(const std::string& file);
+    void setJunctionGlow(const std::string& file);
     // Push the wetness map + its tiling onto the surface and bridge materials.
     // Called every frame for the same reason applyEmission is: the tiling is
     // derived from width/texTile/wetTile, all of which the panel edits live.
@@ -236,6 +263,16 @@ public:
     // making you find the matching file yourself.
     std::string normalFor(const std::string& file) const;
 
+    // The junction sheet that goes with `file`, by the same naming convention:
+    // the surface's own stem with "_crossing" on it (roads_basic.png ->
+    // roads_basic_crossing.png), or, for a pack that spells its maps out, with
+    // the colour token swapped for one (asphalt_02_diff_4k.jpg ->
+    // asphalt_02_crossing_4k.png). "" when the pack ships none. Picking a
+    // surface pulls this along, exactly as it pulls the normal map -- a pack
+    // that went to the trouble of drawing a crossing should not have to be told
+    // twice that it exists.
+    std::string crossingFor(const std::string& file) const;
+
     // --- Accessors for the renderer / physics / vegetation -------------------
     const fitzel::Mesh& mesh() const { return m_mesh; }
     fitzel::Material&   material()   { return m_mat; }
@@ -256,6 +293,17 @@ public:
     // cannot live in a ribbon that has one height per ground position.
     const fitzel::Mesh& loopMesh()       const { return m_loopMesh; }
     bool                hasLoops()       const { return m_loopVerts > 0; }
+    // The junction aprons this road draws -- one flat plate per crossing it owns
+    // (the lower-indexed road of the pair; a road crossing itself owns its own).
+    // Its own material rather than the road's, because the carriageway's edge
+    // fade is a function of the across-road U and the apron's U is world space:
+    // sharing would dissolve the plate in stripes on any road with fadeWidth set.
+    const fitzel::Mesh& junctionMesh()     const { return m_junctionMesh; }
+    fitzel::Material&   junctionMaterial()       { return m_junctionMat; }
+    bool                hasJunctions()     const { return m_junctionVerts > 0; }
+    // What the last build found here, for the panel and the viewport overlay.
+    // OUTPUT ONLY -- never fed back into detection (RoadJunction.hpp, rule 2).
+    const std::vector<roadjunction::Crossing>& junctions() const { return m_junctions; }
     // The built loops, for the sim: a craft rides these frames rather than the
     // flat centreline while it is on one (see RaceSim).
     const std::vector<roadloop::Loop>& loopGeometry() const { return m_loops; }
@@ -461,6 +509,29 @@ public:
     std::vector<BridgeSpec> tunnels;
     roadtunnel::Params      tunnelStyle; // bore look, shared by all of them
 
+    // Junctions (see RoadJunction.hpp). Nothing to author -- these are the terms
+    // on which this road is willing to MEET another one, and the crossings
+    // themselves are detected from the drawing on every build.
+    roadjunction::Params    junctionStyle;
+    // What the apron is surfaced with. Empty (the default) is the carriageway's
+    // own asphalt, tiled in world space so the joint does not show -- which is
+    // right for a junction that is just a place two roads overlap, and wrong for
+    // one that is meant to LOOK like a junction. Name an image here and it is
+    // mapped once across the plate, squared up with the crossing, so a painted
+    // box junction or a give-way triangle lands where it was painted.
+    //
+    // A display name, resolved against the scanned texture lists like every other
+    // one on the road (see refreshTextures): the lists are rebuilt per run, so an
+    // index would not survive a project change. Picking a surface fills this in
+    // from crossingFor() when the pack has a matching sheet.
+    std::string             junctionTex;
+    // The same for its markings under a night sky: an emission map fitted the
+    // same way. Empty means the apron does not glow AT ALL -- deliberately not
+    // "glow like the road", because a road glows through a map painted across
+    // its own width, and a junction has no width to run it across. An evenly
+    // lit slab where four glowing lanes meet reads as a hole in the lighting.
+    std::string             junctionGlow;
+
     // Vertical loops (see RoadLoop.hpp). Saved as rules naming two control
     // points; the geometry is derived on every build, like a bridge deck.
     std::vector<roadloop::Spec> loops;
@@ -511,8 +582,14 @@ private:
         std::vector<roadbridge::Span> spans;  // sample runs carried by a deck
         std::vector<roadtunnel::Span> bores;  // sample runs running through a hill
         std::vector<roadloop::Loop>   loops;  // vertical loops on this road
+        // 1 = leave the ribbon's forward quad out at this sample, because a
+        // junction apron covers it. Empty when there are none, exactly like the
+        // loop footprints it sits beside.
+        std::vector<char>             jcut;
     };
-    Layout layout() const;
+    // `jp` null (the default) is the road on its own: no pull, no cut, and a
+    // Layout identical to the one every build before junctions existed produced.
+    Layout layout(const roadjunction::Plan* jp = nullptr) const;
 
     // Per-sample height offset from ptLift: ramped between the control points
     // (whose sample indices are `ptSample`, as sampleCenterlineXZ hands them
@@ -541,7 +618,8 @@ private:
     // it as well is a second road nobody asked for (see roadloop::Loop::sa).
     void loft(const std::vector<glm::vec2>& center, const std::vector<float>& height,
               const std::vector<float>& bank,
-              const std::vector<roadloop::Loop>& loops);
+              const std::vector<roadloop::Loop>& loops,
+              const std::vector<char>& jcut);
     // Build the road's concrete -- bridge decks and piers, tunnel bores and
     // portals -- into ONE mesh, and merge it into the collider. They share a mesh
     // and a material because they are the same cast concrete, and because a deck
@@ -551,6 +629,10 @@ private:
     // Loft the loop carriageways and merge them into the collider. Runs after
     // loft() and buildConcrete(), which own (and clear) the collider arrays.
     void buildLoops(const Layout& layout);
+    // Lay the junction aprons this road owns and merge them into the collider.
+    // Runs after loft() and the two above, which own (and clear) the collider
+    // arrays. Also records the crossings for junctions().
+    void buildJunctions(const roadjunction::Plan& jp);
     // Drop every mesh, collider and centreline (a road of fewer than 2 points).
     void clearGeometry();
 
@@ -565,10 +647,17 @@ private:
     // falling back to the content dir for a name that is no longer there.
     std::string resolveTexPath(const std::string& name) const;
 
+    // Re-bind the apron's material to the carriageway's current surface. Called
+    // wherever that surface changes, because the apron is drawn separately and
+    // would otherwise keep the texture the road had when it was last built.
+    void syncJunctionSurface();
+
     std::shared_ptr<fitzel::Texture> m_tex;     // kept alive while the material binds it
     std::shared_ptr<fitzel::Texture> m_normTex;
     std::shared_ptr<fitzel::Texture> m_emisTex;
     std::shared_ptr<fitzel::Texture> m_wetTex;
+    std::shared_ptr<fitzel::Texture> m_junctionTex;
+    std::shared_ptr<fitzel::Texture> m_junctionGlowTex;
     fitzel::Material         m_mat;
     fitzel::Mesh             m_mesh;
     int                      m_verts = 0;
@@ -578,6 +667,10 @@ private:
     int                      m_bridgeVerts = 0;
     fitzel::Mesh             m_loopMesh;
     int                      m_loopVerts = 0;
+    fitzel::Material         m_junctionMat;
+    fitzel::Mesh             m_junctionMesh;
+    int                      m_junctionVerts = 0;
+    std::vector<roadjunction::Crossing> m_junctions;
     std::vector<roadloop::Loop> m_loops;
     std::vector<glm::vec3>       m_collVerts;   // road + bridge geometry for physics
     std::vector<std::uint32_t>   m_collIndices;

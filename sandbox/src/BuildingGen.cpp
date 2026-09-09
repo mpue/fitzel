@@ -273,6 +273,28 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& pIn) {
     pal.base  = ensureMaterial(materials, slot + "Base", soiled(p.baseTint, w),
                                glm::mix(0.05f, 0.0f, wr), glm::mix(0.75f, 1.0f, wg),
                                glm::vec3(0.0f), 1.0f);
+    // The corner strips. Same colour as the neon, a third of the glow: they are
+    // the longest lit thing on the building by an order of magnitude, and at the
+    // trim's own brightness a tower reads as a wireframe with dark panels in it.
+    pal.trim = ensureMaterial(materials, slot + "Trim", p.accentColor * 0.10f,
+                              0.0f, 0.5f, p.accentColor,
+                              p.accentStrength * 0.32f * glm::mix(1.0f, 0.7f, w));
+    // The sign faces. Same recipe as the neon -- nearly black under light, all of
+    // their brightness from emission -- but brighter, because a sign is meant to
+    // be read across a street and a trim strip is not. Weathering dims them like
+    // everything else: a dead district should have dead signs.
+    pal.signA = ensureMaterial(materials, slot + "Sign A", p.signColorA * 0.12f,
+                               0.0f, 0.45f, p.signColorA,
+                               p.signGlow * glm::mix(1.0f, 0.55f, w));
+    pal.signB = ensureMaterial(materials, slot + "Sign B", p.signColorB * 0.12f,
+                               0.0f, 0.45f, p.signColorB,
+                               p.signGlow * glm::mix(1.0f, 0.55f, w));
+    // The shopfront band: warm, and at a fraction of a sign's glow. It covers
+    // more facade than every sign on the building put together, so it sets the
+    // colour of the street whether it means to or not.
+    pal.shop = ensureMaterial(materials, slot + "Shopfront", p.shopColor * 0.10f,
+                              0.0f, 0.55f, p.shopColor,
+                              p.signGlow * 0.42f * glm::mix(1.0f, 0.6f, w));
     // Windows go on the GLAZING only. The concrete masses `grime` swaps in stay
     // blind, and that contrast is the point: a street where some towers are lit
     // and their neighbours are dark hulks reads as a city, where a street of
@@ -510,7 +532,7 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal,
     if (p.edgeStrips) {
         // Unlit, they are still worth having -- a shadowed edge reads as a corner
         // -- so the strip falls back to the frame material rather than vanishing.
-        const AssetId stripMat = p.neon ? pal.accent : pal.frame;
+        const AssetId stripMat = p.neon ? pal.trim : pal.frame;
         for (std::size_t i = 0; i < masses.size(); ++i) {
             const Mass& m  = masses[i];
             const float hy = (m.y1 - m.y0) * 0.5f;
@@ -622,6 +644,109 @@ std::vector<Entity> generate(const Params& pIn, const Palette& pal,
         case Crown::None:
         case Crown::Count:
             break;
+    }
+
+    // --- Signage --------------------------------------------------------------
+    // Banners down the corners, screens across the flanks, a lit ground floor and
+    // a sign on the roof. Everything here hangs on ONE face of ONE mass, standing
+    // a little proud of it, and nothing here collides (see Params::signs).
+    {
+        // Its own random stream, like the wear: adding signs must not reshape a
+        // tower the author has already framed.
+        std::mt19937 srng(p.seed ^ 0x5bf03635u);
+        auto sr = [&]() {
+            std::uniform_real_distribution<float> u(0.0f, 1.0f);
+            return u(srng);
+        };
+        // WEIGHTED, not one in three each. The district's own accent carries the
+        // street and the two sign colours are spice: an even split reads as a
+        // paint chart, and with magenta in it the whole canyon goes purple.
+        auto pickSign = [&](float r) {
+            return (r < 0.50f) ? pal.accent : (r < 0.78f) ? pal.signB : pal.signA;
+        };
+
+        // Put a flat panel on the face of `m` facing `side` (0..3 = +X,-X,+Z,-Z),
+        // `along` metres off the centre of that face, its bottom at `y0` and
+        // `h` metres tall, `bw` metres wide, standing `out` proud of the wall.
+        auto panel = [&](const std::string& name, const Mass& m, int side,
+                         float along, float y0, float h, float bw, float out,
+                         AssetId mat) {
+            const float hx = m.w * 0.5f, hz = m.d * 0.5f;
+            glm::vec2 lp(0.0f);
+            glm::vec3 half(0.0f);
+            switch (side) {
+                case 0: lp = {hx + out * 0.5f, along}; half = {out * 0.5f, h * 0.5f, bw * 0.5f}; break;
+                case 1: lp = {-hx - out * 0.5f, along}; half = {out * 0.5f, h * 0.5f, bw * 0.5f}; break;
+                case 2: lp = {along, hz + out * 0.5f}; half = {bw * 0.5f, h * 0.5f, out * 0.5f}; break;
+                default: lp = {along, -hz - out * 0.5f}; half = {bw * 0.5f, h * 0.5f, out * 0.5f}; break;
+            }
+            const glm::vec2 wp = yawXZ(lp, m.yaw);
+            add(EntityType::Box, name, {wp.x, y0 + h * 0.5f, wp.y}, half, m.yaw,
+                mat, false);
+        };
+
+        for (int i = 0; i < p.signs; ++i) {
+            const Mass& m = masses[static_cast<std::size_t>(sr() * masses.size()) %
+                                   std::max<std::size_t>(masses.size(), 1)];
+            const int   side = static_cast<int>(sr() * 4.0f) & 3;
+            const float face = ((side & 2) == 0) ? m.d : m.w;   // the width of it
+            const AssetId mat = pickSign(sr());
+            const float span = m.y1 - m.y0;
+            // A screen is wide and low and sits in the lower half where it can be
+            // read from the street; a banner is narrow and tall and runs up a
+            // corner. Screens only where the mass is tall enough to carry one.
+            const bool screen = p.screens && sr() < 0.4f && span > floorH * 6.0f;
+            if (screen) {
+                const float bw = glm::clamp(face * (0.34f + sr() * 0.3f), 3.0f, 28.0f);
+                const float h  = glm::clamp(bw * (0.42f + sr() * 0.35f), 2.5f, 16.0f);
+                const float y0 = m.y0 + floorH * 1.5f + sr() * std::max(0.0f, span * 0.45f);
+                panel("Screen " + std::to_string(i + 1), m, side,
+                      (sr() - 0.5f) * std::max(0.0f, face - bw), y0, h, bw, 0.5f, mat);
+            } else {
+                const float bw = glm::clamp(face * 0.12f, 1.0f, 3.2f);
+                const float h  = glm::clamp(span * (0.25f + sr() * 0.45f),
+                                            floorH * 3.0f, floorH * 26.0f);
+                const float y0 = m.y0 + sr() * std::max(0.0f, span - h);
+                // Hard against a corner: a banner in the middle of a wall reads as
+                // a poster, one on the edge reads as a building wearing a name.
+                const float along = (sr() < 0.5f ? -1.0f : 1.0f) *
+                                    std::max(0.0f, face * 0.5f - bw * 0.6f);
+                panel("Banner " + std::to_string(i + 1), m, side, along, y0, h,
+                      bw, 0.35f, mat);
+            }
+        }
+
+        // The lit ground floor. One box a hair bigger than the podium, half a
+        // storey tall -- so it shows on all four sides at once for the price of
+        // one object. This is the piece that puts light UNDER the tower, which is
+        // where a street gets its glow from; without it a district is lit from
+        // the windows up and pitch dark where anyone would stand.
+        if (p.shopfronts) {
+            const float pw = (podH > 0.0f) ? p.width * p.podiumSpread : masses.front().w;
+            const float pd = (podH > 0.0f) ? p.depth * p.podiumSpread : masses.front().d;
+            const float h  = floorH * 0.45f;
+            add(EntityType::Box, "Shopfronts",
+                {0.0f, floorH * 0.55f, 0.0f},
+                {pw * 0.5f + 0.10f, h * 0.5f, pd * 0.5f + 0.10f}, 0.0f,
+                pal.shop, false);
+        }
+
+        // ...and the sign on the roof, on a little frame, which is the silhouette
+        // half of the same idea: a skyline reads as a city from a distance where
+        // no facade is legible any more.
+        if (p.roofSign) {
+            const Mass& top = masses.back();
+            const float bw  = glm::clamp(std::min(top.w, top.d) * 0.7f, 2.0f, 22.0f);
+            const float h   = glm::clamp(bw * 0.35f, 1.5f, 7.0f);
+            const float legs = h * 0.5f;
+            add(EntityType::Box, "Roof sign frame",
+                {0.0f, top.y1 + legs * 0.5f, 0.0f},
+                {bw * 0.45f, legs * 0.5f, 0.12f}, top.yaw, pal.frame, false);
+            add(EntityType::Box, "Roof sign",
+                {0.0f, top.y1 + legs + h * 0.5f, 0.0f},
+                {bw * 0.5f, h * 0.5f, 0.18f}, top.yaw,
+                pickSign(static_cast<float>(p.seed % 100) * 0.01f), false);
+        }
     }
 
     // --- Rooftop and terrace clutter -----------------------------------------

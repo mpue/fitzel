@@ -23,6 +23,8 @@ struct BoldScope {
 
 void setBoldFont(ImFont* bold) { g_bold = bold; }
 
+ImFont* boldFont() { return g_bold; }
+
 bool header(const char* label, ImGuiTreeNodeFlags flags) {
     BoldScope bold;
     return ImGui::CollapsingHeader(label, flags);

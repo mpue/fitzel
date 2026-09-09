@@ -114,10 +114,30 @@ public:
     // Mark every road for a rebuild (the terrain moved under all of them).
     void markNeedsBuild();
 
-    // The highest road surface at (x,z) below `maxY`, across every enabled road.
-    // False when no road covers the point. Each road is asked with its OWN
-    // half-width, which is the whole point of them being separate objects.
+    // The road surface at (x,z) below `maxY`, across every enabled road. False
+    // when no road covers the point. Each road is asked with its OWN half-width,
+    // which is the whole point of them being separate objects.
+    //
+    // NEAREST in plan view wins, not highest -- the same rule RoadSystem uses
+    // between the branches of one road, and for the same reason (see the comment
+    // on RoadSystem::surfaceHeightAt). Highest was wrong for exactly the case
+    // two roads exist to make easy: one crossing over another. The craft on the
+    // lower carriageway is nowhere near the flyover's centreline, but it was
+    // handed the deck's height anyway and hovered up into the underside of it.
+    // The ceiling did not save it either, because the deck's height is what the
+    // craft was standing on and so was never above its own ceiling.
     bool surfaceHeightAt(const glm::vec2& xz, float& outY, float maxY) const;
+
+    // --- Junctions -----------------------------------------------------------
+    // Where the roads meet on the level, found by the last buildAll or
+    // rebuildMeshes (see RoadJunction.hpp). This is the ONE place a crossing can
+    // be worked out: it is a fact about two roads, and no road can see another.
+    //
+    // OUTPUT ONLY. The panel and the viewport overlay read it; detection never
+    // does. Feeding it back would make Build depend on the last Build, and
+    // roadcheck's "second Build is identical" would start failing on a scene that
+    // merely has a junction in it.
+    const std::vector<roadjunction::Crossing>& junctions() const { return m_junctions; }
 
     // Every road's centreline in one polyline, the runs separated by a break
     // marker (see SandboxMath's isLineBreak) so the gap between two roads is not
@@ -155,6 +175,17 @@ private:
     // Reuse slot `n` if it exists (so a scene load does not orphan the pointers
     // the history holds), else make one.
     RoadSystem& slotForLoad(int n);
+
+    // Pass one of the two-pass build: trace every living road as it stands ON ITS
+    // OWN, find every crossing among the traces, and hand each road back what it
+    // has to do about the ones it takes part in. Also refreshes m_junctions.
+    //
+    // Traced rather than remembered, every time, and from the base terrain -- so
+    // the answer depends on the scene and on nothing that a previous build left
+    // behind, which is what lets pass two write the same corridor twice running.
+    std::vector<roadjunction::Plan> planJunctions();
+
+    std::vector<roadjunction::Crossing> m_junctions;
 
     fitzel::Shader&          m_lit;
     fitzel::AssetDatabase&   m_assetDb;

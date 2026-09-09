@@ -1,6 +1,7 @@
 #include "RoadPanel.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,7 @@
 
 #include "RoadBridge.hpp"
 #include "RoadDecal.hpp"
+#include "RoadJunction.hpp"
 #include "RoadPrefab.hpp"
 #include "RoadTunnel.hpp"
 #include "RoadSide.hpp"
@@ -37,8 +39,13 @@ namespace {
 // the same pass a scene load runs, so it is a preview of what was just asked
 // for, not a substitute for building: the Build prompt stays lit, because a
 // bridge still needs its corridor cut and its abutments ramped.
+// Every road, not just the edited one, and deliberately: a junction is a fact
+// about TWO roads, found by the pass RoadSet::rebuildMeshes runs (see
+// RoadJunction.hpp). Re-lofting this road alone would show it with the crossings
+// it had before the edit -- or, on a road that just stopped crossing another,
+// with a hole where one used to be.
 void showAtOnce(const PanelState& s) {
-    s.road().rebuildMesh();
+    s.roads.rebuildMeshes();
     s.road().needsBuild = true;
 }
 
@@ -240,6 +247,116 @@ bool loopSection(const PanelState& s) {
     }
     ImGui::PopID(); // "loops"
     if (s.road().loops.empty()) ImGui::TextDisabled("No loops");
+    return rc;
+}
+
+// Junctions: what the last build FOUND, not something to add.
+//
+// Every other section here is a list of things the author placed. This one is
+// not, and that difference is the feature (see RoadJunction.hpp): a crossing is
+// a fact about two centrelines, so there is no Create button. The way to make
+// one is to draw two roads that cross; the way to refuse one is to raise a
+// control point past the clearance, which is what an over/under always was.
+bool junctionSection(const PanelState& s) {
+    bool rc = false;
+    if (!ui::header("Junctions")) return rc;
+    // The whole section under one id. Every widget in here has a name some other
+    // part of the Roads panel also uses -- "Surface" twice over, and a "Junctions"
+    // checkbox under a "Junctions" header -- and ImGui builds ids from labels, so
+    // without this two of them are literally the same widget and clicking one
+    // works the other. (It said so, in red, which is more than most bugs do.)
+    ImGui::PushID("junction");
+    ui::hint("Where the roads meet each other -- or themselves -- on the level.\n"
+             "Found on every build; there is nothing to place. To keep a\n"
+             "crossing as a flyover instead, raise a control point past the\n"
+             "clearance below.");
+
+    // EVERY junction in the scene, not just this road's, with the others dimmed.
+    // "Why is there no junction here?" is a question about the scene, and a list
+    // that hides the answer because it belongs to another road cannot answer it.
+    const int me = s.roads.selected();
+    int shown = 0;
+    ImGui::PushID("list");   // its own scope, or row 0 here IS bridge row 0
+    for (const roadjunction::Crossing& x : s.roads.junctions()) {
+        if (x.roadA < 0 || x.roadA >= s.roads.count()) continue;
+        if (x.roadB < 0 || x.roadB >= s.roads.count()) continue;
+        const bool mine = (x.roadA == me || x.roadB == me);
+        ImGui::PushID(shown++);
+        const float deg = glm::degrees(std::asin(std::clamp(x.sinAngle, 0.0f, 1.0f)));
+        const char* kind = x.tee ? "T" : "Crossing";
+        char row[192];
+        if (x.roadA == x.roadB)
+            std::snprintf(row, sizeof(row), "%s   %s with itself   %.0f, %.0f   %.0f\xC2\xB0",
+                          mine ? "\xE2\x97\x8F" : "\xC2\xB7", kind,
+                          s.roads.at(x.roadA).name.c_str(), x.at.x, x.at.y, deg);
+        else
+            std::snprintf(row, sizeof(row), "%s   %s \xC3\x97 %s   %.0f, %.0f   %.0f\xC2\xB0",
+                          mine ? "\xE2\x97\x8F" : "\xC2\xB7",
+                          s.roads.at(x.roadA).name.c_str(),
+                          s.roads.at(x.roadB).name.c_str(), x.at.x, x.at.y, deg);
+        if (mine) ImGui::TextUnformatted(row);
+        else      ImGui::TextDisabled("%s", row);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Both roads are pulled to %.2f m here, and the\n"
+                              "apron is drawn by %s.", x.y,
+                              s.roads.at(std::min(x.roadA, x.roadB)).name.c_str());
+        ImGui::PopID();
+    }
+    ImGui::PopID(); // "list"
+    if (shown == 0)
+        ImGui::TextDisabled(s.roads.anyNeedsBuild()
+                                ? "Build to find them."
+                                : "No junctions anywhere in this scene.");
+
+    // --- What the apron is surfaced with -------------------------------------
+    // Not on the Params, because it is not a term the two roads have to agree on
+    // -- the apron belongs to one of them and is textured by it. The same wide
+    // image list the decals and the glow map are picked from, since a junction
+    // image is a painted PNG far more often than it is a seamless albedo.
+    auto imagePicker = [&](const char* label, const char* none,
+                           const std::string& cur,
+                           void (RoadSystem::*set)(const std::string&),
+                           const char* tip) {
+        if (ImGui::BeginCombo(label, cur.empty() ? none : cur.c_str())) {
+            if (ImGui::Selectable(none, cur.empty()) && !cur.empty()) {
+                (s.road().*set)(std::string());
+                showAtOnce(s);
+            }
+            for (const std::string& f : s.road().emisFiles)
+                if (ImGui::Selectable(f.c_str(), cur == f) && cur != f) {
+                    (s.road().*set)(f);
+                    showAtOnce(s);
+                }
+            if (s.road().emisFiles.empty())
+                ImGui::TextDisabled("No images found (drop a .png in the project)");
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    };
+    imagePicker("Surface", "Same as the road", s.road().junctionTex,
+                &RoadSystem::setJunctionTex,
+                "What the junction is paved with.\n"
+                "\"Same as the road\" tiles the carriageway's own asphalt through\n"
+                "the crossing, so the joint does not show -- right for a plain\n"
+                "overlap. Pick an image instead and it is laid ONCE across the\n"
+                "junction, squared up with this road, so painted markings land\n"
+                "where you painted them.");
+    imagePicker("Markings glow", "None", s.road().junctionGlow,
+                &RoadSystem::setJunctionGlow,
+                "An emission map for the junction, fitted the same way.\n"
+                "Without one the apron does not glow at all -- the road's own\n"
+                "glow map is painted across its WIDTH, and a junction has no\n"
+                "width to run it across.");
+
+    // The terms this road meets others on. A change re-plans every road (a
+    // crossing needs both of them), but only once the slider is let go --
+    // re-lofting the whole set on every frame of a drag is not worth the
+    // liveness.
+    if (roadjunction::panel(s.road().junctionStyle)) {
+        rc = true;
+        if (!ImGui::IsAnyItemActive()) showAtOnce(s);
+    }
+    ImGui::PopID(); // "junction"
     return rc;
 }
 
@@ -999,6 +1116,9 @@ void drawPanel(const PanelState& s) {
         ImGui::Separator();
         rc |= loopSection(s);
 
+        ImGui::Separator();
+        rc |= junctionSection(s);
+
         if (rc) s.road().needsBuild = true;
 
         // Side objects manage their own (cheap) re-derive and undo, independent of
@@ -1104,6 +1224,13 @@ void drawPanel(const PanelState& s) {
                     s.road().normSel = -1;
                     for (int k = 0; k < static_cast<int>(s.road().normFiles.size()); ++k)
                         if (s.road().normFiles[k] == n) s.road().normSel = k;
+                    // ...and the junction sheet the pack draws to go with it. The
+                    // Junctions section overrides or clears it, the same bargain
+                    // the normal map above makes. A re-loft, not just a material
+                    // swap: whether the apron tiles the road's asphalt or wears a
+                    // sheet of its own decides its UVs, which are in the mesh.
+                    s.road().setJunctionTex(s.road().crossingFor(s.road().texFiles[i]));
+                    showAtOnce(s);
                 }
                 if (sel) ImGui::SetItemDefaultFocus();
             }

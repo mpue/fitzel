@@ -54,6 +54,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+#include "../src/BuildingGen.hpp"
 #include "../src/Component.hpp"
 #include "../src/Document.hpp"
 #include "../src/ModelLibrary.hpp"
@@ -111,6 +112,29 @@ struct Options {
     // picture too. The same numbers lit.frag uses: 0 textured, 1 solid,
     // 2 solid lit, 3 wireframe.
     int   shade = 0;
+    // --- Building mode -------------------------------------------------------
+    // Generate towers and look at them, instead of loading a project.
+    //
+    // It exists because the building generator is the one part of this engine
+    // that is judged entirely by eye, and the eye was the one thing the workflow
+    // did not have: generate in the editor, fly over, squint, change a number,
+    // generate again. Worse, the road city is DERIVED at Build time and is not
+    // in the scene file at all, so even this harness could not see it.
+    //
+    // With --building the scene is a row of freshly generated towers on a dark
+    // ground, and a change to a colour or a shader is a picture away.
+    bool     building  = false;
+    int      count     = 3;
+    unsigned seed      = 1337;
+    int      style     = -1;     // -1 = the generator's default style
+    bool     night     = false;  // kill the sun so the emissive does the talking
+    // A slab under the towers. OFF by default, and that is a judgement about
+    // what the picture is FOR: against black, a facade is all there is to look
+    // at, and the eye judges its windows instead of the plane it stands on.
+    // (It is also currently the one thing in this harness whose material does
+    // not take -- it renders in the default grey however it is set, which is
+    // worth chasing when the floor matters and not before.)
+    bool     ground    = false;
     bool  ok = true;
 };
 
@@ -135,6 +159,12 @@ Options parse(int argc, char** argv) {
                     : (v == "solid")                    ? 1
                     : (v == "textured"  || v == "tex")  ? 0
                     : std::atoi(v.c_str());
+        } else if (a == "--building") { o.building = true;
+        } else if (a == "--count")   { o.count = std::max(1, std::atoi(next().c_str()));
+        } else if (a == "--seed")    { o.seed  = static_cast<unsigned>(std::strtoul(next().c_str(), nullptr, 10));
+        } else if (a == "--style")   { o.style = std::atoi(next().c_str());
+        } else if (a == "--night")   { o.night = true;
+        } else if (a == "--ground")  { o.ground = true;
         } else if (a == "--shaders") { o.shaders = next();
         } else if (a == "--content") { o.content = next();
         } else if (!a.empty() && a[0] == '-') { o.ok = false; break;
@@ -142,7 +172,13 @@ Options parse(int argc, char** argv) {
     }
     if (!loose.empty()) o.project = loose[0];
     if (loose.size() > 1) o.out = loose[1];
-    if (o.project.empty()) o.ok = false;
+    // In building mode the loose argument is the OUTPUT, because there is no
+    // project to name: the scene is generated.
+    if (o.building) {
+        if (loose.size() == 1) { o.out = loose[0]; o.project.clear(); }
+    } else if (o.project.empty()) {
+        o.ok = false;
+    }
     return o;
 }
 
@@ -152,11 +188,16 @@ int main(int argc, char** argv) {
     const Options opt = parse(argc, argv);
     if (!opt.ok) {
         std::printf("usage: viewcheck <projectFolder> [out.png] [--size WxH]\n"
+                    "       viewcheck --building [out.png] [--count N] [--seed N]\n"
+                    "                 [--style 0..5] [--night] [--size WxH]\n"
                     "                 [--yaw deg] [--pitch deg] [--shaders dir]\n"
                     "                 [--shade textured|solid|solidlit|wireframe]\n");
         return 2;
     }
-    if (!fs::exists(opt.project)) {
+    // Building mode generates its own scene, so it needs no project -- but it
+    // still accepts one, because a project's materials and content root are what
+    // make a generated tower look like it belongs to THAT city.
+    if (!opt.building && !fs::exists(opt.project)) {
         std::printf("[viewcheck] no such project folder: %s\n", opt.project.c_str());
         return 2;
     }
@@ -217,15 +258,69 @@ int main(int argc, char** argv) {
     // spheres both came out wearing "Building A Base" instead of Chrome. The
     // editor mounts it inside its open-project path; this loads more directly and
     // so has to do it here.
-    assetDb.mountProject(opt.project);
+    if (!opt.project.empty()) assetDb.mountProject(opt.project);
     assetDb.refresh();
 
-    projectio::loadProjectMaterials(ctx, projectio::matsDirIn(opt.project));
-    const std::string scenePath = projectio::sceneFileIn(opt.project);
-    if (!projectio::loadScene(ctx, scenePath)) {
-        std::printf("[viewcheck] could not load the scene: %s\n", scenePath.c_str());
-        glfwTerminate();
-        return 2;
+    if (!opt.project.empty())
+        projectio::loadProjectMaterials(ctx, projectio::matsDirIn(opt.project));
+    if (opt.building) {
+        // A row of towers on a dark slab. Spaced by their own footprint so they
+        // stand as a street rather than a heap, and each with its own seed so one
+        // picture shows the VARIETY the generator has -- which is the thing a
+        // single tower cannot answer.
+        buildings::Params bp;
+        if (opt.style >= 0 &&
+            opt.style < static_cast<int>(buildings::Style::Count))
+            buildings::applyStyle(bp, static_cast<buildings::Style>(opt.style));
+        const float pitch = bp.width * bp.podiumSpread * 1.45f;
+        int counter = 1;
+        // The ground first, so it is behind everything and the camera's framing
+        // includes it: a tower photographed against nothing has no scale.
+        {
+            // Dark asphalt, not the default grey. An unmaterialed ground comes
+            // back a bright slab that outshines every lit window on the tower
+            // standing on it -- which is a picture of the harness, not of the
+            // building.
+            MaterialDef gm;
+            gm.assetId       = fitzel::AssetId::generate();
+            gm.name          = "Viewcheck Ground";
+            gm.albedo        = glm::vec3(0.035f, 0.037f, 0.042f);
+            gm.reflectivity  = 0.02f;
+            gm.roughness     = 0.85f;
+            materials.push_back(gm);
+            Entity g;
+            g.type = EntityType::Box;
+            g.name = "Ground";
+            g.id   = counter++;
+            {
+                auto mc = std::make_unique<MaterialComponent>();
+                mc->material = gm.assetId;
+                g.components.items.push_back(std::move(mc));
+            }
+            // Just enough to stand on and catch the glow. Bigger and the ground
+            // becomes the scene's bounds, the camera frames IT, and the towers
+            // end up a distant line of dark slivers.
+            g.half = glm::vec3(pitch * (opt.count * 0.5f + 0.6f), 1.0f, pitch * 0.8f);
+            g.localCenter = g.center = glm::vec3(0.0f, -1.0f, 0.0f);
+            if (opt.ground) entities.push_back(std::move(g));
+        }
+        for (int i = 0; i < opt.count; ++i) {
+            bp.seed = opt.seed + static_cast<unsigned>(i) * 7919u;
+            const buildings::Palette pal = buildings::ensurePalette(materials, bp);
+            const float x = (i - (opt.count - 1) * 0.5f) * pitch;
+            std::vector<Entity> es =
+                buildings::generate(bp, pal, counter, glm::vec3(x, 0.0f, 0.0f));
+            for (Entity& e : es) entities.push_back(std::move(e));
+        }
+        std::printf("[viewcheck] generated %d building(s), seed %u%s\n",
+                    opt.count, opt.seed, opt.night ? ", night" : "");
+    } else {
+        const std::string scenePath = projectio::sceneFileIn(opt.project);
+        if (!projectio::loadScene(ctx, scenePath)) {
+            std::printf("[viewcheck] could not load the scene: %s\n", scenePath.c_str());
+            glfwTerminate();
+            return 2;
+        }
     }
     // What is actually in the picture, and what is not. A harness whose answer
     // is "one dark blob" should say whether that is the scene or the renderer --
@@ -288,7 +383,9 @@ int main(int argc, char** argv) {
                            ? std::max(0.5f, 0.5f * glm::length(hi - lo)) : 5.0f;
     // Far enough out that the whole extent fits the vertical field of view, with
     // a little air around it.
-    const float dist = radius * 2.6f;
+    // Closer in building mode: there the subject is a facade, and a facade you
+    // cannot count the windows on is not a picture of a facade.
+    const float dist = radius * (opt.building ? 1.7f : 2.6f);
     const float yawR = glm::radians(opt.yaw), pitchR = glm::radians(opt.pitch);
     const glm::vec3 dir(std::cos(pitchR) * std::cos(yawR),
                         std::sin(pitchR),
@@ -322,6 +419,13 @@ int main(int argc, char** argv) {
 
     // --- The frame -----------------------------------------------------------
     fitzel::DirectionalLight light;
+    if (opt.night) {
+        // Not black: a city at night is lit by its own sky, and a scene with a
+        // literal zero sun renders every unlit face as a silhouette, which
+        // flatters emissive work by hiding everything it is standing next to.
+        light.color   = glm::vec3(0.05f, 0.06f, 0.10f);
+        light.ambient = glm::vec3(0.020f, 0.024f, 0.035f);
+    }
     fitzel::Renderer renderer;
     renderer.setShadingMode(opt.shade);
     renderer.setViewport(opt.width, opt.height);
@@ -340,7 +444,12 @@ int main(int argc, char** argv) {
     // There is no sky here, so the probe is given the same flat colour the picture
     // is cleared to: not the editor's sky, but honest about what it is.
     renderer.prepareEnvProbe(mid, [&](const glm::mat4&, const glm::vec3&) {
-        glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
+        // The probe is the scene's sky, and the sky decides what every unlit
+        // surface is lit BY. Left at the day colour, a night render comes back
+        // with a bright grey dome over it: pale ground, pale concrete, and the
+        // emissive work it was taken for washed out against them.
+        if (opt.night) glClearColor(0.010f, 0.013f, 0.024f, 1.0f);
+        else           glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
     });
 
@@ -350,12 +459,19 @@ int main(int argc, char** argv) {
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glViewport(0, 0, opt.width, opt.height);
     // The editor puts a plain mode against a flat dark ground rather than a sky.
-    if (opt.shade == 0) glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
-    else                glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
+    if (opt.night)           glClearColor(0.012f, 0.016f, 0.030f, 1.0f);
+    else if (opt.shade == 0) glClearColor(kSky.r, kSky.g, kSky.b, 1.0f);
+    else                     glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);
     if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    renderer.renderScene(view, proj, camera.position(), fitzel::Renderer::kNoClip, false);
+    // TONEMAPPED, because this buffer is the file. The editor renders linear into
+    // an HDR target and tonemaps in its composite pass; there is no composite
+    // here, so a linear pass would be read back into 8 bits and come out black --
+    // which is what the first night picture from this harness was, with three
+    // fully lit towers in it.
+    renderer.renderScene(view, proj, camera.position(), fitzel::Renderer::kNoClip,
+                         opt.night);
     if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glFinish();
 

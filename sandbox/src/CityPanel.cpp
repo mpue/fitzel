@@ -137,6 +137,19 @@ bool biomeEditor(const PanelState& s, city::Biome& B, int index) {
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Chance a building carries a projecting neon sign over\n"
                           "the street. Needs Neon on.");
+    {
+        // Through the same drag() as everything else here (it is what carries the
+        // undo label), so the int rides in a float for one line.
+        float fs = static_cast<float>(B.facadeSigns);
+        drag("Facade signs", &fs, 0.05f, 0.0f, 8.0f, "%.0f", "Biome signs");
+        B.facadeSigns = static_cast<int>(fs + 0.5f);
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Lit banners and screens ON the walls, per building --\n"
+                          "the blade above hangs over the road, these light the\n"
+                          "canyon itself. Every one is a piece, so this is the\n"
+                          "knob to bring down when a district gets expensive.\n"
+                          "Needs Neon on; dead buildings get none.");
 
     ui::sectionText("Wear");
     drag("Weathering", &B.weathering, 0.005f, 0.0f, 1.0f, "%.2f", "Biome wear");
