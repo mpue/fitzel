@@ -104,6 +104,11 @@ public:
     // wall two metres back. Only taken when the frame actually has something
     // refractive in it (see m_sceneCopy).
     static constexpr int kSceneCopyUnit = 27;
+    // Last frame's resolved colour and depth, for screen-space reflections
+    // (see setScreenHistory). 28 and 29: the last of the 32 units a desktop GL
+    // gives a fragment shader, after everything above.
+    static constexpr int kSsrColorUnit = 28;
+    static constexpr int kSsrDepthUnit = 29;
 
     // The roughness a lit draw gets when its material never says. Roads,
     // splines, the city and the rest of the derived geometry do not; with a
@@ -183,6 +188,20 @@ public:
     // clear, which the resolve reads as "reproject from depth".
     void renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
                       const glm::mat4& prevVP);
+
+    // Screen-space reflections for the next renderScene() calls: last frame's
+    // resolved colour and depth textures (raw GL names), the view-projection
+    // they were drawn with, and that camera's near/far planes. Reflective
+    // surfaces then trace their reflection through that picture first and fall
+    // back on the probe where the ray leaves it. Set it for the main pass only
+    // and clear it after: a probe face or the water mirror looks from
+    // somewhere else, and last frame's screen means nothing there.
+    void setScreenHistory(std::uint32_t colorTex, std::uint32_t depthTex,
+                          const glm::mat4& prevViewProj, float nearPlane, float farPlane) {
+        m_ssrColor = colorTex; m_ssrDepth = depthTex; m_ssrPrevVP = prevViewProj;
+        m_ssrNear = nearPlane; m_ssrFar = farPlane;
+    }
+    void clearScreenHistory() { m_ssrColor = m_ssrDepth = 0; }
 
     // Render the scene (opaque queue minus reflective surfaces + the sky drawn
     // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
@@ -359,6 +378,10 @@ private:
     std::unordered_map<const Mesh*, std::vector<glm::mat4>> m_lastModels;
     std::unordered_map<const Mesh*, int>                    m_meshSeen;
     Shader            m_motionShader;
+    // Screen-space reflection inputs (see setScreenHistory); 0 = off.
+    std::uint32_t     m_ssrColor = 0, m_ssrDepth = 0;
+    glm::mat4         m_ssrPrevVP{1.0f};
+    float             m_ssrNear = 0.1f, m_ssrFar = 1000.0f;
 
     // The opaque scene, copied out of whatever target is bound just before the
     // transparent pass. Grown to the viewport on demand and reused; 0 until some

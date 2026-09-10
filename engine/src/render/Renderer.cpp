@@ -852,6 +852,23 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
             s->setFloat(Indexed("uCascadeSplits", i), m_csm.splitDistances()[i]);
         }
 
+        // Screen-space reflections out of last frame's picture. Both samplers
+        // always get their units, like the cubes above, so neither is ever
+        // left pointing at unit 0; they are only read when uSsr is 1.
+        const bool ssr = m_ssrColor != 0 && m_ssrDepth != 0;
+        s->setInt("uSsr", ssr ? 1 : 0);
+        s->setInt("uSsrColor", kSsrColorUnit);
+        s->setInt("uSsrDepth", kSsrDepthUnit);
+        if (ssr) {
+            glActiveTexture(GL_TEXTURE0 + kSsrColorUnit);
+            glBindTexture(GL_TEXTURE_2D, m_ssrColor);
+            glActiveTexture(GL_TEXTURE0 + kSsrDepthUnit);
+            glBindTexture(GL_TEXTURE_2D, m_ssrDepth);
+            glActiveTexture(GL_TEXTURE0);
+            s->setMat4("uSsrPrevVP", m_ssrPrevVP);
+            s->setVec2("uSsrNearFar", glm::vec2(m_ssrNear, m_ssrFar));
+        }
+
         r.mesh->draw();
     };
 

@@ -205,6 +205,85 @@ vec3 probeRadiance(vec3 R, float rough) {
     return min(env, vec3(64.0));   // a reflection is never brighter than this
 }
 
+// --- Screen-space reflections -------------------------------------------------
+// The probe is one cube captured at one point: a wet road reflects the sky it
+// saw from there, not the car beside it or the building across the street, and
+// nothing in it lines up with what it stands next to. So a smooth surface first
+// traces its reflection through LAST frame's finished picture (colour + depth,
+// kept by the post chain) and falls back on the probe only where the ray leaves
+// the screen or finds nothing. Last frame, because in a forward renderer this
+// frame's picture does not exist yet while it is being drawn -- and a frame of
+// lag in a reflection is invisible. Set only for the main pass (see
+// Renderer::setScreenHistory); probe faces and the water mirror look from
+// elsewhere and get uSsr = 0.
+uniform int       uSsr;
+uniform sampler2D uSsrColor;    // last frame, linear HDR (before bloom/tonemap)
+uniform sampler2D uSsrDepth;    // last frame's depth
+uniform mat4      uSsrPrevVP;   // the camera that picture was taken with
+uniform vec2      uSsrNearFar;
+
+float ssrSceneDepth(vec2 uv) {
+    float z = textureLod(uSsrDepth, uv, 0.0).r * 2.0 - 1.0;
+    float n = uSsrNearFar.x, f = uSsrNearFar.y;
+    return (2.0 * n * f) / (f + n - z * (f - n));   // distance along the view axis
+}
+
+// Radiance along R from `P` found on screen (rgb) and how much to trust it (a).
+vec4 ssrTrace(vec3 P, vec3 R, float rough) {
+    if (uSsr == 0 || rough > 0.45) return vec4(0.0);
+    const int STEPS = 24;
+    // A different start per pixel; TAA averages the banding it would leave.
+    float t    = 0.12 + 0.3 * fract(52.9829189 * fract(dot(gl_FragCoord.xy,
+                                                            vec2(0.06711056, 0.00583715))));
+    float step = 0.3;
+    for (int i = 0; i < STEPS; ++i) {
+        vec4 c = uSsrPrevVP * vec4(P + R * t, 1.0);
+        if (c.w <= 0.05) break;                             // behind the old camera
+        vec2 uv = c.xy / c.w * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float dz = c.w - ssrSceneDepth(uv);                 // > 0: the ray is behind it
+        if (dz > 0.0) {
+            // Bisect back to where it went in: the march only brackets the hit.
+            float a = t - step, b = t;
+            for (int k = 0; k < 5; ++k) {
+                float m  = 0.5 * (a + b);
+                vec4  cm = uSsrPrevVP * vec4(P + R * m, 1.0);
+                vec2  um = cm.xy / cm.w * 0.5 + 0.5;
+                if (cm.w - ssrSceneDepth(um) > 0.0) b = m; else a = m;
+            }
+            vec4 cb = uSsrPrevVP * vec4(P + R * b, 1.0);
+            uv = cb.xy / cb.w * 0.5 + 0.5;
+            // A real hit is where the ray meets a surface, not where it passes
+            // BEHIND one: a depth buffer is a shell with nothing known behind
+            // it, and a ray that slips behind a hill's silhouette is not
+            // touching the hill. Only a surface the refined point sits on
+            // counts; anything else is unknown, and unknown is the probe's.
+            if (cb.w - ssrSceneDepth(uv) > 0.15 + 0.02 * cb.w) break;
+            vec3 col = textureLod(uSsrColor, uv, 0.0).rgb;
+            if (any(isnan(col)) || any(isinf(col))) return vec4(0.0);
+            // Trust fades at the screen's edge (what is past it is unknown, and
+            // a hard cut there is the tell-tale of SSR), with roughness (this
+            // picture has no blurred version to read a rough reflection from),
+            // and a little with distance marched.
+            vec2  e    = smoothstep(vec2(0.0), vec2(0.07), uv) *
+                         smoothstep(vec2(0.0), vec2(0.07), 1.0 - uv);
+            float conf = e.x * e.y * (1.0 - smoothstep(0.25, 0.45, rough))
+                       * (1.0 - 0.4 * float(i) / float(STEPS));
+            return vec4(min(col, vec3(64.0)), conf);
+        }
+        t    += step;
+        step *= 1.18;   // fine near the surface, reaching ~60 m by the end
+    }
+    return vec4(0.0);
+}
+
+// What a smooth surface sees along R: the screen where it can, `fallback`
+// (the probe, the sky) where it cannot.
+vec3 reflectedRadiance(vec3 P, vec3 R, float rough, vec3 fallback) {
+    vec4 s = ssrTrace(P, R, rough);
+    return mix(fallback, s.rgb, s.a);
+}
+
 // Surface.
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
@@ -1035,6 +1114,9 @@ void main() {
     // Same gate the host uses to decide whether a probe is rendered at all
     // (reflectivity > 0), so nobody samples a cube that was never captured.
     if (uReflectivity > 0.0) ambSpecular = probeRadiance(R, rough);
+    // Anything smooth enough reflects what is actually around it, where that
+    // is on screen (see ssrTrace); the source above is the fallback.
+    ambSpecular = reflectedRadiance(vWorldPos, R, rough, ambSpecular);
     // Glass does its reflection below, by its index, over what it transmits.
     if (uGlass == 1) ambSpecular = vec3(0.0);
 
@@ -1111,7 +1193,8 @@ void main() {
     float wetRefl = clamp(uWetReflect, 0.0, 1.0)
                   * mix(rainWet * 0.25, wetPuddle, wetMask);
     if (wetRefl > 0.0) {
-        vec3  env  = probeRadiance(R, mix(0.55, 0.03, wetPuddle)); // film smeared, puddle sharp
+        float wr   = mix(0.55, 0.03, wetPuddle);            // film smeared, puddle sharp
+        vec3  env  = reflectedRadiance(vWorldPos, R, wr, probeRadiance(R, wr));
         float Fw0  = mix(0.04, 1.0, wetRefl);
         float fres = Fw0 + (1.0 - Fw0) * pow(1.0 - NoV, 5.0);
         color = mix(color, env, clamp(fres, 0.0, 1.0));
@@ -1168,7 +1251,7 @@ void main() {
     // that decides the bend above, which is why there is only one of it.
     // Reflection happens before fog so distant panes haze too.
     if (uGlass == 1) {
-        vec3  env  = probeRadiance(R, rough);
+        vec3  env  = reflectedRadiance(vWorldPos, R, rough, probeRadiance(R, rough));
         float fres = glassF0 + (1.0 - glassF0) * pow(1.0 - NoV, 5.0);
         color = mix(color, env, clamp(fres, 0.0, 1.0));
     }

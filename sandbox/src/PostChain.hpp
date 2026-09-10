@@ -117,6 +117,16 @@ public:
     // run(); a frame that does not call it is resolved from depth alone.
     void beginMotion(const fitzel::RenderTarget& hdr);
 
+    // --- The last finished frame, for screen-space reflections --------------
+    // After run(): the scene as it was resolved (linear HDR, before bloom and
+    // the tonemap -- the TAA resolve when TAA is on, a copy of the frame when
+    // not) and a copy of its depth. The NEXT frame's lit pass reflects out of
+    // these: tracing a ray through last frame's picture costs no extra pass in
+    // a forward renderer, and a frame's worth of lag is invisible in a
+    // reflection. 0 until the first run().
+    std::uint32_t historyColor() const { return m_historyValid ? m_historyColor : 0; }
+    std::uint32_t historyDepth() const { return m_historyValid ? m_prevDepthTex : 0; }
+
     // The log2 luminance a sunlit daytime frame meters at: what auto exposure
     // holds the picture to. Measured, not derived: five daytime projects
     // (forest, desert, lake, road, dunes) metered between -3.43 and -1.54 with
@@ -152,6 +162,12 @@ private:
     unsigned m_motionTex   = 0;
     int      m_motionW = 0, m_motionH = 0;
     bool     m_motionThisFrame = false;
+    // Last frame for the reflections (see historyColor()).
+    unsigned m_prevDepthFbo = 0, m_prevDepthTex = 0;
+    int      m_prevDepthW = 0, m_prevDepthH = 0;
+    unsigned m_historyColor = 0;
+    bool     m_historyValid = false;
+    void keepHistory(const fitzel::RenderTarget& hdr, const fitzel::RenderTarget* scene);
 
     // Exposure meter: two 1x1 targets, ping-ponged (the pass reads last
     // frame's value to ease from it), plus the read-back ring.

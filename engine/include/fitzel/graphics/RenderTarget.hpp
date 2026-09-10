@@ -39,6 +39,8 @@ public:
     // pass that has to depth-test against this target's depth from another
     // framebuffer -- the motion vectors do, against the lit pass's depth.
     std::uint32_t depthTexture() const { return m_depthTex; }
+    // Raw GL framebuffer, for a blit into or out of this target.
+    std::uint32_t framebuffer() const { return m_fbo; }
 
 private:
     std::uint32_t m_fbo       = 0;

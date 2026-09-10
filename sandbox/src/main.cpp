@@ -1549,6 +1549,9 @@ int main(int argc, char** argv) {
         glm::mat4 taaPrevVP[2]{glm::mat4(1.0f), glm::mat4(1.0f)}; // per pane, unjittered
         glm::vec3 taaPrevEye[2]{glm::vec3(0.0f), glm::vec3(0.0f)};
         bool      taaHavePrev[2]{false, false};
+        // Screen-space reflections (lit.frag ssrTrace), traced through the last
+        // frame the post chain kept. Needs taaPrevVP, which is kept either way.
+        bool      ssrEnabled = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
@@ -4588,7 +4591,7 @@ int main(int argc, char** argv) {
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
         addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
         addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
-        addF("adaptSpeed", adaptSpeed);
+        addF("adaptSpeed", adaptSpeed);        addB("ssr", ssrEnabled);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -13066,6 +13069,12 @@ int main(int argc, char** argv) {
                 // changing it reallocates both cubes.
                 {
                     ui::sectionText("Reflections");
+                    ImGui::Checkbox("Screen-space reflections", &ssrEnabled);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Smooth surfaces -- wet roads, puddles, paint,\n"
+                                          "glass -- reflect what is actually beside them,\n"
+                                          "traced through the last frame. The probe fills\n"
+                                          "in whatever is off screen.");
                     const int sizes[] = {128, 256, 512, 1024};
                     char cur[16];
                     std::snprintf(cur, sizeof(cur), "%d", envProbeRes);
@@ -15404,7 +15413,19 @@ int main(int argc, char** argv) {
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             {
                 FZ_GPU_ZONE("GPU terrain + objects");
+                // Screen-space reflections out of last frame's picture -- for
+                // this pass only: the probe faces and the water mirror above
+                // look from elsewhere. Not on the very first frame, nor with the
+                // player's Reflections off, nor in split screen (the history is
+                // one pane's).
+                const bool ssr = ssrEnabled && gfxSet.reflections > 0 && views == 1 &&
+                                 shadeFull && post.historyColor() != 0 &&
+                                 glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
+                if (ssr)
+                    renderer.setScreenHistory(post.historyColor(), post.historyDepth(),
+                                              taaPrevVP[vi], vcam.nearPlane(), vcam.farPlane());
                 renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
+                renderer.clearScreenHistory();
             }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 

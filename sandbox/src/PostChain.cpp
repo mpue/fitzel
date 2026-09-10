@@ -58,6 +58,8 @@ bool PostChain::init() {
 }
 
 PostChain::~PostChain() {
+    if (m_prevDepthTex) glDeleteTextures(1, &m_prevDepthTex);
+    if (m_prevDepthFbo) glDeleteFramebuffers(1, &m_prevDepthFbo);
     if (m_motionTex) glDeleteTextures(1, &m_motionTex);
     if (m_motionFbo) glDeleteFramebuffers(1, &m_motionFbo);
     for (void*& f : m_meterFence)
@@ -79,6 +81,7 @@ void PostChain::resize(int w, int h) {
     m_taaRT[0]   = RT(w, h, RT::Format::RGBA16F);
     m_taaRT[1]   = RT(w, h, RT::Format::RGBA16F);
     m_taaValid   = false;   // a history of another size is no history
+    m_historyValid = false;
 
     m_bloom.clear();
     int lw = std::max(1, w / 2), lh = std::max(1, h / 2);
@@ -342,6 +345,49 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         fsQuad.draw();
         m_result = &m_mbRT;
     }
+
+    keepHistory(hdr, scene);
+}
+
+// Keep this frame for the next one's reflections: its depth (always a copy --
+// the HDR target is cleared and redrawn before the next lit pass reads it) and
+// its resolved colour (the TAA target already holds it; without TAA it is
+// copied into one of those targets, which is idle then).
+void PostChain::keepHistory(const fitzel::RenderTarget& hdr,
+                            const fitzel::RenderTarget* scene) {
+    if (!m_prevDepthFbo) glGenFramebuffers(1, &m_prevDepthFbo);
+    if (!m_prevDepthTex || m_prevDepthW != m_w || m_prevDepthH != m_h) {
+        if (!m_prevDepthTex) glGenTextures(1, &m_prevDepthTex);
+        glBindTexture(GL_TEXTURE_2D, m_prevDepthTex);
+        // The same format as the HDR target's depth: a depth blit converts
+        // nothing, and refuses to try.
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, m_w, m_h, 0,
+                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_prevDepthFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                               m_prevDepthTex, 0);
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+        m_prevDepthW = m_w;
+        m_prevDepthH = m_h;
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, hdr.framebuffer());
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_prevDepthFbo);
+    glBlitFramebuffer(0, 0, m_w, m_h, 0, 0, m_w, m_h, GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    if (scene == &hdr) {
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_taaRT[0].framebuffer());
+        glBlitFramebuffer(0, 0, m_w, m_h, 0, 0, m_w, m_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        m_historyColor = m_taaRT[0].colorTexture();
+    } else {
+        m_historyColor = scene->colorTexture();
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    m_historyValid = true;
 }
 
 // Copy this frame's meter pixel into a ring of pixel buffers and map the copies
