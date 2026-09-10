@@ -108,6 +108,7 @@ struct Options {
                         ? std::string("content") : std::string(FITZEL_CONTENT_DIR);
     int   width = 1280, height = 720;
     float yaw = -35.0f, pitch = -22.0f;
+    float zoom = 1.0f;   // --zoom: >1 moves the auto-framed camera closer
     // The editor's viewport shading ladder, so a question about a mode has a
     // picture too. The same numbers lit.frag uses: 0 textured, 1 solid,
     // 2 solid lit, 3 wireframe.
@@ -135,6 +136,13 @@ struct Options {
     // not take -- it renders in the default grey however it is set, which is
     // worth chasing when the floor matters and not before.)
     bool     ground    = false;
+    // --- Material matrix -----------------------------------------------------
+    // A row of dielectric spheres over a row of metal ones, roughness rising
+    // left to right, on a grey slab. The standard picture for a BRDF: whether a
+    // highlight widens as it should, whether metal takes its colour, whether the
+    // rough end is still lit rather than flat -- none of which a scene built for
+    // something else shows on purpose.
+    bool     matrix    = false;
     bool  ok = true;
 };
 
@@ -152,6 +160,7 @@ Options parse(int argc, char** argv) {
             o.height = std::max(16, std::atoi(v.substr(x + 1).c_str()));
         } else if (a == "--yaw")     { o.yaw   = static_cast<float>(std::atof(next().c_str()));
         } else if (a == "--pitch")   { o.pitch = static_cast<float>(std::atof(next().c_str()));
+        } else if (a == "--zoom")    { o.zoom  = std::max(0.05f, static_cast<float>(std::atof(next().c_str())));
         } else if (a == "--shade") {
             const std::string v = next();
             o.shade = (v == "wireframe" || v == "wire") ? 3
@@ -165,6 +174,7 @@ Options parse(int argc, char** argv) {
         } else if (a == "--style")   { o.style = std::atoi(next().c_str());
         } else if (a == "--night")   { o.night = true;
         } else if (a == "--ground")  { o.ground = true;
+        } else if (a == "--matrix")  { o.matrix = true;
         } else if (a == "--shaders") { o.shaders = next();
         } else if (a == "--content") { o.content = next();
         } else if (!a.empty() && a[0] == '-') { o.ok = false; break;
@@ -174,7 +184,7 @@ Options parse(int argc, char** argv) {
     if (loose.size() > 1) o.out = loose[1];
     // In building mode the loose argument is the OUTPUT, because there is no
     // project to name: the scene is generated.
-    if (o.building) {
+    if (o.building || o.matrix) {
         if (loose.size() == 1) { o.out = loose[0]; o.project.clear(); }
     } else if (o.project.empty()) {
         o.ok = false;
@@ -188,6 +198,7 @@ int main(int argc, char** argv) {
     const Options opt = parse(argc, argv);
     if (!opt.ok) {
         std::printf("usage: viewcheck <projectFolder> [out.png] [--size WxH]\n"
+                    "       viewcheck --matrix [out.png]\n"
                     "       viewcheck --building [out.png] [--count N] [--seed N]\n"
                     "                 [--style 0..5] [--night] [--size WxH]\n"
                     "                 [--yaw deg] [--pitch deg] [--shaders dir]\n"
@@ -197,7 +208,7 @@ int main(int argc, char** argv) {
     // Building mode generates its own scene, so it needs no project -- but it
     // still accepts one, because a project's materials and content root are what
     // make a generated tower look like it belongs to THAT city.
-    if (!opt.building && !fs::exists(opt.project)) {
+    if (!opt.building && !opt.matrix && !fs::exists(opt.project)) {
         std::printf("[viewcheck] no such project folder: %s\n", opt.project.c_str());
         return 2;
     }
@@ -314,6 +325,53 @@ int main(int argc, char** argv) {
         }
         std::printf("[viewcheck] generated %d building(s), seed %u%s\n",
                     opt.count, opt.seed, opt.night ? ", night" : "");
+    } else if (opt.matrix) {
+        int counter = 1;
+        auto addMat = [&](const char* name, glm::vec3 albedo, float refl, float rough) {
+            MaterialDef m;
+            m.assetId      = fitzel::AssetId::generate();
+            m.name         = name;
+            m.albedo       = albedo;
+            m.reflectivity = refl;
+            m.roughness    = rough;
+            materials.push_back(m);
+            return m.assetId;
+        };
+        auto addEntity = [&](EntityType type, fitzel::AssetId mat, glm::vec3 at,
+                             glm::vec3 half) {
+            Entity e;
+            e.type = type;
+            e.name = "Matrix " + std::to_string(counter);
+            e.id   = counter++;
+            auto mc = std::make_unique<MaterialComponent>();
+            mc->material = mat;
+            e.components.items.push_back(std::move(mc));
+            e.half = half;
+            e.localCenter = e.center = at;
+            entities.push_back(std::move(e));
+        };
+        constexpr int   kCols    = 6;
+        constexpr float kSpacing = 1.25f;
+        const float roughs[kCols] = {0.05f, 0.2f, 0.35f, 0.5f, 0.75f, 1.0f};
+        const float x0 = -0.5f * (kCols - 1) * kSpacing;
+        addEntity(EntityType::Box,
+                  addMat("Matrix Ground", glm::vec3(0.45f), 0.0f, 0.9f),
+                  glm::vec3(0.0f, -0.55f, 0.6f),
+                  glm::vec3(0.5f * kCols * kSpacing + 0.4f, 0.05f, 2.0f));
+        for (int c = 0; c < kCols; ++c) {
+            const float x = x0 + c * kSpacing;
+            // Back row: red paint. Front row: gold -- a metal only reads as one
+            // if its reflection is coloured, which is the half of the model that
+            // most easily goes missing.
+            addEntity(EntityType::Sphere,
+                      addMat("Paint", glm::vec3(0.75f, 0.12f, 0.08f), 0.0f, roughs[c]),
+                      glm::vec3(x, 0.0f, 0.0f), glm::vec3(0.5f));
+            addEntity(EntityType::Sphere,
+                      addMat("Gold", glm::vec3(1.0f, 0.78f, 0.34f), 1.0f, roughs[c]),
+                      glm::vec3(x, 0.0f, 1.25f), glm::vec3(0.5f));
+        }
+        std::printf("[viewcheck] material matrix: roughness 0.05 .. 1, "
+                    "back row dielectric, front row metal\n");
     } else {
         const std::string scenePath = projectio::sceneFileIn(opt.project);
         if (!projectio::loadScene(ctx, scenePath)) {
@@ -385,7 +443,7 @@ int main(int argc, char** argv) {
     // a little air around it.
     // Closer in building mode: there the subject is a facade, and a facade you
     // cannot count the windows on is not a picture of a facade.
-    const float dist = radius * (opt.building ? 1.7f : 2.6f);
+    const float dist = radius * (opt.building ? 1.7f : 2.6f) / opt.zoom;
     const float yawR = glm::radians(opt.yaw), pitchR = glm::radians(opt.pitch);
     const glm::vec3 dir(std::cos(pitchR) * std::cos(yawR),
                         std::sin(pitchR),
@@ -470,8 +528,11 @@ int main(int argc, char** argv) {
     // here, so a linear pass would be read back into 8 bits and come out black --
     // which is what the first night picture from this harness was, with three
     // fully lit towers in it.
+    // (This passed opt.night, which left every DAY picture linear -- clamped
+    // straight into 8 bits with no curve and no gamma. The night render was
+    // the one somebody looked at closely.)
     renderer.renderScene(view, proj, camera.position(), fitzel::Renderer::kNoClip,
-                         opt.night);
+                         /*tonemap=*/true);
     if (opt.shade == 3) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     glFinish();
 

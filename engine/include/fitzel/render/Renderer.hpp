@@ -104,6 +104,14 @@ public:
     // refractive in it (see m_sceneCopy).
     static constexpr int kSceneCopyUnit = 27;
 
+    // The roughness a lit draw gets when its material never says. Roads,
+    // splines, the city and the rest of the derived geometry do not; with a
+    // real GGX lobe that is no longer a blur setting nobody sees but the size of
+    // every highlight, and a stale value leaking in from the previous draw's
+    // chrome would make asphalt glint. Rough dielectric: tarmac, concrete, paint.
+    // The path tracer's capture falls back on the same number.
+    static constexpr float kDefaultRoughness = 0.8f;
+
     // Cube-face resolution of the dynamic environment probe.
     static constexpr int kDefaultEnvProbeRes = 256;
     static constexpr int kMinEnvProbeRes     = 64;

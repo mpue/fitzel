@@ -224,7 +224,14 @@ const glm::vec4 Renderer::kNoClip = glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f);
 Renderer::Renderer(int shadowResolution, int cascades)
     : m_csm(shadowResolution, cascades),
       m_depthShader(Shader::fromSource(kDepthVert, kDepthFrag)),
-      m_cubeDistShader(Shader::fromSource(kCubeVert, kCubeFrag)) {}
+      m_cubeDistShader(Shader::fromSource(kCubeVert, kCubeFrag)) {
+    // Filter across cube-face edges. Without it every cubemap lookup clamps at
+    // its face, which is invisible on a sharp mirror and ruinous on a rough one:
+    // the coarse mips a rough surface reads are a handful of texels per face,
+    // and each face then shows as its own flat patch -- a rough metal ball came
+    // out faceted like a disco ball. Core since 3.2, global, and free.
+    glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
+}
 
 void Renderer::setViewport(int width, int height) {
     m_vpWidth  = width;
@@ -622,6 +629,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         // opacity (1 for the opaque queue).
         s->bind();
         s->setFloat("uReflectivity", 0.0f);
+        s->setFloat("uRoughness", kDefaultRoughness);
         s->setFloat("uAlpha", r.opacity);
         s->setInt("uGlass", 0);
         // Whether there IS a picture of the scene behind this surface to bend.
@@ -639,6 +647,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                                  static_cast<float>(m_sceneCopyH)));
         }
         s->setInt("uHasNormalMap", 0);
+        s->setInt("uHasOrmMap", 0);   // baseline: roughness/metal from the sliders alone
         s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
         s->setInt("uShade", m_shadingMode); // viewport shading; 0 = the material
         s->setFloat("uRoadFade", 0.0f); // baseline: no edge fade (road re-enables)

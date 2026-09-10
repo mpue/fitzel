@@ -280,6 +280,58 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     storePixels(decodeImageFile(file, w, h, ch), w, h, outPix, outW, outH);
 }
 
+// A material's metallic-roughness and occlusion, packed into one RGBA map in
+// glTF's channel layout (R occlusion, G roughness, B metalness).
+//
+// Only maps that read the SAME UV set as the base colour are taken: the vertices
+// carry one set, and an occlusion map on TEXCOORD_1 (the usual place for a baked
+// AO) sampled with the colour's UVs is noise laid over the model, not shading.
+// An occlusion map of a different size is resampled nearest onto the MR map's
+// grid rather than dropped -- they are the same surface, merely exported at two
+// resolutions.
+void readMetalRoughOcclusion(const cgltf_material& mat, const std::string& baseDir,
+                             int uvSet, ModelPrimitive& mp) {
+    if (!mat.has_pbr_metallic_roughness) return;   // spec-gloss: leave the defaults
+    const cgltf_pbr_metallic_roughness& pbr = mat.pbr_metallic_roughness;
+    mp.hasPbr    = true;
+    mp.metallic  = pbr.metallic_factor;
+    mp.roughness = pbr.roughness_factor;
+
+    const cgltf_texture* mrTex  = pbr.metallic_roughness_texture.texture;
+    const cgltf_texture* occTex = mat.occlusion_texture.texture;
+    if (mrTex && pbr.metallic_roughness_texture.texcoord != uvSet) mrTex = nullptr;
+    if (occTex && mat.occlusion_texture.texcoord != uvSet) occTex = nullptr;
+    if (!mrTex && !occTex) return;
+
+    if (mrTex)
+        decodeImage(mrTex->image, baseDir, mp.ormPixels, mp.ormWidth, mp.ormHeight,
+                    mp.materialName);
+    // Packed ORM: the occlusion is already in R, which is exactly why glTF put
+    // it there. Anything else in an MR map's R is unspecified and must not be
+    // read as occlusion (it is often 0, which would black the model out).
+    const bool packed = mrTex && occTex && mrTex->image == occTex->image;
+    if (!mp.ormPixels.empty() && !packed)
+        for (std::size_t i = 0; i < mp.ormPixels.size(); i += 4) mp.ormPixels[i] = 255;
+    if (!occTex || packed) return;
+
+    std::vector<std::uint8_t> occ;
+    int ow = 0, oh = 0;
+    decodeImage(occTex->image, baseDir, occ, ow, oh, mp.materialName);
+    if (occ.empty()) return;
+    if (mp.ormPixels.empty()) {
+        // Occlusion alone: roughness and metalness come from the factors, so
+        // their channels are 1 (factor * 1).
+        mp.ormPixels.assign(occ.size(), 255);
+        mp.ormWidth = ow; mp.ormHeight = oh;
+    }
+    for (int y = 0; y < mp.ormHeight; ++y)
+        for (int x = 0; x < mp.ormWidth; ++x) {
+            const int sx = x * ow / mp.ormWidth, sy = y * oh / mp.ormHeight;
+            mp.ormPixels[(static_cast<std::size_t>(y) * mp.ormWidth + x) * 4] =
+                occ[(static_cast<std::size_t>(sy) * ow + sx) * 4];
+        }
+}
+
 // Where a skinned primitive's joint indices point. `skin` is the node's glTF
 // skin, `index` maps a joint node to its slot in ModelData::skeleton, and
 // `active` says a skeleton was actually built -- the structured import (which
@@ -387,6 +439,19 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         if (mat->normal_texture.texture)
             decodeImage(mat->normal_texture.texture->image, baseDir,
                         mp.normalPixels, mp.normalWidth, mp.normalHeight,
+                        mp.materialName);
+        readMetalRoughOcclusion(*mat, baseDir, uvSet, mp);
+        // Emission. The glTF path never read it, so every lit screen, lamp and
+        // neon strip in a GLB came in dark. The factor alone is a colour; with a
+        // map the map is the colour and the factor its tint -- which is how
+        // emissionTex * uEmission already combines on the lit side.
+        for (int c = 0; c < 3; ++c) mp.emissive[c] = mat->emissive_factor[c];
+        if (mat->has_emissive_strength)
+            for (float& e : mp.emissive) e *= mat->emissive_strength.emissive_strength;
+        if (mat->emissive_texture.texture &&
+            mat->emissive_texture.texcoord == uvSet)
+            decodeImage(mat->emissive_texture.texture->image, baseDir,
+                        mp.emissionPixels, mp.emissionWidth, mp.emissionHeight,
                         mp.materialName);
     }
 

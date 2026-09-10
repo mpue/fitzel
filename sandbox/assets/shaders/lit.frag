@@ -142,6 +142,69 @@ vec3 envBRDFApprox(vec3 F0, float rough, float NoV) {
     return F0 * ab.x + ab.y;
 }
 
+// --- Microfacet specular ----------------------------------------------------
+// Trowbridge-Reitz (GGX) with height-correlated Smith visibility and Schlick's
+// Fresnel: term for term the lobe PathTrace.cpp and gputrace.comp evaluate. The
+// viewport used to light with a Phong highlight of fixed width and strength, so
+// uRoughness only ever blurred the probe reflection and every object caught the
+// sun the same way -- and a render then showed materials the viewport had never
+// shown. One BRDF for all three renderers is what makes the viewport a preview.
+const float PI = 3.14159265;
+
+float D_GGX(float NoH, float a) {
+    float a2 = a * a;
+    float d  = NoH * NoH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * d * d, 1e-8);
+}
+float V_SmithCorrelated(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float v  = NoL * sqrt(a2 + (1.0 - a2) * NoV * NoV);
+    float l  = NoV * sqrt(a2 + (1.0 - a2) * NoL * NoL);
+    return 0.5 / max(v + l, 1e-6);
+}
+vec3 F_Schlick(vec3 F0, float VoH) {
+    return F0 + (1.0 - F0) * pow(1.0 - VoH, 5.0);
+}
+
+// The specular part of what a light of colour `c` adds, in this shader's units:
+// diffuse is `albedo * c * NoL` (the 1/pi of Lambert folded into the light), so
+// the microfacet lobe carries the matching pi. Returns lobe * NoL * pi.
+//
+// `a` is the GGX alpha AFTER any widening for the light's size; `scale` is the
+// energy that widening has to give back, (alpha / a)^2 -- the tracer's
+// representative-sphere trick, which keeps a mirror from turning the sun into a
+// single white pixel without making the highlight any brighter in total.
+vec3 specLobe(vec3 N, vec3 V, vec3 L, vec3 F0, float a, float scale) {
+    float NoL = dot(N, L);
+    if (NoL <= 0.0) return vec3(0.0);
+    vec3  H   = normalize(V + L);
+    float NoV = max(dot(N, V), 1e-4);
+    float NoH = max(dot(N, H), 0.0);
+    float VoH = max(dot(V, H), 0.0);
+    return F_Schlick(F0, VoH) *
+           (D_GGX(NoH, a) * V_SmithCorrelated(NoV, NoL, a) * PI * NoL * scale);
+}
+
+// Widen `alpha` for a light that subtends `angle` (radians, its angular RADIUS)
+// and return the energy scale that goes with it.
+float widenForLight(float alpha, float angle, out float scale) {
+    float a = clamp(alpha + 0.5 * angle, alpha, 1.0);
+    float r = alpha / max(a, 1e-6);
+    scale = r * r;
+    return a;
+}
+
+// The dynamic scene probe along R, blurred by roughness. Sanitised on read: the
+// probe is an HDR cube that may never have been rendered this run, and a
+// reflective surface drawn INTO it samples the previous capture -- so one NaN or
+// Inf in it feeds itself and spreads, and bloom then hands the whole pyramid NaN,
+// which is what turns the screen into blocks of black.
+vec3 probeRadiance(vec3 R, float rough) {
+    vec3 env = textureLod(uEnvProbe, R, rough * uEnvMaxLod).rgb;
+    if (any(isnan(env)) || any(isinf(env))) env = vec3(0.0);
+    return min(env, vec3(64.0));   // a reflection is never brighter than this
+}
+
 // Surface.
 uniform sampler2D uTexture;   // used when uColorMode == 2
 uniform int  uColorMode;      // 0 = uAlbedo, 1 = terrain palette, 2 = texture
@@ -186,6 +249,13 @@ uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlp
 uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
 uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
 uniform int   uHasNormalMap;  // 1 = perturb the normal with uNormalMap
+// Metallic-roughness-occlusion map of an imported model, glTF layout: R
+// occlusion, G roughness, B metalness. uRoughness / uReflectivity hold the
+// map's AVERAGE, uOrmMean what the map averages to, so texel / mean spreads
+// the slider's value across the surface without changing what it is overall.
+uniform sampler2D uOrmMap;
+uniform int   uHasOrmMap;
+uniform vec2  uOrmMean;       // mean G, mean B
 uniform vec3  uEmission;         // emissive colour (sRGB); 0 = none
 uniform float uEmissionStrength; // scales the emission (>1 for a strong glow)
 uniform sampler2D uEmissionMap;  // optional emission mask/colour (Unity _Illum)
@@ -867,80 +937,120 @@ void main() {
         N = rainRings(N, vWorldPos.xz, uRainRings * upFace * wetMask,
                       uRainDensity, uTime);
 
-    vec3 L = normalize(uLightDir);
-    vec3 V = normalize(uViewPos - vWorldPos);
-    vec3 H = normalize(L + V);
+    vec3  L   = normalize(uLightDir);
+    vec3  V   = normalize(uViewPos - vWorldPos);
+    float NoV = max(dot(N, V), 1e-4);
 
-    float diff      = max(dot(N, L), 0.0);
-    // Terrain: sun-glint strength is art-directed via uTerrainSpec (0 = fully
-    // matte). Textured surfaces (roads): rough/matte, faint broad sheen.
-    float specPower = (uColorMode == 1) ? uTerrainSpec : 0.03;
-    float specExp   = (uColorMode == 1) ? 48.0 : 14.0;
-    // Wet surfaces gain a stronger, tighter specular highlight (the sheen).
-    specPower = mix(specPower, max(specPower, 0.9), rainWet);
-    specExp   = mix(specExp, 160.0, rainWet);
-    // ...and standing water tighter still: a film scatters the sun into a broad
-    // sheen, a puddle throws back a small hard disc of it.
-    if (wetStands) specExp = mix(specExp, 600.0, wetPuddle);
+    // --- The surface as the BRDF sees it ----------------------------------
+    // The same trade PathTrace.cpp's surfaceAt() makes, so a render and the
+    // viewport agree: uReflectivity is metalness (F0 climbs from a dielectric's
+    // 4% towards the base colour while the diffuse lobe gives way), uRoughness
+    // the perceptual roughness, squared into the GGX alpha.
+    float metal = clamp(uReflectivity, 0.0, 1.0);
+    float rough = clamp(uRoughness, 0.03, 1.0);
+    float occlusion = 1.0;   // baked cavity darkening; ambient light only
+    if (uHasOrmMap == 1) {
+        vec3 orm = texture(uOrmMap, vUV).rgb;
+        occlusion = orm.r;
+        // A map that averages to (nearly) nothing has no shape to hand out, and
+        // the slider's value then applies evenly -- which is also what makes a
+        // slider raised on an all-dielectric map do anything at all.
+        if (uOrmMean.x > 0.004) rough = clamp(rough * orm.g / uOrmMean.x, 0.03, 1.0);
+        if (uOrmMean.y > 0.004) metal = clamp(metal * orm.b / uOrmMean.y, 0.0, 1.0);
+    }
+    if (uColorMode == 1) {
+        // The ground keeps its one dial. Gloss (0..0.4) used to scale a Phong
+        // highlight; now it sweeps the terrain from bone dry to damp loam. The
+        // default 0.05 lands near 0.9, which is what soil and grass actually are.
+        metal = 0.0;
+        rough = mix(1.0, 0.35, clamp(uTerrainSpec / 0.4, 0.0, 1.0));
+    }
+    if (uShade == 2) { metal = 0.0; rough = 0.6; } // solid lit: the light, not the paint
+    // Water smooths whatever it lies on: a film down to a sheen, standing water
+    // to a mirror. This is what the Phong exponents 160 and 600 used to fake.
+    rough = mix(rough, min(rough, 0.2), rainWet);
+    if (wetStands) rough = mix(rough, 0.05, wetPuddle);
+
+    float glassN  = max(uIor, 1.0);
+    float glassF0 = pow((glassN - 1.0) / (glassN + 1.0), 2.0);
+    vec3  diffuseCol = albedo * (1.0 - metal);
+    vec3  F0 = (uGlass == 1) ? vec3(glassF0) : mix(vec3(0.04), albedo, metal);
+
     // Geometric specular anti-aliasing. Where the normal swings a lot *within one
     // pixel* -- distant normal-mapped detail, thin or dense geometry, a grazing
     // road -- a tight highlight is smaller than the pixel and turns into crawling
-    // sparkle/moire. Widen the lobe by the pixel's normal variance instead, which
-    // is what integrating over the pixel would have done anyway. (Kaplanyan's
-    // roughness clamp, expressed for a Phong exponent.)
+    // sparkle. Widening the lobe by the pixel's normal variance is what
+    // integrating over the pixel would have done anyway (Kaplanyan / Tokuyoshi,
+    // with their clamp so a noisy normal map cannot turn chrome into felt).
+    float alpha = rough * rough;
     {
-        float variance = 0.25 * (dot(dFdx(N), dFdx(N)) + dot(dFdy(N), dFdy(N)));
-        float alpha    = sqrt(2.0 / (specExp + 2.0));           // exponent -> width
-        alpha          = sqrt(min(alpha * alpha + variance, 1.0));
-        specExp        = max(2.0 / (alpha * alpha) - 2.0, 1.0); // ...and back
+        vec3  nx = dFdx(N), ny = dFdy(N);
+        float variance = 0.25 * (dot(nx, nx) + dot(ny, ny));
+        alpha = sqrt(clamp(alpha * alpha + min(2.0 * variance, 0.18), 0.0, 1.0));
     }
-    float spec      = pow(max(dot(N, H), 0.0), specExp) * specPower;
 
-    int   layer   = selectCascade();
-    float shadow  = computeShadow(layer, N, L);
+    int   layer  = selectCascade();
+    float shadow = computeShadow(layer, N, L);
 
-    // Ambient: image-based lighting from the HDRI when enabled, else the flat
-    // directional ambient. IBL gives diffuse irradiance + a soft env specular.
-    vec3 ambient;
+    // The sun, through its disc: 0.5 degrees of angular radius, the tracer's
+    // default, so a mirror shows a sun and not a point. No energy scale here,
+    // unlike the lamps below -- the tracer samples the disc itself, so all of the
+    // sun's light is reflected, only spread across the disc.
+    float aSun   = min(alpha + 0.5 * 0.0087, 1.0);
+    vec3  direct = uLightColor * (diffuseCol * max(dot(N, L), 0.0) +
+                                  specLobe(N, V, L, F0, aSun, 1.0));
+
+    // --- Ambient: diffuse irradiance + a specular reflection of the world ---
+    // Every surface reflects its surroundings, not only the ones marked
+    // reflective: a dielectric does it at 4% head-on and nearly all of it at a
+    // grazing angle, and that rim of sky along every edge is most of what tells
+    // the eye a surface is lit by an environment rather than painted.
+    vec3 R = reflect(-V, N);
+    // Horizon occlusion: with a bump map, R can point INTO the geometry, and
+    // what it would see there is the object itself, not the sky.
+    float horizon = clamp(1.0 + dot(R, normalize(vNormal)), 0.0, 1.0);
+    horizon *= horizon;
+
+    vec3 ambDiffuse, ambSpecular;
     if (uUseLightGrid == 1) {
         // The baked grid wins over both of the others where it exists, because
         // it is the only one of the three that knows WHERE the surface is. A
         // flat ambient lights the inside of a tunnel exactly as brightly as an
-        // open field; an HDRI convolution does the same, only in colour.
-        ambient = albedo * bakedIrradiance(vWorldPos, N);
+        // open field; an HDRI convolution does the same, only in colour. Its L1
+        // lobe looked up along R is a blurred stand-in for radiance from there.
+        ambDiffuse  = bakedIrradiance(vWorldPos, N);
+        ambSpecular = bakedIrradiance(vWorldPos, R);
     } else if (uUseIBL == 1) {
-        float NoV = max(dot(N, V), 0.0);
-        vec3  R   = reflect(-V, N);
-        vec3  F0  = vec3(0.04);
-        float iblRough = (uColorMode == 1) ? 0.9 : 0.55; // terrain matte, else semi
-        vec3 diffuseIBL = texture(uIrradiance, N).rgb * albedo;
-        vec3 preSpec    = textureLod(uPrefilter, R, iblRough * uPrefilterMaxLod).rgb;
-        vec3 specIBL    = preSpec * envBRDFApprox(F0, iblRough, NoV);
-        ambient = (diffuseIBL + specIBL) * uIBLIntensity;
+        ambDiffuse  = texture(uIrradiance, N).rgb * uIBLIntensity;
+        ambSpecular = textureLod(uPrefilter, R, rough * uPrefilterMaxLod).rgb
+                    * uIBLIntensity;
     } else {
-        ambient = albedo * uAmbient;
+        // No picture of the sky, only its average. uAmbient is what an up-facing
+        // surface receives per unit albedo -- the sky's mean radiance -- and a
+        // reflection that points at the ground sees the ground, which is darker.
+        ambDiffuse  = uAmbient;
+        ambSpecular = uAmbient * mix(0.35, 1.0, smoothstep(-0.2, 0.3, R.y));
     }
+    // A surface that asked for the probe reflects the actual scene instead.
+    // Same gate the host uses to decide whether a probe is rendered at all
+    // (reflectivity > 0), so nobody samples a cube that was never captured.
+    if (uReflectivity > 0.0) ambSpecular = probeRadiance(R, rough);
+    // Glass does its reflection below, by its index, over what it transmits.
+    if (uGlass == 1) ambSpecular = vec3(0.0);
 
-    vec3 color = ambient
-               + (1.0 - shadow) * uLightColor * (albedo * diff + spec);
+    vec3 color = (diffuseCol * ambDiffuse
+                + ambSpecular * envBRDFApprox(F0, rough, NoV) * horizon) * occlusion
+               + (1.0 - shadow) * direct;
 
-    // Wet grazing sheen: brighten at glancing angles with the ambient/sky tint --
-    // a cheap, probe-free "mirror" that sells the wet-road look.
-    if (rainWet > 0.0) {
-        float NoVw = max(dot(N, V), 0.0);
-        float fres = pow(1.0 - NoVw, 4.0);
-        color += ambient * (fres * rainWet * 2.0);
-    }
-
-    // Point lights: diffuse + a little specular, with smooth range falloff.
+    // Point lights: range-limited (1 - d/range)^2 falloff -- the tracer's, not
+    // 1/r^2 -- with the bulb's size widening the highlight the same way the
+    // sun's disc does (a nominal 5 cm bulb).
     for (int i = 0; i < uPointCount; ++i) {
         vec3  d   = uPointPos[i] - vWorldPos;
         float dst = length(d);
         vec3  Lp  = d / max(dst, 1e-4);
         float att = clamp(1.0 - dst / max(uPointRange[i], 1e-3), 0.0, 1.0);
         att *= att; // quadratic-ish falloff
-        float dp  = max(dot(N, Lp), 0.0);
-        float sp  = pow(max(dot(N, normalize(Lp + V)), 0.0), 32.0) * 0.2;
         float sh  = 0.0;
         if (i < uShadowCount) {
             float far = (i == 0) ? uShadowFar0 : (i == 1) ? uShadowFar1
@@ -949,7 +1059,10 @@ void main() {
                        : (i == 2) ? uShadowBias2 : uShadowBias3;
             sh = pointShadow(i, -d, far, bias); // -d = light -> fragment
         }
-        color += uPointColor[i] * (albedo * dp + sp) * att * (1.0 - sh);
+        float ps;
+        float ap = widenForLight(alpha, min(1.0, 0.05 / max(dst, 1e-3)), ps);
+        color += uPointColor[i] * att * (1.0 - sh) *
+                 (diffuseCol * max(dot(N, Lp), 0.0) + specLobe(N, V, Lp, F0, ap, ps));
     }
 
     // Spot lights: point-light falloff gated by a cone around the spot axis. The
@@ -965,9 +1078,10 @@ void main() {
         float cone = clamp((cosA - uSpotCosOuter[i]) /
                            max(uSpotCosInner[i] - uSpotCosOuter[i], 1e-3), 0.0, 1.0);
         cone *= cone; // smooth the cone edge
-        float dp  = max(dot(N, Lp), 0.0);
-        float sp  = pow(max(dot(N, normalize(Lp + V)), 0.0), 48.0) * 0.25;
-        color += uSpotColor[i] * (albedo * dp + sp) * att * cone;
+        float ps;
+        float ap = widenForLight(alpha, min(1.0, 0.05 / max(dst, 1e-3)), ps);
+        color += uSpotColor[i] * att * cone *
+                 (diffuseCol * max(dot(N, Lp), 0.0) + specLobe(N, V, Lp, F0, ap, ps));
     }
 
     // A wet surface is a mirror in its own right: water fills the pores of the
@@ -985,15 +1099,10 @@ void main() {
     // Capped well short of 1: water reflects a few percent head-on and only turns
     // properly mirror-like at grazing angles, which the Fresnel term below already
     // does. Pushed higher, a wet road reads as polished chrome.
-    float refl  = uReflectivity;
-    float rough = uRoughness;
-    // Glass reflects by its INDEX, not by a slider: the reflectance head-on is
-    // ((n-1)/(n+1))^2 -- 4% for window glass, 17% for diamond -- and it climbs
-    // to 1 at grazing angles all by itself. That single number is what makes a
-    // pane read as glass rather than as a dimmed wall, and it is the same number
-    // that decides the bend below, which is why there is only one of it.
-    float glassN  = max(uIor, 1.0);
-    float glassF0 = pow((glassN - 1.0) / (glassN + 1.0), 2.0);
+    //
+    // It is a LAYER over the lit surface, not a change to its BRDF: the water
+    // film lies on the tarmac, and what it mirrors is the probe, at the road's
+    // own art-directed strength (the road panel's Wet-reflection slider).
     //
     // Which half of the wetness mirrors matters more than how much of it there is:
     // the film scatters (blurred and weak), standing water does not (sharp and
@@ -1001,15 +1110,13 @@ void main() {
     // nothing more than a brighter patch of the same reflection.
     float wetRefl = clamp(uWetReflect, 0.0, 1.0)
                   * mix(rainWet * 0.25, wetPuddle, wetMask);
-    if (wetRefl > refl) {
-        refl  = wetRefl;
-        rough = mix(0.55, 0.03, wetPuddle); // film = smeared, puddle = mirror
+    if (wetRefl > 0.0) {
+        vec3  env  = probeRadiance(R, mix(0.55, 0.03, wetPuddle)); // film smeared, puddle sharp
+        float Fw0  = mix(0.04, 1.0, wetRefl);
+        float fres = Fw0 + (1.0 - Fw0) * pow(1.0 - NoV, 5.0);
+        color = mix(color, env, clamp(fres, 0.0, 1.0));
     }
 
-    // Environment reflection: sample the dynamic scene probe along the reflection
-    // vector and blend in by a Fresnel term. `refl` raises the base reflectance
-    // F0 (0 -> dielectric 4%, 1 -> full mirror); `rough` selects a blurrier mip.
-    // Reflection happens before fog so distant mirrors haze too.
     // What you see THROUGH the glass, and where. Snell's law gives the direction
     // the ray leaves in; the point it lands on is that direction followed for the
     // glass's thickness and projected back to the screen -- exact, one matrix
@@ -1049,32 +1156,20 @@ void main() {
         behind *= pow(max(albedo, vec3(0.002)),
                       vec3(1.0 + clamp(uGlassThickness, 0.0, 2.0) * 6.0));
         color = behind;
-        // The sun's own glint, which the replacement above would otherwise wipe.
-        // Tight and bright: a pane is smooth, and the highlight on one is small
-        // enough to be a shape rather than a sheen.
-        vec3  H    = normalize(L + V);
-        float gsp  = pow(max(dot(N, H), 0.0), 220.0);
-        color += (1.0 - shadow) * uLightColor * gsp * 2.0;
+        // The sun's own glint, which the replacement above would otherwise wipe:
+        // the same lobe as everywhere else, at the index's reflectance.
+        color += (1.0 - shadow) * uLightColor * specLobe(N, V, L, F0, aSun, 1.0);
     }
 
-    // Glass always reflects something, whatever the Reflectivity slider says:
-    // the index decided that, and a dielectric with no reflection at all is not
-    // a material anyone has held.
-    if (uGlass == 1) refl = max(refl, glassF0);
-    if (refl > 0.0) {
-        vec3  Rv   = reflect(-V, N);
-        vec3  env  = textureLod(uEnvProbe, Rv, rough * uEnvMaxLod).rgb;
-        // The probe is an HDR cube that may never have been rendered this run,
-        // and a reflective surface drawn INTO it samples the previous capture --
-        // so one NaN or Inf in it feeds itself and spreads. Bloom then divides by
-        // the luminance and hands the whole pyramid NaN, which is what turns the
-        // screen into blocks of black. Sanitise on read: it costs nothing and it
-        // is the only place this can be contained.
-        if (any(isnan(env)) || any(isinf(env))) env = vec3(0.0);
-        env = min(env, vec3(64.0));   // a reflection is never brighter than this
-        float F0   = (uGlass == 1) ? glassF0 : mix(0.04, 1.0, refl);
-        float NoV  = max(dot(N, V), 0.0);
-        float fres = F0 + (1.0 - F0) * pow(1.0 - NoV, 5.0);
+    // Glass reflects by its INDEX, not by a slider: the reflectance head-on is
+    // ((n-1)/(n+1))^2 -- 4% for window glass, 17% for diamond -- and it climbs
+    // to 1 at grazing angles all by itself. That single number is what makes a
+    // pane read as glass rather than as a dimmed wall, and it is the same number
+    // that decides the bend above, which is why there is only one of it.
+    // Reflection happens before fog so distant panes haze too.
+    if (uGlass == 1) {
+        vec3  env  = probeRadiance(R, rough);
+        float fres = glassF0 + (1.0 - glassF0) * pow(1.0 - NoV, 5.0);
         color = mix(color, env, clamp(fres, 0.0, 1.0));
     }
 

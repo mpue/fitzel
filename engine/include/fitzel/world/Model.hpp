@@ -65,6 +65,18 @@ struct ModelPrimitive {
     int   emissionHeight = 0;
     bool  alphaCutout = false;            // material uses MASK/BLEND (foliage)
     float baseColor[4] = {0.8f, 0.8f, 0.8f, 1.0f}; // PBR base-colour factor (tint)
+    // glTF metallic-roughness. The map is re-packed into glTF's own channel
+    // layout -- occlusion R, roughness G, metalness B -- so a packed ORM texture
+    // arrives as it is and a separate occlusion map is folded into R. R is 255
+    // (unoccluded) wherever the file had no occlusion to give. The FACTORS are
+    // kept apart from the map: the file's value is factor * texel.
+    std::vector<std::uint8_t>  ormPixels;
+    int   ormWidth  = 0;
+    int   ormHeight = 0;
+    bool  hasPbr    = false;              // the two factors below came from the file
+    float metallic  = 0.0f;
+    float roughness = 0.5f;
+    float emissive[3] = {0.0f, 0.0f, 0.0f}; // glTF emissive factor (linear)
     std::string materialName;             // glTF material name (may be empty)
 
     int vertexCount() const { return static_cast<int>(vertices.size() / 8); }

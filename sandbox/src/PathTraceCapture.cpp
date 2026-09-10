@@ -262,7 +262,9 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         const int colorMode = mat->get<int>(kColorMode, 0);
         m.albedo       = mat->get<glm::vec3>(kAlbedo, glm::vec3(0.72f, 0.72f, 0.74f));
         m.tint         = mat->get<glm::vec3>(kTint, glm::vec3(1.0f));
-        m.roughness    = mat->get<float>(kRoughness, 0.4f);
+        // A material that never set it is drawn at the renderer's baseline,
+        // so that is what it is here too.
+        m.roughness    = mat->get<float>(kRoughness, fitzel::Renderer::kDefaultRoughness);
         m.reflectivity = mat->get<float>(kReflectivity, 0.0f);
         m.opacity      = std::min(mat->get<float>(kAlpha, 1.0f), submitOpacity);
         m.glass        = mat->get<int>(kGlass, 0) == 1;
@@ -307,6 +309,12 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
             }
             m.detailScale    = mat->get<float>(kDetailScale, 0.0f);
             m.detailStrength = mat->get<float>(kDetailStr, 0.0f);
+            // The ground's roughness is its Gloss slider, mapped exactly as
+            // lit.frag maps it (0 -> 1.0, 0.4 -> 0.35), and it is never metal.
+            const float gloss = glm::clamp(mat->get<float>("uTerrainSpec", 0.05f) / 0.4f,
+                                           0.0f, 1.0f);
+            m.roughness    = glm::mix(1.0f, 0.35f, gloss);
+            m.reflectivity = 0.0f;
             if (layers > 0 && m.layers.empty()) sawTerrainLayers = true;
             if (!m.layers.empty()) sawTerrainPaint = true;
         }
@@ -405,7 +413,8 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
                 if (vm == voxelMatCache.end()) {
                     pathtrace::Material m;
                     m.albedo    = c;
-                    m.roughness = sub.material->get<float>(kRoughness, 0.6f);
+                    m.roughness = sub.material->get<float>(
+                        kRoughness, fitzel::Renderer::kDefaultRoughness);
                     m.reflectivity = sub.material->get<float>(kReflectivity, 0.0f);
                     const int index = static_cast<int>(scene->materials.size());
                     scene->materials.push_back(m);

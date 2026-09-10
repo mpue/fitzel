@@ -4733,6 +4733,7 @@ int main(int argc, char** argv) {
                     const std::string key = lm->assetId.toString() + "|" +
                                             lm->name + "|" + std::to_string(p);
                     ov[key] = {
+                        {"pbr", 1},   // written after glTF PBR import (see the reader)
                         {"name", md.name},
                         {"albedo", {md.albedo.x, md.albedo.y, md.albedo.z}},
                         {"tint", {md.tint.x, md.tint.y, md.tint.z}},
@@ -5015,8 +5016,19 @@ int main(int argc, char** argv) {
                         md.name          = e.value("name", md.name);
                         md.albedo        = rd3(e.value("albedo", nlohmann::json{}), md.albedo);
                         md.tint          = rd3(e.value("tint", nlohmann::json{}), md.tint);
-                        md.reflectivity  = e.value("reflectivity", md.reflectivity);
-                        md.roughness     = e.value("roughness", md.roughness);
+                        // Every model material is written here on every save,
+                        // edited or not -- so an override from before the import
+                        // read glTF's metallic-roughness and emission carries the
+                        // OLD defaults (roughness 0.2, no metal, no glow), and
+                        // would quietly undo the import's values in every existing
+                        // project. Without the "pbr" mark, a field still at that
+                        // old default was never touched and the import keeps it.
+                        const bool legacy = !e.contains("pbr");
+                        const float sRefl  = e.value("reflectivity", md.reflectivity);
+                        const float sRough = e.value("roughness", md.roughness);
+                        const bool  untouchedPbr = legacy && sRefl == 0.0f &&
+                                                   std::abs(sRough - 0.2f) < 1e-4f;
+                        if (!untouchedPbr) { md.reflectivity = sRefl; md.roughness = sRough; }
                         md.opacity       = e.value("opacity", md.opacity);
                         md.glass         = e.value("glass", md.glass);
                         md.ior           = e.value("ior", md.ior);
@@ -5024,8 +5036,12 @@ int main(int argc, char** argv) {
                         md.alphaMode     = static_cast<AlphaMode>(
                             e.value("alphaMode", static_cast<int>(md.alphaMode)));
                         md.alphaCutoff   = e.value("alphaCutoff", md.alphaCutoff);
-                        md.emission      = rd3(e.value("emission", nlohmann::json{}), md.emission);
-                        md.emissionStrength = e.value("emissionStrength", md.emissionStrength);
+                        const glm::vec3 sEmis = rd3(e.value("emission", nlohmann::json{}),
+                                                    md.emission);
+                        if (!(legacy && sEmis == glm::vec3(0.0f))) {
+                            md.emission         = sEmis;
+                            md.emissionStrength = e.value("emissionStrength", md.emissionStrength);
+                        }
                         // Map slots (see writeSettings): a GUID re-binds the
                         // texture asset, "" means the user emptied the slot, and
                         // an absent key leaves the model's own map in place.

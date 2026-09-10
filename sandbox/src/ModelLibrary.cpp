@@ -87,6 +87,21 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
         const bool      hasTex   = !p.texPixels.empty();
         const bool      hasNorm  = !p.normalPixels.empty();
         const bool      hasEmis  = !p.emissionPixels.empty();
+        const bool      hasOrm   = !p.ormPixels.empty();
+        // What the metallic-roughness map averages to, so the material's two
+        // sliders can hold the average and the map only distribute it (see
+        // MaterialDef::ormTex). glTF: roughness in G, metalness in B.
+        glm::vec2 ormMean(1.0f);
+        if (hasOrm) {
+            double g = 0.0, b = 0.0;
+            const std::size_t n = p.ormPixels.size() / 4;
+            for (std::size_t i = 0; i < n; ++i) {
+                g += p.ormPixels[i * 4 + 1];
+                b += p.ormPixels[i * 4 + 2];
+            }
+            ormMean = glm::vec2(static_cast<float>(g / (255.0 * n)),
+                                static_cast<float>(b / (255.0 * n)));
+        }
         // A match needs the same source name, colour, alpha and the same set of
         // maps at the same resolutions -- close enough to be the same material,
         // strict enough that two different maps under a shared name (e.g. the
@@ -109,6 +124,7 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
                 if (!sameTex(m.modelTex, hasTex, p.texWidth, p.texHeight)) continue;
                 if (!sameTex(m.modelNormalTex, hasNorm, p.normalWidth, p.normalHeight)) continue;
                 if (!sameTex(m.modelEmissionTex, hasEmis, p.emissionWidth, p.emissionHeight)) continue;
+                if (!sameTex(m.ormTex, hasOrm, p.ormWidth, p.ormHeight)) continue;
                 matId = m.assetId; reused = true; break;
             }
         if (!reused) {
@@ -140,6 +156,29 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
                     p.emissionPixels.data(), p.emissionWidth, p.emissionHeight, 4));
                 def.emission = glm::vec3(1.0f);
                 def.emissionStrength = 3.0f;
+            }
+            // glTF's emissive factor. It is linear; `emission` is sRGB (the shader
+            // raises it to 2.2), hence the conversion. With a map the factor is the
+            // tint over it; without one it is the whole glow.
+            const glm::vec3 emisLin(p.emissive[0], p.emissive[1], p.emissive[2]);
+            if (glm::any(glm::greaterThan(emisLin, glm::vec3(1e-4f)))) {
+                // HDR factors (KHR_materials_emissive_strength) go into strength.
+                const float peak = std::max({emisLin.x, emisLin.y, emisLin.z, 1.0f});
+                def.emission = glm::pow(emisLin / peak, glm::vec3(1.0f / 2.2f));
+                def.emissionStrength = (hasEmis ? 3.0f : 1.5f) * peak;
+            }
+            // Metallic-roughness: the factors times the map's average, so the
+            // sliders show what the surface is on the whole (see ormTex).
+            if (p.hasPbr) {
+                def.roughness    = glm::clamp(p.roughness * ormMean.x, 0.0f, 1.0f);
+                def.reflectivity = glm::clamp(p.metallic  * ormMean.y, 0.0f, 1.0f);
+            }
+            if (hasOrm) {
+                // Linear data, not colour: fromPixels uploads RGBA8 without an
+                // sRGB decode, which is what a roughness map needs.
+                def.ormTex = std::make_shared<Texture>(Texture::fromPixels(
+                    p.ormPixels.data(), p.ormWidth, p.ormHeight, 4));
+                def.ormMean = ormMean;
             }
             // Remember what the model shipped so the Materials panel can revert
             // a user override back to it (see MaterialDef::modelTex).

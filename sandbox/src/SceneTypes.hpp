@@ -99,8 +99,14 @@ struct MaterialDef {
                                               // generated for model-embedded mats)
     std::string name;
     glm::vec3   albedo{0.72f, 0.72f, 0.74f};
-    float       reflectivity = 0.0f;         // 0 matte .. 1 mirror (env probe)
-    float       roughness    = 0.2f;         // reflection blur (0 sharp)
+    // Metalness, in effect: F0 climbs from a dielectric's 4% towards the albedo,
+    // and above 0 the surface reflects the environment probe instead of the sky's
+    // average. 1 with a light albedo is a mirror.
+    float       reflectivity = 0.0f;
+    // GGX roughness: the size of every highlight and the blur of every
+    // reflection (0 polished .. 1 chalk). 0.5 is satin -- a new material should
+    // neither glint like lacquer nor look like felt.
+    float       roughness    = 0.5f;
     float       opacity      = 1.0f;         // 1 opaque .. 0 invisible (alpha blend)
     // A dielectric: what you see through it is bent, and how much of it you see
     // at all is decided by the angle rather than by a slider. `ior` is the index
@@ -166,6 +172,17 @@ struct MaterialDef {
     std::shared_ptr<fitzel::Texture> modelTex;
     std::shared_ptr<fitzel::Texture> modelNormalTex;
     std::shared_ptr<fitzel::Texture> modelEmissionTex;
+    // A model's metallic-roughness-occlusion map, glTF layout (R occlusion,
+    // G roughness, B metalness). Model-only, re-created by the import like the
+    // three above.
+    //
+    // The sliders stay in charge: `roughness` and `reflectivity` hold the map's
+    // AVERAGE (factor * mean texel), and the shader spreads them by
+    // texel / ormMean. A slider therefore still does what it says on a mapped
+    // material, and the path tracer -- which reads only the sliders -- sees the
+    // same material on average.
+    std::shared_ptr<fitzel::Texture> ormTex;
+    glm::vec2 ormMean{1.0f};   // mean G (roughness) and B (metalness), 0..1
 };
 
 // Reflectivity at and above which a material counts as a MIRROR rather than
@@ -180,9 +197,14 @@ struct MaterialDef {
 // -- so every tower in the city qualified, which deleted the entire skyline from
 // every wet-road reflection AND captured the probe from inside whichever tower
 // happened to come first in the scene.
+//
+// And smooth: reflectivity is metalness now, and brushed or cast metal reflects
+// nothing anyone could recognise. Such a surface belongs IN the probe like any
+// other object, and it is no place to capture one from.
 inline constexpr float kMirrorReflectivity = 0.5f;
+inline constexpr float kMirrorRoughness    = 0.3f;
 inline bool isMirror(const MaterialDef& md) {
-    return md.reflectivity >= kMirrorReflectivity;
+    return md.reflectivity >= kMirrorReflectivity && md.roughness <= kMirrorRoughness;
 }
 
 // An imported glTF/GLB, uploaded to the GPU: one Mesh + Material per material

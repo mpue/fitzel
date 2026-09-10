@@ -57,6 +57,13 @@ void submit(const Context& c, Scratch& scratch) {
             m.setTexture("uNormalMap", *md.normalTex, 1).set("uHasNormalMap", 1);
         else
             m.set("uHasNormalMap", 0);
+        // Metallic-roughness-occlusion (imported models). Unit 4, which like
+        // the emission map's unit 3 is a terrain layer's only on terrain draws.
+        if (md.ormTex)
+            m.setTexture("uOrmMap", *md.ormTex, 4).set("uHasOrmMap", 1)
+             .set("uOrmMean", md.ormMean);
+        else
+            m.set("uHasOrmMap", 0);
         // Cutout ("transparency map"): let the shader discard masked
         // texels. Blend routes through the transparent queue at submit.
         if (md.alphaMode == AlphaMode::Cutout)

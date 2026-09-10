@@ -94,7 +94,14 @@ void drawPanel(const PanelState& s) {
             else
                 ImGui::ColorEdit3("Albedo", &md.albedo.x);
             ImGui::SliderFloat("Reflectivity", &md.reflectivity, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Metalness. 0 = paint, plastic, stone (4%% reflection,\n"
+                                  "rising at grazing angles). 1 = metal: the reflection\n"
+                                  "takes the colour and the diffuse goes away.");
             ImGui::SliderFloat("Roughness", &md.roughness, 0.0f, 1.0f);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Size of every highlight and blur of every reflection.\n"
+                                  "0 = polished, 0.5 = satin, 1 = chalk.");
             // Glass decides its own transmission from the index of refraction,
             // so the slider would be a second answer to a question already
             // answered -- and the one that used to have to be turned down before
