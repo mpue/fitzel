@@ -131,6 +131,7 @@
 #include "RoadPrefab.hpp"
 #include "SplinePanel.hpp"
 #include "SplineEdit.hpp"
+#include "SplinePlace.hpp"
 #include "RiverPanel.hpp"
 #include "RiverEdit.hpp"
 #include "WeatherPanel.hpp"
@@ -3484,6 +3485,91 @@ int main(int argc, char** argv) {
                          document);
             exportStatus = "Placed " + std::to_string(at.size()) + "x " +
                            roadPrefabCfg.name + " along the road.";
+        };
+
+        // --- Objects along a spline path (see SplinePlace.hpp) -----------------
+        // The road stamp above, for any spline path: tool settings only, and what
+        // they place is ordinary entities, one group per path, one undo step.
+        splineplace::Settings splinePlaceCfg;
+        auto placeAlongSpline = [&]() {
+            if (splineSel < 0 || splineSel >= static_cast<int>(splines.paths.size()))
+                return;
+            const std::string pathName = splines.paths[splineSel].name;
+            std::vector<splineplace::Spot> at =
+                splineplace::spots(splines, splineSel, splinePlaceCfg);
+            if (at.empty()) {
+                exportStatus = "Nothing to place -- the path needs at least two points.";
+                return;
+            }
+            prefab::Prefab tmpl;
+            if (splinePlaceCfg.source == splineplace::Source::Prefab) {
+                if (splinePlaceCfg.path.empty()) {
+                    exportStatus = "Pick a prefab to place along the path.";
+                    return;
+                }
+                auto p = prefab::load(pio, splinePlaceCfg.path);
+                if (!p || p->entities.empty()) {
+                    exportStatus = "Failed to load prefab.";
+                    return;
+                }
+                tmpl = std::move(*p);
+            } else {
+                if (!sel.valid()) {
+                    exportStatus = "Select the object to copy along the path first.";
+                    return;
+                }
+                const Entity& src = entities[sel.index()];
+                if (src.type == EntityType::Sun) {
+                    exportStatus = "The sun can't be copied.";
+                    return;
+                }
+                tmpl = splineplace::fromScene(entities, src.id);
+                // Copies stand the way the original stands: as far above the path
+                // as it is above the ground under it now. A box sitting on the
+                // ground stays sitting; a lamp hung at three metres stays hung.
+                const float clear =
+                    src.center.y - streamer.heightAt(src.center.x, src.center.z);
+                for (splineplace::Spot& s : at) s.pos.y += clear;
+            }
+            // A scene has one terrain; twenty copies of it would be twenty.
+            for (const Entity& e : tmpl.entities)
+                if (e.components.get<TerrainComponent>()) {
+                    exportStatus = "The terrain can't be copied along a path.";
+                    return;
+                }
+            std::vector<Entity> placed =
+                splineplace::stamp(tmpl, at, splinePlaceCfg.scale, entityCounter);
+            if (placed.empty()) return;
+
+            // One group per path, so a run can be selected, moved or deleted as
+            // one -- and placing again along the same path adds to it.
+            const std::string groupName = "Along " + pathName;
+            int groupId = -1;
+            for (const Entity& e : entities)
+                if (e.parent < 0 && e.type == EntityType::Empty && e.name == groupName) {
+                    groupId = e.id;
+                    break;
+                }
+            std::vector<Entity> batch;
+            batch.reserve(placed.size() + 1);
+            if (groupId < 0) {          // the group has to precede its children
+                Entity g;
+                g.type = EntityType::Empty;
+                g.half = glm::vec3(0.5f);
+                g.name = groupName;
+                g.id   = entityCounter++;
+                groupId = g.id;
+                batch.push_back(std::move(g));
+            }
+            for (Entity& e : placed) {
+                if (e.parent < 0) e.parent = groupId; // copy roots only
+                batch.push_back(std::move(e));
+            }
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(batch),
+                                                          "Objects along a path"),
+                         document);
+            exportStatus = "Placed " + std::to_string(at.size()) + "x " + tmpl.name +
+                           " along " + pathName + ".";
         };
 #endif // !FITZEL_PLAYER
         // Ids of an entity and all its descendants (for a parented gizmo drag).
@@ -11260,6 +11346,35 @@ int main(int argc, char** argv) {
                 // --- Spline handles: the same gesture the road editor uses, for
                 //     fences, walls and track. The tool itself is in SplineEdit.cpp
                 //     -- main only hands it the viewport and the undo bracket.
+                // Where "Place along path" would put its copies, while the
+                // panel's placement section is open (see SplinePlace.hpp).
+                std::vector<splineplace::Spot> splinePreview;
+                if (showSplines && splinePlaceCfg.preview)
+                    splinePreview = splineplace::spots(splines, splineSel, splinePlaceCfg);
+                auto splineContext = [&]() {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    splineedit::Context sc{splines, splineSel, splinePtSel,
+                                           splineDragging, splineDragHeight};
+                    sc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    sc.origin      = rmin;
+                    sc.viewW       = static_cast<float>(viewW);
+                    sc.viewH       = static_cast<float>(viewH);
+                    sc.hovered     = viewportHovered;
+                    sc.mouseNdc    = viewportMouseNdc;
+                    sc.mousePos    = mp;
+                    sc.cameraPos   = camera.position();
+                    sc.cameraFront = camera.front();
+                    sc.cameraFov   = camera.fov();
+                    sc.pickTerrain = roadPickTerrain;
+                    sc.groundAt    = [&streamer](float x, float z) {
+                        return streamer.heightAt(x, z);
+                    };
+                    sc.beginEdit = beginSplineEdit;
+                    sc.endEdit   = commitSplineEdit;
+                    sc.editOpen  = [&splineUndoOpen] { return splineUndoOpen; };
+                    sc.preview   = splinePreview.empty() ? nullptr : &splinePreview;
+                    return sc;
+                };
                 if (splineEditMode) {
                     // Only one tool may own the left button. The sibling panels
                     // each switch their rivals off from their own list; rather
@@ -11270,28 +11385,12 @@ int main(int argc, char** argv) {
                         meshPaintMode || riverEditMode) {
                         splineEditMode = false;
                     } else {
-                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                        splineedit::Context sc{splines, splineSel, splinePtSel,
-                                               splineDragging, splineDragHeight};
-                        sc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                        sc.origin      = rmin;
-                        sc.viewW       = static_cast<float>(viewW);
-                        sc.viewH       = static_cast<float>(viewH);
-                        sc.hovered     = viewportHovered;
-                        sc.mouseNdc    = viewportMouseNdc;
-                        sc.mousePos    = mp;
-                        sc.cameraPos   = camera.position();
-                        sc.cameraFront = camera.front();
-                        sc.cameraFov   = camera.fov();
-                        sc.pickTerrain = roadPickTerrain;
-                        sc.groundAt    = [&streamer](float x, float z) {
-                            return streamer.heightAt(x, z);
-                        };
-                        sc.beginEdit = beginSplineEdit;
-                        sc.endEdit   = commitSplineEdit;
-                        sc.editOpen  = [&splineUndoOpen] { return splineUndoOpen; };
-                        splineedit::handle(sc);
+                        splineedit::handle(splineContext());
                     }
+                } else if (showSplines) {
+                    // Panel open, edit mode off: still show the paths -- a bare
+                    // one has nothing else to be seen by -- and the preview.
+                    splineedit::draw(splineContext());
                 }
 
                 // --- Water handles: the same gesture again, for brooks, rivers
@@ -13133,7 +13232,14 @@ int main(int argc, char** argv) {
                     if (mi >= 0) matSel = mi;
                     showMaterials = true;
                 },
-                beginSplineEdit, commitSplineEdit});
+                beginSplineEdit, commitSplineEdit,
+                splinePlaceCfg,
+                [&]{ return sel.valid() ? entities[sel.index()].name : std::string(); },
+                [&]{ const std::string d = prefabDir();
+                     return d.empty()
+                         ? std::vector<std::pair<std::string, std::string>>()
+                         : prefab::list(d); },
+                placeAlongSpline});
 
             // Brooks, rivers and canals: the courses live in RiverSystem (saved +
             // undoable on their own timeline), the panel only edits them. See

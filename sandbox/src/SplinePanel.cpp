@@ -153,6 +153,7 @@ const char* slotName(Kind k, int slot) {
     switch (k) {
         case Kind::Wall:  return slot == 0 ? "Face"  : slot == 1 ? "Coping"   : "Piers";
         case Kind::Rail:  return slot == 0 ? "Steel" : slot == 1 ? "Sleepers" : "Ballast";
+        case Kind::Path:   // no parts, so never asked
         case Kind::Fence:
         case Kind::Count: break;
     }
@@ -227,9 +228,109 @@ int presetMenu(Kind kind, int currentPreset) {
     return picked;
 }
 
+// A number with - and + beside it. Each click moves it by exactly `step` (Ctrl
+// + click by `fast`), and the field takes a typed value -- so every placement
+// setting can be reached without dragging anything.
+bool stepper(const char* label, float* v, float step, float fast, const char* fmt,
+             float lo, float hi) {
+    const bool changed = ImGui::InputFloat(label, v, step, fast, fmt);
+    *v = glm::clamp(*v, lo, hi);
+    return changed;
+}
+
+// Copies of an object -- the selected one or a prefab -- along the path, as real
+// scene objects. The section's numbers are tool settings, not part of the path:
+// what they produce is entities, and those are what the scene saves.
+void placeSection(const PanelState& s, int i, bool openByDefault) {
+    if (!ui::header("Place objects along path",
+                    openByDefault ? ImGuiTreeNodeFlags_DefaultOpen : 0))
+        return;
+    splineplace::Settings& c = s.placeCfg;
+    c.preview = true;   // the viewport shows where they would go while this is open
+    ImGui::PushID("place");   // "Height", "Scale"... are labels the Shape section uses too
+
+    // --- What to copy ---
+    int src = static_cast<int>(c.source);
+    ImGui::RadioButton("Selected object", &src, static_cast<int>(splineplace::Source::Selection));
+    ImGui::SameLine();
+    ImGui::RadioButton("Prefab", &src, static_cast<int>(splineplace::Source::Prefab));
+    c.source = static_cast<splineplace::Source>(src);
+
+    bool haveSource = false;
+    if (c.source == splineplace::Source::Selection) {
+        const std::string name = s.selectedName ? s.selectedName() : std::string();
+        haveSource = !name.empty();
+        if (haveSource) ui::title("Copies: %s", name.c_str());
+        else ui::hint("Select the object to copy -- in the Hierarchy or the viewport. "
+                      "Its children come along.");
+    } else {
+        // The folder is only scanned while the combo is open.
+        const std::string preview = c.name.empty() ? "(pick a prefab)" : c.name;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::BeginCombo("##placeprefab", preview.c_str())) {
+            const auto items = s.listPrefabs
+                ? s.listPrefabs() : std::vector<std::pair<std::string, std::string>>();
+            for (const auto& it : items) {
+                const bool on = (it.second == c.path);
+                if (ImGui::Selectable((it.first + "##" + it.second).c_str(), on)) {
+                    c.path = it.second;
+                    c.name = it.first;
+                }
+                if (on) ImGui::SetItemDefaultFocus();
+            }
+            if (items.empty()) ImGui::TextDisabled("(no prefabs in this project yet)");
+            ImGui::EndCombo();
+        }
+        haveSource = !c.path.empty();
+    }
+
+    // --- Where ---
+    ui::sectionText("Spacing");
+    stepper("Every", &c.spacing, 0.5f, 5.0f, "%.2f m", 0.1f, 1000.0f);
+    stepper("First at", &c.start, 0.5f, 5.0f, "%.2f m", 0.0f, 100000.0f);
+    if (s.splines.paths[i].closed) {
+        const float used = splineplace::spacingOn(s.splines, i, c);
+        ui::hint("A closed loop: evened out to %.2f m, so the last copy is as far "
+                 "from the first as every other pair.", used);
+    } else {
+        ui::hint("Metres along the path from its first point.");
+    }
+
+    ui::sectionText("Placement");
+    stepper("Side", &c.side, 0.25f, 1.0f, "%+.2f m", -500.0f, 500.0f);
+    ui::hint("Metres to the right of the path, in the direction it was drawn. "
+             "Negative is left.");
+    ImGui::BeginDisabled(c.side == 0.0f);
+    ImGui::Checkbox("Both sides", &c.bothSides);
+    ImGui::EndDisabled();
+    ImGui::Checkbox("Turn with the path", &c.align);
+    stepper("Turn", &c.turn, 15.0f, 90.0f, "%+.0f deg", -360.0f, 360.0f);
+    stepper("Height", &c.height, 0.1f, 1.0f, "%+.2f m", -100.0f, 100.0f);
+    stepper("Scale", &c.scale, 0.1f, 0.5f, "%.2f x", 0.05f, 50.0f);
+
+    // What the button would do, before it does it: the same walk the placement
+    // uses, so the count cannot disagree with the result.
+    const int n = static_cast<int>(splineplace::spots(s.splines, i, c).size());
+    ImGui::Separator();
+    if (n == 0)      ImGui::TextDisabled("The path needs at least two points.");
+    else if (!haveSource) ImGui::TextDisabled("Nothing to copy yet.");
+    else             ImGui::Text("Places %d %s", n, n == 1 ? "copy" : "copies");
+
+    ImGui::BeginDisabled(n == 0 || !haveSource || !s.placeAlong);
+    if (ImGui::Button("Place along path", ImVec2(-1.0f, 0.0f))) s.placeAlong();
+    ImGui::EndDisabled();
+    ui::hint("Real objects, grouped under \"Along %s\", and one Ctrl+Z takes them "
+             "all back. They stay where they are when the path moves -- to try "
+             "another spacing, undo and place again.",
+             s.splines.paths[i].name.c_str());
+    ImGui::PopID();
+}
+
 } // namespace
 
 void drawPanel(const PanelState& s) {
+    // Off unless the placement section is drawn (and so open) this frame.
+    s.placeCfg.preview = false;
     if (!s.show) return;
     ImGui::SetNextWindowSize(ImVec2(360.0f, 620.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Splines", &s.show)) { ImGui::End(); return; }
@@ -258,12 +359,24 @@ void drawPanel(const PanelState& s) {
     // --- Adding: pick the structure, not the category ------------------------
     ui::sectionText("Add");
     {
+        // A bare path first: it has no presets to choose between, so it is one
+        // click rather than a menu.
+        const float w = (ImGui::GetContentRegionAvail().x -
+                         ImGui::GetStyle().ItemSpacing.x * 3.0f) / 4.0f;
+        if (ImGui::Button("Path", ImVec2(w, 0.0f))) {
+            s.beginEdit();
+            s.sel   = sp.addPath(Preset::Bare, "Path");
+            s.ptSel = -1;
+            s.endEdit("Add path");
+            if (!s.editMode) { s.editMode = true; if (s.grabLMB) s.grabLMB(); }
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A bare path: just the curve, no geometry.\n"
+                              "Lay it out, then place objects along it.");
         const struct { Kind k; const char* label; } kinds[] = {
             {Kind::Fence, "Fence"}, {Kind::Wall, "Wall"}, {Kind::Rail, "Track"}};
-        const float w = (ImGui::GetContentRegionAvail().x -
-                         ImGui::GetStyle().ItemSpacing.x * 2.0f) / 3.0f;
         for (int i = 0; i < 3; ++i) {
-            if (i) ImGui::SameLine();
+            ImGui::SameLine();
             char lbl[32];
             std::snprintf(lbl, sizeof(lbl), "%s...", kinds[i].label);
             if (ImGui::Button(lbl, ImVec2(w, 0.0f))) ImGui::OpenPopup(kinds[i].label);
@@ -284,8 +397,9 @@ void drawPanel(const PanelState& s) {
     }
 
     if (sp.paths.empty()) {
-        ui::hint("No paths yet. Pick a structure above, then click the ground to "
-                 "lay it out point by point.");
+        ui::hint("No paths yet. Pick a structure above -- or a bare Path to place "
+                 "objects along -- then click the ground to lay it out point by "
+                 "point.");
         ImGui::End();
         return;
     }
@@ -340,7 +454,8 @@ void drawPanel(const PanelState& s) {
     // where the author only has one answer.
     if (ImGui::BeginCombo("Type", splinegen::presetName(p.preset))) {
         const struct { Kind k; const char* label; } groups[] = {
-            {Kind::Fence, "Fences"}, {Kind::Wall, "Walls"}, {Kind::Rail, "Track"}};
+            {Kind::Path, "Path"}, {Kind::Fence, "Fences"}, {Kind::Wall, "Walls"},
+            {Kind::Rail, "Track"}};
         for (const auto& g : groups) {
             ui::sectionText(g.label);
             const int picked = presetMenu(g.k, static_cast<int>(p.preset));
@@ -352,8 +467,10 @@ void drawPanel(const PanelState& s) {
         }
         ImGui::EndCombo();
     }
-    ui::hint("Picking one re-seeds every number below. Your material choices "
-             "survive it.");
+    const bool bare = (p.kind == Kind::Path);
+    if (!bare)
+        ui::hint("Picking one re-seeds every number below. Your material choices "
+                 "survive it.");
 
     if (ImGui::Checkbox("Closed loop", &p.closed)) {
         p.closed = !p.closed;
@@ -362,16 +479,18 @@ void drawPanel(const PanelState& s) {
         s.endEdit("Closed loop");
         sp.touch(i);
     }
-    ImGui::SameLine();
-    if (ImGui::Checkbox("Solid", &st.collide)) {
-        st.collide = !st.collide;
-        s.beginEdit();
-        st.collide = !st.collide;
-        s.endEdit("Toggle collision");
-        sp.touch(i);
+    if (!bare) {   // a bare path has nothing to collide with
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Solid", &st.collide)) {
+            st.collide = !st.collide;
+            s.beginEdit();
+            st.collide = !st.collide;
+            s.endEdit("Toggle collision");
+            sp.touch(i);
+        }
+        ImGui::SameLine();
+        ui::hint("(in Play)");
     }
-    ImGui::SameLine();
-    ui::hint("(in Play)");
 
     ImGui::BeginDisabled(p.points.empty());
     if (ImGui::Button("Clear points")) {
@@ -403,6 +522,17 @@ void drawPanel(const PanelState& s) {
                  static_cast<int>(p.points.size()));
     }
 
+    // --- A bare path: nothing to style, only things to put on it -------------
+    if (bare) {
+        placeSection(s, i, true);
+        const SplineSystem::Run* run = i < static_cast<int>(sp.runs().size())
+                                     ? &sp.runs()[i] : nullptr;
+        ImGui::Separator();
+        if (run) ui::hint("%.0f m of path", run->geo.length);
+        ImGui::End();
+        return;
+    }
+
     // --- Materials -----------------------------------------------------------
     // Above the shape controls on purpose: which surface an element wears is the
     // question an author comes back to, and the numbers below it are the one they
@@ -430,6 +560,7 @@ void drawPanel(const PanelState& s) {
         switch (p.kind) {
             case Kind::Wall: wallStyle(s, i, st); break;
             case Kind::Rail: railStyle(s, i, st); break;
+            case Kind::Path:   // returned above -- a bare path has no shape
             case Kind::Fence:
             case Kind::Count: fenceStyle(s, i, st); break;
         }
@@ -439,6 +570,10 @@ void drawPanel(const PanelState& s) {
                  "ground.");
         slider(s, i, "Raise", &st.lift, -10.0f, 10.0f);
     }
+
+    // Any path can carry objects as well -- lamps along a wall, signals beside
+    // a track -- so the section is here too, just not open unasked.
+    placeSection(s, i, false);
 
     // --- What it came out as -------------------------------------------------
     // Run holds GPU meshes and is move-only, so this is a pointer rather than a

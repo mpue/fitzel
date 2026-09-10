@@ -201,6 +201,8 @@ set(SANDBOX_EDITOR_SOURCES
     # Stamping prefabs along a road. Editor-only: it turns a road + a rule into
     # ordinary entities once, and the shipped player only ever loads the result.
     src/RoadPrefab.cpp
+    # ...and objects along a spline path, the same way (see SplinePlace.hpp).
+    src/SplinePlace.cpp
     src/BuildingPanel.cpp
     src/CityPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -526,6 +528,25 @@ add_executable(prefabeditcheck tools/prefabeditcheck.cpp
 target_compile_definitions(prefabeditcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(prefabeditcheck PRIVATE fitzel imgui stb_headers
                                               nlohmann_json::nlohmann_json)
+
+# splineplacecheck -- objects placed along a spline path: at the right spacing,
+# on the right SIDE (the spline frame's "right" is the traveller's left, which a
+# symmetric fence never showed), and copied as whole subtrees that keep their own
+# prefab links and gain none. All of it looks like a plausible row of objects in
+# the viewport. A bare path builds no geometry, so no GL, no window.
+#   build/release/bin/splineplacecheck.exe
+add_executable(splineplacecheck tools/splineplacecheck.cpp
+                                src/SplinePlace.cpp src/SplineSystem.cpp
+                                src/SplineGen.cpp src/SandboxMath.cpp
+                                src/RoadPrefab.cpp src/PrefabSystem.cpp
+                                src/ProjectIO.cpp src/GameSettings.cpp
+                                src/SceneGraph.cpp src/Selection.cpp
+                                src/ModelLibrary.cpp src/Component.cpp
+                                src/Primitives.cpp src/EditMesh.cpp
+                                src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(splineplacecheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(splineplacecheck PRIVATE fitzel imgui stb_headers
+                                               nlohmann_json::nlohmann_json)
 
 # gridcheck -- the starting grid: are the right craft in the right places?
 # The grid is built in the half second between pressing start and the lights, it

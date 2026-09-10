@@ -1,11 +1,13 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include <glm/glm.hpp>
 #include <imgui.h>
 
 class SplineSystem;
+namespace splineplace { struct Spot; }
 
 // The spline tool's viewport half: draggable control-point handles, click-to-add,
 // the drawn path, and the keyboard nudge. Editor-only.
@@ -53,10 +55,20 @@ struct Context {
     // True while an interaction is open, so a key-repeat burst can be closed once
     // the last key comes up rather than per repeat.
     std::function<bool()>            editOpen;
+
+    // Where "Place along path" would put its copies, drawn as markers; null when
+    // the panel is not offering a placement.
+    const std::vector<splineplace::Spot>* preview = nullptr;
 };
 
 // Run one frame of the tool: picking, dragging, adding, deleting, nudging and
 // drawing. Call it while the spline edit mode owns the left mouse button.
 void handle(const Context& c);
+
+// Draw only -- the paths and the placement preview, no handles and no input.
+// For while the Splines panel is open but edit mode is off: a bare path has no
+// geometry of its own, so without this it would be invisible exactly when you
+// are about to place things along it. Uses only the viewport fields of `c`.
+void draw(const Context& c);
 
 } // namespace splineedit

@@ -334,14 +334,15 @@ struct Stop {
 };
 
 // Stations in [fromStation, toStation) at `spacing`, phased from the path's
-// start so a chunk boundary doesn't shift the pattern.
+// start so a chunk boundary doesn't shift the pattern. `phase` moves the first
+// station that far along; nothing is placed before it.
 std::vector<Stop> stopsIn(const std::vector<Frame>& f, std::size_t i0, std::size_t i1,
-                          float spacing, int& budget) {
+                          float spacing, int& budget, float phase = 0.0f) {
     std::vector<Stop> out;
     const float step = std::max(spacing, 0.05f);
     const float from = f[i0].station, to = f[i1].station;
-    int   idx  = static_cast<int>(std::ceil(from / step - 1e-4f));
-    float st   = idx * step;
+    int   idx  = static_cast<int>(std::ceil((std::max(from, phase) - phase) / step - 1e-4f));
+    float st   = phase + idx * step;
     std::size_t seg = i0;
     // A closed run's last sample repeats the first; stopping strictly before `to`
     // there keeps a post from being placed twice on the seam.
@@ -362,7 +363,7 @@ std::vector<Stop> stopsIn(const std::vector<Frame>& f, std::size_t i0, std::size
         out.push_back(s);
         --budget;
         ++idx;
-        st = idx * step;
+        st = phase + idx * step;
     }
     return out;
 }
@@ -448,6 +449,7 @@ const char* kindName(Kind k) {
         case Kind::Fence: return "Fence";
         case Kind::Wall:  return "Wall";
         case Kind::Rail:  return "Track";
+        case Kind::Path:  return "Path";
         case Kind::Count: break;
     }
     return "Spline";
@@ -508,12 +510,14 @@ const char* presetName(Preset p) {
         case Preset::NarrowGauge:   return "Narrow gauge";
         case Preset::Tram:          return "Tram track";
         case Preset::Siding:        return "Yard siding";
+        case Preset::Bare:          return "Bare path";
         case Preset::Count:         break;
     }
     return "Preset";
 }
 
 Kind presetKind(Preset p) {
+    if (p == Preset::Bare)          return Kind::Path;
     if (p >= Preset::StandardGauge) return Kind::Rail;
     if (p >= Preset::GardenWall)    return Kind::Wall;
     return Kind::Fence;
@@ -544,6 +548,9 @@ Style preset(Preset p) {
             s.colorC = {0.44f, 0.42f, 0.39f};
             s.sink   = 0.15f;
             s.texTile = 1.0f;
+            break;
+        case Kind::Path:   // builds nothing, so has nothing to style
+            s.collide = false;
             break;
     }
 
@@ -730,6 +737,7 @@ Style preset(Preset p) {
             s.colorB = {0.21f, 0.18f, 0.15f};
             s.colorC = {0.40f, 0.38f, 0.34f};
             break;
+        case Preset::Bare:  break;
         case Preset::Count: break;
     }
     return s;
@@ -739,6 +747,7 @@ Style preset(Kind k) {
     switch (k) {
         case Kind::Wall: return preset(Preset::GardenWall);
         case Kind::Rail: return preset(Preset::StandardGauge);
+        case Kind::Path: return preset(Preset::Bare);
         case Kind::Fence:
         case Kind::Count: break;
     }
@@ -764,6 +773,7 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, Kind k, const Style& 
             pal.secondary = ensureMaterial(materials, slot + "Sleeper", s.colorB, 0.0f, 0.92f);
             pal.tertiary  = ensureMaterial(materials, slot + "Ballast", s.colorC, 0.0f, 0.98f);
             break;
+        case Kind::Path:   // never asked: a bare path has no parts to colour
         case Kind::Fence:
         case Kind::Count:
             pal.primary   = ensureMaterial(materials, slot + "Post",  s.colorA, 0.0f, 0.88f);
@@ -789,6 +799,7 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
     const std::vector<Frame> f = makeFrames(path, closed);
     if (f.size() < 2) return res;
     res.length = f.back().station;
+    if (k == Kind::Path) return res;   // the curve is the whole of it
 
     int budget = std::max(maxPieces, 1);
 
@@ -942,6 +953,8 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
                 sweep(slot[0], f, i0, i1, lifted,  s.gauge * 0.5f, s.texTile, capStart, capEnd);
                 break;
             }
+            case Kind::Path:   // returned above; listed so the switch is complete
+                break;
         }
 
         // The path's own override wins over the shared palette slot, per element.
@@ -986,6 +999,8 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
                 height = s.ballastHeight + s.sleeperHeight;
                 if (s.ballastWidth <= 0.0f) { halfW = s.sleeperLength * 0.5f; height = s.sleeperHeight; }
                 break;
+            case Kind::Path:   // returned before any geometry, never reaches here
+                break;
         }
         // ~4 m of path per box: short enough that a curve stays inside its own
         // envelope, long enough that a kilometre of wall is 250 bodies.
@@ -1012,6 +1027,28 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
         }
     }
     return res;
+}
+
+std::vector<Station> stations(const std::vector<glm::vec3>& pathIn, bool closed,
+                              float spacing, float start, int maxCount) {
+    std::vector<Station> out;
+    if (pathIn.size() < 2 || maxCount <= 0) return out;
+    // Same seam handling as generate(): a closed run is an open one whose last
+    // sample repeats the first, and the walk stops short of it.
+    std::vector<glm::vec3> path = pathIn;
+    if (closed && glm::distance(path.front(), path.back()) > 1e-4f) path.push_back(path.front());
+    const std::vector<Frame> f = makeFrames(path, closed);
+    if (f.size() < 2) return out;
+
+    int budget = maxCount;
+    for (const Stop& s : stopsIn(f, 0, f.size() - 1, spacing, budget, std::max(start, 0.0f))) {
+        // The traveller's right in this right-handed, Y-up world is t x up --
+        // walking +Z, that is -X. (The Frame's `r` above is up x t, the LEFT;
+        // a symmetric fence never cared, an object put "to the right" does.)
+        const glm::vec3 t(std::sin(s.yaw), 0.0f, std::cos(s.yaw));
+        out.push_back({s.p, glm::vec3(-t.z, 0.0f, t.x), s.yaw});
+    }
+    return out;
 }
 
 } // namespace splinegen

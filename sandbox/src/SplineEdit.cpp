@@ -5,10 +5,61 @@
 
 #include <glm/gtc/constants.hpp>
 
+#include "SplinePlace.hpp"
 #include "SplineSystem.hpp"
 
 namespace splineedit {
 namespace {
+
+// World point -> viewport pixel. False when it is behind the camera or past the
+// far plane, so callers can skip it rather than draw it somewhere absurd.
+bool toScreen(const Context& c, const glm::vec3& wp, ImVec2& out) {
+    const glm::vec4 clip = c.viewProj * glm::vec4(wp, 1.0f);
+    if (clip.w <= 1e-4f) return false;
+    const glm::vec3 n = glm::vec3(clip) / clip.w;
+    if (n.z > 1.0f) return false;
+    out = ImVec2(c.origin.x + (n.x * 0.5f + 0.5f) * c.viewW,
+                 c.origin.y + (1.0f - (n.y * 0.5f + 0.5f)) * c.viewH);
+    return true;
+}
+
+// Every path's centreline. The selected path in warm yellow, the rest in a cool
+// grey-blue: which run a click will affect is the one thing that must be
+// readable at a glance in a scene with a dozen of them.
+void drawLines(const Context& c, ImDrawList* dl) {
+    const SplineSystem& sp = c.splines;
+    for (int pi = 0; pi < static_cast<int>(sp.paths.size()); ++pi) {
+        const bool active = pi == c.sel;
+        const ImU32 col = active ? IM_COL32(255, 210, 70, 220) : IM_COL32(130, 170, 210, 130);
+        const float th  = active ? 2.0f : 1.5f;
+        ImVec2 prev; bool have = false;
+        for (const glm::vec3& wp : sp.line(pi)) {
+            ImVec2 s;
+            if (!toScreen(c, wp, s)) { have = false; continue; }
+            if (have) dl->AddLine(prev, s, col, th);
+            prev = s; have = true;
+        }
+    }
+}
+
+// Where "Place along path" would put its copies: a dot on the ground and a
+// stroke the way the copy will face. Shown before anything is placed, so the
+// spacing and the side offset can be judged in the scene rather than by number.
+void drawPreview(const Context& c, ImDrawList* dl) {
+    if (!c.preview) return;
+    for (const splineplace::Spot& s : *c.preview) {
+        ImVec2 at, tip;
+        if (!toScreen(c, s.pos, at)) continue;
+        const float yaw = glm::radians(s.yawDeg);
+        const glm::vec3 ahead = s.pos + glm::vec3(std::sin(yaw), 0.0f, std::cos(yaw)) * 1.5f;
+        if (toScreen(c, ahead, tip)) {
+            dl->AddLine(at, tip, IM_COL32(0, 0, 0, 160), 3.5f);
+            dl->AddLine(at, tip, IM_COL32(255, 160, 60, 235), 2.0f);
+        }
+        dl->AddCircleFilled(at, 5.0f, IM_COL32(255, 160, 60, 235));
+        dl->AddCircle(at, 5.0f, IM_COL32(0, 0, 0, 200), 0, 1.5f);
+    }
+}
 
 // Pixel radius the cursor grabs a handle within. Deliberately larger than the
 // dot it grabs -- the tool has to be usable by someone who cannot put the cursor
@@ -50,19 +101,20 @@ int insertIndex(const SplineSystem::Path& p, glm::vec2 P) {
 
 } // namespace
 
+void draw(const Context& c) {
+    if (c.splines.paths.empty()) return;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    drawLines(c, dl);
+    drawPreview(c, dl);
+}
+
 void handle(const Context& c) {
     SplineSystem& sp = c.splines;
     if (sp.paths.empty()) return;
     if (c.sel >= static_cast<int>(sp.paths.size())) { c.sel = -1; c.ptSel = -1; }
 
     auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
-        const glm::vec4 clip = c.viewProj * glm::vec4(wp, 1.0f);
-        if (clip.w <= 1e-4f) return false;
-        const glm::vec3 n = glm::vec3(clip) / clip.w;
-        if (n.z > 1.0f) return false;
-        out = ImVec2(c.origin.x + (n.x * 0.5f + 0.5f) * c.viewW,
-                     c.origin.y + (1.0f - (n.y * 0.5f + 0.5f)) * c.viewH);
-        return true;
+        return splineedit::toScreen(c, wp, out);
     };
 
     // --- What the cursor is over ---------------------------------------------
@@ -190,24 +242,8 @@ void handle(const Context& c) {
 
     // --- Draw ----------------------------------------------------------------
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    auto polyline = [&](const std::vector<glm::vec3>& line, ImU32 col, float th) {
-        ImVec2 prev; bool have = false;
-        for (const glm::vec3& wp : line) {
-            ImVec2 s;
-            if (!toScreen(wp, s)) { have = false; continue; }
-            if (have) dl->AddLine(prev, s, col, th);
-            prev = s; have = true;
-        }
-    };
-    for (int pi = 0; pi < static_cast<int>(sp.paths.size()); ++pi) {
-        // The selected path in warm yellow, the rest in a cool grey-blue: which
-        // run a click will affect is the one thing that must be readable at a
-        // glance in a scene with a dozen of them.
-        const bool active = pi == c.sel;
-        polyline(sp.line(pi), active ? IM_COL32(255, 210, 70, 220)
-                                     : IM_COL32(130, 170, 210, 130),
-                 active ? 2.0f : 1.5f);
-    }
+    drawLines(c, dl);
+    drawPreview(c, dl);
 
     for (int pi = 0; pi < static_cast<int>(sp.paths.size()); ++pi) {
         const SplineSystem::Path& p = sp.paths[pi];

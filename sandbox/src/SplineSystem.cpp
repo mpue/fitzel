@@ -292,6 +292,12 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
         b.line.emplace_back(flat[s].x, y, flat[s].y);
     }
 
+    // A bare path stops at the line: it has no parts, and asking for a palette
+    // would still find-or-create three materials in the project library.
+    if (p.kind == splinegen::Kind::Path) {
+        r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, {});
+        return;
+    }
     const splinegen::Palette pal =
         splinegen::ensurePalette(materials, p.kind, p.style);
     r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, pal);

@@ -13,7 +13,8 @@
 #include "SplineGen.hpp"
 
 // The scene's spline structures: any number of independent paths, each carrying
-// a fence, a wall or a railway track (see SplineGen.hpp for what those are).
+// a fence, a wall or a railway track (see SplineGen.hpp for what those are) --
+// or nothing at all, a bare path that objects are placed along (SplinePlace.hpp).
 //
 // This is the scene-level half: it owns the control points, samples them into a
 // draped centreline, calls the generator, uploads what comes back and persists

@@ -32,10 +32,15 @@
 // SplinePanel.hpp.
 namespace splinegen {
 
-// What runs along the path. The three differ in geometry, not in kind of thing:
-// each is a cross-section swept along the spline plus something repeated at a
-// spacing (posts, piers, sleepers).
-enum class Kind { Fence, Wall, Rail, Count };
+// What runs along the path. The first three differ in geometry, not in kind of
+// thing: each is a cross-section swept along the spline plus something repeated
+// at a spacing (posts, piers, sleepers).
+//
+// Path is the bare curve with nothing on it: no geometry, no collider, no
+// palette materials. It exists to be a guide -- the line objects are placed
+// along (see SplinePlace.hpp) -- and it is appended after the others because
+// the kind is saved as its index.
+enum class Kind { Fence, Wall, Rail, Path, Count };
 
 const char* kindName(Kind k);
 
@@ -170,6 +175,8 @@ enum class Preset {
     Parapet, SeaWall, LowBoundary,
     // Track
     StandardGauge, NarrowGauge, Tram, Siding,
+    // The bare path (Kind::Path). Last, because presets are saved by index.
+    Bare,
     Count
 };
 
@@ -238,5 +245,19 @@ struct Result {
 // not reshuffle a fence the author has been looking at.
 Result generate(Kind k, const Style& s, const std::vector<glm::vec3>& path,
                 bool closed, const Palette& pal, int maxPieces = 4000);
+
+// A place along the path at a true metre spacing -- the same walk the posts and
+// sleepers are stood on, exposed for putting OBJECTS on a path (SplinePlace).
+struct Station {
+    glm::vec3 p;       // on the draped centreline
+    glm::vec3 right;   // unit, in plan: the path's right-hand side
+    float     yaw;     // radians about +Y; 0 faces +Z (the roadside convention)
+};
+
+// Stations every `spacing` metres from `start` metres along `path` (the sampled,
+// draped centreline, as for generate), at most `maxCount` of them. A closed path
+// does not repeat its seam; an open one gets its end only if a station lands on it.
+std::vector<Station> stations(const std::vector<glm::vec3>& path, bool closed,
+                              float spacing, float start, int maxCount);
 
 } // namespace splinegen

@@ -1,16 +1,20 @@
 #pragma once
 
 #include <functional>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include <fitzel/asset/AssetId.hpp>
 
 #include "SceneTypes.hpp"   // MaterialDef
+#include "SplinePlace.hpp"
 
 class SplineSystem;
 
 // The Splines panel: the path list, the viewport edit-mode toggle, the preset
-// picker and the style + material controls for the selected fence / wall / track.
+// picker, the style + material controls for the selected fence / wall / track,
+// and placing objects along the selected path (SplinePlace.hpp).
 // Editor-only -- the widget lives in SplinePanel.cpp, which the player doesn't
 // compile (same split as RoadPanel).
 namespace splineui {
@@ -45,6 +49,17 @@ struct PanelState {
     // pushing; a change that turns out to be a no-op is dropped there.
     std::function<void()>            beginEdit;
     std::function<void(const char*)> endEdit;
+
+    // --- Objects along the path (see SplinePlace.hpp) ------------------------
+    splineplace::Settings& placeCfg;
+    // The name of the object selected in the scene, "" when there is none --
+    // what "Selected object" would copy.
+    std::function<std::string()> selectedName;
+    // The project's prefabs as (display name, file), for the picker.
+    std::function<std::vector<std::pair<std::string, std::string>>()> listPrefabs;
+    // Place copies along the selected path as one undoable step. main owns the
+    // scene and the undo stack, so it does the placing.
+    std::function<void()> placeAlong;
 };
 
 void drawPanel(const PanelState& s);
