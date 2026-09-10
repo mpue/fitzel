@@ -1596,6 +1596,56 @@ glm::vec3 hsv2rgb(const glm::vec3& c) {
                           c.y);
 }
 
+// composite.frag's three curves, transcribed. Linear, exposed radiance in;
+// display-encoded [0,1] out. See the shader for what each is for.
+glm::vec3 agx(glm::vec3 v) {
+    // Column-major like GLSL's mat3(...): the same numbers in the same order.
+    const glm::mat3 inset(0.842479062253094f, 0.0423282422610123f, 0.0423756549057051f,
+                          0.0784335999999992f, 0.878468636469772f, 0.0784336f,
+                          0.0792237451477643f, 0.0791661274605434f, 0.879142973793104f);
+    constexpr float minEv = -12.47393f, maxEv = 4.026069f;
+    v = inset * (v * 2.2409f);
+    for (int i = 0; i < 3; ++i) {
+        float t = std::log2(std::max(v[i], 1e-10f));
+        t = (std::clamp(t, minEv, maxEv) - minEv) / (maxEv - minEv);
+        const float t2 = t * t, t4 = t2 * t2;
+        v[i] = std::pow(std::max(15.5f * t4 * t2 - 40.14f * t4 * t + 31.96f * t4 -
+                                 6.868f * t2 * t + 0.4298f * t2 + 0.1191f * t - 0.00232f,
+                                 0.0f),
+                        1.35f);                                  // the punchy look
+    }
+    const float lu = glm::dot(v, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+    return glm::clamp(glm::vec3(lu) + 1.4f * (v - glm::vec3(lu)),
+                      glm::vec3(0.0f), glm::vec3(1.0f));
+}
+
+glm::vec3 pbrNeutral(glm::vec3 c) {
+    c *= 1.7050f;
+    constexpr float start = 0.76f, desat = 0.15f;
+    const float x = std::min(c.r, std::min(c.g, c.b));
+    const float offset = x < 0.08f ? x - 6.25f * x * x : 0.04f;
+    c -= offset;
+    const float peak = std::max(c.r, std::max(c.g, c.b));
+    if (peak >= start) {
+        constexpr float d = 1.0f - start;
+        const float newPeak = 1.0f - d * d / (peak + d - start);
+        c *= newPeak / peak;
+        const float g = 1.0f - 1.0f / (desat * (peak - newPeak) + 1.0f);
+        c = glm::mix(c, glm::vec3(newPeak), g);
+    }
+    return glm::pow(glm::clamp(c, glm::vec3(0.0f), glm::vec3(1.0f)), glm::vec3(1.0f / 2.2f));
+}
+
+glm::vec3 tonemapCurve(glm::vec3 x, int curve) {
+    x = glm::max(x, glm::vec3(0.0f));
+    if (curve == 1) return agx(x);
+    if (curve == 2) return pbrNeutral(x);
+    constexpr float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
+    glm::vec3 m = (x * (a * x + b)) / (x * (c * x + d) + e);
+    m = glm::clamp(m, glm::vec3(0.0f), glm::vec3(1.0f));
+    return glm::pow(m, glm::vec3(1.0f / 2.2f));
+}
+
 } // namespace
 
 glm::vec3 tonemap(const glm::vec3& linear, float exposure, const Grade& grade) {
@@ -1609,10 +1659,7 @@ glm::vec3 tonemap(const glm::vec3& linear, float exposure, const Grade& grade) {
         if (!(safe[i] == safe[i])) safe[i] = 0.0f;
     safe = glm::min(safe, glm::vec3(50000.0f));
     const glm::vec3 x = glm::max(safe * exposure, glm::vec3(0.0f));
-    constexpr float a = 2.51f, b = 0.03f, c = 2.43f, d = 0.59f, e = 0.14f;
-    glm::vec3 m = (x * (a * x + b)) / (x * (c * x + d) + e);
-    m = glm::clamp(m, glm::vec3(0.0f), glm::vec3(1.0f));
-    m = glm::pow(m, glm::vec3(1.0f / 2.2f));
+    glm::vec3 m = tonemapCurve(x, grade.curve);
 
     // The grade, in composite.frag's order: white balance, then the contrast
     // S-curve, then hue/saturation/value. Order matters -- grading saturation

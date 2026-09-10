@@ -4084,6 +4084,13 @@ int main(int argc, char** argv) {
         float valueGain  = 1.0f;
         float warmth     = 0.18f; // golden-hour white balance
         float contrast   = 0.16f; // lift the flat look
+        // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
+        // and auto exposure relative to `exposure` (see PostChain::Params).
+        int   tonemapCurve  = 1;
+        bool  autoExposure  = true;
+        float autoMinEv     = -1.5f;
+        float autoMaxEv     = 2.5f;
+        float adaptSpeed    = 1.5f;
 
         bool requestDockRebuild = false; // set by "Reset layout" to re-apply the default
 
@@ -4570,6 +4577,9 @@ int main(int argc, char** argv) {
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
+        addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
+        addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
+        addF("adaptSpeed", adaptSpeed);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -7199,7 +7209,12 @@ int main(int argc, char** argv) {
             out << "gpu        " << glStr(GL_RENDERER) << "\n";
             out << "gl         " << glStr(GL_VERSION) << "\n";
             out << "measured   " << boot.profileSeconds << " s over "
-                << prof::history().size() << " frames" << "\n" << "\n";
+                << prof::history().size() << " frames" << "\n";
+            // What the exposure meter read (log2 luminance) and what auto
+            // exposure made of it -- the number PostChain::kAutoReferenceLog2
+            // was calibrated from.
+            out << "meter      log2 " << post.meteredLog2() << "   auto x"
+                << post.autoExposureScale() << "\n" << "\n";
             out << "frame      avg " << fs.avg << " ms ("
                 << (fs.avg > 0.0f ? 1000.0f / fs.avg : 0.0f) << " fps)"
                 << "   worst " << fs.worst << " ms"
@@ -8868,7 +8883,10 @@ int main(int argc, char** argv) {
             // Lightning flash lights the scene briefly.
             light.color   += glm::vec3(0.8f, 0.85f, 1.0f) * (flash * 6.0f);
             light.ambient += glm::vec3(0.5f, 0.55f, 0.7f) * flash;
-            renderer.setExposure(exposure);
+            // Times what auto exposure applied a couple of frames ago: the
+            // renderer's exposure is what the path tracer's capture reads, and a
+            // render has to come out as bright as the viewport it was taken from.
+            renderer.setExposure(exposure * post.autoExposureScale());
 
             // Atmospheric fog, tinted by time of day to match the sky horizon.
             // Colours are authored in sRGB and linearised for the linear-space
@@ -12995,6 +13013,29 @@ int main(int argc, char** argv) {
                              "is marched into the same buffer.");
                 }
                 ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
+                {
+                    const char* curves[] = {"ACES (classic)", "AgX", "Neutral"};
+                    ImGui::Combo("Tonemap", &tonemapCurve, curves, IM_ARRAYSIZE(curves));
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("ACES: punchy, but bright colours slide in hue\n"
+                                          "(blue sky to cyan) and clip early.\n"
+                                          "AgX: highlights fade to white along their own\n"
+                                          "hue, three more stops before a cloud clips.\n"
+                                          "Neutral: base colours exactly as authored.");
+                    ImGui::Checkbox("Auto exposure", &autoExposure);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Corrects the exposure above for how bright the\n"
+                                          "frame is -- up in a tunnel or at dusk, down when\n"
+                                          "it is all sky -- within the range below. A\n"
+                                          "sunlit daytime frame stays as you set it.");
+                    if (autoExposure) {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("%+.1f EV", std::log2(post.autoExposureScale()));
+                        ImGui::SliderFloat("Darken at most", &autoMinEv, -4.0f, 0.0f, "%.1f EV");
+                        ImGui::SliderFloat("Brighten at most", &autoMaxEv, 0.0f, 6.0f, "%.1f EV");
+                        ImGui::SliderFloat("Adaptation", &adaptSpeed, 0.2f, 8.0f, "%.1f /s");
+                    }
+                }
                 ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
                 ImGui::SliderFloat("Bloom threshold", &bloomThreshold, 0.2f, 4.0f, "%.2f");
                 if (ImGui::IsItemHovered())
@@ -15023,6 +15064,7 @@ int main(int argc, char** argv) {
             ptLook.grade.value      = valueGain;
             ptLook.grade.warmth     = warmth;
             ptLook.grade.contrast   = contrast;
+            ptLook.grade.curve      = tonemapCurve;
             // The grass, which the harvest cannot see: the tracer regenerates it
             // from the same parameters the streamed field was built from.
             if (veg.grassEnabled) {
@@ -15602,6 +15644,12 @@ int main(int argc, char** argv) {
                 pp.exposure = exposure;
                 pp.hueShift = hueShift; pp.saturation = saturation;
                 pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
+                pp.curve        = tonemapCurve;
+                pp.autoExposure = autoExposure;
+                pp.autoMinEv    = autoMinEv;
+                pp.autoMaxEv    = autoMaxEv;
+                pp.adaptSpeed   = adaptSpeed;
+                pp.dt           = dt;
                 pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
                 pp.blurAnchorValid  = blurSt.blurAnchorValid;

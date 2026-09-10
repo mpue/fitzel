@@ -248,6 +248,9 @@ struct Grade {
     float value      = 1.0f;
     float warmth     = 0.0f;   // + golden, - cool
     float contrast   = 0.0f;   // S-curve strength around mid grey
+    // The tonemap curve under the grade: 0 ACES (fit), 1 AgX, 2 PBR Neutral.
+    // composite.frag's uCurve; the default is the original look.
+    int   curve      = 0;
 };
 
 // Everything a render needs, and nothing that changes while it runs. Handed to

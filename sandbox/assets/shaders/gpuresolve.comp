@@ -14,7 +14,7 @@
 // draws. Nothing comes back over the bus, nothing stalls, and the picture can be
 // refreshed every frame.
 //
-// THE CURVE IS NOT A NEW ONE. It is composite.frag's -- the same ACES constants,
+// THE CURVES ARE NOT NEW ONES. They are composite.frag's -- the same constants,
 // the same gamma, the same grade in the same order -- which is also what
 // pathtrace::tonemap transcribes for the offline still. Three copies of one
 // curve is two too many, so gpucheck holds this one against the CPU's over a
@@ -54,6 +54,53 @@ vec3 aces(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+// composite.frag's curves, verbatim (see there for what each is for).
+uniform int uCurve;          // 0 ACES, 1 AgX, 2 PBR Neutral
+
+vec3 agx(vec3 v) {
+    const mat3 inset = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+                            0.0784335999999992, 0.878468636469772, 0.0784336,
+                            0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const float minEv = -12.47393, maxEv = 4.026069;
+    v = inset * (v * 2.2409);
+    v = clamp(log2(max(v, vec3(1e-10))), minEv, maxEv);
+    v = (v - minEv) / (maxEv - minEv);
+    vec3 x2 = v * v, x4 = x2 * x2;
+    v = 15.5 * x4 * x2 - 40.14 * x4 * v + 31.96 * x4
+      - 6.868 * x2 * v + 0.4298 * x2 + 0.1191 * v - 0.00232;
+    // The "punchy" look (Blender's): a power and a saturation lift on the
+    // display values, which is what brings AgX's deliberately flat base back
+    // to the contrast a game is expected to have.
+    v = pow(max(v, vec3(0.0)), vec3(1.35));
+    float lu = dot(v, vec3(0.2126, 0.7152, 0.0722));
+    v = lu + 1.4 * (v - lu);
+    return clamp(v, 0.0, 1.0);
+}
+
+vec3 pbrNeutral(vec3 c) {
+    c *= 1.7050;
+    const float start = 0.76, desat = 0.15;
+    float x = min(c.r, min(c.g, c.b));
+    float offset = (x < 0.08) ? x - 6.25 * x * x : 0.04;
+    c -= offset;
+    float peak = max(c.r, max(c.g, c.b));
+    if (peak >= start) {
+        const float d = 1.0 - start;
+        float newPeak = 1.0 - d * d / (peak + d - start);
+        c *= newPeak / peak;
+        float g = 1.0 - 1.0 / (desat * (peak - newPeak) + 1.0);
+        c = mix(c, vec3(newPeak), g);
+    }
+    return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2));
+}
+
+vec3 tonemapCurve(vec3 x) {
+    x = max(x, vec3(0.0));
+    if (uCurve == 1) return agx(x);
+    if (uCurve == 2) return pbrNeutral(x);
+    return pow(aces(x), vec3(1.0 / 2.2));
+}
+
 vec3 colorGrade(vec3 c) {
     // White balance, then the contrast S-curve, then hue/saturation/value. The
     // ORDER is part of the look: grading saturation before contrast gives a
@@ -79,8 +126,7 @@ void main() {
     col = min(col, vec3(50000.0));
     if (any(isnan(col))) col = vec3(0.0);
 
-    col = aces(col * uExposure);
-    col = pow(col, vec3(1.0 / 2.2));
+    col = tonemapCurve(col * uExposure);
     col = colorGrade(col);
     imageStore(uOut, px, vec4(clamp(col, 0.0, 1.0), 1.0));
 }

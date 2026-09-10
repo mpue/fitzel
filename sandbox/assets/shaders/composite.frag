@@ -75,6 +75,97 @@ vec3 aces(vec3 x) {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
 }
 
+// --- The tonemap curves -------------------------------------------------------
+// THREE COPIES: this one, gpuresolve.comp and pathtrace::tonemap. gpucheck holds
+// them against each other, per curve, and a change here is a change there.
+//
+// 0 ACES (Narkowicz's fit). The engine's original look: punchy, but it runs
+//   every channel through the curve on its own, so a bright blue sky slides to
+//   cyan, a fire to yellow, and everything past about 2 is flat white.
+// 1 AgX, with Blender's "punchy" look. Log-encodes in a slightly inset gamut
+//   before the curve, so a highlight desaturates towards white along its own
+//   hue instead of skidding sideways, and a bright sky stays sky blue instead of
+//   going royal. Rolls off later than ACES, so clouds and emissive keep detail.
+// 2 Neutral (Khronos PBR Neutral). Leaves everything below 0.76 untouched and
+//   compresses only the top: base colours read as authored. The product-shot
+//   curve.
+//
+// Each non-ACES curve is pre-scaled so mid grey (0.18) lands where ACES puts it
+// (0.549 on screen): switching the curve changes the highlights and the colour,
+// not the exposure the scene was lit for.
+uniform int uCurve;
+
+vec3 agx(vec3 v) {
+    const mat3 inset = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
+                            0.0784335999999992, 0.878468636469772, 0.0784336,
+                            0.0792237451477643, 0.0791661274605434, 0.879142973793104);
+    const float minEv = -12.47393, maxEv = 4.026069;
+    v = inset * (v * 2.2409);
+    v = clamp(log2(max(v, vec3(1e-10))), minEv, maxEv);
+    v = (v - minEv) / (maxEv - minEv);
+    // Sobotka's contrast curve, as fitted by iolite: already display-encoded.
+    vec3 x2 = v * v, x4 = x2 * x2;
+    v = 15.5 * x4 * x2 - 40.14 * x4 * v + 31.96 * x4
+      - 6.868 * x2 * v + 0.4298 * x2 + 0.1191 * v - 0.00232;
+    // The "punchy" look (Blender's): a power and a saturation lift on the
+    // display values, which is what brings AgX's deliberately flat base back
+    // to the contrast a game is expected to have.
+    v = pow(max(v, vec3(0.0)), vec3(1.35));
+    float lu = dot(v, vec3(0.2126, 0.7152, 0.0722));
+    v = lu + 1.4 * (v - lu);
+    return clamp(v, 0.0, 1.0);
+}
+
+vec3 pbrNeutral(vec3 c) {
+    c *= 1.7050;
+    const float start = 0.76, desat = 0.15;
+    float x = min(c.r, min(c.g, c.b));
+    float offset = (x < 0.08) ? x - 6.25 * x * x : 0.04;
+    c -= offset;
+    float peak = max(c.r, max(c.g, c.b));
+    if (peak >= start) {
+        const float d = 1.0 - start;
+        float newPeak = 1.0 - d * d / (peak + d - start);
+        c *= newPeak / peak;
+        float g = 1.0 - 1.0 / (desat * (peak - newPeak) + 1.0);
+        c = mix(c, vec3(newPeak), g);
+    }
+    return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2));
+}
+
+// --- Auto exposure ------------------------------------------------------------
+// meter.frag keeps the frame's centre-weighted mean log2 luminance, adapted over
+// time, in a 1x1 target. The exposure it gives is RELATIVE: the slider still
+// sets the look for a scene at the reference brightness (uAutoRef, a sunlit
+// daytime frame), and this only corrects away from it -- up in a tunnel, at
+// dusk, under a storm; down when the frame is filled with sky -- inside a
+// range, so night stays night and does not get lifted to noon.
+uniform sampler2D uAdapt;
+uniform int   uAutoExposure;
+uniform float uAutoRef;       // log2 luminance the slider was set for
+uniform float uAutoMinEv;     // most it may darken, in stops (negative)
+uniform float uAutoMaxEv;     // most it may brighten, in stops
+
+// Only part of the difference is corrected (kAutoStrength), the way an eye or
+// a camera's metering does: a dim scene should come out LESS dim, not as bright
+// as noon, or dusk stops reading as dusk. PostChain.cpp mirrors this for the
+// value it reads back.
+const float kAutoStrength = 0.7;
+
+float autoExposure() {
+    if (uAutoExposure == 0) return 1.0;
+    float adapted = texelFetch(uAdapt, ivec2(0), 0).r;
+    return exp2(clamp((uAutoRef - adapted) * kAutoStrength, uAutoMinEv, uAutoMaxEv));
+}
+
+// Linear scene radiance (already exposed) -> display-encoded [0,1].
+vec3 tonemapCurve(vec3 x) {
+    x = max(x, vec3(0.0));
+    if (uCurve == 1) return agx(x);
+    if (uCurve == 2) return pbrNeutral(x);
+    return pow(aces(x), vec3(1.0 / 2.2));
+}
+
 // Eye-space distance from the depth buffer.
 float linearDepth(vec2 uv) {
     float d = texture(uDepth, uv).r * 2.0 - 1.0;
@@ -165,8 +256,7 @@ void main() {
     col = min(col, vec3(50000.0));
     if (any(isnan(col))) col = vec3(0.0);
 
-    col = aces(col * uExposure);
-    col = pow(col, vec3(1.0 / 2.2));
+    col = tonemapCurve(col * uExposure * autoExposure());
     col = colorGrade(col);
     FragColor = vec4(col, 1.0);
 }

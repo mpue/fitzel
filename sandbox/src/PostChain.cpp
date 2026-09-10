@@ -1,6 +1,7 @@
 #include "PostChain.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 
 #include <glad/gl.h>
@@ -22,6 +23,7 @@ bool PostChain::init() {
         {&m_composite,  "assets/shaders/composite.frag",  "composite"},
         {&m_motionBlur, "assets/shaders/motionblur.frag", "motion blur"},
         {&m_fxaa,       "assets/shaders/fxaa.frag",       "fxaa"},
+        {&m_meter,      "assets/shaders/meter.frag",      "exposure meter"},
     };
     for (const Load& l : loads) {
         *l.dst = fitzel::Shader::fromFiles(kVert, l.frag);
@@ -30,7 +32,17 @@ bool PostChain::init() {
             return false;
         }
     }
+    glGenBuffers(kMeterRing, m_meterPbo);
+    for (unsigned pbo : m_meterPbo) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4 * sizeof(float), nullptr, GL_STREAM_READ);
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     return true;
+}
+
+PostChain::~PostChain() {
+    if (m_meterPbo[0]) glDeleteBuffers(kMeterRing, m_meterPbo);
 }
 
 void PostChain::resize(int w, int h) {
@@ -130,6 +142,27 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         glDisable(GL_BLEND);
     }
 
+    // --- Exposure meter: ease the 1x1 adapted luminance towards this frame --
+    // Runs whether or not auto exposure is on, so switching it on starts from
+    // where the eye already is instead of from a snap.
+    {
+        const int prev = m_adaptCur, next = 1 - m_adaptCur;
+        m_adapt[next].bind();
+        m_meter.bind();
+        hdr.bindColorTexture(0);           m_meter.setInt("uHdr", 0);
+        m_adapt[prev].bindColorTexture(1); m_meter.setInt("uPrev", 1);
+        // Frame-rate independent easing; the first frame takes the reading
+        // outright, or the picture would fade in from black.
+        const float blend = m_adaptPrimed
+            ? 1.0f - std::exp(-std::max(p.dt, 0.0f) * std::max(p.adaptSpeed, 0.01f))
+            : 1.0f;
+        m_meter.setFloat("uBlend", blend);
+        fsQuad.draw();
+        m_adaptCur    = next;
+        m_adaptPrimed = true;
+        readBackMeter(p);
+    }
+
     // --- Composite: bloom + god rays + lens flare + tonemap -----------------
     // Project the sun to screen space for the rays/flare.
     const glm::vec4 sunClip = p.viewProj * glm::vec4(p.camPos + p.sunDir * 3000.0f, 1.0f);
@@ -176,6 +209,13 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_composite.setFloat("uValue", p.valueGain);
     m_composite.setFloat("uWarmth", p.warmth);
     m_composite.setFloat("uContrast", p.contrast);
+    m_composite.setInt("uCurve", p.curve);
+    m_adapt[m_adaptCur].bindColorTexture(4);
+    m_composite.setInt("uAdapt", 4);
+    m_composite.setInt("uAutoExposure", p.autoExposure ? 1 : 0);
+    m_composite.setFloat("uAutoRef", kAutoReferenceLog2);
+    m_composite.setFloat("uAutoMinEv", std::min(p.autoMinEv, 0.0f));
+    m_composite.setFloat("uAutoMaxEv", std::max(p.autoMaxEv, 0.0f));
     fsQuad.draw();
     m_result = &m_postRT;
 
@@ -200,6 +240,36 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         fsQuad.draw();
         m_result = &m_mbRT;
     }
+}
+
+// Copy this frame's meter pixel into the ring and map the one written
+// kMeterRing - 1 frames ago. By then the card has long finished with it, so the
+// map does not wait -- a plain glReadPixels here would stall the CPU on the
+// whole frame queued in front of it, every frame, for one number.
+void PostChain::readBackMeter(const Params& p) {
+    if (!m_meterPbo[0]) return;
+    const int write = m_meterFrame % kMeterRing;
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[write]);
+    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, nullptr);   // m_adapt[cur] is bound
+    ++m_meterFrame;
+    if (m_meterFrame >= kMeterRing) {
+        const int read = m_meterFrame % kMeterRing;          // the oldest
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[read]);
+        if (const auto* v = static_cast<const float*>(
+                glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * sizeof(float),
+                                 GL_MAP_READ_BIT))) {
+            if (std::isfinite(v[0]) && std::isfinite(v[1])) {
+                m_meterLog2 = v[1];
+                // composite.frag's autoExposure(), including its 0.7.
+                const float ev = std::clamp((kAutoReferenceLog2 - v[0]) * 0.7f,
+                                            std::min(p.autoMinEv, 0.0f),
+                                            std::max(p.autoMaxEv, 0.0f));
+                m_autoScale = p.autoExposure ? std::exp2(ev) : 1.0f;
+            }
+            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+        }
+    }
+    glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 }
 
 void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled) {

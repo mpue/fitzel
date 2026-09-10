@@ -27,6 +27,10 @@ public:
     // Load the shaders. False means one failed to compile, and the caller should
     // treat that as fatal: a frame without a composite pass is a black screen.
     bool init();
+    PostChain() = default;
+    ~PostChain();
+    PostChain(const PostChain&)            = delete;
+    PostChain& operator=(const PostChain&) = delete;
 
     // (Re)create the intermediates for an image of this size. Cheap to call
     // every frame -- it returns immediately unless the size actually changed,
@@ -58,6 +62,17 @@ public:
         float exposure = 1.0f;
         float hueShift = 0.0f, saturation = 1.0f, valueGain = 1.0f;
         float warmth = 0.0f, contrast = 1.0f;
+        // Tonemap curve: 0 ACES (fit), 1 AgX, 2 Khronos PBR Neutral. See
+        // composite.frag; pathtrace::Grade::curve carries the same number.
+        int   curve = 0;
+
+        // Auto exposure, relative to the slider: `exposure` is what a frame at
+        // the reference brightness gets, and the meter corrects away from it
+        // by at most minEv..maxEv stops, easing at `adaptSpeed` (1/s).
+        bool  autoExposure = false;
+        float autoMinEv = -1.5f, autoMaxEv = 2.5f;
+        float adaptSpeed = 1.5f;
+        float dt = 1.0f / 60.0f;       // frame time, for the easing
 
         // Radial speed blur: how strong, and the world point it stays sharp
         // around (the craft being followed). Invalid = no blur this pane.
@@ -76,11 +91,41 @@ public:
     // image, the screen, or one half of either.
     void present(fitzel::Mesh& fsQuad, bool fxaaEnabled);
 
+    // The log2 luminance a sunlit daytime frame meters at: what auto exposure
+    // holds the picture to. Measured, not derived: five daytime projects
+    // (forest, desert, lake, road, dunes) metered between -3.43 and -1.54 with
+    // most near -3, which is the look every existing scene was tuned under --
+    // so a scene like them keeps its exposure and only the outliers move.
+    static constexpr float kAutoReferenceLog2 = -3.0f;
+
+    // The auto-exposure correction the composite applied a couple of frames
+    // ago (1 with auto exposure off), and that frame's raw meter reading in
+    // log2 luminance. Read back without stalling: the value is copied into a
+    // ring of pixel buffers and mapped only once the card has long finished
+    // with it. The path tracer's capture multiplies this in, so a render is
+    // exposed as the viewport it was taken from.
+    float autoExposureScale() const { return m_autoScale; }
+    float meteredLog2()       const { return m_meterLog2; }
+
 private:
+    void readBackMeter(const Params& p);
+
     int m_w = 0, m_h = 0;
 
     fitzel::Shader m_ssao, m_ssaoBlur, m_bloomDown, m_bloomUp;
-    fitzel::Shader m_composite, m_motionBlur, m_fxaa;
+    fitzel::Shader m_composite, m_motionBlur, m_fxaa, m_meter;
+
+    // Exposure meter: two 1x1 targets, ping-ponged (the pass reads last
+    // frame's value to ease from it), plus the read-back ring.
+    fitzel::RenderTarget m_adapt[2] = {{1, 1, fitzel::RenderTarget::Format::RGBA16F},
+                                       {1, 1, fitzel::RenderTarget::Format::RGBA16F}};
+    int  m_adaptCur    = 0;
+    bool m_adaptPrimed = false;
+    static constexpr int kMeterRing = 3;
+    unsigned m_meterPbo[kMeterRing] = {0, 0, 0};
+    int   m_meterFrame = 0;
+    float m_autoScale  = 1.0f;
+    float m_meterLog2  = 0.0f;
 
     // Created at 1x1 and replaced by the first resize(): a render target needs a
     // live GL context and a size, and this object knows neither until the window

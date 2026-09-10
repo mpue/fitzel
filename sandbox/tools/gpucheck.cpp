@@ -299,11 +299,15 @@ int main(int argc, char** argv) {
         // pathtrace::tonemap already transcribes for the still -- and three
         // copies of anything drift. So it is checked, not trusted: the same
         // radiance through both, and they have to land on the same byte.
-        {
+        // Every curve the grade can name: each is its own transcription, and
+        // the one nobody looked at is the one that drifts.
+        for (int curve = 0; curve < 3; ++curve) {
             const float exposure = scene->exposure;
+            pathtrace::Grade grade = scene->grade;
+            grade.curve = curve;
             std::vector<unsigned char> ldr(
                 static_cast<std::size_t>(s.width) * s.height * 4, 0);
-            const bool resolved = gpu.resolve(exposure, scene->grade) &&
+            const bool resolved = gpu.resolve(exposure, grade) &&
                                   gpu.ldrTexture() != 0;
             if (resolved) {
                 glBindTexture(GL_TEXTURE_2D, gpu.ldrTexture());
@@ -316,7 +320,7 @@ int main(int argc, char** argv) {
                  resolved && i < n; ++i) {
                 const glm::vec3 c = pathtrace::tonemap(
                     glm::vec3(gpuImg[i * 3], gpuImg[i * 3 + 1], gpuImg[i * 3 + 2]),
-                    exposure, scene->grade);
+                    exposure, grade);
                 for (int k = 0; k < 3; ++k) {
                     const int want = static_cast<int>(
                         std::clamp(c[k], 0.0f, 1.0f) * 255.0f + 0.5f);
@@ -332,7 +336,8 @@ int main(int argc, char** argv) {
             // places, and a pixel that lands on the boundary can go either way.
             // A curve that had actually drifted would be nowhere near this.
             std::snprintf(detail, sizeof detail,
-                          "worst channel off by %d, average %.3f", worst, avg);
+                          "curve %d: worst channel off by %d, average %.3f",
+                          curve, worst, avg);
             check(resolved && worst <= 2 && avg < 0.2,
                   "...through the same curve as the still", detail);
         }
