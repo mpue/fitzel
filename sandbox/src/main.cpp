@@ -687,7 +687,10 @@ void refreshCompletion(TextEditor& ed, Completions& c) {
 // holding only what a click does.
 namespace icon {
 
-constexpr ImU32 kOn  = IM_COL32(255, 205,  70, 255);  // this tool/shape is active
+// This tool/shape is active: the theme's accent, read back from the style so the
+// strip follows fitzel::Gui -- the bright cut (CheckMark), since a 2 px line needs
+// more luminance than a filled button to read as the same colour.
+ImU32 on() { return ImGui::GetColorU32(ImGuiCol_CheckMark); }
 constexpr ImU32 kOff = IM_COL32(215, 215, 220, 255);
 constexpr ImU32 kDim = IM_COL32(130, 132, 140, 255);  // offered but not available
 
@@ -757,7 +760,7 @@ void terrain(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
 // The three gizmo operations: a 4-way arrow, a circular arrow, a diagonal
 // between a filled and an open handle.
 void gizmo(ImDrawList* dl, ImGuizmo::OPERATION op, ImVec2 c, float r, ImU32 col) {
-    const float a = 3.5f;
+    const float a = r * 0.44f; // arrowhead, in step with the icon's size
     if (op == ImGuizmo::TRANSLATE) {
         dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.6f);
         dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.6f);
@@ -776,10 +779,11 @@ void gizmo(ImDrawList* dl, ImGuizmo::OPERATION op, ImVec2 c, float r, ImU32 col)
                               {e.x + no.x * a * 0.7f, e.y + no.y * a * 0.7f}, col);
     } else {
         dl->AddLine({c.x - r * 0.7f, c.y + r * 0.7f}, {c.x + r * 0.7f, c.y - r * 0.7f}, col, 1.8f);
-        dl->AddRectFilled({c.x + r * 0.7f - 3, c.y - r * 0.7f - 3},
-                          {c.x + r * 0.7f + 3, c.y - r * 0.7f + 3}, col);
-        dl->AddRect({c.x - r * 0.7f - 3, c.y + r * 0.7f - 3},
-                    {c.x - r * 0.7f + 3, c.y + r * 0.7f + 3}, col, 0.0f, 0, 1.5f);
+        const float h = r * 0.375f; // handle half-size
+        dl->AddRectFilled({c.x + r * 0.7f - h, c.y - r * 0.7f - h},
+                          {c.x + r * 0.7f + h, c.y - r * 0.7f + h}, col);
+        dl->AddRect({c.x - r * 0.7f - h, c.y + r * 0.7f - h},
+                    {c.x - r * 0.7f + h, c.y + r * 0.7f + h}, col, 0.0f, 0, 1.5f);
     }
 }
 
@@ -818,7 +822,7 @@ void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col) {
     // The toolbar's own background, for the pattern that has to be cut OUT of a
     // filled ball rather than drawn on top of it -- these icons have one colour
     // to draw with, and a checker needs two.
-    constexpr ImU32 kInk = IM_COL32(29, 32, 38, 255);
+    const ImU32 kInk = ImGui::GetColorU32(ImGuiCol_WindowBg);
     if (mode == 3) { // wireframe: a cube with its far edges left in
         const float a = r * 0.78f, o = r * 0.42f;
         dl->AddRect({c.x - a, c.y - a + o}, {c.x + a - o, c.y + a}, col, 0.0f, 0, 1.5f);
@@ -854,14 +858,24 @@ void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col) {
 // One button in the strip: a blank fixed-size button with a tooltip, whose
 // picture the caller paints afterwards at `center` -- afterwards, so it lands on
 // top of the button rather than under it. A disabled button still draws itself:
-// greyed out is a state worth showing, missing is not.
+// greyed out is a state worth showing, missing is not. An `active` button (the
+// current tool, shape, mode) sits on a wash of the accent, so what is on reads
+// from the button's shape and not only from the thin lines of its picture.
 bool iconButton(const char* id, ImVec2 size, const char* tip, bool disabled,
-                ImVec2& center) {
+                ImVec2& center, bool active = false) {
     ImGui::PushID(id);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    if (active) {
+        ImVec4 wash = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+        wash.w = 0.22f;
+        ImGui::PushStyleColor(ImGuiCol_Button, wash);
+        wash.w = 0.32f;
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, wash);
+    }
     ImGui::BeginDisabled(disabled);
     const bool clicked = ImGui::Button("##b", size);
     ImGui::EndDisabled();
+    if (active) ImGui::PopStyleColor(2);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
     center = ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f);
     ImGui::PopID();
@@ -9979,9 +9993,20 @@ int main(int argc, char** argv) {
             //     pictures themselves are painted by icon:: -- see there.
             {
                 ImGuiViewport* tvp = ImGui::GetMainViewport();
-                const float bh   = 26.0f;
-                const float barH = bh + ImGui::GetStyle().WindowPadding.y * 2.0f + 2.0f;
+                // Sized from the font, so the strip scales with the display and
+                // with the user's text size like every other control -- a fixed
+                // 26 px shrank to a row of specks at 150 %, the opposite of the
+                // large targets this editor promises.
+                const float  bh   = std::round(ImGui::GetFontSize() * 1.3f);
+                const ImVec2 pad(ImGui::GetStyle().WindowPadding.x,
+                                 ImGui::GetStyle().WindowPadding.y * 0.5f);
+                const float  barH = bh + pad.y * 2.0f + 2.0f;
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, pad);
+                // At rest the buttons are just their pictures on the strip; the
+                // button body shows up on hover, and as an accent wash on the
+                // ones that are on (iconButton's `active`).
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
                 const bool barOpen = ImGui::BeginViewportSideBar(
                     "##PrimToolbar", tvp, ImGuiDir_Up, barH,
                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
@@ -9989,9 +10014,19 @@ int main(int argc, char** argv) {
                 if (barOpen) {
                     ImDrawList*  dl = ImGui::GetWindowDrawList();
                     const ImVec2 bs(bh, bh);
-                    const float  r  = 8.0f;
+                    const float  r  = bh * 0.31f;
                     ImVec2       c;
-                    auto gap = [&]{ ImGui::Dummy(ImVec2(10.0f, 1.0f)); ImGui::SameLine(); };
+                    // Between groups: a hairline divider in a gap, so the groups
+                    // read as groups without a label each.
+                    auto gap = [&]{
+                        const ImVec2 p = ImGui::GetCursorScreenPos();
+                        const float  w = bh * 0.5f;
+                        ImGui::Dummy(ImVec2(w, bh));
+                        dl->AddLine({std::round(p.x + w * 0.5f), p.y + bh * 0.2f},
+                                    {std::round(p.x + w * 0.5f), p.y + bh * 0.8f},
+                                    ImGui::GetColorU32(ImGuiCol_Separator), 1.0f);
+                        ImGui::SameLine();
+                    };
 
                     // --- Select / Create ---------------------------------
                     // The pair that decides what a left-click on empty ground
@@ -10001,10 +10036,10 @@ int main(int argc, char** argv) {
                     // stray click while looking around litters the scene with
                     // boxes. Esc steps back out of Create.
                     auto modeToggle = [&](bool create, const char* tip) {
+                        const bool on  = (placeMode == create);
                         const bool hit = iconButton(create ? "modeCreate" : "modeSelect",
-                                                    bs, tip, false, c);
-                        icon::pointer(dl, create, c, r,
-                                      placeMode == create ? icon::kOn : icon::kOff);
+                                                    bs, tip, false, c, on);
+                        icon::pointer(dl, create, c, r, on ? icon::on() : icon::kOff);
                         if (hit) placeMode = create;
                     };
                     modeToggle(false, "Select -- a click picks objects and never creates one (Esc)");
@@ -10012,9 +10047,9 @@ int main(int argc, char** argv) {
                     gap();
 
                     auto shapeBtn = [&](EntityType t, const char* id, const char* tip) {
-                        const bool hit = iconButton(id, bs, tip, false, c);
-                        icon::shape(dl, t, c, r,
-                                    entityNewType == t ? icon::kOn : icon::kOff);
+                        const bool on  = (entityNewType == t);
+                        const bool hit = iconButton(id, bs, tip, false, c, on);
+                        icon::shape(dl, t, c, r, on ? icon::on() : icon::kOff);
                         if (hit) {
                             entityNewType = t;
                             // In Select mode the button itself is the create
@@ -10053,8 +10088,9 @@ int main(int argc, char** argv) {
                     gap();
                     auto modeBtn = [&](ImGuizmo::OPERATION op, const char* id,
                                        const char* tip) {
-                        const bool hit = iconButton(id, bs, tip, false, c);
-                        icon::gizmo(dl, op, c, r, gizmoOp == op ? icon::kOn : icon::kOff);
+                        const bool on  = (gizmoOp == op);
+                        const bool hit = iconButton(id, bs, tip, false, c, on);
+                        icon::gizmo(dl, op, c, r, on ? icon::on() : icon::kOff);
                         if (hit) gizmoOp = op;
                     };
                     modeBtn(ImGuizmo::TRANSLATE, "gizmoMove",   "Move (Q)");
@@ -10068,8 +10104,10 @@ int main(int argc, char** argv) {
                         char tip[64];
                         std::snprintf(tip, sizeof tip, "Gizmo space: %s  (X to toggle)",
                                       isLocal ? "Local" : "World");
+                        // A two-way switch whose picture IS the state, so no
+                        // accent: there is no "off" for it to stand out from.
                         const bool hit = iconButton("gizmoSpace", bs, tip, false, c);
-                        icon::gizmoSpace(dl, isLocal, c, r, icon::kOn);
+                        icon::gizmoSpace(dl, isLocal, c, r, icon::kOff);
                         if (hit) gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
                     }
 
@@ -10097,10 +10135,11 @@ int main(int argc, char** argv) {
                              "Click again to pick up an edit."},
                         };
                         for (const ShadeBtn& b : kShades) {
-                            const bool hit = iconButton(b.id, bs, b.tip, playMode, c);
+                            const bool on  = !playMode && viewShade == b.mode;
+                            const bool hit = iconButton(b.id, bs, b.tip, playMode, c, on);
                             icon::shade(dl, b.mode, c, r,
                                         playMode ? icon::kDim
-                                        : viewShade == b.mode ? icon::kOn : icon::kOff);
+                                        : on ? icon::on() : icon::kOff);
                             if (!hit) continue;
                             // Pressing the mode you are already in means "look
                             // again": the trace follows the camera by itself,
@@ -10122,8 +10161,9 @@ int main(int argc, char** argv) {
                                       "Click ground = add point, drag = move,\n"
                                       "Ctrl+drag = raise/lower, Del = delete.",
                                       roadEditMode ? " (on)" : "");
-                        const bool hit = iconButton("roadTool", bs, tip, false, c);
-                        icon::road(dl, c, r, roadEditMode ? icon::kOn : icon::kOff);
+                        const bool hit = iconButton("roadTool", bs, tip, false, c,
+                                                    roadEditMode);
+                        icon::road(dl, c, r, roadEditMode ? icon::on() : icon::kOff);
                         if (hit) {
                             roadEditMode = !roadEditMode;
                             if (roadEditMode) {
@@ -10137,7 +10177,8 @@ int main(int argc, char** argv) {
                     }
                 }
                 ImGui::End();
-                ImGui::PopStyleVar();
+                ImGui::PopStyleColor();
+                ImGui::PopStyleVar(2);
             }
 
             // --- New Project / Save As wizard --------------------------------

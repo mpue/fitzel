@@ -307,7 +307,7 @@ void drawPanel(const PanelState& s) {
                         char hdr[64];
                         std::snprintf(hdr, sizeof(hdr),
                                       "Materials (%d)###modelmats", nParts);
-                        if (nParts > 0 && ImGui::CollapsingHeader(hdr)) {
+                        if (nParts > 0 && ui::header(hdr)) {
                             ImGui::TextDisabled(
                                 "Applies to every instance of this model.");
                             for (int pi = 0; pi < nParts; ++pi) {

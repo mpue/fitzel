@@ -27,7 +27,16 @@ ImFont* boldFont() { return g_bold; }
 
 bool header(const char* label, ImGuiTreeNodeFlags flags) {
     BoldScope bold;
-    return ImGui::CollapsingHeader(label, flags);
+    // The theme's Header colours are the accent-washed SELECTION colour (rows in
+    // the hierarchy, lists). A section bar is not a selection, and a panel of
+    // orange bars would leave the real selection nothing to stand out with --
+    // so section bars borrow the neutral frame shades instead.
+    ImGui::PushStyleColor(ImGuiCol_Header,        ImGui::GetStyleColorVec4(ImGuiCol_FrameBg));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,  ImGui::GetStyleColorVec4(ImGuiCol_FrameBgActive));
+    const bool open = ImGui::CollapsingHeader(label, flags);
+    ImGui::PopStyleColor(3);
+    return open;
 }
 
 void sectionText(const char* label) {

@@ -39,7 +39,7 @@ std::string adoptImage(const std::string& picked, const std::string& projectFold
 // configures is one nobody can see while they are making it, since by the time
 // it shows up the editor is gone.
 void drawLoadingSection(game::Settings& s, const std::string& projectFolder) {
-    if (!ImGui::CollapsingHeader("Loading screen", ImGuiTreeNodeFlags_DefaultOpen))
+    if (!ui::header("Loading screen", ImGuiTreeNodeFlags_DefaultOpen))
         return;
 
     // Lives across frames: it owns the decoded background, and re-decoding a 4K
@@ -146,7 +146,7 @@ void drawLoadingSection(game::Settings& s, const std::string& projectFolder) {
 // and "you needed a tool you do not have" is not an answer anybody should have
 // to wait that long to receive.
 void drawInstallerSection(game::Settings& s) {
-    if (!ImGui::CollapsingHeader("Installer"))
+    if (!ui::header("Installer"))
         return;
 
     // Finding the compiler walks the registry and the disk, so the answer is

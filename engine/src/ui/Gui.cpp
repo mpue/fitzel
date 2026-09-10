@@ -15,14 +15,19 @@ namespace fitzel {
 
 namespace {
 
-// A soft, modern dark theme: calmer blue-grey backgrounds, a single azure
+// A soft, modern dark theme: neutral charcoal surfaces, a single warm orange
 // accent, rounded corners and roomier spacing for readability.
 //
 // The surfaces are a deliberate elevation ladder -- dock backdrop < window <
 // child/card < input frame -- so a panel reads as a stack of surfaces rather
-// than one flat wash. The accent is spent only on state that is *live* (checked,
-// dragged, selected, focused); everything at rest is neutral grey-blue, which is
-// what keeps a dense editor from looking like a toy.
+// than one flat wash. The greys carry no blue on purpose: orange next to a
+// blue-grey turns into a colour contrast of its own, next to a neutral grey it
+// is simply the one warm thing on screen. The accent is spent only on state that
+// is *live* (checked, dragged, selected, focused); everything at rest is neutral,
+// which is what keeps a dense editor from looking like a toy.
+//
+// Panels that need "the accent" for their own toggles read it back from
+// ImGuiCol_ButtonActive rather than repeating the numbers here.
 void applyTheme() {
     ImGuiStyle& s = ImGui::GetStyle();
     s.WindowRounding    = 8.0f;
@@ -62,70 +67,90 @@ void applyTheme() {
     s.CircleTessellationMaxError = 0.15f;
     s.CurveTessellationTol       = 1.0f;
 
-    const ImVec4 accent    = ImVec4(0.31f, 0.58f, 0.90f, 1.00f);
-    const ImVec4 accentHi  = ImVec4(0.42f, 0.68f, 0.98f, 1.00f);
-    const ImVec4 accentDim = ImVec4(0.31f, 0.58f, 0.90f, 0.45f);
-    // Elevation ladder (dark -> light).
-    const ImVec4 bgSunken  = ImVec4(0.075f, 0.083f, 0.100f, 1.00f); // behind everything
-    const ImVec4 bgWindow  = ImVec4(0.113f, 0.124f, 0.148f, 1.00f); // panels
-    const ImVec4 bgCard    = ImVec4(0.140f, 0.153f, 0.181f, 1.00f); // child regions
-    const ImVec4 bgFrame   = ImVec4(0.172f, 0.189f, 0.223f, 1.00f); // inputs
-    const ImVec4 bgFrameHi = ImVec4(0.212f, 0.232f, 0.272f, 1.00f);
-    const ImVec4 line      = ImVec4(0.290f, 0.315f, 0.365f, 0.55f); // borders
+    // The accent: a saturated amber-orange, bright enough to read as "on" at a
+    // glance on the darkest surface, not so red that it reads as an error.
+    auto accentA = [](float a) { return ImVec4(0.949f, 0.541f, 0.118f, a); };
+    const ImVec4 accent    = accentA(1.00f);                        // #F28A1E
+    const ImVec4 accentHi  = ImVec4(1.000f, 0.655f, 0.300f, 1.00f); // #FFA74D
+    const ImVec4 accentDim = accentA(0.45f);
+    // Elevation ladder (dark -> light), neutral with the faintest warm lean.
+    const ImVec4 bgSunken  = ImVec4(0.071f, 0.071f, 0.075f, 1.00f); // behind everything
+    const ImVec4 bgWindow  = ImVec4(0.110f, 0.110f, 0.118f, 1.00f); // panels
+    const ImVec4 bgCard    = ImVec4(0.137f, 0.137f, 0.145f, 1.00f); // child regions
+    const ImVec4 bgFrame   = ImVec4(0.172f, 0.172f, 0.182f, 1.00f); // inputs
+    const ImVec4 bgFrameHi = ImVec4(0.212f, 0.212f, 0.224f, 1.00f);
+    const ImVec4 bgRaised  = ImVec4(0.200f, 0.200f, 0.210f, 1.00f); // buttons
+    const ImVec4 line      = ImVec4(0.300f, 0.300f, 0.318f, 0.55f); // borders
 
     ImVec4* c = s.Colors;
-    c[ImGuiCol_Text]                 = ImVec4(0.90f, 0.92f, 0.95f, 1.00f);
-    c[ImGuiCol_TextDisabled]         = ImVec4(0.48f, 0.51f, 0.57f, 1.00f);
+    c[ImGuiCol_Text]                 = ImVec4(0.925f, 0.925f, 0.935f, 1.00f);
+    c[ImGuiCol_TextDisabled]         = ImVec4(0.520f, 0.520f, 0.545f, 1.00f);
     c[ImGuiCol_WindowBg]             = bgWindow;
     c[ImGuiCol_ChildBg]              = bgCard;
-    c[ImGuiCol_PopupBg]              = ImVec4(0.128f, 0.140f, 0.168f, 0.99f);
+    c[ImGuiCol_PopupBg]              = ImVec4(0.125f, 0.125f, 0.133f, 0.99f);
     c[ImGuiCol_Border]               = line;
     c[ImGuiCol_BorderShadow]         = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     c[ImGuiCol_FrameBg]              = bgFrame;
     c[ImGuiCol_FrameBgHovered]       = bgFrameHi;
-    c[ImGuiCol_FrameBgActive]        = ImVec4(0.245f, 0.270f, 0.315f, 1.00f);
+    c[ImGuiCol_FrameBgActive]        = ImVec4(0.250f, 0.245f, 0.250f, 1.00f);
     c[ImGuiCol_TitleBg]              = bgSunken;
-    c[ImGuiCol_TitleBgActive]        = ImVec4(0.145f, 0.165f, 0.205f, 1.00f);
-    c[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.075f, 0.083f, 0.100f, 0.80f);
-    c[ImGuiCol_MenuBarBg]            = ImVec4(0.098f, 0.108f, 0.130f, 1.00f);
+    c[ImGuiCol_TitleBgActive]        = ImVec4(0.140f, 0.140f, 0.150f, 1.00f);
+    c[ImGuiCol_TitleBgCollapsed]     = ImVec4(0.071f, 0.071f, 0.075f, 0.80f);
+    c[ImGuiCol_MenuBarBg]            = ImVec4(0.090f, 0.090f, 0.096f, 1.00f);
     c[ImGuiCol_ScrollbarBg]          = ImVec4(0.00f, 0.00f, 0.00f, 0.16f);
-    c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.290f, 0.315f, 0.365f, 0.85f);
-    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.360f, 0.395f, 0.455f, 1.00f);
+    c[ImGuiCol_ScrollbarGrab]        = ImVec4(0.300f, 0.300f, 0.318f, 0.85f);
+    c[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.380f, 0.380f, 0.400f, 1.00f);
     c[ImGuiCol_ScrollbarGrabActive]  = accent;
     c[ImGuiCol_CheckMark]            = accentHi;
     c[ImGuiCol_SliderGrab]           = accent;
     c[ImGuiCol_SliderGrabActive]     = accentHi;
+    c[ImGuiCol_InputTextCursor]      = accentHi;
     // Buttons sit one step above their frame and lean on the accent only while
-    // pressed -- a panel full of blue buttons has no hierarchy left to give.
-    c[ImGuiCol_Button]               = ImVec4(0.196f, 0.216f, 0.256f, 1.00f);
-    c[ImGuiCol_ButtonHovered]        = ImVec4(0.250f, 0.320f, 0.420f, 1.00f);
+    // pressed -- a panel full of orange buttons has no hierarchy left to give.
+    // Hover warms them a shade, so the pointer's target is never in doubt.
+    c[ImGuiCol_Button]               = bgRaised;
+    c[ImGuiCol_ButtonHovered]        = ImVec4(0.285f, 0.255f, 0.228f, 1.00f);
     c[ImGuiCol_ButtonActive]         = accent;
-    c[ImGuiCol_Header]               = ImVec4(0.200f, 0.270f, 0.370f, 0.75f);
-    c[ImGuiCol_HeaderHovered]        = ImVec4(0.235f, 0.330f, 0.460f, 0.90f);
-    c[ImGuiCol_HeaderActive]         = ImVec4(0.270f, 0.400f, 0.560f, 1.00f);
-    c[ImGuiCol_Separator]            = ImVec4(0.290f, 0.315f, 0.365f, 0.45f);
+    // Header = selected rows (hierarchy, lists, trees): a translucent wash of the
+    // accent, so the selection is orange but the label on it stays white and
+    // readable. Section headers are drawn neutral instead -- see ui::header.
+    c[ImGuiCol_Header]               = accentA(0.30f);
+    c[ImGuiCol_HeaderHovered]        = accentA(0.18f);
+    c[ImGuiCol_HeaderActive]         = accentA(0.45f);
+    c[ImGuiCol_Separator]            = ImVec4(0.300f, 0.300f, 0.318f, 0.45f);
     c[ImGuiCol_SeparatorHovered]     = accentDim;
     c[ImGuiCol_SeparatorActive]      = accent;
-    c[ImGuiCol_ResizeGrip]           = ImVec4(0.290f, 0.315f, 0.365f, 0.40f);
+    c[ImGuiCol_ResizeGrip]           = ImVec4(0.300f, 0.300f, 0.318f, 0.40f);
     c[ImGuiCol_ResizeGripHovered]    = accentDim;
     c[ImGuiCol_ResizeGripActive]     = accent;
-    c[ImGuiCol_Tab]                  = ImVec4(0.113f, 0.124f, 0.148f, 1.00f);
-    c[ImGuiCol_TabHovered]           = ImVec4(0.190f, 0.230f, 0.300f, 1.00f);
-    c[ImGuiCol_TabSelected]          = ImVec4(0.163f, 0.185f, 0.228f, 1.00f);
-    c[ImGuiCol_TabSelectedOverline]  = accentHi;   // the accent line on the active tab
-    c[ImGuiCol_TabDimmed]            = ImVec4(0.095f, 0.105f, 0.126f, 1.00f);
-    c[ImGuiCol_TabDimmedSelected]    = ImVec4(0.135f, 0.150f, 0.180f, 1.00f);
-    c[ImGuiCol_TabDimmedSelectedOverline] = ImVec4(0.31f, 0.58f, 0.90f, 0.35f);
+    // The selected tab takes the panel's own colour, so tab and body read as one
+    // sheet; the orange overline says which sheet is on top.
+    c[ImGuiCol_Tab]                  = ImVec4(0.090f, 0.090f, 0.096f, 1.00f);
+    c[ImGuiCol_TabHovered]           = ImVec4(0.190f, 0.180f, 0.175f, 1.00f);
+    c[ImGuiCol_TabSelected]          = bgWindow;
+    c[ImGuiCol_TabSelectedOverline]  = accent;
+    c[ImGuiCol_TabDimmed]            = ImVec4(0.080f, 0.080f, 0.085f, 1.00f);
+    c[ImGuiCol_TabDimmedSelected]    = ImVec4(0.105f, 0.105f, 0.112f, 1.00f);
+    c[ImGuiCol_TabDimmedSelectedOverline] = accentA(0.35f);
     c[ImGuiCol_DockingPreview]       = accentDim;
     c[ImGuiCol_DockingEmptyBg]       = bgSunken;
-    c[ImGuiCol_TableHeaderBg]        = ImVec4(0.150f, 0.165f, 0.198f, 1.00f);
+    c[ImGuiCol_PlotLines]            = ImVec4(0.640f, 0.640f, 0.660f, 1.00f);
+    c[ImGuiCol_PlotLinesHovered]     = accentHi;
+    c[ImGuiCol_PlotHistogram]        = accent;
+    c[ImGuiCol_PlotHistogramHovered] = accentHi;
+    c[ImGuiCol_TableHeaderBg]        = ImVec4(0.150f, 0.150f, 0.160f, 1.00f);
     c[ImGuiCol_TableBorderStrong]    = line;
-    c[ImGuiCol_TableBorderLight]     = ImVec4(0.290f, 0.315f, 0.365f, 0.28f);
+    c[ImGuiCol_TableBorderLight]     = ImVec4(0.300f, 0.300f, 0.318f, 0.28f);
     c[ImGuiCol_TableRowBg]           = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
     c[ImGuiCol_TableRowBgAlt]        = ImVec4(1.00f, 1.00f, 1.00f, 0.022f);
-    c[ImGuiCol_TextSelectedBg]       = accentDim;
+    c[ImGuiCol_TextLink]             = accentHi;
+    c[ImGuiCol_TextSelectedBg]       = accentA(0.35f);
+    c[ImGuiCol_TreeLines]            = line;
+    c[ImGuiCol_DragDropTarget]       = accentHi;
+    c[ImGuiCol_DragDropTargetBg]     = accentA(0.12f);
+    c[ImGuiCol_UnsavedMarker]        = accentHi;
     c[ImGuiCol_NavCursor]            = accentHi;
-    c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.04f, 0.045f, 0.055f, 0.65f);
+    c[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.035f, 0.035f, 0.040f, 0.65f);
 }
 
 // The UI typefaces we offer, best-first. Each is a regular + semibold pair (the
