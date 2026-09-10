@@ -4640,6 +4640,7 @@ int main(int argc, char** argv) {
         addF("rockSlope", look.rockSlope);     addF("slopeSharp", look.slopeSharpness);
         addF("snowLevel", look.snowLevel);     addF("detailStrength", look.detailStrength);
         addF("terrainGloss", look.gloss);
+        addF("terrainHeightBlend", look.heightBlend);
         addB("grassEnabled", veg.grassEnabled);    addF("grassDensity", veg.grassDensity);
         addF("grassRadius", veg.grassRadius);      addF("grassHeight", veg.grassHeight);
         addF("grassChaos", veg.grassChaos);
@@ -14515,6 +14516,7 @@ int main(int argc, char** argv) {
             terrainMat.set("uDetailScale", look.detailScale)
                       .set("uDetailStrength", look.detailStrength)
                       .set("uTerrainSpec", look.gloss)
+                      .set("uHeightBlend", look.heightBlend)
                       .set("uTexScale", texScale)
                       .set("uNormalStrength", normalStrength)
                       .set("uWaterLevel", waterLevel)

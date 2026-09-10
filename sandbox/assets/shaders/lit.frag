@@ -397,6 +397,7 @@ uniform int       uMeshPaint;     // 1 = read vPaint as paint-slot weights
 uniform sampler2D uPaintTex[4];   // the base-colour texture of each slot
 uniform float     uPaintScale[4]; // world units -> tiling, per slot
 uniform int       uPaintHas[4];   // 1 = that slot points at a material
+uniform float     uHeightBlend; // 0 = cross-fade terrain layers, 1 = the higher texel wins
 uniform float     uTexScale;   // world units -> texture tiling (fallback)
 uniform float     uNormalStrength; // 0 = geometry normal, 1 = full normal-map relief
 uniform float     uWaterLevel;     // surfaces below this are wet (darker)
@@ -746,24 +747,55 @@ void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 nor
     vec4  paint      = clamp(vPaint, 0.0, 1.0);
     float paintCover = clamp(paint.x + paint.y + paint.z + paint.w, 0.0, 1.0);
 
-    vec3  acc  = vec3(0.0);
-    vec3  nacc = vec3(0.0);
+    vec3  cols[MAX_TERRAIN_LAYERS];
+    vec3  nrms[MAX_TERRAIN_LAYERS];
+    float ws[MAX_TERRAIN_LAYERS];
     float wsum = 0.0;
     for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i) {
-        if (i >= uLayerCount) break;
+        ws[i] = 0.0; cols[i] = vec3(0.0); nrms[i] = n;
+        if (i >= uLayerCount) continue;
         vec4  b = uLayerBand[i];
         float autoW = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
         float pw    = (i < 4) ? paint[i] : 0.0;
         float w     = autoW * (1.0 - paintCover) + pw;
         if (w > 0.0) {
-            acc += layerTriplanar(i, wp, n, uLayerScale[i], dpdx, dpdy) * w;
-            vec3 ln = (uLayerHasNorm[i] == 1)
+            cols[i] = layerTriplanar(i, wp, n, uLayerScale[i], dpdx, dpdy);
+            nrms[i] = (uLayerHasNorm[i] == 1)
                     ? layerTriplanarNormal(i, wp, n, uLayerScale[i], dpdx, dpdy) : n;
-            nacc += ln * w;
+            ws[i] = w;
             wsum += w;
         }
     }
     if (wsum < 1e-4) { albedo = uAlbedo; return; } // gap between bands -> flat base
+
+    // Height blending. Two layers cross-faded by weight alone are a smear: grass
+    // and rock at 50/50 is a muddy olive over the whole band. Real ground does
+    // not mix like that -- the rock's high points break through the grass and the
+    // grass fills its hollows. Each texel's brightness stands in for its height
+    // (a rock face's lit tops, a grass tuft's tips), and within the transition
+    // the higher surface wins; `depth` is how far below the top a layer may be
+    // and still show. uHeightBlend 0 is the plain cross-fade, as before.
+    if (uHeightBlend > 0.0) {
+        const float depth = 0.2;
+        float top = -1e9;
+        for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i)
+            if (ws[i] > 0.0)
+                top = max(top, ws[i] / wsum + dot(cols[i], vec3(0.299, 0.587, 0.114)));
+        float nsum = 0.0;
+        for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i) {
+            if (ws[i] <= 0.0) continue;
+            float lin = ws[i] / wsum;
+            float hb  = max(lin + dot(cols[i], vec3(0.299, 0.587, 0.114)) - (top - depth), 0.0);
+            ws[i] = mix(lin, hb, clamp(uHeightBlend, 0.0, 1.0));
+            nsum += ws[i];
+        }
+        wsum = max(nsum, 1e-6);
+    }
+    vec3 acc = vec3(0.0), nacc = vec3(0.0);
+    for (int i = 0; i < MAX_TERRAIN_LAYERS; ++i) {
+        acc  += cols[i] * ws[i];
+        nacc += nrms[i] * ws[i];
+    }
     albedo = acc / wsum;
     vec3 mapped = normalize(nacc / wsum);
     normalOut = normalize(mix(n, mapped, clamp(uNormalStrength, 0.0, 1.0)));

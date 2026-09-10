@@ -67,6 +67,9 @@ struct TerrainLook {
     float detailScale    = 0.35f; // micro-detail frequency
     float detailStrength = 1.5f;  // normal-perturbation strength
     float gloss          = 0.05f; // sun-specular strength (0 = matte)
+    // Layer transitions: 0 cross-fades, 1 lets the higher (brighter) texel win,
+    // so rock breaks through grass instead of blending into olive (lit.frag).
+    float heightBlend    = 0.6f;
     std::vector<TerrainLayer> layers; // texture layers (empty -> flat base colour)
 };
 

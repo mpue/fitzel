@@ -309,6 +309,7 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
             }
             m.detailScale    = mat->get<float>(kDetailScale, 0.0f);
             m.detailStrength = mat->get<float>(kDetailStr, 0.0f);
+            m.heightBlend    = mat->get<float>("uHeightBlend", 0.0f);
             // The ground's roughness is its Gloss slider, mapped exactly as
             // lit.frag maps it (0 -> 1.0, 0.4 -> 0.35), and it is never metal.
             const float gloss = glm::clamp(mat->get<float>("uTerrainSpec", 0.05f) / 0.4f,

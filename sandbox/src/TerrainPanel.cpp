@@ -362,6 +362,12 @@ void drawPanel(const PanelState& s) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Strength of the sun glint on the terrain\n"
                               "(0 = fully matte).");
+        ImGui::SliderFloat("Height blend",    &s.look.heightBlend, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How layers meet. 0 = a soft cross-fade. Higher\n"
+                              "lets the raised parts of one texture break through\n"
+                              "the other -- stones through grass, grass in the\n"
+                              "cracks -- instead of blending into mush.");
     }
     ImGui::End();
 }

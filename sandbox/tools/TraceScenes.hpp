@@ -330,6 +330,9 @@ inline std::shared_ptr<pathtrace::Scene> terrainScene(int n = 24) {
     rock.scale   = 0.22f;
     ground.layers = {grass, rock};
     ground.detailScale = 0.12f;    // the height-edge jitter, as the shader has it
+    // And the height blend, on: it re-weighs the layers by what they sampled,
+    // which is one more place for the two renderers to part company.
+    ground.heightBlend = 0.8f;
     sc->materials.push_back(ground);
 
     // A heightfield, because that is what a terrain is: bands read the height

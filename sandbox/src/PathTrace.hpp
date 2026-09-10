@@ -123,6 +123,7 @@ struct Material {
     std::vector<TerrainLayer> layers;
     float detailScale    = 0.0f;   // frequency of the height-edge jitter
     float detailStrength = 0.0f;   // unused for colour; kept for completeness
+    float heightBlend    = 0.0f;   // lit.frag's uHeightBlend: 0 cross-fade .. 1 higher wins
 };
 
 // One triangle, world space, with the vertex normals and UVs it was drawn with.

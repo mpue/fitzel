@@ -56,7 +56,8 @@ static_assert(sizeof(GpuMat) == 80, "GpuMat must match its std430 counterpart");
 // reason: an array of arrays is not a thing std430 hands over cheaply.
 struct GpuLayer {
     float band[4];      // height start/end, slope start/end (degrees)
-    float scaleTex[4];  // x = world->texture scale, y = texture index, as a float
+    float scaleTex[4];  // x = world->texture scale, y = texture index, as a float,
+                        // z = the material's height blend
 };
 static_assert(sizeof(GpuLayer) == 32, "GpuLayer must match its std430 counterpart");
 
@@ -437,6 +438,7 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
             g.band[2] = L.band.z; g.band[3] = L.band.w;
             g.scaleTex[0] = L.scale;
             g.scaleTex[1] = static_cast<float>(slot);
+            g.scaleTex[2] = m.heightBlend;   // the material's, repeated per layer
             layers.push_back(g);
             ++kept;
         }

@@ -864,9 +864,12 @@ struct Tracer {
         const glm::vec4 p = glm::clamp(paint, glm::vec4(0.0f), glm::vec4(1.0f));
         const float cover = glm::clamp(p.x + p.y + p.z + p.w, 0.0f, 1.0f);
 
-        glm::vec3 acc(0.0f);
+        constexpr std::size_t kMax = 8;
+        glm::vec3 cols[kMax];
+        float     ws[kMax] = {};
         float wsum = 0.0f;
-        for (std::size_t i = 0; i < m.layers.size(); ++i) {
+        const std::size_t count = std::min(m.layers.size(), kMax);
+        for (std::size_t i = 0; i < count; ++i) {
             const TerrainLayer& L = m.layers[i];
             const float autoW = band(h, L.band.x, L.band.y, 1.5f) *
                                 band(slopeDeg, L.band.z, L.band.w, 6.0f);
@@ -875,10 +878,33 @@ struct Tracer {
             if (w <= 0.0f) continue;
             if (L.texture < 0 || L.texture >= static_cast<int>(sc.textures.size()))
                 continue;
-            acc  += triplanar(sc.textures[L.texture], wp, n, L.scale) * w;
-            wsum += w;
+            cols[i] = triplanar(sc.textures[L.texture], wp, n, L.scale);
+            ws[i]   = w;
+            wsum   += w;
         }
         if (wsum < 1e-4f) return false;
+        // lit.frag's height blend, transcribed: brightness stands in for
+        // height, and within a transition the higher texel wins.
+        if (m.heightBlend > 0.0f) {
+            constexpr float depth = 0.2f;
+            const glm::vec3 lw(0.299f, 0.587f, 0.114f);
+            float top = -1e9f;
+            for (std::size_t i = 0; i < count; ++i)
+                if (ws[i] > 0.0f) top = std::max(top, ws[i] / wsum + glm::dot(cols[i], lw));
+            float nsum = 0.0f;
+            const float s = glm::clamp(m.heightBlend, 0.0f, 1.0f);
+            for (std::size_t i = 0; i < count; ++i) {
+                if (ws[i] <= 0.0f) continue;
+                const float lin = ws[i] / wsum;
+                const float hb  = std::max(lin + glm::dot(cols[i], lw) - (top - depth), 0.0f);
+                ws[i] = lin + (hb - lin) * s;
+                nsum += ws[i];
+            }
+            wsum = std::max(nsum, 1e-6f);
+        }
+        glm::vec3 acc(0.0f);
+        for (std::size_t i = 0; i < count; ++i)
+            if (ws[i] > 0.0f) acc += cols[i] * ws[i];
         out = acc / wsum;
         return true;
     }

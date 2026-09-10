@@ -90,7 +90,8 @@ struct Mat {
 // (Mat.modeTex.zw), because std430 does not hand over an array of arrays.
 struct Layer {
     vec4 band;      // height start/end, slope start/end (degrees)
-    vec4 scaleTex;  // x = world->texture scale, y = texture index, as a float
+    vec4 scaleTex;  // x = world->texture scale, y = texture index, as a float,
+                    // z = the material's height blend (lit.frag's uHeightBlend)
 };
 
 struct Lamp {
@@ -392,19 +393,45 @@ bool terrainColorAt(Mat m, vec3 wp, vec3 n, vec4 paint, out vec3 outColor) {
     vec4  p     = clamp(paint, vec4(0.0), vec4(1.0));
     float cover = clamp(p.x + p.y + p.z + p.w, 0.0, 1.0);
 
-    vec3  acc  = vec3(0.0);
+    const int MAXL = 8;
+    vec3  cols[MAXL];
+    float ws[MAXL];
     float wsum = 0.0;
-    for (int i = 0; i < count; ++i) {
+    float heightBlend = 0.0;
+    int   n8 = min(count, MAXL);
+    for (int i = 0; i < MAXL; ++i) { ws[i] = 0.0; cols[i] = vec3(0.0); }
+    for (int i = 0; i < n8; ++i) {
         Layer L = layers[first + i];
+        heightBlend = L.scaleTex.z;
         float autoW = bandOf(h, L.band.x, L.band.y, 1.5) *
                       bandOf(slopeDeg, L.band.z, L.band.w, 6.0);
         float pw = i < 4 ? p[i] : 0.0;
         float w  = autoW * (1.0 - cover) + pw;
         if (w <= 0.0) continue;
-        acc  += triplanar(int(L.scaleTex.y), wp, n, L.scaleTex.x) * w;
-        wsum += w;
+        cols[i] = triplanar(int(L.scaleTex.y), wp, n, L.scaleTex.x);
+        ws[i]   = w;
+        wsum   += w;
     }
     if (wsum < 1e-4) return false;
+    // lit.frag's height blend (PathTrace.cpp transcribes the same).
+    if (heightBlend > 0.0) {
+        const float depth = 0.2;
+        const vec3  lw = vec3(0.299, 0.587, 0.114);
+        float top = -1e9;
+        for (int i = 0; i < n8; ++i)
+            if (ws[i] > 0.0) top = max(top, ws[i] / wsum + dot(cols[i], lw));
+        float nsum = 0.0;
+        for (int i = 0; i < n8; ++i) {
+            if (ws[i] <= 0.0) continue;
+            float lin = ws[i] / wsum;
+            float hb  = max(lin + dot(cols[i], lw) - (top - depth), 0.0);
+            ws[i] = mix(lin, hb, clamp(heightBlend, 0.0, 1.0));
+            nsum += ws[i];
+        }
+        wsum = max(nsum, 1e-6);
+    }
+    vec3 acc = vec3(0.0);
+    for (int i = 0; i < n8; ++i) acc += cols[i] * ws[i];
     outColor = acc / wsum;
     return true;
 }
