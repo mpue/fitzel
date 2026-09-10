@@ -4,6 +4,7 @@ in vec3  vWorldPos;
 in vec3  vNormal;
 in vec3  vColor;
 in float vTint;
+in float vSun;     // sun visibility from the cascades (flower.vert)
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
@@ -45,7 +46,7 @@ void main() {
     float back = max(dot(-N, L), 0.0) * 0.3; // light through thin petals
 
     vec3 color = albedo * uAmbient
-               + uLightColor * albedo * (diff * 0.8 + 0.25 + back);
+               + uLightColor * albedo * (diff * 0.8 + 0.25 + back) * vSun;
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(color, 1.0);
 }

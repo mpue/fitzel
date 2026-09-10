@@ -5,6 +5,7 @@ in vec3  vWorldPos;
 in vec3  vNormal;
 in vec3  vBaseCol; // per-blade colours (computed in the vertex shader)
 in vec3  vTipCol;
+in float vSun;     // sun visibility from the cascades (grass.vert)
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
@@ -52,9 +53,10 @@ void main() {
     float trans = pow(max(dot(V, -L), 0.0), 3.0) * (0.35 + 0.65 * vH);
     vec3  glow  = uLightColor * albedo * trans * 1.5;
 
+    // Every term the sun contributes goes dark in its shadow: the direct light,
+    // the wrap through the blade and the backlit glow alike.
     vec3 color = albedo * uAmbient
-               + uLightColor * albedo * (diff * 0.85 + 0.2 + back)
-               + glow;
+               + (uLightColor * albedo * (diff * 0.85 + 0.2 + back) + glow) * vSun;
     color *= mix(mix(0.72, 1.0, vH), 1.0, farFade); // gentle base AO, none at distance
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);

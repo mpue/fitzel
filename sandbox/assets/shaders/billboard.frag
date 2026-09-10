@@ -23,6 +23,8 @@ uniform float uBrightness; // 1 = unchanged (multiplier)
 uniform float uContrast;   // 1 = unchanged (pivots around mid-grey)
 uniform float uHue;        // 0 = unchanged (radians, rotates about the grey axis)
 
+#include "sunshadow.glsl"
+
 vec3 hueShift(vec3 col, float a) {
     const vec3 k = vec3(0.57735026919); // normalize(vec3(1))
     float c = cos(a), s = sin(a);
@@ -57,7 +59,8 @@ void main() {
 
     // The texture is pre-shaded; modulate by scene light so it tracks day/night.
     vec3 albedo = pow(correct(t.rgb), vec3(2.2));
-    vec3 lit = albedo * (uAmbient + uLightColor * 0.45);
+    float sun = 1.0 - sunShadow(vWorldPos, normalize(uLightDir), 4.0);
+    vec3 lit = albedo * (uAmbient + uLightColor * 0.45 * sun);
     lit = applyFog(lit, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(lit, 1.0);
 }

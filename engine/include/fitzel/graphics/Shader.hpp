@@ -29,6 +29,11 @@ public:
     // Build from files on disk.
     static Shader fromFiles(const std::string& vertexPath, const std::string& fragmentPath);
 
+    // A shader file's source as the driver will see it: read through the VFS,
+    // with every `#include "file"` (relative to the including file) expanded.
+    // Public so a harness that compiles shaders itself compiles the same text.
+    static std::string readSource(const std::string& path);
+
     bool isValid() const { return m_program != 0; }
 
     void bind() const;

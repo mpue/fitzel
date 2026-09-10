@@ -1,7 +1,11 @@
 #pragma once
 
+#include <algorithm>
+
 #include <glm/glm.hpp>
 
+#include <fitzel/graphics/CascadedShadowMap.hpp>
+#include <fitzel/graphics/Shader.hpp>
 #include <fitzel/render/Renderer.hpp> // DirectionalLight, Fog
 
 // Shared vocabulary for the scene layers that draw themselves.
@@ -23,7 +27,34 @@ struct FrameContext {
     glm::vec3 lightDir{0.0f}, lightColor{0.0f}, ambient{0.0f};
     glm::vec3 fogColor{0.0f}, fogSunColor{0.0f};
     float     fogDensity = 0.0f, fogHeightFalloff = 0.0f, fogHeight = 0.0f;
+    // The sun's shadow cascades, for layers that RECEIVE it (grass, flowers,
+    // trees -- see sunshadow.glsl). Null = this pass has none to give, and
+    // receivers draw in full sun: the water mirror, whose view the cascades
+    // were not fitted to. `viewForward` picks the cascade, as in lit.frag.
+    const fitzel::CascadedShadowMap* shadows = nullptr;
+    glm::vec3 viewForward{0.0f, 0.0f, -1.0f};
 };
+
+// Hand a receiver the cascades (the uniforms sunshadow.glsl declares). Called
+// by every layer that includes it, with its own shader bound or not -- the
+// setters bind it.
+inline void applySunShadows(const fitzel::Shader& s, const FrameContext& c) {
+    static const char* const kSpace[4]  = {"uLightSpace[0]", "uLightSpace[1]",
+                                           "uLightSpace[2]", "uLightSpace[3]"};
+    static const char* const kSplit[4]  = {"uCascadeSplits[0]", "uCascadeSplits[1]",
+                                           "uCascadeSplits[2]", "uCascadeSplits[3]"};
+    const int n = c.shadows ? std::min(c.shadows->cascadeCount(), 4) : 0;
+    s.setInt("uCascadeCount", n);
+    s.setInt("uShadowMap", fitzel::Renderer::kShadowMapUnit);
+    if (n == 0) return;
+    c.shadows->bindTextureArray(fitzel::Renderer::kShadowMapUnit);
+    s.setVec3("uShadowEye", c.camPos);
+    s.setVec3("uShadowForward", c.viewForward);
+    for (int i = 0; i < n; ++i) {
+        s.setMat4(kSpace[i], c.shadows->lightMatrices()[i]);
+        s.setFloat(kSplit[i], c.shadows->splitDistances()[i]);
+    }
+}
 
 // Build the context for one pass. `viewProj` and `camPos` are the pass's own (the
 // reflected view for the water mirror, the real one for the main pass); the rest is

@@ -15369,8 +15369,12 @@ int main(int argc, char** argv) {
 
             // Shared draw context for the lit vegetation (grass, trees, billboards)
             // in this HDR pass.
-            const FrameContext gctx =
+            FrameContext gctx =
                 makeFrameContext(mainVP, camPos, now, storm, light, fog);
+            // This pane's cascades were fitted to this camera (above), so the
+            // grass and trees drawn with it can receive the sun's shadow.
+            gctx.shadows     = &renderer.shadows();
+            gctx.viewForward = vcam.front();
 
             // Vegetation and birds only in Textured. Grass and trees are
             // vertex-shader geometry with shaders of their own, none of which

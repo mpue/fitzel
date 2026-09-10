@@ -13,11 +13,15 @@ uniform mat4  uViewProj;
 uniform float uTime;
 uniform vec2  uWindDir;
 uniform float uWindStrength;
+uniform vec3  uLightDir;     // towards the sun (shared with flower.frag)
+
+#include "sunshadow.glsl"
 
 out vec3  vWorldPos;
 out vec3  vNormal;
 out vec3  vColor;
 out float vTint;
+out float vSun;     // 1 = in the sun, 0 = in shadow
 
 // Must match Primitives.hpp (kFlowerMaxPetals / kFlowerStemTop).
 const float kMaxPetals = 8.0;
@@ -94,5 +98,6 @@ void main() {
     vNormal   = nrm;
     vColor    = iColor;
     vTint     = aTint;
+    vSun = 1.0 - sunShadow(wp, normalize(uLightDir), 2.0);  // per vertex, as grass
     gl_Position = uViewProj * vec4(wp, 1.0);
 }

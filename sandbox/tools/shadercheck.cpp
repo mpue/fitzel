@@ -30,11 +30,32 @@ namespace fs = std::filesystem;
 
 namespace {
 
-std::string readFile(const fs::path& p) {
+// With `#include "file"` expanded relative to the including file, as
+// fitzel::Shader::readSource does for the engine (this harness does not link
+// the engine, so it carries the same few lines). Without it a shader that
+// includes sunshadow.glsl would fail here and nowhere else.
+std::string readFile(const fs::path& p, int depth = 0) {
     std::ifstream in(p, std::ios::binary);
     std::ostringstream ss;
     ss << in.rdbuf();
-    return ss.str();
+    const std::string src = ss.str();
+    if (depth > 8 || src.find("#include") == std::string::npos) return src;
+    std::istringstream lines(src);
+    std::string ln, out;
+    int n = 1;
+    while (std::getline(lines, ln)) {
+        const std::size_t first = ln.find_first_not_of(" \t");
+        const std::size_t q0 = ln.find('"'), q1 = ln.rfind('"');
+        if (first != std::string::npos && ln.compare(first, 8, "#include") == 0 &&
+            q0 != std::string::npos && q1 > q0) {
+            out += readFile(p.parent_path() / ln.substr(q0 + 1, q1 - q0 - 1), depth + 1);
+            out += "\n#line " + std::to_string(n + 1) + "\n";
+        } else {
+            out += ln + "\n";
+        }
+        ++n;
+    }
+    return out;
 }
 
 // Compile one stage; on failure print the driver's log with the file name in

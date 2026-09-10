@@ -438,6 +438,7 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     m_grass.setFloat("uFogDensity", c.fogDensity);
     m_grass.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_grass.setFloat("uFogHeight", c.fogHeight);
+    applySunShadows(m_grass, c);   // receives the sun's shadow (sunshadow.glsl)
     // Procedural blades bake absolute height (scale 1); painted blades store a
     // relative height and take the live "Blade height" slider.
     if (drawProc) {
@@ -1094,6 +1095,7 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     m_tree.setFloat("uFogDensity", c.fogDensity);
     m_tree.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_tree.setFloat("uFogHeight", c.fogHeight);
+    applySunShadows(m_tree, c);   // receives the sun's shadow (sunshadow.glsl)
     m_tree.setFloat("uBrightness", treeBrightness);
     m_tree.setFloat("uContrast", treeContrast);
     m_tree.setFloat("uHue", glm::radians(treeHue));
@@ -1150,6 +1152,7 @@ void VegetationSystem::drawTreeBillboards(const FrameContext& c,
     m_billboard.setFloat("uFogDensity", c.fogDensity);
     m_billboard.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_billboard.setFloat("uFogHeight", c.fogHeight);
+    applySunShadows(m_billboard, c);   // receives the sun's shadow (sunshadow.glsl)
     m_billboard.setFloat("uBrightness", treeBrightness);
     m_billboard.setFloat("uContrast", treeContrast);
     m_billboard.setFloat("uHue", glm::radians(treeHue));
@@ -1652,6 +1655,7 @@ void VegetationSystem::drawFlowers(const FrameContext& c) {
     m_flower.setFloat("uFogDensity", c.fogDensity);
     m_flower.setFloat("uFogHeightFalloff", c.fogHeightFalloff);
     m_flower.setFloat("uFogHeight", c.fogHeight);
+    applySunShadows(m_flower, c);   // receives the sun's shadow (sunshadow.glsl)
     m_flowerField.draw(GL_TRIANGLES, m_flowerVerts);
     glEnable(GL_CULL_FACE);
 }

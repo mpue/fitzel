@@ -33,13 +33,45 @@ std::uint32_t compileStage(GLenum type, std::string_view source) {
     return shader;
 }
 
-std::string readFile(const std::string& path) {
+std::string readFile(const std::string& path, int depth = 0) {
     // Through the VFS: in an exported game the shaders live inside the archive
     // like everything else, and a missing shader is a black screen either way.
     std::string src = vfs::readText(path);
-    if (src.empty())
+    if (src.empty()) {
         std::fprintf(stderr, "[Fitzel] failed to open shader file: %s\n", path.c_str());
-    return src;
+        return src;
+    }
+    // #include "file", relative to this file. GLSL has none of its own, and
+    // without it every shader that wants the sun's shadow carries its own copy
+    // of the cascade lookup -- five copies of one function, which is four more
+    // than stay in step. A #line after each insert keeps the driver's error
+    // line numbers pointing into the including file.
+    if (depth > 8 || src.find("#include") == std::string::npos) return src;
+    const std::size_t slash = path.find_last_of("/\\");
+    const std::string dir = (slash == std::string::npos) ? std::string() : path.substr(0, slash + 1);
+    std::string out;
+    out.reserve(src.size());
+    std::size_t pos = 0;
+    int line = 1;
+    while (pos < src.size()) {
+        std::size_t end = src.find('\n', pos);
+        if (end == std::string::npos) end = src.size();
+        const std::string_view ln(src.data() + pos, end - pos);
+        const std::size_t first = ln.find_first_not_of(" \t");
+        if (first != std::string_view::npos && ln.substr(first, 8) == "#include") {
+            const std::size_t q0 = ln.find('"'), q1 = ln.rfind('"');
+            if (q0 != std::string_view::npos && q1 > q0) {
+                out += readFile(dir + std::string(ln.substr(q0 + 1, q1 - q0 - 1)), depth + 1);
+                out += "\n#line " + std::to_string(line + 1) + "\n";
+            }
+        } else {
+            out.append(ln);
+            out += '\n';
+        }
+        pos = end + 1;
+        ++line;
+    }
+    return out;
 }
 
 } // namespace
@@ -98,6 +130,10 @@ Shader Shader::fromSource(std::string_view vertexSrc, std::string_view fragmentS
     glDeleteShader(vs);
     glDeleteShader(fs);
     return result;
+}
+
+std::string Shader::readSource(const std::string& path) {
+    return readFile(path);
 }
 
 Shader Shader::fromFiles(const std::string& vertexPath, const std::string& fragmentPath) {

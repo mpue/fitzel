@@ -23,6 +23,8 @@ uniform float uBrightness; // 1 = unchanged (multiplier)
 uniform float uContrast;   // 1 = unchanged (pivots around mid-grey)
 uniform float uHue;        // 0 = unchanged (radians, rotates about the grey axis)
 
+#include "sunshadow.glsl"
+
 // Rodrigues rotation of an RGB colour about the achromatic (1,1,1) axis: a cheap
 // hue shift that leaves greys untouched.
 vec3 hueShift(vec3 col, float a) {
@@ -65,7 +67,13 @@ void main() {
     float diff = (uAlphaCutout == 1) ? mix(max(ndl, 0.0), abs(ndl), 0.5)
                                      : max(ndl, 0.0);
 
-    vec3 color = albedo * uAmbient * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05);
+    // The cascades hold the trees too, so a crown shades itself and its
+    // neighbours: the inside of a canopy is dark and the forest floor is dappled
+    // instead of every leaf in full sun. Pushed further towards the light than
+    // grass, because the shadow pass draws the coarsest LOD and its leaves do not
+    // lie exactly where these do.
+    float sun = 1.0 - sunShadow(vWorldPos, L, 4.0);
+    vec3 color = albedo * uAmbient * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05) * sun;
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(color, 1.0);
 }

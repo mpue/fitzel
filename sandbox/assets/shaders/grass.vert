@@ -15,12 +15,16 @@ uniform float uHeightScale; // global blade-height multiplier (1 = as baked)
 uniform vec3  uViewPos;     // camera world position (for the distance fade)
 uniform float uFadeStart;   // blades start shrinking past this distance (m)
 uniform float uFadeEnd;     // ...and are fully gone by here (the streamed ring edge)
+uniform vec3  uLightDir;    // towards the sun (shared with grass.frag)
+
+#include "sunshadow.glsl"
 
 out float vH;
 out vec3  vWorldPos;
 out vec3  vNormal;
 out vec3  vBaseCol; // per-blade base/tip colour (computed here, not per fragment)
 out vec3  vTipCol;
+out float vSun;     // 1 = this point of the blade is in the sun, 0 = in shadow
 
 // Value noise for large-scale colour patches (per blade, from its base position).
 float ghash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
@@ -132,6 +136,12 @@ void main() {
                    * mix(0.85, 1.05, iLush);
     vBaseCol = mix(dryBase, lushBase, green) * bright;
     vTipCol  = mix(dryTip,  lushTip,  green) * bright;
+
+    // The sun's shadow, per VERTEX: a blade is seven vertices and a few hundred
+    // fragments, and at this size the difference is invisible. Base and tip
+    // are looked up separately, so a blade can stand in shade with its tip in
+    // the light -- which is exactly what the edge of a tree's shadow does.
+    vSun = 1.0 - sunShadow(wp, normalize(uLightDir), 2.0);
 
     gl_Position = uViewProj * vec4(wp, 1.0);
 }
