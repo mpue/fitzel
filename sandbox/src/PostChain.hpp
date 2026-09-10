@@ -121,9 +121,12 @@ private:
                                        {1, 1, fitzel::RenderTarget::Format::RGBA16F}};
     int  m_adaptCur    = 0;
     bool m_adaptPrimed = false;
-    static constexpr int kMeterRing = 3;
-    unsigned m_meterPbo[kMeterRing] = {0, 0, 0};
-    int   m_meterFrame = 0;
+    // The 16x9 first stage of the meter (see meter.frag).
+    fitzel::RenderTarget m_meterCells{16, 9, fitzel::RenderTarget::Format::RGBA16F};
+    static constexpr int kMeterRing = 4;
+    unsigned m_meterPbo[kMeterRing]   = {0, 0, 0, 0};
+    void*    m_meterFence[kMeterRing] = {nullptr, nullptr, nullptr, nullptr}; // GLsync
+    int   m_meterFrame = 0;   // next slot to write
     float m_autoScale  = 1.0f;
     float m_meterLog2  = 0.0f;
 

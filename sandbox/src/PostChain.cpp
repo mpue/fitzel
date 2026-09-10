@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <limits>
 
 #include <glad/gl.h>
 
@@ -11,6 +13,19 @@ namespace {
 // shader; only the fragment stage differs. Named once so the list below reads as
 // what it is: seven fragment programs over one quad.
 constexpr const char* kVert = "assets/shaders/sky.vert";
+
+// IEEE half -> float, for the meter's read-back (it comes back in the target's
+// own format; see readBackMeter).
+float halfToFloat(std::uint16_t h) {
+    const std::uint32_t sign = (h >> 15) & 1u, exp = (h >> 10) & 0x1Fu, man = h & 0x3FFu;
+    float v;
+    if (exp == 0)        v = std::ldexp(static_cast<float>(man), -24);            // subnormal
+    else if (exp == 31)  v = man ? std::numeric_limits<float>::quiet_NaN()
+                                 : std::numeric_limits<float>::infinity();
+    else                 v = std::ldexp(static_cast<float>(man | 0x400u),
+                                        static_cast<int>(exp) - 25);
+    return sign ? -v : v;
+}
 }
 
 bool PostChain::init() {
@@ -35,13 +50,15 @@ bool PostChain::init() {
     glGenBuffers(kMeterRing, m_meterPbo);
     for (unsigned pbo : m_meterPbo) {
         glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-        glBufferData(GL_PIXEL_PACK_BUFFER, 4 * sizeof(float), nullptr, GL_STREAM_READ);
+        glBufferData(GL_PIXEL_PACK_BUFFER, 4 * sizeof(std::uint16_t), nullptr, GL_STREAM_READ);
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
     return true;
 }
 
 PostChain::~PostChain() {
+    for (void*& f : m_meterFence)
+        if (f) { glDeleteSync(reinterpret_cast<GLsync>(f)); f = nullptr; }
     if (m_meterPbo[0]) glDeleteBuffers(kMeterRing, m_meterPbo);
 }
 
@@ -146,10 +163,17 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     // Runs whether or not auto exposure is on, so switching it on starts from
     // where the eye already is instead of from a snap.
     {
+        // Stage 0: every cell of a 16x9 grid reduces its part of the frame.
+        m_meterCells.bind();
+        m_meter.bind();
+        m_meter.setInt("uStage", 0);
+        hdr.bindColorTexture(0);           m_meter.setInt("uSrc", 0);
+        fsQuad.draw();
+        // Stage 1: one pixel adds the cells up and eases towards them.
         const int prev = m_adaptCur, next = 1 - m_adaptCur;
         m_adapt[next].bind();
-        m_meter.bind();
-        hdr.bindColorTexture(0);           m_meter.setInt("uHdr", 0);
+        m_meter.setInt("uStage", 1);
+        m_meterCells.bindColorTexture(0);  m_meter.setInt("uSrc", 0);
         m_adapt[prev].bindColorTexture(1); m_meter.setInt("uPrev", 1);
         // Frame-rate independent easing; the first frame takes the reading
         // outright, or the picture would fade in from black.
@@ -242,22 +266,37 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     }
 }
 
-// Copy this frame's meter pixel into the ring and map the one written
-// kMeterRing - 1 frames ago. By then the card has long finished with it, so the
-// map does not wait -- a plain glReadPixels here would stall the CPU on the
+// Copy this frame's meter pixel into a ring of pixel buffers and map the copies
+// the card has finished. A plain glReadPixels here would stall the CPU on the
 // whole frame queued in front of it, every frame, for one number.
+//
+// "Finished" is checked, not assumed: with vsync off the driver lets the CPU
+// run several frames ahead, and mapping a buffer the card has not reached yet
+// waits for it -- the first version (map whatever was written two frames ago)
+// put the frame's entire GPU time into the CPU's submit zone. Each copy carries
+// a fence; a slot is mapped only once its fence has signalled, and a slot whose
+// copy is still in flight is not overwritten (the meter reports a frame later).
 void PostChain::readBackMeter(const Params& p) {
     if (!m_meterPbo[0]) return;
-    const int write = m_meterFrame % kMeterRing;
-    glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[write]);
-    glReadPixels(0, 0, 1, 1, GL_RGBA, GL_FLOAT, nullptr);   // m_adapt[cur] is bound
-    ++m_meterFrame;
-    if (m_meterFrame >= kMeterRing) {
-        const int read = m_meterFrame % kMeterRing;          // the oldest
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[read]);
-        if (const auto* v = static_cast<const float*>(
-                glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * sizeof(float),
+    auto sync = [this](int i) -> GLsync& {
+        return reinterpret_cast<GLsync&>(m_meterFence[i]);
+    };
+
+    // Harvest every copy that has landed, oldest first, so the value kept is
+    // the newest one available.
+    for (int k = 0; k < kMeterRing; ++k) {
+        const int i = (m_meterFrame + k) % kMeterRing;   // oldest slot first
+        GLsync& f = sync(i);
+        if (!f) continue;
+        const GLenum r = glClientWaitSync(f, 0, 0);
+        if (r != GL_ALREADY_SIGNALED && r != GL_CONDITION_SATISFIED) continue;
+        glDeleteSync(f);
+        f = nullptr;
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[i]);
+        if (const auto* h = static_cast<const std::uint16_t*>(
+                glMapBufferRange(GL_PIXEL_PACK_BUFFER, 0, 4 * sizeof(std::uint16_t),
                                  GL_MAP_READ_BIT))) {
+            const float v[2] = {halfToFloat(h[0]), halfToFloat(h[1])};
             if (std::isfinite(v[0]) && std::isfinite(v[1])) {
                 m_meterLog2 = v[1];
                 // composite.frag's autoExposure(), including its 0.7.
@@ -268,6 +307,19 @@ void PostChain::readBackMeter(const Params& p) {
             }
             glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
         }
+    }
+
+    // This frame's copy, into the next slot -- unless that slot's previous
+    // copy is still in flight, in which case this frame simply is not read.
+    const int write = m_meterFrame % kMeterRing;
+    if (!sync(write)) {
+        glBindBuffer(GL_PIXEL_PACK_BUFFER, m_meterPbo[write]);
+        // HALF_FLOAT, the target's own format: asked for FLOAT, the driver
+        // converts on the way out and that conversion is synchronous -- the
+        // stall this whole ring exists to avoid came straight back.
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_HALF_FLOAT, nullptr);   // m_adapt[cur] is bound
+        sync(write) = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        m_meterFrame = (m_meterFrame + 1) % kMeterRing;
     }
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 }
