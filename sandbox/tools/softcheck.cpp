@@ -236,6 +236,185 @@ void checkCloth() {
     check(loose.endY < loose.startY - 2.0f, "with nothing pinned it simply falls");
 }
 
+// --- Hanging cloth: curtains, banners, flags ---------------------------------
+// A hanging sheet is judged by where its particles are, in the world: does the
+// held edge stay held, does it hang rather than fall, does a curtain keep its
+// pleats, does a flag fly. One run records exactly that.
+struct Hang {
+    bool      built  = false;
+    bool      finite = true;
+    glm::vec3 lo0{0.0f}, hi0{0.0f};   // world bounds, first frame
+    glm::vec3 lo{0.0f},  hi{0.0f};    // ...last frame
+    float     heldDrift = 0.0f;       // worst move of a held particle (see below)
+    float     topSag    = 0.0f;       // how far the top row's lowest particle fell
+    glm::vec3 tipLo{1e9f}, tipHi{-1e9f}; // the free corner's range, last 2 s
+};
+
+// `poleHeld` says which particles should not move, picked by their first-frame
+// world position: the pole edge (-X) if set, the top row otherwise.
+Hang hang(const SoftBodyComponent& soft, glm::vec3 half, glm::vec3 at, float seconds,
+          bool poleHeld) {
+    std::vector<Entity> entities;
+    Entity e;
+    e.type   = EntityType::Box;
+    e.center = e.localCenter = at;
+    e.half   = half;
+    e.id     = 1;
+    entities.push_back(std::move(e));
+    entities[0].components.items.push_back(std::make_unique<SoftBodyComponent>(soft));
+
+    fitzel::PhysicsWorld world;
+    world.addBox(glm::vec3(50.0f, 1.0f, 50.0f), glm::vec3(0.0f, -1.0f, 0.0f),
+                 glm::quat(1, 0, 0, 0), 0.0f);
+    SoftBodySystem sys;
+    sys.spawn(entities, world);
+    Hang h;
+    h.built = sys.has(1);
+    if (!h.built) return h;
+
+    const auto setWorld = [](Entity& en, const glm::vec3& p, const glm::vec3& r) {
+        en.center = en.localCenter = p;
+        en.rotation = en.localRotation = r;
+    };
+    std::vector<glm::vec3> first;
+    std::vector<int> held, top;
+    int tip = 0;
+    const int steps = static_cast<int>(seconds * 60.0f);
+    // Frame -1 is the rest pose, read before anything has been stepped: after
+    // even one step the free particles have fallen a few millimetres, and "the
+    // top row" would shrink to the pinned ones.
+    for (int i = -1; i < steps; ++i) {
+        const float t = std::max(i, 0) / 60.0f;
+        if (i >= 0) {
+            sys.blow(world, t, 1.0f / 60.0f);
+            world.step(1.0f / 60.0f);
+        }
+        sys.sync(entities, world, setWorld);
+        const Entity& en = entities[0];
+        const auto* mc = en.components.get<MeshComponent>();
+        if (!mc) { h.built = false; return h; }
+        glm::vec3 lo(1e9f), hi(-1e9f);
+        std::vector<glm::vec3> wp(mc->mesh.verts.size());
+        for (std::size_t k = 0; k < wp.size(); ++k) {
+            wp[k] = en.center + mc->mesh.verts[k];
+            lo = glm::min(lo, wp[k]);
+            hi = glm::max(hi, wp[k]);
+            if (!std::isfinite(wp[k].x) || !std::isfinite(wp[k].y) || !std::isfinite(wp[k].z))
+                h.finite = false;
+        }
+        if (i < 0) {
+            first = wp;
+            h.lo0 = lo; h.hi0 = hi;
+            for (int k = 0; k < static_cast<int>(wp.size()); ++k) {
+                const bool isTop  = wp[k].y > hi.y - 1.0e-3f;
+                const bool isPole = wp[k].x < lo.x + 1.0e-3f;
+                if (isTop) top.push_back(k);
+                if (poleHeld ? isPole : isTop) held.push_back(k);
+                // The free corner: furthest from the pole, lowest of those.
+                if (wp[k].x > wp[tip].x + 1.0e-4f ||
+                    (std::fabs(wp[k].x - wp[tip].x) <= 1.0e-4f && wp[k].y < wp[tip].y))
+                    tip = k;
+            }
+            continue;
+        }
+        h.lo = lo; h.hi = hi;
+        for (int k : held)
+            h.heldDrift = std::max(h.heldDrift, glm::distance(wp[k], first[k]));
+        if (i == steps - 1) {
+            float topLow = 1e9f;
+            for (int k : top) topLow = std::min(topLow, wp[k].y);
+            h.topSag = h.hi0.y - topLow;
+        }
+        if (t >= seconds - 2.0f) {
+            h.tipLo = glm::min(h.tipLo, wp[tip]);
+            h.tipHi = glm::max(h.tipHi, wp[tip]);
+        }
+    }
+    return h;
+}
+
+void checkHanging() {
+    std::printf("\nHanging cloth\n");
+    const glm::vec3 drape(1.0f, 1.25f, 0.02f);   // a 2 m x 2.5 m curtain
+    const glm::vec3 above(0.0f, 3.0f, 0.0f);     // bottom 1.75 m clear of the floor
+
+    SoftBodyComponent curtain;
+    curtain.kind       = SoftBodyComponent::Cloth;
+    curtain.pinning    = SoftBodyComponent::PinTop;
+    curtain.resolution = 5;
+    curtain.mass       = 3.0f;
+    curtain.softness   = 0.35f;
+    const Hang c = hang(curtain, drape, above, 3.0f, false);
+    check(c.built && c.finite, "a curtain comes up and stays finite");
+    std::printf("       built %.2f m tall; after 3 s top drift %.3f m, bottom %.2f -> %.2f,"
+                " depth %.3f m\n",
+                c.hi0.y - c.lo0.y, c.heldDrift, c.lo0.y, c.lo.y, c.hi.z - c.lo.z);
+    check(std::fabs((c.hi0.y - c.lo0.y) - 2.5f) < 0.05f,
+          "it is built hanging (2.5 m tall), not lying down");
+    check(c.heldDrift < 0.02f, "its top edge stays exactly where it was hung");
+    check(std::fabs(c.lo.y - c.lo0.y) < 0.3f, "it hangs rather than falling or bunching up");
+    check(c.hi.z - c.lo.z < 0.3f, "without wind it hangs in its own plane");
+
+    SoftBodyComponent pleated = curtain;
+    pleated.folds = 0.8f;
+    const Hang p = hang(pleated, drape, above, 3.0f, false);
+    std::printf("       pleated depth %.3f m vs flat %.3f m\n",
+                p.hi.z - p.lo.z, c.hi.z - c.lo.z);
+    check(p.built && p.finite, "a pleated curtain simulates");
+    check(p.hi.z - p.lo.z > (c.hi.z - c.lo.z) + 0.05f, "and keeps its pleats");
+    check(p.heldDrift < 0.02f, "its pleated top stays on the rail");
+
+    // Rings only let the top sag where there is fabric to sag with -- a flat
+    // sheet is taut between any two points of its own top edge, as a real one
+    // is. So the comparison is between pleated curtains: held all along, and on
+    // four rings.
+    SoftBodyComponent ringed = pleated;
+    ringed.pinning = SoftBodyComponent::PinRings;
+    ringed.rings   = 4;
+    const Hang r = hang(ringed, drape, above, 3.0f, false);
+    std::printf("       pleated, on 4 rings the top sags %.3f m (held all along %.3f)\n",
+                r.topSag, p.topSag);
+    check(r.built && r.finite, "a curtain on rings simulates");
+    check(r.topSag > p.topSag + 0.02f, "between its rings the top edge sags");
+
+    SoftBodyComponent banner = curtain;
+    banner.pinning = SoftBodyComponent::PinTopCorners;
+    banner.mass    = 1.0f;
+    const Hang b = hang(banner, glm::vec3(0.5f, 1.0f, 0.01f), above, 3.0f, false);
+    std::printf("       banner: bottom %.2f -> %.2f\n", b.lo0.y, b.lo.y);
+    check(b.built && b.finite, "a banner simulates");
+    check(std::fabs(b.lo.y - b.lo0.y) < 0.3f, "held at its two top corners, it hangs");
+
+    // A flag: held along the pole, 1.5 m x 1 m, weighing what a flag weighs.
+    SoftBodyComponent flag;
+    flag.kind       = SoftBodyComponent::Cloth;
+    flag.pinning    = SoftBodyComponent::PinPole;
+    flag.resolution = 5;
+    flag.mass       = 0.5f;
+    flag.softness   = 0.3f;
+    flag.damping    = 0.05f;
+    const glm::vec3 flagHalf(0.75f, 0.5f, 0.01f);
+    const Hang calm = hang(flag, flagHalf, above, 4.0f, true);
+    flag.wind = glm::vec3(6.0f, 0.0f, 0.0f);
+    const Hang windy = hang(flag, flagHalf, above, 4.0f, true);
+    const float calmReach  = calm.hi.x - calm.lo0.x;
+    const float windyReach = windy.hi.x - windy.lo0.x;
+    const glm::vec3 wander = windy.tipHi - windy.tipLo;
+    std::printf("       reach from the pole: calm %.2f m, 6 m/s %.2f m (1.5 m of flag);"
+                " pole drift %.3f m; free corner wanders %.2f/%.2f/%.2f m\n",
+                calmReach, windyReach, windy.heldDrift, wander.x, wander.y, wander.z);
+    std::printf("       calm: bottom %.2f -> %.2f, free corner y %.2f..%.2f x %.2f..%.2f\n",
+                calm.lo0.y, calm.lo.y, calm.tipLo.y, calm.tipHi.y, calm.tipLo.x, calm.tipHi.x);
+    check(calm.built && windy.built && calm.finite && windy.finite, "a flag simulates");
+    check(calm.heldDrift < 0.02f && windy.heldDrift < 0.02f,
+          "its pole edge stays on the pole, wind or not");
+    check(calmReach < 1.5f * 0.9f, "with no wind it droops off the pole");
+    check(windyReach > calmReach + 0.1f && windyReach > 1.5f * 0.75f,
+          "in a wind it flies out from the pole");
+    check(std::max(wander.y, wander.z) > 0.05f,
+          "and keeps moving -- it flutters instead of standing out like a board");
+}
+
 // --- A modelled mesh, made soft ----------------------------------------------
 void checkFromMesh() {
     std::printf("\nFrom a modelled mesh\n");
@@ -271,6 +450,7 @@ int main() {
     checkSoftness();
     checkBalloon();
     checkCloth();
+    checkHanging();
     checkFromMesh();
     std::printf("\n%d check(s), %d failure(s)\n", checks, failures);
     return failures == 0 ? 0 : 1;

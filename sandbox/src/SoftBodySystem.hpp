@@ -45,6 +45,12 @@ public:
     // spawns inside the ground is pushed out of it, which looks like an explosion.
     void spawn(std::vector<Entity>& entities, fitzel::PhysicsWorld& world);
 
+    // Let the air at every cloth for the coming step: its wind
+    // (SoftBodyComponent::wind), or still air, which damps its swinging. Call
+    // right BEFORE PhysicsWorld::step; `time` is seconds of Play, which keys
+    // the gusts so they travel rather than flicker.
+    void blow(fitzel::PhysicsWorld& world, float time, float dt);
+
     // Read this frame's particles back into the entities. Call right after
     // PhysicsWorld::step, before the scene is submitted.
     void sync(std::vector<Entity>& entities, fitzel::PhysicsWorld& world,
@@ -64,6 +70,8 @@ public:
 private:
     struct Body {
         fitzel::PhysicsBodyId      id = 0;
+        bool                       cloth = false; // feels the air (see blow)
+        glm::vec3                  wind{0.0f};    // ...moving at this, world m/s
         std::vector<std::uint32_t> tris;    // surface triangles, read once
         std::vector<glm::vec3>     verts;   // scratch for the per-frame readback
     };

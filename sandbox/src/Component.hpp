@@ -1821,13 +1821,37 @@ public:
     // all, which is why it is the one kind that needs pinning to hang from.
     enum Kind { Jelly = 0, Balloon = 1, Cloth = 2, FromMesh = 3 };
 
+    // How a Cloth is held. The first three LIE: the sheet spans the box's X/Z,
+    // a tarp or a trampoline. The rest HANG: the sheet stands in the box's X/Y
+    // plane -- width along X, drop along Y -- because a curtain or a flag built
+    // lying down swings through ninety degrees before it looks like one. Saved
+    // by number, so new ones go on the end.
+    enum Pin {
+        PinNothing    = 0,  // lies, falls
+        PinCorners    = 1,  // lies, held at its four corners
+        PinEdge       = 2,  // lies, held along one edge
+        PinTop        = 3,  // hangs from its whole top edge (a curtain on a pole)
+        PinRings      = 4,  // hangs from `rings` points along the top (curtain rings)
+        PinTopCorners = 5,  // hangs from its two top corners (a banner)
+        PinPole       = 6,  // hangs from its whole -X edge (a flag on a pole)
+    };
+    static bool hangs(int pin) { return pin >= PinTop; }
+
     int   kind       = Jelly;
     int   resolution = 4;      // particles per axis (cost grows with the cube of it)
     float mass       = 20.0f;  // kg, spread over every particle
     float softness   = 0.25f;  // 0 = barely gives .. 1 = slack
     float pressure   = 2000.0f;// what holds a hollow shell out (Balloon/Mesh only)
     float damping    = 0.1f;   // how quickly the wobble dies down
-    int   pinning    = 1;      // Cloth: 0 = nothing, 1 = the four corners, 2 = one edge
+    int   pinning    = PinCorners; // Cloth: see Pin
+    int   rings      = 8;      // PinRings: how many, spread evenly along the top
+    // Hanging from its top: how deeply it is pleated, 0 = a flat sheet .. 1 = a
+    // curtain with twice its width of fabric gathered onto the rail.
+    float folds      = 0.0f;
+    // Cloth: the air it hangs in, world metres per second. Gusts and a ripple
+    // travelling downwind are added on top, which is what makes a flag fly
+    // rather than stand out like a sign.
+    glm::vec3 wind{0.0f, 0.0f, 0.0f};
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<SoftBodyComponent>(*this);

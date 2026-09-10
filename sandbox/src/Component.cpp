@@ -1464,14 +1464,49 @@ const std::vector<Property>& SoftBodyComponent::properties() {
         damp.slider = true; damp.min = 0.0f; damp.max = 1.0f; damp.fmt = "%.2f";
         damp.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->damping; };
         p.push_back(std::move(damp));
-        Property pin;
-        pin.label = "Pinned"; pin.key = "pinning"; pin.kind = PropKind::EnumInt;
-        pin.enumLabels = {"Nothing", "Corners", "One edge"};
-        pin.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->pinning; };
-        pin.visible = [](const void* o) {
+        auto isCloth = [](const void* o) {
             return static_cast<const SoftBodyComponent*>(o)->kind == SoftBodyComponent::Cloth;
         };
+        Property pin;
+        pin.label = "Pinned"; pin.key = "pinning"; pin.kind = PropKind::EnumInt;
+        // Which way the sheet is built is part of the answer, so it is in the
+        // label: the three "lies" ones span the box's X/Z, the rest hang in X/Y.
+        pin.enumLabels = {"Nothing (lies flat)", "Corners (lies flat)",
+                          "One edge (lies flat)", "Top edge (curtain)",
+                          "Rings along the top", "Top corners (banner)",
+                          "Pole edge (flag)"};
+        pin.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->pinning; };
+        pin.visible = isCloth;
         p.push_back(std::move(pin));
+        Property rings;
+        rings.label = "Rings"; rings.key = "rings"; rings.kind = PropKind::Int;
+        rings.min = 2.0f; rings.max = 40.0f; rings.slider = true;
+        rings.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->rings; };
+        rings.visible = [](const void* o) {
+            const auto* s = static_cast<const SoftBodyComponent*>(o);
+            return s->kind == SoftBodyComponent::Cloth &&
+                   s->pinning == SoftBodyComponent::PinRings;
+        };
+        p.push_back(std::move(rings));
+        Property folds;
+        folds.label = "Folds"; folds.key = "folds"; folds.kind = PropKind::Float;
+        folds.slider = true; folds.min = 0.0f; folds.max = 1.0f; folds.fmt = "%.2f";
+        folds.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->folds; };
+        // Pleats are gathered onto a rail: only something hanging from its top
+        // has one. A flag or a banner held at two points has nothing to gather on.
+        folds.visible = [](const void* o) {
+            const auto* s = static_cast<const SoftBodyComponent*>(o);
+            return s->kind == SoftBodyComponent::Cloth &&
+                   (s->pinning == SoftBodyComponent::PinTop ||
+                    s->pinning == SoftBodyComponent::PinRings);
+        };
+        p.push_back(std::move(folds));
+        Property wind;
+        wind.label = "Wind"; wind.key = "wind"; wind.kind = PropKind::Vec3;
+        wind.speed = 0.1f;
+        wind.field = [](void* o) -> void* { return &static_cast<SoftBodyComponent*>(o)->wind; };
+        wind.visible = isCloth;
+        p.push_back(std::move(wind));
         return p;
     }();
     return props;

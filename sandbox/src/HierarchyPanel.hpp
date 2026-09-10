@@ -48,6 +48,9 @@ struct PanelState {
     std::function<void(int)>                 addEmptyParent;
     std::function<void(int)>                 addEmptyChild;
     std::function<void(int, EntityType)>     addPrimitiveChild;
+    // A ready-hung cloth on the row: 0 = a curtain below it, 1 = a flag beside
+    // it (the row being the pole), 2 = a banner below it.
+    std::function<void(int, int)>            addClothChild;
     std::function<void(int)>                 addShotCamera;     // "Shoot this"
     std::function<void(int)>                 addCockpitCamera;  // "Sit in this"
     std::function<void(int)>                 addVehicleLights;

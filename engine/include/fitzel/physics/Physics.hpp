@@ -147,6 +147,19 @@ public:
     bool getSoftVertices(PhysicsBodyId id, glm::vec3* out, int count,
                          glm::vec3& outCenter) const;
 
+    // Blow on a soft body for the coming step. Every surface triangle feels the
+    // air moving past it as pressure on its face -- none when it lies along the
+    // wind, most when it stands square to it -- so a sheet is pushed until it
+    // streams downwind, which is what a flag does and a jelly cube barely feels.
+    // `wind` is the air's velocity in world space (m/s). `turbulence` (0..1)
+    // adds gusts and a ripple that travels down the sheet, keyed to `time`
+    // (seconds): without it a flag settles into a stiff board. Pinned particles
+    // do not move. A zero wind is still air, and still damps: a sheet swinging
+    // through it is slowed the same way. Call before step(); no-op on an unknown
+    // or rigid body.
+    void applySoftWind(PhysicsBodyId id, glm::vec3 wind, float turbulence,
+                       float time, float dt);
+
     // Static triangle-mesh collider for concave world geometry (e.g. roads).
     // `verts` are world-space positions; `indices` is a triangle list (a multiple
     // of 3). Always static. Returns 0 on failure.

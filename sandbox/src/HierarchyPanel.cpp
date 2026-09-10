@@ -33,6 +33,7 @@ void drawPanel(const PanelState& s) {
     // Deferred context-menu creation requests (applied after the tree
     // is drawn, so entities isn't mutated mid-iteration).
     int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
+    int clothChildReq = -1, clothChildKind = 0;
     int shotCamReq = -1;   // "Shoot this": a multishot camera on this object
     int seatCamReq = -1;   // "Sit in this": a cockpit camera inside it
     int vehicleLightsReq = -1;
@@ -142,6 +143,15 @@ void drawPanel(const PanelState& s) {
                         { primChildReq = i; primChildType = EntityType::Plane; }
                     ImGui::EndMenu();
                 }
+                // Cloth that is already hung: the object right-clicked is what it
+                // hangs FROM -- the rail, the pole -- so it is put where it would
+                // hang and pinned there, and Play does the rest.
+                if (ImGui::BeginMenu("Add Cloth")) {
+                    if (ImGui::MenuItem("Curtain (hangs below)"))  { clothChildReq = i; clothChildKind = 0; }
+                    if (ImGui::MenuItem("Flag (flies from this pole)")) { clothChildReq = i; clothChildKind = 1; }
+                    if (ImGui::MenuItem("Banner (hangs below)"))   { clothChildReq = i; clothChildKind = 2; }
+                    ImGui::EndMenu();
+                }
                 if (const auto* cc = s.entities[i].components.get<CameraComponent>()) {
                     ImGui::Separator();
                     if (ImGui::MenuItem("Set as Main Camera", nullptr,
@@ -215,6 +225,7 @@ void drawPanel(const PanelState& s) {
     else if (emptyParentReq >= 0) s.addEmptyParent(emptyParentReq);
     else if (emptyChildReq >= 0)  s.addEmptyChild(emptyChildReq);
     else if (primChildReq >= 0)   s.addPrimitiveChild(primChildReq, primChildType);
+    else if (clothChildReq >= 0 && s.addClothChild) s.addClothChild(clothChildReq, clothChildKind);
     else if (shotCamReq >= 0)     s.addShotCamera(shotCamReq);
     else if (seatCamReq >= 0)     s.addCockpitCamera(seatCamReq);
     else if (vehicleLightsReq >= 0) s.addVehicleLights(vehicleLightsReq);

@@ -3798,6 +3798,77 @@ int main(int argc, char** argv) {
             const int id = spawnChild(n.id, type, n.center, glm::vec3(0.0f));
             sel.select(id);
         };
+        // A cloth already hung from the picked object: a thin box carrying a Soft
+        // Body whose pinning, size and weight say what it is. The picked object is
+        // what it hangs FROM -- a curtain rail, a flagpole -- so the cloth is put
+        // where it would hang off it, as a child, turned the way it is turned.
+        //
+        // Everything here is a starting point for the Inspector, not a mode: the
+        // sizes are a room's curtain and a flagpole's flag, and the weights are
+        // what those weigh -- a flag at the component's default 20 kg would hang
+        // off its pole like a wet towel however hard it blew.
+        auto addClothChild = [&](int idx, int which) {
+            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
+            const Entity& n = entities[idx];
+            Entity cl;
+            cl.type   = EntityType::Box;
+            cl.id     = entityCounter++;
+            cl.parent = n.id;
+            auto sb = std::make_unique<SoftBodyComponent>();
+            sb->kind = SoftBodyComponent::Cloth;
+            if (which == 1) {                       // flag: flies from the pole's +X side
+                cl.name = "Flag " + std::to_string(cl.id);
+                cl.half = glm::vec3(0.75f, 0.5f, 0.01f);
+                cl.localCenter = glm::vec3(n.half.x + cl.half.x + 0.03f,
+                                           n.half.y - cl.half.y - 0.1f, 0.0f);
+                sb->pinning    = SoftBodyComponent::PinPole;
+                sb->resolution = 5;
+                sb->mass       = 0.5f;
+                sb->softness   = 0.3f;
+                sb->damping    = 0.05f;
+                // A breeze out along the way the flag points, flat: so it flies
+                // as placed, and turning the pole turns where it flies.
+                glm::vec3 out = glm::quat(glm::radians(n.rotation)) * glm::vec3(1.0f, 0.0f, 0.0f);
+                out.y = 0.0f;
+                sb->wind = glm::length(out) > 1.0e-3f ? glm::normalize(out) * 6.0f
+                                                      : glm::vec3(6.0f, 0.0f, 0.0f);
+            } else if (which == 2) {                // banner: two top corners, below
+                cl.name = "Banner " + std::to_string(cl.id);
+                cl.half = glm::vec3(0.5f, 1.0f, 0.01f);
+                cl.localCenter = glm::vec3(0.0f, -(n.half.y + cl.half.y + 0.02f), 0.0f);
+                sb->pinning    = SoftBodyComponent::PinTopCorners;
+                sb->resolution = 5;
+                sb->mass       = 1.0f;
+                sb->softness   = 0.3f;
+            } else {                                // curtain: on rings, pleated, below
+                cl.name = "Curtain " + std::to_string(cl.id);
+                cl.half = glm::vec3(1.0f, 1.25f, 0.02f);
+                cl.localCenter = glm::vec3(0.0f, -(n.half.y + cl.half.y + 0.02f), 0.0f);
+                sb->pinning    = SoftBodyComponent::PinRings;
+                sb->rings      = 10;
+                sb->folds      = 0.6f;
+                sb->resolution = 6;
+                sb->mass       = 3.0f;
+                sb->softness   = 0.35f;
+                sb->damping    = 0.15f;
+            }
+            cl.components.items.push_back(std::move(sb));
+            if (!materials.empty()) {
+                auto mc = std::make_unique<MaterialComponent>();
+                mc->material = materials[glm::clamp(matSel, 0,
+                                   static_cast<int>(materials.size()) - 1)].assetId;
+                cl.components.items.push_back(std::move(mc));
+            }
+            // World transform for the rest of this frame; the scene-graph resolve
+            // takes it over from here (local is the source of truth).
+            glm::vec3 sc;
+            scenegraph::decompose(worldOf(n) * composeModel(cl.localCenter,
+                                                            cl.localRotation,
+                                                            glm::vec3(1.0f)),
+                                  cl.center, cl.rotation, sc);
+            history.push(std::make_unique<AddEntityCmd>(cl), document);
+            sel.select(cl.id);
+        };
         // A camera that SHOOTS the picked object: an Empty carrying a Camera in
         // Multishot mode, aimed at that object by id (see MultiShot.hpp).
         //
@@ -5313,6 +5384,7 @@ int main(int argc, char** argv) {
         // The entities that wobble instead of moving as one piece. Built with the
         // physics world at Play start and thrown away with it (see SoftBodySystem).
         SoftBodySystem                softBodies;
+        float                         softWindTime = 0.0f; // seconds of Play, keys the gusts
         // Knockable road side objects (posts/bollards): each a dynamic body created
         // at Play start, rendered from its live physics transform so a car bowls it
         // over. Rebuilt every Play; the derived static instances take over in the
@@ -6751,6 +6823,7 @@ int main(int argc, char** argv) {
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
             softBodies.spawn(entities, *physics);
+            softWindTime = 0.0f;
             // The player is a physics capsule (~1.8 m tall), standing on the
             // ground that was built around startPos above.
             //
@@ -8801,6 +8874,10 @@ int main(int argc, char** argv) {
 
             // --- Physics: step the world, sync dynamic bodies back to entities -
             if (playMode && physics) {
+                // Flags and curtains in a breeze: the air's push goes into the
+                // particles before the step that moves them.
+                softWindTime += dt;
+                softBodies.blow(*physics, softWindTime, dt);
                 physics->step(dt);
                 // Keep the terrain collider centred on the action: once the focus
                 // (camera = player head / chase cam) drifts a quarter-span from the
@@ -13455,6 +13532,7 @@ int main(int argc, char** argv) {
                                     duplicateEntity, deleteEntity,
                                     duplicateSelection, deleteSelection,
                                     addEmptyParent, addEmptyChild, addPrimitiveChild,
+                                    addClothChild,
                                     addShotCamera, addCockpitCamera,
                                     addVehicleLights, setMainCamera,
                                     isUnderId, worldOf, rebaseLocal,

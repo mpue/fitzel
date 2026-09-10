@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
 #include <mutex>
 #include <thread>
@@ -726,6 +727,83 @@ bool PhysicsWorld::getSoftVertices(PhysicsBodyId id, glm::vec3* out, int count,
     const int n = std::min(count, static_cast<int>(vs.size()));
     for (int i = 0; i < n; ++i) out[i] = toGlm(rot * vs[i].mPosition);
     return n > 0;
+}
+
+void PhysicsWorld::applySoftWind(PhysicsBodyId id, glm::vec3 wind, float turbulence,
+                                 float time, float dt) {
+    // Still air is not skipped: it is what stops a curtain swinging for ever.
+    // The same pressure that pushes a sheet downwind resists it moving at all.
+    if (dt <= 0.0f) return;
+    const float speed = glm::length(wind);
+    const JPH::BodyID bid(id);
+    {
+        JPH::BodyLockWrite lock(m_impl->system.GetBodyLockInterface(), bid);
+        if (!lock.Succeeded() || !lock.GetBody().IsSoftBody()) return;
+        JPH::Body& body = lock.GetBody();
+        auto* mp = static_cast<JPH::SoftBodyMotionProperties*>(body.GetMotionProperties());
+
+        // Particles and their velocities live in the body's frame, relative to
+        // its centre of mass; the wind and the ripple are laid out in the world.
+        const JPH::Quat rot    = body.GetRotation();
+        const JPH::Quat toBody = rot.Conjugated();
+        const glm::vec3 com    = toGlm(JPH::Vec3(body.GetCenterOfMassPosition()));
+        const glm::vec3 dir    = speed > 1.0e-3f ? wind / speed : glm::vec3(1.0f, 0.0f, 0.0f);
+        glm::vec3 side = glm::cross(dir, glm::vec3(0.0f, 1.0f, 0.0f));
+        side = glm::length(side) > 1.0e-3f ? glm::normalize(side) : glm::vec3(1.0f, 0.0f, 0.0f);
+        const glm::vec3 up = glm::cross(side, dir);
+
+        // A ripple running downwind at a bit under the wind's own speed -- the
+        // speed a real flag's waves travel at -- with gusts along and across it.
+        const float turb = glm::clamp(turbulence, 0.0f, 1.0f);
+        const float k    = 1.3f;                 // rad per metre along the wind
+        const float w    = 0.7f * k * speed;     // rad per second
+        // Half air density times a flat plate's drag coefficient: the pressure a
+        // square-on metre of cloth feels per (m/s)^2 of air through it.
+        const float kPress = 0.6f;
+        const float kSkin  = 0.03f;              // the much smaller drag along it
+
+        auto& vs = mp->GetVertices();
+        for (const JPH::SoftBodySharedSettings::Face& f : mp->GetFaces()) {
+            JPH::SoftBodyVertex& a = vs[f.mVertex[0]];
+            JPH::SoftBodyVertex& b = vs[f.mVertex[1]];
+            JPH::SoftBodyVertex& c = vs[f.mVertex[2]];
+            const JPH::Vec3 n2 = (b.mPosition - a.mPosition).Cross(c.mPosition - a.mPosition);
+            const float len = n2.Length();
+            if (len < 1.0e-8f) continue;
+            const float area = 0.5f * len;
+            const glm::vec3 n = toGlm(rot * (n2 / len));
+
+            const glm::vec3 at =
+                com + toGlm(rot * ((a.mPosition + b.mPosition + c.mPosition) / 3.0f));
+            const float ph = w * time - k * glm::dot(at, dir);
+            const glm::vec3 air = wind * (1.0f + 0.5f * turb * std::sin(ph))
+                + side * (speed * 0.35f * turb * std::sin(1.37f * ph + 1.1f))
+                + up   * (speed * 0.20f * turb * std::sin(0.83f * ph + 2.3f));
+            const glm::vec3 v =
+                toGlm(rot * ((a.mVelocity + b.mVelocity + c.mVelocity) / 3.0f));
+            const glm::vec3 rel = air - v;
+            const float vn = glm::dot(n, rel);
+            const glm::vec3 vt = rel - n * vn;
+            const glm::vec3 force = n * (kPress * area * vn * std::fabs(vn))
+                                  + vt * (kSkin * area * glm::length(vt));
+
+            // A third to each corner. Capped at the air's own speed relative to the
+            // cloth: no push can accelerate it past the wind, and a very light
+            // sheet under a long frame would otherwise be flung.
+            const JPH::Vec3 impulse = toBody * toJolt(force * (dt / 3.0f));
+            const float cap = glm::length(rel);
+            for (JPH::SoftBodyVertex* p : {&a, &b, &c}) {
+                if (p->mInvMass <= 0.0f) continue;   // pinned: holds, whatever blows
+                JPH::Vec3 dv = impulse * p->mInvMass;
+                const float m = dv.Length();
+                if (m > cap && m > 0.0f) dv *= cap / m;
+                p->mVelocity += dv;
+            }
+        }
+    }
+    // A cloth at rest goes to sleep, and a sleeping body ignores what is written
+    // into its velocities. Woken after the lock is released: activating takes it.
+    m_impl->system.GetBodyInterface().ActivateBody(bid);
 }
 
 // --- Character controller ---------------------------------------------------

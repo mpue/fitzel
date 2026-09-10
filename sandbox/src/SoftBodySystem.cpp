@@ -113,6 +113,84 @@ Surface clothSurface(glm::vec3 half, int res, int pinning) {
     return s;
 }
 
+// A sheet HANGING in the box's X/Y plane -- width along X, drop along Y, the top
+// edge at +Y and the pole edge at -X -- which is how a curtain, a banner and a
+// flag are all built: as they hang, so nothing has to swing into place first.
+//
+// The longer side gets three particles per Resolution step: a curtain needs
+// columns to fold on, and a flag rows to ripple along, far more than a jelly
+// cube needs per axis.
+//
+// `folds` pleats a top-held sheet: alternate columns step front and back, so the
+// fabric between two neighbours is longer than the rail between them. At 1 that
+// is twice the width of fabric on the rail, the fullness a real curtain is made
+// to. It is the rest shape, not a nudge: the constraints are measured from it,
+// so the pleats are what the cloth is, and gravity only deepens them.
+Surface hangingSurface(glm::vec3 half, int res, int pinning, int rings, float folds) {
+    using S = SoftBodyComponent;
+    const float w = half.x * 2.0f, h = half.y * 2.0f;
+    const int longCells  = std::clamp(res, 2, 10) * 3;
+    const int shortCells = std::max(2, static_cast<int>(
+        std::round(longCells * std::min(w, h) / std::max(std::max(w, h), 1.0e-3f))));
+    const int nx = (w >= h ? longCells : shortCells) + 1;   // columns
+    const int ny = (w >= h ? shortCells : longCells) + 1;   // rows, top first
+    const float cw = w / float(nx - 1), ch = h / float(ny - 1);
+
+    const bool topHeld = pinning == S::PinTop || pinning == S::PinRings;
+    const float amp = topHeld ? glm::clamp(folds, 0.0f, 1.0f) * 1.7f * cw : 0.0f;
+
+    // Ring columns: evenly spread, both ends included, never more than there
+    // are columns to put them on.
+    std::vector<std::uint8_t> ringCol(static_cast<std::size_t>(nx), 0);
+    if (pinning == S::PinRings) {
+        const int n = std::clamp(rings, 2, nx);
+        for (int k = 0; k < n; ++k)
+            ringCol[static_cast<std::size_t>(
+                std::lround(float(k) * float(nx - 1) / float(n - 1)))] = 1;
+    }
+
+    Surface s;
+    s.verts.reserve(static_cast<std::size_t>(nx) * ny);
+    s.pinned.assign(static_cast<std::size_t>(nx) * ny, 0);
+    for (int r = 0; r < ny; ++r)
+        for (int c = 0; c < nx; ++c) {
+            float z = (c & 1) ? 0.5f * amp : -0.5f * amp;
+            // A couple of millimetres of cockle, fixed per particle, for what is
+            // NOT held along its top. A perfectly flat sheet hanging in its own
+            // plane has gravity IN that plane and nothing to buckle it out of it,
+            // so a flag with no wind swings to and fro like a board on a hinge
+            // instead of falling limp against its pole. Real cloth is never flat;
+            // this is the least of that which works. A curtain hangs straight
+            // down its own threads and needs none -- it would only crumple.
+            if (!topHeld) {
+                const std::uint32_t hsh = static_cast<std::uint32_t>(r * 73856093) ^
+                                          static_cast<std::uint32_t>(c * 19349663);
+                z += (static_cast<float>((hsh * 2654435761u) >> 20) / 4096.0f - 0.5f) * 0.004f;
+            }
+            s.verts.push_back(glm::vec3(-half.x + c * cw, half.y - r * ch, z));
+            const bool top = (r == 0);
+            bool pin = false;
+            switch (pinning) {
+                case S::PinTop:        pin = top; break;
+                case S::PinRings:      pin = top && ringCol[static_cast<std::size_t>(c)]; break;
+                case S::PinTopCorners: pin = top && (c == 0 || c == nx - 1); break;
+                case S::PinPole:       pin = (c == 0); break;
+                default: break;
+            }
+            s.pinned[static_cast<std::size_t>(r) * nx + c] = pin ? 1 : 0;
+        }
+    for (int r = 0; r < ny - 1; ++r)
+        for (int c = 0; c < nx - 1; ++c) {
+            const int a = r * nx + c, b = r * nx + c + 1;
+            const int d = (r + 1) * nx + c, e = (r + 1) * nx + c + 1;
+            // Alternate the diagonal so the sheet has no grain: one direction
+            // throughout makes a cloth fold more easily one way than the other.
+            if ((r + c) & 1) { addTri(s, a, b, e); addTri(s, a, e, d); }
+            else             { addTri(s, a, b, d); addTri(s, b, e, d); }
+        }
+    return s;
+}
+
 // The entity's own modelled mesh as a soft shell, scaled the way the renderer
 // scales it (mesh bounds -> the entity's half-extents), so what starts wobbling
 // is exactly the shape that was standing there a frame ago.
@@ -158,13 +236,26 @@ void SoftBodySystem::spawn(std::vector<Entity>& entities,
         } else {
             Surface s;
             if (sc->kind == SoftBodyComponent::Cloth) {
-                s = clothSurface(half, sc->resolution, sc->pinning);
+                s = SoftBodyComponent::hangs(sc->pinning)
+                    ? hangingSurface(half, sc->resolution, sc->pinning, sc->rings, sc->folds)
+                    : clothSurface(half, sc->resolution, sc->pinning);
                 twoSided = true; // a sheet has no inside to cull away
                 // Cloth barely STRETCHES but folds easily, so its diagonals have
                 // to give where its edges do not. Tie the two together and a
                 // hanging sheet comes out as a stiff panel: it is the shear that
                 // makes the difference between a flag and a table top.
                 desc.shearCompliance = desc.compliance * 4.0f + 2.0e-4f;
+                if (SoftBodyComponent::hangs(sc->pinning)) {
+                    // Hanging, the diagonals are what let it hang at all. A flag
+                    // droops off its pole, and a curtain falls into folds, only by
+                    // SHEARING: its threads stay their length and the weave
+                    // skews. At the lying sheet's shear a light flag -- a couple
+                    // of grams a particle, which is what a flag is -- stands off
+                    // its pole like a sign, because compliance is per constraint
+                    // and those grams barely load it.
+                    const float soft = glm::clamp(sc->softness, 0.0f, 1.0f);
+                    desc.shearCompliance = 0.05f + 0.5f * soft * soft;
+                }
             } else if (sc->kind == SoftBodyComponent::FromMesh) {
                 const auto* mc = e.components.get<MeshComponent>();
                 if (!mc) continue; // nothing modelled here to make soft
@@ -187,6 +278,7 @@ void SoftBodySystem::spawn(std::vector<Entity>& entities,
         if (faces <= 0 || count <= 0) continue;
         Body b;
         b.id = id;
+        if (sc->kind == SoftBodyComponent::Cloth) { b.cloth = true; b.wind = sc->wind; }
         b.tris.resize(static_cast<std::size_t>(faces) * 3);
         world.getSoftFaces(id, b.tris.data(), faces * 3);
         b.verts.resize(static_cast<std::size_t>(count));
@@ -214,6 +306,16 @@ void SoftBodySystem::spawn(std::vector<Entity>& entities,
             if (twoSided) mc->mesh.faces.push_back({d, c, a});
         }
         m_bodies[e.id] = std::move(b);
+    }
+}
+
+void SoftBodySystem::blow(fitzel::PhysicsWorld& world, float time, float dt) {
+    // Every cloth, wind or not: still air is what settles a swinging curtain.
+    // Half turbulence: enough for a flag to fly and a curtain to breathe, not so
+    // much that a steady breeze reads as a storm.
+    for (const auto& kv : m_bodies) {
+        const Body& b = kv.second;
+        if (b.cloth) world.applySoftWind(b.id, b.wind, 0.5f, time, dt);
     }
 }
 
