@@ -29,7 +29,7 @@ const char* kVegOpts[]     = {"Off", "Sparse", "Medium", "Full", nullptr};
 const char* kCityOpts[]    = {"Near", "Balanced", "Far", nullptr};
 const char* kOffOn[]       = {"Off", "On", nullptr};
 const char* kBlurOpts[]    = {"Off", "Subtle", "Full", nullptr};
-const char* kAaOpts[]      = {"Off", "FXAA", nullptr};
+const char* kAaOpts[]      = {"Off", "FXAA", "TAA", nullptr};
 
 struct Row {
     const char* label;
@@ -98,8 +98,10 @@ const Row kRows[] = {
 
     {"Anti-aliasing", &Settings::aa, kAaOpts,
      "Smooths the stair-stepping along edges. FXAA works on the finished\n"
-     "image, so it softens fine detail slightly along with the edges.",
-     "One cheap full-screen pass."},
+     "image and softens fine detail with the edges. TAA gathers each pixel\n"
+     "over several frames: grass, fences and far edges stop crawling.",
+     "FXAA: one cheap pass. TAA: two, plus a pass for whatever moved --\n"
+     "still cheap, and not offered in split screen."},
 
     {"V-Sync", &Settings::vsync, kOffOn,
      "Hands each finished frame to the screen on its own refresh. On removes\n"
@@ -124,9 +126,9 @@ int optionCount(const char* const* opts) {
 const Settings kPresets[4] = {
     // preset, view, shadow, refl, rate, veg, city, ao, bloom, dof, mb, aa, vsync
     {0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1},   // Low
-    {1, 2, 1, 1, 1, 2, 1, 1, 1, 0, 1, 1, 1},   // Medium
-    {2, 3, 2, 2, 2, 3, 1, 1, 1, 1, 2, 1, 1},   // High
-    {3, 5, 3, 3, 3, 3, 2, 1, 1, 1, 2, 1, 1},   // Ultra
+    {1, 2, 1, 1, 1, 2, 1, 1, 1, 0, 1, 2, 1},   // Medium
+    {2, 3, 2, 2, 2, 3, 1, 1, 1, 1, 2, 2, 1},   // High
+    {3, 5, 3, 3, 3, 3, 2, 1, 1, 1, 2, 2, 1},   // Ultra
 };
 const char* kPresetNames[] = {"Low", "Medium", "High", "Ultra"};
 constexpr int kCustom = 4;
@@ -326,7 +328,13 @@ Settings load(const std::string& file) {
     s.bloom        = get("bloom",        s.bloom,        kOffOn);
     s.dof          = get("dof",          s.dof,          kOffOn);
     s.motionBlur   = get("motionBlur",   s.motionBlur,   kBlurOpts);
-    s.aa           = get("aa",           s.aa,           kAaOpts);
+    // "antiAliasing" replaced "aa" when TAA arrived. A file from before it knew
+    // only Off and FXAA, and FXAA was simply the best on offer then -- so that
+    // becomes TAA, while an explicit Off stays off.
+    if (j.contains("antiAliasing"))
+        s.aa = get("antiAliasing", s.aa, kAaOpts);
+    else if (j.contains("aa"))
+        s.aa = (j.value("aa", 1) == 0) ? 0 : 2;
     s.vsync        = get("vsync",        s.vsync,        kOffOn);
     refreshPresetLabel(s);
     return s;
@@ -339,7 +347,7 @@ void save(const std::string& file, const Settings& s) {
         {"vegetation", s.vegetation},     {"cityDetail", s.cityDetail},
         {"ao", s.ao},                     {"bloom", s.bloom},
         {"dof", s.dof},                   {"motionBlur", s.motionBlur},
-        {"aa", s.aa},                     {"vsync", s.vsync},
+        {"antiAliasing", s.aa},           {"vsync", s.vsync},
     };
     std::ofstream f(file);
     if (f) f << j.dump(2) << '\n';
@@ -372,7 +380,8 @@ void apply(const Settings& s, const Settings& prev, fitzel::Renderer& renderer,
         renderer.setEnvProbeMaxFaces(faces);
     }
 
-    if (t.fxaa) *t.fxaa = (s.aa > 0);
+    if (t.fxaa) *t.fxaa = (s.aa == 1);
+    if (t.taa)  *t.taa  = (s.aa == 2);
 
     const int veg = std::clamp(s.vegetation, 0, 3);
     if (t.grassEnabled)  *t.grassEnabled  = (veg > 0);

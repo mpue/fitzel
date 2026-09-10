@@ -1541,6 +1541,14 @@ int main(int argc, char** argv) {
         bool&      blurAnchorValid = race.blurAnchorValid;
         float&     blurSpeed01     = race.blurSpeed01; // craft speed 0..~1.4 -> streak len
         bool fxaaEnabled = true;
+        // Temporal AA (see PostChain / taa.frag). Wins over FXAA when on; not
+        // used in split screen, where one history would serve two cameras.
+        bool  taaEnabled = true;
+        float taaSharpen = 0.35f;
+        unsigned  taaFrame = 0;            // jitter sequence position
+        glm::mat4 taaPrevVP[2]{glm::mat4(1.0f), glm::mat4(1.0f)}; // per pane, unjittered
+        glm::vec3 taaPrevEye[2]{glm::vec3(0.0f), glm::vec3(0.0f)};
+        bool      taaHavePrev[2]{false, false};
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
@@ -1850,6 +1858,7 @@ int main(int argc, char** argv) {
             t.envProbeRes   = &envProbeRes;
             t.envProbeFaces = &envProbeFaces;
             t.fxaa          = &fxaaEnabled;
+            t.taa           = &taaEnabled;
             t.grassEnabled  = &veg.grassEnabled;
             t.flowerEnabled = &veg.flowerEnabled;
             t.grassDensity  = &veg.grassDensity;
@@ -13116,7 +13125,17 @@ int main(int argc, char** argv) {
                                       "world smears outward past the craft, growing\n"
                                       "with speed. 0 = off. (No effect on the free camera.)");
                 ui::sectionText("Anti-aliasing");
+                ImGui::Checkbox("TAA", &taaEnabled);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Temporal anti-aliasing: every pixel gathered over\n"
+                                      "several frames. Grass, fences and far edges stop\n"
+                                      "crawling. Replaces FXAA while on; split screen\n"
+                                      "falls back to FXAA.");
+                if (taaEnabled)
+                    ImGui::SliderFloat("Sharpen", &taaSharpen, 0.0f, 1.0f, "%.2f");
+                ImGui::BeginDisabled(taaEnabled);
                 ImGui::Checkbox("FXAA", &fxaaEnabled);
+                ImGui::EndDisabled();
                 ui::sectionText("Split screen");
                 ImGui::Checkbox("Two panes", &splitScreen);
                 if (ImGui::IsItemHovered())
@@ -15264,8 +15283,30 @@ int main(int argc, char** argv) {
             // of the camera entity now, so two players can be looking through
             // different lenses. (The outer `proj` stays what the shared work --
             // shadow fitting, the probe -- was sized against.)
-            const glm::mat4  proj   = vcam.projectionMatrix(aspect);
+            // Temporal AA: this frame is drawn a sub-pixel off, a different
+            // offset every frame, and the resolve gathers them. Only in a single
+            // full-shading pane -- one history cannot serve two cameras, and a
+            // wireframe gathered over frames is a smear.
+            const bool useTaa = taaEnabled && views == 1 && shadeFull;
+            const glm::mat4  projUnjittered = vcam.projectionMatrix(aspect);
+            glm::vec2 taaJitter(0.0f);
+            glm::mat4 projJ = projUnjittered;
+            if (useTaa) {
+                taaJitter = PostChain::jitter(taaFrame, paneW, fbH);
+                if (projJ[2][3] != 0.0f) {
+                    // Perspective: subtracting from the z column moves NDC by
+                    // +jitter, since w = -z.
+                    projJ[2][0] -= taaJitter.x;
+                    projJ[2][1] -= taaJitter.y;
+                } else {
+                    // Orthographic (w = 1): the translation column does it.
+                    projJ[3][0] += taaJitter.x;
+                    projJ[3][1] += taaJitter.y;
+                }
+            }
+            const glm::mat4  proj   = projJ;
             const glm::mat4  mainVP = proj * view;
+            const glm::mat4  mainVPUnjittered = projUnjittered * view;
 
             // This pane's shadow cascades. Pane 0 already has them from the
             // shared pass above; the second pane re-fits them to its own eye,
@@ -15657,6 +15698,26 @@ int main(int argc, char** argv) {
                 pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
                 pp.blurAnchorValid  = blurSt.blurAnchorValid;
+                if (useTaa) {
+                    // A cut -- the camera jumped, or this is the first frame --
+                    // leaves a history that belongs to another picture; drop it
+                    // rather than let the resolve drag it across the new one.
+                    const bool cut = !taaHavePrev[vi] ||
+                                     glm::distance(camPos, taaPrevEye[vi]) > 25.0f;
+                    pp.taa      = true;
+                    pp.curVP    = mainVPUnjittered;
+                    pp.prevVP   = cut ? mainVPUnjittered : taaPrevVP[vi];
+                    pp.jitterUV = taaJitter * 0.5f;
+                    pp.taaReset = cut;
+                    // Motion for what moved on its own, depth-tested against
+                    // everything the HDR buffer now holds.
+                    FZ_GPU_ZONE("GPU motion vectors");
+                    post.beginMotion(hdrRT);
+                    renderer.renderMotion(mainVP, pp.curVP, pp.prevVP);
+                }
+                taaPrevVP[vi]   = mainVPUnjittered;
+                taaPrevEye[vi]  = camPos;
+                taaHavePrev[vi] = useTaa;
                 FZ_GPU_ZONE("GPU post (bloom/blur)");
                 post.run(hdrRT, pp, fsQuad);
             }
@@ -15683,8 +15744,10 @@ int main(int argc, char** argv) {
                 glViewport(vi * pw, 0, pw, dstH);
             }
             { FZ_GPU_ZONE("GPU composite");
-              post.present(fsQuad, fxaaEnabled); }
+              // TAA replaces FXAA and brings its sharpening along instead.
+              post.present(fsQuad, fxaaEnabled && !useTaa, useTaa ? taaSharpen : 0.0f); }
             } // per-pane loop
+            ++taaFrame;   // the next jitter offset, once per frame whatever the panes
 
             // Back to the whole image. Everything after this -- the editor grid,
             // the HUD, ImGui -- addresses the full target, and would otherwise

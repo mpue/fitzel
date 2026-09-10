@@ -39,6 +39,7 @@ bool PostChain::init() {
         {&m_motionBlur, "assets/shaders/motionblur.frag", "motion blur"},
         {&m_fxaa,       "assets/shaders/fxaa.frag",       "fxaa"},
         {&m_meter,      "assets/shaders/meter.frag",      "exposure meter"},
+        {&m_taa,        "assets/shaders/taa.frag",        "taa resolve"},
     };
     for (const Load& l : loads) {
         *l.dst = fitzel::Shader::fromFiles(kVert, l.frag);
@@ -57,6 +58,8 @@ bool PostChain::init() {
 }
 
 PostChain::~PostChain() {
+    if (m_motionTex) glDeleteTextures(1, &m_motionTex);
+    if (m_motionFbo) glDeleteFramebuffers(1, &m_motionFbo);
     for (void*& f : m_meterFence)
         if (f) { glDeleteSync(reinterpret_cast<GLsync>(f)); f = nullptr; }
     if (m_meterPbo[0]) glDeleteBuffers(kMeterRing, m_meterPbo);
@@ -73,6 +76,9 @@ void PostChain::resize(int w, int h) {
     m_ssaoBlurRT = RT(std::max(1, w / 2), std::max(1, h / 2));
     m_postRT     = RT(w, h, RT::Format::RGBA8);
     m_mbRT       = RT(w, h, RT::Format::RGBA8);
+    m_taaRT[0]   = RT(w, h, RT::Format::RGBA16F);
+    m_taaRT[1]   = RT(w, h, RT::Format::RGBA16F);
+    m_taaValid   = false;   // a history of another size is no history
 
     m_bloom.clear();
     int lw = std::max(1, w / 2), lh = std::max(1, h / 2);
@@ -84,6 +90,48 @@ void PostChain::resize(int w, int h) {
     m_result = nullptr;
 }
 
+glm::vec2 PostChain::jitter(unsigned frame, int width, int height) {
+    auto halton = [](unsigned i, unsigned base) {
+        float f = 1.0f, r = 0.0f;
+        for (unsigned n = i; n > 0; n /= base) {
+            f /= static_cast<float>(base);
+            r += f * static_cast<float>(n % base);
+        }
+        return r;
+    };
+    const unsigned i = (frame % 8u) + 1u;   // skip index 0, which is (0, 0)
+    // [-0.5, 0.5) of a pixel, in NDC (a pixel is 2/size of it).
+    return glm::vec2((halton(i, 2) - 0.5f) * 2.0f / static_cast<float>(std::max(width, 1)),
+                     (halton(i, 3) - 0.5f) * 2.0f / static_cast<float>(std::max(height, 1)));
+}
+
+void PostChain::beginMotion(const fitzel::RenderTarget& hdr) {
+    if (!m_motionFbo) glGenFramebuffers(1, &m_motionFbo);
+    if (!m_motionTex || m_motionW != m_w || m_motionH != m_h) {
+        if (!m_motionTex) glGenTextures(1, &m_motionTex);
+        glBindTexture(GL_TEXTURE_2D, m_motionTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, m_w, m_h, 0, GL_RGBA, GL_FLOAT, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        m_motionW = m_w;
+        m_motionH = m_h;
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, m_motionFbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_motionTex, 0);
+    // The lit pass's own depth, so the motion is written only where the moving
+    // surface is actually the one in front. Re-attached every frame: the HDR
+    // target is reallocated whenever the pane changes size.
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
+                           hdr.depthTexture(), 0);
+    glViewport(0, 0, m_w, m_h);
+    glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    m_motionThisFrame = true;
+}
+
 void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
                     fitzel::Mesh& fsQuad) {
     // Fullscreen passes: no depth, no culling, no blending unless a pass asks
@@ -92,6 +140,36 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
+
+    // --- Temporal anti-aliasing: the jittered frame into the running history.
+    //     Everything after reads the resolve instead of the raw frame -- bloom
+    //     and the meter too, or they would flicker with the jitter. -----------
+    const fitzel::RenderTarget* scene = &hdr;
+    if (p.taa) {
+        const int next = 1 - m_taaCur;
+        m_taaRT[next].bind();
+        m_taa.bind();
+        hdr.bindColorTexture(0);              m_taa.setInt("uCur", 0);
+        m_taaRT[m_taaCur].bindColorTexture(1); m_taa.setInt("uHistory", 1);
+        hdr.bindDepthTexture(2);              m_taa.setInt("uDepth", 2);
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, m_motionTex);
+        m_taa.setInt("uMotion", 3);
+        m_taa.setInt("uHasMotion", (m_motionThisFrame && m_motionTex) ? 1 : 0);
+        m_taa.setMat4("uInvCurVP", glm::inverse(p.curVP));
+        m_taa.setMat4("uPrevVP", p.prevVP);
+        m_taa.setVec2("uTexel", {1.0f / m_w, 1.0f / m_h});
+        m_taa.setVec2("uJitter", p.jitterUV);
+        m_taa.setFloat("uBlend", 0.1f);
+        m_taa.setInt("uReset", (!m_taaValid || p.taaReset) ? 1 : 0);
+        fsQuad.draw();
+        m_taaCur   = next;
+        m_taaValid = true;
+        scene      = &m_taaRT[m_taaCur];
+    } else {
+        m_taaValid = false;   // what is in there now would be stale when it returns
+    }
+    m_motionThisFrame = false;
 
     // --- SSAO: occlusion from the HDR depth buffer (half-res) ---------------
     m_ssaoRT.bind();
@@ -130,7 +208,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         glClear(GL_COLOR_BUFFER_BIT);
         m_bloomDown.bind();
         if (i == 0) {
-            hdr.bindColorTexture(0);
+            scene->bindColorTexture(0);
             m_bloomDown.setVec2("uSrcTexel", {1.0f / m_w, 1.0f / m_h});
         } else {
             m_bloom[i - 1].bindColorTexture(0);
@@ -167,7 +245,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         m_meterCells.bind();
         m_meter.bind();
         m_meter.setInt("uStage", 0);
-        hdr.bindColorTexture(0);           m_meter.setInt("uSrc", 0);
+        scene->bindColorTexture(0);           m_meter.setInt("uSrc", 0);
         fsQuad.draw();
         // Stage 1: one pixel adds the cells up and eases towards them.
         const int prev = m_adaptCur, next = 1 - m_adaptCur;
@@ -206,7 +284,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     glDepthMask(GL_FALSE);
     glDisable(GL_CULL_FACE);
     m_composite.bind();
-    hdr.bindColorTexture(0);   m_composite.setInt("uHdr", 0);
+    scene->bindColorTexture(0);   m_composite.setInt("uHdr", 0);
     hdr.bindDepthTexture(1);   m_composite.setInt("uDepth", 1);
     m_composite.setFloat("uNear", p.nearPlane);
     m_composite.setFloat("uFar", p.farPlane);
@@ -324,11 +402,12 @@ void PostChain::readBackMeter(const Params& p) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 }
 
-void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled) {
+void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen) {
     if (!m_result) return;   // run() has not produced anything yet
     m_fxaa.bind();
     m_result->bindColorTexture(0);
     m_fxaa.setInt("uImage", 0);
+    m_fxaa.setFloat("uSharpen", sharpen);
     // The source is one pane, not the window.
     m_fxaa.setVec2("uTexel", {1.0f / m_w, 1.0f / m_h});
     m_fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);

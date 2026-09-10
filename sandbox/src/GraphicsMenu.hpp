@@ -46,7 +46,7 @@ struct Settings {
     int bloom        = 1;  // off, on
     int dof          = 1;  // off, on
     int motionBlur   = 2;  // off, half, full
-    int aa           = 1;  // off, FXAA
+    int aa           = 2;  // off, FXAA, TAA
     int vsync        = 1;  // off, on
 
     bool operator==(const Settings& o) const;
@@ -76,6 +76,7 @@ struct Targets {
     int*   envProbeRes    = nullptr;  // mirrored copy of the probe's face size
     int*   envProbeFaces  = nullptr;  // probe faces refreshed per frame
     bool*  fxaa           = nullptr;
+    bool*  taa            = nullptr;
     bool*  grassEnabled   = nullptr;
     bool*  flowerEnabled  = nullptr;
     float* grassDensity   = nullptr;

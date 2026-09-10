@@ -8,13 +8,34 @@ out vec4 FragColor;
 uniform sampler2D uImage;
 uniform vec2  uTexel;   // 1 / resolution
 uniform int   uEnabled;
+uniform float uSharpen;  // 0 = off; used when FXAA is off (TAA is on instead)
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// Contrast-adaptive sharpening (AMD's CAS, the five-tap form). Temporal AA
+// averages every pixel with its past and comes out a touch soft; an unsharp mask
+// would buy the edge back and the aliasing with it. CAS scales its kernel by how
+// much headroom the neighbourhood has, so it lifts texture and detail and leaves
+// already-hard edges alone.
+vec3 sharpen(vec2 uv, vec3 c) {
+    vec3 n = texture(uImage, uv + vec2(0.0, -1.0) * uTexel).rgb;
+    vec3 s = texture(uImage, uv + vec2(0.0,  1.0) * uTexel).rgb;
+    vec3 e = texture(uImage, uv + vec2( 1.0, 0.0) * uTexel).rgb;
+    vec3 w = texture(uImage, uv + vec2(-1.0, 0.0) * uTexel).rgb;
+    vec3 mn = min(c, min(min(n, s), min(e, w)));
+    vec3 mx = max(c, max(max(n, s), max(e, w)));
+    vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+    vec3 wgt = amp * (-1.0 / mix(8.0, 5.0, clamp(uSharpen, 0.0, 1.0)));
+    return clamp((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt), 0.0, 1.0);
+}
 
 void main() {
     vec2 uv = vNdc * 0.5 + 0.5;
     vec3 rgbM = texture(uImage, uv).rgb;
-    if (uEnabled == 0) { FragColor = vec4(rgbM, 1.0); return; }
+    if (uEnabled == 0) {
+        FragColor = vec4(uSharpen > 0.001 ? sharpen(uv, rgbM) : rgbM, 1.0);
+        return;
+    }
 
     vec3 rgbNW = texture(uImage, uv + vec2(-1.0, -1.0) * uTexel).rgb;
     vec3 rgbNE = texture(uImage, uv + vec2( 1.0, -1.0) * uTexel).rgb;

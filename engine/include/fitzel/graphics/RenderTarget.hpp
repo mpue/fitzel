@@ -35,6 +35,10 @@ public:
 
     // Raw GL color texture handle (e.g. to display the target via ImGui::Image).
     std::uint32_t colorTexture() const { return m_colorTex; }
+    // Raw GL depth texture handle (0 unless created with depthAsTexture), for a
+    // pass that has to depth-test against this target's depth from another
+    // framebuffer -- the motion vectors do, against the lit pass's depth.
+    std::uint32_t depthTexture() const { return m_depthTex; }
 
 private:
     std::uint32_t m_fbo       = 0;

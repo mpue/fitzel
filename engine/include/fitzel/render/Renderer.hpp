@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -172,6 +173,17 @@ public:
                 bool castsPointShadow = true, bool reflective = false,
                 float opacity = 1.0f, bool forceTransparent = false);
 
+    // Screen-space motion, for temporal anti-aliasing: draws every opaque
+    // surface that MOVED since the last frame into whatever target is bound,
+    // depth-tested (LEQUAL, no writes) against the depth the lit pass left.
+    // `viewProj` must be the matrix that pass drew with (jitter included), so
+    // the test finds its fragments; `curVP` / `prevVP` are this and last
+    // frame's matrices WITHOUT jitter, between which the motion is measured.
+    // Writes (uvNow - uvThen, 0, 1); what it does not touch is the caller's
+    // clear, which the resolve reads as "reproject from depth".
+    void renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
+                      const glm::mat4& prevVP);
+
     // Render the scene (opaque queue minus reflective surfaces + the sky drawn
     // by `drawSky`) into the environment-probe cubemap from `pos`. Call after
     // submit()/prepareShadows() and before the lit passes so those passes sample
@@ -337,7 +349,16 @@ private:
         int             castAlphaMode; // 0 opaque, 1 cutout, 2 blend
         float           castCutoff;    // cutout threshold (mode 1)
         const Texture*  castTex;       // alpha source for modes 1 and 2
+        // Where this surface stood last frame (see begin()), for the motion
+        // vectors. Equal to `model` for anything that did not move.
+        glm::mat4       prevModel;
     };
+    // Last frame's matrices per mesh, in submission order, and how many of
+    // each mesh this frame has submitted so far -- how submit() finds a
+    // surface's previous placement without the callers having to name it.
+    std::unordered_map<const Mesh*, std::vector<glm::mat4>> m_lastModels;
+    std::unordered_map<const Mesh*, int>                    m_meshSeen;
+    Shader            m_motionShader;
 
     // The opaque scene, copied out of whatever target is bound just before the
     // transparent pass. Grown to the viewport on demand and reused; 0 until some

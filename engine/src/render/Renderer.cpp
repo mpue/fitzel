@@ -103,6 +103,43 @@ void main() {
 }
 )";
 
+// Motion vectors for the temporal anti-aliasing. Drawn only for surfaces that
+// moved since the last frame, depth-tested against the finished opaque scene:
+// everything else is reprojected from depth and the camera alone, which is
+// exact for a world that stands still. The position goes through the SAME
+// jittered matrix and the same arithmetic as lit.vert, so the depth test finds
+// the very fragments the lit pass wrote; the motion itself is measured between
+// the unjittered matrices, because the jitter is not motion.
+constexpr const char* kMotionVert = R"(#version 330 core
+layout(location = 0) in vec3 aPos;
+uniform mat4 uModel;
+uniform mat4 uPrevModel;
+uniform mat4 uViewProj;      // this frame's, jittered -- for the depth test
+uniform mat4 uCurVP;         // this frame's, unjittered
+uniform mat4 uPrevVP;        // last frame's, unjittered
+out vec4 vCur;
+out vec4 vPrev;
+void main() {
+    vec4 world = uModel * vec4(aPos, 1.0);
+    vCur  = uCurVP * world;
+    vPrev = uPrevVP * (uPrevModel * vec4(aPos, 1.0));
+    gl_Position = uViewProj * world;
+}
+)";
+
+constexpr const char* kMotionFrag = R"(#version 330 core
+in vec4 vCur;
+in vec4 vPrev;
+out vec4 oMotion;
+void main() {
+    // UV units (NDC / 2): where this point was on screen, relative to where it
+    // is. Alpha 1 marks "measured"; the clear leaves 0, "reproject from depth".
+    vec2 cur  = vCur.xy  / vCur.w;
+    vec2 prev = vPrev.xy / vPrev.w;
+    oMotion = vec4((cur - prev) * 0.5, 0.0, 1.0);
+}
+)";
+
 // A glass pane refracts the sun rather than stopping it, so it dims what passes
 // instead of blocking it. The scalar stand-in pathtrace::shadowFactor() uses
 // for the caustics nobody is tracing -- without its tint, which a depth map has
@@ -224,7 +261,8 @@ const glm::vec4 Renderer::kNoClip = glm::vec4(0.0f, 1.0f, 0.0f, 1.0e6f);
 Renderer::Renderer(int shadowResolution, int cascades)
     : m_csm(shadowResolution, cascades),
       m_depthShader(Shader::fromSource(kDepthVert, kDepthFrag)),
-      m_cubeDistShader(Shader::fromSource(kCubeVert, kCubeFrag)) {
+      m_cubeDistShader(Shader::fromSource(kCubeVert, kCubeFrag)),
+      m_motionShader(Shader::fromSource(kMotionVert, kMotionFrag)) {
     // Filter across cube-face edges. Without it every cubemap lookup clamps at
     // its face, which is invisible on a sharp mirror and ruinous on a rough one:
     // the coarse mips a rough surface reads are a handful of texels per face,
@@ -252,6 +290,13 @@ void Renderer::begin(const Camera& camera, float aspect,
     m_camera = &camera;
     m_aspect = aspect;
     m_light  = light;
+    // Last frame's placements, for the motion vectors: every mesh's matrices in
+    // the order they were submitted. The n-th submission of a mesh this frame
+    // is taken to be the n-th one last frame -- true for everything that
+    // submits the same things in the same order each frame, which is all of it.
+    for (auto& [mesh, models] : m_lastModels) models.clear();
+    for (const Renderable& r : m_queue) m_lastModels[r.mesh].push_back(r.model);
+    for (auto& [mesh, n] : m_meshSeen) n = 0;
     m_queue.clear();
 }
 
@@ -279,9 +324,48 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
             alphaTex  = tex;
         }
     }
+    // Where this surface was last frame (see begin()); a first appearance has
+    // no past and is treated as having stood still.
+    glm::mat4 prevModel = model;
+    {
+        int& nth = m_meshSeen[&mesh];
+        const auto it = m_lastModels.find(&mesh);
+        if (it != m_lastModels.end() && nth < static_cast<int>(it->second.size()))
+            prevModel = it->second[static_cast<std::size_t>(nth)];
+        ++nth;
+    }
     m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective,
                        opacity, forceTransparent,
-                       coverage, alphaMode, cutoff, alphaTex});
+                       coverage, alphaMode, cutoff, alphaTex, prevModel});
+}
+
+void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
+                            const glm::mat4& prevVP) {
+    if (!m_motionShader.isValid()) return;
+    const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
+    GLint prevFunc = GL_LESS;
+    glGetIntegerv(GL_DEPTH_FUNC, &prevFunc);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
+    glDisable(GL_CLIP_DISTANCE0);
+    m_motionShader.bind();
+    m_motionShader.setMat4("uViewProj", viewProj);
+    m_motionShader.setMat4("uCurVP", curVP);
+    m_motionShader.setMat4("uPrevVP", prevVP);
+    for (const Renderable& r : m_queue) {
+        if (r.model == r.prevModel) continue;               // stood still
+        if (r.opacity < 0.999f || r.forceTransparent) continue; // wrote no depth
+        if (!aabbVisible(planes, worldAabb(r.model, r.mesh->boundsMin(),
+                                           r.mesh->boundsMax())))
+            continue;
+        m_motionShader.setMat4("uModel", r.model);
+        m_motionShader.setMat4("uPrevModel", r.prevModel);
+        r.mesh->draw();
+    }
+    glDepthMask(GL_TRUE);
+    glDepthFunc(static_cast<GLenum>(prevFunc));
 }
 
 void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,

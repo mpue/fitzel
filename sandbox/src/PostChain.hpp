@@ -74,6 +74,18 @@ public:
         float adaptSpeed = 1.5f;
         float dt = 1.0f / 60.0f;       // frame time, for the easing
 
+        // Temporal anti-aliasing (taa.frag). The frame must have been drawn
+        // with jitter(frame) folded into its projection, and beginMotion()
+        // called after the opaque pass. curVP / prevVP are this and last
+        // frame's view-projection WITHOUT the jitter; `jitterUV` is the offset
+        // this frame was drawn with, in UV. `taaReset` drops the history (a
+        // camera cut, a scene load).
+        bool      taa = false;
+        glm::mat4 curVP{1.0f};
+        glm::mat4 prevVP{1.0f};
+        glm::vec2 jitterUV{0.0f};
+        bool      taaReset = false;
+
         // Radial speed blur: how strong, and the world point it stays sharp
         // around (the craft being followed). Invalid = no blur this pane.
         float     blurStrength = 0.0f;   // already scaled by the craft's speed
@@ -89,7 +101,21 @@ public:
     // by FXAA (or copied straight through with it off). Separate from run()
     // because the destination is the caller's business: the editor's viewport
     // image, the screen, or one half of either.
-    void present(fitzel::Mesh& fsQuad, bool fxaaEnabled);
+    // `sharpen` (0..1) applies contrast-adaptive sharpening when FXAA is off --
+    // the partner of TAA, which resolves a little soft.
+    void present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen = 0.0f);
+
+    // --- Temporal anti-aliasing ----------------------------------------------
+    // The sub-pixel offset for frame `frame`, in NDC: fold it into the
+    // projection (proj[2][0] += x, proj[2][1] += y) of every pass that draws
+    // into the HDR buffer. Halton(2,3), eight steps -- evenly spread over the
+    // pixel however many of them the history has seen.
+    static glm::vec2 jitter(unsigned frame, int width, int height);
+
+    // Bind a target that shares `hdr`'s depth and clear its colour, for
+    // Renderer::renderMotion to draw into. Call after the opaque scene, before
+    // run(); a frame that does not call it is resolved from depth alone.
+    void beginMotion(const fitzel::RenderTarget& hdr);
 
     // The log2 luminance a sunlit daytime frame meters at: what auto exposure
     // holds the picture to. Measured, not derived: five daytime projects
@@ -113,7 +139,19 @@ private:
     int m_w = 0, m_h = 0;
 
     fitzel::Shader m_ssao, m_ssaoBlur, m_bloomDown, m_bloomUp;
-    fitzel::Shader m_composite, m_motionBlur, m_fxaa, m_meter;
+    fitzel::Shader m_composite, m_motionBlur, m_fxaa, m_meter, m_taa;
+
+    // TAA: two resolves, ping-ponged (one is this frame's, the other the
+    // history it reads), and the motion target, which borrows the HDR
+    // buffer's depth -- raw GL, because a RenderTarget owns its own depth.
+    fitzel::RenderTarget m_taaRT[2] = {{1, 1, fitzel::RenderTarget::Format::RGBA16F},
+                                       {1, 1, fitzel::RenderTarget::Format::RGBA16F}};
+    int      m_taaCur      = 0;
+    bool     m_taaValid    = false;   // the other target holds a usable history
+    unsigned m_motionFbo   = 0;
+    unsigned m_motionTex   = 0;
+    int      m_motionW = 0, m_motionH = 0;
+    bool     m_motionThisFrame = false;
 
     // Exposure meter: two 1x1 targets, ping-ponged (the pass reads last
     // frame's value to ease from it), plus the read-back ring.
