@@ -1552,6 +1552,9 @@ int main(int argc, char** argv) {
         // Screen-space reflections (lit.frag ssrTrace), traced through the last
         // frame the post chain kept. Needs taaPrevVP, which is kept either way.
         bool      ssrEnabled = true;
+        // Contact shadows (lit.frag contactShadow): short rays to the sun
+        // through the same history, for what the cascades are too coarse for.
+        bool      contactShadows = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
@@ -4594,6 +4597,7 @@ int main(int argc, char** argv) {
         addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
         addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
         addF("adaptSpeed", adaptSpeed);        addB("ssr", ssrEnabled);
+        addB("contactShadows", contactShadows);
         addF("vignette", vignette);            addF("filmGrain", filmGrain);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
@@ -13068,6 +13072,12 @@ int main(int argc, char** argv) {
                                       "Raise it if flat surfaces look dirty, lower it\n"
                                       "for more contact shading in creases.");
                 ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
+                ImGui::Checkbox("Contact shadows", &contactShadows);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Short rays towards the sun for the small shadows\n"
+                                      "the cascades are too coarse to cast -- a wheel\n"
+                                      "on the road, a stone on the ground. Near the\n"
+                                      "camera only.");
                 // Reflection probe: the cubemap a wet road (and any reflective
                 // material) mirrors. Applied on pick rather than per frame --
                 // changing it reallocates both cubes.
@@ -15429,12 +15439,17 @@ int main(int argc, char** argv) {
                 // look from elsewhere. Not on the very first frame, nor with the
                 // player's Reflections off, nor in split screen (the history is
                 // one pane's).
-                const bool ssr = ssrEnabled && gfxSet.reflections > 0 && views == 1 &&
-                                 shadeFull && post.historyColor() != 0 &&
-                                 glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
-                if (ssr)
+                // Contact shadows read the same history, for short rays towards
+                // the sun; they go with the player's Shadows setting instead.
+                const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
+                                     glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
+                const bool ssr     = history && ssrEnabled && gfxSet.reflections > 0;
+                const bool contact = history && contactShadows && gfxSet.shadows > 0 &&
+                                     renderer.shadowsEnabled();
+                if (ssr || contact)
                     renderer.setScreenHistory(post.historyColor(), post.historyDepth(),
-                                              taaPrevVP[vi], vcam.nearPlane(), vcam.farPlane());
+                                              taaPrevVP[vi], vcam.nearPlane(), vcam.farPlane(),
+                                              ssr, contact);
                 renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
                 renderer.clearScreenHistory();
             }

@@ -277,6 +277,41 @@ vec4 ssrTrace(vec3 P, vec3 R, float rough) {
     return vec4(0.0);
 }
 
+// --- Contact shadows ----------------------------------------------------------
+// The cascades spread a fixed texture over a hundred metres and more, so a
+// shadow texel is several centimetres across: a wheel's shadow on the road, a
+// stone's on the ground, the gap under a door all dissolve into the normal
+// offset and the filter, and objects float. A short ray towards the sun through
+// last frame's depth (the same history the reflections use) finds what the
+// cascades cannot resolve. Only close to the camera, where it matters and where
+// the depth is precise enough to trust.
+uniform int uContactShadows;    // 1 = trace them (needs the history, as uSsr)
+
+float contactShadow(vec3 P, vec3 N, vec3 L) {
+    if (uContactShadows == 0) return 0.0;
+    float viewDist = length(uViewPos - P);
+    if (viewDist > 60.0) return 0.0;
+    const int STEPS = 12;
+    float reach = 0.35 + 0.012 * viewDist;          // metres towards the sun
+    float step  = reach / float(STEPS);
+    float t     = step * (0.5 + fract(52.9829189 * fract(dot(gl_FragCoord.xy,
+                                                             vec2(0.06711056, 0.00583715)))));
+    vec3  O = P + N * (0.01 + 0.001 * viewDist);    // off the surface, not through it
+    for (int i = 0; i < STEPS; ++i) {
+        vec4 c = uSsrPrevVP * vec4(O + L * t, 1.0);
+        if (c.w <= 0.05) break;
+        vec2 uv = c.xy / c.w * 0.5 + 0.5;
+        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) break;
+        float dz = c.w - ssrSceneDepth(uv);
+        // Behind something, but only just: an occluder right there. Much
+        // further behind is a surface far in front of the ray, not touching it.
+        if (dz > 0.004 * c.w && dz < 0.25 + 0.01 * c.w)
+            return (1.0 - smoothstep(35.0, 60.0, viewDist)) * (1.0 - float(i) / float(STEPS) * 0.5);
+        t += step;
+    }
+    return 0.0;
+}
+
 // What a smooth surface sees along R: the screen where it can, `fallback`
 // (the probe, the sky) where it cannot.
 vec3 reflectedRadiance(vec3 P, vec3 R, float rough, vec3 fallback) {
@@ -1102,6 +1137,10 @@ void main() {
 
     int   layer  = selectCascade();
     float shadow = computeShadow(layer, N, L);
+    // Only where the sun is not already blocked, and only for surfaces that
+    // face it -- the far side of an object is in its own shadow anyway.
+    if (shadow < 0.99 && dot(normalize(vNormal), L) > 0.0)
+        shadow = max(shadow, contactShadow(vWorldPos, normalize(vNormal), L));
 
     // The sun, through its disc: 0.5 degrees of angular radius, the tracer's
     // default, so a mirror shows a sun and not a point. No energy scale here,

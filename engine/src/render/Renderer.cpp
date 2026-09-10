@@ -856,7 +856,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         // always get their units, like the cubes above, so neither is ever
         // left pointing at unit 0; they are only read when uSsr is 1.
         const bool ssr = m_ssrColor != 0 && m_ssrDepth != 0;
-        s->setInt("uSsr", ssr ? 1 : 0);
+        s->setInt("uSsr", (ssr && m_ssrReflect) ? 1 : 0);
+        s->setInt("uContactShadows", (ssr && m_ssrContact) ? 1 : 0);
         s->setInt("uSsrColor", kSsrColorUnit);
         s->setInt("uSsrDepth", kSsrDepthUnit);
         if (ssr) {

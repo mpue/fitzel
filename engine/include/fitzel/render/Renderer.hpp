@@ -196,10 +196,15 @@ public:
     // back on the probe where the ray leaves it. Set it for the main pass only
     // and clear it after: a probe face or the water mirror looks from
     // somewhere else, and last frame's screen means nothing there.
+    // `reflections` and `contactShadows` pick what the history is used for:
+    // the traced reflections, and the short rays towards the sun that catch
+    // the small shadows the cascades are too coarse for.
     void setScreenHistory(std::uint32_t colorTex, std::uint32_t depthTex,
-                          const glm::mat4& prevViewProj, float nearPlane, float farPlane) {
+                          const glm::mat4& prevViewProj, float nearPlane, float farPlane,
+                          bool reflections = true, bool contactShadows = true) {
         m_ssrColor = colorTex; m_ssrDepth = depthTex; m_ssrPrevVP = prevViewProj;
         m_ssrNear = nearPlane; m_ssrFar = farPlane;
+        m_ssrReflect = reflections; m_ssrContact = contactShadows;
     }
     void clearScreenHistory() { m_ssrColor = m_ssrDepth = 0; }
 
@@ -382,6 +387,7 @@ private:
     std::uint32_t     m_ssrColor = 0, m_ssrDepth = 0;
     glm::mat4         m_ssrPrevVP{1.0f};
     float             m_ssrNear = 0.1f, m_ssrFar = 1000.0f;
+    bool              m_ssrReflect = true, m_ssrContact = true;
 
     // The opaque scene, copied out of whatever target is bound just before the
     // transparent pass. Grown to the viewport on demand and reused; 0 until some
