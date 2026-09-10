@@ -8,6 +8,8 @@
 
 #include <glad/gl.h>
 
+#include "FrameRender.hpp"   // applySunShadows
+
 namespace {
 // Every pass here is a fullscreen triangle pair through the same trivial vertex
 // shader; only the fragment stage differs. Named once so the list below reads as
@@ -315,6 +317,10 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_composite.setFloat("uWarmth", p.warmth);
     m_composite.setFloat("uContrast", p.contrast);
     m_composite.setInt("uCurve", p.curve);
+    applySunShadows(m_composite, p.shadows, p.camPos, p.viewForward);
+    m_composite.setFloat("uAoSunlitShare", p.shadows ? p.aoSunlitShare : 1.0f);
+    m_composite.setVec3("uAoSunDir", p.sunDir);
+    m_composite.setMat4("uInvViewProj", glm::inverse(p.viewProj));
     m_composite.setFloat("uVignette", p.vignette);
     m_composite.setFloat("uGrain", p.grain);
     // Small and cycling: the hash in the shader loses its randomness on big

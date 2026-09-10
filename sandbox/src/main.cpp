@@ -15712,6 +15712,22 @@ int main(int argc, char** argv) {
                     motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
                 pp.ssaoRadius = ssaoRadius; pp.ssaoBias = ssaoBias;
                 pp.ssaoPower  = ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
+                // What share of a sunlit, level surface's light is the sky's:
+                // that is all the AO may take away where the sun reaches
+                // (composite.frag). Floored at 0.3, because the AO also stands
+                // in for the contact shadow the cascades are too coarse to cast.
+                {
+                    const auto lum = [](const glm::vec3& c) {
+                        return glm::dot(c, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+                    };
+                    const float amb = lum(light.ambient);
+                    const float sun = lum(light.color) *
+                                      std::max(glm::normalize(light.direction).y, 0.2f);
+                    pp.aoSunlitShare = glm::clamp(amb / std::max(amb + sun, 1e-4f),
+                                                  0.3f, 1.0f);
+                }
+                pp.shadows     = renderer.shadowsEnabled() ? &renderer.shadows() : nullptr;
+                pp.viewForward = vcam.front();
                 pp.bloomThreshold = bloomThreshold; pp.bloomKnee = bloomKnee;
                 pp.bloomIntensity = gate.bloomIntensity;
                 pp.rayIntensity   = gate.rayIntensity;

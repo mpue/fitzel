@@ -19,6 +19,13 @@ uniform float uRays;        // god-ray intensity
 
 uniform sampler2D uAO;      // screen-space ambient occlusion (already denoised)
 uniform float uAoStrength;
+// Sun-aware AO (see main()): the share of a sunlit surface's light that is
+// ambient, the direction towards the sun, and the pane's inverse view-proj.
+uniform float uAoSunlitShare;   // 1 = old behaviour (occlude everything)
+uniform vec3  uAoSunDir;
+uniform mat4  uInvViewProj;
+
+#include "sunshadow.glsl"
 
 // Depth of field (distance blur toward the background).
 uniform sampler2D uDepth;
@@ -209,7 +216,24 @@ void main() {
 
     // Ambient occlusion darkens creases/valleys. Already denoised by the
     // depth-aware blur pass, so one bilinear tap is all it takes here.
-    float ao = mix(1.0, texture(uAO, uv).r, uAoStrength);
+    //
+    // It is applied to the finished picture, but what it describes is how much
+    // SKY a point sees -- and in full sun the sky is a small part of what lights
+    // it. Darkening everything by it is what put grey halos into sunlit corners
+    // and made a bright day look dirty. So the strength follows the sun: where
+    // the cascades say the sun reaches, only the ambient's share of the light
+    // (uAoSunlitShare) is occluded; in shade, all of it.
+    float aoStrength = uAoStrength;
+    if (uAoSunlitShare < 0.999 && uAoStrength > 0.0) {
+        float d = texture(uDepth, uv).r;
+        if (d < 1.0) {
+            vec4 wp = uInvViewProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+            wp /= wp.w;
+            float sunlit = 1.0 - sunShadow(wp.xyz, normalize(uAoSunDir), 2.0);
+            aoStrength *= mix(1.0, uAoSunlitShare, sunlit);
+        }
+    }
+    float ao = mix(1.0, texture(uAO, uv).r, aoStrength);
     hdr *= ao;
 
     // Bloom: the pyramid pass did the work (threshold, downsample, tent

@@ -8,6 +8,8 @@
 #include <fitzel/graphics/RenderTarget.hpp>
 #include <fitzel/graphics/Shader.hpp>
 
+namespace fitzel { class CascadedShadowMap; }
+
 // The post chain: everything between the lit HDR buffer and the finished image.
 // SSAO and its denoise, the bloom pyramid, the composite (tonemap, god rays,
 // depth of field, colour grade), the radial speed blur, and FXAA on the way out.
@@ -56,6 +58,12 @@ public:
         glm::vec3 sunCol{1.0f};
 
         float ssaoRadius = 0.5f, ssaoBias = 0.02f, ssaoPower = 1.0f, ssaoStrength = 1.0f;
+        // Sun-aware AO: where the cascades say the sun reaches, only this share
+        // of the occlusion is applied -- the ambient's part of a sunlit
+        // surface's light. 1 = occlude everything alike (no cascades needed).
+        float aoSunlitShare = 1.0f;
+        const fitzel::CascadedShadowMap* shadows = nullptr;
+        glm::vec3 viewForward{0.0f, 0.0f, -1.0f};
         float bloomThreshold = 1.0f, bloomKnee = 0.5f;
         float bloomIntensity = 0.35f, rayIntensity = 0.5f;
         float dofNear = 25.0f, dofFar = 140.0f, dofMax = 0.0f;

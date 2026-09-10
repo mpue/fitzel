@@ -38,22 +38,29 @@ struct FrameContext {
 // Hand a receiver the cascades (the uniforms sunshadow.glsl declares). Called
 // by every layer that includes it, with its own shader bound or not -- the
 // setters bind it.
-inline void applySunShadows(const fitzel::Shader& s, const FrameContext& c) {
+// The same for a caller with no FrameContext (the post chain): the cascades, or
+// null for none, and the camera that picks among them.
+inline void applySunShadows(const fitzel::Shader& s, const fitzel::CascadedShadowMap* shadows,
+                            const glm::vec3& eye, const glm::vec3& forward) {
     static const char* const kSpace[4]  = {"uLightSpace[0]", "uLightSpace[1]",
                                            "uLightSpace[2]", "uLightSpace[3]"};
     static const char* const kSplit[4]  = {"uCascadeSplits[0]", "uCascadeSplits[1]",
                                            "uCascadeSplits[2]", "uCascadeSplits[3]"};
-    const int n = c.shadows ? std::min(c.shadows->cascadeCount(), 4) : 0;
+    const int n = shadows ? std::min(shadows->cascadeCount(), 4) : 0;
     s.setInt("uCascadeCount", n);
     s.setInt("uShadowMap", fitzel::Renderer::kShadowMapUnit);
     if (n == 0) return;
-    c.shadows->bindTextureArray(fitzel::Renderer::kShadowMapUnit);
-    s.setVec3("uShadowEye", c.camPos);
-    s.setVec3("uShadowForward", c.viewForward);
+    shadows->bindTextureArray(fitzel::Renderer::kShadowMapUnit);
+    s.setVec3("uShadowEye", eye);
+    s.setVec3("uShadowForward", forward);
     for (int i = 0; i < n; ++i) {
-        s.setMat4(kSpace[i], c.shadows->lightMatrices()[i]);
-        s.setFloat(kSplit[i], c.shadows->splitDistances()[i]);
+        s.setMat4(kSpace[i], shadows->lightMatrices()[i]);
+        s.setFloat(kSplit[i], shadows->splitDistances()[i]);
     }
+}
+
+inline void applySunShadows(const fitzel::Shader& s, const FrameContext& c) {
+    applySunShadows(s, c.shadows, c.camPos, c.viewForward);
 }
 
 // Build the context for one pass. `viewProj` and `camPos` are the pass's own (the
