@@ -65,6 +65,11 @@ public:
         // Tonemap curve: 0 ACES (fit), 1 AgX, 2 Khronos PBR Neutral. See
         // composite.frag; pathtrace::Grade::curve carries the same number.
         int   curve = 0;
+        // Lens and film after the grade (composite.frag): corner fall-off,
+        // grain, and the frame counter that keeps grain and dither moving.
+        float    vignette = 0.0f;
+        float    grain    = 0.0f;
+        unsigned frame    = 0;
 
         // Auto exposure, relative to the slider: `exposure` is what a frame at
         // the reference brightness gets, and the meter corrects away from it

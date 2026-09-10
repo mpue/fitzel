@@ -73,7 +73,26 @@ void main() {
     // grass, because the shadow pass draws the coarsest LOD and its leaves do not
     // lie exactly where these do.
     float sun = 1.0 - sunShadow(vWorldPos, L, 4.0);
-    vec3 color = albedo * uAmbient * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05) * sun;
+
+    // Sky above, ground below: a crown is lit by the sky on top and by the
+    // darker ground from underneath, and a flat ambient made its underside as
+    // bright as its top -- which is what flattened a tree into a cut-out.
+    float up   = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+    vec3  amb  = uAmbient * mix(0.45, 1.0, up);
+
+    vec3 color = albedo * amb * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05) * sun;
+
+    // Sun through the leaves. A leaf is thin: seen against the sun it glows
+    // with its own colour, deeper and more saturated than lit from the front --
+    // the backlit canopy that sells a forest at golden hour. Only foliage (bark
+    // is opaque), only where the sun actually reaches it, strongest looking
+    // straight into the light.
+    if (uAlphaCutout == 1) {
+        vec3  V     = normalize(uViewPos - vWorldPos);
+        float back  = pow(max(dot(V, -L), 0.0), 4.0);
+        float thin  = 0.35 + 0.65 * max(-ndl, 0.0);   // lit face turned away from us
+        color += uLightColor * albedo * albedo * (back * thin * 1.6) * sun;
+    }
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);
     FragColor = vec4(color, 1.0);
 }

@@ -659,6 +659,7 @@ bool Tracer::resolve(float exposure, const pathtrace::Grade& grade) {
     setFloat(m_resolve, "uWarmth", grade.warmth);
     setFloat(m_resolve, "uContrast", grade.contrast);
     setInt(m_resolve, "uCurve", grade.curve);
+    setFloat(m_resolve, "uVignette", grade.vignette);
     glDispatchCompute(static_cast<GLuint>((m_width  + 7) / 8),
                       static_cast<GLuint>((m_height + 7) / 8), 1);
     glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT);

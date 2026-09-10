@@ -35,6 +35,11 @@ uniform float uValue;
 uniform float uWarmth;      // white balance: + warms (golden), - cools (blue)
 uniform float uContrast;    // S-curve contrast around mid grey
 
+// Lens and film, after the grade.
+uniform float uVignette;    // 0 = off .. 1 = strong corner fall-off
+uniform float uGrain;       // 0 = off .. ~0.1 = heavy film grain
+uniform float uFrameSeed;   // changes every frame, so grain and dither move
+
 vec3 rgb2hsv(vec3 c) {
     vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
     vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
@@ -258,5 +263,27 @@ void main() {
 
     col = tonemapCurve(col * uExposure * autoExposure());
     col = colorGrade(col);
+
+    // Lens vignette: the natural fall-off of light towards the corners of a
+    // real lens (roughly cos^4 of the field angle), which is what frames a
+    // picture and pulls the eye to its middle. Circular in screen space.
+    if (uVignette > 0.0) {
+        vec2  d  = (uv - 0.5) * vec2(uAspect, 1.0);
+        float r2 = dot(d, d) / (0.25 * (uAspect * uAspect + 1.0)); // 1 at the corner
+        col *= mix(1.0, 1.0 - 0.6 * r2 * r2 + 0.1 * r2, clamp(uVignette, 0.0, 1.0));
+    }
+
+    // Film grain, luminance-weighted (strongest in the mid-tones, as on film),
+    // re-rolled every frame. Off by default: a look, not a fix.
+    float n1 = fract(sin(dot(gl_FragCoord.xy + uFrameSeed, vec2(12.9898, 78.233))) * 43758.5453);
+    float n2 = fract(sin(dot(gl_FragCoord.xy + uFrameSeed * 1.7, vec2(39.3468, 11.1353))) * 24634.6345);
+    if (uGrain > 0.0) {
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col += (n1 - 0.5) * uGrain * 4.0 * l * (1.0 - l);
+    }
+    // Dither, always: this goes into eight bits, and a smooth sky gradient in
+    // eight bits is a staircase of bands. Half a level of triangular noise
+    // costs nothing anyone can see and takes every one of them away.
+    col += (n1 + n2 - 1.0) / 255.0;
     FragColor = vec4(col, 1.0);
 }

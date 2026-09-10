@@ -251,7 +251,21 @@ struct Grade {
     // The tonemap curve under the grade: 0 ACES (fit), 1 AgX, 2 PBR Neutral.
     // composite.frag's uCurve; the default is the original look.
     int   curve      = 0;
+    // Lens vignette after the grade (composite.frag's uVignette). Not part of
+    // tonemap() -- it depends on where the pixel is -- see vignette() below.
+    float vignette   = 0.0f;
 };
+
+// composite.frag's vignette: the factor for the pixel at (u, v) in [0,1] of an
+// image `aspect` wide per unit of height. 1 at the centre; 1 everywhere at
+// strength 0.
+inline float vignette(float u, float v, float aspect, float strength) {
+    if (strength <= 0.0f) return 1.0f;
+    const float dx = (u - 0.5f) * aspect, dy = v - 0.5f;
+    const float r2 = (dx * dx + dy * dy) / (0.25f * (aspect * aspect + 1.0f));
+    const float s  = strength < 1.0f ? strength : 1.0f;
+    return 1.0f + ((1.0f - 0.6f * r2 * r2 + 0.1f * r2) - 1.0f) * s;
+}
 
 // Everything a render needs, and nothing that changes while it runs. Handed to
 // a Job as a shared_ptr and never touched again: the editor is free to carry on

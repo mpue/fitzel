@@ -1954,7 +1954,10 @@ bool Job::snapshotLdr(std::vector<unsigned char>& out) const {
                     const std::size_t i = static_cast<std::size_t>(y) * W + x;
                     glm::vec3 c = m_accum[i] * inv;
                     c = m_settings.tonemap
-                      ? tonemap(c, exposure, grade)
+                      ? tonemap(c, exposure, grade) *
+                            vignette((x + 0.5f) / W, (y + 0.5f) / H,
+                                     static_cast<float>(W) / static_cast<float>(H),
+                                     grade.vignette)
                       : glm::clamp(c, glm::vec3(0.0f), glm::vec3(1.0f));
                     // Again here, next to the cast itself. tonemap() already
                     // guarantees this; the cast is where the cost of being

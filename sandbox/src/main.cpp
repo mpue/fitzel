@@ -4099,6 +4099,8 @@ int main(int argc, char** argv) {
         // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
         // and auto exposure relative to `exposure` (see PostChain::Params).
         int   tonemapCurve  = 1;
+        float vignette      = 0.2f;   // lens fall-off to the corners (composite.frag)
+        float filmGrain     = 0.0f;
         bool  autoExposure  = true;
         float autoMinEv     = -1.5f;
         float autoMaxEv     = 2.5f;
@@ -4592,6 +4594,7 @@ int main(int argc, char** argv) {
         addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
         addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
         addF("adaptSpeed", adaptSpeed);        addB("ssr", ssrEnabled);
+        addF("vignette", vignette);            addF("filmGrain", filmGrain);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -13161,6 +13164,11 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
                 ImGui::SliderFloat("Warmth",     &warmth, -0.5f, 0.5f);
                 ImGui::SliderFloat("Contrast",   &contrast, 0.0f, 0.6f);
+                ImGui::SliderFloat("Vignette",   &vignette, 0.0f, 1.0f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Light falling off towards the corners, as through\n"
+                                      "a real lens. Frames the picture; 0 = off.");
+                ImGui::SliderFloat("Film grain", &filmGrain, 0.0f, 0.1f, "%.3f");
             }
             ImGui::End(); }
 
@@ -15093,6 +15101,7 @@ int main(int argc, char** argv) {
             ptLook.grade.warmth     = warmth;
             ptLook.grade.contrast   = contrast;
             ptLook.grade.curve      = tonemapCurve;
+            ptLook.grade.vignette   = vignette;
             // The grass, which the harvest cannot see: the tracer regenerates it
             // from the same parameters the streamed field was built from.
             if (veg.grassEnabled) {
@@ -15711,6 +15720,9 @@ int main(int argc, char** argv) {
                 pp.hueShift = hueShift; pp.saturation = saturation;
                 pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
                 pp.curve        = tonemapCurve;
+                pp.vignette     = vignette;
+                pp.grain        = filmGrain;
+                pp.frame        = taaFrame;
                 pp.autoExposure = autoExposure;
                 pp.autoMinEv    = autoMinEv;
                 pp.autoMaxEv    = autoMaxEv;

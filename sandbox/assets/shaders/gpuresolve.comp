@@ -56,6 +56,7 @@ vec3 aces(vec3 x) {
 
 // composite.frag's curves, verbatim (see there for what each is for).
 uniform int uCurve;          // 0 ACES, 1 AgX, 2 PBR Neutral
+uniform float uVignette;     // lens vignette after the grade (0 = off)
 
 vec3 agx(vec3 v) {
     const mat3 inset = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
@@ -128,5 +129,13 @@ void main() {
 
     col = tonemapCurve(col * uExposure);
     col = colorGrade(col);
+    // composite.frag's vignette (pathtrace::vignette on the CPU).
+    if (uVignette > 0.0) {
+        vec2  s  = vec2(uSize);
+        float aspect = s.x / s.y;
+        vec2  d  = ((vec2(px) + 0.5) / s - 0.5) * vec2(aspect, 1.0);
+        float r2 = dot(d, d) / (0.25 * (aspect * aspect + 1.0));
+        col *= mix(1.0, 1.0 - 0.6 * r2 * r2 + 0.1 * r2, clamp(uVignette, 0.0, 1.0));
+    }
     imageStore(uOut, px, vec4(clamp(col, 0.0, 1.0), 1.0));
 }

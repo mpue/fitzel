@@ -305,6 +305,10 @@ int main(int argc, char** argv) {
             const float exposure = scene->exposure;
             pathtrace::Grade grade = scene->grade;
             grade.curve = curve;
+            // One curve also carries a vignette, which is the part of the
+            // resolve that depends on WHERE the pixel is -- so a flipped axis
+            // or a wrong aspect shows up too.
+            grade.vignette = (curve == 1) ? 0.6f : 0.0f;
             std::vector<unsigned char> ldr(
                 static_cast<std::size_t>(s.width) * s.height * 4, 0);
             const bool resolved = gpu.resolve(exposure, grade) &&
@@ -318,9 +322,14 @@ int main(int argc, char** argv) {
             double sumAbs = 0.0;
             for (std::size_t i = 0, n = static_cast<std::size_t>(s.width) * s.height;
                  resolved && i < n; ++i) {
+                const int px = static_cast<int>(i % static_cast<std::size_t>(s.width));
+                const int py = static_cast<int>(i / static_cast<std::size_t>(s.width));
                 const glm::vec3 c = pathtrace::tonemap(
                     glm::vec3(gpuImg[i * 3], gpuImg[i * 3 + 1], gpuImg[i * 3 + 2]),
-                    exposure, grade);
+                    exposure, grade) *
+                    pathtrace::vignette((px + 0.5f) / s.width, (py + 0.5f) / s.height,
+                                        static_cast<float>(s.width) / s.height,
+                                        grade.vignette);
                 for (int k = 0; k < 3; ++k) {
                     const int want = static_cast<int>(
                         std::clamp(c[k], 0.0f, 1.0f) * 255.0f + 0.5f);
