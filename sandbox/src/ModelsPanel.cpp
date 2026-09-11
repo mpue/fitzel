@@ -10,8 +10,6 @@
 #include <imgui.h>
 
 #include <fitzel/asset/AssetDatabase.hpp>
-#include <fitzel/scene/Camera.hpp>
-#include <fitzel/world/Terrain.hpp>
 
 namespace modelsui {
 
@@ -38,8 +36,7 @@ ImGui::Separator();
 ImGui::BeginDisabled(s.modelFile.empty());
 if (ImGui::Button("Import to scene")) {
     const std::string path = s.modelDir + "/" + s.modelFile;
-    const glm::vec3 p = s.camera.position() + s.camera.front() * 8.0f;
-    const glm::vec3 g(p.x, s.streamer.heightAt(p.x, p.z), p.z);
+    const glm::vec3 g = s.spawnPoint();
     if (s.isStructured(path)) s.addHierarchy(g, path);
     else {
         const int id = s.models.import(path, s.assetDb, s.materials);

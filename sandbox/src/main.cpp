@@ -2436,6 +2436,12 @@ int main(int argc, char** argv) {
         glm::vec3 cursor3D{0.0f};
         bool      cursorVisible = true;
         float     cursorGrid    = 1.0f;
+        // Holding Ctrl while dragging the gizmo rasters it: a move lands on
+        // cursorGrid, a turn goes in snapAngle steps, a scale in snapScale steps
+        // of the size it started at. A hand that shakes then cannot nudge a value
+        // it has already found -- the next step is a whole step away.
+        float     snapAngle     = 15.0f;
+        float     snapScale     = 0.1f;
         // The construction grid draws that snap step on the cursor's plane, so
         // the lattice you aim at and the one "snap to grid" rounds to are the
         // same thing seen twice. Held here rather than on the renderer (which is
@@ -2779,6 +2785,40 @@ int main(int argc, char** argv) {
         // Gizmo reference frame: WORLD = global axes, LOCAL = the object's own axes.
         // Toggle from the toolbar or with X. (ImGuizmo forces SCALE to local anyway.)
         ImGuizmo::MODE gizmoMode = ImGuizmo::WORLD;
+        // Where a new object goes when nothing else says where (a toolbar shape,
+        // an imported model, a prefab, a generated building -- not a click in
+        // Create mode or a drop, which name their own spot). Returns the point
+        // its BASE rests on.
+        //
+        // While the 3D cursor is shown, that is the cursor, always -- Blender's
+        // rule, and the one place you can aim precisely without dragging. With it
+        // hidden, the object must land where you can see it, which "`dist` ahead,
+        // dropped onto the ground" alone does not promise: from high up the
+        // ground below that point is off the bottom of the screen, and looking
+        // at the sky it is behind the horizon. So, in order:
+        //  1. the ground in the middle of the view, if it is near enough that the
+        //     object will not be a speck;
+        //  2. `dist` ahead on the ground, if that ground is on screen;
+        //  3. `dist` ahead in the air -- floating, but in front of you.
+#ifndef FITZEL_PLAYER
+        auto spawnPoint = [&](float dist) -> glm::vec3 {
+            if (cursorVisible) return cursor3D;
+            const glm::vec3 eye = camera.position();
+            const glm::mat4 vp  = camera.projectionMatrix(
+                                      static_cast<float>(viewW) / static_cast<float>(viewH)) *
+                                  camera.viewMatrix();
+            glm::vec3 hit;
+            if (roadPickTerrain(glm::vec2(0.0f), vp, hit) &&
+                glm::length(hit - eye) <= dist * 3.0f)
+                return hit;
+            const glm::vec3 p = eye + camera.front() * dist;
+            const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
+            const glm::vec4 c = vp * glm::vec4(g, 1.0f);
+            if (c.w > 1e-4f && std::abs(c.x) <= 0.85f * c.w && std::abs(c.y) <= 0.85f * c.w)
+                return g;
+            return glm::vec3(p.x, std::max(p.y, g.y), p.z);
+        };
+#endif
         // Add an entity of the given type, sitting on the terrain at a world point.
         auto addEntity = [&](glm::vec3 groundPos, EntityType type) {
             Entity nb;
@@ -3399,16 +3439,15 @@ int main(int argc, char** argv) {
             exportStatus = "Saved prefab: " + p->name;
             return true;
         };
-        // Load a .fprefab and drop an instance into the scene, on the ground in
-        // front of the camera, as one undoable step. Selects the new root.
+        // Load a .fprefab and drop an instance into the scene at the spawn point
+        // (3D cursor, or in view), as one undoable step. Selects the new root.
         auto instantiatePrefabFile = [&](const std::string& path) {
             auto p = prefab::load(pio, path);
             if (!p || p->entities.empty()) {
                 exportStatus = "Failed to load prefab.";
                 return;
             }
-            const glm::vec3 f = camera.position() + camera.front() * 8.0f;
-            const glm::vec3 g(f.x, streamer.heightAt(f.x, f.z), f.z);
+            const glm::vec3 g = spawnPoint(8.0f);
             std::vector<Entity> spawn = prefab::instantiate(*p, entityCounter, g, 0.0f);
             const int rootId = spawn.empty() ? -1 : spawn.front().id;
             history.push(std::make_unique<AddEntitiesCmd>(std::move(spawn), "Prefab"),
@@ -3610,12 +3649,11 @@ int main(int argc, char** argv) {
 
 #ifndef FITZEL_PLAYER
         // --- Procedural buildings (see BuildingGen.hpp) -------------------------
-        // Generate a building on the ground in front of the camera as one undoable
-        // step, select it, and remember it as the "live" one so it can be re-tuned
-        // and saved without hunting for it in the hierarchy.
+        // Generate a building at the spawn point (3D cursor, or in view) as one
+        // undoable step, select it, and remember it as the "live" one so it can be
+        // re-tuned and saved without hunting for it in the hierarchy.
         auto generateBuilding = [&]() {
-            const glm::vec3 f = camera.position() + camera.front() * 60.0f;
-            const glm::vec3 g(f.x, streamer.heightAt(f.x, f.z), f.z);
+            const glm::vec3 g = spawnPoint(60.0f);
             const buildings::Palette pal = buildings::ensurePalette(materials, buildingCfg);
             std::vector<Entity> es = buildings::generate(buildingCfg, pal, entityCounter, g);
             if (es.empty()) return;
@@ -4148,6 +4186,7 @@ int main(int argc, char** argv) {
         // same incremental delta applied (individual-origins style).
         std::vector<int>    gizmoRoots;
         glm::vec3           gizmoPrevT{0.0f}, gizmoPrevR{0.0f}, gizmoPrevS{1.0f};
+        glm::vec3           gizmoStartT{0.0f}; // where the drag began (Ctrl grid snap)
         // Inspector edit transaction: snapshot the selected entity's subtree while
         // a field is being touched, commit one ModifyEntities step when released.
         int                 inspEditId = -1;
@@ -4608,6 +4647,7 @@ int main(int argc, char** argv) {
         addF("waterIor", waterIor);
         addF("cursorX", cursor3D.x); addF("cursorY", cursor3D.y); addF("cursorZ", cursor3D.z);
         addF("cursorGrid", cursorGrid);
+        addF("snapAngle", snapAngle);          addF("snapScale", snapScale);
 #ifndef FITZEL_PLAYER
         addB("camPreview", showCamPreview);    // editor-only: the player has no viewport corner
 #endif
@@ -10270,14 +10310,12 @@ int main(int argc, char** argv) {
                         if (hit) {
                             entityNewType = t;
                             // In Select mode the button itself is the create
-                            // action, so it drops one in front of the camera. In
-                            // Create mode it only arms the shape -- there the
-                            // click in the viewport is what places it, and
-                            // getting two objects out of one click surprises.
-                            if (!placeMode) {
-                                const glm::vec3 pp = camera.position() + camera.front() * 6.0f;
-                                addEntity(glm::vec3(pp.x, streamer.heightAt(pp.x, pp.z), pp.z), t);
-                            }
+                            // action, so it drops one at the spawn point (the
+                            // 3D cursor, or in view). In Create mode it only
+                            // arms the shape -- there the click in the viewport
+                            // is what places it, and getting two objects out of
+                            // one click surprises.
+                            if (!placeMode) addEntity(spawnPoint(6.0f), t);
                         }
                     };
                     shapeBtn(EntityType::Box,      "shapeBox",      "Box");
@@ -10310,9 +10348,12 @@ int main(int argc, char** argv) {
                         icon::gizmo(dl, op, c, r, on ? icon::on() : icon::kOff);
                         if (hit) gizmoOp = op;
                     };
-                    modeBtn(ImGuizmo::TRANSLATE, "gizmoMove",   "Move (Q)");
-                    modeBtn(ImGuizmo::ROTATE,    "gizmoRotate", "Rotate (W)");
-                    modeBtn(ImGuizmo::SCALE,     "gizmoScale",  "Scale (E)");
+                    modeBtn(ImGuizmo::TRANSLATE, "gizmoMove",
+                            "Move (Q) -- hold Ctrl to snap to the grid");
+                    modeBtn(ImGuizmo::ROTATE,    "gizmoRotate",
+                            "Rotate (W) -- hold Ctrl to turn in steps");
+                    modeBtn(ImGuizmo::SCALE,     "gizmoScale",
+                            "Scale (E) -- hold Ctrl to scale in steps");
 
                     // Gap, then the gizmo reference-frame toggle (local vs world).
                     gap();
@@ -12350,6 +12391,21 @@ int main(int argc, char** argv) {
                         float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
                         float s[3] = {b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f};
 
+                        // Ctrl rasters the drag (see snapAngle). ImGuizmo's own
+                        // snap counts steps from where the drag began: right for
+                        // a turn and a scale, and for a move along the object's
+                        // own axes, which have no grid to meet. A move along the
+                        // WORLD axes lands on the grid itself instead (rounded
+                        // below), so what you place lines up with the lattice
+                        // drawn under it rather than keeping its old offset.
+                        const bool snapHeld   = ImGui::GetIO().KeyCtrl;
+                        const bool snapToLattice =
+                            snapHeld && gizmoOp == ImGuizmo::TRANSLATE &&
+                            gizmoMode == ImGuizmo::WORLD;
+                        float snapStep[3] = {cursorGrid, cursorGrid, cursorGrid};
+                        if (gizmoOp == ImGuizmo::ROTATE) snapStep[0] = snapAngle;
+                        if (gizmoOp == ImGuizmo::SCALE)  snapStep[0] = snapScale;
+
                         // --- Face gizmo -------------------------------------
                         // With a face selected in Modeling, the gizmo drives THAT
                         // face rather than the object: the same Move/Rotate/Scale
@@ -12378,10 +12434,14 @@ int main(int argc, char** argv) {
                                 glm::translate(glm::mat4(1.0f),
                                                faceMc->mesh.faceCenter(meshFaceSel));
                             glm::mat4 world = M * F;
+                            // A face snaps in steps from where it started: its
+                            // corners, not its centre, are what would have to
+                            // meet the grid.
                             float delta[16];
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
                                                  gizmoOp, gizmoMode,
-                                                 glm::value_ptr(world), delta);
+                                                 glm::value_ptr(world), delta,
+                                                 snapHeld ? snapStep : nullptr);
                             const bool using3d = ImGuizmo::IsUsing();
                             if (using3d && !faceGizmoActive) {
                                 faceGizmoActive   = true;
@@ -12436,7 +12496,9 @@ int main(int argc, char** argv) {
                             float model[16];
                             ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                                 gizmoOp, gizmoMode, model);
+                                                 gizmoOp, gizmoMode, model, nullptr,
+                                                 (snapHeld && !snapToLattice) ? snapStep
+                                                                              : nullptr);
                             const bool gizmoUsing = ImGuizmo::IsUsing();
                             if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtrees
                                 gizmoActive = true;
@@ -12451,9 +12513,20 @@ int main(int argc, char** argv) {
                                 gizmoPrevT = glm::vec3(t[0], t[1], t[2]);
                                 gizmoPrevR = glm::vec3(r[0], r[1], r[2]);
                                 gizmoPrevS = glm::vec3(s[0], s[1], s[2]);
+                                gizmoStartT = gizmoPrevT;
                             }
                             if (gizmoUsing) {
                                 ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
+                                // Onto the grid -- but only the axes the drag
+                                // actually moves. Pulling the X arrow must not
+                                // also drop the object's height onto a grid line.
+                                // ImGuizmo hands back the unsnapped target every
+                                // frame (it measures from the ray, not from what
+                                // it got last time), so rounding it here holds.
+                                if (snapToLattice && cursorGrid > 0.0f)
+                                    for (int k = 0; k < 3; ++k)
+                                        if (std::abs(t[k] - gizmoStartT[k]) > 1e-4f)
+                                            t[k] = std::round(t[k] / cursorGrid) * cursorGrid;
                                 const glm::vec3 newT(t[0], t[1], t[2]);
                                 const glm::vec3 newR(r[0], r[1], r[2]);
                                 const glm::vec3 newS(s[0], s[1], s[2]);
@@ -13583,10 +13656,19 @@ int main(int argc, char** argv) {
 
             if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
                 ImGui::Checkbox("Show cursor", &cursorVisible);
+                ui::hint(cursorVisible
+                             ? "New objects are placed on the cursor."
+                             : "Hidden: new objects are placed in view.");
                 ImGui::TextDisabled("Shift+Right-click in the viewport to place it.");
                 ImGui::DragFloat3("Position", &cursor3D.x, 0.05f, 0.0f, 0.0f, "%.2f");
                 ImGui::SetNextItemWidth(140.0f);
                 ImGui::DragFloat("Grid step", &cursorGrid, 0.05f, 0.01f, 100.0f, "%.2f m");
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::DragFloat("Rotate step", &snapAngle, 0.5f, 1.0f, 90.0f, "%.0f deg");
+                ImGui::SetNextItemWidth(140.0f);
+                ImGui::DragFloat("Scale step", &snapScale, 0.01f, 0.01f, 1.0f, "%.2f x");
+                ui::hint("Hold Ctrl while dragging the gizmo: a move lands on the\n"
+                         "grid, a turn and a scale go in these steps.");
                 ImGui::TextDisabled("Shift+S in the viewport opens the snap menu.");
 
                 // The drawn grid IS this step, on this cursor's plane -- so these
@@ -13672,7 +13754,7 @@ int main(int argc, char** argv) {
             // the scene in front of the camera as a Model entity.
             modelsui::drawPanel({showModels, modelDir, modelFile,
                                  models, assetDb, materials,
-                                 camera, streamer,
+                                 [&] { return spawnPoint(8.0f); },
                                  isStructuredModel, addModelHierarchy,
                                  addModelEntity});
 
@@ -13871,9 +13953,7 @@ int main(int argc, char** argv) {
                         } else {
                             unityStatus = "Imported (already in the project).";
                         }
-                        const glm::vec3 p = camera.position() + camera.front() * 8.0f;
-                        const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
-                        addModelHierarchy(g, src, unityFlipV);
+                        addModelHierarchy(spawnPoint(8.0f), src, unityFlipV);
                     }
                     ImGui::EndDisabled();
                     if (!unityStatus.empty()) ImGui::TextDisabled("%s", unityStatus.c_str());
@@ -14021,8 +14101,7 @@ int main(int argc, char** argv) {
                                 ImGui::IsItemHovered() &&
                                 ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                                 const std::string mp = e->absPath.string();
-                                const glm::vec3 p = camera.position() + camera.front() * 8.0f;
-                                const glm::vec3 g(p.x, streamer.heightAt(p.x, p.z), p.z);
+                                const glm::vec3 g = spawnPoint(8.0f);
                                 if (isStructuredModel(mp)) addModelHierarchy(g, mp);
                                 else {
                                     const int id2 = models.import(mp, assetDb, materials);

@@ -11,13 +11,11 @@
 
 namespace fitzel {
 class AssetDatabase;
-class Camera;
-class TerrainStreamer;
 }
 
 // The editor's "Models" panel: what glTF/GLB (and FBX/DAE) files the project's
-// models/ folder holds, and a button that puts one into the scene on the ground
-// in front of the camera.
+// models/ folder holds, and a button that puts one into the scene where new
+// objects go (the host's spawnPoint: the 3D cursor, or in view).
 //
 // A structured file (FBX, DAE) comes in as a HIERARCHY -- one entity per
 // mesh-bearing node, under a shared root -- and everything else as a single
@@ -35,11 +33,8 @@ struct PanelState {
     fitzel::AssetDatabase&    assetDb;
     std::vector<MaterialDef>& materials; // an import registers its materials here
 
-    // Only here to work out where a dropped model lands: eight metres ahead of
-    // the eye, on the ground. Worth replacing with a single "where would it go"
-    // callback the day anything else needs the same answer.
-    const fitzel::Camera&          camera;
-    const fitzel::TerrainStreamer& streamer;
+    // Where an imported model lands -- the same answer every other "add" gets.
+    std::function<glm::vec3()>                                spawnPoint;
 
     std::function<bool(const std::string&)>                   isStructured;
     std::function<void(const glm::vec3&, const std::string&)> addHierarchy;
