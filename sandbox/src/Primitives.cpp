@@ -151,9 +151,16 @@ std::vector<Vertex> makeRampVerts() {
 std::vector<Vertex> makeCylinderYVerts(int seg) {
     std::vector<Vertex> v;
     const float TAU = 6.28318530718f, r = 0.5f, hy = 0.5f;
+    // Each triangle twice: wound counter-clockwise as seen from the side `n`
+    // points to -- the copy back-face culling keeps when you look at that side
+    // -- and the other way round with the normal flipped, for the inside.
+    // The calls below list their corners clockwise from outside, so the
+    // outward copy is (a, c, b). It used to be (a, b, c), which paired every
+    // visible face with the INWARD normal: a cylinder's sunlit top came out
+    // black and its shadowed side lit.
     auto tri = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 n) {
-        v.push_back({a, n, {0, 0}}); v.push_back({b, n, {0, 0}}); v.push_back({c, n, {0, 0}});
-        v.push_back({a, -n, {0, 0}}); v.push_back({c, -n, {0, 0}}); v.push_back({b, -n, {0, 0}});
+        v.push_back({a, n, {0, 0}}); v.push_back({c, n, {0, 0}}); v.push_back({b, n, {0, 0}});
+        v.push_back({a, -n, {0, 0}}); v.push_back({b, -n, {0, 0}}); v.push_back({c, -n, {0, 0}});
     };
     for (int i = 0; i < seg; ++i) {
         const float a0 = static_cast<float>(i) / seg * TAU;
