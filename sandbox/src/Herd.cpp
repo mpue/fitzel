@@ -132,6 +132,18 @@ void Herd::decide(Animal& a, const World& w) {
 void Herd::update(float dt, const World& w) {
     if (!m_ok) return;
     dt = std::clamp(dt, 0.0f, 0.1f);
+    // Spread over the meadow at load, where nobody could say what is water:
+    // the first update moves anyone who landed in the river onto dry grass.
+    if (!m_placed && w.walkable) {
+        m_placed = true;
+        for (Animal& a : m_animals) {
+            for (int tries = 0; tries < 60 && !w.walkable(a.pos.x, a.pos.z); ++tries) {
+                const float ang = uni() * 6.2831853f, r = std::sqrt(uni()) * m_cfg.radius;
+                a.pos.x = m_cfg.centre.x + std::cos(ang) * r;
+                a.pos.z = m_cfg.centre.y + std::sin(ang) * r;
+            }
+        }
+    }
     for (Animal& a : m_animals) {
         a.stateLeft -= dt;
         a.clipTime  += dt;
@@ -150,8 +162,19 @@ void Herd::update(float dt, const World& w) {
                 while (d < -3.14159265f) d += 6.2831853f;
                 a.yaw += std::clamp(d, -0.7f * dt, 0.7f * dt);
                 const float go = m_cfg.walkSpeed * a.blend * (std::abs(d) < 1.2f ? 1.0f : 0.3f);
-                a.pos.x += std::sin(a.yaw) * go * dt;
-                a.pos.z += std::cos(a.yaw) * go * dt;
+                const float nx = a.pos.x + std::sin(a.yaw) * go * dt;
+                const float nz = a.pos.z + std::cos(a.yaw) * go * dt;
+                // The way there crosses the brook: stop at the bank, and
+                // think again.
+                const float ax = a.pos.x + to.x / dist * 1.2f;
+                const float az = a.pos.z + to.y / dist * 1.2f;
+                if (w.walkable && !w.walkable(ax, az)) {
+                    a.walking   = false;
+                    a.stateLeft = 0.5f + uni();
+                } else {
+                    a.pos.x = nx;
+                    a.pos.z = nz;
+                }
             }
         }
         a.blend = std::clamp(a.blend + (a.walking ? 1.0f : -1.0f) * dt * 1.6f, 0.0f, 1.0f);

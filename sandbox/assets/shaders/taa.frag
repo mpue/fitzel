@@ -117,7 +117,11 @@ void main() {
     // Where this surface was last frame.
     vec2 motion;
     vec4 measured = (uHasMotion == 1) ? textureLod(uMotion, nearestUV, 0.0) : vec4(0.0);
-    if (measured.a > 0.5) {
+    // a = 2 is not a measurement but a flag: something small and quick was
+    // drawn here (a mote of pollen, Motes.hpp) that no history can follow --
+    // show this frame's, or the resolve averages it away to nothing.
+    float reactive = (uHasMotion == 1 && textureLod(uMotion, uv, 0.0).a > 1.5) ? 1.0 : 0.0;
+    if (measured.a > 0.5 && measured.a < 1.5) {
         motion = measured.xy;
     } else {
         // Undo the jitter first: the depth was written at the jittered point,
@@ -151,6 +155,7 @@ void main() {
     // far more than it forgives smear.
     float speed = length(motion / uTexel);
     float blend = mix(uBlend, 0.4, clamp(speed / 30.0, 0.0, 1.0));
+    blend = max(blend, 0.75 * reactive);
     vec3  res   = mix(hist, centre, blend);
 
     vec3 outc = unweigh(fromYCoCg(res));

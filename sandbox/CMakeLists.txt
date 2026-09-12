@@ -34,6 +34,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CloudShadow.cpp
     # The fauna: flocks, swallows, raptors, butterflies.
     src/Wildlife.cpp
+    src/Motes.cpp
     # ...and the sound of the place: birdsong, insects, the wind in the leaves.
     src/Soundscape.cpp
     # A herd grazing in a meadow: a skinned model, each animal on its own clock.

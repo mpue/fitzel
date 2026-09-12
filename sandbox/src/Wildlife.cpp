@@ -68,6 +68,40 @@ std::vector<V> flyMesh() {
     return m;
 }
 
+// A fish: a spindle, deeper than it is wide, with a forked tail fin and a
+// dorsal fin. The wing coordinate is reused as how far a vertex swings in the
+// tail beat: nothing at the head, the whole fin at the tail.
+std::vector<V> fishMesh() {
+    std::vector<V> m;
+    struct R { float z, top, bot, half, wag; };
+    const R rings[4] = {{0.30f, 0.10f, -0.08f, 0.050f, 0.00f},
+                        {0.05f, 0.14f, -0.11f, 0.070f, 0.06f},
+                        {-0.25f, 0.05f, -0.04f, 0.025f, 0.35f},
+                        {-0.36f, 0.015f, -0.015f, 0.010f, 0.60f}};
+    const auto ring = [&](const R& r, int k) {
+        // top, right, bottom, left
+        const float x = (k == 1) ? r.half : (k == 3) ? -r.half : 0.0f;
+        const float y = (k == 0) ? r.top : (k == 2) ? r.bot : 0.5f * (r.top + r.bot);
+        return V{x, y, r.z, r.wag, 0, 0};
+    };
+    const V nose{0, 0.0f, 0.5f, 0, 0, 0};
+    for (int k = 0; k < 4; ++k) tri(m, nose, ring(rings[0], k), ring(rings[0], (k + 1) % 4));
+    for (int s = 0; s < 3; ++s)
+        for (int k = 0; k < 4; ++k) {
+            const V a = ring(rings[s], k), b = ring(rings[s], (k + 1) % 4);
+            const V c = ring(rings[s + 1], k), d = ring(rings[s + 1], (k + 1) % 4);
+            tri(m, a, c, b); tri(m, b, c, d);
+        }
+    // Tail fin (forked) and the dorsal fin.
+    // (u = 1: a fin, flat, where the body is round.)
+    const V p{0, 0, -0.34f, 0.6f, 1, 0};
+    tri(m, p, V{0, 0.16f, -0.53f, 1.0f, 1, 0}, V{0, 0.0f, -0.45f, 0.9f, 1, 0});
+    tri(m, p, V{0, 0.0f, -0.45f, 0.9f, 1, 0}, V{0, -0.14f, -0.52f, 1.0f, 1, 0});
+    tri(m, V{0, 0.13f, 0.10f, 0.03f, 1, 0}, V{0, 0.20f, -0.02f, 0.1f, 1, 0},
+        V{0, 0.10f, -0.12f, 0.15f, 1, 0});
+    return m;
+}
+
 void makeVao(const std::vector<V>& mesh, std::uint32_t& vao, std::uint32_t& vbo,
              std::uint32_t& inst) {
     glGenVertexArrays(1, &vao);
@@ -119,12 +153,107 @@ bool Wildlife::init() {
         std::fprintf(stderr, "Failed to load creature shader\n");
         return false;
     }
-    const std::vector<V> bird = birdMesh(), fly = flyMesh();
+    const std::vector<V> bird = birdMesh(), fly = flyMesh(), fish = fishMesh();
     m_birdVerts = static_cast<int>(bird.size());
     m_flyVerts  = static_cast<int>(fly.size());
+    m_fishVerts = static_cast<int>(fish.size());
     makeVao(bird, m_birdVao, m_birdVbo, m_birdInst);
     makeVao(fly, m_flyVao, m_flyVbo, m_flyInst);
+    makeVao(fish, m_fishVao, m_fishVbo, m_fishInst);
     return true;
+}
+
+bool Wildlife::findWater(const World& w, float minDist, float maxDist, float depth,
+                         glm::vec2& at, float* surface) {
+    if (!w.water && (!w.ground || w.waterLevel < -999.0f)) return false;
+    const float look = std::atan2(w.forward.x, w.forward.z);
+    for (int tries = 0; tries < 40; ++tries) {
+        // Mostly where the eye is looking: a fish that jumps behind you is a
+        // sound, and this has none.
+        const float a = (uni() < 0.75f) ? look + sym() * 0.7f : uni() * 2.0f * kPi;
+        const float d = minDist + uni() * (maxDist - minDist);
+        const glm::vec2 p(w.eye.x + std::sin(a) * d, w.eye.z + std::cos(a) * d);
+        float surf = w.waterLevel, deep = 0.0f;
+        if (w.water) {
+            if (!w.water(p.x, p.y, surf, deep)) continue;
+        } else {
+            deep = w.waterLevel - w.ground(p.x, p.y);
+        }
+        if (deep < depth) continue;
+        at = p;
+        if (surface) *surface = surf;
+        return true;
+    }
+    return false;
+}
+
+void Wildlife::applyRipples(const fitzel::Shader& s, bool on) const {
+    static const char* const kRip[kMaxRipples] = {"uFishRing[0]", "uFishRing[1]", "uFishRing[2]",
+                                                  "uFishRing[3]", "uFishRing[4]", "uFishRing[5]"};
+    const int n = on ? std::min(static_cast<int>(m_ripples.size()), kMaxRipples) : 0;
+    s.setInt("uFishRingCount", n);
+    for (int i = 0; i < n; ++i) s.setVec4(kRip[i], m_ripples[static_cast<std::size_t>(i)]);
+}
+
+void Wildlife::addRipple(glm::vec2 xz, float strength, float y) {
+    m_lastRipple = glm::vec3(xz.x, y, xz.y);
+    if (static_cast<int>(m_ripples.size()) >= kMaxRipples) {
+        auto oldest = std::max_element(m_ripples.begin(), m_ripples.end(),
+            [](const glm::vec4& a, const glm::vec4& b) { return a.z < b.z; });
+        m_ripples.erase(oldest);
+    }
+    m_ripples.push_back(glm::vec4(xz.x, xz.y, 0.0f, strength));
+}
+
+void Wildlife::updateFish(float dt, const World& w) {
+    for (glm::vec4& r : m_ripples) r.z += dt;
+    m_ripples.erase(std::remove_if(m_ripples.begin(), m_ripples.end(),
+                                   [](const glm::vec4& r) { return r.z > 7.0f; }),
+                    m_ripples.end());
+    m_fishData.clear();
+    if (!w.water && (!w.ground || w.waterLevel < -999.0f)) return;
+    Fish& f = m_fish;
+    if (f.flying) {
+        f.vel.y -= 9.81f * dt;
+        f.pos   += f.vel * dt;
+        f.phase += dt * 32.0f;                 // the tail thrashing in the air
+        if (f.pos.y < f.surface - 0.05f && f.vel.y < 0.0f) {
+            f.flying = false;                  // back in, with a slap
+            addRipple(glm::vec2(f.pos.x, f.pos.z), 1.0f, f.surface);
+            m_splashes.push_back({glm::vec3(f.pos.x, f.surface, f.pos.z), 1.0f});
+        }
+    } else if ((f.nextJump -= dt) <= 0.0f) {
+        f.nextJump = (5.0f + uni() * 14.0f) / std::max(fishRate, 0.1f);
+        glm::vec2 at;
+        if (w.daylight > 0.15f && findWater(w, 6.0f, 35.0f, 0.4f, at, &f.surface)) {
+            f.scale   = 0.22f + uni() * 0.25f;
+            const float h  = 0.25f + uni() * 0.6f;
+            const float vy = std::sqrt(2.0f * 9.81f * h);
+            const float hs = 1.0f + uni() * 1.4f;
+            f.heading = uni() * 2.0f * kPi;
+            f.vel     = glm::vec3(std::sin(f.heading) * hs, vy, std::cos(f.heading) * hs);
+            f.pos     = glm::vec3(at.x, f.surface - 0.04f, at.y);
+            f.phase   = uni() * 6.28f;
+            f.flying  = true;
+            ++m_fishJumps;
+            addRipple(at, 0.6f, f.surface);
+            m_splashes.push_back({glm::vec3(at.x, f.surface, at.y), 0.5f});
+        }
+    }
+    // Between jumps, the quiet ones: a fish taking a fly off the surface,
+    // nothing but a ring.
+    if ((f.nextRise -= dt) <= 0.0f) {
+        f.nextRise = 1.5f + uni() * 5.0f;
+        glm::vec2 at;
+        float surf = 0.0f;
+        if (findWater(w, 5.0f, 60.0f, 0.2f, at, &surf)) addRipple(at, 0.3f + uni() * 0.3f, surf);
+    }
+    if (f.flying) {
+        const float yaw   = std::atan2(f.vel.x, f.vel.z);
+        const float pitch = std::atan2(f.vel.y, glm::length(glm::vec2(f.vel.x, f.vel.z)));
+        pushInstance(m_fishData, f.pos, yaw, pitch, 0.25f * std::sin(f.phase * 0.3f), f.phase,
+                     1.0f, f.scale, glm::vec3(0.20f, 0.26f, 0.25f), 0.95f);
+    }
 }
 
 float Wildlife::groundAt(const World& w, float x, float z) const {
@@ -406,6 +535,9 @@ void Wildlife::update(float dt, const World& w) {
         b.heading += wrapAngle(want - b.heading) * std::min(1.0f, dt * 6.0f);
     }
 
+    // --- Fish in the lake --------------------------------------------------------
+    updateFish(dt, w);
+
     // --- Instances ---------------------------------------------------------------
     m_birdData.clear();
     for (const Bird& b : m_birds) {
@@ -464,6 +596,15 @@ void Wildlife::draw(const FrameContext& c) {
         glBindVertexArray(m_flyVao);
         glDrawArraysInstanced(GL_TRIANGLES, 0, m_flyVerts,
                               static_cast<GLsizei>(m_flyData.size() / kInstFloats));
+    }
+    if (!m_fishData.empty()) {
+        glBindBuffer(GL_ARRAY_BUFFER, m_fishInst);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_fishData.size() * sizeof(float)),
+                     m_fishData.data(), GL_STREAM_DRAW);
+        m_shader.setInt("uKind", 2);
+        glBindVertexArray(m_fishVao);
+        glDrawArraysInstanced(GL_TRIANGLES, 0, m_fishVerts,
+                              static_cast<GLsizei>(m_fishData.size() / kInstFloats));
     }
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);

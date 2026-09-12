@@ -6,9 +6,10 @@ in vec3  vColor;
 in float vBelly;
 in vec3  vUp;
 in float vWing;
+in vec3  vNrm;
 out vec4 FragColor;
 
-uniform int  uKind;            // 0 bird, 1 butterfly
+uniform int  uKind;            // 0 bird, 1 butterfly, 2 fish
 uniform vec3 uViewPos;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
@@ -38,6 +39,7 @@ void main() {
     // The face as seen: flat, turned towards the eye. Whether that face is the
     // bird's back or its belly decides which colour it shows.
     vec3 N = normalize(cross(dFdx(vWorldPos), dFdy(vWorldPos)));
+    if (uKind == 2) N = normalize(vNrm);
     if (dot(N, V) < 0.0) N = -N;
     bool belly = dot(N, vUp) < 0.0;
 
@@ -63,6 +65,9 @@ void main() {
         }
         // Undersides of butterfly wings are the dull, camouflaged side.
         if (belly) col = mix(col, vec3(0.35, 0.3, 0.22), 0.55);
+    } else if (uKind == 2) {
+        // Dark back, silver flanks and a white belly, shading into each other.
+        col = mix(col, vec3(0.78, 0.80, 0.80), vBelly * smoothstep(0.55, -0.35, dot(N, vUp)));
     } else if (belly) {
         col = mix(col, vec3(0.82, 0.76, 0.66), vBelly);
     }
@@ -75,6 +80,12 @@ void main() {
     float through = max(-ndl, 0.0) * (uKind == 1 ? 0.6 : 0.25);
     vec3  amb   = uAmbient * (0.55 + 0.45 * abs(N.y));
     vec3  color = albedo * (amb + uLightColor * (max(ndl, 0.0) * 0.9 + through) * sun);
+    if (uKind == 2) {
+        // Wet scales: a hard glint of the sun, and the sky on the flanks.
+        float spec = pow(max(dot(reflect(-L, N), V), 0.0), 60.0);
+        float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+        color += uLightColor * spec * 2.5 * sun + uAmbient * fres * 0.8;
+    }
     color = applyFog(color, vWorldPos, uViewPos, L);
     FragColor = vec4(color, 1.0);
 }

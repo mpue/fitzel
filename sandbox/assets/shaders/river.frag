@@ -170,6 +170,8 @@ float filaments(vec2 p, float t, float px) {
 // actually looks like. Fading the same drops towards flat instead (which is what
 // this did while the rain intensity was folded into `amount`) makes a drizzle
 // read as a downpour seen through frosted glass.
+#include "fishrings.glsl"
+
 vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float time) {
     const float kCell = 0.5;    // metres between drops
     const float kFreq = 34.0;   // ring wavelength
@@ -309,6 +311,9 @@ void main() {
     if (uRainRings > 0.002 && uRainDensity > 0.002)
         N = rainRings(N, vWorldPos.xz, uRainRings * (1.0 - falling), uRainDensity,
                       wpx, uTime);
+    // Fish rising in the pools (fishrings.glsl), and not in the falls.
+    if (uFishRingCount > 0)
+        N = fishRings(N, vWorldPos.xz, min(length(dp1.xz), length(dp2.xz)), 1.0 - falling);
 
     vec3 V = normalize(uCameraPos - vWorldPos);
     vec3 L = normalize(uLightDir);

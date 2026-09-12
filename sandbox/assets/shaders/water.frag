@@ -129,6 +129,8 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float tim
     return normalize(N);
 }
 
+#include "fishrings.glsl"
+
 // Where this surface ends (xz min, xz max). With the horizon terrain on, past
 // the streamed ring the far terrain draws its own lakes -- and this quad, drawn
 // after the far terrain's depth was cleared, would lie over its hills.
@@ -153,6 +155,10 @@ void main() {
         vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
         N = rainRings(N, vWorldPos.xz, uRainRings, uRainDensity,
                       max(length(dpx.xz), length(dpy.xz)), uTime);
+    }
+    if (uFishRingCount > 0) {
+        vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
+        N = fishRings(N, vWorldPos.xz, min(length(dpx.xz), length(dpy.xz)), 1.0);
     }
     vec3  V = normalize(uCameraPos - vWorldPos);
 

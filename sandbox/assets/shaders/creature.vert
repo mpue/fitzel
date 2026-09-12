@@ -15,7 +15,7 @@ layout(location = 7) in vec3  iColor;
 layout(location = 8) in float iBelly;  // how much lighter the underside is
 
 uniform mat4 uViewProj;
-uniform int  uKind;                    // 0 bird, 1 butterfly
+uniform int  uKind;                    // 0 bird, 1 butterfly, 2 fish
 
 out vec3  vWorldPos;
 out vec2  vUv;
@@ -23,14 +23,22 @@ out vec3  vColor;
 out float vBelly;
 out vec3  vUp;
 out float vWing;
+out vec3  vNrm;      // fish: a smooth normal (the others are drawn faceted)
 
 vec2 rot(vec2 v, float a) { float c = cos(a), s = sin(a); return vec2(c * v.x - s * v.y, s * v.x + c * v.y); }
 
 void main() {
     vec3 p = aPos;
+    // The fish's round body: out from the spine. Its fins (u = 1) are flat.
+    vec3 n = (aUv.x > 0.5) ? vec3(1.0, 0.0, 0.0)
+           : normalize(vec3(aPos.x * 14.0, (aPos.y - 0.015) * 8.0, 0.35 * aPos.z));
     float side = sign(aWing);
     float w    = abs(aWing);
-    if (w > 0.0) {
+    if (uKind == 2) {
+        // Fish: the body swings side to side, more towards the tail, the wave
+        // running down it a little behind the head's.
+        p.x += sin(iAnim.x - p.z * 3.0) * iAnim.y * 0.16 * w;
+    } else if (w > 0.0) {
         float x = abs(p.x);
         if (uKind == 0) {
             // Arm about the shoulder, hand about the elbow and a little behind
@@ -59,12 +67,15 @@ void main() {
     // Bank (about forward), pitch (about right), yaw (about up).
     float cb = cos(iRot.z), sb = sin(iRot.z);
     p = vec3(cb * p.x - sb * p.y, sb * p.x + cb * p.y, p.z);
+    n = vec3(cb * n.x - sb * n.y, sb * n.x + cb * n.y, n.z);
     vec3 up = vec3(-sb, cb, 0.0);
     float cp = cos(iRot.y), sp = sin(iRot.y);
     p  = vec3(p.x, cp * p.y + sp * p.z, -sp * p.y + cp * p.z);
+    n  = vec3(n.x, cp * n.y + sp * n.z, -sp * n.y + cp * n.z);
     up = vec3(up.x, cp * up.y + sp * up.z, -sp * up.y + cp * up.z);
     float cy = cos(iRot.x), sy = sin(iRot.x);
     p  = vec3(cy * p.x + sy * p.z, p.y, -sy * p.x + cy * p.z);
+    n  = vec3(cy * n.x + sy * n.z, n.y, -sy * n.x + cy * n.z);
     up = vec3(cy * up.x + sy * up.z, up.y, -sy * up.x + cy * up.z);
 
     vec3 wp = iPos + p * iScale;
@@ -74,5 +85,6 @@ void main() {
     vBelly = iBelly;
     vUp    = up;
     vWing  = w;
+    vNrm   = n;
     gl_Position = uViewProj * vec4(wp, 1.0);
 }

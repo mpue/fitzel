@@ -77,6 +77,7 @@ private:
 
     Config m_cfg;
     bool   m_ok = false;
+    bool   m_placed = false;       // moved off the water yet
     fitzel::ModelData m_model;
     float  m_scale = 1.0f;
     glm::vec3 m_offset{0.0f};      // model space: what puts the feet on the ground

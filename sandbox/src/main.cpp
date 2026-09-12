@@ -111,6 +111,7 @@
 #include "FarTerrain.hpp"
 #include "CloudShadow.hpp"
 #include "Wildlife.hpp"
+#include "Motes.hpp"
 #include "Soundscape.hpp"
 #include "Herd.hpp"
 #include "RoadSet.hpp"
@@ -1702,6 +1703,10 @@ int main(int argc, char** argv) {
         Wildlife wildlife;
         wildlife.init();
         bool wildlifeOn = false;
+        // Pollen, seeds and dust drifting in the sunlight (Motes.hpp).
+        Motes motes;
+        motes.init();
+        bool motesOn = false;
 
         bool      grassPaintMode = false;      // grass brush active
         bool      brushErase     = false;      // stamp vs erase (shared)
@@ -4575,6 +4580,7 @@ int main(int argc, char** argv) {
         addF("windGust", windGust);
         addB("cloudShadows", cloudShadowsOn);
         addB("wildlife", wildlifeOn);
+        addB("motes", motesOn);
         addB("soundscape", soundscapeOn);
         addB("timeFlows", timeFlows);
         addS("herdModel", herdModel);
@@ -4990,6 +4996,7 @@ int main(int argc, char** argv) {
             windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
             cloudShadowsOn = false;
             wildlifeOn     = false;
+            motesOn        = false;
             soundscapeOn   = false;
             timeFlows      = false;
             herdModel.clear();
@@ -7359,6 +7366,14 @@ int main(int argc, char** argv) {
         if (!boot.shotsPath.empty() && !bootProject.empty())
             shotRunner.load(boot.shotsPath, boot.shotsOut);
         shotRunner.target = [&](int i, glm::vec3& t) {
+            if (i == 2000 || i == 2001) {      // "@2000" = the fish, or its last ring
+                if (i == 2001) wildlife.fishRate = 6.0f;   // ...and "@2001" with them busy
+                if (wildlife.fishInAir(t)) return true;
+                const std::vector<glm::vec4>& rp = wildlife.ripples();
+                if (rp.empty()) return false;
+                t = wildlife.lastRipple();
+                return true;
+            }
             if (i >= 1000) {                   // "@1000.." = the herd's animals
                 if (i - 1000 >= herd.count()) return false;
                 t = herd.animalPos(i - 1000) + glm::vec3(0.0f, 1.0f, 0.0f);
@@ -7395,7 +7410,11 @@ int main(int argc, char** argv) {
                               soundscape.phrases(), soundscape.singing(),
                               h, ny, mo, valNoise2(e.x * 0.13f + 19.0f, e.z * 0.13f + 7.0f),
                               valNoise2(e.x * 0.31f + 3.0f, e.z * 0.31f + 23.0f), veg.grassCount);
-                return std::string(buf) + g + "  " + herd.status();
+                char f[120];
+                std::snprintf(f, sizeof f, "  fish jumps %d rings %d motes %d",
+                              wildlife.fishJumps(), static_cast<int>(wildlife.ripples().size()),
+                              motes.drawn());
+                return std::string(buf) + g + f + "  " + herd.statusShort();
             }
             return std::string(buf);
         };
@@ -9200,8 +9219,45 @@ int main(int argc, char** argv) {
                 ww.daylight   = dayF;
                 ww.wind       = &veg.wind;
                 ww.flowers    = &veg.flowerHeads();
+                ww.forward    = camera.front();
+                ww.water      = [&](float x, float z, float& surf, float& depth) {
+                    float white = 0.0f;
+                    if (rivers.sample(glm::vec2(x, z), surf, &depth, nullptr, &white))
+                        return white < 0.3f;             // not in the falls and rapids
+                    const float g = streamer.heightAt(x, z);
+                    surf  = waterLevel;
+                    depth = waterLevel - g;
+                    return depth > 0.0f;
+                };
                 wildlife.enabled = true;
                 wildlife.update(dt, ww);
+                // A fish breaking the surface throws up a handful of drops.
+                std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+                for (const Wildlife::Splash& sp : wildlife.takeSplashes()) {
+                    if (!spray.ready()) break;
+                    const int n = static_cast<int>(6.0f + 18.0f * sp.strength);
+                    for (int k = 0; k < n; ++k) {
+                        const float a = u01(sprayRng) * 6.2831853f, o = u01(sprayRng);
+                        SprayP p;
+                        p.pos  = sp.pos + glm::vec3(std::cos(a) * 0.08f, 0.02f, std::sin(a) * 0.08f);
+                        p.vel  = glm::vec3(std::cos(a) * (0.4f + o * 1.0f),
+                                           (1.2f + u01(sprayRng) * 2.2f) * (0.6f + 0.4f * sp.strength),
+                                           std::sin(a) * (0.4f + o * 1.0f));
+                        p.life = p.life0 = 0.35f + u01(sprayRng) * 0.45f;
+                        p.size = 0.10f + u01(sprayRng) * 0.14f;
+                        p.flat = 0.0f;
+                        spray.add(p);
+                    }
+                }
+            }
+            if (motesOn) {
+                Motes::World mw;
+                mw.eye     = camera.position();
+                mw.ground  = [&](float x, float z) { return streamer.heightAt(x, z); };
+                mw.waterLevel = waterLevel;
+                mw.wind    = &veg.wind;
+                mw.weather = std::max(storm, rainIntensity);
+                motes.update(dt, mw);
             }
             // ...and what it sounds like (Soundscape.hpp): singers on their
             // perches, insects by the hour, the wind in the leaves. Play only,
@@ -13260,8 +13316,13 @@ int main(int argc, char** argv) {
                     ImGui::Checkbox("Wildlife", &wildlifeOn);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Starling flocks, swallows, raptors in the\n"
-                                          "thermals, butterflies at the flowers\n"
+                                          "thermals, butterflies at the flowers,\n"
+                                          "fish rising and jumping in the lake\n"
                                           "(needs Birds on in the Vegetation panel).");
+                    ImGui::Checkbox("Pollen in the light", &motesOn);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Pollen, dust and seeds drifting on the wind,\n"
+                                          "glittering where the sun shines towards you.");
                     ImGui::Checkbox("Soundscape", &soundscapeOn);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Birdsong from the trees by the hour,\n"
@@ -16051,6 +16112,8 @@ int main(int argc, char** argv) {
                 // downpour. What the weather changes is how MANY land.
                 water.setFloat("uRainRings", 1.0f);
                 water.setFloat("uRainDensity", rainDensity);
+                // Rings where the fish rose (Wildlife.hpp).
+                wildlife.applyRipples(water, wildlifeOn && veg.birdsEnabled);
                 water.setVec4("uWaterClip", farTerrain.ready()
                                                 ? farTerrain.nearRect()
                                                 : glm::vec4(-1e9f, -1e9f, 1e9f, 1e9f));
@@ -16108,6 +16171,7 @@ int main(int argc, char** argv) {
                 // in mid air off a fall has no surface for a ring.
                 river.setFloat("uRainRings", 1.0f);
                 river.setFloat("uRainDensity", rainDensity);
+                wildlife.applyRipples(river, wildlifeOn && veg.birdsEnabled);
                 for (std::size_t i = 0; i < rivers.runs().size() &&
                                         i < rivers.paths.size(); ++i) {
                     if (!rivers.paths[i].enabled) continue;
@@ -16178,6 +16242,10 @@ int main(int argc, char** argv) {
             // effect it is being tuned against.
             particles.update(entities, dt, assetDb);
             particles.draw(gctx);
+
+            // --- Pollen and dust in the light, additive into HDR ---------------
+            if (shadeFull && motesOn)
+                motes.draw(gctx, static_cast<float>(fbH) * 0.5f * proj[1][1]);
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
@@ -16307,6 +16375,8 @@ int main(int argc, char** argv) {
                     // ...and the crowns in the wind (treemotion.vert).
                     if (shadeFull)
                         veg.drawTreeMotion(mainVP, pp.curVP, pp.prevVP, camPos);
+                    // ...and where the pollen glitters, which follows nothing.
+                    if (shadeFull && motesOn) motes.drawReactive(mainVP);
                 }
                 taaPrevVP[vi]   = mainVPUnjittered;
                 taaPrevEye[vi]  = camPos;
