@@ -9240,6 +9240,17 @@ int main(int argc, char** argv) {
                         herd.load(c, lit);
                     }
                 }
+                // The grass parts around whoever walks through it: the player
+                // on foot, and the animals of the herd.
+                veg.grassPushers.clear();
+                if (playMode && fpsMode) {
+                    const glm::vec3 e = camera.position();
+                    veg.grassPushers.push_back({e.x, e.y - eyeHeight, e.z, 0.9f});
+                }
+                for (int i = 0; i < herd.count() && veg.grassPushers.size() < 8; ++i) {
+                    const glm::vec3 p = herd.animalPos(i);
+                    veg.grassPushers.push_back({p.x, p.y, p.z, 1.3f});
+                }
                 if (herd.loaded()) {
                     Herd::World hw;
                     hw.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };

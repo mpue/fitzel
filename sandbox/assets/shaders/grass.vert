@@ -17,6 +17,12 @@ uniform vec3  uLightDir;    // towards the sun (shared with grass.frag)
 #include "sunshadow.glsl"
 #include "wind.glsl"
 
+// Things walking through the field (the player, the herd): xyz = where they
+// stand, w = how wide they part the grass. The blades lean away and flatten
+// where they are trodden.
+uniform int  uPushCount;
+uniform vec4 uPush[8];
+
 out float vWave;    // how hard this blade is being pushed (the field's sheen)
 out float vH;
 out vec3  vWorldPos;
@@ -97,6 +103,17 @@ void main() {
     float bend  = uWindStrength * gust * stiff * (0.30 + 0.70 * sway)
                 * h01 * h01 * bendGain;
     local.xz += uWindDir * bend;
+    for (int i = 0; i < 8; ++i) {
+        if (i >= uPushCount) break;
+        vec2  away = iPos.xz - uPush[i].xz;
+        float d    = length(away);
+        float r    = uPush[i].w;
+        if (d >= r || abs(iPos.y - uPush[i].y) > 2.5) continue;
+        float k = 1.0 - d / r;
+        k *= k;
+        local.xz += (away / max(d, 1e-3)) * (k * 0.9 * h01 * bladeH);
+        local.y  *= 1.0 - 0.55 * k;
+    }
     // The sheen of a meadow in wind: blades pressed over by a gust turn their
     // paler, sky-lit side up, which is how the gust is SEEN from afar.
     vWave = clamp((gust - 0.9) * 1.6, 0.0, 1.0) * clamp(uWindStrength * 2.5, 0.0, 1.0);

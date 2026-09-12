@@ -437,6 +437,13 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     m_grass.bind();
     m_grass.setMat4("uViewProj", c.viewProj);
     wind::apply(m_grass, wind, 0.5f);   // a blade goes further than a trunk
+    {
+        const int n = static_cast<int>(std::min<std::size_t>(grassPushers.size(), 8));
+        m_grass.setInt("uPushCount", n);
+        static const char* const kPush[8] = {"uPush[0]", "uPush[1]", "uPush[2]", "uPush[3]",
+                                             "uPush[4]", "uPush[5]", "uPush[6]", "uPush[7]"};
+        for (int i = 0; i < n; ++i) m_grass.setVec4(kPush[i], grassPushers[i]);
+    }
     m_grass.setVec3("uTint", grassTint);
     m_grass.setVec3("uViewPos", c.camPos);
     m_grass.setVec3("uLightDir", c.lightDir);

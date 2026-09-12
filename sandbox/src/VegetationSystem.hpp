@@ -311,6 +311,9 @@ public:
     ecology::Params eco;
     // The air this frame (Wind.hpp): set by the host, read by every draw.
     wind::State wind;
+    // What walks through the grass this frame (xyz feet, w radius, up to 8):
+    // the blades part around it. Set by the host.
+    std::vector<glm::vec4> grassPushers;
     // Discs (x, z, radius) the forest field plants nothing in: the spawn point,
     // the placed models. Set by the host.
     std::vector<glm::vec3> treeClearings;
