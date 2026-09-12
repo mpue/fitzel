@@ -112,6 +112,7 @@
 #include "CloudShadow.hpp"
 #include "Wildlife.hpp"
 #include "Soundscape.hpp"
+#include "Herd.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -412,6 +413,8 @@ struct BootConfig {
     // (see ShotList.hpp). `--shots-out <dir>` says where the PNGs go.
     std::string shotsPath;
     std::string shotsOut;
+    // `--open <project>`: the editor starts with this project open (not Play).
+    std::string editorOpen;
 };
 
 BootConfig loadBootConfig(int argc, char** argv) {
@@ -436,6 +439,7 @@ BootConfig loadBootConfig(int argc, char** argv) {
             cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
         else if (a == "--shots")      cfg.shotsPath   = argv[i + 1];
         else if (a == "--shots-out")  cfg.shotsOut    = argv[i + 1];
+        else if (a == "--open")       cfg.editorOpen  = argv[i + 1];
     }
     return cfg;
 }
@@ -1687,6 +1691,12 @@ int main(int argc, char** argv) {
         bool cloudShadowsOn = false;
         bool soundscapeOn = false;   // scene setting "soundscape"
         bool timeFlows = false;      // scene setting "timeFlows": the day runs in Play
+        // A herd grazing in a meadow (Herd.hpp): a skinned model from the
+        // project, each animal on its own clock. Empty model = none.
+        Herd herd;
+        Herd::Config herdCfg;
+        std::string  herdModel;          // project-relative
+        std::string  herdLoadedKey;      // what the herd was last loaded from
         // The fauna (Wildlife.hpp): flocks, swallows, raptors, butterflies. In
         // place of the old circling birds, for scenes that ask for it.
         Wildlife wildlife;
@@ -4567,6 +4577,14 @@ int main(int argc, char** argv) {
         addB("wildlife", wildlifeOn);
         addB("soundscape", soundscapeOn);
         addB("timeFlows", timeFlows);
+        addS("herdModel", herdModel);
+        addI("herdCount", herdCfg.count);
+        addF("herdX", herdCfg.centre.x);    addF("herdZ", herdCfg.centre.y);
+        addF("herdRadius", herdCfg.radius); addF("herdHeight", herdCfg.height);
+        addI("herdGrazeClip", herdCfg.grazeClip);
+        addI("herdWalkClip", herdCfg.walkClip);
+        addF("herdWalkSpeed", herdCfg.walkSpeed);
+        addF("herdYaw", herdCfg.yawOffset);
         addF("grassDryGrowth", veg.grassDryGrowth);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
@@ -4974,6 +4992,8 @@ int main(int argc, char** argv) {
             wildlifeOn     = false;
             soundscapeOn   = false;
             timeFlows      = false;
+            herdModel.clear();
+            herdCfg = Herd::Config{};
             veg.grassDryGrowth = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
@@ -7221,6 +7241,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr,
                     "[Fitzel] player: project not found: %s\n", bootProject.c_str());
             }
+        } else if (!boot.editorOpen.empty()) {
+            openProjectShowing(boot.editorOpen);
         }
 
         double lastTime = window.time();
@@ -7337,6 +7359,11 @@ int main(int argc, char** argv) {
         if (!boot.shotsPath.empty() && !bootProject.empty())
             shotRunner.load(boot.shotsPath, boot.shotsOut);
         shotRunner.target = [&](int i, glm::vec3& t) {
+            if (i >= 1000) {                   // "@1000.." = the herd's animals
+                if (i - 1000 >= herd.count()) return false;
+                t = herd.animalPos(i - 1000) + glm::vec3(0.0f, 1.0f, 0.0f);
+                return true;
+            }
             if (i < 0 || i >= wildlife.birdsDrawn()) return false;
             t = wildlife.debugPos(i);
             return true;
@@ -7368,7 +7395,7 @@ int main(int argc, char** argv) {
                               soundscape.phrases(), soundscape.singing(),
                               h, ny, mo, valNoise2(e.x * 0.13f + 19.0f, e.z * 0.13f + 7.0f),
                               valNoise2(e.x * 0.31f + 3.0f, e.z * 0.31f + 23.0f), veg.grassCount);
-                return std::string(buf) + g;
+                return std::string(buf) + g + "  " + herd.status();
             }
             return std::string(buf);
         };
@@ -9192,6 +9219,36 @@ int main(int argc, char** argv) {
                 sf.trees    = &veg.treeInstances();
                 sf.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };
                 soundscape.update(dt, sf, playMode);
+            }
+            // The herd: (re)loaded when the scene names a different one, then
+            // grazing and wandering whether or not the game is running.
+            {
+                const std::string dir = currentProject.empty() ? std::string()
+                    : std::filesystem::path(currentProject).parent_path().generic_string();
+                char key[512];
+                std::snprintf(key, sizeof key, "%s|%s|%d|%.1f|%.1f|%.1f|%.2f|%d|%d|%.2f|%.1f",
+                              dir.c_str(), herdModel.c_str(), herdCfg.count, herdCfg.centre.x,
+                              herdCfg.centre.y, herdCfg.radius, herdCfg.height,
+                              herdCfg.grazeClip, herdCfg.walkClip, herdCfg.walkSpeed,
+                              herdCfg.yawOffset);
+                if (herdLoadedKey != key) {
+                    herdLoadedKey = key;
+                    herd = Herd{};
+                    if (!herdModel.empty() && !dir.empty()) {
+                        Herd::Config c = herdCfg;
+                        c.model = dir + "/" + herdModel;
+                        herd.load(c, lit);
+                    }
+                }
+                if (herd.loaded()) {
+                    Herd::World hw;
+                    hw.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };
+                    hw.walkable = [&](float x, float z) {
+                        return streamer.heightAt(x, z) > waterLevel + 0.8f &&
+                               !inDiscs(veg.wet, x, z);
+                    };
+                    herd.update(dt, hw);
+                }
             }
             renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
 
@@ -14995,6 +15052,7 @@ int main(int argc, char** argv) {
             for (const TerrainChunk* chunk : streamer.visibleChunks()) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
             }
+            herd.submit(renderer);   // the grazing herd, lit and shadowed like any object
 
             // Every road in the scene, each drawn with its own surface, its own
             // wetness and its own glow -- which is the whole point of them being

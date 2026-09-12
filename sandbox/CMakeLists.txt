@@ -36,6 +36,8 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Wildlife.cpp
     # ...and the sound of the place: birdsong, insects, the wind in the leaves.
     src/Soundscape.cpp
+    # A herd grazing in a meadow: a skinned model, each animal on its own clock.
+    src/Herd.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
