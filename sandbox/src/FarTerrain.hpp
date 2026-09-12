@@ -106,6 +106,15 @@ public:
     // own surfaces -- the lake quad -- end and this one's begin.
     glm::vec4 nearRect() const { return glm::vec4(m_nearMin, m_nearMax); }
 
+    // The finest ring's field (r = height, g = moisture) and where it lies:
+    // (origin x, origin z, cell, samples per side). The near terrain reads the
+    // moisture from it to colour its meadows the way the grass grows them.
+    // 0 until the ring has been filled.
+    unsigned  fineTexture() const { return m_levels[0].valid ? m_levels[0].tex : 0u; }
+    glm::vec4 fineRect() const {
+        return glm::vec4(m_levels[0].origin, m_levels[0].cell, static_cast<float>(kGrid));
+    }
+
 private:
     // Five rings, each twice the cell and twice the size of the one inside it:
     // 8 m over 2 km out to 128 m over 32 km. Doubling (rather than quadrupling)

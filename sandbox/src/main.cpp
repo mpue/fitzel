@@ -110,6 +110,7 @@
 #include "VegetationSystem.hpp"
 #include "FarTerrain.hpp"
 #include "CloudShadow.hpp"
+#include "Wildlife.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -1683,6 +1684,11 @@ int main(int argc, char** argv) {
         // The cumulus casts its shadow on the ground (CloudShadow.hpp).
         CloudShadow cloudShadow;
         bool cloudShadowsOn = false;
+        // The fauna (Wildlife.hpp): flocks, swallows, raptors, butterflies. In
+        // place of the old circling birds, for scenes that ask for it.
+        Wildlife wildlife;
+        wildlife.init();
+        bool wildlifeOn = false;
 
         bool      grassPaintMode = false;      // grass brush active
         bool      brushErase     = false;      // stamp vs erase (shared)
@@ -4551,6 +4557,8 @@ int main(int argc, char** argv) {
         addF("windAngle", windAngle);
         addF("windGust", windGust);
         addB("cloudShadows", cloudShadowsOn);
+        addB("wildlife", wildlifeOn);
+        addF("grassDryGrowth", veg.grassDryGrowth);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
         // The opening camera move. The KEYS are a blob written below (a list, not
@@ -4954,6 +4962,8 @@ int main(int argc, char** argv) {
             forestFloorLayer      = -1;
             windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
             cloudShadowsOn = false;
+            wildlifeOn     = false;
+            veg.grassDryGrowth = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
@@ -7317,11 +7327,32 @@ int main(int argc, char** argv) {
             shotRunner.load(boot.shotsPath, boot.shotsOut);
         shotRunner.status = [&] {
             const prof::FrameStats fs = prof::frameStats();
-            char buf[160];
-            std::snprintf(buf, sizeof buf, "chunks %d (+%d pending)  frame %.1f ms  eye %.0f %.0f %.0f",
+            char buf[400];
+            std::snprintf(buf, sizeof buf, "chunks %d (+%d pending)  frame %.1f ms  eye %.0f %.0f %.0f"
+                          "  fauna %d/%d birds %d flies %d  b0 %.0f %.0f %.0f  s0 %.0f %.0f %.0f  r0 %.0f %.0f %.0f  v %.1f goal %.0f upd %d",
                           streamer.loadedChunkCount(), streamer.pendingChunkCount(),
                           fs.avg, camera.position().x, camera.position().y,
-                          camera.position().z);
+                          camera.position().z, wildlifeOn ? 1 : 0, wildlife.ready() ? 1 : 0,
+                          wildlife.birdsDrawn(), wildlife.fliesDrawn(),
+                          wildlife.debugPos(0).x, wildlife.debugPos(0).y, wildlife.debugPos(0).z,
+                          wildlife.debugPos(62).x, wildlife.debugPos(62).y, wildlife.debugPos(62).z,
+                          wildlife.debugPos(69).x, wildlife.debugPos(69).y, wildlife.debugPos(69).z,
+                          wildlife.debugSpeed(), wildlife.debugGoal(), wildlife.debugUpdates);
+            // Why the grass does or does not grow at the eye (the placement's
+            // own tests, GrassTrace::generateTile).
+            {
+                const glm::vec3 e = camera.position();
+                const float h  = streamer.heightAt(e.x, e.z);
+                const float hl = streamer.heightAt(e.x - 1, e.z), hr = streamer.heightAt(e.x + 1, e.z);
+                const float hd = streamer.heightAt(e.x, e.z - 1), hu = streamer.heightAt(e.x, e.z + 1);
+                const float ny = glm::normalize(glm::vec3(hl - hr, 2.0f, hd - hu)).y;
+                const float mo = fitzel::terrainMoisture(streamer.settings(), e.x, e.z);
+                char g[200];
+                std::snprintf(g, sizeof g, "  grass@eye h %.1f ny %.2f moist %.2f bare %.2f bare2 %.2f blades %d",
+                              h, ny, mo, valNoise2(e.x * 0.13f + 19.0f, e.z * 0.13f + 7.0f),
+                              valNoise2(e.x * 0.31f + 3.0f, e.z * 0.31f + 23.0f), veg.grassCount);
+                return std::string(buf) + g;
+            }
             return std::string(buf);
         };
 #endif
@@ -9104,6 +9135,19 @@ int main(int argc, char** argv) {
             fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
             fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
+            // The fauna moves in the world just lit: after the sun, before the
+            // passes that draw it.
+            if (wildlifeOn && veg.birdsEnabled) {
+                Wildlife::World ww;
+                ww.eye        = camera.position();
+                ww.ground     = [&](float x, float z) { return streamer.heightAt(x, z); };
+                ww.waterLevel = waterLevel;
+                ww.daylight   = dayF;
+                ww.wind       = &veg.wind;
+                ww.flowers    = &veg.flowerHeads();
+                wildlife.enabled = true;
+                wildlife.update(dt, ww);
+            }
             renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
 
             // --- Physics: step the world, sync dynamic bodies back to entities -
@@ -9819,6 +9863,10 @@ int main(int argc, char** argv) {
             if (!playMode) applyViewCamera();
 #ifndef FITZEL_PLAYER
             // --shots: the listed view wins over every camera the scene has.
+            // The walking player must not pull the eye back to the capsule: the
+            // next frame streams terrain, grass and trees around wherever the
+            // camera is when it starts, and that has to be the shot.
+            if (playMode && shotRunner.active()) fpsMode = false;
             if (playMode && shotRunner.active())
                 shotRunner.applyCamera(
                     camera, [&](float x, float z) { return streamer.heightAt(x, z); },
@@ -14790,6 +14838,15 @@ int main(int argc, char** argv) {
                           .set("uGrassTint", veg.grassTint)
                           .set("uGrassTop", look.snowLevel - 1.5f);
                 // The forest floor under the ecology's woods (ecology.glsl).
+                // The meadow's moisture from the horizon's finest ring, on a unit
+                // of its own (30: nothing else binds it).
+                const unsigned moistTex = farTerrain.ready() ? farTerrain.fineTexture() : 0u;
+                glActiveTexture(GL_TEXTURE30);
+                glBindTexture(GL_TEXTURE_2D, moistTex);
+                glActiveTexture(GL_TEXTURE0);
+                terrainMat.set("uMoistTex", 30)
+                          .set("uMoistRect", moistTex ? farTerrain.fineRect() : glm::vec4(0.0f))
+                          .set("uGrassDry", veg.grassDryGrowth);
                 terrainMat.set("uForestLayer", veg.eco.enabled ? forestFloorLayer : -1)
                           .set("uCanopy", veg.canopyColour() * veg.treeBrightness);
                 ecology::forEachUniform(
@@ -15789,7 +15846,8 @@ int main(int argc, char** argv) {
                   veg.drawTreeBillboards(gctx, vcam.right()); }
 
                 // Birds: a flock wheeling above the camera, two-sided into the HDR.
-                veg.drawBirds(mainVP, now, camPos);
+                if (wildlifeOn && veg.birdsEnabled) wildlife.draw(gctx);
+                else veg.drawBirds(mainVP, now, camPos);
             }
 
             // 4) The water surface: a large quad following the camera, sampling

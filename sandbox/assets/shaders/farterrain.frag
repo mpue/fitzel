@@ -210,7 +210,7 @@ void main() {
 
         // The valley's meadow is the near field's own colour (meadow.glsl), so
         // the streamed ground and this one meet without a change of season.
-        vec3 meadow  = pow(meadowColour(xz, 0.62, px), vec3(2.2)) * uGrassTint;
+        vec3 meadow  = pow(meadowColour(xz, moist, px), vec3(2.2)) * uGrassTint;
         vec3 alpine  = mix(lin(vec3(0.36, 0.38, 0.22)), lin(vec3(0.44, 0.40, 0.28)), n2);
         vec3 forest  = mix(lin(vec3(0.085, 0.13, 0.07)), lin(vec3(0.12, 0.15, 0.08)), n2)
                      * (0.8 + 0.4 * (fbmPx(xz, 14.0, px) + 0.5));

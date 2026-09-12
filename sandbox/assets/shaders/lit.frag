@@ -468,6 +468,11 @@ uniform float uMeadowAmount;   // 0..1, how completely the field hides the soil
 uniform float uMeadowLush;     // the field's moisture, as the blades see it
 uniform vec3  uGrassTint;      // the grass's own colour multiplier (linear)
 uniform float uGrassTop;       // no grass above this height (the snow line)
+uniform float uGrassDry;       // thin dry sward on ground too dry for grass (0 = bare)
+// The moisture the grass grows by, from the far terrain's finest ring
+// (FarTerrain::fineTexture): .w of the rect is the sample count, 0 = none.
+uniform sampler2D uMoistTex;
+uniform vec4      uMoistRect;  // origin x, origin z, cell, samples
 #include "meadow.glsl"
 // The forest (ecology.glsl): under the trees the ground is forest floor --
 // the terrain layer uForestLayer (-1 = none) takes over there -- and no meadow.
@@ -995,10 +1000,20 @@ void main() {
             float t = smoothstep(uMeadowNear, uMeadowFar, length(vWorldPos - uViewPos))
                     * uMeadowAmount;
             if (t > 0.0) {
+                // How wet the ground is where the grass grows: the blades take
+                // their colour from it (dry = straw) and thin out where it is
+                // too dry for them.
+                float lush = uMeadowLush;
+                if (uMoistRect.w > 0.0) {
+                    vec2 muv = ((vWorldPos.xz - uMoistRect.xy) / uMoistRect.z + 0.5) / uMoistRect.w;
+                    if (all(greaterThan(muv, vec2(0.0))) && all(lessThan(muv, vec2(1.0))))
+                        lush = textureLod(uMoistTex, muv, 0.0).g;
+                }
+                float thin = (lush < 0.22) ? uGrassDry * mix(0.35, 0.75, lush / 0.22) : 1.0;
                 float cover = t * meadowCover(vWorldPos.xz, vWorldPos.y, N.y,
                                               uWaterLevel, uGrassTop, groundPx)
-                            * (1.0 - 0.9 * gWoods);
-                vec3 m = pow(pow(meadowColour(vWorldPos.xz, uMeadowLush, groundPx),
+                            * (1.0 - 0.9 * gWoods) * clamp(thin * 1.4, 0.0, 1.0);
+                vec3 m = pow(pow(meadowColour(vWorldPos.xz, lush, groundPx),
                                  vec3(2.2)) * uGrassTint, vec3(1.0 / 2.2));
                 albedo     = mix(albedo, m, cover);
                 terrainNrm = normalize(mix(terrainNrm, N, cover));

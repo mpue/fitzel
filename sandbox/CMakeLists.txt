@@ -32,6 +32,8 @@ set(SANDBOX_RUNTIME_SOURCES
     src/FarTerrain.cpp
     # The cumulus deck's shadow on the ground.
     src/CloudShadow.cpp
+    # The fauna: flocks, swallows, raptors, butterflies.
+    src/Wildlife.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural

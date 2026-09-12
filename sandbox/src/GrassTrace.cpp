@@ -186,7 +186,14 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
                 terrainMoisture(s, wx, wz)
                     - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
                 0.0f, 1.0f);
-            if (lush < 0.22f) continue;
+            // Dry ground: nothing, as it always was -- or, with dryGrowth, a thin
+            // straw-coloured sward, which is what a dry meadow actually is. A
+            // valley floor with bare earth between green patches reads as desert.
+            float dryThin = 1.0f;
+            if (lush < 0.22f) {
+                if (f.dryGrowth <= 0.0f) continue;
+                dryThin = f.dryGrowth * glm::mix(0.35f, 0.75f, lush / 0.22f);
+            }
             // In the woods the canopy takes the light: a few tufts, not a lawn.
             // The edge keeps most of its grass -- that is where the sun gets in.
             float woods = 0.0f;
@@ -206,7 +213,7 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
             const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * chaos;
             const int   count = static_cast<int>(per * dens
                                 * glm::mix(0.35f, 1.0f, lush) * cellJit
-                                * (1.0f - 0.85f * woods));
+                                * (1.0f - 0.85f * woods) * dryThin);
             // Height clumps have their OWN frequency (independent of density), so
             // tall tufts and low turf don't line up with thick/thin.
             const float tuft = valNoise2(wx * 0.11f + 40.0f, wz * 0.11f + 40.0f);

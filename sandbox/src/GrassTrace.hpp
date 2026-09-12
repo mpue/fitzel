@@ -59,6 +59,10 @@ struct Field {
     // the forest floor. Disabled = grass everywhere, as before.
     ecology::Params eco;
 
+    // Ground too dry for the old rule (moisture under 0.22) grows a thin, dry
+    // sward at this density (0 = bare, as before).
+    float dryGrowth = 0.0f;
+
     // The tile edge the field is generated on. A constant rather than a setting:
     // the seed is the tile coordinate, so changing this reshuffles every blade in
     // the world. VegetationSystem's TiledScatter config must use the same number.

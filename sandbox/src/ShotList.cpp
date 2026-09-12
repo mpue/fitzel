@@ -1,5 +1,6 @@
 #include "ShotList.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -70,6 +71,7 @@ bool Runner::afterFrame(double now, int w, int h) {
     const double due = (m_frame == 0) ? s.settle : s.every;
     if (now - m_since < due) return false;
 
+    const auto wroteStart = std::chrono::steady_clock::now();
     // After the swap the front buffer holds the finished frame, post chain and
     // all. Flipped: GL counts rows from the bottom.
     std::vector<unsigned char> px(static_cast<std::size_t>(w) * h * 4);
@@ -102,7 +104,10 @@ bool Runner::afterFrame(double now, int w, int h) {
         std::fclose(f);
     }
 
-    m_since = now;
+    // The clock restarts AFTER the picture is on disk: writing a 5 MB PNG
+    // takes most of a second, and a wait measured from before it would be
+    // over by the next frame -- every short settle silently became "one frame".
+    m_since = now + std::chrono::duration<double>(std::chrono::steady_clock::now() - wroteStart).count();
     if (++m_frame >= s.frames) {
         m_frame = 0;
         if (++m_index >= static_cast<int>(m_shots.size())) m_done = true;

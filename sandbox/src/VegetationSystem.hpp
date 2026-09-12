@@ -234,6 +234,8 @@ public:
     void eraseFlower(glm::vec2 c, float radius);
     void clearPaintedFlowers() { paintedFlowers.clear(); rebuildFlowerBuffer(); }
     void drawFlowers(const FrameContext& ctx);
+    // Every bloom's head, world space (procedural and painted).
+    const std::vector<glm::vec3>& flowerHeads() const { return m_flowerHeads; }
 
     // --- Birds + fireflies ---------------------------------------------------
     void drawBirds(const glm::mat4& viewProj, double time, const glm::vec3& camPos);
@@ -254,6 +256,7 @@ public:
     float grassDensity = 1.0f;
     float grassChaos   = 1.0f;  // 0 = even lawn, 1 = wild meadow, >1 = unruly
     float grassRadius  = 46.0f;
+    float grassDryGrowth = 0.0f; // thin dry sward on ground too dry for grass (0 = bare)
     glm::vec3 grassTint{1.0f, 1.0f, 1.0f};
 
     // The grass field as data, for the path tracer: what the streamed tiles were
@@ -372,6 +375,7 @@ private:
     float         m_gRadius = -1.0f;
     std::uint32_t m_gRoadHash = 0;
     ecology::Params m_gEco;
+    float         m_gDry = -1.0f;
 
     // Trees. Shaders are shared across all species (bound once, uniforms per draw).
     fitzel::Shader           m_tree, m_treeDepth, m_billboard;
@@ -413,6 +417,7 @@ private:
     fitzel::InstancedMesh m_flowerField;
     int                   m_flowerVerts = 0;
     std::vector<float>    m_flowerInst;
+    std::vector<glm::vec3> m_flowerHeads;
     std::size_t           m_proceduralFlowerFloats = 0;
     std::future<std::vector<float>> m_flowerFuture; // async procedural regen
     bool                            m_flowerPending = false;

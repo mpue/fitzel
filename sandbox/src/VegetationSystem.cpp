@@ -299,7 +299,7 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
                a.treeLine != b.treeLine || a.waterLevel != b.waterLevel ||
                a.solitary != b.solitary || a.slopeLove != b.slopeLove;
     };
-    if (grassDirty || ecoDiffers(eco, m_gEco) ||
+    if (grassDirty || ecoDiffers(eco, m_gEco) || grassDryGrowth != m_gDry ||
         grassDensity != m_gDensity || grassChaos != m_gChaos ||
         grassHeight != m_gHeight || grassRadius != m_gRadius ||
         waterLevel != m_gWater || snowLevel != m_gSnow ||
@@ -321,6 +321,8 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         m_field.wet        = wet;
         m_field.eco        = eco;
         m_gEco             = eco;
+        m_field.dryGrowth  = grassDryGrowth;
+        m_gDry             = grassDryGrowth;
         // The "Grass range" slider (m) maps to a tile radius over the 12 m grid.
         const int tileR = std::clamp(
             static_cast<int>(std::lround(grassRadius / grassfield::Field::kTileSize)),
@@ -1802,6 +1804,12 @@ void VegetationSystem::rebuildFlowerBuffer() {
                         paintedFlowers.begin(), paintedFlowers.end());
     m_flowerField.upload(m_flowerInst);
     flowerCount = m_flowerField.count();
+    // Where the blooms sit (the stem top, half a flower's scale up), for the
+    // butterflies to visit.
+    m_flowerHeads.clear();
+    for (std::size_t i = 0; i + 8 <= m_flowerInst.size(); i += 8)
+        m_flowerHeads.push_back({m_flowerInst[i], m_flowerInst[i + 1] + 0.5f * m_flowerInst[i + 4],
+                                 m_flowerInst[i + 2]});
 }
 
 // Weighted palette pick plus a small per-bloom colour jitter, so no two flowers
