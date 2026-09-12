@@ -1594,6 +1594,12 @@ int main(int argc, char** argv) {
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
         float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
+        // Where on the globe and when in the year: the sun's path. The defaults
+        // are the engine's old sky -- an equatorial sun that rises due east and
+        // stands nearly overhead at noon -- so scenes keep the light they were
+        // lit for. The Alps in June are 47 and +20.
+        float sunLatitude    = 0.0f;     // degrees north
+        float sunDeclination = -10.4f;   // degrees: +23 midsummer .. -23 midwinter
         bool  timePaused = true;   // freeze the time of day where it is
 
         // The air: the cumulus deck, the ice above it and the height haze, as
@@ -4195,6 +4201,11 @@ int main(int argc, char** argv) {
         float valueGain  = 1.0f;
         float warmth     = 0.18f; // golden-hour white balance
         float contrast   = 0.16f; // lift the flat look
+        // Split toning and vibrance (composite.frag): cool shadows, warm
+        // highlights, and more colour where there is little -- the graded look
+        // of a landscape photograph. 0 = off, the default.
+        float gradeSplit    = 0.0f;
+        float gradeVibrance = 0.0f;
         // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
         // and auto exposure relative to `exposure` (see PostChain::Params).
         int   tonemapCurve  = 1;
@@ -4633,6 +4644,7 @@ int main(int argc, char** argv) {
         // Solo is deliberately NOT kept: it is a listening state, not a mix, and
         // a scene that opens with one bus soloed sounds broken.
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
+        addF("sunLatitude", sunLatitude);      addF("sunDeclination", sunDeclination);
         addF("coverage", skySet.coverage);     addF("cloudDensity", skySet.density);
         addF("cloudScale", skySet.scale);      addF("cloudWind", skySet.wind);
         addF("cloudBottom", skySet.base);      addF("cloudTop", skySet.top);
@@ -4721,6 +4733,7 @@ int main(int argc, char** argv) {
         addI("envProbeRes", envProbeRes);      addI("envProbeFaces", envProbeFaces);
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
+        addF("gradeSplit", gradeSplit);        addF("gradeVibrance", gradeVibrance);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
         addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
         addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
@@ -4996,6 +5009,10 @@ int main(int argc, char** argv) {
             windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
             cloudShadowsOn = false;
             wildlifeOn     = false;
+            sunLatitude    = 0.0f;
+            gradeSplit     = 0.0f;
+            gradeVibrance  = 0.0f;
+            sunDeclination = -10.4f;
             motesOn        = false;
             soundscapeOn   = false;
             timeFlows      = false;
@@ -9151,9 +9168,20 @@ int main(int argc, char** argv) {
                 timeOfDay += dt * (24.0f / dayLength);
                 timeOfDay = std::fmod(timeOfDay, 24.0f);
             }
-            const float phi = (timeOfDay / 24.0f) * 6.2831853f - 1.5707963f;
-            const glm::vec3 sunDir =
-                glm::normalize(glm::vec3(std::cos(phi), std::sin(phi), 0.18f));
+            // The sun on its day arc: hour angle from local noon, latitude and
+            // declination (sunLatitude/sunDeclination above). East is +X, south
+            // +Z. At latitude 0 and -10.4 degrees this is the old sky exactly.
+            const glm::vec3 sunDir = [&] {
+                const float H   = (timeOfDay - 12.0f) / 24.0f * 6.2831853f;
+                const float lat = glm::radians(sunLatitude);
+                const float dec = glm::radians(sunDeclination);
+                const float up    = std::sin(lat) * std::sin(dec)
+                                  + std::cos(lat) * std::cos(dec) * std::cos(H);
+                const float east  = -std::cos(dec) * std::sin(H);
+                const float north = std::cos(lat) * std::sin(dec)
+                                  - std::sin(lat) * std::cos(dec) * std::cos(H);
+                return glm::normalize(glm::vec3(east, up, -north));
+            }();
             const float dayF   = glm::smoothstep(-0.12f, 0.18f, sunDir.y);
             const float lowSun = 1.0f - glm::clamp(sunDir.y / 0.3f, 0.0f, 1.0f);
             const glm::vec3 sunCol =
@@ -13312,6 +13340,12 @@ int main(int argc, char** argv) {
                     ImGui::SliderFloat("Wind towards", &windAngle, -180.0f, 180.0f, "%.0f deg");
                     ImGui::SliderFloat("Gusts", &windGust, 0.0f, 1.0f, "%.2f");
                     ImGui::Separator();
+                    ImGui::SliderFloat("Latitude", &sunLatitude, -60.0f, 70.0f, "%.0f deg");
+                    ImGui::SliderFloat("Season", &sunDeclination, -23.4f, 23.4f, "%.1f deg");
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("The sun's declination: +23 midsummer,\n"
+                                          "0 equinox, -23 midwinter (north).");
+                    ImGui::Separator();
                     ImGui::Checkbox("Cloud shadows", &cloudShadowsOn);
                     ImGui::Checkbox("Wildlife", &wildlifeOn);
                     if (ImGui::IsItemHovered())
@@ -13677,6 +13711,13 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f);
                 ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
                 ImGui::SliderFloat("Warmth",     &warmth, -0.5f, 0.5f);
+                ImGui::SliderFloat("Split tone", &gradeSplit, 0.0f, 1.5f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Cool shadows, warm highlights.");
+                ImGui::SliderFloat("Vibrance",   &gradeVibrance, -0.5f, 1.0f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("More colour where there is little;\n"
+                                      "already vivid colours stay as they are.");
                 ImGui::SliderFloat("Contrast",   &contrast, 0.0f, 0.6f);
                 ImGui::SliderFloat("Vignette",   &vignette, 0.0f, 1.0f);
                 if (ImGui::IsItemHovered())
@@ -15732,6 +15773,13 @@ int main(int argc, char** argv) {
                 } else {
                     cloudShadow.disable();
                 }
+                // ...and the mountains' (FarTerrain::renderSunShadow): the valley
+                // goes into shade while the summits still catch the sun.
+                if (farTerrainOn && shadeFull)
+                    farTerrain.renderSunShadow(light.direction, camera.position(),
+                                               [&] { fsQuad.draw(); });
+                else
+                    cloudShadowInfo().mtnOn = false;
                 applyCloudShadow(lit);
             }
             {
@@ -16344,6 +16392,7 @@ int main(int argc, char** argv) {
                 pp.exposure = exposure;
                 pp.hueShift = hueShift; pp.saturation = saturation;
                 pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
+                pp.split = gradeSplit; pp.vibrance = gradeVibrance;
                 pp.curve        = tonemapCurve;
                 pp.vignette     = vignette;
                 pp.grain        = filmGrain;

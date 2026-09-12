@@ -68,6 +68,27 @@ float fbmPx(vec2 p, float scale, float px) {
     return s;   // about -0.5..0.5
 }
 
+// --- A forest seen from a few kilometres ------------------------------------
+// Not a colour but crowns: a roof of rounded tops, each lit on its sun side and
+// dark on the other, with shade in the gaps between them. At three kilometres
+// a crown is still five or six pixels across, and a flat green there is what
+// made the far woods read as moss. `crownH` is the canopy's height in crown
+// heights (0 = the ground in a gap), on a jittered 7.5 m grid.
+float crownH(vec2 p) {
+    vec2  g = p / 7.5;
+    vec2  i = floor(g), f = g - i;
+    float h = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec2  o = vec2(float(x), float(y));
+            vec2  c = o + 0.1 + 0.8 * vec2(hash21(i + o), hash21(i + o + 17.3));
+            float r = 0.45 + 0.30 * hash21(i + o + 41.7);
+            float d = length(f - c) / r;
+            h = max(h, (1.0 - d * d) * (0.7 + 0.6 * hash21(i + o + 9.1)));
+        }
+    return h;
+}
+
 // --- The heightfields -------------------------------------------------------
 vec2 ringUv(vec2 xz, vec2 origin, float size) {
     float cell = size / (uGrid - 1.0);
@@ -148,7 +169,7 @@ vec3 applyAir(vec3 color, vec3 p, vec3 eye, vec3 L) {
                : exp(-y0 / H);
     float a = 1.0 - exp(-dist / Lair * avgD);
     vec3 air = skyAir(normalize(vec3(rd.x, max(rd.y, 0.015), rd.z)));
-    air += uFogSunColor * pow(max(dot(rd, L), 0.0), 6.0) * 0.30;   // forward scatter
+    air += uFogSunColor * pow(max(dot(rd, L), 0.0), 8.0) * 0.18;   // forward scatter
     return mix(color, air, a);
 }
 
@@ -176,7 +197,35 @@ void main() {
     // Fine relief the grid is too coarse to carry: gullies and ribs as a bump
     // (surface-gradient method), strongest on the steep ground where it lives.
     float steep = 1.0 - N.y;
+    vec3  N0 = N;                                           // the field's own normal
+    float slope0 = degrees(acos(clamp(N.y, -1.0, 1.0)));   // ...and slope
     float bump  = fbmPx(xz, 55.0, px) * (4.0 + 26.0 * steep);
+    // Gullies: what water and rockfall cut into a mountainside -- channels
+    // running straight down it, a few dozen metres apart, ribs between them.
+    // Noise stretched five to one along the fall line; the fall line turns
+    // from place to place, so four fixed orientations are blended by how well
+    // each matches it (turning ONE frame with the slope would swirl the
+    // pattern, kilometres from the origin, into whorls).
+    if (steep > 0.08) {
+        vec2  dn   = normalize(N.xz + 1e-5);          // downhill
+        float vis  = 1.0 - smoothstep(0.3, 0.9, px / 26.0);
+        if (vis > 0.0) {
+            float g = 0.0, wsum = 0.0;
+            for (int k = 0; k < 4; ++k) {
+                float a  = float(k) * 0.7853982;
+                vec2  d  = vec2(cos(a), sin(a));
+                float w  = pow(abs(dot(dn, d)), 6.0) + 1e-4;
+                vec2  pp = vec2(dot(xz, vec2(-d.y, d.x)) / 26.0, dot(xz, d) / 130.0);
+                float r1 = 1.0 - abs(2.0 * vnoise(pp + float(k) * 7.3) - 1.0);
+                float r2 = 1.0 - abs(2.0 * vnoise(pp * vec2(2.3, 1.7) + 31.0) - 1.0);
+                g    += w * (r1 * r1 + 0.45 * r2 * r2);
+                wsum += w;
+            }
+            // Some faces are scored all over, some are smooth slabs.
+            float face = 0.35 + 0.65 * smoothstep(0.3, 0.75, vnoise(xz / 900.0 + 3.7));
+            bump += (g / wsum - 0.55) * 13.0 * face * smoothstep(0.08, 0.35, steep) * vis;
+        }
+    }
     {
         vec3  dpx = dFdx(P), dpy = dFdy(P);
         vec3  r1 = cross(dpy, N), r2 = cross(N, dpx);
@@ -239,7 +288,7 @@ void main() {
         // on the slopes it can hold, below the tree line, in valley patches.
         float forestAmt;
         if (uEcoOn == 1) {
-            vec3 e = ecoSample(xz, h, N.y);
+            vec3 e = ecoSample(xz, h, N0.y);
             forestAmt = clamp(e.x * 1.3, 0.0, 1.0);
             forest = uCanopy * 0.75 * (0.75 + 0.5 * (fbmPx(xz, 14.0, px) + 0.5))
                    * mix(0.85, 1.1, n2);
@@ -251,11 +300,30 @@ void main() {
                       * (1.0 - smoothstep(30.0, 40.0, slope));
         }
         albedo = mix(albedo, forest, forestAmt);
+        // The crowns, while they are big enough on screen to be crowns; past
+        // that the roof's self-shadowing is the canopy darkening below.
+        float crownVis = forestAmt * (1.0 - smoothstep(0.35, 1.2, px / 7.5));
+        if (crownVis > 0.01) {
+            const float kE = 0.8, kH = 5.0;             // metres: step, crown height
+            float c0 = crownH(xz);
+            float cx = crownH(xz + vec2(kE, 0.0));
+            float cz = crownH(xz + vec2(0.0, kE));
+            vec3  g  = vec3(cx - c0, 0.0, cz - c0) * (kH / kE);
+            N = normalize(N - g * crownVis);
+            float gap = 1.0 - smoothstep(0.0, 0.3, c0);
+            albedo *= mix(1.0, 0.35, gap * crownVis);
+        }
         // Rock: where it is too steep for soil, and more of it the higher up.
         float screeAmt = smoothstep(24.0, 32.0, slope + (n1 - 0.5) * 10.0)
                        * (1.0 - forestAmt) * smoothstep(uTreeLine - 200.0, uTreeLine + 100.0, h);
         albedo = mix(albedo, scree, screeAmt * 0.8);
-        float rockAmt = smoothstep(33.0, 46.0, slope + (n2 - 0.5) * 16.0);
+        // Rock breaks through where it is too steep to hold soil: past about
+        // 44 degrees under the forest (a mountain wood grows on slopes that
+        // look impossible from below), 32 above the tree line. The field's
+        // own slope decides, the gullies only fray the edge.
+        float rockSlope = mix(44.0, 32.0, alpineAmt);
+        float rockAmt = smoothstep(rockSlope, rockSlope + 12.0,
+                                   mix(slope0, slope, 0.35) + (n2 - 0.5) * 16.0);
         rockAmt = max(rockAmt, alpineAmt * smoothstep(0.55, 0.8, n1) *
                                smoothstep(uTreeLine + 150.0, uTreeLine + 500.0, h));
         albedo = mix(albedo, rock, rockAmt);

@@ -77,6 +77,13 @@ struct TerrainSettings {
     float backdropScale   = 3000.0f;
     float backdropStretch = 1.0f;
     float backdropAngle   = 0.0f;
+    // The valley need not be a bowl: backdropOutlet (metres, 0 = closed) runs
+    // it on along backdropAngle as a long, bending valley between the ranges,
+    // narrowing as it goes and closed at the far end by the mountains -- the
+    // view down a valley to ridge behind ridge. backdropLake (metres, 0 = none)
+    // sinks its floor a third of the way down into a lake basin that deep.
+    float backdropOutlet  = 0.0f;
+    float backdropLake    = 0.0f;
 };
 
 // Value equality, so a host can tell "these settings changed" without keeping a
@@ -96,7 +103,8 @@ inline bool operator==(const TerrainSettings& a, const TerrainSettings& b) {
            a.backdropHeight == b.backdropHeight && a.backdropRadius == b.backdropRadius &&
            a.backdropWidth == b.backdropWidth && a.backdropCenterX == b.backdropCenterX &&
            a.backdropCenterZ == b.backdropCenterZ && a.backdropScale == b.backdropScale &&
-           a.backdropStretch == b.backdropStretch && a.backdropAngle == b.backdropAngle;
+           a.backdropStretch == b.backdropStretch && a.backdropAngle == b.backdropAngle &&
+           a.backdropOutlet == b.backdropOutlet && a.backdropLake == b.backdropLake;
 }
 
 // The backdrop's contribution alone (0 inside the valley, and everywhere while

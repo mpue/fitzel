@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -99,6 +100,17 @@ public:
     void draw(const FrameContext& ctx, const glm::mat4& view, const glm::mat4& proj,
               bool mirror = false);
 
+    // The ranges' shadow on the near scene (mtnshadow.frag): an 8 km map of
+    // the height a point must stand at to see the sun, re-marched when the sun
+    // has moved or a ring has changed, and published through cloudShadowInfo()
+    // so every receiver of the sun's shadow reads it (cloudshadow.glsl).
+    // `drawQuad` draws the fullscreen quad (sky.vert's input).
+    void renderSunShadow(const glm::vec3& sunDir, const glm::vec3& eye,
+                         const std::function<void()>& drawQuad);
+    static constexpr int   kShadowUnit = 29;
+    static constexpr int   kShadowRes  = 512;
+    static constexpr float kShadowSize = 8000.0f;
+
     // Anything to draw yet?
     bool ready() const;
 
@@ -153,6 +165,14 @@ private:
     void queue(int level, const glm::vec2& origin);
 
     std::array<Level, kLevels> m_levels;
+    std::uint64_t  m_fieldGen = 0;               // bumps whenever a ring is refilled
+
+    fitzel::Shader m_shadowShader;
+    unsigned       m_shadowFbo = 0, m_shadowTex = 0;
+    bool           m_shadowTried = false;
+    glm::vec3      m_shadowSun{0.0f};
+    glm::vec2      m_shadowOrigin{1e9f};
+    std::uint64_t  m_shadowGen = ~0ull;
     fitzel::Shader m_shader;
     unsigned m_vao = 0, m_vbo = 0, m_ibo = 0;
     int      m_indexCount = 0;

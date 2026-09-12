@@ -1818,6 +1818,8 @@ const std::vector<Property>& TerrainComponent::properties() {
         addF("Range size",      "backdropScale",  &fitzel::TerrainSettings::backdropScale,  200.0f, 20000.0f, "%.0f m");
         addF("Valley stretch",  "backdropStretch",&fitzel::TerrainSettings::backdropStretch,0.2f, 5.0f, "%.2f");
         addF("Valley angle",    "backdropAngle",  &fitzel::TerrainSettings::backdropAngle,  -180.0f, 180.0f, "%.0f deg");
+        addF("Valley outlet",   "backdropOutlet", &fitzel::TerrainSettings::backdropOutlet, 0.0f, 30000.0f, "%.0f m");
+        addF("Valley lake",     "backdropLake",   &fitzel::TerrainSettings::backdropLake,   0.0f, 200.0f, "%.0f m");
         // Streaming granularity -- what the ground is cut into, not what it looks
         // like. Last, because changing either rebuilds every loaded chunk.
         addF("Chunk size",  "chunkSize",    &fitzel::TerrainSettings::chunkSize,     16.0f, 256.0f,"%.0f m");

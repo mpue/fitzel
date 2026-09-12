@@ -149,14 +149,47 @@ float terrainBackdrop(const TerrainSettings& s, float worldX, float worldZ) {
                                              2.0f, 0.5f, 3);
     const float rim = R * (1.0f + 0.33f * rimN);
     if (r <= rim) return 0.0f;           // the valley: not a millimetre changed
+    // How far out of the valley, in METRES: the frame above squeezed the
+    // across-axis by the stretch, and a slope measured in its units would come
+    // out that much steeper across the valley than along it -- a gentle end
+    // wall and cliffs for sides.
+    const float str  = std::max(s.backdropStretch, 0.05f);
+    const float ssin = std::sin(ang) * str, scos = std::cos(ang);
+    float dist = (r - rim) * std::sqrt(scos * scos + ssin * ssin);
+
+    // The outlet: the valley running on along its axis, bending as a river
+    // valley does, its floor narrowing downstream until the ranges close it.
+    // Distance to it is measured across (in the stretched frame, like the rim),
+    // so the mountains stand along both its sides.
+    float lake = 0.0f;
+    if (s.backdropOutlet > 0.0f && u > 0.0f) {
+        const float Lo = s.backdropOutlet;
+        const float k  = u / Lo;                                   // 0 .. 1 down the valley
+        const float bend = R * 1.1f * stb_perlin_fbm_noise3(u / (R * 2.6f) + 5.7f, 1.9f, 3.3f,
+                                                          2.0f, 0.5f, 2)
+                         * glm::smoothstep(0.0f, 0.25f, k);
+        const float hw = R * glm::mix(0.9f, 0.5f, glm::clamp(k, 0.0f, 1.0f))
+                       * (1.0f - glm::smoothstep(0.85f, 1.0f, k))
+                       * (1.0f + 0.25f * stb_perlin_noise3(u / (R * 0.9f), 8.8f, 0.5f, 0, 0, 0));
+        const float across = std::abs(v - bend);
+        dist = std::min(dist, (across - hw) * str);
+        // The lake basin, a third of the way down: deepest in the middle of
+        // the floor, shelving out to the shores.
+        if (s.backdropLake > 0.0f && hw > 1.0f) {
+            const float along = glm::smoothstep(0.26f, 0.34f, k) * (1.0f - glm::smoothstep(0.50f, 0.60f, k));
+            const float bowl  = 1.0f - glm::smoothstep(0.15f, 0.95f, across / hw);
+            lake = s.backdropLake * along * bowl;
+        }
+    }
+    if (dist <= 0.0f) return -lake;      // on the valley floor (or under its lake)
 
     const float W = std::max(s.backdropWidth, 1.0f);
-    const float t = (r - rim) / W;       // 0 at the rim, 1 where the massif starts
+    const float t = dist / W;            // 0 at the valley's edge, 1 where the massif starts
 
     // The ranges themselves, in world space (not the valley frame, which would
     // print the ellipse into every ridge). Domain-warped so crests bend and
     // branch; a ridged multifractal because that is what gives knife-edge
-    // arêtes above smooth, broad valleys -- the one silhouette that reads as
+    // aretes above smooth, broad valleys -- the one silhouette that reads as
     // "high mountains" from twenty kilometres away.
     const float S  = std::max(s.backdropScale, 10.0f);
     const float px = worldX / S, pz = worldZ / S;
@@ -173,11 +206,29 @@ float terrainBackdrop(const TerrainSettings& s, float worldX, float worldZ) {
                                               pz * 0.33f - 12.0f, 2.0f, 0.5f, 3),
         0.12f, 1.25f);
 
-    const float foot  = glm::smoothstep(0.0f, 1.0f, std::min(t, 1.0f)); // foothills
-    const float peaks = glm::smoothstep(0.25f, 1.6f, t);                 // high relief
+    // Two ranges, one behind the other. In front, the valley's own flanks:
+    // they rise straight out of the floor to a third of the height, broad and
+    // rounded enough to carry forest to their crests. Behind them, the high
+    // range -- rock, ice, knife-edges -- stepped back so that from the valley
+    // it stands OVER its foothills rather than being them. Between the two a
+    // saddle, so a ridge reads against the one behind it instead of merging.
+    const float flank  = glm::smoothstep(0.0f, 0.42f, t);
+    // The flanks' crest is not a wall: summits and cols along it, spurs that
+    // run down into the valley between side valleys (the ridged noise again,
+    // at twice the frequency and gentler), so it carries forest and still has
+    // a skyline of its own.
+    const float spur   = stb_perlin_ridge_noise3(qx * 2.3f + 4.0f, 2.9f, qz * 2.3f - 6.0f,
+                                                 2.0f, 0.5f, 1.0f, 5);
+    const float flankR = 0.35f + 0.75f * glm::clamp(spur, 0.0f, 1.2f)
+                       + 0.20f * stb_perlin_fbm_noise3(px * 2.1f + 9.0f, 4.4f,
+                                                       pz * 2.1f - 2.0f, 2.0f, 0.5f, 4);
+    const float saddle = 1.0f - 0.35f * glm::smoothstep(0.35f, 0.55f, t)
+                                      * (1.0f - glm::smoothstep(0.55f, 0.85f, t));
+    const float peaks  = glm::smoothstep(0.45f, 1.5f, t);
     const float relief = std::pow(std::max(ridged, 0.0f), 1.6f) * 1.3f;
-    return s.backdropHeight *
-           (0.12f * foot + foot * (0.25f + 0.75f * peaks * massif) * relief);
+    const float front  = 0.34f * flank * flankR * saddle;
+    const float high   = peaks * (0.20f + 0.85f * massif) * relief;
+    return s.backdropHeight * (0.06f * flank + front + high) - lake;
 }
 
 float terrainMoisture(const TerrainSettings& s, float worldX, float worldZ) {

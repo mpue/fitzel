@@ -186,6 +186,7 @@ void FarTerrain::update(const glm::vec3& eye, const fitzel::TerrainSettings& set
                         r.data.data());
         l.origin = r.origin;
         l.valid  = true;
+        ++m_fieldGen;
         if (r.origin == l.wanted) l.busy = false;
     }
     glBindTexture(GL_TEXTURE_2D, 0);
@@ -280,4 +281,93 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
     if (cull) glEnable(GL_CULL_FACE);
+}
+
+void FarTerrain::renderSunShadow(const glm::vec3& sunDir, const glm::vec3& eye,
+                                 const std::function<void()>& drawQuad) {
+    CloudShadowInfo& ci = cloudShadowInfo();
+    if (!m_shadowTried) {
+        m_shadowTried  = true;
+        m_shadowShader = fitzel::Shader::fromFiles("assets/shaders/sky.vert",
+                                                   "assets/shaders/mtnshadow.frag");
+        if (!m_shadowShader.isValid()) std::fprintf(stderr, "Failed to load mtnshadow shader\n");
+        glGenTextures(1, &m_shadowTex);
+        glBindTexture(GL_TEXTURE_2D, m_shadowTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, kShadowRes, kShadowRes, 0, GL_RED, GL_FLOAT,
+                     nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glGenFramebuffers(1, &m_shadowFbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+                               m_shadowTex, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+    if (!enabled || !ready() || !m_shadowShader.isValid() || sunDir.y <= 0.0f) {
+        ci.mtnOn = false;
+        return;
+    }
+    // Snapped to a coarse step, so walking about neither crawls the shadow's
+    // edges nor re-marches the map every frame.
+    const float step = 400.0f;
+    const glm::vec2 origin(std::floor((eye.x - kShadowSize * 0.5f) / step) * step,
+                           std::floor((eye.z - kShadowSize * 0.5f) / step) * step);
+    const bool redo = origin != m_shadowOrigin || m_fieldGen != m_shadowGen ||
+                      glm::dot(glm::normalize(sunDir), m_shadowSun) < 0.999999f;
+    if (redo) {
+        m_shadowOrigin = origin;
+        m_shadowGen    = m_fieldGen;
+        m_shadowSun    = glm::normalize(sunDir);
+
+        GLint prevFbo = 0, vp[4];
+        glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+        glGetIntegerv(GL_VIEWPORT, vp);
+        const GLboolean depth = glIsEnabled(GL_DEPTH_TEST);
+        const GLboolean blend = glIsEnabled(GL_BLEND);
+        const GLboolean cull  = glIsEnabled(GL_CULL_FACE);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_shadowFbo);
+        glViewport(0, 0, kShadowRes, kShadowRes);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glDisable(GL_CULL_FACE);
+        glDepthMask(GL_FALSE);
+
+        m_shadowShader.bind();
+        static const char* const kTex[kLevels]  = {"uL0", "uL1", "uL2", "uL3", "uL4"};
+        static const char* const kRect[kLevels] = {"uR0", "uR1", "uR2", "uR3", "uR4"};
+        for (int i = 0; i < kLevels; ++i) {
+            const Level& l = m_levels[i];
+            glActiveTexture(GL_TEXTURE0 + i);
+            glBindTexture(GL_TEXTURE_2D, l.valid ? l.tex : 0);
+            m_shadowShader.setInt(kTex[i], i);
+            m_shadowShader.setVec4(kRect[i],
+                                   glm::vec4(l.origin, l.size(), l.valid ? 1.0f : 0.0f));
+        }
+        m_shadowShader.setFloat("uGrid", static_cast<float>(kGrid));
+        m_shadowShader.setVec2("uOrigin", origin);
+        m_shadowShader.setFloat("uSize", kShadowSize);
+        m_shadowShader.setVec3("uSunDir", m_shadowSun);
+        drawQuad();
+        for (int i = kLevels - 1; i >= 0; --i) {
+            glActiveTexture(GL_TEXTURE0 + i);
+            glBindTexture(GL_TEXTURE_2D, 0);
+        }
+
+        glDepthMask(GL_TRUE);
+        if (depth) glEnable(GL_DEPTH_TEST);
+        if (blend) glEnable(GL_BLEND);
+        if (cull)  glEnable(GL_CULL_FACE);
+        glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
+        glViewport(vp[0], vp[1], vp[2], vp[3]);
+    }
+    // On its own unit for the whole frame; nothing else binds 29.
+    glActiveTexture(GL_TEXTURE0 + kShadowUnit);
+    glBindTexture(GL_TEXTURE_2D, m_shadowTex);
+    glActiveTexture(GL_TEXTURE0);
+    ci.mtnOn     = true;
+    ci.mtnOrigin = origin;
+    ci.mtnSize   = kShadowSize;
 }

@@ -41,6 +41,8 @@ uniform float uSaturation;
 uniform float uValue;
 uniform float uWarmth;      // white balance: + warms (golden), - cools (blue)
 uniform float uContrast;    // S-curve contrast around mid grey
+uniform float uSplit;       // split toning: cool shadows, warm highlights
+uniform float uVibrance;    // saturation for the muted colours, not the vivid
 
 // Lens and film, after the grade.
 uniform float uVignette;    // 0 = off .. 1 = strong corner fall-off
@@ -71,7 +73,26 @@ vec3 colorGrade(vec3 c) {
     hsv.x = fract(hsv.x + uHueShift / 360.0);
     hsv.y = clamp(hsv.y * uSaturation, 0.0, 1.0);
     hsv.z = hsv.z * uValue;
-    return hsv2rgb(hsv);
+    c = hsv2rgb(hsv);
+
+    // Split toning, the photographer's grade: shadows pulled towards blue-teal
+    // (where the sky's light is), highlights towards gold (where the sun's
+    // is). Weighted by luminance and added, so a neutral grey mid-tone stays
+    // neutral and the picture's brightness does not move.
+    if (uSplit > 0.0) {
+        float l  = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float ws = 1.0 - smoothstep(0.0, 0.5, l);
+        float wh = smoothstep(0.4, 1.0, l);
+        c += uSplit * (vec3(-0.035, 0.004, 0.050) * ws + vec3(0.055, 0.018, -0.050) * wh);
+    }
+    // Vibrance: saturation that goes to the colours that have little of it,
+    // so a grey-green meadow comes alive and a red roof does not burn.
+    if (uVibrance != 0.0) {
+        float l   = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        float sat = max(c.r, max(c.g, c.b)) - min(c.r, min(c.g, c.b));
+        c = mix(vec3(l), c, 1.0 + uVibrance * (1.0 - smoothstep(0.0, 0.6, sat)));
+    }
+    return clamp(c, 0.0, 1.0);
 }
 
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }

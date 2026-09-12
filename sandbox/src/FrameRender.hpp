@@ -44,6 +44,11 @@ struct CloudShadowInfo {
     float     size = 1.0f;
     float     refY = 0.0f;
     glm::vec3 sunDir{0.0f, 1.0f, 0.0f};
+    // ...and the mountains' (FarTerrain::renderSunShadow): the height a point
+    // must reach to see the sun, over an 8 km map.
+    bool      mtnOn = false;
+    glm::vec2 mtnOrigin{0.0f};
+    float     mtnSize = 1.0f;
 };
 inline CloudShadowInfo& cloudShadowInfo() {
     static CloudShadowInfo info;
@@ -55,6 +60,9 @@ inline void applyCloudShadow(const fitzel::Shader& s) {
     s.setInt("uCloudShadow", 31);   // CloudShadow::kUnit
     s.setVec4("uCloudRect", glm::vec4(c.origin, 1.0f / c.size, c.refY));
     s.setVec3("uCloudSun", c.sunDir);
+    s.setInt("uMtnShadowOn", c.mtnOn ? 1 : 0);
+    s.setInt("uMtnShadow", 29);     // FarTerrain::kShadowUnit
+    s.setVec4("uMtnRect", glm::vec4(c.mtnOrigin, 1.0f / c.mtnSize, 0.0f));
 }
 
 // Hand a receiver the cascades (the uniforms sunshadow.glsl declares). Called

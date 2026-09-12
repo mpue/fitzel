@@ -316,6 +316,8 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_composite.setFloat("uValue", p.valueGain);
     m_composite.setFloat("uWarmth", p.warmth);
     m_composite.setFloat("uContrast", p.contrast);
+    m_composite.setFloat("uSplit", p.split);
+    m_composite.setFloat("uVibrance", p.vibrance);
     m_composite.setInt("uCurve", p.curve);
     applySunShadows(m_composite, p.shadows, p.camPos, p.viewForward);
     m_composite.setFloat("uAoSunlitShare", p.shadows ? p.aoSunlitShare : 1.0f);

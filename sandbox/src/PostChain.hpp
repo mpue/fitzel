@@ -70,6 +70,7 @@ public:
         float exposure = 1.0f;
         float hueShift = 0.0f, saturation = 1.0f, valueGain = 1.0f;
         float warmth = 0.0f, contrast = 1.0f;
+        float split = 0.0f, vibrance = 0.0f;   // split toning, vibrance (composite.frag)
         // Tonemap curve: 0 ACES (fit), 1 AgX, 2 Khronos PBR Neutral. See
         // composite.frag; pathtrace::Grade::curve carries the same number.
         int   curve = 0;
