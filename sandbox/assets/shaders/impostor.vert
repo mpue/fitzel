@@ -16,9 +16,9 @@ uniform float uViews;       // views in the atlas row
 uniform float uStart;       // impostors take over here...
 uniform float uFadeWidth;   // ...crossfading with the meshes over this band
 uniform float uEnd;         // and fade out at the edge of the field
-uniform float uTime;
-uniform vec2  uWindDir;
-uniform float uWindStrength;
+
+#include "wind.glsl"
+#include "treewind.glsl"
 
 out vec2  vUv;
 out vec3  vWorldPos;
@@ -52,11 +52,10 @@ void main() {
     float cardH = 1.04 * h;
     float w     = cardH * uAspect;
     vec3  p = iPos + right * (corner.x - 0.5) * w + up * (corner.y * cardH - 0.02 * h);
-    // The crown sways like the mesh does (tree.vert), so the switch between
-    // the two does not stop the wind.
-    float sway = sin(uTime * 1.1 + iPos.x * 0.2 + iPos.z * 0.2);
-    p.xz += uWindDir * (uWindStrength * 0.5) * corner.y * corner.y
-          * (0.5 + 0.5 * sway) * iScale;
+    // The crown moves as the mesh does (treewind.glsl -- trunk bow and branch
+    // swing of the card's own corner), so the handover does not stop the wind.
+    p += treeWind(vec3((corner.x - 0.5) * uAspect * 1.04, corner.y * 1.04 - 0.02, 0.0),
+                  iPos, iScale, iRot, false);
 
     // Which of the baked views this tree shows, and whether mirrored: its yaw
     // decides, so neighbours differ and a tree never changes view as you move.

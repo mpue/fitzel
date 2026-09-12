@@ -40,6 +40,7 @@ uniform vec3  uCanopy;           // the forest's mean foliage colour (linear)
 
 #include "meadow.glsl"
 #include "ecology.glsl"
+#include "cloudshadow.glsl"
 
 // --- Noise ------------------------------------------------------------------
 float hash21(vec2 p) {
@@ -260,7 +261,7 @@ void main() {
         // Wet ground at the shore.
         albedo *= mix(1.0, 0.55, 1.0 - smoothstep(uWaterLevel, uWaterLevel + 1.5, h));
 
-        float sh   = terrainShadow(P, N, L);
+        float sh   = terrainShadow(P, N, L) * cloudLight(P);
         float ndl  = max(dot(N, L), 0.0);
         // A forest canopy is rough on the metre scale: it scatters the light it
         // catches into its own shade, so it takes the sun flatter and darker.

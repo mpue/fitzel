@@ -8,9 +8,6 @@ layout(location = 4) in float iPhase;  // sway phase
 layout(location = 5) in float iLush;   // 0 dry .. 1 lush (biome moisture)
 
 uniform mat4  uViewProj;
-uniform float uTime;
-uniform vec2  uWindDir;
-uniform float uWindStrength;
 uniform float uHeightScale; // global blade-height multiplier (1 = as baked)
 uniform vec3  uViewPos;     // camera world position (for the distance fade)
 uniform float uFadeStart;   // blades start shrinking past this distance (m)
@@ -18,7 +15,9 @@ uniform float uFadeEnd;     // ...and are fully gone by here (the streamed ring 
 uniform vec3  uLightDir;    // towards the sun (shared with grass.frag)
 
 #include "sunshadow.glsl"
+#include "wind.glsl"
 
+out float vWave;    // how hard this blade is being pushed (the field's sheen)
 out float vH;
 out vec3  vWorldPos;
 out vec3  vNormal;
@@ -81,18 +80,14 @@ void main() {
     vec2  leanDir = vec2(cos(leanAng), sin(leanAng));
     local.xz += leanDir * (mix(0.03, 0.17, r1) * h01 * h01);
 
-    // Wind: gusts roll across the field along the wind direction. A low-frequency
-    // wave in space+time modulates the local sway amplitude, so some patches lie
-    // flat while neighbours still stand and the lull travels downwind -- instead
-    // of one uniform shimmer everywhere. A cross-wind octave keeps it irregular.
+    // Wind: the shared gust field (wind.glsl) -- patches of faster air carried
+    // downwind, so a squall runs across the meadow as a band of flattened grass
+    // and the lull behind it stands back up.
     float along = dot(iPos.xz, uWindDir);
-    float cross = dot(iPos.xz, vec2(-uWindDir.y, uWindDir.x));
-    float g1    = sin(along * 0.05 - uTime * 0.85);
-    float g2    = sin(along * 0.15 + cross * 0.06 - uTime * 1.70);
-    float gust  = clamp(0.45 + 0.42 * g1 + 0.16 * g2, 0.05, 1.15);
+    float gust  = windGust(iPos.xz);
     // Per-blade flutter + stiffness: stiff blades bend less and rustle at their
     // own tempo, so the motion isn't lock-stepped.
-    float sway  = sin(uTime * (1.35 + 0.6 * r2) + iPhase + along * 0.25);
+    float sway  = sin(uWindTime * (1.35 + 0.6 * r2) + iPhase + along * 0.25);
     float stiff = mix(0.65, 1.25, r1);
     // Shorter blades move less: scale the sway by the blade's true world height
     // (0.35 ~= the default height) so low turf barely stirs while tall stalks
@@ -102,6 +97,9 @@ void main() {
     float bend  = uWindStrength * gust * stiff * (0.30 + 0.70 * sway)
                 * h01 * h01 * bendGain;
     local.xz += uWindDir * bend;
+    // The sheen of a meadow in wind: blades pressed over by a gust turn their
+    // paler, sky-lit side up, which is how the gust is SEEN from afar.
+    vWave = clamp((gust - 0.9) * 1.6, 0.0, 1.0) * clamp(uWindStrength * 2.5, 0.0, 1.0);
 
     vec3 wp = iPos + local;
     vWorldPos = wp;

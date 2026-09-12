@@ -8,17 +8,18 @@ layout(location = 4) in float iRot;   // yaw
 layout(location = 5) in float iScale;
 
 uniform mat4  uViewProj;
-uniform float uTime;
-uniform vec2  uWindDir;
-uniform float uWindStrength;
 uniform float uTreeHeight; // local tree height, for sway weight
 uniform vec3  uCamPos;
 uniform float uLodMin;     // below this distance this LOD is clipped (finer LOD covers it)
 uniform float uLodNear;    // beyond this, the next LOD / billboard takes over (clip the mesh)
+uniform int   uAlphaCutout;// 1 = this draw is foliage (it flutters)
 // The handover to the impostors (treedither.glsl): across [uHandover - width,
 // uHandover] this mesh gives its pixels up. Width 0 = no impostors, no fade.
 uniform float uHandover;
 uniform float uHandoverWidth;
+
+#include "wind.glsl"
+#include "treewind.glsl"
 
 out vec3 vWorldPos;
 out vec3 vNormal;
@@ -31,13 +32,8 @@ void main() {
     p = vec3(p.x * c - p.z * s, p.y, p.x * s + p.z * c);
     vec3 n = vec3(aNormal.x * c - aNormal.z * s, aNormal.y, aNormal.x * s + aNormal.z * c);
 
-    vec3 wp = iPos + p;
-
-    // Crown sway: weight by height up the tree.
-    float w = clamp(aPos.y / uTreeHeight, 0.0, 1.0);
-    w = w * w;
-    float sway = sin(uTime * 1.1 + iPos.x * 0.2 + iPos.z * 0.2);
-    wp.xz += uWindDir * (uWindStrength * 0.5) * w * (0.5 + 0.5 * sway) * iScale;
+    vec3 wp = iPos + p + treeWind(aPos / max(uTreeHeight, 1e-3), iPos, iScale, iRot,
+                                  uAlphaCutout == 1);
 
     vWorldPos = wp;
     vNormal   = normalize(n);

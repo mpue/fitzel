@@ -20,6 +20,7 @@
 #include "GrassTrace.hpp"  // the field's definition, shared with the path tracer
 #include "TiledScatter.hpp" // per-tile streamed instance buffers (grass field)
 #include "TreeField.hpp"   // the procedural forest, streamed to the horizon
+#include "Wind.hpp"        // the air everything sways in
 
 namespace fitzel { class Camera; }
 
@@ -95,6 +96,11 @@ public:
                         glm::vec2 camXZ, float maxDist);
     void drawTrees(const FrameContext& ctx);
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
+    // Motion vectors for the swaying meshes, into the target PostChain::
+    // beginMotion bound (TAA would otherwise smear every crown in the wind).
+    // `viewProj` is the jittered matrix the lit pass drew with.
+    void drawTreeMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
+                        const glm::mat4& prevVP, const glm::vec3& camPos);
     // Tree positions (5 floats/tree: pos3, yaw, scale) so flowers can cluster.
     const std::vector<float>& treeInstances() const { return m_treeInst; }
 
@@ -300,6 +306,8 @@ public:
     // near ones as meshes out to impostorStart, the rest as impostors out to
     // forestRadius. Off, the old 120 m scatter, as scenes before it had.
     ecology::Params eco;
+    // The air this frame (Wind.hpp): set by the host, read by every draw.
+    wind::State wind;
     // Discs (x, z, radius) the forest field plants nothing in: the spawn point,
     // the placed models. Set by the host.
     std::vector<glm::vec3> treeClearings;
@@ -367,7 +375,8 @@ private:
 
     // Trees. Shaders are shared across all species (bound once, uniforms per draw).
     fitzel::Shader           m_tree, m_treeDepth, m_billboard;
-    fitzel::Shader           m_impostor, m_impostorBake;
+    fitzel::Shader           m_impostor, m_impostorBake, m_treeMotion;
+    float                    m_prevWindTime = -1.0f;   // for the motion vectors
     TreeField                m_treeField;
     glm::vec2                m_nearCenter{1e9f};  // where the mesh set was gathered
     std::size_t              m_farPainted = static_cast<std::size_t>(-1);

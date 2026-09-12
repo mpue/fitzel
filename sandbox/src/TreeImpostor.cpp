@@ -298,9 +298,7 @@ void VegetationSystem::drawImpostors(const FrameContext& c) {
     m_impostor.setFloat("uStart", impostorStart);
     m_impostor.setFloat("uFadeWidth", 15.0f);
     m_impostor.setFloat("uEnd", forestRadius);
-    m_impostor.setFloat("uTime", static_cast<float>(c.time));
-    m_impostor.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_impostor.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, c.weather));
+    wind::apply(m_impostor, wind, 1.0f);
     m_impostor.setInt("uAlbedo", 0);
     m_impostor.setInt("uNormal", 1);
     for (const TreeSpecies& sp : m_species) {

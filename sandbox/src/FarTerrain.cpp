@@ -229,6 +229,7 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     m_shader.setFloat("uWaterLevel", waterLevel);
     m_shader.setVec3("uGrassTint", grassTint);
     m_shader.setVec3("uCanopy", canopy);
+    applyCloudShadow(m_shader);
     ecology::forEachUniform(
         eco, [&](const char* n, int v) { m_shader.setInt(n, v); },
         [&](const char* n, float v) { m_shader.setFloat(n, v); });

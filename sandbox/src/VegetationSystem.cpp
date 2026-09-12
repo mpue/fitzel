@@ -434,9 +434,7 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     glDisable(GL_CULL_FACE);
     m_grass.bind();
     m_grass.setMat4("uViewProj", c.viewProj);
-    m_grass.setFloat("uTime", static_cast<float>(c.time));
-    m_grass.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_grass.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, c.weather));
+    wind::apply(m_grass, wind, 0.5f);   // a blade goes further than a trunk
     m_grass.setVec3("uTint", grassTint);
     m_grass.setVec3("uViewPos", c.camPos);
     m_grass.setVec3("uLightDir", c.lightDir);
@@ -912,6 +910,8 @@ bool VegetationSystem::initTrees(const std::string& modelDir, const std::string&
                                        "assets/shaders/impostorbake.frag");
     if (!m_impostor.isValid() || !m_impostorBake.isValid())
         std::fprintf(stderr, "Failed to load impostor shaders\n");
+    m_treeMotion = Shader::fromFiles("assets/shaders/treemotion.vert",
+                                     "assets/shaders/treemotion.frag");
     m_modelDir = modelDir;
     m_texDir   = texDir;
     scanTreeAssets();
@@ -1221,9 +1221,7 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     glCullFace(GL_BACK);
     m_treeDepth.bind();
     m_treeDepth.setMat4("uLightSpace", lightSpace);
-    m_treeDepth.setFloat("uTime", static_cast<float>(time));
-    m_treeDepth.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_treeDepth.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
+    wind::apply(m_treeDepth, wind, 1.0f);   // the same air as the lit pass
     m_treeDepth.setFloat("uTreeHeight", 1.0f); // meshes normalized to unit height
     m_treeDepth.setInt("uTex", 0);
     // Shadows use LOD0 -- but only the instances THIS cascade can see, and only
@@ -1284,9 +1282,7 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     glDisable(GL_CULL_FACE);
     m_tree.bind();
     m_tree.setMat4("uViewProj", c.viewProj);
-    m_tree.setFloat("uTime", static_cast<float>(c.time));
-    m_tree.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_tree.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, c.weather));
+    wind::apply(m_tree, wind, 1.0f);
     m_tree.setFloat("uTreeHeight", 1.0f);
     m_tree.setVec3("uCamPos", c.camPos);
     m_tree.setVec3("uViewPos", c.camPos);
@@ -1373,6 +1369,87 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     }
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
+}
+
+void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
+                                      const glm::mat4& prevVP, const glm::vec3& camPos) {
+    const float prevT = (m_prevWindTime < 0.0f) ? wind.time : m_prevWindTime;
+    m_prevWindTime = wind.time;
+    if (!terrainPresent || !treeEnabled || treeCount == 0 || !m_treeMotion.isValid()) return;
+    // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
+    GLint prevFunc = GL_LESS;
+    glGetIntegerv(GL_DEPTH_FUNC, &prevFunc);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    m_treeMotion.bind();
+    m_treeMotion.setMat4("uViewProj", viewProj);
+    m_treeMotion.setMat4("uCurVP", curVP);
+    m_treeMotion.setMat4("uPrevVP", prevVP);
+    m_treeMotion.setFloat("uPrevWindTime", prevT);
+    m_treeMotion.setFloat("uTreeHeight", 1.0f);
+    m_treeMotion.setVec3("uCamPos", camPos);
+    m_treeMotion.setInt("uTex", 0);
+    wind::apply(m_treeMotion, wind, 1.0f);
+    const glm::vec2 camXZ(camPos.x, camPos.z);
+    // The same bands drawTrees drew, so every lit fragment finds its vector.
+    const auto drawRanges = [&](std::uint32_t vao, const TreeLOD& texLod,
+                                const auto& ranges) {
+        glBindVertexArray(vao);
+        bindTreeInstanceAttribs(m_cullVBO);
+        for (const auto& r : ranges) {
+            const TreeLOD::Prim& tp = texLod.prims[r.prim];
+            if (tp.hasTex) tp.tex.bind(0);
+            m_treeMotion.setInt("uAlphaCutout", r.cutout ? 1 : 0);
+            glDrawElementsInstanced(GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(r.first) *
+                                              sizeof(std::uint32_t)),
+                r.vis);
+        }
+    };
+    struct R { int first, count, prim; bool cutout; int vis; };
+    for (TreeSpecies& sp : m_species) {
+        if (!sp.enabled || sp.count == 0 || sp.lods.empty()) continue;
+        const int nl = static_cast<int>(sp.lods.size());
+        const bool useMid = (nl == 1) && sp.mid.valid();
+        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo != 0;
+        const float farEnd = imp ? impostorStart : (sp.bbEnabled ? sp.bbStart : 1e9f);
+        for (int k = 0; k < nl; ++k) {
+            const TreeLOD& lod = sp.lods[k];
+            const float lo = (k == 0) ? 0.0f : sp.lods[k - 1].dist;
+            float hi = (k + 1 == nl) ? farEnd : lod.dist;
+            if (useMid) hi = std::min(lod.dist, farEnd);
+            hi = std::max(hi, lo);
+            m_treeMotion.setFloat("uLodMin", lo);
+            m_treeMotion.setFloat("uLodNear", hi);
+            const int vis = cullInstances(sp, lod.boundR, viewProj, 6, camXZ, lo, hi);
+            if (vis == 0) continue;
+            std::vector<R> rs;
+            for (int p = 0; p < static_cast<int>(lod.prims.size()); ++p)
+                rs.push_back({lod.prims[p].first, lod.prims[p].count, p,
+                              lod.prims[p].cutout, vis});
+            drawRanges(lod.vao, lod, rs);
+        }
+        if (useMid) {
+            const TreeLOD& src = sp.lods.back();
+            const float lo = std::min(src.dist, farEnd);
+            if (farEnd <= lo) continue;
+            m_treeMotion.setFloat("uLodMin", lo);
+            m_treeMotion.setFloat("uLodNear", farEnd);
+            const int vis = cullInstances(sp, src.boundR, viewProj, 6, camXZ, lo, farEnd);
+            if (vis == 0) continue;
+            std::vector<R> rs;
+            for (const AutoLod::Range& r : sp.mid.ranges)
+                rs.push_back({r.first, r.count, r.prim, r.cutout, vis});
+            drawRanges(sp.mid.vao, src, rs);
+        }
+    }
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(static_cast<GLenum>(prevFunc));
 }
 
 void VegetationSystem::drawTreeBillboards(const FrameContext& c,
@@ -1884,9 +1961,7 @@ void VegetationSystem::drawFlowers(const FrameContext& c) {
     glDisable(GL_CULL_FACE);
     m_flower.bind();
     m_flower.setMat4("uViewProj", c.viewProj);
-    m_flower.setFloat("uTime", static_cast<float>(c.time));
-    m_flower.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_flower.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, c.weather));
+    wind::apply(m_flower, wind, 0.5f);
     m_flower.setVec3("uViewPos", c.camPos);
     m_flower.setVec3("uLightDir", c.lightDir);
     m_flower.setVec3("uLightColor", c.lightColor);

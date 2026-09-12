@@ -109,6 +109,7 @@
 #include "LightGrid.hpp"
 #include "VegetationSystem.hpp"
 #include "FarTerrain.hpp"
+#include "CloudShadow.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -1673,6 +1674,15 @@ int main(int argc, char** argv) {
         // Which terrain layer is the forest floor under the ecology's woods
         // (-1 = none: the woods leave the ground as the bands paint it).
         int forestFloorLayer = -1;
+        // The breeze (Wind.hpp): mean strength in calm weather, where it blows
+        // to (degrees in XZ, 0 = +X), and how gusty. The defaults are the old
+        // fixed wind, so a scene that never set them sways as it did.
+        float windStrength = 0.2f;
+        float windAngle    = 26.57f;
+        float windGust     = 0.6f;
+        // The cumulus casts its shadow on the ground (CloudShadow.hpp).
+        CloudShadow cloudShadow;
+        bool cloudShadowsOn = false;
 
         bool      grassPaintMode = false;      // grass brush active
         bool      brushErase     = false;      // stamp vs erase (shared)
@@ -4537,6 +4547,10 @@ int main(int argc, char** argv) {
         addF("impostorStart", veg.impostorStart);
         addF("forestRadius", veg.forestRadius);
         addI("forestFloorLayer", forestFloorLayer);
+        addF("windStrength", windStrength);
+        addF("windAngle", windAngle);
+        addF("windGust", windGust);
+        addB("cloudShadows", cloudShadowsOn);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
         // The opening camera move. The KEYS are a blob written below (a list, not
@@ -4938,6 +4952,8 @@ int main(int argc, char** argv) {
             veg.impostorStart     = 130.0f;
             veg.forestRadius      = 1600.0f;
             forestFloorLayer      = -1;
+            windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
+            cloudShadowsOn = false;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
@@ -8806,6 +8822,18 @@ int main(int argc, char** argv) {
             // and nothing grows in the lake.
             veg.eco.treeLine   = farTerrain.treeLine;
             veg.eco.waterLevel = waterLevel;
+            // The air (Wind.hpp): the scene's breeze, veering a little over the
+            // minutes, stiffening and gusting with the storm.
+            {
+                const float t   = static_cast<float>(now);
+                const float ang = glm::radians(windAngle)
+                                + 0.22f * std::sin(t * 0.011f)
+                                + 0.09f * std::sin(t * 0.037f + 1.3f);
+                veg.wind.dir       = glm::vec2(std::cos(ang), std::sin(ang));
+                veg.wind.strength  = glm::mix(windStrength, 1.4f, storm);
+                veg.wind.gustiness = glm::mix(windGust, 1.0f, storm * 0.5f);
+                veg.wind.time      = t;
+            }
             // Generated tree levels and impostors for species whose meshes
             // changed -- here, before any pass has bound its target.
             veg.prepareTrees();
@@ -15405,6 +15433,33 @@ int main(int argc, char** argv) {
             // its own set inside the loop below -- shadows are cut to a view
             // frustum, so they cannot be shared between two people looking at
             // different places.
+            // The clouds' shadow on the ground (CloudShadow.hpp): the sky's own
+            // cumulus, marched towards the sun from a 16 km ground map. Before
+            // any pass, so every receiver this frame reads the same map.
+            {
+                bool cumulus = false;
+                for (const skylayers::Packed& L :
+                     skylayers::order(skySet, effCloudBot, skySet.top))
+                    if (L.kind == 0) cumulus = true;
+                if (cumulus && cloudShadowsOn && shadeFull) {
+                    FZ_GPU_ZONE("GPU cloud shadows");
+                    CloudShadow::Params cp;
+                    cp.time     = static_cast<float>(now);
+                    cp.coverage = glm::mix(0.86f, 0.46f, effCoverage);
+                    cp.density  = effDensity;
+                    cp.scale    = skySet.scale;
+                    cp.speed    = effWind;
+                    cp.bottom   = effCloudBot;
+                    cp.top      = skySet.top;
+                    cp.sunDir   = light.direction;
+                    cp.eye      = camera.position();
+                    cp.groundY  = waterLevel;
+                    cloudShadow.render(cp, [&] { fsQuad.draw(); });
+                } else {
+                    cloudShadow.disable();
+                }
+                applyCloudShadow(lit);
+            }
             {
                 FZ_GPU_ZONE("GPU shadows");
                 renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
@@ -16035,6 +16090,9 @@ int main(int argc, char** argv) {
                     FZ_GPU_ZONE("GPU motion vectors");
                     post.beginMotion(hdrRT);
                     renderer.renderMotion(mainVP, pp.curVP, pp.prevVP);
+                    // ...and the crowns in the wind (treemotion.vert).
+                    if (shadeFull)
+                        veg.drawTreeMotion(mainVP, pp.curVP, pp.prevVP, camPos);
                 }
                 taaPrevVP[vi]   = mainVPUnjittered;
                 taaPrevEye[vi]  = camPos;

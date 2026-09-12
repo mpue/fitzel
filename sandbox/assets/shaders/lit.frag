@@ -474,6 +474,7 @@ uniform float uGrassTop;       // no grass above this height (the snow line)
 uniform int   uForestLayer;
 uniform vec3  uCanopy;         // the trees' mean foliage colour (linear)
 #include "ecology.glsl"
+#include "cloudshadow.glsl"
 float gWoods = 0.0;            // this fragment's forest (0 open .. 1 inside a stand)
 
 int selectCascade() {
@@ -1187,6 +1188,8 @@ void main() {
     // face it -- the far side of an object is in its own shadow anyway.
     if (shadow < 0.99 && dot(normalize(vNormal), L) > 0.0)
         shadow = max(shadow, contactShadow(vWorldPos, normalize(vNormal), L));
+    // A cloud between the surface and the sun (cloudshadow.glsl).
+    shadow = 1.0 - (1.0 - shadow) * cloudLight(vWorldPos);
 
     // The sun, through its disc: 0.5 degrees of angular radius, the tracer's
     // default, so a mirror shows a sun and not a point. No energy scale here,

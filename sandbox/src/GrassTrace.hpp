@@ -91,6 +91,7 @@ struct TraceOptions {
     float     windTime     = 0.0f;
     glm::vec2 windDir{0.894f, 0.447f};  // normalize(vec2(0.6, 0.3)), as drawGrass
     float     windStrength = 0.2f;
+    float     windGust     = 0.6f;   // Wind.hpp's gustiness
 
     // Per-blade colour is computed per blade by the shader, and pathtrace has no
     // vertex-colour channel to put it in. So the colours are quantised to this

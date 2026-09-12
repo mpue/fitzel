@@ -30,6 +30,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # The ground past the streamed ring, out to the horizon. Runtime: the
     # shipped player looks at the same mountains.
     src/FarTerrain.cpp
+    # The cumulus deck's shadow on the ground.
+    src/CloudShadow.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
@@ -627,7 +629,7 @@ target_link_libraries(fogcheck PRIVATE glfw glad_gl_core_43 glm::glm stb_headers
 add_executable(tracecheck tools/tracecheck.cpp
                           src/ViewportTrace.cpp src/GpuTrace.cpp
                           src/PathTrace.cpp src/PathTraceCapture.cpp
-                          src/GrassTrace.cpp src/SandboxMath.cpp)
+                          src/GrassTrace.cpp src/Ecology.cpp src/SandboxMath.cpp)
 target_link_libraries(tracecheck PRIVATE fitzel imgui glfw glad_gl_core_43
                                          glm::glm stb_headers)
 
@@ -647,7 +649,7 @@ target_link_libraries(pathcheck PRIVATE glm::glm stb_headers)
 # an answer and writes a picture for what does not. No GL either: the whole
 # point of generating the field on the CPU is that it needs no context.
 #   build/release/bin/grasscheck.exe [outDir]
-add_executable(grasscheck tools/grasscheck.cpp src/GrassTrace.cpp
+add_executable(grasscheck tools/grasscheck.cpp src/GrassTrace.cpp src/Ecology.cpp
                           src/PathTrace.cpp src/SandboxMath.cpp)
 target_link_libraries(grasscheck PRIVATE fitzel glm::glm stb_headers)
 

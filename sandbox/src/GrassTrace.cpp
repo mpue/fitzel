@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "SandboxMath.hpp"
+#include "Wind.hpp"
 
 using fitzel::TerrainSettings;
 using fitzel::terrainHeight;
@@ -305,13 +306,12 @@ void appendToScene(pathtrace::Scene& scene, const Field& f,
                 const float leanAmt = glm::mix(0.03f, 0.17f, r1);
 
                 const float along = glm::dot(glm::vec2(iPos.x, iPos.z), windDir);
-                const float cross = glm::dot(glm::vec2(iPos.x, iPos.z),
-                                             glm::vec2(-windDir.y, windDir.x));
-                const float g1 = std::sin(along * 0.05f - opt.windTime * 0.85f);
-                const float g2 = std::sin(along * 0.15f + cross * 0.06f
-                                          - opt.windTime * 1.70f);
-                const float gust = glm::clamp(0.45f + 0.42f * g1 + 0.16f * g2,
-                                              0.05f, 1.15f);
+                // wind.glsl's gust field (Wind.hpp), posed at the tracer's time.
+                wind::State ws;
+                ws.dir = windDir;
+                ws.gustiness = opt.windGust;
+                ws.time = opt.windTime;
+                const float gust = wind::gust(ws, glm::vec2(iPos.x, iPos.z));
                 const float sway = std::sin(opt.windTime * (1.35f + 0.6f * r2)
                                             + iPhase + along * 0.25f);
                 const float stiff = glm::mix(0.65f, 1.25f, r1);
