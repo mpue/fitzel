@@ -5,6 +5,8 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <cmath>
+#include <cstdlib>
 #include <sstream>
 
 #include <glad/gl.h>
@@ -55,6 +57,13 @@ void Runner::applyCamera(fitzel::Camera& cam,
     cam.setPosition(p);
     cam.setYaw(s.yaw);
     cam.setPitch(s.pitch);
+    glm::vec3 t;
+    if (!s.name.empty() && s.name[0] == '@' && target &&
+        target(std::atoi(s.name.c_str() + 1), t) && glm::length(t - p) > 0.5f) {
+        const glm::vec3 d = glm::normalize(t - p);
+        cam.setYaw(glm::degrees(std::atan2(d.z, d.x)));
+        cam.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
+    }
     cam.setFov(s.fov);
     if (s.hour >= 0.0f) timeOfDay = s.hour;
 }

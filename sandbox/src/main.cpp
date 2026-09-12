@@ -111,6 +111,7 @@
 #include "FarTerrain.hpp"
 #include "CloudShadow.hpp"
 #include "Wildlife.hpp"
+#include "Soundscape.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -1684,6 +1685,7 @@ int main(int argc, char** argv) {
         // The cumulus casts its shadow on the ground (CloudShadow.hpp).
         CloudShadow cloudShadow;
         bool cloudShadowsOn = false;
+        bool soundscapeOn = false;   // scene setting "soundscape"
         // The fauna (Wildlife.hpp): flocks, swallows, raptors, butterflies. In
         // place of the old circling birds, for scenes that ask for it.
         Wildlife wildlife;
@@ -4131,6 +4133,10 @@ int main(int argc, char** argv) {
         const std::string& soundDir = roots.sounds;
         WeatherSounds wx;
         loadWeatherSounds(audio, soundDir, wx);
+        // Birdsong, insects, leaves (Soundscape.hpp). After `audio`, so it is
+        // destroyed before it: its voices belong to that engine.
+        Soundscape soundscape;
+        soundscape.init(audio, soundDir);
         Sound& rainSnd    = wx.rain;
         Sound& windSnd    = wx.wind;
         Sound& breezeSnd  = wx.breeze;
@@ -4558,6 +4564,7 @@ int main(int argc, char** argv) {
         addF("windGust", windGust);
         addB("cloudShadows", cloudShadowsOn);
         addB("wildlife", wildlifeOn);
+        addB("soundscape", soundscapeOn);
         addF("grassDryGrowth", veg.grassDryGrowth);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
@@ -4963,6 +4970,7 @@ int main(int argc, char** argv) {
             windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
             cloudShadowsOn = false;
             wildlifeOn     = false;
+            soundscapeOn   = false;
             veg.grassDryGrowth = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
@@ -7325,6 +7333,11 @@ int main(int argc, char** argv) {
         shotlist::Runner shotRunner;
         if (!boot.shotsPath.empty() && !bootProject.empty())
             shotRunner.load(boot.shotsPath, boot.shotsOut);
+        shotRunner.target = [&](int i, glm::vec3& t) {
+            if (i < 0 || i >= wildlife.birdsDrawn()) return false;
+            t = wildlife.debugPos(i);
+            return true;
+        };
         shotRunner.status = [&] {
             const prof::FrameStats fs = prof::frameStats();
             char buf[400];
@@ -7348,7 +7361,8 @@ int main(int argc, char** argv) {
                 const float ny = glm::normalize(glm::vec3(hl - hr, 2.0f, hd - hu)).y;
                 const float mo = fitzel::terrainMoisture(streamer.settings(), e.x, e.z);
                 char g[200];
-                std::snprintf(g, sizeof g, "  grass@eye h %.1f ny %.2f moist %.2f bare %.2f bare2 %.2f blades %d",
+                std::snprintf(g, sizeof g, "  birdsong %d phrases %d singers  grass@eye h %.1f ny %.2f moist %.2f bare %.2f bare2 %.2f blades %d",
+                              soundscape.phrases(), soundscape.singing(),
                               h, ny, mo, valNoise2(e.x * 0.13f + 19.0f, e.z * 0.13f + 7.0f),
                               valNoise2(e.x * 0.31f + 3.0f, e.z * 0.31f + 23.0f), veg.grassCount);
                 return std::string(buf) + g;
@@ -9147,6 +9161,23 @@ int main(int argc, char** argv) {
                 ww.flowers    = &veg.flowerHeads();
                 wildlife.enabled = true;
                 wildlife.update(dt, ww);
+            }
+            // ...and what it sounds like (Soundscape.hpp): singers on their
+            // perches, insects by the hour, the wind in the leaves. Play only,
+            // like the weather loops.
+            if (soundscapeOn) {
+                Soundscape::Frame sf;
+                sf.eye      = camera.position();
+                sf.hour     = timeOfDay;
+                sf.daylight = dayF;
+                sf.wind     = veg.wind.strength;
+                sf.gust     = wind::gust(veg.wind, glm::vec2(sf.eye.x, sf.eye.z));
+                sf.rain     = rainIntensity;
+                sf.storm    = storm;
+                sf.gain     = mix.ambientGain();
+                sf.trees    = &veg.treeInstances();
+                sf.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };
+                soundscape.update(dt, sf, playMode);
             }
             renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
 

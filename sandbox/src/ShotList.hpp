@@ -61,6 +61,10 @@ public:
     // Written to the log beside each picture: whatever state the host thinks
     // explains it (what had streamed in, what the frame cost).
     std::function<std::string()> status;
+    // A view named "@<n>..." looks at whatever the host says target n is this
+    // frame (a flying bird, say) instead of along its yaw/pitch. False = no such
+    // target: the yaw/pitch stand.
+    std::function<bool(int, glm::vec3&)> target;
 
 private:
     std::vector<Shot> m_shots;

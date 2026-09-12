@@ -34,6 +34,8 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CloudShadow.cpp
     # The fauna: flocks, swallows, raptors, butterflies.
     src/Wildlife.cpp
+    # ...and the sound of the place: birdsong, insects, the wind in the leaves.
+    src/Soundscape.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
