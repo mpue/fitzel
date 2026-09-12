@@ -7,6 +7,7 @@
 
 #include <fitzel/world/Terrain.hpp>
 
+#include "Ecology.hpp"
 #include "PathTrace.hpp"
 
 // The grass field, as data rather than as a draw call.
@@ -53,6 +54,10 @@ struct Field {
     std::vector<glm::vec3> wet;             // brook discs (x, z, radius) to avoid
 
     glm::vec3 tint{1.0f};         // the grass shader's uTint
+
+    // The forest (Ecology.hpp): under a closed canopy the grass gives way to
+    // the forest floor. Disabled = grass everywhere, as before.
+    ecology::Params eco;
 
     // The tile edge the field is generated on. A constant rather than a setting:
     // the seed is the tile coordinate, so changing this reshuffles every blade in

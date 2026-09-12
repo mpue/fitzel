@@ -228,6 +228,10 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     m_shader.setFloat("uTreeLine", treeLine);
     m_shader.setFloat("uWaterLevel", waterLevel);
     m_shader.setVec3("uGrassTint", grassTint);
+    m_shader.setVec3("uCanopy", canopy);
+    ecology::forEachUniform(
+        eco, [&](const char* n, int v) { m_shader.setInt(n, v); },
+        [&](const char* n, float v) { m_shader.setFloat(n, v); });
     m_shader.setInt("uCutHole", mirror ? 1 : 0);
     m_shader.setFloat("uGrid", static_cast<float>(kGrid));
     m_shader.setInt("uHeight", 0);

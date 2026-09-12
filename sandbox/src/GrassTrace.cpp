@@ -186,6 +186,10 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
                     - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
                 0.0f, 1.0f);
             if (lush < 0.22f) continue;
+            // In the woods the canopy takes the light: a few tufts, not a lawn.
+            // The edge keeps most of its grass -- that is where the sun gets in.
+            float woods = 0.0f;
+            if (f.eco.enabled) woods = ecology::sample(f.eco, wx, wz, h, n.y).forest;
             // Meadow patchiness at several scales. `chaos` scales how much each
             // irregularity kicks in: 0 = near-uniform lawn, 1 = wild meadow,
             // higher piles on taller outliers and more gaps.
@@ -200,7 +204,8 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
             // Per-cell count jitter breaks the even grid density (chaos-scaled).
             const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * chaos;
             const int   count = static_cast<int>(per * dens
-                                * glm::mix(0.35f, 1.0f, lush) * cellJit);
+                                * glm::mix(0.35f, 1.0f, lush) * cellJit
+                                * (1.0f - 0.85f * woods));
             // Height clumps have their OWN frequency (independent of density), so
             // tall tufts and low turf don't line up with thick/thin.
             const float tuft = valNoise2(wx * 0.11f + 40.0f, wz * 0.11f + 40.0f);

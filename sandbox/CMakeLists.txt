@@ -30,6 +30,13 @@ set(SANDBOX_RUNTIME_SOURCES
     # The ground past the streamed ring, out to the horizon. Runtime: the
     # shipped player looks at the same mountains.
     src/FarTerrain.cpp
+    # Generated levels of detail for the trees (bark collapse, leaf thinning).
+    src/MeshSimplify.cpp
+    # Where the forest stands (shared with ecology.glsl), and the procedural
+    # trees streamed from it out to the horizon.
+    src/Ecology.cpp
+    src/TreeField.cpp
+    src/TreeImpostor.cpp
     # The grass field as data: where the blades are (shared with the streamer)
     # and what one looks like as triangles (the path tracer's half). Runtime,
     # because VegetationSystem is.

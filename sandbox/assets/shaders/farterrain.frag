@@ -36,8 +36,10 @@ uniform float uSnowLevel;
 uniform float uTreeLine;
 uniform float uWaterLevel;
 uniform vec3  uGrassTint;
+uniform vec3  uCanopy;           // the forest's mean foliage colour (linear)
 
 #include "meadow.glsl"
+#include "ecology.glsl"
 
 // --- Noise ------------------------------------------------------------------
 float hash21(vec2 p) {
@@ -221,13 +223,23 @@ void main() {
         // Above the tree line the forest thins into alpine grass.
         float alpineAmt = smoothstep(uTreeLine - 60.0, uTreeLine + 120.0, h + (n1 - 0.5) * 220.0);
         albedo = mix(albedo, alpine, alpineAmt);
-        // Forest: on the slopes it can hold, below the tree line, where there is
-        // water enough -- and in patches on the valley floor, not as a carpet.
-        float woods = smoothstep(0.28, 0.5, moist + (n2 - 0.5) * 0.35);
-        float valleyPatch = mix(smoothstep(0.42, 0.62, n1 * 0.6 + n3 * 0.6), 1.0,
-                                smoothstep(40.0, 180.0, h));
-        float forestAmt = woods * valleyPatch * (1.0 - alpineAmt)
-                        * (1.0 - smoothstep(30.0, 40.0, slope));
+        // Forest: where the ecology put the trees (the same stands the impostor
+        // field and the near meshes stand in -- ecology.glsl), a closed canopy
+        // once a cell in two or so carries a tree. Without it, the old rule:
+        // on the slopes it can hold, below the tree line, in valley patches.
+        float forestAmt;
+        if (uEcoOn == 1) {
+            vec3 e = ecoSample(xz, h, N.y);
+            forestAmt = clamp(e.x * 1.3, 0.0, 1.0);
+            forest = uCanopy * 0.75 * (0.75 + 0.5 * (fbmPx(xz, 14.0, px) + 0.5))
+                   * mix(0.85, 1.1, n2);
+        } else {
+            float woods = smoothstep(0.28, 0.5, moist + (n2 - 0.5) * 0.35);
+            float valleyPatch = mix(smoothstep(0.42, 0.62, n1 * 0.6 + n3 * 0.6), 1.0,
+                                    smoothstep(40.0, 180.0, h));
+            forestAmt = woods * valleyPatch * (1.0 - alpineAmt)
+                      * (1.0 - smoothstep(30.0, 40.0, slope));
+        }
         albedo = mix(albedo, forest, forestAmt);
         // Rock: where it is too steep for soil, and more of it the higher up.
         float rockAmt = smoothstep(30.0, 44.0, slope + (n2 - 0.5) * 16.0);

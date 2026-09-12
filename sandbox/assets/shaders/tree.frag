@@ -3,6 +3,7 @@
 in vec3 vWorldPos;
 in vec3 vNormal;
 in vec2 vUv;
+in float vShare;
 out vec4 FragColor;
 
 uniform sampler2D uTex;
@@ -24,6 +25,7 @@ uniform float uContrast;   // 1 = unchanged (pivots around mid-grey)
 uniform float uHue;        // 0 = unchanged (radians, rotates about the grey axis)
 
 #include "sunshadow.glsl"
+#include "treedither.glsl"
 
 // Rodrigues rotation of an RGB colour about the achromatic (1,1,1) axis: a cheap
 // hue shift that leaves greys untouched.
@@ -57,6 +59,7 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 void main() {
     vec4 tex = texture(uTex, vUv);
     if (uAlphaCutout == 1 && tex.a < 0.5) discard;
+    if (vShare < 1.0 && !treeDitherKeep(vShare, false)) discard;
 
     vec3 albedo = pow(correct(tex.rgb), vec3(2.2));
     vec3 N = normalize(vNormal);

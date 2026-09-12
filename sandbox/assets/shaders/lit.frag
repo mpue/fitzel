@@ -469,6 +469,12 @@ uniform float uMeadowLush;     // the field's moisture, as the blades see it
 uniform vec3  uGrassTint;      // the grass's own colour multiplier (linear)
 uniform float uGrassTop;       // no grass above this height (the snow line)
 #include "meadow.glsl"
+// The forest (ecology.glsl): under the trees the ground is forest floor --
+// the terrain layer uForestLayer (-1 = none) takes over there -- and no meadow.
+uniform int   uForestLayer;
+uniform vec3  uCanopy;         // the trees' mean foliage colour (linear)
+#include "ecology.glsl"
+float gWoods = 0.0;            // this fragment's forest (0 open .. 1 inside a stand)
 
 int selectCascade() {
     for (int i = 0; i < uCascadeCount; ++i) {
@@ -802,6 +808,11 @@ void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 nor
         if (i >= uLayerCount) continue;
         vec4  b = uLayerBand[i];
         float autoW = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
+        // In the woods the forest floor layer wins over whatever the height
+        // and slope bands would have laid there.
+        if (uForestLayer >= 0 && gWoods > 0.0)
+            autoW = (i == uForestLayer) ? max(autoW, gWoods * 1.3)
+                                        : autoW * (1.0 - 0.85 * gWoods);
         float pw    = (i < 4) ? paint[i] : 0.0;
         float w     = autoW * (1.0 - paintCover) + pw;
         if (w > 0.0) {
@@ -969,7 +980,13 @@ void main() {
     // Taken out here, in uniform control flow, for the meadow below.
     float groundPx = length(fwidth(vWorldPos.xz));
     if (uColorMode == 1) {
+        gWoods = ecoSample(vWorldPos.xz, vWorldPos.y, N.y).y;
         terrainSurface(vWorldPos, N, detail, albedo, terrainNrm);
+        // Past the trees' shadow range the canopy still stands over its floor,
+        // and between the impostors what shows is shade and crowns, not leaf
+        // litter in the sun: the floor goes the canopy's dark green there.
+        float canopyShade = gWoods * smoothstep(90.0, 160.0, length(vWorldPos - uViewPos));
+        albedo = mix(albedo, pow(uCanopy * 0.55, vec3(1.0 / 2.2)), 0.7 * canopyShade);
         // Past the blades, the field's colour: without it the valley is bare
         // soil from a hundred metres on (see meadow.glsl). The soil's relief
         // goes with it -- a meadow hides the pebbles it grows between.
@@ -978,7 +995,8 @@ void main() {
                     * uMeadowAmount;
             if (t > 0.0) {
                 float cover = t * meadowCover(vWorldPos.xz, vWorldPos.y, N.y,
-                                              uWaterLevel, uGrassTop, groundPx);
+                                              uWaterLevel, uGrassTop, groundPx)
+                            * (1.0 - 0.9 * gWoods);
                 vec3 m = pow(pow(meadowColour(vWorldPos.xz, uMeadowLush, groundPx),
                                  vec3(2.2)) * uGrassTint, vec3(1.0 / 2.2));
                 albedo     = mix(albedo, m, cover);

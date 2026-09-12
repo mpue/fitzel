@@ -16,6 +16,7 @@
 #include <fitzel/scene/Camera.hpp>
 #include <fitzel/world/Terrain.hpp>
 
+#include "Ecology.hpp"
 #include "FrameRender.hpp"
 
 // The far terrain's projection: the camera's lens, a depth range of its own
@@ -71,6 +72,8 @@ public:
     float treeLine   = 750.0f;   // forest gives way to alpine meadow here
     float waterLevel = -1000.0f; // lakes and sea below this are water
     glm::vec3 grassTint{1.0f};   // the near grass's colour multiplier
+    ecology::Params eco;         // where the forests are (the trees' own rule)
+    glm::vec3 canopy{0.02f, 0.035f, 0.012f};  // their foliage colour, linear
 
     // Compile the shaders and build the grid. False if a shader failed.
     bool init();
@@ -98,6 +101,10 @@ public:
 
     // Anything to draw yet?
     bool ready() const;
+
+    // The streamed square this frame (xz min, xz max): where the near scene's
+    // own surfaces -- the lake quad -- end and this one's begin.
+    glm::vec4 nearRect() const { return glm::vec4(m_nearMin, m_nearMax); }
 
 private:
     // Five rings, each twice the cell and twice the size of the one inside it:

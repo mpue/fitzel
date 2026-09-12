@@ -1670,6 +1670,9 @@ int main(int argc, char** argv) {
         // How completely the ground past the grass takes the field's colour
         // (meadow.glsl). 0 = the terrain layers alone, as before.
         float meadowTint = 0.0f;
+        // Which terrain layer is the forest floor under the ecology's woods
+        // (-1 = none: the woods leave the ground as the bands paint it).
+        int forestFloorLayer = -1;
 
         bool      grassPaintMode = false;      // grass brush active
         bool      brushErase     = false;      // stamp vs erase (shared)
@@ -4524,6 +4527,16 @@ int main(int argc, char** argv) {
         addF("farSnowLevel", farTerrain.snowLevel);
         addF("farTreeLine", farTerrain.treeLine);
         addF("meadowTint", meadowTint);
+        // The forest field (Ecology.hpp). Off in scenes from before it: they
+        // keep the 120 m scatter they were planted with.
+        addB("ecoForest", veg.eco.enabled);
+        addF("ecoCover", veg.eco.cover);
+        addF("ecoStandSize", veg.eco.standSize);
+        addF("ecoSolitary", veg.eco.solitary);
+        addF("ecoSlopeLove", veg.eco.slopeLove);
+        addF("impostorStart", veg.impostorStart);
+        addF("forestRadius", veg.forestRadius);
+        addI("forestFloorLayer", forestFloorLayer);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
         // The opening camera move. The KEYS are a blob written below (a list, not
@@ -4921,6 +4934,10 @@ int main(int argc, char** argv) {
             farTerrain.snowLevel  = 1100.0f;
             farTerrain.treeLine   = 750.0f;
             meadowTint            = 0.0f;
+            veg.eco               = ecology::Params{};
+            veg.impostorStart     = 130.0f;
+            veg.forestRadius      = 1600.0f;
+            forestFloorLayer      = -1;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
@@ -8713,6 +8730,18 @@ int main(int argc, char** argv) {
                     if (r->enabled && r->cityEnabled && !r->district().empty())
                         autoFar = std::max(autoFar, r->cityRange + 60.0f);
                 autoFar = std::min(autoFar, 5000.0f); // the manual slider's ceiling
+                // With the horizon drawn behind the ring, the ring itself must
+                // never be sliced by the far plane -- from high up its corners
+                // are further than the ring is wide, and a sliced corner shows
+                // the far terrain's sunk hole instead of ground.
+                if (farTerrainOn) {
+                    const float    ringHalf = (viewRadius + 1.0f) * streamer.settings().chunkSize;
+                    const glm::vec3 ep      = camera.position();
+                    const float    alt      = std::max(0.0f, ep.y - streamer.heightAt(ep.x, ep.z));
+                    autoFar = std::min(std::max(autoFar,
+                                                std::sqrt(2.0f * ringHalf * ringHalf + alt * alt) + 30.0f),
+                                       5000.0f);
+                }
                 const float farZ = farPlaneAuto ? autoFar
                                                : std::max(farPlaneManual, 50.0f);
                 camera.setFarPlane(farZ);
@@ -8750,6 +8779,10 @@ int main(int argc, char** argv) {
                 farTerrain.enabled    = farTerrainOn;
                 farTerrain.waterLevel = waterLevel;
                 farTerrain.grassTint  = veg.grassTint;
+                farTerrain.eco        = veg.eco;
+                farTerrain.eco.treeLine   = farTerrain.treeLine;
+                farTerrain.eco.waterLevel = waterLevel;
+                farTerrain.canopy     = veg.canopyColour() * veg.treeBrightness;
                 farTerrain.update(ep, streamer.settings(), streamer.enabled(),
                                   (cc - r) * cs, (cc + r + 1.0f) * cs);
             }
@@ -8769,6 +8802,13 @@ int main(int argc, char** argv) {
             // A new frame's worth of vegetation statistics (what the culling
             // actually submitted last frame -- see VegetationSystem::beginFrame).
             veg.beginFrame();
+            // The forest's tree line is the horizon's (one mountain, one line),
+            // and nothing grows in the lake.
+            veg.eco.treeLine   = farTerrain.treeLine;
+            veg.eco.waterLevel = waterLevel;
+            // Generated tree levels and impostors for species whose meshes
+            // changed -- here, before any pass has bound its target.
+            veg.prepareTrees();
 
             // Regrow grass (async) / trees when the camera has moved far enough.
             {
@@ -8784,6 +8824,24 @@ int main(int argc, char** argv) {
                     veg.regenFlowers(veg.grassCenter(), cls, roadW,
                                      waterLevel, look.snowLevel);
                 veg.updateFlowers(); // finish + upload a pending async flower regen
+                // Ground the forest leaves alone: where the player starts, and
+                // under every placed model -- a procedural pine growing through
+                // the hut's roof or out of the spawn point is the forest not
+                // knowing the scene exists. Taken while editing (and once when a
+                // game starts straight into Play): in Play things move, and every
+                // move would regrow the field.
+                if (!playMode || veg.treeClearings.empty()) {
+                    std::vector<glm::vec3> clear;
+                    for (const Entity& e : entities) {
+                        if (!e.activeInHierarchy) continue;
+                        if (e.components.get<PlayerStartComponent>())
+                            clear.push_back({e.center.x, e.center.z, 6.0f});
+                        else if (e.type == EntityType::Model)
+                            clear.push_back({e.center.x, e.center.z,
+                                             std::max(e.half.x, e.half.z) * 1.2f + 2.0f});
+                    }
+                    veg.treeClearings = std::move(clear);
+                }
                 veg.updateTrees(camXZ, cls, roadW, waterLevel, look.snowLevel);
             }
 
@@ -14703,6 +14761,12 @@ int main(int argc, char** argv) {
                           .set("uMeadowLush", 0.62f)
                           .set("uGrassTint", veg.grassTint)
                           .set("uGrassTop", look.snowLevel - 1.5f);
+                // The forest floor under the ecology's woods (ecology.glsl).
+                terrainMat.set("uForestLayer", veg.eco.enabled ? forestFloorLayer : -1)
+                          .set("uCanopy", veg.canopyColour() * veg.treeBrightness);
+                ecology::forEachUniform(
+                    veg.eco, [&](const char* n, int v) { terrainMat.set(n, v); },
+                    [&](const char* n, float v) { terrainMat.set(n, v); });
             }
             {
                 int bound = 0;
@@ -15718,6 +15782,9 @@ int main(int argc, char** argv) {
                 // downpour. What the weather changes is how MANY land.
                 water.setFloat("uRainRings", 1.0f);
                 water.setFloat("uRainDensity", rainDensity);
+                water.setVec4("uWaterClip", farTerrain.ready()
+                                                ? farTerrain.nearRect()
+                                                : glm::vec4(-1e9f, -1e9f, 1e9f, 1e9f));
                 reflectRT.bindColorTexture(0);
                 refractRT.bindColorTexture(1);
                 refractRT.bindDepthTexture(2);

@@ -16,8 +16,10 @@
 #include <fitzel/world/Terrain.hpp>
 
 #include "FrameRender.hpp"  // FrameContext -- the per-frame lighting/fog the draws take
+#include "Ecology.hpp"     // where the forest is
 #include "GrassTrace.hpp"  // the field's definition, shared with the path tracer
 #include "TiledScatter.hpp" // per-tile streamed instance buffers (grass field)
+#include "TreeField.hpp"   // the procedural forest, streamed to the horizon
 
 namespace fitzel { class Camera; }
 
@@ -142,6 +144,21 @@ public:
         // the other way round, and a guessed radius either clips crowns at the
         // screen edge or gives the culling nothing to reject.
         float boundR = 0.75f;
+        // The welded mesh as uploaded (8 floats a vertex), kept so the
+        // generated levels below can be derived from it.
+        std::vector<float>         cpuVerts;
+        std::vector<std::uint32_t> cpuIdx;
+    };
+    // A level the engine made itself from the coarsest authored one (see
+    // MeshSimplify.hpp): bark collapsed by quadric error, leaf cards thinned
+    // and grown. Draw ranges point back at that level's prims for their
+    // textures.
+    struct AutoLod {
+        std::uint32_t vao = 0, vbo = 0, ibo = 0;
+        struct Range { int first = 0, count = 0, prim = 0; bool cutout = false; };
+        std::vector<Range> ranges;
+        long long tris = 0;
+        bool valid() const { return vao != 0 && !ranges.empty(); }
     };
     // A configurable tree type: an ordered LOD chain + a far billboard, its own
     // density/size and its own GPU instance buffer (5 floats/tree: pos3,yaw,scale).
@@ -162,6 +179,21 @@ public:
         std::vector<float> inst;                 // procedural prefix + painted (this species)
         std::size_t        proceduralFloats = 0;
         int                count = 0;
+        // Generated from lods.back(): `mid` stands in for everything past
+        // LOD0 when the author gave only one level; `shadow` is what the
+        // cascades draw. Rebuilt lazily whenever a level's mesh changes.
+        AutoLod mid, shadow;
+        bool    autoDirty = true;
+        // The impostor (TreeImpostor.cpp): LOD0 baked from four sides into an
+        // atlas row -- colour, and the normal the card is lit with.
+        std::uint32_t impAlbedo = 0, impNormal = 0;
+        float     impAspect = 0.6f;          // one view's width / height
+        bool      impDirty  = true;
+        glm::vec3 canopy{0.02f, 0.035f, 0.012f};  // mean foliage albedo, linear
+        // Every tree of this species the forest field holds, plus the painted
+        // ones: what the impostor pass draws (it skips the near ones itself).
+        std::uint32_t farVBO = 0, farVAO = 0;
+        int           farCount = 0;
     };
 
     // Species/LOD editing (used by panelTrees). Each mutates GPU state and, where
@@ -263,7 +295,27 @@ public:
     bool  birdsEnabled   = true;
     bool  fireflyEnabled = true;
 
+    // --- The forest field (Ecology.hpp, TreeField.hpp) -------------------------
+    // With eco.enabled the procedural trees come from the streamed field: the
+    // near ones as meshes out to impostorStart, the rest as impostors out to
+    // forestRadius. Off, the old 120 m scatter, as scenes before it had.
+    ecology::Params eco;
+    // Discs (x, z, radius) the forest field plants nothing in: the spawn point,
+    // the placed models. Set by the host.
+    std::vector<glm::vec3> treeClearings;
+    float impostorStart = 130.0f;
+    float forestRadius  = 1600.0f;
+    // Generated levels and impostors for species whose meshes changed. Once a
+    // frame, OUTSIDE any render pass: the bake draws into its own target.
+    void prepareTrees();
+    // The forest's mean foliage colour (linear), for the far terrain's canopy.
+    glm::vec3 canopyColour() const;
+    int forestTrees() const { return m_treeField.treeCount(); }
+
 private:
+    void bakeImpostor(TreeSpecies& sp);
+    void drawImpostors(const FrameContext& ctx);
+    void uploadFar();   // every field tree + painted, per species
     void regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road, float roadWidth,
                     float waterLevel, float snowLevel);
     void rebuildTreeBuffers();  // re-upload every species (procedural prefix + painted)
@@ -271,11 +323,14 @@ private:
     // Load a .glb into `lod` (fills prims + creates its VAO/VBO bound to the
     // species' instance buffer). Returns false if the model failed to load.
     bool loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod);
+    // (Re)derive sp.mid / sp.shadow from the species' coarsest authored level.
+    void buildAutoLods(TreeSpecies& sp);
+    static void freeAutoLod(AutoLod& a);
     // The instances of `sp` that a pass with this view-projection can see AND
     // that belong to this LOD's distance band, uploaded to the shared cull
     // buffer; returns how many to draw. `planeCount` is 4 for a shadow cascade
     // -- see sphereVisible in the .cpp.
-    int  cullInstances(const TreeSpecies& sp, const TreeLOD& lod,
+    int  cullInstances(const TreeSpecies& sp, float boundR,
                        const glm::mat4& viewProj, int planeCount,
                        const glm::vec2& camXZ, float lodMin, float lodMax);
     void scanTreeAssets(); // populate m_modelFiles / m_texFiles from the search dirs
@@ -308,9 +363,15 @@ private:
     float         m_gDensity = -1.0f, m_gChaos = -1.0f, m_gHeight = -1.0f;
     float         m_gRadius = -1.0f;
     std::uint32_t m_gRoadHash = 0;
+    ecology::Params m_gEco;
 
     // Trees. Shaders are shared across all species (bound once, uniforms per draw).
     fitzel::Shader           m_tree, m_treeDepth, m_billboard;
+    fitzel::Shader           m_impostor, m_impostorBake;
+    TreeField                m_treeField;
+    glm::vec2                m_nearCenter{1e9f};  // where the mesh set was gathered
+    std::size_t              m_farPainted = static_cast<std::size_t>(-1);
+    bool                     m_farPaintedOn = true;
     std::vector<TreeSpecies> m_species;
     std::vector<std::string> m_modelFiles;  // *.glb display names (panel dropdown)
     std::vector<std::string> m_texFiles;    // *.png display names (billboard dropdown)
