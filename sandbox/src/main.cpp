@@ -98,6 +98,7 @@
 #include "TimelinePanel.hpp"
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
+#include "ShotList.hpp"
 #endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
@@ -107,6 +108,7 @@
 #include "LoadingScreen.hpp"
 #include "LightGrid.hpp"
 #include "VegetationSystem.hpp"
+#include "FarTerrain.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -403,6 +405,10 @@ struct BootConfig {
     // a development flag.
     std::string profileShot;
     double      profileSeconds = 8.0;
+    // `--shots <list>`: photograph a list of fixed views in one run and quit
+    // (see ShotList.hpp). `--shots-out <dir>` says where the PNGs go.
+    std::string shotsPath;
+    std::string shotsOut;
 };
 
 BootConfig loadBootConfig(int argc, char** argv) {
@@ -425,6 +431,8 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--profile-shot") cfg.profileShot = argv[i + 1];
         else if (a == "--profile-seconds")
             cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
+        else if (a == "--shots")      cfg.shotsPath   = argv[i + 1];
+        else if (a == "--shots-out")  cfg.shotsOut    = argv[i + 1];
     }
     return cfg;
 }
@@ -1653,6 +1661,15 @@ int main(int argc, char** argv) {
         // grass params) -- streamer/camera already exist above.
         VegetationSystem veg(streamer, camera);
         if (!veg.init()) return 1;
+
+        // The ground past the streamed ring, out to the horizon (FarTerrain.hpp).
+        // Optional: a failed shader costs the horizon, not the session.
+        FarTerrain farTerrain;
+        farTerrain.init();
+        bool farTerrainOn = false;   // scene setting "farTerrain"
+        // How completely the ground past the grass takes the field's colour
+        // (meadow.glsl). 0 = the terrain layers alone, as before.
+        float meadowTint = 0.0f;
 
         bool      grassPaintMode = false;      // grass brush active
         bool      brushErase     = false;      // stamp vs erase (shared)
@@ -4503,6 +4520,10 @@ int main(int argc, char** argv) {
         };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
+        addB("farTerrain", farTerrainOn);
+        addF("farSnowLevel", farTerrain.snowLevel);
+        addF("farTreeLine", farTerrain.treeLine);
+        addF("meadowTint", meadowTint);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
         // The opening camera move. The KEYS are a blob written below (a list, not
@@ -4895,6 +4916,11 @@ int main(int argc, char** argv) {
             uiSettings.islandCenterX = 0.0f;
             uiSettings.islandCenterZ = 0.0f;
             uiSettings.islandShape   = 0.0f;
+            // Same for the horizon: only a scene that asked for one gets it.
+            farTerrainOn          = false;
+            farTerrain.snowLevel  = 1100.0f;
+            farTerrain.treeLine   = 750.0f;
+            meadowTint            = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
@@ -7252,6 +7278,20 @@ int main(int argc, char** argv) {
         // waits for the display measures the display.
         double profileStart = 0.0;
         if (!boot.profilePath.empty()) glfwSwapInterval(0);
+#ifndef FITZEL_PLAYER
+        shotlist::Runner shotRunner;
+        if (!boot.shotsPath.empty() && !bootProject.empty())
+            shotRunner.load(boot.shotsPath, boot.shotsOut);
+        shotRunner.status = [&] {
+            const prof::FrameStats fs = prof::frameStats();
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "chunks %d (+%d pending)  frame %.1f ms  eye %.0f %.0f %.0f",
+                          streamer.loadedChunkCount(), streamer.pendingChunkCount(),
+                          fs.avg, camera.position().x, camera.position().y,
+                          camera.position().z);
+            return std::string(buf);
+        };
+#endif
         auto writeProfileReport = [&] {
             std::ofstream out(boot.profilePath);
             if (!out) return;
@@ -8699,6 +8739,20 @@ int main(int argc, char** argv) {
                 if (haveView2) viewers.push_back(camera2.position());
                 streamer.update(viewers);
             }
+            // ...and the ground past it, framing exactly the square the chunks
+            // cover (see FarTerrain::update). Player one's eye only: a split
+            // screen is a race, and its horizon can be player one's.
+            {
+                const float     cs = streamer.settings().chunkSize;
+                const glm::vec3 ep = camera.position();
+                const glm::vec2 cc(std::floor(ep.x / cs), std::floor(ep.z / cs));
+                const float     r  = static_cast<float>(streamer.radius());
+                farTerrain.enabled    = farTerrainOn;
+                farTerrain.waterLevel = waterLevel;
+                farTerrain.grassTint  = veg.grassTint;
+                farTerrain.update(ep, streamer.settings(), streamer.enabled(),
+                                  (cc - r) * cs, (cc + r + 1.0f) * cs);
+            }
 
             // When the road settles (not mid-drag), regrow vegetation so it
             // clears off the new road; debounced to avoid thrashing while editing.
@@ -9677,6 +9731,13 @@ int main(int argc, char** argv) {
             // Same outside Play: a craft can be flown in the editor too, and its
             // camera has to follow there or a test flight is done blind.
             if (!playMode) applyViewCamera();
+#ifndef FITZEL_PLAYER
+            // --shots: the listed view wins over every camera the scene has.
+            if (playMode && shotRunner.active())
+                shotRunner.applyCamera(
+                    camera, [&](float x, float z) { return streamer.heightAt(x, z); },
+                    timeOfDay);
+#endif
 
             // One row of the trace, taken HERE: the sim has written the craft's
             // interpolated pose for this frame and applyViewCamera has just
@@ -12904,6 +12965,25 @@ int main(int argc, char** argv) {
                                       "shadow resolution.");
                 ImGui::SameLine();
                 ImGui::TextDisabled("now %.0f m", camera.farPlane());
+                // The ground past the ring (FarTerrain.hpp). Next to the view
+                // distance because it answers the same question -- where does
+                // the world end -- at a price of nearly nothing.
+                ImGui::Checkbox("Horizon terrain", &farTerrainOn);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Draw the terrain past the streamed ring out\n"
+                                      "to 30 km, coarse and in its own depth range:\n"
+                                      "mountains on the horizon instead of fog.\n"
+                                      "Pairs with the terrain's Backdrop settings.");
+                ImGui::BeginDisabled(!farTerrainOn);
+                ImGui::SliderFloat("Snow line", &farTerrain.snowLevel, 0.0f, 4000.0f, "%.0f m");
+                ImGui::SliderFloat("Tree line", &farTerrain.treeLine, 0.0f, 3000.0f, "%.0f m");
+                ImGui::EndDisabled();
+                ImGui::SliderFloat("Meadow colour", &meadowTint, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Past the grass's radius the ground takes the\n"
+                                      "field's own colour, so a meadow stays a\n"
+                                      "meadow at any distance instead of turning\n"
+                                      "into the soil texture under it.");
                 ImGui::Separator();
                 if (ImGui::Button("Reset layout")) requestDockRebuild = true;
             }
@@ -14612,6 +14692,18 @@ int main(int argc, char** argv) {
                       .set("uWetness", roadWetness)
                       .set("uMeshPaint", 0)             // object paint is not the terrain's
                       .set("uAlbedo", glm::vec3(0.5f)); // neutral grey where no layer covers
+            // The field's colour past its blades (meadow.glsl). Starts well inside
+            // the streamed radius -- the blades thin out towards it -- and is
+            // complete where the last of them has shrunk away.
+            {
+                const bool meadow = veg.grassEnabled && meadowTint > 0.0f;
+                terrainMat.set("uMeadowNear", veg.grassRadius * 0.3f)
+                          .set("uMeadowFar", meadow ? veg.grassRadius * 0.95f : 0.0f)
+                          .set("uMeadowAmount", glm::clamp(meadowTint, 0.0f, 1.0f))
+                          .set("uMeadowLush", 0.62f)
+                          .set("uGrassTint", veg.grassTint)
+                          .set("uGrassTop", look.snowLevel - 1.5f);
+            }
             {
                 int bound = 0;
                 for (const TerrainLayer& L : look.layers) {
@@ -15469,6 +15561,14 @@ int main(int argc, char** argv) {
                 reflectRT.bind();
                 glClear(GL_DEPTH_BUFFER_BIT);
                 drawBackground(glm::inverse(proj * reflView), reflEye, false);
+                // The ranges mirror in the lake -- half of why a mountain lake
+                // looks like one.
+                if (farTerrain.ready()) {
+                    farTerrain.draw(makeFrameContext(proj * reflView, reflEye, now, storm,
+                                                     light, fog),
+                                    reflView, farProjection(vcam, aspect, taaJitter), true);
+                    glClear(GL_DEPTH_BUFFER_BIT);
+                }
                 glCullFace(GL_FRONT); // mirroring flips winding
                 renderer.renderScene(reflView, proj, reflEye,
                                      glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
@@ -15510,6 +15610,15 @@ int main(int argc, char** argv) {
             if (!shadeFull) glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             if (shadeFull) drawBackground(glm::inverse(mainVP), camPos, false);
+            // The horizon, in its own depth range, then out of the depth buffer
+            // (see FarTerrain.hpp). Jittered like the scene, or TAA would smear
+            // every ridgeline it resolves.
+            if (shadeFull && farTerrain.ready()) {
+                FZ_GPU_ZONE("GPU far terrain");
+                farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
+                                view, farProjection(vcam, aspect, taaJitter));
+                glClear(GL_DEPTH_BUFFER_BIT);
+            }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             {
                 FZ_GPU_ZONE("GPU terrain + objects");
@@ -16361,6 +16470,15 @@ int main(int argc, char** argv) {
             // back now, two frames after they were issued, and post them to the
             // profiler beside the CPU zones (see GpuTimer.hpp).
             gputime::collect();
+
+#ifndef FITZEL_PLAYER
+            if (playMode && shotRunner.active()) {
+                int sw = 0, sh = 0;
+                window.framebufferSize(sw, sh);
+                if (shotRunner.afterFrame(window.time(), sw, sh))
+                    window.requestClose();
+            }
+#endif
 
             // --- Benchmark mode (--profile) ----------------------------------
             // Measure for a few seconds, write the breakdown, quit. The window

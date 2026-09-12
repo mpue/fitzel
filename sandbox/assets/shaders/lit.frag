@@ -459,6 +459,17 @@ uniform float uDetailScale;    // frequency of the close-up detail
 uniform float uDetailStrength; // how strongly it perturbs the normal
 uniform float uTerrainSpec;    // terrain sun-specular strength (0 = matte)
 
+// The meadow past the grass's streamed radius (see meadow.glsl): the ground
+// takes the field's colour from uMeadowNear metres out, fully by uMeadowFar.
+// uMeadowFar <= 0 switches it off.
+uniform float uMeadowNear;
+uniform float uMeadowFar;
+uniform float uMeadowAmount;   // 0..1, how completely the field hides the soil
+uniform float uMeadowLush;     // the field's moisture, as the blades see it
+uniform vec3  uGrassTint;      // the grass's own colour multiplier (linear)
+uniform float uGrassTop;       // no grass above this height (the snow line)
+#include "meadow.glsl"
+
 int selectCascade() {
     for (int i = 0; i < uCascadeCount; ++i) {
         if (vViewDepth < uCascadeSplits[i]) return i;
@@ -955,8 +966,25 @@ void main() {
     vec3 albedo;
     vec3 terrainNrm = N; // terrain's perturbed normal (filled in layer mode)
     float texA = 1.0; // texture alpha, folded into the output alpha
+    // Taken out here, in uniform control flow, for the meadow below.
+    float groundPx = length(fwidth(vWorldPos.xz));
     if (uColorMode == 1) {
         terrainSurface(vWorldPos, N, detail, albedo, terrainNrm);
+        // Past the blades, the field's colour: without it the valley is bare
+        // soil from a hundred metres on (see meadow.glsl). The soil's relief
+        // goes with it -- a meadow hides the pebbles it grows between.
+        if (uMeadowFar > 0.0) {
+            float t = smoothstep(uMeadowNear, uMeadowFar, length(vWorldPos - uViewPos))
+                    * uMeadowAmount;
+            if (t > 0.0) {
+                float cover = t * meadowCover(vWorldPos.xz, vWorldPos.y, N.y,
+                                              uWaterLevel, uGrassTop, groundPx);
+                vec3 m = pow(pow(meadowColour(vWorldPos.xz, uMeadowLush, groundPx),
+                                 vec3(2.2)) * uGrassTint, vec3(1.0 / 2.2));
+                albedo     = mix(albedo, m, cover);
+                terrainNrm = normalize(mix(terrainNrm, N, cover));
+            }
+        }
     } else if (uColorMode == 2) {
         vec4 t = texture(uTexture, vUV);
         albedo = t.rgb * uTint; texA = t.a;

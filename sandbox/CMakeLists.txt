@@ -27,6 +27,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Component.cpp
     src/PrefabSystem.cpp
     src/VegetationSystem.cpp
+    # The ground past the streamed ring, out to the horizon. Runtime: the
+    # shipped player looks at the same mountains.
+    src/FarTerrain.cpp
     # The grass field as data: where the blades are (shared with the streamer)
     # and what one looks like as triangles (the path tracer's half). Runtime,
     # because VegetationSystem is.
@@ -226,7 +229,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/LightGridBake.cpp
     src/VehicleGizmo.cpp
     src/VehicleTool.cpp
-    src/GliderTool.cpp)
+    src/GliderTool.cpp
+    # `--shots <file>`: a list of fixed views photographed in one Play run.
+    # Editor-only, like --profile-shot -- it is a look-development tool.
+    src/ShotList.cpp)
 
 # The editor: full sandbox with all panels/tools.
 add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})
