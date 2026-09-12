@@ -52,10 +52,12 @@ void main() {
     float cardH = 1.04 * h;
     float w     = cardH * uAspect;
     vec3  p = iPos + right * (corner.x - 0.5) * w + up * (corner.y * cardH - 0.02 * h);
-    // The crown moves as the mesh does (treewind.glsl -- trunk bow and branch
-    // swing of the card's own corner), so the handover does not stop the wind.
-    p += treeWind(vec3((corner.x - 0.5) * uAspect * 1.04, corner.y * 1.04 - 0.02, 0.0),
-                  iPos, iScale, iRot, false);
+    // The crown bows as the mesh's does (treewind.glsl's trunk term), the card
+    // as ONE piece: its corners taken on the trunk axis, so the branch swing
+    // -- which differs from limb to limb -- cannot pull them apart. Swung
+    // separately they sheared the card, and a forest of cards flapped like
+    // washing on a line.
+    p += treeWind(vec3(0.0, corner.y * 1.04 - 0.02, 0.0), iPos, iScale, iRot, false);
 
     // Which of the baked views this tree shows, and whether mirrored: its yaw
     // decides, so neighbours differ and a tree never changes view as you move.

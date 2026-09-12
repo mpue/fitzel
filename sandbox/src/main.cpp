@@ -7410,11 +7410,11 @@ int main(int argc, char** argv) {
                               soundscape.phrases(), soundscape.singing(),
                               h, ny, mo, valNoise2(e.x * 0.13f + 19.0f, e.z * 0.13f + 7.0f),
                               valNoise2(e.x * 0.31f + 3.0f, e.z * 0.31f + 23.0f), veg.grassCount);
-                char f[120];
-                std::snprintf(f, sizeof f, "  fish jumps %d rings %d motes %d",
+                char f[200];
+                std::snprintf(f, sizeof f, "  fish jumps %d rings %d motes %d  wind %.2f gust %.2f t %.1f",
                               wildlife.fishJumps(), static_cast<int>(wildlife.ripples().size()),
-                              motes.drawn());
-                return std::string(buf) + g + f + "  " + herd.statusShort();
+                              motes.drawn(), veg.wind.strength, veg.wind.gustiness, veg.wind.time);
+                return std::string(buf) + g + f + "  " + herd.status();
             }
             return std::string(buf);
         };

@@ -17,6 +17,47 @@ void blendPalette(std::vector<glm::mat4>& a, const std::vector<glm::mat4>& b, fl
     for (std::size_t i = 0; i < a.size(); ++i) a[i] = a[i] * (1.0f - w) + b[i] * w;
 }
 
+// How fast a clip walks: the feet on the ground move backwards under the body
+// at exactly the speed the body has to move forwards, or they slide. Sampled
+// through one cycle, the vertices in contact (the lowest few) are followed
+// from sample to sample; the median of their backward speed along the model's
+// forward axis, in model units per second. Negative: the model walks the other
+// way round than it was told. Zero: no contact found, or the clip carries its
+// own root motion.
+float stanceSpeed(const fitzel::ModelData& m, int clip, glm::vec3 fwd) {
+    if (clip < 0 || clip >= static_cast<int>(m.animations.size()) || m.primitives.empty())
+        return 0.0f;
+    const float dur = m.animations[clip].duration;
+    if (dur <= 1e-3f) return 0.0f;
+    std::size_t big = 0;
+    for (std::size_t i = 1; i < m.primitives.size(); ++i)
+        if (m.primitives[i].vertexCount() > m.primitives[big].vertexCount()) big = i;
+    const int kN = 48;
+    const float dt = dur / kN;
+    std::vector<fitzel::Vertex> a, b;
+    fitzel::skinPrimitive(m.primitives[big], fitzel::sampleSkeleton(m, clip, 0.0f), a);
+    std::vector<float> speeds;
+    const float contact = 0.02f * std::max(m.height(), 1e-3f);
+    for (int k = 1; k <= kN; ++k) {
+        fitzel::skinPrimitive(m.primitives[big], fitzel::sampleSkeleton(m, clip, k * dt), b);
+        if (a.size() != b.size() || a.empty()) return 0.0f;
+        float lo = 1e30f;
+        for (const fitzel::Vertex& v : a) lo = std::min(lo, v.position.y);
+        double sum = 0.0;
+        int n = 0;
+        for (std::size_t i = 0; i < a.size(); ++i) {
+            if (a[i].position.y > lo + contact || b[i].position.y > lo + contact) continue;
+            sum += glm::dot(b[i].position - a[i].position, fwd);
+            ++n;
+        }
+        if (n > 0) speeds.push_back(static_cast<float>(-sum / n / dt));
+        a.swap(b);
+    }
+    if (speeds.empty()) return 0.0f;
+    std::nth_element(speeds.begin(), speeds.begin() + speeds.size() / 2, speeds.end());
+    return speeds[speeds.size() / 2];
+}
+
 } // namespace
 
 bool Herd::load(const Config& cfg, fitzel::Shader& lit) {
@@ -54,6 +95,22 @@ bool Herd::load(const Config& cfg, fitzel::Shader& lit) {
     const float h = std::max(m_model.height(), 1e-3f);
     m_scale  = cfg.height / h;
     m_offset = glm::vec3(0.0f, -m_model.minY, 0.0f);
+
+    // The walk's own pace (see stanceSpeed), so the hooves stay planted: the
+    // herd moves at the speed the clip's legs carry it, and when it slows the
+    // legs slow with it. A model that walks backwards is turned round.
+    {
+        const float off = glm::radians(cfg.yawOffset);
+        const glm::vec3 fwd(-std::sin(off), 0.0f, std::cos(off));
+        m_clipSpeeds.clear();
+        for (int c = 0; c < static_cast<int>(m_model.animations.size()); ++c)
+            m_clipSpeeds.push_back(stanceSpeed(m_model, c, fwd) * m_scale);
+        const float v = (cfg.walkClip >= 0 && cfg.walkClip < static_cast<int>(m_clipSpeeds.size()))
+                            ? m_clipSpeeds[static_cast<std::size_t>(cfg.walkClip)] : 0.0f;
+        m_flip = v < -0.2f;
+        m_walkPace = std::abs(v) > 0.2f ? std::abs(v) : cfg.walkSpeed;
+        m_paceMeasured = std::abs(v) > 0.2f;
+    }
 
     // One material per primitive, every lit uniform written (the program is
     // shared, and whatever this does not set it inherits from the last draw).
@@ -148,6 +205,7 @@ void Herd::update(float dt, const World& w) {
         a.stateLeft -= dt;
         a.clipTime  += dt;
         if (a.stateLeft <= 0.0f) decide(a, w);
+        float go = 0.0f;
         if (a.walking) {
             const glm::vec2 to = a.target - glm::vec2(a.pos.x, a.pos.z);
             const float dist = glm::length(to);
@@ -161,7 +219,7 @@ void Herd::update(float dt, const World& w) {
                 while (d > 3.14159265f) d -= 6.2831853f;
                 while (d < -3.14159265f) d += 6.2831853f;
                 a.yaw += std::clamp(d, -0.7f * dt, 0.7f * dt);
-                const float go = m_cfg.walkSpeed * a.blend * (std::abs(d) < 1.2f ? 1.0f : 0.3f);
+                go = m_walkPace * a.blend * (std::abs(d) < 1.2f ? 1.0f : 0.3f);
                 const float nx = a.pos.x + std::sin(a.yaw) * go * dt;
                 const float nz = a.pos.z + std::cos(a.yaw) * go * dt;
                 // The way there crosses the brook: stop at the bank, and
@@ -171,6 +229,7 @@ void Herd::update(float dt, const World& w) {
                 if (w.walkable && !w.walkable(ax, az)) {
                     a.walking   = false;
                     a.stateLeft = 0.5f + uni();
+                    go = 0.0f;
                 } else {
                     a.pos.x = nx;
                     a.pos.z = nz;
@@ -178,13 +237,15 @@ void Herd::update(float dt, const World& w) {
             }
         }
         a.blend = std::clamp(a.blend + (a.walking ? 1.0f : -1.0f) * dt * 1.6f, 0.0f, 1.0f);
+        // The legs go exactly as fast as the ground passes under them.
+        a.walkTime += dt * (m_paceMeasured ? go / m_walkPace : (a.walking ? 1.0f : 0.0f));
         if (w.ground) a.pos.y = w.ground(a.pos.x, a.pos.z);
 
         // Pose: grazing and walking, blended through the switch.
         std::vector<glm::mat4> pal = fitzel::sampleSkeleton(m_model, m_cfg.grazeClip, a.clipTime);
         if (a.blend > 0.0f) {
             const std::vector<glm::mat4> walk =
-                fitzel::sampleSkeleton(m_model, m_cfg.walkClip, a.clipTime);
+                fitzel::sampleSkeleton(m_model, m_cfg.walkClip, a.walkTime);
             if (a.blend >= 1.0f) pal = walk;
             else                 blendPalette(pal, walk, a.blend);
         }
@@ -193,7 +254,8 @@ void Herd::update(float dt, const World& w) {
             a.meshes[p].update(m_scratch);
         }
         a.model = glm::translate(glm::mat4(1.0f), a.pos) *
-                  glm::rotate(glm::mat4(1.0f), a.yaw + glm::radians(m_cfg.yawOffset),
+                  glm::rotate(glm::mat4(1.0f), a.yaw + glm::radians(m_cfg.yawOffset) +
+                                                   (m_flip ? 3.14159265f : 0.0f),
                               glm::vec3(0.0f, 1.0f, 0.0f)) *
                   glm::scale(glm::mat4(1.0f), glm::vec3(m_scale)) *
                   glm::translate(glm::mat4(1.0f), m_offset);
@@ -216,9 +278,12 @@ std::string Herd::status() const {
     }
     int walking = 0;
     for (const Animal& a : m_animals) walking += a.walking ? 1 : 0;
-    char w[32];
-    std::snprintf(w, sizeof w, " walking %d", walking);
-    return statusShort() + w + clips;
+    char w[64];
+    std::snprintf(w, sizeof w, " walking %d pace %.2f%s%s", walking, m_walkPace,
+                  m_paceMeasured ? " measured" : "", m_flip ? " flipped" : "");
+    std::string sp = " clip speeds";
+    for (float v : m_clipSpeeds) { char b[16]; std::snprintf(b, sizeof b, " %.2f", v); sp += b; }
+    return statusShort() + w + sp + clips;
 }
 
 std::string Herd::statusShort() const {

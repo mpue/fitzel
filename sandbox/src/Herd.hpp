@@ -66,7 +66,8 @@ private:
         float yaw = 0.0f;          // radians, heading in XZ (0 = +Z)
         glm::vec2 target{0.0f};
         bool  walking = false;
-        float clipTime = 0.0f;
+        float clipTime = 0.0f;     // the grazing clip's clock
+        float walkTime = 0.0f;     // the walk's: runs with the ground speed
         float stateLeft = 0.0f;    // seconds until the next decision
         float blend = 0.0f;        // 0 grazing .. 1 walking (pose blend weight)
         std::vector<fitzel::Mesh> meshes;   // one per primitive
@@ -78,6 +79,10 @@ private:
     Config m_cfg;
     bool   m_ok = false;
     bool   m_placed = false;       // moved off the water yet
+    float  m_walkPace = 1.4f;      // m/s the walk clip's legs carry it
+    bool   m_paceMeasured = false;
+    bool   m_flip = false;         // the model faces backwards: turned round
+    std::vector<float> m_clipSpeeds;   // every clip's stance speed (m/s), for the status
     fitzel::ModelData m_model;
     float  m_scale = 1.0f;
     glm::vec3 m_offset{0.0f};      // model space: what puts the feet on the ground

@@ -647,6 +647,28 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
     // UVs and must stay apart -- welding those would visibly seam the leaves.
     std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> unique;
     const float scale = 1.0f / md.height();
+    // The trunk goes on the origin. A model exported where it stood in its
+    // artist's scene (tree2.glb sits nine of its own heights off its origin)
+    // would otherwise be drawn that far from where the tree was planted --
+    // in the river -- and the wind, which bends a tree by the distance from
+    // its trunk axis, would fling the whole crown about. The foot of the
+    // trunk is the centre of what lies within the lowest few percent.
+    float baseX = 0.0f, baseZ = 0.0f;
+    {
+        const float cut = md.minY + 0.04f * md.height();
+        double sx = 0.0, sz = 0.0;
+        long long n = 0;
+        float bx0 = 1e30f, bx1 = -1e30f, bz0 = 1e30f, bz1 = -1e30f;
+        for (const fitzel::ModelPrimitive& p : md.primitives)
+            for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
+                const float x = p.vertices[i], y = p.vertices[i + 1], z = p.vertices[i + 2];
+                bx0 = std::min(bx0, x); bx1 = std::max(bx1, x);
+                bz0 = std::min(bz0, z); bz1 = std::max(bz1, z);
+                if (y <= cut) { sx += x; sz += z; ++n; }
+            }
+        baseX = n > 0 ? static_cast<float>(sx / n) : 0.5f * (bx0 + bx1);
+        baseZ = n > 0 ? static_cast<float>(sz / n) : 0.5f * (bz0 + bz1);
+    }
     // ...and the sphere that holds the normalized mesh, for the instance culling.
     float boundR2 = 0.0f;
     for (fitzel::ModelPrimitive& p : md.primitives) {
@@ -659,9 +681,9 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
             tp.tex = Texture::fromPixels(p.texPixels.data(), p.texWidth, p.texHeight, 4);
         for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
             VertexKey key{};
-            key.v[0] = p.vertices[i + 0] * scale;
+            key.v[0] = (p.vertices[i + 0] - baseX) * scale;
             key.v[1] = (p.vertices[i + 1] - md.minY) * scale;
-            key.v[2] = p.vertices[i + 2] * scale;
+            key.v[2] = (p.vertices[i + 2] - baseZ) * scale;
             for (int k = 3; k < 8; ++k) key.v[k] = p.vertices[i + k];
             const auto it = unique.find(key);
             if (it != unique.end()) { indices.push_back(it->second); continue; }

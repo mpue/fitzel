@@ -34,8 +34,12 @@ vec3 treeWindAt(vec3 lp, vec3 base, float scale, float yaw, bool leaf, float T) 
     // leaf card, must move together, or the card tears into a streak (a phase
     // cut into cells did exactly that). A slow wave through the crown reads as
     // limbs swinging one after another.
-    float reach = length(lp.xz);
-    float bph   = dot(lp, vec3(4.1, 2.3, 3.7)) + phase;
+    // Clamped: a crown is at most about as wide as the tree is tall, and a
+    // mesh that lies off its origin must not be flung about by it.
+    float reach = min(length(lp.xz), 0.8);
+    // Gently varying across the crown (a radian or two from side to side):
+    // limbs swing a little after one another, the crown does not ripple.
+    float bph   = dot(lp, vec3(1.9, 1.2, 1.7)) + phase;
     float swing = sin(T * 1.6 + bph);
     off.xz += dir * (0.015 * s * g * reach * swing * scale);
     off.y  += 0.008 * s * g * reach * sin(T * 2.1 + bph * 1.3) * scale;
