@@ -211,13 +211,22 @@ void main() {
         // The valley's meadow is the near field's own colour (meadow.glsl), so
         // the streamed ground and this one meet without a change of season.
         vec3 meadow  = pow(meadowColour(xz, moist, px), vec3(2.2)) * uGrassTint;
-        vec3 alpine  = mix(lin(vec3(0.36, 0.38, 0.22)), lin(vec3(0.44, 0.40, 0.28)), n2);
+        vec3 alpine  = mix(lin(vec3(0.33, 0.40, 0.19)), lin(vec3(0.45, 0.43, 0.24)), n2);
         vec3 forest  = mix(lin(vec3(0.085, 0.13, 0.07)), lin(vec3(0.12, 0.15, 0.08)), n2)
                      * (0.8 + 0.4 * (fbmPx(xz, 14.0, px) + 0.5));
-        vec3 rock    = mix(lin(vec3(0.38, 0.36, 0.34)), lin(vec3(0.52, 0.50, 0.47)), n1);
-        // Strata: bands of lighter and darker rock that follow the height,
-        // bent by the noise so they are not contour lines.
-        rock *= 0.82 + 0.28 * smoothstep(0.3, 0.7, vnoise(vec2(h * 0.035 + n2 * 2.0, 0.5)));
+        // Rock that differs from massif to massif -- warm limestone, cool
+        // granite -- and within one face, lighter where it is fresh.
+        vec3 rockCool = mix(lin(vec3(0.36, 0.36, 0.37)), lin(vec3(0.50, 0.50, 0.50)), n1);
+        vec3 rockWarm = mix(lin(vec3(0.44, 0.39, 0.33)), lin(vec3(0.58, 0.53, 0.45)), n1);
+        vec3 rock     = mix(rockCool, rockWarm, smoothstep(0.35, 0.65, n3));
+        // Strata: faint bands that follow the height only loosely -- bent hard
+        // by the noise and tilted across the range, so they read as bedding
+        // in the rock and not as contour lines drawn on it.
+        float bed = h * 0.028 + n2 * 5.0 + n1 * 3.0 + dot(xz, vec2(0.0011, -0.0007));
+        rock *= 0.9 + 0.14 * smoothstep(0.35, 0.65, vnoise(vec2(bed, n3 * 3.0)));
+        // Scree: the pale fans below the cliffs, on the slopes just too steep
+        // for grass and not steep enough to stand as rock.
+        vec3 scree = mix(lin(vec3(0.52, 0.50, 0.46)), lin(vec3(0.62, 0.59, 0.54)), n2);
         vec3 snow    = lin(vec3(0.93, 0.95, 0.98));
 
         vec3 albedo = meadow;
@@ -243,7 +252,10 @@ void main() {
         }
         albedo = mix(albedo, forest, forestAmt);
         // Rock: where it is too steep for soil, and more of it the higher up.
-        float rockAmt = smoothstep(30.0, 44.0, slope + (n2 - 0.5) * 16.0);
+        float screeAmt = smoothstep(24.0, 32.0, slope + (n1 - 0.5) * 10.0)
+                       * (1.0 - forestAmt) * smoothstep(uTreeLine - 200.0, uTreeLine + 100.0, h);
+        albedo = mix(albedo, scree, screeAmt * 0.8);
+        float rockAmt = smoothstep(33.0, 46.0, slope + (n2 - 0.5) * 16.0);
         rockAmt = max(rockAmt, alpineAmt * smoothstep(0.55, 0.8, n1) *
                                smoothstep(uTreeLine + 150.0, uTreeLine + 500.0, h));
         albedo = mix(albedo, rock, rockAmt);

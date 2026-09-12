@@ -1686,6 +1686,7 @@ int main(int argc, char** argv) {
         CloudShadow cloudShadow;
         bool cloudShadowsOn = false;
         bool soundscapeOn = false;   // scene setting "soundscape"
+        bool timeFlows = false;      // scene setting "timeFlows": the day runs in Play
         // The fauna (Wildlife.hpp): flocks, swallows, raptors, butterflies. In
         // place of the old circling birds, for scenes that ask for it.
         Wildlife wildlife;
@@ -4565,6 +4566,7 @@ int main(int argc, char** argv) {
         addB("cloudShadows", cloudShadowsOn);
         addB("wildlife", wildlifeOn);
         addB("soundscape", soundscapeOn);
+        addB("timeFlows", timeFlows);
         addF("grassDryGrowth", veg.grassDryGrowth);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
@@ -4971,6 +4973,7 @@ int main(int argc, char** argv) {
             cloudShadowsOn = false;
             wildlifeOn     = false;
             soundscapeOn   = false;
+            timeFlows      = false;
             veg.grassDryGrowth = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
@@ -9096,7 +9099,9 @@ int main(int argc, char** argv) {
             }
 
             // --- Day/night: advance time, derive sun direction and lighting ---
-            if (!timePaused && dayLength > 0.1f) {
+            // In Play the day can run on its own (scene setting timeFlows): the
+            // editor's Pause is a working state, not a statement about the game.
+            if ((!timePaused || (playMode && timeFlows)) && dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
                 timeOfDay = std::fmod(timeOfDay, 24.0f);
             }
@@ -9120,8 +9125,17 @@ int main(int argc, char** argv) {
             // HDR radiance: the sun is much brighter than 1 so tonemapping
             // produces highlights and contrast instead of a flat look.
             light.color   = sunCol * sunTint * (0.12f + 0.95f * dayF) * 3.4f * lightDim * sunStrength;
+            // ...and none of it once the sun is under the horizon. It used to
+            // keep a tenth of its strength all night, shining UP from below the
+            // ground, so every slope facing the sunset stayed lit orange under
+            // a sky full of stars. The night is the ambient's (and the moon's
+            // glow in the sky) alone.
+            light.color  *= glm::smoothstep(-0.03f, 0.03f, sunDir.y);
             light.ambient = glm::mix(glm::vec3(0.015f, 0.02f, 0.04f),
                                      glm::vec3(0.12f, 0.14f, 0.18f), dayF);
+            // The moonlit sky takes over the little the set sun used to give.
+            light.ambient += glm::vec3(0.012f, 0.016f, 0.028f) *
+                             (1.0f - glm::smoothstep(-0.03f, 0.03f, sunDir.y));
             // Overcast: dimmer, greyer, cooler ambient.
             light.ambient = glm::mix(light.ambient,
                                      glm::vec3(0.05f, 0.06f, 0.08f), storm * 0.7f);
@@ -13149,6 +13163,48 @@ int main(int argc, char** argv) {
                                       "field's own colour, so a meadow stays a\n"
                                       "meadow at any distance instead of turning\n"
                                       "into the soil texture under it.");
+                ImGui::SliderFloat("Dry grass", &veg.grassDryGrowth, 0.0f, 1.0f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Ground too dry for the meadow grows a thin,\n"
+                                      "straw-coloured sward instead of bare earth.");
+                // --- The living landscape: forest, wind, weather, fauna, sound ---
+                if (ImGui::CollapsingHeader("Living landscape")) {
+                    ImGui::Checkbox("Forest field", &veg.eco.enabled);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Procedural trees from one ecology rule\n"
+                                          "(stands, clearings, tree line), meshes near\n"
+                                          "you and impostors out to the forest radius.");
+                    ImGui::BeginDisabled(!veg.eco.enabled);
+                    ImGui::SliderFloat("Forest cover", &veg.eco.cover, 0.0f, 1.0f, "%.2f");
+                    ImGui::SliderFloat("Stand size", &veg.eco.standSize, 60.0f, 1500.0f, "%.0f m");
+                    ImGui::SliderFloat("Lone trees", &veg.eco.solitary, 0.0f, 0.3f, "%.3f");
+                    ImGui::SliderFloat("Slopes wooded", &veg.eco.slopeLove, 0.0f, 3.0f, "%.2f");
+                    ImGui::SliderFloat("Impostors from", &veg.impostorStart, 40.0f, 400.0f, "%.0f m");
+                    ImGui::SliderFloat("Forest radius", &veg.forestRadius, 200.0f, 4000.0f, "%.0f m");
+                    ImGui::SliderInt("Forest floor layer", &forestFloorLayer, -1, 5);
+                    ImGui::EndDisabled();
+                    ImGui::Separator();
+                    ImGui::SliderFloat("Wind", &windStrength, 0.0f, 1.5f, "%.2f");
+                    ImGui::SliderFloat("Wind towards", &windAngle, -180.0f, 180.0f, "%.0f deg");
+                    ImGui::SliderFloat("Gusts", &windGust, 0.0f, 1.0f, "%.2f");
+                    ImGui::Separator();
+                    ImGui::Checkbox("Cloud shadows", &cloudShadowsOn);
+                    ImGui::Checkbox("Wildlife", &wildlifeOn);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Starling flocks, swallows, raptors in the\n"
+                                          "thermals, butterflies at the flowers\n"
+                                          "(needs Birds on in the Vegetation panel).");
+                    ImGui::Checkbox("Soundscape", &soundscapeOn);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("Birdsong from the trees by the hour,\n"
+                                          "grasshoppers, crickets, leaves in the wind.\n"
+                                          "Heard in Play.");
+                    ImGui::Checkbox("Day runs in Play", &timeFlows);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("The sun moves while playing, at the Sky\n"
+                                          "panel's day length -- dawn to dusk to the\n"
+                                          "fireflies and crickets of the night.");
+                }
                 ImGui::Separator();
                 if (ImGui::Button("Reset layout")) requestDockRebuild = true;
             }

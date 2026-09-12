@@ -65,7 +65,7 @@ Sample sample(const Params& P, float x, float z, float h, float ny) {
     s.forest  = smooth01(cut - 0.035f, cut + 0.035f, f);
     s.edge    = 4.0f * s.forest * (1.0f - s.forest);
     float d   = glm::max(s.forest, P.solitary);
-    d *= smooth01(0.70f, 0.80f, ny);                          // cliffs stay bare
+    d *= smooth01(0.62f, 0.72f, ny);                          // cliffs stay bare
     const float tl = P.treeLine + (ragged - 0.5f) * 180.0f;
     d *= 1.0f - smooth01(tl - 140.0f, tl + 30.0f, h);         // the tree line
     d *= smooth01(P.waterLevel + 0.6f, P.waterLevel + 1.6f, h); // not in the lake

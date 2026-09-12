@@ -56,7 +56,7 @@ vec3 ecoSample(vec2 xz, float h, float ny) {
     float forest = smoothstep(cut - 0.035, cut + 0.035, f);
     float edge   = 4.0 * forest * (1.0 - forest);
     float d      = max(forest, uEcoSolitary);
-    d *= smoothstep(0.70, 0.80, ny);
+    d *= smoothstep(0.62, 0.72, ny);
     float tl = uEcoTreeLine + (ragged - 0.5) * 180.0;
     d *= 1.0 - smoothstep(tl - 140.0, tl + 30.0, h);
     d *= smoothstep(uEcoWater + 0.6, uEcoWater + 1.6, h);
