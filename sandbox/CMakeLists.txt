@@ -204,6 +204,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/RiverPanel.cpp
     src/RiverEdit.cpp
     src/WeatherPanel.cpp
+    src/NaturePanel.cpp
     src/SkyLayersPanel.cpp
     src/TerrainPanel.cpp
     src/SculptPanel.cpp

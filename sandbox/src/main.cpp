@@ -142,6 +142,7 @@
 #include "RiverPanel.hpp"
 #include "RiverEdit.hpp"
 #include "WeatherPanel.hpp"
+#include "NaturePanel.hpp"
 #include "SkidSystem.hpp"
 #include "SoftBodySystem.hpp"
 #include "TrailSystem.hpp"
@@ -946,7 +947,7 @@ void buildDefaultDockLayout(ImGuiID dockId) {
     for (const char* w : {
             "Terrain", "Terrain Sculpt", "Terrain Paint", "Water",
             "Sky & atmosphere", "Weather & audio", "Colour grade",
-            "Environment",
+            "Environment", "Advanced nature",
             "Vegetation", "Scatter",
             "Roads", "City", "Buildings",
             "Materials", "Models", "Prefabs", "Assets",
@@ -2650,6 +2651,7 @@ int main(int argc, char** argv) {
         bool showScriptEditor = false;
         bool showAbout       = false;
         bool showStats       = false;
+        bool showNature      = false;   // Advanced nature (NaturePanel.hpp)
         // Frame-cost window (F3). Lives outside the editor-only block: the
         // player build shows it too, which is the build whose numbers count.
         bool showPerf        = false;
@@ -7330,6 +7332,7 @@ int main(int argc, char** argv) {
             {"World",    "Weather & audio",    nullptr, &showWeather},
             {"World",    "Colour grade",       nullptr, &showColorGrade},
             {"World",    "Environment",        nullptr, &showEnv},
+            {"World",    "Advanced nature",    nullptr, &showNature},
             {"Planting", "Vegetation",         nullptr, &showVegetation},
             {"Planting", "Scatter",            nullptr, &showScatter},
             {"Track",    "Roads",              nullptr, &showRoads},
@@ -13296,78 +13299,6 @@ int main(int argc, char** argv) {
                                       "shadow resolution.");
                 ImGui::SameLine();
                 ImGui::TextDisabled("now %.0f m", camera.farPlane());
-                // The ground past the ring (FarTerrain.hpp). Next to the view
-                // distance because it answers the same question -- where does
-                // the world end -- at a price of nearly nothing.
-                ImGui::Checkbox("Horizon terrain", &farTerrainOn);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Draw the terrain past the streamed ring out\n"
-                                      "to 30 km, coarse and in its own depth range:\n"
-                                      "mountains on the horizon instead of fog.\n"
-                                      "Pairs with the terrain's Backdrop settings.");
-                ImGui::BeginDisabled(!farTerrainOn);
-                ImGui::SliderFloat("Snow line", &farTerrain.snowLevel, 0.0f, 4000.0f, "%.0f m");
-                ImGui::SliderFloat("Tree line", &farTerrain.treeLine, 0.0f, 3000.0f, "%.0f m");
-                ImGui::EndDisabled();
-                ImGui::SliderFloat("Meadow colour", &meadowTint, 0.0f, 1.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Past the grass's radius the ground takes the\n"
-                                      "field's own colour, so a meadow stays a\n"
-                                      "meadow at any distance instead of turning\n"
-                                      "into the soil texture under it.");
-                ImGui::SliderFloat("Dry grass", &veg.grassDryGrowth, 0.0f, 1.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Ground too dry for the meadow grows a thin,\n"
-                                      "straw-coloured sward instead of bare earth.");
-                // --- The living landscape: forest, wind, weather, fauna, sound ---
-                if (ImGui::CollapsingHeader("Living landscape")) {
-                    ImGui::Checkbox("Forest field", &veg.eco.enabled);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Procedural trees from one ecology rule\n"
-                                          "(stands, clearings, tree line), meshes near\n"
-                                          "you and impostors out to the forest radius.");
-                    ImGui::BeginDisabled(!veg.eco.enabled);
-                    ImGui::SliderFloat("Forest cover", &veg.eco.cover, 0.0f, 1.0f, "%.2f");
-                    ImGui::SliderFloat("Stand size", &veg.eco.standSize, 60.0f, 1500.0f, "%.0f m");
-                    ImGui::SliderFloat("Lone trees", &veg.eco.solitary, 0.0f, 0.3f, "%.3f");
-                    ImGui::SliderFloat("Slopes wooded", &veg.eco.slopeLove, 0.0f, 3.0f, "%.2f");
-                    ImGui::SliderFloat("Impostors from", &veg.impostorStart, 40.0f, 400.0f, "%.0f m");
-                    ImGui::SliderFloat("Forest radius", &veg.forestRadius, 200.0f, 4000.0f, "%.0f m");
-                    ImGui::SliderInt("Forest floor layer", &forestFloorLayer, -1, 5);
-                    ImGui::EndDisabled();
-                    ImGui::Separator();
-                    ImGui::SliderFloat("Wind", &windStrength, 0.0f, 1.5f, "%.2f");
-                    ImGui::SliderFloat("Wind towards", &windAngle, -180.0f, 180.0f, "%.0f deg");
-                    ImGui::SliderFloat("Gusts", &windGust, 0.0f, 1.0f, "%.2f");
-                    ImGui::Separator();
-                    ImGui::SliderFloat("Latitude", &sunLatitude, -60.0f, 70.0f, "%.0f deg");
-                    ImGui::SliderFloat("Season", &sunDeclination, -23.4f, 23.4f, "%.1f deg");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("The sun's declination: +23 midsummer,\n"
-                                          "0 equinox, -23 midwinter (north).");
-                    ImGui::Separator();
-                    ImGui::Checkbox("Cloud shadows", &cloudShadowsOn);
-                    ImGui::Checkbox("Wildlife", &wildlifeOn);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Starling flocks, swallows, raptors in the\n"
-                                          "thermals, butterflies at the flowers,\n"
-                                          "fish rising and jumping in the lake\n"
-                                          "(needs Birds on in the Vegetation panel).");
-                    ImGui::Checkbox("Pollen in the light", &motesOn);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Pollen, dust and seeds drifting on the wind,\n"
-                                          "glittering where the sun shines towards you.");
-                    ImGui::Checkbox("Soundscape", &soundscapeOn);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Birdsong from the trees by the hour,\n"
-                                          "grasshoppers, crickets, leaves in the wind.\n"
-                                          "Heard in Play.");
-                    ImGui::Checkbox("Day runs in Play", &timeFlows);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("The sun moves while playing, at the Sky\n"
-                                          "panel's day length -- dawn to dusk to the\n"
-                                          "fireflies and crickets of the night.");
-                }
                 ImGui::Separator();
                 if (ImGui::Button("Reset layout")) requestDockRebuild = true;
             }
@@ -13403,6 +13334,14 @@ int main(int argc, char** argv) {
             if (showMixer)
                 mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
                                     audio.ok(), playMode});
+
+            // The landscape past the terrain: horizon, forest, wind, sun, life.
+            natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
+                                 farTerrain.treeLine, meadowTint, veg.grassDryGrowth,
+                                 veg.eco, veg.impostorStart, veg.forestRadius,
+                                 forestFloorLayer, windStrength, windAngle, windGust,
+                                 sunLatitude, sunDeclination, cloudShadowsOn,
+                                 wildlifeOn, motesOn, soundscapeOn, timeFlows});
 
             if (showWeather) {
                 // The presets belong to the PROJECT, so the list is re-read
