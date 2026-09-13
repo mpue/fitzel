@@ -17,13 +17,13 @@ void blendPalette(std::vector<glm::mat4>& a, const std::vector<glm::mat4>& b, fl
     for (std::size_t i = 0; i < a.size(); ++i) a[i] = a[i] * (1.0f - w) + b[i] * w;
 }
 
-// How fast a clip walks: the feet on the ground move backwards under the body
-// at exactly the speed the body has to move forwards, or they slide. Sampled
-// through one cycle, the vertices in contact (the lowest few) are followed
-// from sample to sample; the median of their backward speed along the model's
-// forward axis, in model units per second. Negative: the model walks the other
-// way round than it was told. Zero: no contact found, or the clip carries its
-// own root motion.
+// How fast a clip walks: a hoof on the ground moves backwards under the body
+// at exactly the speed the body has to move forwards, or it slides. So: find
+// the hooves (the vertices that come lowest in the cycle, one per corner of
+// the body), follow each through the cycle, and average its backward speed
+// over the samples where it is down. Model units per second; negative = the
+// model walks the other way round than it was told; 0 = no contact found (or
+// the clip carries its own root motion).
 float stanceSpeed(const fitzel::ModelData& m, int clip, glm::vec3 fwd) {
     if (clip < 0 || clip >= static_cast<int>(m.animations.size()) || m.primitives.empty())
         return 0.0f;
@@ -32,30 +32,53 @@ float stanceSpeed(const fitzel::ModelData& m, int clip, glm::vec3 fwd) {
     std::size_t big = 0;
     for (std::size_t i = 1; i < m.primitives.size(); ++i)
         if (m.primitives[i].vertexCount() > m.primitives[big].vertexCount()) big = i;
-    const int kN = 48;
+    const int kN = 96;
+    std::vector<std::vector<fitzel::Vertex>> frames(kN);
+    for (int k = 0; k < kN; ++k)
+        fitzel::skinPrimitive(m.primitives[big], fitzel::sampleSkeleton(m, clip, dur * k / kN),
+                              frames[k]);
+    const std::size_t nv = frames[0].size();
+    if (nv == 0) return 0.0f;
+    // Each vertex's lowest point in the cycle; the hooves are what comes
+    // within a couple of percent of the lowest of all.
+    std::vector<float> low(nv, 1e30f);
+    for (const auto& f : frames)
+        for (std::size_t i = 0; i < nv && i < f.size(); ++i) low[i] = std::min(low[i], f[i].position.y);
+    const float floorY = *std::min_element(low.begin(), low.end());
+    const float H = std::max(m.height(), 1e-3f);
+    glm::vec3 c(0.0f);
+    for (const auto& v : frames[0]) c += v.position;
+    c /= static_cast<float>(nv);
+    const glm::vec3 side(fwd.z, 0.0f, -fwd.x);
+    // One representative per corner (front/back x left/right): the vertex
+    // that gets lowest there.
+    int rep[4] = {-1, -1, -1, -1};
+    for (std::size_t i = 0; i < nv; ++i) {
+        if (low[i] > floorY + 0.02f * H) continue;
+        const glm::vec3 d = frames[0][i].position - c;
+        const int q = (glm::dot(d, fwd) > 0.0f ? 1 : 0) + (glm::dot(d, side) > 0.0f ? 2 : 0);
+        if (rep[q] < 0 || low[i] < low[static_cast<std::size_t>(rep[q])]) rep[q] = static_cast<int>(i);
+    }
     const float dt = dur / kN;
-    std::vector<fitzel::Vertex> a, b;
-    fitzel::skinPrimitive(m.primitives[big], fitzel::sampleSkeleton(m, clip, 0.0f), a);
-    std::vector<float> speeds;
-    const float contact = 0.02f * std::max(m.height(), 1e-3f);
-    for (int k = 1; k <= kN; ++k) {
-        fitzel::skinPrimitive(m.primitives[big], fitzel::sampleSkeleton(m, clip, k * dt), b);
-        if (a.size() != b.size() || a.empty()) return 0.0f;
-        float lo = 1e30f;
-        for (const fitzel::Vertex& v : a) lo = std::min(lo, v.position.y);
-        double sum = 0.0;
-        int n = 0;
-        for (std::size_t i = 0; i < a.size(); ++i) {
-            if (a[i].position.y > lo + contact || b[i].position.y > lo + contact) continue;
-            sum += glm::dot(b[i].position - a[i].position, fwd);
+    double sum = 0.0;
+    int n = 0;
+    for (int q = 0; q < 4; ++q) {
+        if (rep[q] < 0) continue;
+        const std::size_t i = static_cast<std::size_t>(rep[q]);
+        float hi = -1e30f;
+        for (int k = 0; k < kN; ++k) hi = std::max(hi, frames[k][i].position.y);
+        for (int k = 0; k < kN; ++k) {
+            const glm::vec3 p0 = frames[k][i].position, p1 = frames[(k + 1) % kN][i].position;
+            // Down: in the lowest quarter of its own lift, and going back. (A
+            // clip's body bobs, so "down" cannot be a fixed height.)
+            const float cut = low[i] + 0.25f * (hi - low[i]);
+            const float back = -glm::dot(p1 - p0, fwd);
+            if (p0.y > cut || p1.y > cut || back <= 0.0f) continue;
+            sum += back / dt;
             ++n;
         }
-        if (n > 0) speeds.push_back(static_cast<float>(-sum / n / dt));
-        a.swap(b);
     }
-    if (speeds.empty()) return 0.0f;
-    std::nth_element(speeds.begin(), speeds.begin() + speeds.size() / 2, speeds.end());
-    return speeds[speeds.size() / 2];
+    return n > 0 ? static_cast<float>(sum / n) : 0.0f;
 }
 
 } // namespace
@@ -241,6 +264,13 @@ void Herd::update(float dt, const World& w) {
         a.walkTime += dt * (m_paceMeasured ? go / m_walkPace : (a.walking ? 1.0f : 0.0f));
         if (w.ground) a.pos.y = w.ground(a.pos.x, a.pos.z);
 
+        // Both clocks wrap on their clip's length: sampleSkeleton holds the
+        // last key past the end, so a clock that only ever grew froze the
+        // walk in mid-stride after its first cycle -- and the horses glided
+        // across the meadow on four stiff legs.
+        a.clipTime = loopTime(m_cfg.grazeClip, a.clipTime);
+        a.walkTime = loopTime(m_cfg.walkClip, a.walkTime);
+
         // Pose: grazing and walking, blended through the switch.
         std::vector<glm::mat4> pal = fitzel::sampleSkeleton(m_model, m_cfg.grazeClip, a.clipTime);
         if (a.blend > 0.0f) {
@@ -249,17 +279,34 @@ void Herd::update(float dt, const World& w) {
             if (a.blend >= 1.0f) pal = walk;
             else                 blendPalette(pal, walk, a.blend);
         }
+        // Standing on the ground: the clip's body bobs, and in this pose the
+        // lowest hoof may be a hand's breadth above the floor it was modelled
+        // on, or below it. Whatever is lowest this frame is what stands on the
+        // ground (eased a little, so the trot's short flight does not drop the
+        // whole horse onto its belly).
+        float lowest = 1e30f;
         for (std::size_t p = 0; p < m_model.primitives.size() && p < a.meshes.size(); ++p) {
             fitzel::skinPrimitive(m_model.primitives[p], pal, m_scratch);
             a.meshes[p].update(m_scratch);
+            for (const fitzel::Vertex& v : m_scratch) lowest = std::min(lowest, v.position.y);
+        }
+        if (lowest < 1e29f) {
+            if (!a.grounded) { a.floorY = lowest; a.grounded = true; }
+            a.floorY += (lowest - a.floorY) * std::min(1.0f, dt * 14.0f);
         }
         a.model = glm::translate(glm::mat4(1.0f), a.pos) *
                   glm::rotate(glm::mat4(1.0f), a.yaw + glm::radians(m_cfg.yawOffset) +
                                                    (m_flip ? 3.14159265f : 0.0f),
                               glm::vec3(0.0f, 1.0f, 0.0f)) *
                   glm::scale(glm::mat4(1.0f), glm::vec3(m_scale)) *
-                  glm::translate(glm::mat4(1.0f), m_offset);
+                  glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, a.grounded ? -a.floorY : m_offset.y, 0.0f));
     }
+}
+
+float Herd::loopTime(int clip, float t) const {
+    if (clip < 0 || clip >= static_cast<int>(m_model.animations.size())) return t;
+    const float d = m_model.animations[static_cast<std::size_t>(clip)].duration;
+    return d > 1e-3f ? std::fmod(t, d) : 0.0f;
 }
 
 void Herd::submit(fitzel::Renderer& r) {
@@ -277,13 +324,14 @@ std::string Herd::status() const {
         clips += b;
     }
     int walking = 0;
-    for (const Animal& a : m_animals) walking += a.walking ? 1 : 0;
+    std::string who;
+    for (const Animal& a : m_animals) { walking += a.walking ? 1 : 0; who += a.walking ? 'W' : '.'; }
     char w[64];
     std::snprintf(w, sizeof w, " walking %d pace %.2f%s%s", walking, m_walkPace,
                   m_paceMeasured ? " measured" : "", m_flip ? " flipped" : "");
     std::string sp = " clip speeds";
     for (float v : m_clipSpeeds) { char b[16]; std::snprintf(b, sizeof b, " %.2f", v); sp += b; }
-    return statusShort() + w + sp + clips;
+    return statusShort() + w + " [" + who + "]" + sp;
 }
 
 std::string Herd::statusShort() const {

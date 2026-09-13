@@ -72,9 +72,12 @@ private:
         float blend = 0.0f;        // 0 grazing .. 1 walking (pose blend weight)
         std::vector<fitzel::Mesh> meshes;   // one per primitive
         glm::mat4 model{1.0f};
+        float floorY = 0.0f;       // model y that stands on the ground (eased)
+        bool  grounded = false;
     };
 
     void decide(Animal& a, const World& w);
+    float loopTime(int clip, float t) const;   // t wrapped into the clip's length
 
     Config m_cfg;
     bool   m_ok = false;
