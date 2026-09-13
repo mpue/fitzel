@@ -98,6 +98,7 @@
 #include "TimelinePanel.hpp"
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
+#include "ShotList.hpp"
 #endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
@@ -107,6 +108,12 @@
 #include "LoadingScreen.hpp"
 #include "LightGrid.hpp"
 #include "VegetationSystem.hpp"
+#include "FarTerrain.hpp"
+#include "CloudShadow.hpp"
+#include "Wildlife.hpp"
+#include "Motes.hpp"
+#include "Soundscape.hpp"
+#include "Herd.hpp"
 #include "RoadSet.hpp"
 #include "RoadSystem.hpp"
 #include "SplineSystem.hpp"
@@ -135,6 +142,7 @@
 #include "RiverPanel.hpp"
 #include "RiverEdit.hpp"
 #include "WeatherPanel.hpp"
+#include "NaturePanel.hpp"
 #include "SkidSystem.hpp"
 #include "SoftBodySystem.hpp"
 #include "TrailSystem.hpp"
@@ -403,6 +411,12 @@ struct BootConfig {
     // a development flag.
     std::string profileShot;
     double      profileSeconds = 8.0;
+    // `--shots <list>`: photograph a list of fixed views in one run and quit
+    // (see ShotList.hpp). `--shots-out <dir>` says where the PNGs go.
+    std::string shotsPath;
+    std::string shotsOut;
+    // `--open <project>`: the editor starts with this project open (not Play).
+    std::string editorOpen;
 };
 
 BootConfig loadBootConfig(int argc, char** argv) {
@@ -425,6 +439,9 @@ BootConfig loadBootConfig(int argc, char** argv) {
         else if (a == "--profile-shot") cfg.profileShot = argv[i + 1];
         else if (a == "--profile-seconds")
             cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
+        else if (a == "--shots")      cfg.shotsPath   = argv[i + 1];
+        else if (a == "--shots-out")  cfg.shotsOut    = argv[i + 1];
+        else if (a == "--open")       cfg.editorOpen  = argv[i + 1];
     }
     return cfg;
 }
@@ -930,7 +947,7 @@ void buildDefaultDockLayout(ImGuiID dockId) {
     for (const char* w : {
             "Terrain", "Terrain Sculpt", "Terrain Paint", "Water",
             "Sky & atmosphere", "Weather & audio", "Colour grade",
-            "Environment",
+            "Environment", "Advanced nature",
             "Vegetation", "Scatter",
             "Roads", "City", "Buildings",
             "Materials", "Models", "Prefabs", "Assets",
@@ -1578,6 +1595,12 @@ int main(int argc, char** argv) {
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
         float dayLength = 240.0f;  // real seconds per full 24h (0 = frozen)
+        // Where on the globe and when in the year: the sun's path. The defaults
+        // are the engine's old sky -- an equatorial sun that rises due east and
+        // stands nearly overhead at noon -- so scenes keep the light they were
+        // lit for. The Alps in June are 47 and +20.
+        float sunLatitude    = 0.0f;     // degrees north
+        float sunDeclination = -10.4f;   // degrees: +23 midsummer .. -23 midwinter
         bool  timePaused = true;   // freeze the time of day where it is
 
         // The air: the cumulus deck, the ice above it and the height haze, as
@@ -1653,6 +1676,44 @@ int main(int argc, char** argv) {
         // grass params) -- streamer/camera already exist above.
         VegetationSystem veg(streamer, camera);
         if (!veg.init()) return 1;
+
+        // The ground past the streamed ring, out to the horizon (FarTerrain.hpp).
+        // Optional: a failed shader costs the horizon, not the session.
+        FarTerrain farTerrain;
+        farTerrain.init();
+        bool farTerrainOn = false;   // scene setting "farTerrain"
+        // How completely the ground past the grass takes the field's colour
+        // (meadow.glsl). 0 = the terrain layers alone, as before.
+        float meadowTint = 0.0f;
+        // Which terrain layer is the forest floor under the ecology's woods
+        // (-1 = none: the woods leave the ground as the bands paint it).
+        int forestFloorLayer = -1;
+        // The breeze (Wind.hpp): mean strength in calm weather, where it blows
+        // to (degrees in XZ, 0 = +X), and how gusty. The defaults are the old
+        // fixed wind, so a scene that never set them sways as it did.
+        float windStrength = 0.2f;
+        float windAngle    = 26.57f;
+        float windGust     = 0.6f;
+        // The cumulus casts its shadow on the ground (CloudShadow.hpp).
+        CloudShadow cloudShadow;
+        bool cloudShadowsOn = false;
+        bool soundscapeOn = false;   // scene setting "soundscape"
+        bool timeFlows = false;      // scene setting "timeFlows": the day runs in Play
+        // A herd grazing in a meadow (Herd.hpp): a skinned model from the
+        // project, each animal on its own clock. Empty model = none.
+        Herd herd;
+        Herd::Config herdCfg;
+        std::string  herdModel;          // project-relative
+        std::string  herdLoadedKey;      // what the herd was last loaded from
+        // The fauna (Wildlife.hpp): flocks, swallows, raptors, butterflies. In
+        // place of the old circling birds, for scenes that ask for it.
+        Wildlife wildlife;
+        wildlife.init();
+        bool wildlifeOn = false;
+        // Pollen, seeds and dust drifting in the sunlight (Motes.hpp).
+        Motes motes;
+        motes.init();
+        bool motesOn = false;
 
         bool      grassPaintMode = false;      // grass brush active
         bool      brushErase     = false;      // stamp vs erase (shared)
@@ -2590,6 +2651,7 @@ int main(int argc, char** argv) {
         bool showScriptEditor = false;
         bool showAbout       = false;
         bool showStats       = false;
+        bool showNature      = false;   // Advanced nature (NaturePanel.hpp)
         // Frame-cost window (F3). Lives outside the editor-only block: the
         // player build shows it too, which is the build whose numbers count.
         bool showPerf        = false;
@@ -4095,6 +4157,10 @@ int main(int argc, char** argv) {
         const std::string& soundDir = roots.sounds;
         WeatherSounds wx;
         loadWeatherSounds(audio, soundDir, wx);
+        // Birdsong, insects, leaves (Soundscape.hpp). After `audio`, so it is
+        // destroyed before it: its voices belong to that engine.
+        Soundscape soundscape;
+        soundscape.init(audio, soundDir);
         Sound& rainSnd    = wx.rain;
         Sound& windSnd    = wx.wind;
         Sound& breezeSnd  = wx.breeze;
@@ -4137,6 +4203,11 @@ int main(int argc, char** argv) {
         float valueGain  = 1.0f;
         float warmth     = 0.18f; // golden-hour white balance
         float contrast   = 0.16f; // lift the flat look
+        // Split toning and vibrance (composite.frag): cool shadows, warm
+        // highlights, and more colour where there is little -- the graded look
+        // of a landscape photograph. 0 = off, the default.
+        float gradeSplit    = 0.0f;
+        float gradeVibrance = 0.0f;
         // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
         // and auto exposure relative to `exposure` (see PostChain::Params).
         int   tonemapCurve  = 1;
@@ -4503,6 +4574,37 @@ int main(int argc, char** argv) {
         };
         addF("moveSpeed", camera.moveSpeed);   addI("viewRadius", viewRadius);
         addB("farPlaneAuto", farPlaneAuto);    addF("farPlane", farPlaneManual);
+        addB("farTerrain", farTerrainOn);
+        addF("farSnowLevel", farTerrain.snowLevel);
+        addF("farTreeLine", farTerrain.treeLine);
+        addF("meadowTint", meadowTint);
+        // The forest field (Ecology.hpp). Off in scenes from before it: they
+        // keep the 120 m scatter they were planted with.
+        addB("ecoForest", veg.eco.enabled);
+        addF("ecoCover", veg.eco.cover);
+        addF("ecoStandSize", veg.eco.standSize);
+        addF("ecoSolitary", veg.eco.solitary);
+        addF("ecoSlopeLove", veg.eco.slopeLove);
+        addF("impostorStart", veg.impostorStart);
+        addF("forestRadius", veg.forestRadius);
+        addI("forestFloorLayer", forestFloorLayer);
+        addF("windStrength", windStrength);
+        addF("windAngle", windAngle);
+        addF("windGust", windGust);
+        addB("cloudShadows", cloudShadowsOn);
+        addB("wildlife", wildlifeOn);
+        addB("motes", motesOn);
+        addB("soundscape", soundscapeOn);
+        addB("timeFlows", timeFlows);
+        addS("herdModel", herdModel);
+        addI("herdCount", herdCfg.count);
+        addF("herdX", herdCfg.centre.x);    addF("herdZ", herdCfg.centre.y);
+        addF("herdRadius", herdCfg.radius); addF("herdHeight", herdCfg.height);
+        addI("herdGrazeClip", herdCfg.grazeClip);
+        addI("herdWalkClip", herdCfg.walkClip);
+        addF("herdWalkSpeed", herdCfg.walkSpeed);
+        addF("herdYaw", herdCfg.yawOffset);
+        addF("grassDryGrowth", veg.grassDryGrowth);
         addB("autoWeather", autoWeather);      addF("weather", storm);
         addB("lightning", lightning);        addF("rainAmount", rainAmount);
         // The opening camera move. The KEYS are a blob written below (a list, not
@@ -4544,6 +4646,7 @@ int main(int argc, char** argv) {
         // Solo is deliberately NOT kept: it is a listening state, not a mix, and
         // a scene that opens with one bus soloed sounds broken.
         addF("timeOfDay", timeOfDay);          addF("dayLength", dayLength);
+        addF("sunLatitude", sunLatitude);      addF("sunDeclination", sunDeclination);
         addF("coverage", skySet.coverage);     addF("cloudDensity", skySet.density);
         addF("cloudScale", skySet.scale);      addF("cloudWind", skySet.wind);
         addF("cloudBottom", skySet.base);      addF("cloudTop", skySet.top);
@@ -4632,6 +4735,7 @@ int main(int argc, char** argv) {
         addI("envProbeRes", envProbeRes);      addI("envProbeFaces", envProbeFaces);
         addF("hue", hueShift);                 addF("saturation", saturation);
         addF("value", valueGain);              addF("warmth", warmth);
+        addF("gradeSplit", gradeSplit);        addF("gradeVibrance", gradeVibrance);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
         addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
         addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
@@ -4895,6 +4999,28 @@ int main(int argc, char** argv) {
             uiSettings.islandCenterX = 0.0f;
             uiSettings.islandCenterZ = 0.0f;
             uiSettings.islandShape   = 0.0f;
+            // Same for the horizon: only a scene that asked for one gets it.
+            farTerrainOn          = false;
+            farTerrain.snowLevel  = 1100.0f;
+            farTerrain.treeLine   = 750.0f;
+            meadowTint            = 0.0f;
+            veg.eco               = ecology::Params{};
+            veg.impostorStart     = 130.0f;
+            veg.forestRadius      = 1600.0f;
+            forestFloorLayer      = -1;
+            windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
+            cloudShadowsOn = false;
+            wildlifeOn     = false;
+            sunLatitude    = 0.0f;
+            gradeSplit     = 0.0f;
+            gradeVibrance  = 0.0f;
+            sunDeclination = -10.4f;
+            motesOn        = false;
+            soundscapeOn   = false;
+            timeFlows      = false;
+            herdModel.clear();
+            herdCfg = Herd::Config{};
+            veg.grassDryGrowth = 0.0f;
             for (const Setting& s : tunables) s.read(j);
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
@@ -7141,6 +7267,8 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr,
                     "[Fitzel] player: project not found: %s\n", bootProject.c_str());
             }
+        } else if (!boot.editorOpen.empty()) {
+            openProjectShowing(boot.editorOpen);
         }
 
         double lastTime = window.time();
@@ -7204,6 +7332,7 @@ int main(int argc, char** argv) {
             {"World",    "Weather & audio",    nullptr, &showWeather},
             {"World",    "Colour grade",       nullptr, &showColorGrade},
             {"World",    "Environment",        nullptr, &showEnv},
+            {"World",    "Advanced nature",    nullptr, &showNature},
             {"Planting", "Vegetation",         nullptr, &showVegetation},
             {"Planting", "Scatter",            nullptr, &showScatter},
             {"Track",    "Roads",              nullptr, &showRoads},
@@ -7252,6 +7381,64 @@ int main(int argc, char** argv) {
         // waits for the display measures the display.
         double profileStart = 0.0;
         if (!boot.profilePath.empty()) glfwSwapInterval(0);
+#ifndef FITZEL_PLAYER
+        shotlist::Runner shotRunner;
+        if (!boot.shotsPath.empty() && !bootProject.empty())
+            shotRunner.load(boot.shotsPath, boot.shotsOut);
+        shotRunner.target = [&](int i, glm::vec3& t) {
+            if (i == 2000 || i == 2001) {      // "@2000" = the fish, or its last ring
+                if (i == 2001) wildlife.fishRate = 6.0f;   // ...and "@2001" with them busy
+                if (wildlife.fishInAir(t)) return true;
+                const std::vector<glm::vec4>& rp = wildlife.ripples();
+                if (rp.empty()) return false;
+                t = wildlife.lastRipple();
+                return true;
+            }
+            if (i >= 1000) {                   // "@1000.." = the herd's animals
+                if (i - 1000 >= herd.count()) return false;
+                t = herd.animalPos(i - 1000) + glm::vec3(0.0f, 1.0f, 0.0f);
+                return true;
+            }
+            if (i < 0 || i >= wildlife.birdsDrawn()) return false;
+            t = wildlife.debugPos(i);
+            return true;
+        };
+        shotRunner.status = [&] {
+            const prof::FrameStats fs = prof::frameStats();
+            char buf[400];
+            std::snprintf(buf, sizeof buf, "chunks %d (+%d pending)  frame %.1f ms  eye %.0f %.0f %.0f"
+                          "  fauna %d/%d birds %d flies %d  b0 %.0f %.0f %.0f  s0 %.0f %.0f %.0f  r0 %.0f %.0f %.0f  v %.1f goal %.0f upd %d",
+                          streamer.loadedChunkCount(), streamer.pendingChunkCount(),
+                          fs.avg, camera.position().x, camera.position().y,
+                          camera.position().z, wildlifeOn ? 1 : 0, wildlife.ready() ? 1 : 0,
+                          wildlife.birdsDrawn(), wildlife.fliesDrawn(),
+                          wildlife.debugPos(0).x, wildlife.debugPos(0).y, wildlife.debugPos(0).z,
+                          wildlife.debugPos(62).x, wildlife.debugPos(62).y, wildlife.debugPos(62).z,
+                          wildlife.debugPos(69).x, wildlife.debugPos(69).y, wildlife.debugPos(69).z,
+                          wildlife.debugSpeed(), wildlife.debugGoal(), wildlife.debugUpdates);
+            // Why the grass does or does not grow at the eye (the placement's
+            // own tests, GrassTrace::generateTile).
+            {
+                const glm::vec3 e = camera.position();
+                const float h  = streamer.heightAt(e.x, e.z);
+                const float hl = streamer.heightAt(e.x - 1, e.z), hr = streamer.heightAt(e.x + 1, e.z);
+                const float hd = streamer.heightAt(e.x, e.z - 1), hu = streamer.heightAt(e.x, e.z + 1);
+                const float ny = glm::normalize(glm::vec3(hl - hr, 2.0f, hd - hu)).y;
+                const float mo = fitzel::terrainMoisture(streamer.settings(), e.x, e.z);
+                char g[200];
+                std::snprintf(g, sizeof g, "  birdsong %d phrases %d singers  grass@eye h %.1f ny %.2f moist %.2f bare %.2f bare2 %.2f blades %d",
+                              soundscape.phrases(), soundscape.singing(),
+                              h, ny, mo, valNoise2(e.x * 0.13f + 19.0f, e.z * 0.13f + 7.0f),
+                              valNoise2(e.x * 0.31f + 3.0f, e.z * 0.31f + 23.0f), veg.grassCount);
+                char f[200];
+                std::snprintf(f, sizeof f, "  fish jumps %d rings %d motes %d  wind %.2f gust %.2f t %.1f",
+                              wildlife.fishJumps(), static_cast<int>(wildlife.ripples().size()),
+                              motes.drawn(), veg.wind.strength, veg.wind.gustiness, veg.wind.time);
+                return std::string(buf) + g + f + "  " + herd.status();
+            }
+            return std::string(buf);
+        };
+#endif
         auto writeProfileReport = [&] {
             std::ofstream out(boot.profilePath);
             if (!out) return;
@@ -8673,6 +8860,18 @@ int main(int argc, char** argv) {
                     if (r->enabled && r->cityEnabled && !r->district().empty())
                         autoFar = std::max(autoFar, r->cityRange + 60.0f);
                 autoFar = std::min(autoFar, 5000.0f); // the manual slider's ceiling
+                // With the horizon drawn behind the ring, the ring itself must
+                // never be sliced by the far plane -- from high up its corners
+                // are further than the ring is wide, and a sliced corner shows
+                // the far terrain's sunk hole instead of ground.
+                if (farTerrainOn) {
+                    const float    ringHalf = (viewRadius + 1.0f) * streamer.settings().chunkSize;
+                    const glm::vec3 ep      = camera.position();
+                    const float    alt      = std::max(0.0f, ep.y - streamer.heightAt(ep.x, ep.z));
+                    autoFar = std::min(std::max(autoFar,
+                                                std::sqrt(2.0f * ringHalf * ringHalf + alt * alt) + 30.0f),
+                                       5000.0f);
+                }
                 const float farZ = farPlaneAuto ? autoFar
                                                : std::max(farPlaneManual, 50.0f);
                 camera.setFarPlane(farZ);
@@ -8699,6 +8898,24 @@ int main(int argc, char** argv) {
                 if (haveView2) viewers.push_back(camera2.position());
                 streamer.update(viewers);
             }
+            // ...and the ground past it, framing exactly the square the chunks
+            // cover (see FarTerrain::update). Player one's eye only: a split
+            // screen is a race, and its horizon can be player one's.
+            {
+                const float     cs = streamer.settings().chunkSize;
+                const glm::vec3 ep = camera.position();
+                const glm::vec2 cc(std::floor(ep.x / cs), std::floor(ep.z / cs));
+                const float     r  = static_cast<float>(streamer.radius());
+                farTerrain.enabled    = farTerrainOn;
+                farTerrain.waterLevel = waterLevel;
+                farTerrain.grassTint  = veg.grassTint;
+                farTerrain.eco        = veg.eco;
+                farTerrain.eco.treeLine   = farTerrain.treeLine;
+                farTerrain.eco.waterLevel = waterLevel;
+                farTerrain.canopy     = veg.canopyColour() * veg.treeBrightness;
+                farTerrain.update(ep, streamer.settings(), streamer.enabled(),
+                                  (cc - r) * cs, (cc + r + 1.0f) * cs);
+            }
 
             // When the road settles (not mid-drag), regrow vegetation so it
             // clears off the new road; debounced to avoid thrashing while editing.
@@ -8715,6 +8932,25 @@ int main(int argc, char** argv) {
             // A new frame's worth of vegetation statistics (what the culling
             // actually submitted last frame -- see VegetationSystem::beginFrame).
             veg.beginFrame();
+            // The forest's tree line is the horizon's (one mountain, one line),
+            // and nothing grows in the lake.
+            veg.eco.treeLine   = farTerrain.treeLine;
+            veg.eco.waterLevel = waterLevel;
+            // The air (Wind.hpp): the scene's breeze, veering a little over the
+            // minutes, stiffening and gusting with the storm.
+            {
+                const float t   = static_cast<float>(now);
+                const float ang = glm::radians(windAngle)
+                                + 0.22f * std::sin(t * 0.011f)
+                                + 0.09f * std::sin(t * 0.037f + 1.3f);
+                veg.wind.dir       = glm::vec2(std::cos(ang), std::sin(ang));
+                veg.wind.strength  = glm::mix(windStrength, 1.4f, storm);
+                veg.wind.gustiness = glm::mix(windGust, 1.0f, storm * 0.5f);
+                veg.wind.time      = t;
+            }
+            // Generated tree levels and impostors for species whose meshes
+            // changed -- here, before any pass has bound its target.
+            veg.prepareTrees();
 
             // Regrow grass (async) / trees when the camera has moved far enough.
             {
@@ -8730,6 +8966,24 @@ int main(int argc, char** argv) {
                     veg.regenFlowers(veg.grassCenter(), cls, roadW,
                                      waterLevel, look.snowLevel);
                 veg.updateFlowers(); // finish + upload a pending async flower regen
+                // Ground the forest leaves alone: where the player starts, and
+                // under every placed model -- a procedural pine growing through
+                // the hut's roof or out of the spawn point is the forest not
+                // knowing the scene exists. Taken while editing (and once when a
+                // game starts straight into Play): in Play things move, and every
+                // move would regrow the field.
+                if (!playMode || veg.treeClearings.empty()) {
+                    std::vector<glm::vec3> clear;
+                    for (const Entity& e : entities) {
+                        if (!e.activeInHierarchy) continue;
+                        if (e.components.get<PlayerStartComponent>())
+                            clear.push_back({e.center.x, e.center.z, 6.0f});
+                        else if (e.type == EntityType::Model)
+                            clear.push_back({e.center.x, e.center.z,
+                                             std::max(e.half.x, e.half.z) * 1.2f + 2.0f});
+                    }
+                    veg.treeClearings = std::move(clear);
+                }
                 veg.updateTrees(camXZ, cls, roadW, waterLevel, look.snowLevel);
             }
 
@@ -8911,13 +9165,26 @@ int main(int argc, char** argv) {
             }
 
             // --- Day/night: advance time, derive sun direction and lighting ---
-            if (!timePaused && dayLength > 0.1f) {
+            // In Play the day can run on its own (scene setting timeFlows): the
+            // editor's Pause is a working state, not a statement about the game.
+            if ((!timePaused || (playMode && timeFlows)) && dayLength > 0.1f) {
                 timeOfDay += dt * (24.0f / dayLength);
                 timeOfDay = std::fmod(timeOfDay, 24.0f);
             }
-            const float phi = (timeOfDay / 24.0f) * 6.2831853f - 1.5707963f;
-            const glm::vec3 sunDir =
-                glm::normalize(glm::vec3(std::cos(phi), std::sin(phi), 0.18f));
+            // The sun on its day arc: hour angle from local noon, latitude and
+            // declination (sunLatitude/sunDeclination above). East is +X, south
+            // +Z. At latitude 0 and -10.4 degrees this is the old sky exactly.
+            const glm::vec3 sunDir = [&] {
+                const float H   = (timeOfDay - 12.0f) / 24.0f * 6.2831853f;
+                const float lat = glm::radians(sunLatitude);
+                const float dec = glm::radians(sunDeclination);
+                const float up    = std::sin(lat) * std::sin(dec)
+                                  + std::cos(lat) * std::cos(dec) * std::cos(H);
+                const float east  = -std::cos(dec) * std::sin(H);
+                const float north = std::cos(lat) * std::sin(dec)
+                                  - std::sin(lat) * std::cos(dec) * std::cos(H);
+                return glm::normalize(glm::vec3(east, up, -north));
+            }();
             const float dayF   = glm::smoothstep(-0.12f, 0.18f, sunDir.y);
             const float lowSun = 1.0f - glm::clamp(sunDir.y / 0.3f, 0.0f, 1.0f);
             const glm::vec3 sunCol =
@@ -8935,8 +9202,17 @@ int main(int argc, char** argv) {
             // HDR radiance: the sun is much brighter than 1 so tonemapping
             // produces highlights and contrast instead of a flat look.
             light.color   = sunCol * sunTint * (0.12f + 0.95f * dayF) * 3.4f * lightDim * sunStrength;
+            // ...and none of it once the sun is under the horizon. It used to
+            // keep a tenth of its strength all night, shining UP from below the
+            // ground, so every slope facing the sunset stayed lit orange under
+            // a sky full of stars. The night is the ambient's (and the moon's
+            // glow in the sky) alone.
+            light.color  *= glm::smoothstep(-0.03f, 0.03f, sunDir.y);
             light.ambient = glm::mix(glm::vec3(0.015f, 0.02f, 0.04f),
                                      glm::vec3(0.12f, 0.14f, 0.18f), dayF);
+            // The moonlit sky takes over the little the set sun used to give.
+            light.ambient += glm::vec3(0.012f, 0.016f, 0.028f) *
+                             (1.0f - glm::smoothstep(-0.03f, 0.03f, sunDir.y));
             // Overcast: dimmer, greyer, cooler ambient.
             light.ambient = glm::mix(light.ambient,
                                      glm::vec3(0.05f, 0.06f, 0.08f), storm * 0.7f);
@@ -8964,6 +9240,114 @@ int main(int argc, char** argv) {
             fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
             fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
             renderer.setFog(fog);
+            // The fauna moves in the world just lit: after the sun, before the
+            // passes that draw it.
+            if (wildlifeOn && veg.birdsEnabled) {
+                Wildlife::World ww;
+                ww.eye        = camera.position();
+                ww.ground     = [&](float x, float z) { return streamer.heightAt(x, z); };
+                ww.waterLevel = waterLevel;
+                ww.daylight   = dayF;
+                ww.wind       = &veg.wind;
+                ww.flowers    = &veg.flowerHeads();
+                ww.forward    = camera.front();
+                ww.water      = [&](float x, float z, float& surf, float& depth) {
+                    float white = 0.0f;
+                    if (rivers.sample(glm::vec2(x, z), surf, &depth, nullptr, &white))
+                        return white < 0.3f;             // not in the falls and rapids
+                    const float g = streamer.heightAt(x, z);
+                    surf  = waterLevel;
+                    depth = waterLevel - g;
+                    return depth > 0.0f;
+                };
+                wildlife.enabled = true;
+                wildlife.update(dt, ww);
+                // A fish breaking the surface throws up a handful of drops.
+                std::uniform_real_distribution<float> u01(0.0f, 1.0f);
+                for (const Wildlife::Splash& sp : wildlife.takeSplashes()) {
+                    if (!spray.ready()) break;
+                    const int n = static_cast<int>(6.0f + 18.0f * sp.strength);
+                    for (int k = 0; k < n; ++k) {
+                        const float a = u01(sprayRng) * 6.2831853f, o = u01(sprayRng);
+                        SprayP p;
+                        p.pos  = sp.pos + glm::vec3(std::cos(a) * 0.08f, 0.02f, std::sin(a) * 0.08f);
+                        p.vel  = glm::vec3(std::cos(a) * (0.4f + o * 1.0f),
+                                           (1.2f + u01(sprayRng) * 2.2f) * (0.6f + 0.4f * sp.strength),
+                                           std::sin(a) * (0.4f + o * 1.0f));
+                        p.life = p.life0 = 0.35f + u01(sprayRng) * 0.45f;
+                        p.size = 0.10f + u01(sprayRng) * 0.14f;
+                        p.flat = 0.0f;
+                        spray.add(p);
+                    }
+                }
+            }
+            if (motesOn) {
+                Motes::World mw;
+                mw.eye     = camera.position();
+                mw.ground  = [&](float x, float z) { return streamer.heightAt(x, z); };
+                mw.waterLevel = waterLevel;
+                mw.wind    = &veg.wind;
+                mw.weather = std::max(storm, rainIntensity);
+                motes.update(dt, mw);
+            }
+            // ...and what it sounds like (Soundscape.hpp): singers on their
+            // perches, insects by the hour, the wind in the leaves. Play only,
+            // like the weather loops.
+            if (soundscapeOn) {
+                Soundscape::Frame sf;
+                sf.eye      = camera.position();
+                sf.hour     = timeOfDay;
+                sf.daylight = dayF;
+                sf.wind     = veg.wind.strength;
+                sf.gust     = wind::gust(veg.wind, glm::vec2(sf.eye.x, sf.eye.z));
+                sf.rain     = rainIntensity;
+                sf.storm    = storm;
+                sf.gain     = mix.ambientGain();
+                sf.trees    = &veg.treeInstances();
+                sf.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };
+                soundscape.update(dt, sf, playMode);
+            }
+            // The herd: (re)loaded when the scene names a different one, then
+            // grazing and wandering whether or not the game is running.
+            {
+                const std::string dir = currentProject.empty() ? std::string()
+                    : std::filesystem::path(currentProject).parent_path().generic_string();
+                char key[512];
+                std::snprintf(key, sizeof key, "%s|%s|%d|%.1f|%.1f|%.1f|%.2f|%d|%d|%.2f|%.1f",
+                              dir.c_str(), herdModel.c_str(), herdCfg.count, herdCfg.centre.x,
+                              herdCfg.centre.y, herdCfg.radius, herdCfg.height,
+                              herdCfg.grazeClip, herdCfg.walkClip, herdCfg.walkSpeed,
+                              herdCfg.yawOffset);
+                if (herdLoadedKey != key) {
+                    herdLoadedKey = key;
+                    herd = Herd{};
+                    if (!herdModel.empty() && !dir.empty()) {
+                        Herd::Config c = herdCfg;
+                        c.model = dir + "/" + herdModel;
+                        herd.load(c, lit);
+                    }
+                }
+                // The grass parts around whoever walks through it: the player
+                // on foot, and the animals of the herd.
+                veg.grassPushers.clear();
+                if (playMode && fpsMode) {
+                    const glm::vec3 e = camera.position();
+                    veg.grassPushers.push_back({e.x, e.y - eyeHeight, e.z, 0.9f});
+                }
+                for (int i = 0; i < herd.count() && veg.grassPushers.size() < 8; ++i) {
+                    const glm::vec3 p = herd.animalPos(i);
+                    veg.grassPushers.push_back({p.x, p.y, p.z, 1.3f});
+                }
+                if (herd.loaded()) {
+                    Herd::World hw;
+                    hw.ground   = [&](float x, float z) { return streamer.heightAt(x, z); };
+                    hw.walkable = [&](float x, float z) {
+                        return streamer.heightAt(x, z) > waterLevel + 0.8f &&
+                               !inDiscs(veg.wet, x, z);
+                    };
+                    herd.update(dt, hw);
+                }
+            }
             renderer.setEnvironmentIBL(&environment, iblEnabled, iblIntensity);
 
             // --- Physics: step the world, sync dynamic bodies back to entities -
@@ -9677,6 +10061,17 @@ int main(int argc, char** argv) {
             // Same outside Play: a craft can be flown in the editor too, and its
             // camera has to follow there or a test flight is done blind.
             if (!playMode) applyViewCamera();
+#ifndef FITZEL_PLAYER
+            // --shots: the listed view wins over every camera the scene has.
+            // The walking player must not pull the eye back to the capsule: the
+            // next frame streams terrain, grass and trees around wherever the
+            // camera is when it starts, and that has to be the shot.
+            if (playMode && shotRunner.active()) fpsMode = false;
+            if (playMode && shotRunner.active())
+                shotRunner.applyCamera(
+                    camera, [&](float x, float z) { return streamer.heightAt(x, z); },
+                    timeOfDay);
+#endif
 
             // One row of the trace, taken HERE: the sim has written the craft's
             // interpolated pose for this frame and applyViewCamera has just
@@ -12940,6 +13335,14 @@ int main(int argc, char** argv) {
                 mixerui::drawPanel({showMixer, mix, static_cast<float>(dt),
                                     audio.ok(), playMode});
 
+            // The landscape past the terrain: horizon, forest, wind, sun, life.
+            natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
+                                 farTerrain.treeLine, meadowTint, veg.grassDryGrowth,
+                                 veg.eco, veg.impostorStart, veg.forestRadius,
+                                 forestFloorLayer, windStrength, windAngle, windGust,
+                                 sunLatitude, sunDeclination, cloudShadowsOn,
+                                 wildlifeOn, motesOn, soundscapeOn, timeFlows});
+
             if (showWeather) {
                 // The presets belong to the PROJECT, so the list is re-read
                 // whenever the open one changes. Here rather than at each of the
@@ -13247,6 +13650,13 @@ int main(int argc, char** argv) {
                 ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f);
                 ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
                 ImGui::SliderFloat("Warmth",     &warmth, -0.5f, 0.5f);
+                ImGui::SliderFloat("Split tone", &gradeSplit, 0.0f, 1.5f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Cool shadows, warm highlights.");
+                ImGui::SliderFloat("Vibrance",   &gradeVibrance, -0.5f, 1.0f);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("More colour where there is little;\n"
+                                      "already vivid colours stay as they are.");
                 ImGui::SliderFloat("Contrast",   &contrast, 0.0f, 0.6f);
                 ImGui::SliderFloat("Vignette",   &vignette, 0.0f, 1.0f);
                 if (ImGui::IsItemHovered())
@@ -14612,6 +15022,33 @@ int main(int argc, char** argv) {
                       .set("uWetness", roadWetness)
                       .set("uMeshPaint", 0)             // object paint is not the terrain's
                       .set("uAlbedo", glm::vec3(0.5f)); // neutral grey where no layer covers
+            // The field's colour past its blades (meadow.glsl). Starts well inside
+            // the streamed radius -- the blades thin out towards it -- and is
+            // complete where the last of them has shrunk away.
+            {
+                const bool meadow = veg.grassEnabled && meadowTint > 0.0f;
+                terrainMat.set("uMeadowNear", veg.grassRadius * 0.3f)
+                          .set("uMeadowFar", meadow ? veg.grassRadius * 0.95f : 0.0f)
+                          .set("uMeadowAmount", glm::clamp(meadowTint, 0.0f, 1.0f))
+                          .set("uMeadowLush", 0.62f)
+                          .set("uGrassTint", veg.grassTint)
+                          .set("uGrassTop", look.snowLevel - 1.5f);
+                // The forest floor under the ecology's woods (ecology.glsl).
+                // The meadow's moisture from the horizon's finest ring, on a unit
+                // of its own (30: nothing else binds it).
+                const unsigned moistTex = farTerrain.ready() ? farTerrain.fineTexture() : 0u;
+                glActiveTexture(GL_TEXTURE30);
+                glBindTexture(GL_TEXTURE_2D, moistTex);
+                glActiveTexture(GL_TEXTURE0);
+                terrainMat.set("uMoistTex", 30)
+                          .set("uMoistRect", moistTex ? farTerrain.fineRect() : glm::vec4(0.0f))
+                          .set("uGrassDry", veg.grassDryGrowth);
+                terrainMat.set("uForestLayer", veg.eco.enabled ? forestFloorLayer : -1)
+                          .set("uCanopy", veg.canopyColour() * veg.treeBrightness);
+                ecology::forEachUniform(
+                    veg.eco, [&](const char* n, int v) { terrainMat.set(n, v); },
+                    [&](const char* n, float v) { terrainMat.set(n, v); });
+            }
             {
                 int bound = 0;
                 for (const TerrainLayer& L : look.layers) {
@@ -14667,6 +15104,7 @@ int main(int argc, char** argv) {
             for (const TerrainChunk* chunk : streamer.visibleChunks()) {
                 renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
             }
+            herd.submit(renderer);   // the grazing herd, lit and shadowed like any object
 
             // Every road in the scene, each drawn with its own surface, its own
             // wetness and its own glow -- which is the whole point of them being
@@ -15249,6 +15687,40 @@ int main(int argc, char** argv) {
             // its own set inside the loop below -- shadows are cut to a view
             // frustum, so they cannot be shared between two people looking at
             // different places.
+            // The clouds' shadow on the ground (CloudShadow.hpp): the sky's own
+            // cumulus, marched towards the sun from a 16 km ground map. Before
+            // any pass, so every receiver this frame reads the same map.
+            {
+                bool cumulus = false;
+                for (const skylayers::Packed& L :
+                     skylayers::order(skySet, effCloudBot, skySet.top))
+                    if (L.kind == 0) cumulus = true;
+                if (cumulus && cloudShadowsOn && shadeFull) {
+                    FZ_GPU_ZONE("GPU cloud shadows");
+                    CloudShadow::Params cp;
+                    cp.time     = static_cast<float>(now);
+                    cp.coverage = glm::mix(0.86f, 0.46f, effCoverage);
+                    cp.density  = effDensity;
+                    cp.scale    = skySet.scale;
+                    cp.speed    = effWind;
+                    cp.bottom   = effCloudBot;
+                    cp.top      = skySet.top;
+                    cp.sunDir   = light.direction;
+                    cp.eye      = camera.position();
+                    cp.groundY  = waterLevel;
+                    cloudShadow.render(cp, [&] { fsQuad.draw(); });
+                } else {
+                    cloudShadow.disable();
+                }
+                // ...and the mountains' (FarTerrain::renderSunShadow): the valley
+                // goes into shade while the summits still catch the sun.
+                if (farTerrainOn && shadeFull)
+                    farTerrain.renderSunShadow(light.direction, camera.position(),
+                                               [&] { fsQuad.draw(); });
+                else
+                    cloudShadowInfo().mtnOn = false;
+                applyCloudShadow(lit);
+            }
             {
                 FZ_GPU_ZONE("GPU shadows");
                 renderer.prepareShadows(treeShadowCaster); // shadows from the real camera
@@ -15469,6 +15941,14 @@ int main(int argc, char** argv) {
                 reflectRT.bind();
                 glClear(GL_DEPTH_BUFFER_BIT);
                 drawBackground(glm::inverse(proj * reflView), reflEye, false);
+                // The ranges mirror in the lake -- half of why a mountain lake
+                // looks like one.
+                if (farTerrain.ready()) {
+                    farTerrain.draw(makeFrameContext(proj * reflView, reflEye, now, storm,
+                                                     light, fog),
+                                    reflView, farProjection(vcam, aspect, taaJitter), true);
+                    glClear(GL_DEPTH_BUFFER_BIT);
+                }
                 glCullFace(GL_FRONT); // mirroring flips winding
                 renderer.renderScene(reflView, proj, reflEye,
                                      glm::vec4(0, 1, 0, -waterLevel + 0.1f), false);
@@ -15510,6 +15990,15 @@ int main(int argc, char** argv) {
             if (!shadeFull) glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             if (shadeFull) drawBackground(glm::inverse(mainVP), camPos, false);
+            // The horizon, in its own depth range, then out of the depth buffer
+            // (see FarTerrain.hpp). Jittered like the scene, or TAA would smear
+            // every ridgeline it resolves.
+            if (shadeFull && farTerrain.ready()) {
+                FZ_GPU_ZONE("GPU far terrain");
+                farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
+                                view, farProjection(vcam, aspect, taaJitter));
+                glClear(GL_DEPTH_BUFFER_BIT);
+            }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             {
                 FZ_GPU_ZONE("GPU terrain + objects");
@@ -15561,7 +16050,8 @@ int main(int argc, char** argv) {
                   veg.drawTreeBillboards(gctx, vcam.right()); }
 
                 // Birds: a flock wheeling above the camera, two-sided into the HDR.
-                veg.drawBirds(mainVP, now, camPos);
+                if (wildlifeOn && veg.birdsEnabled) wildlife.draw(gctx);
+                else veg.drawBirds(mainVP, now, camPos);
             }
 
             // 4) The water surface: a large quad following the camera, sampling
@@ -15609,6 +16099,11 @@ int main(int argc, char** argv) {
                 // downpour. What the weather changes is how MANY land.
                 water.setFloat("uRainRings", 1.0f);
                 water.setFloat("uRainDensity", rainDensity);
+                // Rings where the fish rose (Wildlife.hpp).
+                wildlife.applyRipples(water, wildlifeOn && veg.birdsEnabled);
+                water.setVec4("uWaterClip", farTerrain.ready()
+                                                ? farTerrain.nearRect()
+                                                : glm::vec4(-1e9f, -1e9f, 1e9f, 1e9f));
                 reflectRT.bindColorTexture(0);
                 refractRT.bindColorTexture(1);
                 refractRT.bindDepthTexture(2);
@@ -15663,6 +16158,7 @@ int main(int argc, char** argv) {
                 // in mid air off a fall has no surface for a ring.
                 river.setFloat("uRainRings", 1.0f);
                 river.setFloat("uRainDensity", rainDensity);
+                wildlife.applyRipples(river, wildlifeOn && veg.birdsEnabled);
                 for (std::size_t i = 0; i < rivers.runs().size() &&
                                         i < rivers.paths.size(); ++i) {
                     if (!rivers.paths[i].enabled) continue;
@@ -15733,6 +16229,10 @@ int main(int argc, char** argv) {
             // effect it is being tuned against.
             particles.update(entities, dt, assetDb);
             particles.draw(gctx);
+
+            // --- Pollen and dust in the light, additive into HDR ---------------
+            if (shadeFull && motesOn)
+                motes.draw(gctx, static_cast<float>(fbH) * 0.5f * proj[1][1]);
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
@@ -15831,6 +16331,7 @@ int main(int argc, char** argv) {
                 pp.exposure = exposure;
                 pp.hueShift = hueShift; pp.saturation = saturation;
                 pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
+                pp.split = gradeSplit; pp.vibrance = gradeVibrance;
                 pp.curve        = tonemapCurve;
                 pp.vignette     = vignette;
                 pp.grain        = filmGrain;
@@ -15859,6 +16360,11 @@ int main(int argc, char** argv) {
                     FZ_GPU_ZONE("GPU motion vectors");
                     post.beginMotion(hdrRT);
                     renderer.renderMotion(mainVP, pp.curVP, pp.prevVP);
+                    // ...and the crowns in the wind (treemotion.vert).
+                    if (shadeFull)
+                        veg.drawTreeMotion(mainVP, pp.curVP, pp.prevVP, camPos);
+                    // ...and where the pollen glitters, which follows nothing.
+                    if (shadeFull && motesOn) motes.drawReactive(mainVP);
                 }
                 taaPrevVP[vi]   = mainVPUnjittered;
                 taaPrevEye[vi]  = camPos;
@@ -16361,6 +16867,15 @@ int main(int argc, char** argv) {
             // back now, two frames after they were issued, and post them to the
             // profiler beside the CPU zones (see GpuTimer.hpp).
             gputime::collect();
+
+#ifndef FITZEL_PLAYER
+            if (playMode && shotRunner.active()) {
+                int sw = 0, sh = 0;
+                window.framebufferSize(sw, sh);
+                if (shotRunner.afterFrame(window.time(), sw, sh))
+                    window.requestClose();
+            }
+#endif
 
             // --- Benchmark mode (--profile) ----------------------------------
             // Measure for a few seconds, write the breakdown, quit. The window

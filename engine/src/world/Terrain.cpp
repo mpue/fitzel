@@ -119,7 +119,116 @@ float terrainBaseHeight(const TerrainSettings& s, float worldX, float worldZ) {
         }
     }
 
-    return h;
+    // 9) The mountain backdrop, last and additive: it must not be scaled by the
+    //    relief gain nor sunk by the island mask, because it is measured in
+    //    metres the author typed, not in units of the valley's own relief.
+    return h + terrainBackdrop(s, worldX, worldZ);
+}
+
+float terrainBackdrop(const TerrainSettings& s, float worldX, float worldZ) {
+    if (s.backdropHeight <= 0.0f || !terrainPresent()) return 0.0f;
+
+    // Into the valley's own frame: u along its axis, v across it. Dividing v by
+    // the stretch makes the ellipse a circle, so everything below can think in
+    // plain radii.
+    const float a  = glm::radians(s.backdropAngle);
+    const float ca = std::cos(a), sa = std::sin(a);
+    const float dx = worldX - s.backdropCenterX;
+    const float dz = worldZ - s.backdropCenterZ;
+    const float u  = dx * ca + dz * sa;
+    const float v  = (-dx * sa + dz * ca) / std::max(s.backdropStretch, 0.05f);
+    const float r  = std::sqrt(u * u + v * v);
+
+    // Where the valley ends. Sampled on a circle in noise space so the rim
+    // closes on itself without a seam at +-180 degrees, and wandering by a third
+    // of the radius: spurs reach into the valley, bays reach out of it.
+    const float R   = std::max(s.backdropRadius, 1.0f);
+    const float ang = std::atan2(v, u);
+    const float rimN = stb_perlin_fbm_noise3(std::cos(ang) * 1.7f + 17.3f,
+                                             std::sin(ang) * 1.7f - 4.1f, 0.37f,
+                                             2.0f, 0.5f, 3);
+    const float rim = R * (1.0f + 0.33f * rimN);
+    if (r <= rim) return 0.0f;           // the valley: not a millimetre changed
+    // How far out of the valley, in METRES: the frame above squeezed the
+    // across-axis by the stretch, and a slope measured in its units would come
+    // out that much steeper across the valley than along it -- a gentle end
+    // wall and cliffs for sides.
+    const float str  = std::max(s.backdropStretch, 0.05f);
+    const float ssin = std::sin(ang) * str, scos = std::cos(ang);
+    float dist = (r - rim) * std::sqrt(scos * scos + ssin * ssin);
+
+    // The outlet: the valley running on along its axis, bending as a river
+    // valley does, its floor narrowing downstream until the ranges close it.
+    // Distance to it is measured across (in the stretched frame, like the rim),
+    // so the mountains stand along both its sides.
+    float lake = 0.0f;
+    if (s.backdropOutlet > 0.0f && u > 0.0f) {
+        const float Lo = s.backdropOutlet;
+        const float k  = u / Lo;                                   // 0 .. 1 down the valley
+        const float bend = R * 1.1f * stb_perlin_fbm_noise3(u / (R * 2.6f) + 5.7f, 1.9f, 3.3f,
+                                                          2.0f, 0.5f, 2)
+                         * glm::smoothstep(0.0f, 0.25f, k);
+        const float hw = R * glm::mix(0.9f, 0.5f, glm::clamp(k, 0.0f, 1.0f))
+                       * (1.0f - glm::smoothstep(0.85f, 1.0f, k))
+                       * (1.0f + 0.25f * stb_perlin_noise3(u / (R * 0.9f), 8.8f, 0.5f, 0, 0, 0));
+        const float across = std::abs(v - bend);
+        dist = std::min(dist, (across - hw) * str);
+        // The lake basin, a third of the way down: deepest in the middle of
+        // the floor, shelving out to the shores.
+        if (s.backdropLake > 0.0f && hw > 1.0f) {
+            const float along = glm::smoothstep(0.26f, 0.34f, k) * (1.0f - glm::smoothstep(0.50f, 0.60f, k));
+            const float bowl  = 1.0f - glm::smoothstep(0.15f, 0.95f, across / hw);
+            lake = s.backdropLake * along * bowl;
+        }
+    }
+    if (dist <= 0.0f) return -lake;      // on the valley floor (or under its lake)
+
+    const float W = std::max(s.backdropWidth, 1.0f);
+    const float t = dist / W;            // 0 at the valley's edge, 1 where the massif starts
+
+    // The ranges themselves, in world space (not the valley frame, which would
+    // print the ellipse into every ridge). Domain-warped so crests bend and
+    // branch; a ridged multifractal because that is what gives knife-edge
+    // aretes above smooth, broad valleys -- the one silhouette that reads as
+    // "high mountains" from twenty kilometres away.
+    const float S  = std::max(s.backdropScale, 10.0f);
+    const float px = worldX / S, pz = worldZ / S;
+    const float qx = px + 0.45f * stb_perlin_fbm_noise3(px * 0.8f + 3.1f, 5.5f,
+                                                        pz * 0.8f - 1.7f, 2.0f, 0.5f, 3);
+    const float qz = pz + 0.45f * stb_perlin_fbm_noise3(px * 0.8f - 7.9f, 9.1f,
+                                                        pz * 0.8f + 5.3f, 2.0f, 0.5f, 3);
+    const float ridged = stb_perlin_ridge_noise3(qx, 13.7f, qz, 2.0f, 0.5f, 1.0f, 8);
+
+    // Some massifs tower over their neighbours; a range of equal peaks is the
+    // tell-tale of noise.
+    const float massif = glm::clamp(
+        0.55f + 0.65f * stb_perlin_fbm_noise3(px * 0.33f + 41.0f, 2.2f,
+                                              pz * 0.33f - 12.0f, 2.0f, 0.5f, 3),
+        0.12f, 1.25f);
+
+    // Two ranges, one behind the other. In front, the valley's own flanks:
+    // they rise straight out of the floor to a third of the height, broad and
+    // rounded enough to carry forest to their crests. Behind them, the high
+    // range -- rock, ice, knife-edges -- stepped back so that from the valley
+    // it stands OVER its foothills rather than being them. Between the two a
+    // saddle, so a ridge reads against the one behind it instead of merging.
+    const float flank  = glm::smoothstep(0.0f, 0.42f, t);
+    // The flanks' crest is not a wall: summits and cols along it, spurs that
+    // run down into the valley between side valleys (the ridged noise again,
+    // at twice the frequency and gentler), so it carries forest and still has
+    // a skyline of its own.
+    const float spur   = stb_perlin_ridge_noise3(qx * 2.3f + 4.0f, 2.9f, qz * 2.3f - 6.0f,
+                                                 2.0f, 0.5f, 1.0f, 5);
+    const float flankR = 0.35f + 0.75f * glm::clamp(spur, 0.0f, 1.2f)
+                       + 0.20f * stb_perlin_fbm_noise3(px * 2.1f + 9.0f, 4.4f,
+                                                       pz * 2.1f - 2.0f, 2.0f, 0.5f, 4);
+    const float saddle = 1.0f - 0.35f * glm::smoothstep(0.35f, 0.55f, t)
+                                      * (1.0f - glm::smoothstep(0.55f, 0.85f, t));
+    const float peaks  = glm::smoothstep(0.45f, 1.5f, t);
+    const float relief = std::pow(std::max(ridged, 0.0f), 1.6f) * 1.3f;
+    const float front  = 0.34f * flank * flankR * saddle;
+    const float high   = peaks * (0.20f + 0.85f * massif) * relief;
+    return s.backdropHeight * (0.06f * flank + front + high) - lake;
 }
 
 float terrainMoisture(const TerrainSettings& s, float worldX, float worldZ) {
@@ -494,6 +603,22 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
         return h;
     };
 
+    // Every height once, on the grid plus a one-sample apron, and the normals
+    // read their neighbours out of it. The same central differences as before
+    // (same points, same step -- still continuous across chunks), at a fifth of
+    // the height evaluations: asking for four neighbours per vertex evaluated
+    // each interior sample five times, which is most of what a chunk costs, and
+    // far more of it once the mountain backdrop makes a sample expensive.
+    const int apron = verts + 2;
+    std::vector<float> hgrid(static_cast<std::size_t>(apron) * apron);
+    for (int z = 0; z < apron; ++z)
+        for (int x = 0; x < apron; ++x)
+            hgrid[static_cast<std::size_t>(z) * apron + x] =
+                height(originX + (x - 1) * step, originZ + (z - 1) * step);
+    const auto H = [&](int x, int z) {   // grid coordinates, -1..verts
+        return hgrid[static_cast<std::size_t>(z + 1) * apron + (x + 1)];
+    };
+
     data.vertices.reserve(static_cast<std::size_t>(verts) * verts);
     for (int z = 0; z < verts; ++z) {
         for (int x = 0; x < verts; ++x) {
@@ -501,15 +626,15 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
             const float wz = originZ + z * step;
 
             // Central differences in world space (continuous across chunks).
-            const float hl = height(wx - step, wz);
-            const float hr = height(wx + step, wz);
-            const float hd = height(wx, wz - step);
-            const float hu = height(wx, wz + step);
+            const float hl = H(x - 1, z);
+            const float hr = H(x + 1, z);
+            const float hd = H(x, z - 1);
+            const float hu = H(x, z + 1);
             const glm::vec3 normal =
                 glm::normalize(glm::vec3(hl - hr, 2.0f * step, hd - hu));
 
             Vertex v;
-            v.position = {wx, height(wx, wz), wz};
+            v.position = {wx, H(x, z), wz};
             v.normal   = normal;
             v.uv       = {static_cast<float>(x) / s.resolution,
                           static_cast<float>(z) / s.resolution};

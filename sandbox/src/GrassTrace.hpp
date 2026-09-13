@@ -7,6 +7,7 @@
 
 #include <fitzel/world/Terrain.hpp>
 
+#include "Ecology.hpp"
 #include "PathTrace.hpp"
 
 // The grass field, as data rather than as a draw call.
@@ -54,6 +55,14 @@ struct Field {
 
     glm::vec3 tint{1.0f};         // the grass shader's uTint
 
+    // The forest (Ecology.hpp): under a closed canopy the grass gives way to
+    // the forest floor. Disabled = grass everywhere, as before.
+    ecology::Params eco;
+
+    // Ground too dry for the old rule (moisture under 0.22) grows a thin, dry
+    // sward at this density (0 = bare, as before).
+    float dryGrowth = 0.0f;
+
     // The tile edge the field is generated on. A constant rather than a setting:
     // the seed is the tile coordinate, so changing this reshuffles every blade in
     // the world. VegetationSystem's TiledScatter config must use the same number.
@@ -86,6 +95,7 @@ struct TraceOptions {
     float     windTime     = 0.0f;
     glm::vec2 windDir{0.894f, 0.447f};  // normalize(vec2(0.6, 0.3)), as drawGrass
     float     windStrength = 0.2f;
+    float     windGust     = 0.6f;   // Wind.hpp's gustiness
 
     // Per-blade colour is computed per blade by the shader, and pathtrace has no
     // vertex-colour channel to put it in. So the colours are quantised to this

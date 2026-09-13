@@ -35,6 +35,36 @@ struct FrameContext {
     glm::vec3 viewForward{0.0f, 0.0f, -1.0f};
 };
 
+// The frame's cloud-shadow map (CloudShadow.hpp), for every shader that
+// includes cloudshadow.glsl -- sunshadow.glsl does, so every receiver of the
+// sun's cascades gets the clouds with them. Frame state, set once by the host.
+struct CloudShadowInfo {
+    bool      on = false;
+    glm::vec2 origin{0.0f};
+    float     size = 1.0f;
+    float     refY = 0.0f;
+    glm::vec3 sunDir{0.0f, 1.0f, 0.0f};
+    // ...and the mountains' (FarTerrain::renderSunShadow): the height a point
+    // must reach to see the sun, over an 8 km map.
+    bool      mtnOn = false;
+    glm::vec2 mtnOrigin{0.0f};
+    float     mtnSize = 1.0f;
+};
+inline CloudShadowInfo& cloudShadowInfo() {
+    static CloudShadowInfo info;
+    return info;
+}
+inline void applyCloudShadow(const fitzel::Shader& s) {
+    const CloudShadowInfo& c = cloudShadowInfo();
+    s.setInt("uCloudShadowOn", c.on ? 1 : 0);
+    s.setInt("uCloudShadow", 31);   // CloudShadow::kUnit
+    s.setVec4("uCloudRect", glm::vec4(c.origin, 1.0f / c.size, c.refY));
+    s.setVec3("uCloudSun", c.sunDir);
+    s.setInt("uMtnShadowOn", c.mtnOn ? 1 : 0);
+    s.setInt("uMtnShadow", 29);     // FarTerrain::kShadowUnit
+    s.setVec4("uMtnRect", glm::vec4(c.mtnOrigin, 1.0f / c.mtnSize, 0.0f));
+}
+
 // Hand a receiver the cascades (the uniforms sunshadow.glsl declares). Called
 // by every layer that includes it, with its own shader bound or not -- the
 // setters bind it.
@@ -42,6 +72,7 @@ struct FrameContext {
 // null for none, and the camera that picks among them.
 inline void applySunShadows(const fitzel::Shader& s, const fitzel::CascadedShadowMap* shadows,
                             const glm::vec3& eye, const glm::vec3& forward) {
+    applyCloudShadow(s);   // the clouds are part of the sun's shadow
     static const char* const kSpace[4]  = {"uLightSpace[0]", "uLightSpace[1]",
                                            "uLightSpace[2]", "uLightSpace[3]"};
     static const char* const kSplit[4]  = {"uCascadeSplits[0]", "uCascadeSplits[1]",

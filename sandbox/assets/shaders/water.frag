@@ -129,7 +129,16 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float px, float tim
     return normalize(N);
 }
 
+#include "fishrings.glsl"
+
+// Where this surface ends (xz min, xz max). With the horizon terrain on, past
+// the streamed ring the far terrain draws its own lakes -- and this quad, drawn
+// after the far terrain's depth was cleared, would lie over its hills.
+uniform vec4 uWaterClip;
+
 void main() {
+    if (vWorldPos.x < uWaterClip.x || vWorldPos.z < uWaterClip.y ||
+        vWorldPos.x > uWaterClip.z || vWorldPos.z > uWaterClip.w) discard;
     // Projective UVs from clip-space position. The reflection is rendered with a
     // mirror matrix (view * scale(1,-1,1)), so the texture is already correctly
     // oriented -- both targets sample at the fragment's own screen UV.
@@ -146,6 +155,10 @@ void main() {
         vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
         N = rainRings(N, vWorldPos.xz, uRainRings, uRainDensity,
                       max(length(dpx.xz), length(dpy.xz)), uTime);
+    }
+    if (uFishRingCount > 0) {
+        vec3 dpx = dFdx(vWorldPos), dpy = dFdy(vWorldPos);
+        N = fishRings(N, vWorldPos.xz, min(length(dpx.xz), length(dpy.xz)), 1.0);
     }
     vec3  V = normalize(uCameraPos - vWorldPos);
 

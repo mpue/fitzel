@@ -25,6 +25,7 @@
 #include <fitzel/world/Terrain.hpp>
 
 #include "GrassTrace.hpp"
+#include "MeshSimplify.hpp"
 #include "Primitives.hpp"
 #include "SandboxMath.hpp"
 #include "UiStyle.hpp"
@@ -293,7 +294,13 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
     // rebuild captures fresh copies so the workers never read live state, then
     // invalidates the resident tiles so the field re-streams with the new look.
     const std::uint32_t rh = roadHashOf(road);
-    if (grassDirty || grassDensity != m_gDensity || grassChaos != m_gChaos ||
+    const auto ecoDiffers = [](const ecology::Params& a, const ecology::Params& b) {
+        return a.enabled != b.enabled || a.cover != b.cover || a.standSize != b.standSize ||
+               a.treeLine != b.treeLine || a.waterLevel != b.waterLevel ||
+               a.solitary != b.solitary || a.slopeLove != b.slopeLove;
+    };
+    if (grassDirty || ecoDiffers(eco, m_gEco) || grassDryGrowth != m_gDry ||
+        grassDensity != m_gDensity || grassChaos != m_gChaos ||
         grassHeight != m_gHeight || grassRadius != m_gRadius ||
         waterLevel != m_gWater || snowLevel != m_gSnow ||
         roadClear != m_gRoadClear || rh != m_gRoadHash ||
@@ -312,6 +319,10 @@ bool VegetationSystem::updateGrass(glm::vec2 camXZ, const std::vector<glm::vec2>
         m_field.road       = road;
         m_field.roadClear  = rc;
         m_field.wet        = wet;
+        m_field.eco        = eco;
+        m_gEco             = eco;
+        m_field.dryGrowth  = grassDryGrowth;
+        m_gDry             = grassDryGrowth;
         // The "Grass range" slider (m) maps to a tile radius over the 12 m grid.
         const int tileR = std::clamp(
             static_cast<int>(std::lround(grassRadius / grassfield::Field::kTileSize)),
@@ -425,9 +436,14 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
     glDisable(GL_CULL_FACE);
     m_grass.bind();
     m_grass.setMat4("uViewProj", c.viewProj);
-    m_grass.setFloat("uTime", static_cast<float>(c.time));
-    m_grass.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_grass.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, c.weather));
+    wind::apply(m_grass, wind, 0.5f);   // a blade goes further than a trunk
+    {
+        const int n = static_cast<int>(std::min<std::size_t>(grassPushers.size(), 8));
+        m_grass.setInt("uPushCount", n);
+        static const char* const kPush[8] = {"uPush[0]", "uPush[1]", "uPush[2]", "uPush[3]",
+                                             "uPush[4]", "uPush[5]", "uPush[6]", "uPush[7]"};
+        for (int i = 0; i < n; ++i) m_grass.setVec4(kPush[i], grassPushers[i]);
+    }
     m_grass.setVec3("uTint", grassTint);
     m_grass.setVec3("uViewPos", c.camPos);
     m_grass.setVec3("uLightDir", c.lightDir);
@@ -478,6 +494,12 @@ VegetationSystem::~VegetationSystem() {
         }
         if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
         if (sp.bbVAO)   glDeleteVertexArrays(1, &sp.bbVAO);
+        if (sp.farVBO)  glDeleteBuffers(1, &sp.farVBO);
+        if (sp.farVAO)  glDeleteVertexArrays(1, &sp.farVAO);
+        if (sp.impAlbedo) glDeleteTextures(1, &sp.impAlbedo);
+        if (sp.impNormal) glDeleteTextures(1, &sp.impNormal);
+        freeAutoLod(sp.mid);
+        freeAutoLod(sp.shadow);
     }
 }
 
@@ -625,6 +647,28 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
     // UVs and must stay apart -- welding those would visibly seam the leaves.
     std::unordered_map<VertexKey, std::uint32_t, VertexKeyHash> unique;
     const float scale = 1.0f / md.height();
+    // The trunk goes on the origin. A model exported where it stood in its
+    // artist's scene (tree2.glb sits nine of its own heights off its origin)
+    // would otherwise be drawn that far from where the tree was planted --
+    // in the river -- and the wind, which bends a tree by the distance from
+    // its trunk axis, would fling the whole crown about. The foot of the
+    // trunk is the centre of what lies within the lowest few percent.
+    float baseX = 0.0f, baseZ = 0.0f;
+    {
+        const float cut = md.minY + 0.04f * md.height();
+        double sx = 0.0, sz = 0.0;
+        long long n = 0;
+        float bx0 = 1e30f, bx1 = -1e30f, bz0 = 1e30f, bz1 = -1e30f;
+        for (const fitzel::ModelPrimitive& p : md.primitives)
+            for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
+                const float x = p.vertices[i], y = p.vertices[i + 1], z = p.vertices[i + 2];
+                bx0 = std::min(bx0, x); bx1 = std::max(bx1, x);
+                bz0 = std::min(bz0, z); bz1 = std::max(bz1, z);
+                if (y <= cut) { sx += x; sz += z; ++n; }
+            }
+        baseX = n > 0 ? static_cast<float>(sx / n) : 0.5f * (bx0 + bx1);
+        baseZ = n > 0 ? static_cast<float>(sz / n) : 0.5f * (bz0 + bz1);
+    }
     // ...and the sphere that holds the normalized mesh, for the instance culling.
     float boundR2 = 0.0f;
     for (fitzel::ModelPrimitive& p : md.primitives) {
@@ -637,9 +681,9 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
             tp.tex = Texture::fromPixels(p.texPixels.data(), p.texWidth, p.texHeight, 4);
         for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
             VertexKey key{};
-            key.v[0] = p.vertices[i + 0] * scale;
+            key.v[0] = (p.vertices[i + 0] - baseX) * scale;
             key.v[1] = (p.vertices[i + 1] - md.minY) * scale;
-            key.v[2] = p.vertices[i + 2] * scale;
+            key.v[2] = (p.vertices[i + 2] - baseZ) * scale;
             for (int k = 3; k < 8; ++k) key.v[k] = p.vertices[i + k];
             const auto it = unique.find(key);
             if (it != unique.end()) { indices.push_back(it->second); continue; }
@@ -680,7 +724,87 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
     glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, ms, (void*)(6 * sizeof(float)));
     bindTreeInstanceAttribs(sp.instVBO);
     glBindVertexArray(0);
+    lod.cpuVerts = std::move(verts);
+    lod.cpuIdx   = std::move(indices);
+    sp.autoDirty = true;   // the generated levels derive from this
+    sp.impDirty  = true;   // ...and so does the impostor
     return true;
+}
+
+void VegetationSystem::freeAutoLod(AutoLod& a) {
+    if (a.vbo) glDeleteBuffers(1, &a.vbo);
+    if (a.ibo) glDeleteBuffers(1, &a.ibo);
+    if (a.vao) glDeleteVertexArrays(1, &a.vao);
+    a = AutoLod{};
+}
+
+void VegetationSystem::buildAutoLods(TreeSpecies& sp) {
+    sp.autoDirty = false;
+    freeAutoLod(sp.mid);
+    freeAutoLod(sp.shadow);
+    if (sp.lods.empty()) return;
+    const TreeLOD& src = sp.lods.back();
+    if (src.cpuVerts.empty() || src.cpuIdx.empty()) return;
+    const std::size_t nV = src.cpuVerts.size() / 8;
+
+    // One level: solid prims collapsed to `barkRatio` of their triangles, leaf
+    // prims thinned to `leafKeep` of their cards (grown to keep the area).
+    const auto make = [&](AutoLod& out, float barkRatio, float leafKeep,
+                          std::uint32_t seed) {
+        std::vector<float>         v = src.cpuVerts;   // pruning moves leaf corners
+        std::vector<std::uint32_t> ix;
+        for (int p = 0; p < static_cast<int>(src.prims.size()); ++p) {
+            const TreeLOD::Prim& pr = src.prims[p];
+            std::vector<std::uint32_t> sub(src.cpuIdx.begin() + pr.first,
+                                           src.cpuIdx.begin() + pr.first + pr.count);
+            if (pr.cutout) {
+                meshsimplify::pruneCards(v, 8, sub, leafKeep, seed + p * 7919u);
+            } else {
+                const std::size_t target = std::max<std::size_t>(
+                    12, static_cast<std::size_t>(sub.size() / 3 * barkRatio));
+                sub = meshsimplify::simplify(src.cpuVerts.data(), 8, nV, sub.data(),
+                                             sub.size(), target);
+            }
+            if (sub.empty()) continue;
+            AutoLod::Range r;
+            r.first  = static_cast<int>(ix.size());
+            r.count  = static_cast<int>(sub.size());
+            r.prim   = p;
+            r.cutout = pr.cutout;
+            out.ranges.push_back(r);
+            out.tris += static_cast<long long>(sub.size() / 3);
+            ix.insert(ix.end(), sub.begin(), sub.end());
+        }
+        if (ix.empty()) return;
+        glGenVertexArrays(1, &out.vao);
+        glBindVertexArray(out.vao);
+        glGenBuffers(1, &out.vbo);
+        glBindBuffer(GL_ARRAY_BUFFER, out.vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                     v.data(), GL_STATIC_DRAW);
+        glGenBuffers(1, &out.ibo);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, out.ibo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                     static_cast<GLsizeiptr>(ix.size() * sizeof(std::uint32_t)),
+                     ix.data(), GL_STATIC_DRAW);
+        const GLsizei ms = 8 * sizeof(float);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, ms, (void*)0);
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, ms, (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, ms, (void*)(6 * sizeof(float)));
+        bindTreeInstanceAttribs(sp.instVBO);
+        glBindVertexArray(0);
+    };
+    const auto t0 = std::chrono::steady_clock::now();
+    make(sp.mid,    0.16f, 0.5f,  0x5eedu);
+    make(sp.shadow, 0.05f, 0.25f, 0xbeefu);
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    long long srcTris = static_cast<long long>(src.cpuIdx.size() / 3);
+    std::fprintf(stderr, "tree LODs %s: %lld -> mid %lld, shadow %lld tris (%.0f ms)\n",
+                 sp.name.c_str(), srcTris, sp.mid.tris, sp.shadow.tris, ms);
 }
 
 int VegetationSystem::addSpecies() {
@@ -692,6 +816,13 @@ int VegetationSystem::addSpecies() {
     glGenVertexArrays(1, &sp.bbVAO);
     glBindVertexArray(sp.bbVAO);
     bindTreeInstanceAttribs(sp.instVBO);
+    glBindVertexArray(0);
+    // The impostor pass's own instances: the whole forest field, not the near
+    // set the meshes draw.
+    glGenBuffers(1, &sp.farVBO);
+    glGenVertexArrays(1, &sp.farVAO);
+    glBindVertexArray(sp.farVAO);
+    bindTreeInstanceAttribs(sp.farVBO);
     glBindVertexArray(0);
     // Default LOD0 = first available model, so a fresh species is visible at once.
     TreeLOD lod;
@@ -727,6 +858,12 @@ void VegetationSystem::removeSpecies(int s) {
     }
     if (sp.instVBO) glDeleteBuffers(1, &sp.instVBO);
     if (sp.bbVAO)   glDeleteVertexArrays(1, &sp.bbVAO);
+    if (sp.farVBO)  glDeleteBuffers(1, &sp.farVBO);
+    if (sp.farVAO)  glDeleteVertexArrays(1, &sp.farVAO);
+    if (sp.impAlbedo) glDeleteTextures(1, &sp.impAlbedo);
+    if (sp.impNormal) glDeleteTextures(1, &sp.impNormal);
+    freeAutoLod(sp.mid);
+    freeAutoLod(sp.shadow);
     m_species.erase(m_species.begin() + s);
     // Fix up painted trees: drop those on the removed species, shift higher ids.
     std::vector<float> kept;
@@ -764,6 +901,7 @@ void VegetationSystem::removeLOD(int s, int lod) {
     if (L.ibo) glDeleteBuffers(1, &L.ibo);
     if (L.vao) glDeleteVertexArrays(1, &L.vao);
     sp.lods.erase(sp.lods.begin() + lod);
+    sp.autoDirty = true;   // the coarsest level may have changed
 }
 
 void VegetationSystem::setLODModel(int s, int lod, const std::string& file) {
@@ -796,6 +934,15 @@ bool VegetationSystem::initTrees(const std::string& modelDir, const std::string&
     if (!m_billboard.isValid()) {
         std::fprintf(stderr, "Failed to load billboard shader\n"); return false;
     }
+    // Optional: a failed impostor shader costs the distant forest, not the trees.
+    m_impostor     = Shader::fromFiles("assets/shaders/impostor.vert",
+                                       "assets/shaders/impostor.frag");
+    m_impostorBake = Shader::fromFiles("assets/shaders/impostorbake.vert",
+                                       "assets/shaders/impostorbake.frag");
+    if (!m_impostor.isValid() || !m_impostorBake.isValid())
+        std::fprintf(stderr, "Failed to load impostor shaders\n");
+    m_treeMotion = Shader::fromFiles("assets/shaders/treemotion.vert",
+                                     "assets/shaders/treemotion.frag");
     m_modelDir = modelDir;
     m_texDir   = texDir;
     scanTreeAssets();
@@ -915,8 +1062,78 @@ void VegetationSystem::regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& ro
 void VegetationSystem::updateTrees(glm::vec2 camXZ, const std::vector<glm::vec2>& road,
                                    float roadWidth, float waterLevel, float snowLevel) {
     if (!terrainPresent) return; // nothing to plant on
-    if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f)
-        regenTrees(camXZ, road, roadWidth, waterLevel, snowLevel);
+    if (!eco.enabled) {
+        if (treeEnabled && glm::length(camXZ - treeCenter) > 25.0f)
+            regenTrees(camXZ, road, roadWidth, waterLevel, snowLevel);
+        return;
+    }
+    if (!treeEnabled) return;
+
+    // --- The forest field ------------------------------------------------------
+    // Everything the placement reads, as one value: a change anywhere in it
+    // regrows the field (TreeField::configure is a no-op when nothing moved).
+    TreeField::Inputs in;
+    in.terrain    = m_streamer.settings();
+    in.eco        = eco;
+    in.waterLevel = waterLevel;
+    in.snowLevel  = snowLevel;
+    in.road       = road;
+    in.roadClear  = roadWidth * 0.5f + 3.0f;
+    in.wet        = wet;
+    in.wet.insert(in.wet.end(), treeClearings.begin(), treeClearings.end());
+    for (const TreeSpecies& sp : m_species) {
+        TreeField::Species s;
+        s.density = (treeProcedural && sp.enabled && !sp.lods.empty()) ? sp.density : 0.0f;
+        s.size    = sp.size;
+        s.shrub   = sp.size < 4.0f;    // a bush, by what it is rather than a flag
+        in.species.push_back(s);
+    }
+    m_treeField.radius = forestRadius;
+    m_treeField.configure(in);
+    // treeCenter reset to "far away" is how the host says the ground itself
+    // changed (a sculpt, a road re-graded) -- which no input above records.
+    if (treeCenter.x > 1e8f) {
+        m_treeField.invalidate();
+        treeCenter = camXZ;
+    }
+    const bool fieldChanged = m_treeField.update(camXZ);
+
+    // The mesh set: the field's trees near enough to be meshes, plus every
+    // painted one (rebuildTreeBuffers appends those). Regathered when the field
+    // changed or the eye has walked far enough to bring new ones into range.
+    if (fieldChanged || glm::length(camXZ - m_nearCenter) > 8.0f) {
+        std::vector<std::vector<float>> near(m_species.size());
+        m_treeField.gather(camXZ, impostorStart + 20.0f, near);
+        for (std::size_t s = 0; s < m_species.size(); ++s) {
+            m_species[s].inst = std::move(near[s]);
+            m_species[s].proceduralFloats = m_species[s].inst.size();
+        }
+        rebuildTreeBuffers();
+        m_nearCenter = camXZ;
+    }
+    // The impostors: the whole field, and the painted trees with it (a brush
+    // stroke changes their count, which is all this needs to notice).
+    if (fieldChanged || paintedTrees.size() != m_farPainted || treePainted != m_farPaintedOn)
+        uploadFar();
+}
+
+void VegetationSystem::uploadFar() {
+    m_farPainted   = paintedTrees.size();
+    m_farPaintedOn = treePainted;
+    std::vector<std::vector<float>> all(m_species.size());
+    m_treeField.gather(glm::vec2(0.0f), -1.0f, all);
+    for (std::size_t s = 0; s < m_species.size(); ++s) {
+        TreeSpecies& sp = m_species[s];
+        std::vector<float>& v = all[s];
+        if (treePainted)
+            for (std::size_t t = 0; t + 6 <= paintedTrees.size(); t += 6)
+                if (static_cast<std::size_t>(std::lround(paintedTrees[t + 5])) == s)
+                    v.insert(v.end(), paintedTrees.begin() + t, paintedTrees.begin() + t + 5);
+        glBindBuffer(GL_ARRAY_BUFFER, sp.farVBO);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(v.size() * sizeof(float)),
+                     v.data(), GL_DYNAMIC_DRAW);
+        sp.farCount = static_cast<int>(v.size() / 5);
+    }
 }
 
 void VegetationSystem::stampTree(glm::vec2 c, float radius, std::mt19937& rng,
@@ -970,7 +1187,7 @@ void VegetationSystem::eraseTree(glm::vec2 c, float radius) {
     }
 }
 
-int VegetationSystem::cullInstances(const TreeSpecies& sp, const TreeLOD& lod,
+int VegetationSystem::cullInstances(const TreeSpecies& sp, float boundR,
                                     const glm::mat4& viewProj, int planeCount,
                                     const glm::vec2& camXZ, float lodMin,
                                     float lodMax) {
@@ -991,7 +1208,7 @@ int VegetationSystem::cullInstances(const TreeSpecies& sp, const TreeLOD& lod,
         // A margin on top of the mesh's own radius: the crown sways in the wind,
         // and a tree that pops out at the edge of the screen is a worse bug than
         // the handful of instances this keeps.
-        const float r = lod.boundR * scale + 0.5f;
+        const float r = boundR * scale + 0.5f;
         if (!sphereVisible(planes, centre, r, planeCount)) continue;
         m_visInst.insert(m_visInst.end(), sp.inst.begin() + i,
                                           sp.inst.begin() + i + 5);
@@ -1035,29 +1252,44 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     glCullFace(GL_BACK);
     m_treeDepth.bind();
     m_treeDepth.setMat4("uLightSpace", lightSpace);
-    m_treeDepth.setFloat("uTime", static_cast<float>(time));
-    m_treeDepth.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_treeDepth.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, weather));
+    wind::apply(m_treeDepth, wind, 1.0f);   // the same air as the lit pass
     m_treeDepth.setFloat("uTreeHeight", 1.0f); // meshes normalized to unit height
     m_treeDepth.setInt("uTex", 0);
     // Shadows use LOD0 -- but only the instances THIS cascade can see, and only
     // those within treeShadowDistance of the camera. A cascade is a slice of the
     // view, and drawing the whole forest into each of them was the same trees
     // five times over: it is the single most expensive thing a dense forest did.
-    for (const TreeSpecies& sp : m_species) {
+    for (TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.count == 0 || sp.lods.empty()) continue;
+        if (sp.autoDirty) buildAutoLods(sp);
         // The COARSEST level, not the finest. A shadow is a silhouette: the leaf
         // a lower LOD dropped is worth a texel of the map at best, and this pass
-        // draws more tree geometry than the visible frame does. A species with
-        // one LOD is unchanged -- which is also why adding a coarse one is worth
-        // several times more here than it is in the lit pass.
+        // draws more tree geometry than the visible frame does -- so it draws the
+        // generated shadow level (a twentieth of the bark, a quarter of the
+        // leaf cards, grown to cast the same shade) when there is one.
         const TreeLOD& lod = sp.lods.back();
         // Four planes, not six: a tree standing between the sun and the slice is
         // outside the box and still casts into it (see sphereVisible).
-        const int vis = cullInstances(sp, lod, lightSpace, 4,
+        const int vis = cullInstances(sp, lod.boundR, lightSpace, 4,
                                       camXZ, 0.0f, shadowDistance);
         if (vis == 0) continue;
         m_shadowInst += vis;
+        if (sp.shadow.valid()) {
+            glBindVertexArray(sp.shadow.vao);
+            bindTreeInstanceAttribs(m_cullVBO);
+            for (const AutoLod::Range& r : sp.shadow.ranges) {
+                const TreeLOD::Prim& tp = lod.prims[r.prim];
+                if (tp.hasTex) tp.tex.bind(0);
+                m_treeDepth.setInt("uAlphaCutout", r.cutout ? 1 : 0);
+                glDrawElementsInstanced(
+                    GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
+                    reinterpret_cast<const void*>(
+                        static_cast<std::uintptr_t>(r.first) * sizeof(std::uint32_t)),
+                    vis);
+                m_shadowTris += static_cast<long long>(r.count / 3) * vis;
+            }
+            continue;
+        }
         glBindVertexArray(lod.vao);
         bindTreeInstanceAttribs(m_cullVBO);
         for (const TreeLOD::Prim& tp : lod.prims) {
@@ -1081,9 +1313,7 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     glDisable(GL_CULL_FACE);
     m_tree.bind();
     m_tree.setMat4("uViewProj", c.viewProj);
-    m_tree.setFloat("uTime", static_cast<float>(c.time));
-    m_tree.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_tree.setFloat("uWindStrength", glm::mix(0.05f, 0.4f, c.weather));
+    wind::apply(m_tree, wind, 1.0f);
     m_tree.setFloat("uTreeHeight", 1.0f);
     m_tree.setVec3("uCamPos", c.camPos);
     m_tree.setVec3("uViewPos", c.camPos);
@@ -1100,22 +1330,34 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     m_tree.setFloat("uContrast", treeContrast);
     m_tree.setFloat("uHue", glm::radians(treeHue));
     m_tree.setInt("uTex", 0);
-    for (const TreeSpecies& sp : m_species) {
+    for (TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.count == 0) continue;
+        if (sp.autoDirty) buildAutoLods(sp);
         const int nl = static_cast<int>(sp.lods.size());
+        // Past the one authored level, the generated one: an author who gave a
+        // single mesh gets it up close and a sixth of it beyond its distance,
+        // which is where the silhouette is all that is left to see.
+        const bool useMid = (nl == 1) && sp.mid.valid();
+        // With the forest field the meshes hand over to the impostors (the
+        // same trees -- see drawImpostors), dissolving across the last 15 m.
+        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo != 0;
+        const float farEnd = imp ? impostorStart : (sp.bbEnabled ? sp.bbStart : 1e9f);
+        m_tree.setFloat("uHandover", impostorStart);
+        m_tree.setFloat("uHandoverWidth", imp ? 15.0f : 0.0f);
         for (int k = 0; k < nl; ++k) {
             const TreeLOD& lod = sp.lods[k];
             const float lo = (k == 0) ? 0.0f : sp.lods[k - 1].dist;
             // The last mesh LOD runs out to the billboard start (or the far plane
             // when the species has no billboard).
-            float hi = (k + 1 == nl) ? (sp.bbEnabled ? sp.bbStart : 1e9f) : lod.dist;
+            float hi = (k + 1 == nl) ? farEnd : lod.dist;
+            if (useMid) hi = std::min(lod.dist, farEnd);
             hi = std::max(hi, lo);
             m_tree.setFloat("uLodMin", lo);
             m_tree.setFloat("uLodNear", hi);
             // Only the trees this view can see, and only the ones this LOD is
             // responsible for. Per pass, because the water reflection asks with
             // a different matrix (see cullInstances).
-            const int vis = cullInstances(sp, lod, c.viewProj, 6,
+            const int vis = cullInstances(sp, lod.boundR, c.viewProj, 6,
                                           glm::vec2(c.camPos.x, c.camPos.z), lo, hi);
             if (vis == 0) continue;
             glBindVertexArray(lod.vao);
@@ -1130,13 +1372,120 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
                     vis);
             }
         }
+        if (useMid) {
+            const TreeLOD& src = sp.lods.back();
+            const float lo = std::min(src.dist, farEnd);
+            if (farEnd > lo) {
+                m_tree.setFloat("uLodMin", lo);
+                m_tree.setFloat("uLodNear", farEnd);
+                const int vis = cullInstances(sp, src.boundR, c.viewProj, 6,
+                                              glm::vec2(c.camPos.x, c.camPos.z), lo,
+                                              farEnd);
+                if (vis > 0) {
+                    glBindVertexArray(sp.mid.vao);
+                    bindTreeInstanceAttribs(m_cullVBO);
+                    for (const AutoLod::Range& r : sp.mid.ranges) {
+                        const TreeLOD::Prim& tp = src.prims[r.prim];
+                        if (tp.hasTex) tp.tex.bind(0);
+                        m_tree.setInt("uAlphaCutout", r.cutout ? 1 : 0);
+                        glDrawElementsInstanced(
+                            GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
+                            reinterpret_cast<const void*>(
+                                static_cast<std::uintptr_t>(r.first) * sizeof(std::uint32_t)),
+                            vis);
+                    }
+                }
+            }
+        }
     }
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
 }
 
+void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
+                                      const glm::mat4& prevVP, const glm::vec3& camPos) {
+    const float prevT = (m_prevWindTime < 0.0f) ? wind.time : m_prevWindTime;
+    m_prevWindTime = wind.time;
+    if (!terrainPresent || !treeEnabled || treeCount == 0 || !m_treeMotion.isValid()) return;
+    // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
+    GLint prevFunc = GL_LESS;
+    glGetIntegerv(GL_DEPTH_FUNC, &prevFunc);
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_LEQUAL);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_BLEND);
+    glDisable(GL_CULL_FACE);
+    m_treeMotion.bind();
+    m_treeMotion.setMat4("uViewProj", viewProj);
+    m_treeMotion.setMat4("uCurVP", curVP);
+    m_treeMotion.setMat4("uPrevVP", prevVP);
+    m_treeMotion.setFloat("uPrevWindTime", prevT);
+    m_treeMotion.setFloat("uTreeHeight", 1.0f);
+    m_treeMotion.setVec3("uCamPos", camPos);
+    m_treeMotion.setInt("uTex", 0);
+    wind::apply(m_treeMotion, wind, 1.0f);
+    const glm::vec2 camXZ(camPos.x, camPos.z);
+    // The same bands drawTrees drew, so every lit fragment finds its vector.
+    const auto drawRanges = [&](std::uint32_t vao, const TreeLOD& texLod,
+                                const auto& ranges) {
+        glBindVertexArray(vao);
+        bindTreeInstanceAttribs(m_cullVBO);
+        for (const auto& r : ranges) {
+            const TreeLOD::Prim& tp = texLod.prims[r.prim];
+            if (tp.hasTex) tp.tex.bind(0);
+            m_treeMotion.setInt("uAlphaCutout", r.cutout ? 1 : 0);
+            glDrawElementsInstanced(GL_TRIANGLES, r.count, GL_UNSIGNED_INT,
+                reinterpret_cast<const void*>(static_cast<std::uintptr_t>(r.first) *
+                                              sizeof(std::uint32_t)),
+                r.vis);
+        }
+    };
+    struct R { int first, count, prim; bool cutout; int vis; };
+    for (TreeSpecies& sp : m_species) {
+        if (!sp.enabled || sp.count == 0 || sp.lods.empty()) continue;
+        const int nl = static_cast<int>(sp.lods.size());
+        const bool useMid = (nl == 1) && sp.mid.valid();
+        const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo != 0;
+        const float farEnd = imp ? impostorStart : (sp.bbEnabled ? sp.bbStart : 1e9f);
+        for (int k = 0; k < nl; ++k) {
+            const TreeLOD& lod = sp.lods[k];
+            const float lo = (k == 0) ? 0.0f : sp.lods[k - 1].dist;
+            float hi = (k + 1 == nl) ? farEnd : lod.dist;
+            if (useMid) hi = std::min(lod.dist, farEnd);
+            hi = std::max(hi, lo);
+            m_treeMotion.setFloat("uLodMin", lo);
+            m_treeMotion.setFloat("uLodNear", hi);
+            const int vis = cullInstances(sp, lod.boundR, viewProj, 6, camXZ, lo, hi);
+            if (vis == 0) continue;
+            std::vector<R> rs;
+            for (int p = 0; p < static_cast<int>(lod.prims.size()); ++p)
+                rs.push_back({lod.prims[p].first, lod.prims[p].count, p,
+                              lod.prims[p].cutout, vis});
+            drawRanges(lod.vao, lod, rs);
+        }
+        if (useMid) {
+            const TreeLOD& src = sp.lods.back();
+            const float lo = std::min(src.dist, farEnd);
+            if (farEnd <= lo) continue;
+            m_treeMotion.setFloat("uLodMin", lo);
+            m_treeMotion.setFloat("uLodNear", farEnd);
+            const int vis = cullInstances(sp, src.boundR, viewProj, 6, camXZ, lo, farEnd);
+            if (vis == 0) continue;
+            std::vector<R> rs;
+            for (const AutoLod::Range& r : sp.mid.ranges)
+                rs.push_back({r.first, r.count, r.prim, r.cutout, vis});
+            drawRanges(sp.mid.vao, src, rs);
+        }
+    }
+    glBindVertexArray(0);
+    glEnable(GL_CULL_FACE);
+    glDepthMask(GL_TRUE);
+    glDepthFunc(static_cast<GLenum>(prevFunc));
+}
+
 void VegetationSystem::drawTreeBillboards(const FrameContext& c,
                                           const glm::vec3& camRight) {
+    if (eco.enabled) { drawImpostors(c); return; }
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     glDisable(GL_CULL_FACE);
     m_billboard.bind();
@@ -1484,6 +1833,12 @@ void VegetationSystem::rebuildFlowerBuffer() {
                         paintedFlowers.begin(), paintedFlowers.end());
     m_flowerField.upload(m_flowerInst);
     flowerCount = m_flowerField.count();
+    // Where the blooms sit (the stem top, half a flower's scale up), for the
+    // butterflies to visit.
+    m_flowerHeads.clear();
+    for (std::size_t i = 0; i + 8 <= m_flowerInst.size(); i += 8)
+        m_flowerHeads.push_back({m_flowerInst[i], m_flowerInst[i + 1] + 0.5f * m_flowerInst[i + 4],
+                                 m_flowerInst[i + 2]});
 }
 
 // Weighted palette pick plus a small per-bloom colour jitter, so no two flowers
@@ -1643,9 +1998,7 @@ void VegetationSystem::drawFlowers(const FrameContext& c) {
     glDisable(GL_CULL_FACE);
     m_flower.bind();
     m_flower.setMat4("uViewProj", c.viewProj);
-    m_flower.setFloat("uTime", static_cast<float>(c.time));
-    m_flower.setVec2("uWindDir", glm::normalize(glm::vec2(0.6f, 0.3f)));
-    m_flower.setFloat("uWindStrength", glm::mix(0.08f, 0.55f, c.weather));
+    wind::apply(m_flower, wind, 0.5f);
     m_flower.setVec3("uViewPos", c.camPos);
     m_flower.setVec3("uLightDir", c.lightDir);
     m_flower.setVec3("uLightColor", c.lightColor);

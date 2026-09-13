@@ -10,12 +10,10 @@ layout(location = 5) in float iScale;
 layout(location = 6) in vec3  iColor;   // bloom colour
 
 uniform mat4  uViewProj;
-uniform float uTime;
-uniform vec2  uWindDir;
-uniform float uWindStrength;
 uniform vec3  uLightDir;     // towards the sun (shared with flower.frag)
 
 #include "sunshadow.glsl"
+#include "wind.glsl"
 
 out vec3  vWorldPos;
 out vec3  vNormal;
@@ -89,9 +87,11 @@ void main() {
     lp  = rotY(lp,  c, s) * iScale;
     nrm = rotY(nrm, c, s);
 
-    // Gentle sway, stronger toward the bloom (higher local y).
-    float sway = sin(uTime * 1.4 + iPos.x * 0.3 + iPos.z * 0.3);
-    lp.xz += uWindDir * (uWindStrength * 0.5) * sway * aPos.y * iScale;
+    // Sway with the grass around it: the same gusts (wind.glsl), a bloom
+    // nodding on its stem, stronger toward the top.
+    float gust = windGust(iPos.xz);
+    float sway = 0.35 + 0.65 * sin(uWindTime * (1.4 + r1 * 0.6) + iPos.x * 0.3 + iPos.z * 0.3);
+    lp.xz += uWindDir * (uWindStrength * 0.5) * gust * sway * aPos.y * iScale;
 
     vec3 wp = iPos + lp;
     vWorldPos = wp;

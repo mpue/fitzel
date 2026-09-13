@@ -6,6 +6,7 @@ in vec3  vNormal;
 in vec3  vBaseCol; // per-blade colours (computed in the vertex shader)
 in vec3  vTipCol;
 in float vSun;     // sun visibility from the cascades (grass.vert)
+in float vWave;    // gust pressure on this blade (grass.vert)
 out vec4 FragColor;
 
 uniform vec3 uViewPos;
@@ -41,6 +42,9 @@ void main() {
     float farFade = smoothstep(8.0, 38.0, dist);
     float h       = mix(vH, 0.6, farFade);
     vec3 albedo = pow(mix(vBaseCol, vTipCol, h), vec3(2.2)) * uTint; // -> linear
+    // A gust presses the blades over and shows their paler, sky-lit side: the
+    // silvery band that runs across a meadow ahead of the wind.
+    albedo = mix(albedo, albedo * 1.45 + vec3(0.018, 0.022, 0.014), vWave * (0.3 + 0.5 * h));
 
     vec3 N = normalize(vNormal);
     vec3 L = normalize(uLightDir);

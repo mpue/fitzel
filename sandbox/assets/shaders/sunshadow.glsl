@@ -20,11 +20,15 @@ uniform int   uCascadeCount;    // 0 = this pass has no shadows to give: all lit
 uniform vec3  uShadowEye;       // camera position and forward: the cascade is
 uniform vec3  uShadowForward;   //   chosen by view depth, as in lit.frag
 
+// ...and the clouds: sunShadow() below includes their shadow, so everything that
+// receives the sun's cascades is also dimmed by a passing cloud.
+#include "cloudshadow.glsl"
+
 // 0 = in full sun, 1 = in shadow. `L` points towards the sun. `texels` pushes
 // the lookup that many shadow texels towards the light: a blade or a leaf card
 // has no normal worth offsetting along (lit.frag's fix for acne), and moving
 // along the light does the same job for geometry that has none.
-float sunShadow(vec3 wp, vec3 L, float texels) {
+float cascadeShadow(vec3 wp, vec3 L, float texels) {
     if (uCascadeCount <= 0) return 0.0;
     float d = dot(wp - uShadowEye, uShadowForward);
     float reach = uCascadeSplits[uCascadeCount - 1];
@@ -56,4 +60,9 @@ float sunShadow(vec3 wp, vec3 L, float texels) {
     // Fade out over the last tenth of the shadowed range, where lit.frag's own
     // shadow ends too, so there is no line where the grass lights up again.
     return s * (1.0 - smoothstep(0.9 * reach, reach, d));
+}
+
+// The sun's whole shadow at wp: the cascades' and the clouds'.
+float sunShadow(vec3 wp, vec3 L, float texels) {
+    return 1.0 - (1.0 - cascadeShadow(wp, L, texels)) * cloudLight(wp);
 }

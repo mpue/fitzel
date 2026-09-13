@@ -1808,6 +1808,18 @@ const std::vector<Property>& TerrainComponent::properties() {
         addF("Island X",    "islandCenterX",&fitzel::TerrainSettings::islandCenterX,-4000.0f, 4000.0f,"%.0f");
         addF("Island Z",    "islandCenterZ",&fitzel::TerrainSettings::islandCenterZ,-4000.0f, 4000.0f,"%.0f");
         addF("Atoll",       "islandShape",  &fitzel::TerrainSettings::islandShape,   0.0f, 1.0f,   "%.2f");
+        // Mountain backdrop (height 0 = none, the default): ranges around the
+        // valley, which itself stays exactly as it is.
+        addF("Backdrop height", "backdropHeight", &fitzel::TerrainSettings::backdropHeight, 0.0f, 4000.0f, "%.0f m");
+        addF("Valley radius",   "backdropRadius", &fitzel::TerrainSettings::backdropRadius, 100.0f, 20000.0f, "%.0f m");
+        addF("Foothills",       "backdropWidth",  &fitzel::TerrainSettings::backdropWidth,  100.0f, 20000.0f, "%.0f m");
+        addF("Valley X",        "backdropCenterX",&fitzel::TerrainSettings::backdropCenterX,-20000.0f, 20000.0f, "%.0f");
+        addF("Valley Z",        "backdropCenterZ",&fitzel::TerrainSettings::backdropCenterZ,-20000.0f, 20000.0f, "%.0f");
+        addF("Range size",      "backdropScale",  &fitzel::TerrainSettings::backdropScale,  200.0f, 20000.0f, "%.0f m");
+        addF("Valley stretch",  "backdropStretch",&fitzel::TerrainSettings::backdropStretch,0.2f, 5.0f, "%.2f");
+        addF("Valley angle",    "backdropAngle",  &fitzel::TerrainSettings::backdropAngle,  -180.0f, 180.0f, "%.0f deg");
+        addF("Valley outlet",   "backdropOutlet", &fitzel::TerrainSettings::backdropOutlet, 0.0f, 30000.0f, "%.0f m");
+        addF("Valley lake",     "backdropLake",   &fitzel::TerrainSettings::backdropLake,   0.0f, 200.0f, "%.0f m");
         // Streaming granularity -- what the ground is cut into, not what it looks
         // like. Last, because changing either rebuilds every loaded chunk.
         addF("Chunk size",  "chunkSize",    &fitzel::TerrainSettings::chunkSize,     16.0f, 256.0f,"%.0f m");

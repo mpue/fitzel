@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "SandboxMath.hpp"
+#include "Wind.hpp"
 
 using fitzel::TerrainSettings;
 using fitzel::terrainHeight;
@@ -185,7 +186,18 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
                 terrainMoisture(s, wx, wz)
                     - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
                 0.0f, 1.0f);
-            if (lush < 0.22f) continue;
+            // Dry ground: nothing, as it always was -- or, with dryGrowth, a thin
+            // straw-coloured sward, which is what a dry meadow actually is. A
+            // valley floor with bare earth between green patches reads as desert.
+            float dryThin = 1.0f;
+            if (lush < 0.22f) {
+                if (f.dryGrowth <= 0.0f) continue;
+                dryThin = f.dryGrowth * glm::mix(0.35f, 0.75f, lush / 0.22f);
+            }
+            // In the woods the canopy takes the light: a few tufts, not a lawn.
+            // The edge keeps most of its grass -- that is where the sun gets in.
+            float woods = 0.0f;
+            if (f.eco.enabled) woods = ecology::sample(f.eco, wx, wz, h, n.y).forest;
             // Meadow patchiness at several scales. `chaos` scales how much each
             // irregularity kicks in: 0 = near-uniform lawn, 1 = wild meadow,
             // higher piles on taller outliers and more gaps.
@@ -200,7 +212,8 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
             // Per-cell count jitter breaks the even grid density (chaos-scaled).
             const float cellJit = 1.0f + (glm::mix(0.60f, 1.30f, u(rng)) - 1.0f) * chaos;
             const int   count = static_cast<int>(per * dens
-                                * glm::mix(0.35f, 1.0f, lush) * cellJit);
+                                * glm::mix(0.35f, 1.0f, lush) * cellJit
+                                * (1.0f - 0.85f * woods) * dryThin);
             // Height clumps have their OWN frequency (independent of density), so
             // tall tufts and low turf don't line up with thick/thin.
             const float tuft = valNoise2(wx * 0.11f + 40.0f, wz * 0.11f + 40.0f);
@@ -300,13 +313,12 @@ void appendToScene(pathtrace::Scene& scene, const Field& f,
                 const float leanAmt = glm::mix(0.03f, 0.17f, r1);
 
                 const float along = glm::dot(glm::vec2(iPos.x, iPos.z), windDir);
-                const float cross = glm::dot(glm::vec2(iPos.x, iPos.z),
-                                             glm::vec2(-windDir.y, windDir.x));
-                const float g1 = std::sin(along * 0.05f - opt.windTime * 0.85f);
-                const float g2 = std::sin(along * 0.15f + cross * 0.06f
-                                          - opt.windTime * 1.70f);
-                const float gust = glm::clamp(0.45f + 0.42f * g1 + 0.16f * g2,
-                                              0.05f, 1.15f);
+                // wind.glsl's gust field (Wind.hpp), posed at the tracer's time.
+                wind::State ws;
+                ws.dir = windDir;
+                ws.gustiness = opt.windGust;
+                ws.time = opt.windTime;
+                const float gust = wind::gust(ws, glm::vec2(iPos.x, iPos.z));
                 const float sway = std::sin(opt.windTime * (1.35f + 0.6f * r2)
                                             + iPhase + along * 0.25f);
                 const float stiff = glm::mix(0.65f, 1.25f, r1);

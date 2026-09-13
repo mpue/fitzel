@@ -459,6 +459,29 @@ uniform float uDetailScale;    // frequency of the close-up detail
 uniform float uDetailStrength; // how strongly it perturbs the normal
 uniform float uTerrainSpec;    // terrain sun-specular strength (0 = matte)
 
+// The meadow past the grass's streamed radius (see meadow.glsl): the ground
+// takes the field's colour from uMeadowNear metres out, fully by uMeadowFar.
+// uMeadowFar <= 0 switches it off.
+uniform float uMeadowNear;
+uniform float uMeadowFar;
+uniform float uMeadowAmount;   // 0..1, how completely the field hides the soil
+uniform float uMeadowLush;     // the field's moisture, as the blades see it
+uniform vec3  uGrassTint;      // the grass's own colour multiplier (linear)
+uniform float uGrassTop;       // no grass above this height (the snow line)
+uniform float uGrassDry;       // thin dry sward on ground too dry for grass (0 = bare)
+// The moisture the grass grows by, from the far terrain's finest ring
+// (FarTerrain::fineTexture): .w of the rect is the sample count, 0 = none.
+uniform sampler2D uMoistTex;
+uniform vec4      uMoistRect;  // origin x, origin z, cell, samples
+#include "meadow.glsl"
+// The forest (ecology.glsl): under the trees the ground is forest floor --
+// the terrain layer uForestLayer (-1 = none) takes over there -- and no meadow.
+uniform int   uForestLayer;
+uniform vec3  uCanopy;         // the trees' mean foliage colour (linear)
+#include "ecology.glsl"
+#include "cloudshadow.glsl"
+float gWoods = 0.0;            // this fragment's forest (0 open .. 1 inside a stand)
+
 int selectCascade() {
     for (int i = 0; i < uCascadeCount; ++i) {
         if (vViewDepth < uCascadeSplits[i]) return i;
@@ -791,6 +814,11 @@ void terrainSurface(vec3 wp, vec3 n, float detail, out vec3 albedo, out vec3 nor
         if (i >= uLayerCount) continue;
         vec4  b = uLayerBand[i];
         float autoW = band(h, b.x, b.y, 1.5) * band(slopeDeg, b.z, b.w, 6.0);
+        // In the woods the forest floor layer wins over whatever the height
+        // and slope bands would have laid there.
+        if (uForestLayer >= 0 && gWoods > 0.0)
+            autoW = (i == uForestLayer) ? max(autoW, gWoods * 1.3)
+                                        : autoW * (1.0 - 0.85 * gWoods);
         float pw    = (i < 4) ? paint[i] : 0.0;
         float w     = autoW * (1.0 - paintCover) + pw;
         if (w > 0.0) {
@@ -955,8 +983,42 @@ void main() {
     vec3 albedo;
     vec3 terrainNrm = N; // terrain's perturbed normal (filled in layer mode)
     float texA = 1.0; // texture alpha, folded into the output alpha
+    // Taken out here, in uniform control flow, for the meadow below.
+    float groundPx = length(fwidth(vWorldPos.xz));
     if (uColorMode == 1) {
+        gWoods = ecoSample(vWorldPos.xz, vWorldPos.y, N.y).y;
         terrainSurface(vWorldPos, N, detail, albedo, terrainNrm);
+        // Past the trees' shadow range the canopy still stands over its floor,
+        // and between the impostors what shows is shade and crowns, not leaf
+        // litter in the sun: the floor goes the canopy's dark green there.
+        float canopyShade = gWoods * smoothstep(90.0, 160.0, length(vWorldPos - uViewPos));
+        albedo = mix(albedo, pow(uCanopy * 0.55, vec3(1.0 / 2.2)), 0.7 * canopyShade);
+        // Past the blades, the field's colour: without it the valley is bare
+        // soil from a hundred metres on (see meadow.glsl). The soil's relief
+        // goes with it -- a meadow hides the pebbles it grows between.
+        if (uMeadowFar > 0.0) {
+            float t = smoothstep(uMeadowNear, uMeadowFar, length(vWorldPos - uViewPos))
+                    * uMeadowAmount;
+            if (t > 0.0) {
+                // How wet the ground is where the grass grows: the blades take
+                // their colour from it (dry = straw) and thin out where it is
+                // too dry for them.
+                float lush = uMeadowLush;
+                if (uMoistRect.w > 0.0) {
+                    vec2 muv = ((vWorldPos.xz - uMoistRect.xy) / uMoistRect.z + 0.5) / uMoistRect.w;
+                    if (all(greaterThan(muv, vec2(0.0))) && all(lessThan(muv, vec2(1.0))))
+                        lush = textureLod(uMoistTex, muv, 0.0).g;
+                }
+                float thin = (lush < 0.22) ? uGrassDry * mix(0.35, 0.75, lush / 0.22) : 1.0;
+                float cover = t * meadowCover(vWorldPos.xz, vWorldPos.y, N.y,
+                                              uWaterLevel, uGrassTop, groundPx)
+                            * (1.0 - 0.9 * gWoods) * clamp(thin * 1.4, 0.0, 1.0);
+                vec3 m = pow(pow(meadowColour(vWorldPos.xz, lush, groundPx),
+                                 vec3(2.2)) * uGrassTint, vec3(1.0 / 2.2));
+                albedo     = mix(albedo, m, cover);
+                terrainNrm = normalize(mix(terrainNrm, N, cover));
+            }
+        }
     } else if (uColorMode == 2) {
         vec4 t = texture(uTexture, vUV);
         albedo = t.rgb * uTint; texA = t.a;
@@ -1141,6 +1203,8 @@ void main() {
     // face it -- the far side of an object is in its own shadow anyway.
     if (shadow < 0.99 && dot(normalize(vNormal), L) > 0.0)
         shadow = max(shadow, contactShadow(vWorldPos, normalize(vNormal), L));
+    // A cloud between the surface and the sun (cloudshadow.glsl).
+    shadow = 1.0 - (1.0 - shadow) * cloudLight(vWorldPos);
 
     // The sun, through its disc: 0.5 degrees of angular radius, the tracer's
     // default, so a mirror shows a sun and not a point. No energy scale here,

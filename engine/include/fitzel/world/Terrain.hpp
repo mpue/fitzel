@@ -55,6 +55,35 @@ struct TerrainSettings {
     float islandCenterX = 0.0f;
     float islandCenterZ = 0.0f;
     float islandShape   = 0.0f;   // 0 island, 1 atoll (float for uniform serialization)
+
+    // Mountain backdrop: ranges that rise AROUND a valley and leave the valley
+    // itself exactly as the generator above made it. The point is scale -- a
+    // landscape a few hundred metres across reads as a garden until something
+    // two kilometres high stands behind it -- without touching a single height
+    // inside the part of the world that was sculpted, painted and planted.
+    // backdropHeight 0 (the default) switches it off entirely.
+    //
+    // The valley is an ellipse around (backdropCenterX, backdropCenterZ):
+    // backdropRadius along backdropAngle (degrees, 0 = +X), that times
+    // backdropStretch across it. Its rim wanders by up to a third of the radius,
+    // so the ranges come in as spurs and bays rather than a crater wall. Over
+    // backdropWidth the ground rises through foothills to the full massif, whose
+    // features are about backdropScale across.
+    float backdropHeight  = 0.0f;
+    float backdropRadius  = 1500.0f;
+    float backdropWidth   = 2500.0f;
+    float backdropCenterX = 0.0f;
+    float backdropCenterZ = 0.0f;
+    float backdropScale   = 3000.0f;
+    float backdropStretch = 1.0f;
+    float backdropAngle   = 0.0f;
+    // The valley need not be a bowl: backdropOutlet (metres, 0 = closed) runs
+    // it on along backdropAngle as a long, bending valley between the ranges,
+    // narrowing as it goes and closed at the far end by the mountains -- the
+    // view down a valley to ridge behind ridge. backdropLake (metres, 0 = none)
+    // sinks its floor a third of the way down into a lake basin that deep.
+    float backdropOutlet  = 0.0f;
+    float backdropLake    = 0.0f;
 };
 
 // Value equality, so a host can tell "these settings changed" without keeping a
@@ -70,8 +99,19 @@ inline bool operator==(const TerrainSettings& a, const TerrainSettings& b) {
            a.terrace == b.terrace && a.valleyDepth == b.valleyDepth &&
            a.peakSharpness == b.peakSharpness && a.reliefGain == b.reliefGain &&
            a.islandRadius == b.islandRadius && a.islandCenterX == b.islandCenterX &&
-           a.islandCenterZ == b.islandCenterZ && a.islandShape == b.islandShape;
+           a.islandCenterZ == b.islandCenterZ && a.islandShape == b.islandShape &&
+           a.backdropHeight == b.backdropHeight && a.backdropRadius == b.backdropRadius &&
+           a.backdropWidth == b.backdropWidth && a.backdropCenterX == b.backdropCenterX &&
+           a.backdropCenterZ == b.backdropCenterZ && a.backdropScale == b.backdropScale &&
+           a.backdropStretch == b.backdropStretch && a.backdropAngle == b.backdropAngle &&
+           a.backdropOutlet == b.backdropOutlet && a.backdropLake == b.backdropLake;
 }
+
+// The backdrop's contribution alone (0 inside the valley, and everywhere while
+// backdropHeight is 0). terrainBaseHeight already includes it; this is for the
+// ones who need to know how much of a height is mountain -- the far-field
+// shading, which puts rock and snow on the ranges and not on the valley.
+float terrainBackdrop(const TerrainSettings& settings, float worldX, float worldZ);
 inline bool operator!=(const TerrainSettings& a, const TerrainSettings& b) {
     return !(a == b);
 }
