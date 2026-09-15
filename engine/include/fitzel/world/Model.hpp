@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,27 @@ struct AnimationClip {
     std::vector<JointTrack> tracks; // sized to the skeleton's joint count
 };
 
+// The decoded RGBA pixels of one image, shared and read-only. Every primitive
+// that samples the same image holds the same buffer: parts of one model share
+// their atlases, and a copy per part is what took medieval_house.glb (107 parts,
+// 30 images) to 5 GB of RAM and medieval_watchtower.glb to an estimated 49.
+// Reads like the vector it wraps; copying it shares, never duplicates.
+class SharedPixels {
+public:
+    SharedPixels() = default;
+    explicit SharedPixels(std::vector<std::uint8_t> px)
+        : px_(std::make_shared<const std::vector<std::uint8_t>>(std::move(px))) {}
+
+    bool                empty() const { return !px_ || px_->empty(); }
+    std::size_t         size()  const { return px_ ? px_->size() : 0; }
+    const std::uint8_t* data()  const { return px_ ? px_->data() : nullptr; }
+    std::uint8_t operator[](std::size_t i) const { return (*px_)[i]; }
+    void                reset() { px_.reset(); }
+
+private:
+    std::shared_ptr<const std::vector<std::uint8_t>> px_;
+};
+
 // One material group of a loaded model: a de-indexed triangle list interleaved
 // as position(3) + normal(3) + uv(2) per vertex (8 floats), plus its decoded
 // base-colour texture (RGBA, top-to-bottom). Node transforms are baked in for
@@ -54,13 +76,13 @@ struct AnimationClip {
 struct ModelPrimitive {
     std::vector<float>         vertices;  // 8 floats per vertex
     std::vector<VertexSkin>    skin;      // per-vertex binding (empty = static)
-    std::vector<std::uint8_t>  texPixels; // RGBA base colour, empty if untextured
+    SharedPixels               texPixels; // RGBA base colour, empty if untextured
     int   texWidth    = 0;
     int   texHeight   = 0;
-    std::vector<std::uint8_t>  normalPixels; // RGBA tangent-space normal map (opt)
+    SharedPixels               normalPixels; // RGBA tangent-space normal map (opt)
     int   normalWidth  = 0;
     int   normalHeight = 0;
-    std::vector<std::uint8_t>  emissionPixels; // RGBA emission/_Illum map (opt)
+    SharedPixels               emissionPixels; // RGBA emission/_Illum map (opt)
     int   emissionWidth  = 0;
     int   emissionHeight = 0;
     bool  alphaCutout = false;            // material uses MASK/BLEND (foliage)
@@ -70,7 +92,7 @@ struct ModelPrimitive {
     // arrives as it is and a separate occlusion map is folded into R. R is 255
     // (unoccluded) wherever the file had no occlusion to give. The FACTORS are
     // kept apart from the map: the file's value is factor * texel.
-    std::vector<std::uint8_t>  ormPixels;
+    SharedPixels               ormPixels;
     int   ormWidth  = 0;
     int   ormHeight = 0;
     bool  hasPbr    = false;              // the two factors below came from the file

@@ -36,6 +36,15 @@ public:
     int importNode(const std::string& path, int nodeIndex, bool flipV,
                    fitzel::AssetDatabase& assetDb, std::vector<MaterialDef>& materials);
 
+    // Drop the decoded texture pixels the node cache holds. They are only needed
+    // until importNode has uploaded them, and kept they cost what the whole file
+    // decodes to (medieval_house.glb: ~0.5 GB, 5 GB before images were shared).
+    // Geometry, names and centres stay; a node imported after this reads its
+    // file again. Called once a frame, but not while a scene load streams in
+    // across frames, so one import operation -- a drop, a scene load -- decodes
+    // each file once.
+    void releasePixels();
+
     // Look up a loaded model by id (nullptr if unknown).
     LoadedModel* byId(int id);
 
@@ -55,7 +64,15 @@ private:
                       std::shared_ptr<fitzel::ModelData> keepAnim,
                       fitzel::AssetDatabase& assetDb, std::vector<MaterialDef>& materials);
 
+    // A model's nodes, cached per path+flipV. `pixels` says whether they still
+    // carry their decoded maps (see releasePixels).
+    struct NodeEntry {
+        std::vector<fitzel::ModelNode> nodes;
+        bool                           pixels = true;
+    };
+    NodeEntry& nodeEntry(const std::string& path, bool flipV);
+
     std::vector<std::unique_ptr<LoadedModel>> models_;
-    std::unordered_map<std::string, std::vector<fitzel::ModelNode>> nodeCache_;
+    std::unordered_map<std::string, NodeEntry> nodeCache_;
     int counter_ = 0;
 };

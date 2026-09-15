@@ -1,6 +1,7 @@
 #include "fitzel/world/Model.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -9,6 +10,8 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <map>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -164,11 +167,23 @@ std::vector<std::string> filesIn(const std::filesystem::path& dir) {
 
 // Store decoded RGBA pixels into an output buffer + dimensions.
 void storePixels(unsigned char* px, int w, int h,
-                 std::vector<std::uint8_t>& outPix, int& outW, int& outH) {
+                 SharedPixels& outPix, int& outW, int& outH) {
     if (!px) return;
-    outPix.assign(px, px + static_cast<std::size_t>(w) * h * 4);
+    outPix = SharedPixels(
+        std::vector<std::uint8_t>(px, px + static_cast<std::size_t>(w) * h * 4));
     outW = w; outH = h;
     stbi_image_free(px);
+}
+
+// One decoded image and its size.
+struct DecodedImage {
+    SharedPixels px;
+    int          w = 0;
+    int          h = 0;
+};
+
+void assignImage(const DecodedImage& d, SharedPixels& outPix, int& outW, int& outH) {
+    outPix = d.px; outW = d.w; outH = d.h;
 }
 
 // Does this base-colour map cut holes in the surface it dresses?
@@ -198,7 +213,7 @@ void storePixels(unsigned char* px, int w, int h,
 //
 // Sampled, not scanned: every seventh texel is far more than a ratio this coarse
 // needs, and it keeps a 4k atlas to a few hundred thousand reads.
-bool alphaCutsHoles(const std::vector<std::uint8_t>& rgba) {
+bool alphaCutsHoles(const SharedPixels& rgba) {
     const std::size_t texels = rgba.size() / 4;
     if (texels < 64) return false;
     std::size_t seen = 0, holes = 0, mid = 0;
@@ -231,11 +246,15 @@ const char* imageFormat(const unsigned char* p, std::size_t n) {
 // an embedded buffer view (the GLB case), an inline base64 data URI, or an
 // external file relative to the model. Missing any of these left textures
 // undecoded before -- so a model mixing storage/workflows lost some textures.
+//
+// Safe to run on several threads at once, provided each has stb's flip flag at 0
+// (glTF UVs match GL once uploaded as-is): the caller sets it, because the global
+// setter must stay on the main thread and the thread-local one must stay off it
+// (see stb_image_impl.cpp).
 void decodeImage(const cgltf_image* img, const std::string& baseDir,
-                 std::vector<std::uint8_t>& outPix, int& outW, int& outH,
+                 SharedPixels& outPix, int& outW, int& outH,
                  const std::string& matName) {
     if (!img) return;
-    stbi_set_flip_vertically_on_load(0); // glTF UVs match GL once uploaded as-is
     int w = 0, h = 0, ch = 0;
 
     if (img->buffer_view) {                       // embedded (typical GLB)
@@ -254,6 +273,9 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     }
     if (!img->uri) return;
 
+    // In the two branches below the decode is its own statement: passed straight
+    // into storePixels next to w/h, MSVC reads w/h (still 0) before the decode
+    // sets them, and the image comes out 0x0 (see loadTextureFileRGBA).
     if (std::strncmp(img->uri, "data:", 5) == 0) { // inline base64 data URI
         const char* comma = std::strchr(img->uri, ',');
         if (!comma) return;
@@ -263,10 +285,10 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
         cgltf_options opts{};
         if (cgltf_load_buffer_base64(&opts, outSize, b64, &decoded) ==
                 cgltf_result_success && decoded) {
-            storePixels(stbi_load_from_memory(static_cast<unsigned char*>(decoded),
-                                              static_cast<int>(outSize), &w, &h, &ch, 4),
-                        w, h, outPix, outW, outH);
+            unsigned char* px = stbi_load_from_memory(static_cast<unsigned char*>(decoded),
+                                                      static_cast<int>(outSize), &w, &h, &ch, 4);
             std::free(decoded);
+            storePixels(px, w, h, outPix, outW, outH);
         }
         return;
     }
@@ -277,7 +299,69 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
     cgltf_decode_uri(&uri[0]);
     const std::string file = (std::filesystem::path(baseDir) / uri.c_str())
                                  .generic_string();
-    storePixels(decodeImageFile(file, w, h, ch), w, h, outPix, outW, outH);
+    unsigned char* px = decodeImageFile(file, w, h, ch);
+    storePixels(px, w, h, outPix, outW, outH);
+}
+
+// What one glTF load has decoded so far. Parts of a model share their images --
+// medieval_house.glb samples 30 images from 107 primitives -- so each image is
+// decoded once and handed to every primitive that uses it, and each pairing of
+// metal-rough and occlusion map is packed once (see readMetalRoughOcclusion).
+struct GltfImages {
+    std::string baseDir; // where external (non-embedded) images are resolved
+    std::unordered_map<const cgltf_image*, DecodedImage> decoded;
+    std::map<std::pair<const cgltf_image*, const cgltf_image*>, DecodedImage> orm;
+};
+
+// `img` decoded -- by an earlier primitive of this load, or now. A failed decode
+// is remembered too, so a broken image warns once, not once per part.
+const DecodedImage& gltfImage(GltfImages& images, const cgltf_image* img,
+                              const std::string& matName) {
+    auto it = images.decoded.find(img);
+    if (it == images.decoded.end()) {
+        DecodedImage d;
+        stbi_set_flip_vertically_on_load(0); // see decodeImage
+        decodeImage(img, images.baseDir, d.px, d.w, d.h, matName);
+        it = images.decoded.emplace(img, std::move(d)).first;
+    }
+    return it->second;
+}
+
+// The metal-rough map `mrImg` and the occlusion map `occImg` (either may be
+// null) packed into one RGBA map in glTF's channel layout. A packed ORM -- one
+// image for both -- already is that, and is shared as it is.
+DecodedImage packOrm(GltfImages& images, const cgltf_image* mrImg,
+                     const cgltf_image* occImg, const std::string& matName) {
+    const DecodedImage mr = mrImg ? gltfImage(images, mrImg, matName) : DecodedImage{};
+    // Packed ORM: the occlusion is already in R, which is exactly why glTF put
+    // it there.
+    if (mrImg && mrImg == occImg) return mr;
+    const DecodedImage occ = occImg ? gltfImage(images, occImg, matName) : DecodedImage{};
+    if (mr.px.empty() && occ.px.empty()) return {};
+
+    std::vector<std::uint8_t> orm;
+    int w = mr.w, h = mr.h;
+    if (!mr.px.empty()) {
+        // Anything else in an MR map's R is unspecified and must not be read as
+        // occlusion (it is often 0, which would black the model out).
+        orm.assign(mr.px.data(), mr.px.data() + mr.px.size());
+        for (std::size_t i = 0; i < orm.size(); i += 4) orm[i] = 255;
+    }
+    if (!occ.px.empty()) {
+        if (orm.empty()) {
+            // Occlusion alone: roughness and metalness come from the factors, so
+            // their channels are 1 (factor * 1).
+            orm.assign(occ.px.size(), 255);
+            w = occ.w; h = occ.h;
+        }
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                const int sx = x * occ.w / w, sy = y * occ.h / h;
+                orm[(static_cast<std::size_t>(y) * w + x) * 4] =
+                    occ.px[(static_cast<std::size_t>(sy) * occ.w + sx) * 4];
+            }
+    }
+    return {SharedPixels(std::move(orm)), w, h};
 }
 
 // A material's metallic-roughness and occlusion, packed into one RGBA map in
@@ -289,7 +373,7 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
 // An occlusion map of a different size is resampled nearest onto the MR map's
 // grid rather than dropped -- they are the same surface, merely exported at two
 // resolutions.
-void readMetalRoughOcclusion(const cgltf_material& mat, const std::string& baseDir,
+void readMetalRoughOcclusion(const cgltf_material& mat, GltfImages& images,
                              int uvSet, ModelPrimitive& mp) {
     if (!mat.has_pbr_metallic_roughness) return;   // spec-gloss: leave the defaults
     const cgltf_pbr_metallic_roughness& pbr = mat.pbr_metallic_roughness;
@@ -303,33 +387,120 @@ void readMetalRoughOcclusion(const cgltf_material& mat, const std::string& baseD
     if (occTex && mat.occlusion_texture.texcoord != uvSet) occTex = nullptr;
     if (!mrTex && !occTex) return;
 
-    if (mrTex)
-        decodeImage(mrTex->image, baseDir, mp.ormPixels, mp.ormWidth, mp.ormHeight,
-                    mp.materialName);
-    // Packed ORM: the occlusion is already in R, which is exactly why glTF put
-    // it there. Anything else in an MR map's R is unspecified and must not be
-    // read as occlusion (it is often 0, which would black the model out).
-    const bool packed = mrTex && occTex && mrTex->image == occTex->image;
-    if (!mp.ormPixels.empty() && !packed)
-        for (std::size_t i = 0; i < mp.ormPixels.size(); i += 4) mp.ormPixels[i] = 255;
-    if (!occTex || packed) return;
+    const auto key = std::make_pair(mrTex ? mrTex->image : nullptr,
+                                    occTex ? occTex->image : nullptr);
+    auto it = images.orm.find(key);
+    if (it == images.orm.end())
+        it = images.orm.emplace(key, packOrm(images, key.first, key.second,
+                                             mp.materialName)).first;
+    assignImage(it->second, mp.ormPixels, mp.ormWidth, mp.ormHeight);
+}
 
-    std::vector<std::uint8_t> occ;
-    int ow = 0, oh = 0;
-    decodeImage(occTex->image, baseDir, occ, ow, oh, mp.materialName);
-    if (occ.empty()) return;
-    if (mp.ormPixels.empty()) {
-        // Occlusion alone: roughness and metalness come from the factors, so
-        // their channels are 1 (factor * 1).
-        mp.ormPixels.assign(occ.size(), 255);
-        mp.ormWidth = ow; mp.ormHeight = oh;
-    }
-    for (int y = 0; y < mp.ormHeight; ++y)
-        for (int x = 0; x < mp.ormWidth; ++x) {
-            const int sx = x * ow / mp.ormWidth, sy = y * oh / mp.ormHeight;
-            mp.ormPixels[(static_cast<std::size_t>(y) * mp.ormWidth + x) * 4] =
-                occ[(static_cast<std::size_t>(sy) * ow + sx) * 4];
+// The view a material's base colour is sampled through: metallic-roughness base
+// colour, or -- when that has no texture -- the spec-gloss diffuse. The same
+// choice gltfPrimitive makes; null when the material has neither workflow.
+const cgltf_texture_view* gltfColorView(const cgltf_material& mat) {
+    const cgltf_texture_view* v = nullptr;
+    if (mat.has_pbr_metallic_roughness) v = &mat.pbr_metallic_roughness.base_color_texture;
+    if ((!v || !v->texture) && mat.has_pbr_specular_glossiness)
+        v = &mat.pbr_specular_glossiness.diffuse_texture;
+    return v;
+}
+
+// The UV set the vertices are built with: the base-colour texture's, which a
+// KHR_texture_transform may override. 0 for an untextured material.
+int gltfUvSet(const cgltf_texture_view* colorView) {
+    if (!colorView || !colorView->texture) return 0;
+    if (colorView->has_transform && colorView->transform.has_texcoord)
+        return colorView->transform.texcoord;
+    return colorView->texcoord;
+}
+
+// At most this many images decode at once. Each one in flight holds its
+// compressed bytes, stb's inflate buffer and the RGBA result -- about 0.2 GB for
+// a 4k PNG, 0.75 GB for an 8k one -- so the cap is what keeps a model of big
+// maps from spiking the process by gigabytes while it loads.
+constexpr std::size_t kDecodeThreads = 8;
+
+// job(i) for every i in [0, n), on worker threads. The calling thread only
+// waits: stb's flip flag is set per worker through the thread-local setter,
+// which must never run on the main thread (it would pin the main thread's flag
+// against the global one the texture loaders set there).
+template <class Job>
+void decodeInParallel(std::size_t n, const Job& job) {
+    const std::size_t hw      = std::max(1u, std::thread::hardware_concurrency());
+    const std::size_t threads = std::min({n, hw, kDecodeThreads});
+    std::atomic<std::size_t> next{0};
+    std::vector<std::thread> pool;
+    pool.reserve(threads);
+    for (std::size_t t = 0; t < threads; ++t)
+        pool.emplace_back([&] {
+            stbi_set_flip_vertically_on_load_thread(0);
+            for (std::size_t i; (i = next.fetch_add(1)) < n;) {
+                // An allocation that fails leaves that image undecoded (flat
+                // colour) instead of terminating the editor from a worker.
+                try { job(i); } catch (...) {}
+            }
+        });
+    for (std::thread& t : pool) t.join();
+}
+
+// Decode, up front and in parallel, every image the primitives of this load are
+// going to sample, into `images` -- where gltfImage then finds them. Decoding
+// was nearly all of a big model's load time, one image after another: 11 4k maps
+// of medieval_watchtower.glb took 2.2 s. The selection mirrors gltfPrimitive (a
+// map on another UV set than the base colour is not read, so not decoded
+// either); anything it misses still decodes on first use, just not in parallel.
+void predecodeGltfImages(const cgltf_data* data, GltfImages& images) {
+    struct Job {
+        const cgltf_image* img = nullptr;
+        std::string        matName; // the first material that uses it, for warnings
+        std::size_t        bytes = 0;
+        DecodedImage       out;
+    };
+    std::vector<Job> jobs;
+    std::unordered_set<const cgltf_image*> seen;
+    auto want = [&](const cgltf_texture* tex, const cgltf_material& mat) {
+        if (!tex || !tex->image || !seen.insert(tex->image).second) return;
+        Job j;
+        j.img     = tex->image;
+        j.matName = mat.name ? mat.name : "";
+        if (tex->image->buffer_view) j.bytes = tex->image->buffer_view->size;
+        jobs.push_back(std::move(j));
+    };
+    std::unordered_set<const cgltf_material*> mats;
+    for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
+        const cgltf_mesh* mesh = data->nodes[ni].mesh;
+        if (!mesh) continue;
+        for (cgltf_size pi = 0; pi < mesh->primitives_count; ++pi) {
+            const cgltf_primitive& prim = mesh->primitives[pi];
+            if (prim.type != cgltf_primitive_type_triangles || !prim.material) continue;
+            if (!mats.insert(prim.material).second) continue;
+            const cgltf_material&     mat   = *prim.material;
+            const cgltf_texture_view* color = gltfColorView(mat);
+            const int                 uvSet = gltfUvSet(color);
+            if (color) want(color->texture, mat);
+            want(mat.normal_texture.texture, mat);
+            if (mat.has_pbr_metallic_roughness) {
+                const cgltf_texture_view& mr = mat.pbr_metallic_roughness.metallic_roughness_texture;
+                if (mr.texcoord == uvSet) want(mr.texture, mat);
+                if (mat.occlusion_texture.texcoord == uvSet)
+                    want(mat.occlusion_texture.texture, mat);
+            }
+            if (mat.emissive_texture.texcoord == uvSet)
+                want(mat.emissive_texture.texture, mat);
         }
+    }
+    if (jobs.size() < 2) return; // nothing to overlap: gltfImage decodes it inline
+    // Biggest first, so the longest decode is not the one left running alone at
+    // the end.
+    std::sort(jobs.begin(), jobs.end(),
+              [](const Job& a, const Job& b) { return a.bytes > b.bytes; });
+    decodeInParallel(jobs.size(), [&](std::size_t i) {
+        Job& j = jobs[i];
+        decodeImage(j.img, images.baseDir, j.out.px, j.out.w, j.out.h, j.matName);
+    });
+    for (Job& j : jobs) images.decoded.emplace(j.img, std::move(j.out));
 }
 
 // Where a skinned primitive's joint indices point. `skin` is the node's glTF
@@ -349,9 +520,10 @@ struct GltfSkinCtx {
 // JOINTS/WEIGHTS -- the per-vertex skin binding. Returns an empty primitive for
 // anything that isn't a triangle list with positions, so callers skip on
 // vertexCount() == 0. Shared by loadGltf (one flat model) and loadGltfNodes (one
-// entry per node), which differ only in how they group the results.
+// entry per node), which differ only in how they group the results. `images` is
+// the load's decode cache: pass the same one for every primitive of a file.
 ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model,
-                             const std::string& baseDir, const GltfSkinCtx& sk) {
+                             GltfImages& images, const GltfSkinCtx& sk) {
     ModelPrimitive mp;
     if (prim.type != cgltf_primitive_type_triangles) return mp;
 
@@ -417,30 +589,27 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         }
         // The base-colour view drives the vertex UVs (base colour, normal and
         // emission share one set in every workflow we target).
-        if (colorView && colorView->texture) {
-            uvSet = colorView->texcoord;
-            if (colorView->has_transform) {
-                const cgltf_texture_transform& tr = colorView->transform;
-                uvHasXform  = true;
-                uvOffset[0] = tr.offset[0]; uvOffset[1] = tr.offset[1];
-                uvScale[0]  = tr.scale[0];  uvScale[1]  = tr.scale[1];
-                uvRotation  = tr.rotation;
-                if (tr.has_texcoord) uvSet = tr.texcoord; // may override the set
-            }
+        uvSet = gltfUvSet(colorView);
+        if (colorView && colorView->texture && colorView->has_transform) {
+            const cgltf_texture_transform& tr = colorView->transform;
+            uvHasXform  = true;
+            uvOffset[0] = tr.offset[0]; uvOffset[1] = tr.offset[1];
+            uvScale[0]  = tr.scale[0];  uvScale[1]  = tr.scale[1];
+            uvRotation  = tr.rotation;
         }
         if (colorTex)
-            decodeImage(colorTex->image, baseDir,
-                        mp.texPixels, mp.texWidth, mp.texHeight, mp.materialName);
+            assignImage(gltfImage(images, colorTex->image, mp.materialName),
+                        mp.texPixels, mp.texWidth, mp.texHeight);
         // ...and if the material claimed to be opaque, let the pixels answer:
         // foliage that ships as OPAQUE with a leaf mask is common (see
         // alphaCutsHoles), and taking it at its word draws the leaf cards solid.
         if (!mp.alphaCutout && alphaCutsHoles(mp.texPixels)) mp.alphaCutout = true;
         // Tangent-space normal map (KHR standard normal_texture).
         if (mat->normal_texture.texture)
-            decodeImage(mat->normal_texture.texture->image, baseDir,
-                        mp.normalPixels, mp.normalWidth, mp.normalHeight,
-                        mp.materialName);
-        readMetalRoughOcclusion(*mat, baseDir, uvSet, mp);
+            assignImage(gltfImage(images, mat->normal_texture.texture->image,
+                                  mp.materialName),
+                        mp.normalPixels, mp.normalWidth, mp.normalHeight);
+        readMetalRoughOcclusion(*mat, images, uvSet, mp);
         // Emission. The glTF path never read it, so every lit screen, lamp and
         // neon strip in a GLB came in dark. The factor alone is a colour; with a
         // map the map is the colour and the factor its tint -- which is how
@@ -450,9 +619,9 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
             for (float& e : mp.emissive) e *= mat->emissive_strength.emissive_strength;
         if (mat->emissive_texture.texture &&
             mat->emissive_texture.texcoord == uvSet)
-            decodeImage(mat->emissive_texture.texture->image, baseDir,
-                        mp.emissionPixels, mp.emissionWidth, mp.emissionHeight,
-                        mp.materialName);
+            assignImage(gltfImage(images, mat->emissive_texture.texture->image,
+                                  mp.materialName),
+                        mp.emissionPixels, mp.emissionWidth, mp.emissionHeight);
     }
 
     // Resolve the UV accessor for the chosen set, falling back to the first
@@ -524,8 +693,9 @@ ModelData loadGltf(const std::string& path) {
         return out;
     }
     // Directory the model lives in, for resolving external (non-embedded) images.
-    const std::string baseDir =
-        std::filesystem::path(path).parent_path().generic_string();
+    GltfImages images;
+    images.baseDir = std::filesystem::path(path).parent_path().generic_string();
+    predecodeGltfImages(data, images);
 
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
@@ -622,7 +792,7 @@ ModelData loadGltf(const std::string& path) {
 
         for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
             ModelPrimitive mp =
-                gltfPrimitive(node.mesh->primitives[pi], model, baseDir, sk);
+                gltfPrimitive(node.mesh->primitives[pi], model, images, sk);
             if (mp.vertexCount() == 0) continue;
             for (int i = 1; i + 6 < static_cast<int>(mp.vertices.size()); i += 8) {
                 lo = glm::min(lo, mp.vertices[i]);
@@ -651,8 +821,9 @@ std::vector<ModelNode> loadGltfNodes(const std::string& path) {
         cgltf_free(data);
         return out;
     }
-    const std::string baseDir =
-        std::filesystem::path(path).parent_path().generic_string();
+    GltfImages images;
+    images.baseDir = std::filesystem::path(path).parent_path().generic_string();
+    predecodeGltfImages(data, images);
 
     for (cgltf_size ni = 0; ni < data->nodes_count; ++ni) {
         const cgltf_node& node = data->nodes[ni];
@@ -673,7 +844,7 @@ std::vector<ModelNode> loadGltfNodes(const std::string& path) {
         glm::vec3 lo(1e30f), hi(-1e30f);
         for (cgltf_size pi = 0; pi < node.mesh->primitives_count; ++pi) {
             ModelPrimitive mp =
-                gltfPrimitive(node.mesh->primitives[pi], world, baseDir, {});
+                gltfPrimitive(node.mesh->primitives[pi], world, images, {});
             if (mp.vertexCount() == 0) continue;
             for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
                 const glm::vec3 v(mp.vertices[i], mp.vertices[i + 1], mp.vertices[i + 2]);
@@ -714,29 +885,40 @@ glm::mat4 aiToGlm(const aiMatrix4x4& m) {
                      m.a4, m.b4, m.c4, m.d4);
 }
 
+// The assimp loaders' counterpart of GltfImages: each image decoded once per
+// load, keyed by where it came from ("*N" for an embedded one, else the file) --
+// and the folder sweep the Unity texture matching reads (see unityCandidates).
+struct AiImages {
+    std::unordered_map<std::string, DecodedImage> decoded;
+    bool                                          listed = false;
+    std::vector<std::filesystem::path>            candidates;
+};
+
 // Decode an assimp EMBEDDED texture (compressed like PNG/JPG, or raw BGRA) into
-// an RGBA buffer + dimensions.
-void decodeAiTexture(const aiTexture* tex, std::vector<std::uint8_t>& outPix,
+// an RGBA buffer + dimensions. Thread-safe the way decodeImage is: the caller
+// sets stb's flip flag to 0 on its thread.
+void decodeAiTexture(const aiTexture* tex, SharedPixels& outPix,
                      int& outW, int& outH) {
     if (!tex) return;
     if (tex->mHeight == 0) {                 // compressed blob of mWidth bytes
         int w = 0, h = 0, ch = 0;
-        stbi_set_flip_vertically_on_load(0);
-        storePixels(stbi_load_from_memory(
-                        reinterpret_cast<const unsigned char*>(tex->pcData),
-                        static_cast<int>(tex->mWidth), &w, &h, &ch, 4),
-                    w, h, outPix, outW, outH);
+        // Its own statement: see loadTextureFileRGBA.
+        unsigned char* px = stbi_load_from_memory(
+            reinterpret_cast<const unsigned char*>(tex->pcData),
+            static_cast<int>(tex->mWidth), &w, &h, &ch, 4);
+        storePixels(px, w, h, outPix, outW, outH);
     } else {                                 // raw aiTexel grid (B,G,R,A)
         outW = static_cast<int>(tex->mWidth);
         outH = static_cast<int>(tex->mHeight);
         const std::size_t n = static_cast<std::size_t>(tex->mWidth) * tex->mHeight;
-        outPix.resize(n * 4);
+        std::vector<std::uint8_t> px(n * 4);
         for (std::size_t i = 0; i < n; ++i) {
-            outPix[i * 4 + 0] = tex->pcData[i].r;
-            outPix[i * 4 + 1] = tex->pcData[i].g;
-            outPix[i * 4 + 2] = tex->pcData[i].b;
-            outPix[i * 4 + 3] = tex->pcData[i].a;
+            px[i * 4 + 0] = tex->pcData[i].r;
+            px[i * 4 + 1] = tex->pcData[i].g;
+            px[i * 4 + 2] = tex->pcData[i].b;
+            px[i * 4 + 3] = tex->pcData[i].a;
         }
+        outPix = SharedPixels(std::move(px));
     }
 }
 
@@ -771,42 +953,60 @@ std::string findTextureFile(const std::string& baseDir, const std::string& ref) 
 
 // Load a material's texture of `type` (embedded or an external file resolved via
 // findTextureFile) into an RGBA buffer + dimensions.
-void loadAiTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
-                   const std::string& baseDir, std::vector<std::uint8_t>& outPix,
-                   int& outW, int& outH) {
-    aiString texPath;
-    if (mat->GetTexture(type, 0, &texPath) != AI_SUCCESS || texPath.length == 0) return;
-    if (texPath.data[0] == '*') { // embedded (*N -> scene->mTextures)
-        const int ti = std::atoi(texPath.C_Str() + 1);
-        if (ti >= 0 && ti < static_cast<int>(scene->mNumTextures))
-            decodeAiTexture(scene->mTextures[ti], outPix, outW, outH);
-        return;
+// Load an external image file into an RGBA buffer + dimensions (empty on fail),
+// from `images` when this load already decoded it.
+void loadTextureFileRGBA(const std::string& file, AiImages& images,
+                         SharedPixels& outPix, int& outW, int& outH) {
+    if (file.empty()) return;
+    auto it = images.decoded.find(file);
+    if (it == images.decoded.end()) {
+        stbi_set_flip_vertically_on_load(0);
+        int w = 0, h = 0, ch = 0;
+        // Load into its own variable first: passing the decode as an argument
+        // *alongside* w/h reads w/h before the call populates them (argument
+        // evaluation order is unspecified), yielding a 0x0 image on MSVC.
+        unsigned char* px = decodeImageFile(file, w, h, ch);
+        DecodedImage d;
+        storePixels(px, w, h, d.px, d.w, d.h);
+        it = images.decoded.emplace(file, std::move(d)).first;
     }
-    const std::string file = findTextureFile(baseDir, texPath.C_Str());
-    if (file.empty()) {
-        std::fprintf(stderr, "[Fitzel] model texture not found: '%s' (near %s)\n",
-                     texPath.C_Str(), baseDir.c_str());
-        return;
-    }
-    stbi_set_flip_vertically_on_load(0);
-    int w = 0, h = 0, ch = 0;
-    // Separate statement: see loadTextureFileRGBA -- passing the decode and w/h
-    // to storePixels() in one call reads w/h before the decode sets them.
-    unsigned char* px = decodeImageFile(file, w, h, ch);
-    storePixels(px, w, h, outPix, outW, outH);
+    assignImage(it->second, outPix, outW, outH);
 }
 
-// Load an external image file into an RGBA buffer + dimensions (empty on fail).
-void loadTextureFileRGBA(const std::string& file, std::vector<std::uint8_t>& outPix,
-                         int& outW, int& outH) {
-    if (file.empty()) return;
-    stbi_set_flip_vertically_on_load(0);
-    int w = 0, h = 0, ch = 0;
-    // Load into its own variable first: passing the decode as an argument
-    // *alongside* w/h reads w/h before the call populates them (argument
-    // evaluation order is unspecified), yielding a 0x0 image on MSVC.
-    unsigned char* px = decodeImageFile(file, w, h, ch);
-    storePixels(px, w, h, outPix, outW, outH);
+// Where a material's `type` texture comes from, as the AiImages key: "*N" for an
+// embedded one, else the file it resolves to (see findTextureFile). Empty when
+// the material has none, or names a file that cannot be found (warned about when
+// `warn`).
+std::string aiTextureKey(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
+                         const std::string& baseDir, bool warn) {
+    aiString texPath;
+    if (mat->GetTexture(type, 0, &texPath) != AI_SUCCESS || texPath.length == 0) return {};
+    if (texPath.data[0] == '*') { // embedded (*N -> scene->mTextures)
+        const int ti = std::atoi(texPath.C_Str() + 1);
+        if (ti < 0 || ti >= static_cast<int>(scene->mNumTextures)) return {};
+        return texPath.C_Str();
+    }
+    const std::string file = findTextureFile(baseDir, texPath.C_Str());
+    if (file.empty() && warn)
+        std::fprintf(stderr, "[Fitzel] model texture not found: '%s' (near %s)\n",
+                     texPath.C_Str(), baseDir.c_str());
+    return file;
+}
+
+void loadAiTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
+                   const std::string& baseDir, AiImages& images,
+                   SharedPixels& outPix, int& outW, int& outH) {
+    const std::string key = aiTextureKey(scene, mat, type, baseDir, true);
+    if (key.empty()) return;
+    if (key[0] != '*') { loadTextureFileRGBA(key, images, outPix, outW, outH); return; }
+    auto it = images.decoded.find(key);
+    if (it == images.decoded.end()) {
+        DecodedImage d;
+        stbi_set_flip_vertically_on_load(0); // see decodeAiTexture
+        decodeAiTexture(scene->mTextures[std::atoi(key.c_str() + 1)], d.px, d.w, d.h);
+        it = images.decoded.emplace(key, std::move(d)).first;
+    }
+    assignImage(it->second, outPix, outW, outH);
 }
 
 // --- Unity-style external texture matching ---------------------------------
@@ -974,10 +1174,95 @@ std::string matchUnityTexture(const std::vector<std::filesystem::path>& imgs,
     return !bestNamed.empty() ? bestNamed : bestAtlas;
 }
 
-// Convenience for the loader: gather + match in one call (per primitive).
-std::string findUnityTexture(const std::string& baseDir, const std::string& matName,
-                             const std::string& modelStem, UnityRole role) {
-    return matchUnityTexture(gatherCandidateImages(baseDir), matName, modelStem, role);
+// The images the Unity matching chooses from, gathered once per load. It used to
+// be once per mesh and role -- three folder sweeps for every part, and when the
+// usual folders hold no images, three recursive walks of the asset root: the same
+// cx5.fbx took 1.9, 3.2 or 4.3 s depending on which project folder it sat in.
+const std::vector<std::filesystem::path>& unityCandidates(AiImages& images,
+                                                          const std::string& baseDir) {
+    if (!images.listed) {
+        images.candidates = gatherCandidateImages(baseDir);
+        images.listed     = true;
+    }
+    return images.candidates;
+}
+
+// The assimp counterpart of predecodeGltfImages: every map the meshes of this
+// load will ask for, decoded up front and in parallel into `images`. The choice
+// per material mirrors aiMeshToPrimitive -- DIFFUSE else BASE_COLOR, NORMALS else
+// HEIGHT, the Unity-named files where the material names nothing -- and anything
+// it does not foresee still decodes on first use.
+void predecodeAiImages(const aiScene* scene, const std::string& baseDir,
+                       const std::string& modelStem, AiImages& images) {
+    std::vector<std::string>        keys;
+    std::unordered_set<std::string> seen;
+    auto want = [&](const std::string& k) {
+        if (!k.empty() && seen.insert(k).second) keys.push_back(k);
+    };
+    std::unordered_set<unsigned> mats;
+    for (unsigned i = 0; i < scene->mNumMeshes; ++i) {
+        const aiMesh* mesh = scene->mMeshes[i];
+        if (!mesh || mesh->mNumFaces == 0 || mesh->mMaterialIndex >= scene->mNumMaterials)
+            continue;
+        if (!mats.insert(mesh->mMaterialIndex).second) continue;
+        const aiMaterial* mat = scene->mMaterials[mesh->mMaterialIndex];
+        aiString nm;
+        const std::string matName =
+            mat->Get(AI_MATKEY_NAME, nm) == AI_SUCCESS ? nm.C_Str() : "";
+        std::string color = aiTextureKey(scene, mat, aiTextureType_DIFFUSE, baseDir, false);
+        if (color.empty())
+            color = aiTextureKey(scene, mat, aiTextureType_BASE_COLOR, baseDir, false);
+        std::string normal = aiTextureKey(scene, mat, aiTextureType_NORMALS, baseDir, false);
+        if (normal.empty())
+            normal = aiTextureKey(scene, mat, aiTextureType_HEIGHT, baseDir, false);
+        const auto& cand = unityCandidates(images, baseDir);
+        if (color.empty())
+            color = matchUnityTexture(cand, matName, modelStem, UnityRole::Albedo);
+        if (normal.empty())
+            normal = matchUnityTexture(cand, matName, modelStem, UnityRole::Normal);
+        want(color);
+        want(normal);
+        want(matchUnityTexture(cand, matName, modelStem, UnityRole::Emission));
+    }
+    if (keys.size() < 2) return; // nothing to overlap: decoded inline on first use
+
+    struct Job {
+        std::string  key;
+        std::size_t  bytes = 0;
+        DecodedImage out;
+    };
+    std::vector<Job> jobs;
+    jobs.reserve(keys.size());
+    for (std::string& k : keys) {
+        Job j;
+        std::error_code ec;
+        if (k[0] == '*') {
+            const aiTexture* t = scene->mTextures[std::atoi(k.c_str() + 1)];
+            j.bytes = t->mHeight == 0 ? t->mWidth
+                                      : static_cast<std::size_t>(t->mWidth) * t->mHeight * 4;
+        } else {
+            // Only an ordering hint: an archive entry (packed build) sorts last.
+            const auto sz = std::filesystem::file_size(k, ec);
+            j.bytes = ec ? 0 : static_cast<std::size_t>(sz);
+        }
+        j.key = std::move(k);
+        jobs.push_back(std::move(j));
+    }
+    // Biggest first (see predecodeGltfImages).
+    std::sort(jobs.begin(), jobs.end(),
+              [](const Job& a, const Job& b) { return a.bytes > b.bytes; });
+    decodeInParallel(jobs.size(), [&](std::size_t i) {
+        Job& j = jobs[i];
+        if (j.key[0] == '*') {
+            decodeAiTexture(scene->mTextures[std::atoi(j.key.c_str() + 1)],
+                            j.out.px, j.out.w, j.out.h);
+            return;
+        }
+        int w = 0, h = 0, ch = 0;
+        unsigned char* px = decodeImageFile(j.key, w, h, ch); // see loadTextureFileRGBA
+        storePixels(px, w, h, j.out.px, j.out.w, j.out.h);
+    });
+    for (Job& j : jobs) images.decoded.emplace(j.key, std::move(j.out));
 }
 
 // Walk the node tree, baking each node's world transform into its meshes so the
@@ -988,9 +1273,11 @@ std::string findUnityTexture(const std::string& baseDir, const std::string& matN
 // `srcSkin`, when given, is the mesh's per-vertex binding (indexed like
 // mesh->mVertices); it is de-indexed alongside the vertices. `world` is baked in
 // either way -- see loadSkinnedModel for why a skinned mesh wants that too.
+// `images` is the load's decode cache, shared by every mesh of the file.
 ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
                                  const glm::mat4& world, const std::string& baseDir,
                                  const std::string& modelStem, bool flipV,
+                                 AiImages& images,
                                  const std::vector<VertexSkin>* srcSkin = nullptr) {
     const glm::mat3 normalM = glm::mat3(glm::transpose(glm::inverse(world)));
     ModelPrimitive mp;
@@ -1007,31 +1294,35 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
         if (mat->Get(AI_MATKEY_OPACITY, opacity) == AI_SUCCESS && opacity < 0.999f)
             mp.alphaCutout = true;
         // Base colour (embedded or external file next to the model).
-        loadAiTexture(scene, mat, aiTextureType_DIFFUSE, baseDir,
+        loadAiTexture(scene, mat, aiTextureType_DIFFUSE, baseDir, images,
                       mp.texPixels, mp.texWidth, mp.texHeight);
         if (mp.texPixels.empty()) // some FBX put the colour map under BASE_COLOR
-            loadAiTexture(scene, mat, aiTextureType_BASE_COLOR, baseDir,
+            loadAiTexture(scene, mat, aiTextureType_BASE_COLOR, baseDir, images,
                           mp.texPixels, mp.texWidth, mp.texHeight);
         // Normal map (FBX often uses HEIGHT/bump for it).
-        loadAiTexture(scene, mat, aiTextureType_NORMALS, baseDir,
+        loadAiTexture(scene, mat, aiTextureType_NORMALS, baseDir, images,
                       mp.normalPixels, mp.normalWidth, mp.normalHeight);
         if (mp.normalPixels.empty())
-            loadAiTexture(scene, mat, aiTextureType_HEIGHT, baseDir,
+            loadAiTexture(scene, mat, aiTextureType_HEIGHT, baseDir, images,
                           mp.normalPixels, mp.normalWidth, mp.normalHeight);
         // Unity/PBR fallback: no (resolvable) texture in the FBX -> look for maps
         // shipped alongside it under Unity naming conventions.
         if (mp.texPixels.empty())
-            loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
-                                                 UnityRole::Albedo),
-                                mp.texPixels, mp.texWidth, mp.texHeight);
+            loadTextureFileRGBA(matchUnityTexture(unityCandidates(images, baseDir),
+                                                  mp.materialName, modelStem,
+                                                  UnityRole::Albedo),
+                                images, mp.texPixels, mp.texWidth, mp.texHeight);
         if (mp.normalPixels.empty())
-            loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
-                                                 UnityRole::Normal),
-                                mp.normalPixels, mp.normalWidth, mp.normalHeight);
+            loadTextureFileRGBA(matchUnityTexture(unityCandidates(images, baseDir),
+                                                  mp.materialName, modelStem,
+                                                  UnityRole::Normal),
+                                images, mp.normalPixels, mp.normalWidth, mp.normalHeight);
         // Emission (_Illum) map, if the pack ships one for this material.
-        loadTextureFileRGBA(findUnityTexture(baseDir, mp.materialName, modelStem,
-                                             UnityRole::Emission),
-                            mp.emissionPixels, mp.emissionWidth, mp.emissionHeight);
+        loadTextureFileRGBA(matchUnityTexture(unityCandidates(images, baseDir),
+                                              mp.materialName, modelStem,
+                                              UnityRole::Emission),
+                            images, mp.emissionPixels, mp.emissionWidth,
+                            mp.emissionHeight);
         // The same last word the glTF path gives the pixels: an FBX/OBJ material
         // with full opacity and a cut-out leaf map is the same tree, exported by
         // a different tool. alphaCutsHoles is what keeps a Unity albedo whose
@@ -1072,13 +1363,14 @@ ModelPrimitive aiMeshToPrimitive(const aiScene* scene, const aiMesh* mesh,
 
 void collectColladaNode(const aiScene* scene, const aiNode* node,
                         const glm::mat4& parent, const std::string& baseDir,
-                        const std::string& modelStem, bool flipV, ModelData& out,
-                        float& lo, float& hi) {
+                        const std::string& modelStem, bool flipV, AiImages& images,
+                        ModelData& out, float& lo, float& hi) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
         const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
         if (!mesh || mesh->mNumFaces == 0) continue;
-        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem, flipV);
+        ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem,
+                                              flipV, images);
         for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
             lo = glm::min(lo, mp.vertices[i + 1]);
             hi = glm::max(hi, mp.vertices[i + 1]);
@@ -1086,7 +1378,8 @@ void collectColladaNode(const aiScene* scene, const aiNode* node,
         if (mp.vertexCount() > 0) out.primitives.push_back(std::move(mp));
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
-        collectColladaNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV, out, lo, hi);
+        collectColladaNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV,
+                           images, out, lo, hi);
 }
 
 // --- Rig extraction (assimp -> SkeletonJoint / VertexSkin / AnimationClip) ---
@@ -1241,7 +1534,7 @@ void collectAnimations(const aiScene* scene, const Rig& rig, ModelData& out) {
 void collectSkinnedNode(const aiScene* scene, const aiNode* node,
                         const glm::mat4& parent, const std::string& baseDir,
                         const std::string& modelStem, bool flipV, const Rig& rig,
-                        ModelData& out, float& lo, float& hi) {
+                        AiImages& images, ModelData& out, float& lo, float& hi) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
         const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
@@ -1250,7 +1543,7 @@ void collectSkinnedNode(const aiScene* scene, const aiNode* node,
         std::vector<VertexSkin> vs;
         if (skinned) vs = buildMeshSkin(scene, mesh, rig);
         ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem,
-                                              flipV, skinned ? &vs : nullptr);
+                                              flipV, images, skinned ? &vs : nullptr);
         for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
             lo = glm::min(lo, mp.vertices[i + 1]);
             hi = glm::max(hi, mp.vertices[i + 1]);
@@ -1259,7 +1552,7 @@ void collectSkinnedNode(const aiScene* scene, const aiNode* node,
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
         collectSkinnedNode(scene, node->mChildren[c], world, baseDir, modelStem,
-                           flipV, rig, out, lo, hi);
+                           flipV, rig, images, out, lo, hi);
 }
 
 // Structure-preserving walk: one ModelNode per mesh-bearing node, its meshes
@@ -1268,7 +1561,7 @@ void collectSkinnedNode(const aiScene* scene, const aiNode* node,
 void collectStructuredNode(const aiScene* scene, const aiNode* node,
                            const glm::mat4& parent, const std::string& baseDir,
                            const std::string& modelStem, bool flipV,
-                           std::vector<ModelNode>& out) {
+                           AiImages& images, std::vector<ModelNode>& out) {
     const glm::mat4 world = parent * aiToGlm(node->mTransformation);
     if (node->mNumMeshes > 0) {
         ModelNode mn;
@@ -1277,7 +1570,8 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         for (unsigned mi = 0; mi < node->mNumMeshes; ++mi) {
             const aiMesh* mesh = scene->mMeshes[node->mMeshes[mi]];
             if (!mesh || mesh->mNumFaces == 0) continue;
-            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem, flipV);
+            ModelPrimitive mp = aiMeshToPrimitive(scene, mesh, world, baseDir, modelStem,
+                                                  flipV, images);
             if (mp.vertexCount() == 0) continue;
             for (int i = 0; i + 7 < static_cast<int>(mp.vertices.size()); i += 8) {
                 lo = glm::min(lo, glm::vec3(mp.vertices[i], mp.vertices[i+1], mp.vertices[i+2]));
@@ -1300,7 +1594,8 @@ void collectStructuredNode(const aiScene* scene, const aiNode* node,
         }
     }
     for (unsigned c = 0; c < node->mNumChildren; ++c)
-        collectStructuredNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV, out);
+        collectStructuredNode(scene, node->mChildren[c], world, baseDir, modelStem, flipV,
+                              images, out);
 }
 
 // True for the two glTF spellings. Those always take the cgltf path: assimp is
@@ -1334,8 +1629,10 @@ ModelData loadCollada(const std::string& path, bool flipV) {
     const std::string stem = std::filesystem::path(path).stem().string();
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
+    AiImages images;
+    predecodeAiImages(scene, baseDir, stem, images);
     collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
-                       flipV, out, lo, hi);
+                       flipV, images, out, lo, hi);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
     return out;
 }
@@ -1388,12 +1685,14 @@ ModelData loadSkinnedModel(const std::string& path, bool flipV) {
 
     float lo = std::numeric_limits<float>::max();
     float hi = std::numeric_limits<float>::lowest();
+    AiImages images;
+    predecodeAiImages(scene, baseDir, stem, images);
     if (skinned)
         collectSkinnedNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
-                           flipV, rig, out, lo, hi);
+                           flipV, rig, images, out, lo, hi);
     else
         collectColladaNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem,
-                           flipV, out, lo, hi);
+                           flipV, images, out, lo, hi);
     if (!out.primitives.empty()) { out.minY = lo; out.maxY = hi; }
     return out;
 }
@@ -1420,7 +1719,10 @@ std::vector<ModelNode> loadModelNodes(const std::string& path, bool flipV) {
     const std::string baseDir =
         std::filesystem::path(path).parent_path().generic_string();
     const std::string stem = std::filesystem::path(path).stem().string();
-    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem, flipV, out);
+    AiImages images;
+    predecodeAiImages(scene, baseDir, stem, images);
+    collectStructuredNode(scene, scene->mRootNode, glm::mat4(1.0f), baseDir, stem, flipV,
+                          images, out);
     return out;
 }
 

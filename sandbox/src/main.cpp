@@ -56,6 +56,7 @@
 #include "RiverCommand.hpp"
 #include "Primitives.hpp"
 #include "ModelLibrary.hpp"
+#include "NumberBlob.hpp"
 #include "VideoLibrary.hpp"
 #include "GpuTimer.hpp"
 #include "Profiler.hpp"
@@ -4836,28 +4837,24 @@ int main(int argc, char** argv) {
             // Hand-painted grass: a compact space-separated float blob (7 per
             // blade). Stored as one JSON string so pretty-printing doesn't
             // explode into a line per number.
-            std::ostringstream gs;
-            gs.precision(7);
-            for (float v : veg.paintedBlades) gs << v << ' ';
-            j["paintedGrass"] = gs.str();
+            NumberBlobWriter gs(7, veg.paintedBlades.size());
+            for (float v : veg.paintedBlades) gs.put(v);
+            j["paintedGrass"] = gs.take();
             // Tree species: name, LOD meshes, billboard config and per-species density.
             veg.serializeTrees(j);
             // Hand-painted trees: compact float blob (6 per tree: pos3, yaw, scale,
             // speciesIdx).
-            std::ostringstream ts;
-            ts.precision(7);
-            for (float v : veg.paintedTrees) ts << v << ' ';
-            j["paintedTrees2"] = ts.str();
+            NumberBlobWriter ts(7, veg.paintedTrees.size());
+            for (float v : veg.paintedTrees) ts.put(v);
+            j["paintedTrees2"] = ts.take();
             // Hand-painted flowers (8 per bloom: pos3, yaw, scale, rgb).
-            std::ostringstream fs;
-            fs.precision(7);
-            for (float v : veg.paintedFlowers) fs << v << ' ';
-            j["paintedFlowers"] = fs.str();
+            NumberBlobWriter fs(7, veg.paintedFlowers.size());
+            for (float v : veg.paintedFlowers) fs.put(v);
+            j["paintedFlowers"] = fs.take();
             // Terrain sculpt: grid spacing + a compact "ix iz delta ..." blob of
             // every edited cell (one JSON string, same reasoning as the grass).
             j["terrainEditCell"] = sculptWork.cell;
-            std::ostringstream es;
-            es.precision(7);
+            NumberBlobWriter es(7, sculptWork.deltas.size() * 3);
             for (const auto& [k, d] : sculptWork.deltas) {
                 // Minus the watercourse beds. A channel is derived geometry like
                 // the road's ribbon or the roadside city -- the file holds the
@@ -4869,15 +4866,14 @@ int main(int argc, char** argv) {
                 const int ix = static_cast<int>(k >> 32);
                 const int iz = static_cast<int>(
                     static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
-                es << ix << ' ' << iz << ' ' << own << ' ';
+                es.put(ix); es.put(iz); es.put(own);
             }
-            j["terrainEdits"] = es.str();
+            j["terrainEdits"] = es.take();
 
             // Terrain texture paint: grid spacing + an "ix iz r g b a ..." blob of
             // every painted cell's four layer weights (same compact-string scheme).
             j["terrainPaintCell"] = paintWork.cell;
-            std::ostringstream ps;
-            ps.precision(5);
+            NumberBlobWriter ps(5, paintWork.weights.size() * 6);
             for (const auto& [k, w0] : paintWork.weights) {
                 const glm::vec4 w = glm::max(w0 - rivers.minePaintAt(k),
                                              glm::vec4(0.0f));
@@ -4885,10 +4881,10 @@ int main(int argc, char** argv) {
                 const int ix = static_cast<int>(k >> 32);
                 const int iz = static_cast<int>(
                     static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
-                ps << ix << ' ' << iz << ' '
-                   << w.x << ' ' << w.y << ' ' << w.z << ' ' << w.w << ' ';
+                ps.put(ix); ps.put(iz);
+                ps.put(w.x); ps.put(w.y); ps.put(w.z); ps.put(w.w);
             }
-            j["terrainPaint"] = ps.str();
+            j["terrainPaint"] = ps.take();
 
             // Model-material overrides: edits to materials that come from an
             // imported model aren't written as standalone .fmat files (the model
@@ -5073,9 +5069,11 @@ int main(int argc, char** argv) {
             // Restore hand-painted grass (empty for scenes saved before it existed).
             veg.paintedBlades.clear();
             if (j.contains("paintedGrass") && j["paintedGrass"].is_string()) {
-                std::istringstream gs(j["paintedGrass"].get<std::string>());
+                const std::string& blob = j["paintedGrass"].get_ref<const std::string&>();
+                veg.paintedBlades.reserve(blob.size() / 9);
+                NumberBlobReader gs(blob);
                 float v;
-                while (gs >> v) veg.paintedBlades.push_back(v);
+                while (gs.next(v)) veg.paintedBlades.push_back(v);
                 veg.paintedBlades.resize(veg.paintedBlades.size() / 7 * 7); // whole blades
             }
             veg.paintedDirty = true; // re-upload to the GPU next frame
@@ -5087,9 +5085,9 @@ int main(int argc, char** argv) {
             // floats/tree (with a species index); legacy scenes stored 5 -> species 0.
             veg.paintedTrees.clear();
             if (j.contains("paintedTrees2") && j["paintedTrees2"].is_string()) {
-                std::istringstream ts(j["paintedTrees2"].get<std::string>());
+                NumberBlobReader ts(j["paintedTrees2"].get_ref<const std::string&>());
                 float v;
-                while (ts >> v) veg.paintedTrees.push_back(v);
+                while (ts.next(v)) veg.paintedTrees.push_back(v);
                 veg.paintedTrees.resize(veg.paintedTrees.size() / 6 * 6); // whole trees
             } else if (j.contains("paintedTrees") && j["paintedTrees"].is_string()) {
                 std::istringstream ts(j["paintedTrees"].get<std::string>());
@@ -5107,9 +5105,9 @@ int main(int argc, char** argv) {
             // grass pass runs, triggered by the veg.grassDirty reset below).
             veg.paintedFlowers.clear();
             if (j.contains("paintedFlowers") && j["paintedFlowers"].is_string()) {
-                std::istringstream fs(j["paintedFlowers"].get<std::string>());
+                NumberBlobReader fs(j["paintedFlowers"].get_ref<const std::string&>());
                 float v;
-                while (fs >> v) veg.paintedFlowers.push_back(v);
+                while (fs.next(v)) veg.paintedFlowers.push_back(v);
                 veg.paintedFlowers.resize(veg.paintedFlowers.size() / 8 * 8); // whole flowers
             }
             // Restore terrain sculpt edits (empty for scenes saved before it
@@ -5122,9 +5120,9 @@ int main(int argc, char** argv) {
             rivers.forget();
             sculptWork.cell = j.value("terrainEditCell", 1.0f);
             if (j.contains("terrainEdits") && j["terrainEdits"].is_string()) {
-                std::istringstream es(j["terrainEdits"].get<std::string>());
+                NumberBlobReader es(j["terrainEdits"].get_ref<const std::string&>());
                 int ix, iz; float d;
-                while (es >> ix >> iz >> d)
+                while (es.next(ix) && es.next(iz) && es.next(d))
                     sculptWork.deltas[TerrainEditField::cellKey(ix, iz)] = d;
             }
             publishSculpt();
@@ -5134,9 +5132,10 @@ int main(int argc, char** argv) {
             paintWork.weights.clear();
             paintWork.cell = j.value("terrainPaintCell", 1.0f);
             if (j.contains("terrainPaint") && j["terrainPaint"].is_string()) {
-                std::istringstream ps(j["terrainPaint"].get<std::string>());
+                NumberBlobReader ps(j["terrainPaint"].get_ref<const std::string&>());
                 int ix, iz; glm::vec4 w;
-                while (ps >> ix >> iz >> w.x >> w.y >> w.z >> w.w)
+                while (ps.next(ix) && ps.next(iz) && ps.next(w.x) && ps.next(w.y) &&
+                       ps.next(w.z) && ps.next(w.w))
                     paintWork.weights[TerrainEditField::cellKey(ix, iz)] = w;
             }
             publishPaint();
@@ -7721,6 +7720,13 @@ int main(int argc, char** argv) {
                     }
                 }
             };
+
+            // Whatever this frame imported is on the GPU now: the decoded maps the
+            // node cache kept for it can go (see ModelLibrary::releasePixels).
+            // Not while a scene load is streaming in, though: it imports a few
+            // nodes a frame, and every node after a release reads its whole file
+            // again -- a 43-part house was 43 reads of 1.2 s each.
+            if (!sceneLoad.active) models.releasePixels();
 
             // Hot reload: pick up on-disk asset edits ~twice a second. Textures
             // and models reload in place (existing handles update automatically);

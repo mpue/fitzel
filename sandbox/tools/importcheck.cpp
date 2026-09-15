@@ -19,11 +19,12 @@
 //
 // Console program, like modelcheck and shadercheck, and for the same reason:
 // the editor is /SUBSYSTEM:WINDOWS in Release and has nowhere to print to.
-//   build/release/bin/importcheck.exe [model.glb ...]
-// With no argument it checks the models under content/models. Exits non-zero if
-// any check fails.
+//   build/release/bin/importcheck.exe [model.glb|.fbx|.dae ...]
+// With no argument it checks the .glb models under content/models. Exits non-zero
+// if any check fails.
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -83,7 +84,7 @@ int vertexTotal(const fitzel::ModelData& md) {
 // models actually shipped.
 struct AlphaMix { float holes = 0.0f, mid = 0.0f; };
 
-AlphaMix alphaMix(const std::vector<std::uint8_t>& rgba) {
+AlphaMix alphaMix(const fitzel::SharedPixels& rgba) {
     AlphaMix m;
     const std::size_t texels = rgba.size() / 4;
     if (texels < 64) return m;
@@ -100,18 +101,55 @@ AlphaMix alphaMix(const std::vector<std::uint8_t>& rgba) {
     return m;
 }
 
+// The flat import the editor would make of `path`, routed by extension the way
+// AssetDatabase does it: .dae to Collada, .fbx to the rig-aware assimp loader,
+// everything else to glTF.
+fitzel::ModelData loadFlat(const std::string& path) {
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (ext == ".dae") return fitzel::loadCollada(path);
+    if (ext == ".fbx") return fitzel::loadSkinnedModel(path);
+    return fitzel::loadGltf(path);
+}
+
+// The image memory a structured import really holds: parts that sample one
+// image share its buffer, so this counts buffers, not the maps that point at
+// them. (The same model at one buffer per part is how medieval_house.glb came
+// to take 5 GB.)
+void reportImageBuffers(const std::vector<fitzel::ModelNode>& nodes) {
+    std::vector<const std::uint8_t*> seen;
+    std::size_t maps = 0, bytes = 0;
+    auto count = [&](const fitzel::SharedPixels& px) {
+        if (px.empty()) return;
+        ++maps;
+        if (std::find(seen.begin(), seen.end(), px.data()) != seen.end()) return;
+        seen.push_back(px.data());
+        bytes += px.size();
+    };
+    for (const fitzel::ModelNode& n : nodes)
+        for (const fitzel::ModelPrimitive& p : n.data.primitives) {
+            count(p.texPixels);
+            count(p.normalPixels);
+            count(p.ormPixels);
+            count(p.emissionPixels);
+        }
+    std::printf("       %zu map(s) on %zu image buffer(s), %.0f MB decoded\n", maps,
+                seen.size(), static_cast<double>(bytes) / (1024.0 * 1024.0));
+}
+
 void checkModel(const std::string& path) {
     std::printf("%s\n", path.c_str());
 
-    const fitzel::ModelData flat = fitzel::loadGltf(path);
+    const fitzel::ModelData flat = loadFlat(path);
     if (flat.empty()) {
-        check(false, "loads at all (loadGltf)");
+        check(false, "loads at all");
         return;
     }
     const std::vector<fitzel::ModelNode> nodes = fitzel::loadModelNodes(path);
 
-    check(!nodes.empty(), "loadModelNodes returns nodes for a .glb");
+    check(!nodes.empty(), "loadModelNodes returns nodes");
     if (nodes.empty()) return;
+    reportImageBuffers(nodes);
 
     // Nothing may be lost on the way: the structured import must carry the same
     // vertices as the flat one, just grouped. (A model authored as one object

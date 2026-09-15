@@ -31,22 +31,43 @@ int ModelLibrary::import(const std::string& path, AssetDatabase& assetDb,
                          mdPtr->animated() ? mdPtr : nullptr, assetDb, materials);
 }
 
-const std::vector<ModelNode>& ModelLibrary::nodes(const std::string& path, bool flipV) {
+ModelLibrary::NodeEntry& ModelLibrary::nodeEntry(const std::string& path, bool flipV) {
     const std::string key = path + (flipV ? "#f" : "#n");
     auto it = nodeCache_.find(key);
     if (it == nodeCache_.end())
-        it = nodeCache_.emplace(key, loadModelNodes(path, flipV)).first;
+        it = nodeCache_.emplace(key, NodeEntry{loadModelNodes(path, flipV), true}).first;
     return it->second;
+}
+
+const std::vector<ModelNode>& ModelLibrary::nodes(const std::string& path, bool flipV) {
+    return nodeEntry(path, flipV).nodes;
 }
 
 int ModelLibrary::importNode(const std::string& path, int nodeIndex, bool flipV,
                              AssetDatabase& assetDb, std::vector<MaterialDef>& materials) {
     const std::string key = path + "#" + std::to_string(nodeIndex) + (flipV ? "f" : "n");
     for (auto& lm : models_) if (lm->path == key) return lm->id;
-    const std::vector<ModelNode>& ns = nodes(path, flipV);
-    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(ns.size())) return -1;
-    return buildFromData(ns[nodeIndex].name, key, assetDb.idForPath(path),
-                         ns[nodeIndex].data, nullptr, assetDb, materials);
+    NodeEntry& e = nodeEntry(path, flipV);
+    // Not uploaded yet, but its maps were released: read the file again. The
+    // vector is reassigned, not replaced, so a caller's nodes() reference holds.
+    if (!e.pixels) { e.nodes = loadModelNodes(path, flipV); e.pixels = true; }
+    if (nodeIndex < 0 || nodeIndex >= static_cast<int>(e.nodes.size())) return -1;
+    return buildFromData(e.nodes[nodeIndex].name, key, assetDb.idForPath(path),
+                         e.nodes[nodeIndex].data, nullptr, assetDb, materials);
+}
+
+void ModelLibrary::releasePixels() {
+    for (auto& [key, e] : nodeCache_) {
+        if (!e.pixels) continue;
+        for (ModelNode& n : e.nodes)
+            for (ModelPrimitive& p : n.data.primitives) {
+                p.texPixels.reset();
+                p.normalPixels.reset();
+                p.emissionPixels.reset();
+                p.ormPixels.reset();
+            }
+        e.pixels = false;
+    }
 }
 
 int ModelLibrary::buildFromData(const std::string& name, const std::string& path,
