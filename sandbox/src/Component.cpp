@@ -813,6 +813,10 @@ const std::vector<Property>& GliderComponent::properties() {
         inv.label = "Invert steering"; inv.key = "invertSteer"; inv.kind = PropKind::Bool;
         inv.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->invertSteer; };
         p.push_back(std::move(inv));
+        Property fm;
+        fm.label = "Free mode"; fm.key = "freeMode"; fm.kind = PropKind::Bool;
+        fm.field = [](void* o) -> void* { return &static_cast<GliderComponent*>(o)->freeMode; };
+        p.push_back(std::move(fm));
         addFloat("Grip",         "grip",       &GliderComponent::grip,       0.0f, 12.0f,  "%.2f");
         addFloat("Drag",         "drag",       &GliderComponent::drag,       0.0f, 4.0f,   "%.2f");
         // Manual boost (grouped under a "Boost" header at "boostCapacity" --

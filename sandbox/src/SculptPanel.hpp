@@ -7,7 +7,7 @@
 #include <fitzel/world/Terrain.hpp>
 
 // The editor's "Terrain Sculpt" panel: the brush-tool controls for the manual
-// deformation layer (raise/lower/smooth/flatten/erode/stamp/noise). It edits the
+// deformation layer (raise/lower/smooth/flatten/erode/stamp/noise/carve/pull/rain). It edits the
 // live TerrainEditField owned by main; the viewport brush application (mouse
 // picking, per-frame dabs, cursor ring) stays in main, since it is wired into the
 // camera and input. Draws nothing when `show` is false.
@@ -27,7 +27,7 @@ struct PanelState {
     bool& scatterMode;
 
     // Brush parameters (owned by main, shared with the viewport application code).
-    int&   tool;          // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve 8 pull
+    int&   tool;          // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve 8 pull 9 rain
     float& radius;
     float& strength;
     float& pullFalloff;   // proportional pull: skirt shape (1 = the smooth bell)

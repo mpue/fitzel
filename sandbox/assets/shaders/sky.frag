@@ -128,27 +128,22 @@ vec3 moon(vec3 dir) {
 }
 
 // --- Sky gradient + sun ----------------------------------------------------
+#include "skyair.glsl"
+
+// The light a cloud's shaded side gets, sRGB: `night` to `day` by `dayF`. At
+// noon that is the blue dome. With the sun low it is the glowing air under and
+// around the cloud: peach on the sun's side, greyed lavender away from it -- an
+// orange sun on one side and a blue fill on the other is what turns every cloud
+// of a sunset lilac. Mixed in after the night, for the reason skyGradient gives.
+vec3 cloudAmbient(vec3 night, vec3 day, float dayF, vec3 rd) {
+    return mix(mix(night, day, dayF),
+               mix(vec3(0.32, 0.33, 0.41), vec3(0.47, 0.36, 0.30), sunSideOf(rd, uSunDir)),
+               goldenHour(uSunDir) * 0.80);
+}
+
 vec3 skyColor(vec3 dir) {
     float day = smoothstep(-0.12, 0.18, uSunDir.y); // 0 night -> 1 day
-
-    vec3 dayZenith   = vec3(0.20, 0.42, 0.80);
-    vec3 dayHorizon  = vec3(0.70, 0.82, 0.95);
-    vec3 nightZenith = vec3(0.01, 0.02, 0.06);
-    vec3 nightHoriz  = vec3(0.04, 0.06, 0.12);
-
-    float h = clamp(dir.y, 0.0, 1.0);
-    vec3 zenith  = mix(nightZenith, dayZenith, day);
-    vec3 horizon = mix(nightHoriz,  dayHorizon, day);
-    vec3 col = mix(horizon, zenith, pow(h, 0.5));
-
-    // Warm sunset/sunrise tint near the horizon when the sun is low.
-    float lowSun = (1.0 - smoothstep(0.0, 0.35, uSunDir.y)) * day;
-    float toSun  = max(dot(normalize(vec3(dir.x, 0.0, dir.z)),
-                           normalize(vec3(uSunDir.x, 0.0, uSunDir.z))), 0.0);
-    col += vec3(0.85, 0.35, 0.10) * lowSun * pow(toSun, 3.0) * (1.0 - h);
-
-    // The gradient colours are authored in sRGB -> linearise for the pipeline.
-    col = pow(col, vec3(2.2));
+    vec3 col = skyGradient(dir, uSunDir);
 
     // Stars and moon fade in at night.
     float night = 1.0 - day;
@@ -465,7 +460,7 @@ vec4 renderSheet(vec3 ro, vec3 rd, int kind, vec4 A, vec2 heading, vec3 behind) 
     float toSun = max(dot(rd, uSunDir), 0.0);
     float fwd   = pow(toSun, fwdPow);
     vec3  lit   = uSunColor * (sunGain + fwdGain * fwd) * dayF;
-    vec3  ambient = pow(mix(vec3(0.06, 0.08, 0.14), vec3(0.52, 0.60, 0.74), dayF),
+    vec3  ambient = pow(cloudAmbient(vec3(0.06, 0.08, 0.14), vec3(0.52, 0.60, 0.74), dayF, rd),
                         vec3(2.2));
     // The underside. Not a grey tint laid over the lit colour but a darkening
     // of it: a stratus is the sun's own light after two hundred metres of
@@ -532,8 +527,8 @@ vec4 renderClouds(vec3 ro, vec3 rd, vec3 behind) {
     float phase = mix(phaseHG(cosA, 0.2), phaseHG(cosA, -0.15), 0.5);
     float dayF  = smoothstep(-0.1, 0.2, uSunDir.y); // fade sun lighting at night
 
-    vec3 ambient = pow(mix(vec3(0.10, 0.13, 0.20), vec3(0.55, 0.62, 0.75),
-                       smoothstep(-0.1, 0.2, uSunDir.y)), vec3(2.2));
+    vec3 ambient = pow(cloudAmbient(vec3(0.10, 0.13, 0.20), vec3(0.55, 0.62, 0.75),
+                                    smoothstep(-0.1, 0.2, uSunDir.y), rd), vec3(2.2));
 
     float T = 1.0;
     vec3  col = vec3(0.0);

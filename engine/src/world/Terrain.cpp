@@ -432,6 +432,160 @@ void TerrainEditField::erode(const TerrainSettings& s, glm::vec2 c, float radius
         }
 }
 
+float TerrainEditField::rain(const TerrainSettings& s, glm::vec2 c, float radius,
+                             int droplets, std::uint32_t seed) {
+    if (radius <= 0.0f || droplets <= 0) return 0.0f;
+    // Drops carry their load past the rim, so the working grid gets room beyond
+    // the disc and the edit fades out across that margin.
+    const float reach = radius + std::max(8.0f * cell, radius);
+    const int x0 = static_cast<int>(std::floor((c.x - reach) / cell));
+    const int x1 = static_cast<int>(std::ceil ((c.x + reach) / cell));
+    const int z0 = static_cast<int>(std::floor((c.y - reach) / cell));
+    const int z1 = static_cast<int>(std::ceil ((c.y + reach) / cell));
+    const int W = x1 - x0 + 1, H = z1 - z0 + 1;
+    if (W < 8 || H < 8) return 0.0f;
+
+    // The droplet constants come from the classic particle-erosion model, which
+    // is tuned for a field whose height unit spans about 60 cells. The model does
+    // not change if height and spacing scale together, so heights are measured
+    // in that unit here and converted back on the way out.
+    const float unit = 60.0f * cell, toUnit = 1.0f / unit;
+    std::vector<float> h(static_cast<std::size_t>(W) * H);
+    for (int iz = z0; iz <= z1; ++iz)
+        for (int ix = x0; ix <= x1; ++ix) {
+            const auto it = deltas.find(cellKey(ix, iz));
+            h[(iz - z0) * W + (ix - x0)] =
+                (terrainBaseHeight(s, ix * cell, iz * cell) +
+                 (it == deltas.end() ? 0.0f : it->second)) * toUnit;
+        }
+    const std::vector<float> before = h;
+
+    // Erosion takes material from a small disc around the drop, not one cell, so
+    // it cuts channels instead of pits.
+    constexpr int BR = 3;
+    int   bOff[(2 * BR + 1) * (2 * BR + 1)];
+    float bW  [(2 * BR + 1) * (2 * BR + 1)];
+    int   bN = 0;
+    {
+        float sum = 0.0f;
+        for (int dz = -BR; dz <= BR; ++dz)
+            for (int dx = -BR; dx <= BR; ++dx) {
+                const float d = std::sqrt(static_cast<float>(dx * dx + dz * dz));
+                if (d >= BR) continue;
+                bOff[bN] = dz * W + dx;
+                bW[bN]   = 1.0f - d / BR;
+                sum += bW[bN++];
+            }
+        for (int k = 0; k < bN; ++k) bW[k] /= sum;
+    }
+
+    // More inertia and a longer life than the textbook values: on metre-scale
+    // ground a drop that follows every bump drowns in the first hollow and the
+    // brush just smooths. Carried over the bumps, the drops gather into rills.
+    constexpr float inertia = 0.3f, capacityK = 4.0f, minCapacity = 0.01f;
+    constexpr float depositK = 0.3f, erodeK = 0.3f, gravity = 4.0f, evaporate = 0.02f;
+    constexpr int   lifetime = 64;
+
+    std::uint32_t rng = seed * 2654435761u + 0x9E3779B9u;
+    auto rnd = [&rng] {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return (rng >> 8) * (1.0f / 16777216.0f);
+    };
+
+    for (int n = 0; n < droplets; ++n) {
+        const float a = rnd() * 6.2831853f, rr = radius * std::sqrt(rnd());
+        float px = (c.x + std::cos(a) * rr) / cell - x0;
+        float pz = (c.y + std::sin(a) * rr) / cell - z0;
+        float dx = 0.0f, dz = 0.0f, speed = 1.0f, water = 1.0f, sediment = 0.0f;
+        for (int life = 0; ; ++life) {
+            if (px < 0.0f || pz < 0.0f || px >= W - 1 || pz >= H - 1) break;
+            const int   nx = static_cast<int>(px), nz = static_cast<int>(pz);
+            const int   ci = nz * W + nx;
+            const float fx = px - nx, fz = pz - nz;
+            // A drop that comes to rest leaves its load where it soaked in --
+            // the silt fans at the foot of a slope are exactly that. (One that
+            // runs off the working grid takes it along; the edit fades out
+            // there anyway.)
+            // Spread over the same small disc erosion takes from, or every
+            // resting drop leaves a pimple.
+            auto settle = [&] {
+                if (nx >= BR && nz >= BR && nx < W - BR && nz < H - BR) {
+                    for (int k = 0; k < bN; ++k) h[ci + bOff[k]] += sediment * bW[k];
+                } else {
+                    h[ci]         += sediment * (1 - fx) * (1 - fz);
+                    h[ci + 1]     += sediment * fx * (1 - fz);
+                    h[ci + W]     += sediment * (1 - fx) * fz;
+                    h[ci + W + 1] += sediment * fx * fz;
+                }
+            };
+            if (life == lifetime) { settle(); break; }
+            const float hNW = h[ci], hNE = h[ci + 1], hSW = h[ci + W], hSE = h[ci + W + 1];
+            const float gx = (hNE - hNW) * (1 - fz) + (hSE - hSW) * fz;
+            const float gz = (hSW - hNW) * (1 - fx) + (hSE - hNE) * fx;
+            const float here = hNW * (1 - fx) * (1 - fz) + hNE * fx * (1 - fz) +
+                               hSW * (1 - fx) * fz + hSE * fx * fz;
+
+            dx = dx * inertia - gx * (1 - inertia);
+            dz = dz * inertia - gz * (1 - inertia);
+            const float len = std::sqrt(dx * dx + dz * dz);
+            if (len < 1e-10f) { settle(); break; } // flat ground: the drop soaks in
+            dx /= len; dz /= len;
+            px += dx; pz += dz;
+            if (px < 0.0f || pz < 0.0f || px >= W - 1 || pz >= H - 1) break;
+
+            const int   mx = static_cast<int>(px), mz = static_cast<int>(pz);
+            const int   mi = mz * W + mx;
+            const float qx = px - mx, qz = pz - mz;
+            const float next = h[mi] * (1 - qx) * (1 - qz) + h[mi + 1] * qx * (1 - qz) +
+                               h[mi + W] * (1 - qx) * qz + h[mi + W + 1] * qx * qz;
+            const float dh = next - here;
+
+            const float capacity = std::max(-dh * speed * water * capacityK, minCapacity);
+            if (sediment > capacity || dh > 0.0f) {
+                // Uphill it fills the hollow it came from; otherwise it sheds the
+                // part of its load the slowing water can no longer carry.
+                const float drop = dh > 0.0f ? std::min(dh, sediment)
+                                             : (sediment - capacity) * depositK;
+                sediment -= drop;
+                h[ci]         += drop * (1 - fx) * (1 - fz);
+                h[ci + 1]     += drop * fx * (1 - fz);
+                h[ci + W]     += drop * (1 - fx) * fz;
+                h[ci + W + 1] += drop * fx * fz;
+            } else if (nx >= BR && nz >= BR && nx < W - BR && nz < H - BR) {
+                // Never take more than the drop just fell, or it digs a pit
+                // below where it is going.
+                const float take = std::min((capacity - sediment) * erodeK, -dh);
+                for (int k = 0; k < bN; ++k) {
+                    const int   i = ci + bOff[k];
+                    const float t = std::min(h[i], take * bW[k]);
+                    h[i] -= t;
+                    sediment += t;
+                }
+            }
+            speed = std::sqrt(std::max(0.0f, speed * speed - dh * gravity));
+            water *= 1.0f - evaporate;
+        }
+    }
+
+    // Hand back only what changed, full strength out to halfway into the margin
+    // (where the silt the drops carried off the disc lands) and fading to
+    // nothing at the reach, so the gullies run out instead of stopping at a wall.
+    for (int iz = z0; iz <= z1; ++iz)
+        for (int ix = x0; ix <= x1; ++ix) {
+            const int   i      = (iz - z0) * W + (ix - x0);
+            const float change = h[i] - before[i];
+            if (change == 0.0f) continue;
+            const float wx = ix * cell, wz = iz * cell;
+            const float d  = std::sqrt((wx - c.x) * (wx - c.x) + (wz - c.y) * (wz - c.y));
+            const float fade = radius + 0.5f * (reach - radius);
+            const float t  = glm::clamp((reach - d) / (reach - fade), 0.0f, 1.0f);
+            const float w  = t * t * (3.0f - 2.0f * t);
+            if (w <= 0.0f) continue;
+            deltas[cellKey(ix, iz)] += change * unit * w;
+        }
+    return reach;
+}
+
 // Procedural stamp profiles, evaluated in normalised, rotated disc coordinates
 // (u, v) in [-1, 1]. Returns the height weight (0 outside the shape's support;
 // the crater is signed: a raised rim around a sunken floor).

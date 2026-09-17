@@ -196,6 +196,52 @@ int deleteFace(EditMesh& m, int face);
 // face, because extrude gave it corners of its own.
 int transformFace(EditMesh& m, int face, const glm::mat4& xform);
 
+// --- Vertices and edges -------------------------------------------------------
+// The same small toolbox one level down. A vertex is an index into `verts`, an
+// edge is the pair of corners at its ends (in either order -- the two faces that
+// share it list it opposite ways round). Every operation that can make a face
+// collapse drops that face and any corner nobody uses any more, keeping `paint`,
+// `faceMat` and `faceUV` in step, exactly as deleteFace does.
+
+// One edge of the mesh and the (at most two) faces it borders; f1 is -1 on the
+// mesh's border. Listed once each, in the order the faces first name them.
+struct EdgeInfo {
+    int a = -1, b = -1;
+    int f0 = -1, f1 = -1;
+};
+std::vector<EdgeInfo> edges(const EditMesh& m);
+
+// Apply `xform` to each of these corners once, duplicates and out-of-range
+// indices ignored. What the gizmo drives in vertex and edge mode; transformFace
+// is this with a face's own corners.
+void transformVerts(EditMesh& m, const std::vector<int>& idx, const glm::mat4& xform);
+
+// Collapse these corners into one at their centre (paint averaged). Faces that
+// shrink below a triangle go. Returns the surviving corner, -1 if fewer than two
+// were given or nothing survived.
+int mergeVerts(EditMesh& m, const std::vector<int>& idx);
+
+// Remove every face that uses one of these corners, then the corners. Leaves a
+// hole, like deleteFace.
+void deleteVerts(EditMesh& m, const std::vector<int>& idx);
+
+// Put a new corner on edge (a, b), `t` along it measured from `a`, and thread
+// it into every face that has the edge -- a quad beside it becomes a five-sided
+// face, so nothing cracks open. Returns the new corner, -1 if there is no such
+// edge.
+int splitEdge(EditMesh& m, int a, int b, float t = 0.5f);
+
+// Remove edge (a, b) by joining the two faces either side of it into one. Only
+// an edge with exactly two consistently wound faces can go; a border edge
+// cannot. Returns the joined face, -1 when it did not apply.
+int dissolveEdge(EditMesh& m, int a, int b);
+
+// A loop cut that runs ACROSS edge (a, b): the ring through the quad beside it
+// that crosses this edge, with `t` measured along the edge from its lower-
+// numbered corner. Returns the cut face (as loopCut), -1 when no quad borders it.
+int loopCutEdge(EditMesh& m, int a, int b, float t);
+int loopLengthEdge(const EditMesh& m, int a, int b);
+
 // Shift the mesh so its bounding box is centred on the object's origin, and
 // report the shift (in the mesh's own space). Callers move the entity by the
 // same amount so nothing appears to jump: this is what keeps the entity's

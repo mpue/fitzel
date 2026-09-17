@@ -32,6 +32,10 @@ float roadDistanceSq(const std::vector<glm::vec2>& line, float x, float z);
 // few hundred entries at most and every caller is already doing several terrain
 // height samples per candidate.
 bool inDiscs(const std::vector<glm::vec3>& discs, float x, float z);
+// How far (x,z) is outside the nearest disc's rim: negative inside one, and
+// `reach` when none comes within `reach` metres. One pass for callers that ask
+// "in the water, on the bank, or near it" of the same point.
+float discGap(const std::vector<glm::vec3>& discs, float x, float z, float reach);
 
 // Ray vs AABB (slab test). Returns the entry distance, or -1 on a miss.
 float rayAABB(const glm::vec3& ro, const glm::vec3& rd,

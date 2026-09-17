@@ -24,6 +24,7 @@ struct PanelState {
     // The forest (Ecology.hpp) and how far it is drawn.
     ecology::Params& eco;
     float& impostorStart;
+    float& impostorShadows;   // how far out the impostors cast (0 = off)
     float& forestRadius;
     int&   forestFloorLayer;
 

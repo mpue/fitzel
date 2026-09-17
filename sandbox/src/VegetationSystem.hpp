@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <future>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -139,8 +140,27 @@ public:
         // thousand triangles an instance, redrawn into every shadow cascade,
         // that redundancy IS the frame -- so the mesh is welded back into an
         // indexed one on load (see loadTreeMesh).
-        struct Prim { fitzel::Texture tex; bool hasTex = false;
-                      int first = 0, count = 0; bool cutout = false; };
+        // One material group of the mesh. `tex`/`hasTex`/`modelCutout`/
+        // `baseColor`/`name` are what the model shipped; `cutout`, `tint`,
+        // `cutoff` and `swapTex` are what is drawn -- the species' PartMat
+        // applied over the model (applyPartMats). Every pass reads these, so
+        // an edit reaches the shadows, the motion vectors and the impostor too.
+        struct Prim {
+            fitzel::Texture tex; bool hasTex = false;
+            int first = 0, count = 0;
+            bool cutout = false, modelCutout = false;
+            glm::vec3 baseColor{1.0f};             // glTF factor, sRGB (untextured parts)
+            std::string name;                      // glTF material name
+            glm::vec3 tint{1.0f};                  // sRGB multiplier (tint * brightness)
+            float     cutoff = 0.5f;               // alpha discard threshold
+            std::string swapName;                  // texture file drawn instead ("" = model's)
+            std::shared_ptr<fitzel::Texture> swapTex;
+            bool textured() const { return (swapTex && swapTex->isValid()) || hasTex; }
+            void bindTex() const {
+                if (swapTex && swapTex->isValid()) swapTex->bind(0);
+                else if (hasTex) tex.bind(0);
+            }
+        };
         std::vector<Prim> prims;     // per-material draw groups
         std::uint32_t vao = 0, vbo = 0, ibo = 0;
         // Bounding-sphere radius of the loaded mesh in UNIT-HEIGHT units, about
@@ -166,10 +186,24 @@ public:
         long long tris = 0;
         bool valid() const { return vao != 0 && !ranges.empty(); }
     };
+    // An author's edit to one material group of a species' mesh, kept apart from
+    // the mesh so it survives a reload of the model: matched by file name and
+    // group index, like the scene's model-material overrides.
+    struct PartMat {
+        std::string model;              // LOD mesh file this applies to
+        int         prim = 0;           // material group within it
+        glm::vec3   tint{1.0f};         // sRGB colour multiplier
+        float       brightness = 1.0f;
+        std::string texture;            // file drawn instead of the model's ("" = model's)
+        int         cutout = -1;        // -1 as the model says, 0 solid, 1 cut out
+        float       cutoff = 0.5f;      // alpha below this is a hole
+    };
+
     // A configurable tree type: an ordered LOD chain + a far billboard, its own
     // density/size and its own GPU instance buffer (5 floats/tree: pos3,yaw,scale).
     struct TreeSpecies {
         std::string          name = "Tree";
+        std::vector<PartMat> partMats;           // material edits (see applyPartMats)
         std::vector<TreeLOD> lods;               // LOD0..n, ascending dist
         std::string          billboard;          // PNG name ("" = none)
         fitzel::Texture      bbTex;
@@ -194,6 +228,10 @@ public:
         // atlas row -- colour, and the normal the card is lit with.
         std::uint32_t impAlbedo = 0, impNormal = 0;
         float     impAspect = 0.6f;          // one view's width / height
+        // The side views' share of the atlas width. The rest is the crown seen
+        // from straight above, a square cell -- what a tree looks like to an
+        // eye high over it, where a side view would lie on the ground edge-on.
+        float     impSideFrac = 1.0f;
         bool      impDirty  = true;
         glm::vec3 canopy{0.02f, 0.035f, 0.012f};  // mean foliage albedo, linear
         // Every tree of this species the forest field holds, plus the painted
@@ -319,6 +357,11 @@ public:
     std::vector<glm::vec3> treeClearings;
     float impostorStart = 130.0f;
     float forestRadius  = 1600.0f;
+    // How far out the impostors cast shadows (0 = none: only the meshes near
+    // treeShadowDistance do). One card per tree, turned to the sun -- the
+    // shadow that gives a forest seen from high above its depth, for the price
+    // of a quad.
+    float impostorShadowDist = 0.0f;
     // Generated levels and impostors for species whose meshes changed. Once a
     // frame, OUTSIDE any render pass: the bake draws into its own target.
     void prepareTrees();
@@ -329,6 +372,7 @@ public:
 private:
     void bakeImpostor(TreeSpecies& sp);
     void drawImpostors(const FrameContext& ctx);
+    void drawImpostorShadows(const glm::mat4& lightSpace, glm::vec2 camXZ, float from);
     void uploadFar();   // every field tree + painted, per species
     void regenTrees(glm::vec2 cc, const std::vector<glm::vec2>& road, float roadWidth,
                     float waterLevel, float snowLevel);
@@ -337,16 +381,31 @@ private:
     // Load a .glb into `lod` (fills prims + creates its VAO/VBO bound to the
     // species' instance buffer). Returns false if the model failed to load.
     bool loadTreeMesh(const std::string& path, TreeSpecies& sp, TreeLOD& lod);
+    // Lay the species' PartMat edits over the model values of every prim of
+    // `lod` (tint, texture swap, cutout). Marks the generated levels dirty when
+    // a part changes between leaf and bark. The impostor is baked from what is
+    // drawn too, but rebaking it is the caller's call: a slider being dragged
+    // should not rebake an atlas every frame.
+    void applyPartMats(TreeSpecies& sp, TreeLOD& lod);
+    // The species' edit for (model, prim), created with defaults when `make`.
+    PartMat* findPartMat(TreeSpecies& sp, const std::string& model, int prim, bool make);
+    // The "Materials" section of the species editor.
+    void panelPartMats(int s);
+    // Replacement textures, shared across parts and species.
+    std::shared_ptr<fitzel::Texture> partTexture(const std::string& file);
+    std::vector<std::pair<std::string, std::shared_ptr<fitzel::Texture>>> m_partTexCache;
     // (Re)derive sp.mid / sp.shadow from the species' coarsest authored level.
     void buildAutoLods(TreeSpecies& sp);
     static void freeAutoLod(AutoLod& a);
     // The instances of `sp` that a pass with this view-projection can see AND
     // that belong to this LOD's distance band, uploaded to the shared cull
     // buffer; returns how many to draw. `planeCount` is 4 for a shadow cascade
-    // -- see sphereVisible in the .cpp.
+    // -- see sphereVisible in the .cpp. The band is measured from `eye` in 3D,
+    // or across the ground only when `planar` (the shadow reach is a ground
+    // distance: it is about which cascade a tree falls into, not detail).
     int  cullInstances(const TreeSpecies& sp, float boundR,
                        const glm::mat4& viewProj, int planeCount,
-                       const glm::vec2& camXZ, float lodMin, float lodMax);
+                       const glm::vec3& eye, bool planar, float lodMin, float lodMax);
     void scanTreeAssets(); // populate m_modelFiles / m_texFiles from the search dirs
     // Absolute path of a model/billboard picked by file name. Falls back to the
     // built-in content dir when the name isn't in the scanned list (e.g. a scene
@@ -382,7 +441,7 @@ private:
 
     // Trees. Shaders are shared across all species (bound once, uniforms per draw).
     fitzel::Shader           m_tree, m_treeDepth, m_billboard;
-    fitzel::Shader           m_impostor, m_impostorBake, m_treeMotion;
+    fitzel::Shader           m_impostor, m_impostorBake, m_treeMotion, m_impostorShadow;
     float                    m_prevWindTime = -1.0f;   // for the motion vectors
     TreeField                m_treeField;
     glm::vec2                m_nearCenter{1e9f};  // where the mesh set was gathered

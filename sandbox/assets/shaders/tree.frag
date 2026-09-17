@@ -8,6 +8,12 @@ out vec4 FragColor;
 
 uniform sampler2D uTex;
 uniform int  uAlphaCutout; // 1 for foliage (discard transparent texels)
+uniform float uAlphaCutoff; // ...below this alpha
+// The part's material (VegetationSystem::applyPartMats): a mesh part without a
+// map is its glTF base colour, and every part takes the author's tint (sRGB).
+uniform int  uHasTex;
+uniform vec3 uBaseColor;
+uniform vec3 uTint;
 uniform vec3 uViewPos;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
@@ -57,18 +63,26 @@ vec3 applyFog(vec3 color, vec3 worldPos, vec3 eye, vec3 lightDir) {
 }
 
 void main() {
-    vec4 tex = texture(uTex, vUv);
-    if (uAlphaCutout == 1 && tex.a < 0.5) discard;
+    vec4 tex = (uHasTex == 1) ? texture(uTex, vUv) : vec4(uBaseColor, 1.0);
+    if (uAlphaCutout == 1 && tex.a < uAlphaCutoff) discard;
     if (vShare < 1.0 && !treeDitherKeep(vShare, false)) discard;
 
-    vec3 albedo = pow(correct(tex.rgb), vec3(2.2));
+    vec3 albedo = pow(correct(tex.rgb * uTint), vec3(2.2));
     vec3 N = normalize(vNormal);
     vec3 L = normalize(uLightDir);
     float ndl = dot(N, L);
     // Foliage is translucent -> soft two-sided; bark is opaque -> one-sided so it
-    // keeps its form and doesn't read as flat and over-bright.
-    float diff = (uAlphaCutout == 1) ? mix(max(ndl, 0.0), abs(ndl), 0.5)
-                                     : max(ndl, 0.0);
+    // keeps its form and doesn't read as flat and over-bright. The half that
+    // comes through the leaf from its far side is what the leaf let through, not
+    // what it reflects: filtered twice, so a purer green (see grass.frag). As
+    // plain albedo, a crown seen against a low sun came out lit orange-olive
+    // from the front -- the one direction the sun was not shining from.
+    float diff = max(ndl, 0.0);
+    vec3  lit  = albedo * diff;
+    if (uAlphaCutout == 1) {
+        float peak = max(max(albedo.r, albedo.g), max(albedo.b, 1e-4));
+        lit = mix(lit, albedo * diff + albedo * (albedo / peak) * max(-ndl, 0.0), 0.5);
+    }
 
     // The cascades hold the trees too, so a crown shades itself and its
     // neighbours: the inside of a canopy is dark and the forest floor is dappled
@@ -83,7 +97,7 @@ void main() {
     float up   = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
     vec3  amb  = uAmbient * mix(0.45, 1.0, up);
 
-    vec3 color = albedo * amb * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05) * sun;
+    vec3 color = albedo * amb * 0.8 + uLightColor * (lit * 0.85 + albedo * 0.05) * sun;
 
     // Sun through the leaves. A leaf is thin: seen against the sun it glows
     // with its own colour, deeper and more saturated than lit from the front --

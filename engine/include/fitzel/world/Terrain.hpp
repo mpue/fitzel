@@ -154,6 +154,16 @@ struct TerrainEditField {
     void erode  (const TerrainSettings& s, glm::vec2 center, float radius,
                  float rate, int iterations = 8);
 
+    // Hydraulic erosion: `droplets` raindrops fall on the brush disc and each one
+    // runs downhill, picking up sediment where it speeds up and dropping it where
+    // it slows or climbs. Repeated showers cut branching gullies into slopes and
+    // leave silt fans in the hollows below. Drops may run past the rim, so the
+    // edit reaches a little beyond `radius` and fades out towards that edge; the
+    // reach is returned for the caller's rebuild rectangle. `seed` places the
+    // drops: the same seed on the same ground gives the same result.
+    float rain  (const TerrainSettings& s, glm::vec2 center, float radius,
+                 int droplets, std::uint32_t seed);
+
     // Stamp a procedural landform additively under the brush. `height` is the
     // peak offset in world units (negative digs the shape in instead); `shape`
     // selects the profile: 0 dome, 1 cone, 2 plateau/mesa, 3 crater, 4 ridge,

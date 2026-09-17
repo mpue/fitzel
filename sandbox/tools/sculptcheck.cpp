@@ -18,9 +18,13 @@
 // the answer is compared with the one straight line that should have produced
 // it, cell for cell.
 //
+// The Rain brush (hydraulic erosion) is checked here too: repeatable, bounded,
+// and actually cutting channels. `--dump <dir>` writes hillshaded before/after
+// pictures of its test cone, for looking rather than measuring.
+//
 // No GL, no window, no assets: this is arithmetic about a height field.
 //
-//   build/release/bin/sculptcheck.exe
+//   build/release/bin/sculptcheck.exe [--dump <dir>]
 // Exits non-zero if any measurement fails.
 
 #include <algorithm>
@@ -82,10 +86,34 @@ double volumeOf(const fitzel::TerrainEditField& f) {
     return v;
 }
 
+// A hillshaded greyscale picture of the field around `c`, for looking at what
+// the rain did (sculptcheck --dump <dir>). Base ground is flat in this tool.
+void dumpShade(const fitzel::TerrainEditField& f, glm::vec2 c, float half,
+               const std::string& path, const fitzel::TerrainSettings* ground = nullptr) {
+    auto at = [&](float x, float z) {
+        return (ground ? fitzel::terrainBaseHeight(*ground, x, z) : 0.0f) + f.sample(x, z);
+    };
+    const int n = static_cast<int>(half * 2.0f / f.cell);
+    std::FILE* out = std::fopen(path.c_str(), "wb");
+    if (!out) return;
+    std::fprintf(out, "P5\n%d %d\n255\n", n, n);
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i) {
+            const float x = c.x - half + i * f.cell, z = c.y - half + j * f.cell;
+            const float sx = (at(x + f.cell, z) - at(x - f.cell, z)) / (2 * f.cell);
+            const float sz = (at(x, z + f.cell) - at(x, z - f.cell)) / (2 * f.cell);
+            const glm::vec3 nrm = glm::normalize(glm::vec3(-sx, 1.0f, -sz));
+            const float lam = std::max(0.0f, glm::dot(nrm, glm::normalize(glm::vec3(-0.6f, 0.7f, -0.5f))));
+            std::fputc(static_cast<int>(std::min(255.0f, 30.0f + 225.0f * lam)), out);
+        }
+    std::fclose(out);
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+    const std::string dumpDir = (argc > 2 && std::string(argv[1]) == "--dump") ? argv[2] : "";
 
     const glm::vec2 C(120.0f, -37.0f);   // off the grid origin on purpose
     const float R = 12.0f;
@@ -210,6 +238,90 @@ int main() {
         std::snprintf(d, sizeof d, "a -5 m pull mirrors a +5 m one to %.6f m", worst);
         if (worst > 1e-5f) fail("down is the same tool as up", d);
         else               pass("down is the same tool as up", d);
+    }
+
+    // --- 5) Rain: hydraulic erosion ------------------------------------------
+    // A rough cone on flat ground, rained on in showers the way the brush does
+    // it. The rain is not a height the gesture asks for, so the checks are about
+    // behaviour: same seed same ground, nothing past the reach, flat ground left
+    // alone, material taken off the slope and laid down at its foot, and the
+    // slope cut into channels rather than lowered evenly.
+    {
+        fitzel::setTerrainPresent(false);                // flat base: only the field counts
+        const fitzel::TerrainSettings ts;
+        const float cone = 36.0f, rainR = 30.0f;
+        fitzel::TerrainEditField hill = makeField();
+        hill.stamp(C, cone, 22.0f, 1);
+        hill.roughen(C, cone, 0.5f, 0.35f, 3.0f);
+        fitzel::TerrainEditField a = hill, b = hill;
+        float reach = 0.0f;
+        const int showers = 20, drops = 150;   // about one drop per square metre in all
+        for (int i = 0; i < showers; ++i) {
+            reach = a.rain(ts, C, rainR, drops, static_cast<std::uint32_t>(i));
+            b.rain(ts, C, rainR, drops, static_cast<std::uint32_t>(i));
+        }
+        if (!dumpDir.empty()) {
+            dumpShade(hill, C, 50.0f, dumpDir + "/rain-before.pgm");
+            dumpShade(a,    C, 50.0f, dumpDir + "/rain-after.pgm");
+        }
+
+        const float same = worstDiff(a, b);
+        bool finite = true;
+        float outside = 0.0f;
+        double upper = 0.0, foot = 0.0; int nUpper = 0, nFoot = 0;
+        double ringSq = 0.0, ringMean = 0.0; int nRing = 0;
+        double moved = 0.0;
+        for (const auto& [k, v] : a.deltas) {
+            if (!std::isfinite(v)) finite = false;
+            const auto it = hill.deltas.find(k);
+            const float change = v - (it == hill.deltas.end() ? 0.0f : it->second);
+            const int ix = static_cast<int>(k >> 32);
+            const int iz = static_cast<int>(static_cast<std::int32_t>(static_cast<std::uint32_t>(k)));
+            const float r = glm::distance(glm::vec2(ix, iz) * a.cell, C);
+            moved += std::fabs(change);
+            if (r > reach + a.cell) outside = std::max(outside, std::fabs(change));
+            if (r < 20.0f)                { upper += change; ++nUpper; }
+            if (r > 32.0f && r < 44.0f)   { foot  += change; ++nFoot;  }
+            if (r > 14.0f && r < 18.0f)   { ringSq += change * change; ringMean += change; ++nRing; }
+        }
+        upper /= std::max(1, nUpper); foot /= std::max(1, nFoot);
+        ringMean /= std::max(1, nRing);
+        const double ringDev = std::sqrt(std::max(0.0, ringSq / std::max(1, nRing) - ringMean * ringMean));
+
+        fitzel::TerrainEditField flat = makeField();
+        flat.rain(ts, C, rainR, drops, 7u);
+        double flatMoved = 0.0;
+        for (const auto& [k, v] : flat.deltas) flatMoved += std::fabs(v);
+
+        char d[240];
+        std::snprintf(d, sizeof d, "two runs with the same seeds differ by %.7f m", same);
+        if (same > 1e-6f) fail("rain is repeatable", d); else pass("rain is repeatable", d);
+        std::snprintf(d, sizeof d, "largest change past the %.1f m reach: %.6f m", reach, outside);
+        if (!finite || outside > 1e-6f) fail("rain stays inside its reach", d);
+        else                            pass("rain stays inside its reach", d);
+        std::snprintf(d, sizeof d, "flat ground moved %.6f m in total", flatMoved);
+        if (flatMoved > 1e-6) fail("rain leaves flat ground alone", d);
+        else                  pass("rain leaves flat ground alone", d);
+        std::snprintf(d, sizeof d, "upper slope %+.3f m on average, foot %+.3f m", upper, foot);
+        if (!(upper < -0.05 && foot > 0.01)) fail("rain carries the slope to its foot", d);
+        else                                 pass("rain carries the slope to its foot", d);
+        std::snprintf(d, sizeof d, "mid-slope ring: mean %+.3f m, spread %.3f m", ringMean, ringDev);
+        if (!(ringDev > 0.1)) fail("rain cuts channels, not a smooth lowering", d);
+        else                  pass("rain cuts channels, not a smooth lowering", d);
+        fitzel::setTerrainPresent(true);
+
+        // For looking only: two seconds of holding the brush the way the editor
+        // doses it (radius 20 m, strength 0.5, ten showers a second) on the
+        // default generator's ground, which is what the dose was tuned against.
+        if (!dumpDir.empty()) {
+            const fitzel::TerrainSettings real;
+            const glm::vec2 at(260.0f, 140.0f);
+            fitzel::TerrainEditField g = makeField();
+            dumpShade(g, at, 50.0f, dumpDir + "/rain-real-before.pgm", &real);
+            const int dose = static_cast<int>(3.14159265f * 20.0f * 20.0f * 0.5f * 0.06f);
+            for (int i = 0; i < 20; ++i) g.rain(real, at, 20.0f, dose, static_cast<std::uint32_t>(i));
+            dumpShade(g, at, 50.0f, dumpDir + "/rain-real-after.pgm", &real);
+        }
     }
 
     std::printf(g_fails ? "\n%d check(s) FAILED\n" : "\nall checks passed\n",

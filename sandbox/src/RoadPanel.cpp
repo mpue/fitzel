@@ -286,7 +286,7 @@ bool junctionSection(const PanelState& s) {
         const char* kind = x.tee ? "T" : "Crossing";
         char row[192];
         if (x.roadA == x.roadB)
-            std::snprintf(row, sizeof(row), "%s   %s with itself   %.0f, %.0f   %.0f\xC2\xB0",
+            std::snprintf(row, sizeof(row), "%s   %s: %s with itself   %.0f, %.0f   %.0f\xC2\xB0",
                           mine ? "\xE2\x97\x8F" : "\xC2\xB7", kind,
                           s.roads.at(x.roadA).name.c_str(), x.at.x, x.at.y, deg);
         else

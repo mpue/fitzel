@@ -15,6 +15,8 @@ extern "C" {
 
 #include <fitzel/asset/Vfs.hpp>
 
+#include "SaveData.hpp"
+
 namespace {
 
 // Load a Lua chunk through the VFS rather than the filesystem, so scripts inside
@@ -354,6 +356,126 @@ int l_setHud(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* text = luaL_optstring(L, 1, "");
     if (h) h->hud = text;
+    return 0;
+}
+
+// --- Script-drawn HUD ----------------------------------------------------------
+// Every call queues one ScriptHudCmd; the host draws the queue after the frame.
+// Colours are four numbers 0..1 (alpha optional, default 1) packed the way
+// IM_COL32 packs them, so the host hands them to ImGui as they are.
+
+unsigned hudColour(lua_State* L, int first) {
+    auto ch = [&](int i, double dflt) {
+        const double v = luaL_optnumber(L, i, dflt);
+        return static_cast<unsigned>(std::clamp(v, 0.0, 1.0) * 255.0 + 0.5);
+    };
+    return ch(first, 1.0) | (ch(first + 1, 1.0) << 8) | (ch(first + 2, 1.0) << 16) |
+           (ch(first + 3, 1.0) << 24);
+}
+float num(lua_State* L, int i) { return static_cast<float>(luaL_checknumber(L, i)); }
+float optNum(lua_State* L, int i, float d) {
+    return static_cast<float>(luaL_optnumber(L, i, d));
+}
+void queueHud(lua_State* L, ScriptHudCmd&& c) {
+    if (ScriptHost* h = hostOf(L)) h->hudCmds.push_back(std::move(c));
+}
+
+// hudRect(x, y, w, h, r, g, b, a, rounding)
+int l_hudRect(lua_State* L) {
+    ScriptHudCmd c;
+    c.kind = ScriptHudCmd::Kind::Rect;
+    for (int i = 0; i < 4; ++i) c.a[i] = num(L, i + 1);
+    c.col  = hudColour(L, 5);
+    c.a[4] = optNum(L, 9, 0.0f);
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudGradient(x, y, w, h, r, g, b, a, r2, g2, b2, a2) -- top colour to bottom
+int l_hudGradient(lua_State* L) {
+    ScriptHudCmd c;
+    c.kind = ScriptHudCmd::Kind::Gradient;
+    for (int i = 0; i < 4; ++i) c.a[i] = num(L, i + 1);
+    c.col  = hudColour(L, 5);
+    c.col2 = hudColour(L, 9);
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudFrame(x, y, w, h, r, g, b, a, thickness, rounding)
+int l_hudFrame(lua_State* L) {
+    ScriptHudCmd c;
+    c.kind = ScriptHudCmd::Kind::Frame;
+    for (int i = 0; i < 4; ++i) c.a[i] = num(L, i + 1);
+    c.col  = hudColour(L, 5);
+    c.size = optNum(L, 9, 2.0f);
+    c.a[4] = optNum(L, 10, 0.0f);
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudLine(x1, y1, x2, y2, r, g, b, a, thickness)
+int l_hudLine(lua_State* L) {
+    ScriptHudCmd c;
+    c.kind = ScriptHudCmd::Kind::Line;
+    for (int i = 0; i < 4; ++i) c.a[i] = num(L, i + 1);
+    c.col  = hudColour(L, 5);
+    c.size = optNum(L, 9, 2.0f);
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudCircle(x, y, radius, r, g, b, a, thickness) -- no thickness = filled
+int l_hudCircle(lua_State* L) {
+    ScriptHudCmd c;
+    for (int i = 0; i < 3; ++i) c.a[i] = num(L, i + 1);
+    c.col  = hudColour(L, 4);
+    c.size = optNum(L, 8, 0.0f);
+    c.kind = c.size > 0.0f ? ScriptHudCmd::Kind::Ring : ScriptHudCmd::Kind::Circle;
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudTri(x1, y1, x2, y2, x3, y3, r, g, b, a) -- filled
+int l_hudTri(lua_State* L) {
+    ScriptHudCmd c;
+    c.kind = ScriptHudCmd::Kind::Tri;
+    for (int i = 0; i < 6; ++i) c.a[i] = num(L, i + 1);
+    c.col = hudColour(L, 7);
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudText(x, y, text, size, r, g, b, a, align, bold) -- y is the top of the line
+int l_hudText(lua_State* L) {
+    ScriptHudCmd c;
+    c.kind  = ScriptHudCmd::Kind::Text;
+    c.a[0]  = num(L, 1);
+    c.a[1]  = num(L, 2);
+    c.text  = luaL_checkstring(L, 3);
+    c.size  = optNum(L, 4, 32.0f);
+    c.col   = hudColour(L, 5);
+    c.align = optNum(L, 9, 0.0f);
+    c.bold  = lua_toboolean(L, 10) != 0;
+    queueHud(L, std::move(c));
+    return 0;
+}
+// hudTextSize(text, size, bold) -> w, h
+int l_hudTextSize(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const std::string text = luaL_checkstring(L, 1);
+    const float size = optNum(L, 2, 32.0f);
+    glm::vec2 s(0.0f);
+    if (h && h->measureText) s = h->measureText(text, size, lua_toboolean(L, 3) != 0);
+    lua_pushnumber(L, s.x);
+    lua_pushnumber(L, s.y);
+    return 2;
+}
+// hudSize() -> w, h: the canvas is 1080 high and as wide as the view's aspect.
+int l_hudSize(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float aspect = (h && h->screen.y > 0.0f) ? h->screen.x / h->screen.y
+                                                   : 16.0f / 9.0f;
+    lua_pushnumber(L, 1080.0f * aspect);
+    lua_pushnumber(L, 1080.0f);
+    return 2;
+}
+int l_setCrosshair(lua_State* L) {
+    if (ScriptHost* h = hostOf(L)) h->crosshair = lua_toboolean(L, 1) != 0;
     return 0;
 }
 
@@ -743,6 +865,95 @@ int l_log(lua_State* L) {
     else             std::fprintf(stderr, "[Lua] %s\n", line.c_str());
     return 0;
 }
+// --- Saves: a Lua value <-> JSON -----------------------------------------------
+// Tables with keys 1..n and nothing else become arrays, every other table an
+// object with its keys as strings; numbers, strings and booleans go as they
+// are. Functions and the like are not data and are left out. Nesting is capped:
+// a table that contains itself must not take the game down with it.
+nlohmann::json luaToJson(lua_State* L, int idx, int depth) {
+    idx = lua_absindex(L, idx);
+    switch (lua_type(L, idx)) {
+    case LUA_TBOOLEAN: return lua_toboolean(L, idx) != 0;
+    case LUA_TNUMBER:
+        if (lua_isinteger(L, idx)) return static_cast<long long>(lua_tointeger(L, idx));
+        return lua_tonumber(L, idx);
+    case LUA_TSTRING: return std::string(lua_tostring(L, idx));
+    case LUA_TTABLE: {
+        if (depth > 32) return nullptr;
+        const lua_Integer n = static_cast<lua_Integer>(lua_rawlen(L, idx));
+        lua_Integer keys = 0;
+        lua_pushnil(L);
+        while (lua_next(L, idx) != 0) { ++keys; lua_pop(L, 1); }
+        if (n > 0 && keys == n) {
+            nlohmann::json arr = nlohmann::json::array();
+            for (lua_Integer i = 1; i <= n; ++i) {
+                lua_rawgeti(L, idx, i);
+                arr.push_back(luaToJson(L, -1, depth + 1));
+                lua_pop(L, 1);
+            }
+            return arr;
+        }
+        nlohmann::json obj = nlohmann::json::object();
+        lua_pushnil(L);
+        while (lua_next(L, idx) != 0) {
+            const int kt = lua_type(L, -2);
+            const int vt = lua_type(L, -1);
+            if ((kt == LUA_TSTRING || kt == LUA_TNUMBER) &&
+                (vt == LUA_TBOOLEAN || vt == LUA_TNUMBER || vt == LUA_TSTRING || vt == LUA_TTABLE)) {
+                lua_pushvalue(L, -2);   // tostring on a copy: lua_next needs the key as it was
+                const std::string key = lua_tostring(L, -1);
+                lua_pop(L, 1);
+                obj[key] = luaToJson(L, -1, depth + 1);
+            }
+            lua_pop(L, 1);
+        }
+        return obj;
+    }
+    default: return nullptr;
+    }
+}
+
+void jsonToLua(lua_State* L, const nlohmann::json& j) {
+    if (j.is_boolean())             lua_pushboolean(L, j.get<bool>());
+    else if (j.is_number_integer()) lua_pushinteger(L, j.get<long long>());
+    else if (j.is_number())         lua_pushnumber(L, j.get<double>());
+    else if (j.is_string())         lua_pushstring(L, j.get<std::string>().c_str());
+    else if (j.is_array()) {
+        lua_createtable(L, static_cast<int>(j.size()), 0);
+        for (std::size_t i = 0; i < j.size(); ++i) {
+            jsonToLua(L, j[i]);
+            lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+        }
+    } else if (j.is_object()) {
+        lua_createtable(L, 0, static_cast<int>(j.size()));
+        for (auto it = j.begin(); it != j.end(); ++it) {
+            jsonToLua(L, it.value());
+            lua_setfield(L, -2, it.key().c_str());
+        }
+    } else {
+        lua_pushnil(L);
+    }
+}
+
+// game.saveData(slot, value) -> true when written
+int l_saveData(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* slot = luaL_checkstring(L, 1);
+    luaL_checkany(L, 2);
+    const bool ok = savedata::write(h ? h->saveGame : std::string(), slot, luaToJson(L, 2, 0));
+    lua_pushboolean(L, ok);
+    return 1;
+}
+// game.loadData(slot) -> the value saved there, or nil
+int l_loadData(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* slot = luaL_checkstring(L, 1);
+    const auto j = savedata::read(h ? h->saveGame : std::string(), slot);
+    if (!j) { lua_pushnil(L); return 1; }
+    jsonToLua(L, *j);
+    return 1;
+}
+
 int l_loadScene(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* name = luaL_checkstring(L, 1);
@@ -769,6 +980,14 @@ int l_setCameraFov(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const float f = static_cast<float>(luaL_checknumber(L, 1));
     if (h && h->setCamFov) h->setCamFov(f);
+    return 0;
+}
+// game.setFocus(near, far) -- or game.setFocus() for the view's own focus again.
+int l_setFocus(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const float nearM = static_cast<float>(luaL_optnumber(L, 1, 0.0));
+    const float farM  = static_cast<float>(luaL_optnumber(L, 2, 0.0));
+    if (h && h->setFocus) h->setFocus(nearM, farM);
     return 0;
 }
 int l_setCamera(lua_State* L) {
@@ -822,6 +1041,12 @@ void ScriptSystem::installApi() {
     fn("playAudio", l_playAudio);     fn("stopAudio", l_stopAudio);
     fn("addScore", l_addScore);       fn("getScore", l_getScore);
     fn("setHud", l_setHud);
+    // Script-drawn HUD
+    fn("hudRect", l_hudRect);         fn("hudGradient", l_hudGradient);
+    fn("hudFrame", l_hudFrame);       fn("hudLine", l_hudLine);
+    fn("hudCircle", l_hudCircle);     fn("hudTri", l_hudTri);
+    fn("hudText", l_hudText);         fn("hudTextSize", l_hudTextSize);
+    fn("hudSize", l_hudSize);         fn("setCrosshair", l_setCrosshair);
     // Assets
     fn("assets", l_assets);           fn("findAsset", l_findAsset);
     fn("assetInfo", l_assetInfo);     fn("assetPath", l_assetPath);
@@ -856,8 +1081,10 @@ void ScriptSystem::installApi() {
     fn("terrainHeight", l_terrainHeight);
     fn("raycast", l_raycast);         fn("log", l_log);
     fn("loadScene", l_loadScene);
+    fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
     fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);
+    fn("setFocus", l_setFocus);
     fn("screenSize", l_screenSize);
 
     auto k = [&](const char* name, int v) {
@@ -866,7 +1093,7 @@ void ScriptSystem::installApi() {
     };
     // Entity types (match EntityType in SceneTypes.hpp).
     k("BOX", 0); k("RAMP", 1); k("CYLINDER", 2); k("SPHERE", 3);
-    k("LIGHT", 4); k("SUN", 5); k("MODEL", 6); k("EMPTY", 7);
+    k("LIGHT", 4); k("SUN", 5); k("MODEL", 6); k("EMPTY", 7); k("PLANE", 8);
     // Physics modes (game.spawn's `physics`).
     k("PHYSICS_NONE", 0); k("PHYSICS_STATIC", 1); k("PHYSICS_DYNAMIC", 2);
     // Material alpha modes (see game.createMaterial).

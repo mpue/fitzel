@@ -109,6 +109,25 @@ struct ScriptLightEdit {
     std::optional<float>     spotBlend;
 };
 
+// One 2D drawing call a script queued for this frame's HUD (game.hudRect and
+// friends). Coordinates are on a virtual canvas 1080 units high and as wide as
+// the view's aspect makes it (game.hudSize), so a layout written once holds at
+// any window size and in the editor's inset viewport alike. The host scales and
+// offsets them onto the rendered view when it draws the HUD.
+struct ScriptHudCmd {
+    enum class Kind : unsigned char { Rect, Gradient, Frame, Line, Circle, Ring, Tri, Text };
+    Kind        kind = Kind::Rect;
+    float       a[6] = {};         // Rect/Frame: x, y, w, h, rounding | Gradient:
+                                   // x, y, w, h | Line: x1, y1, x2, y2 | Circle/Ring:
+                                   // cx, cy, r | Tri: three corners | Text: x, y
+    float       size    = 0.0f;    // Frame/Line/Ring: thickness | Text: height
+    float       align   = 0.0f;    // Text: 0 left .. 0.5 centred .. 1 right
+    bool        bold    = false;   // Text: the UI's semibold face
+    unsigned    col     = 0;       // RGBA8 (ImGui's IM_COL32 layout)
+    unsigned    col2    = 0;       // Gradient: the bottom colour
+    std::string text;
+};
+
 // A scene entity as scripts see it (see game.entityInfo).
 struct ScriptEntityInfo {
     int         id     = 0;
@@ -143,6 +162,9 @@ struct ScriptHost {
     std::function<void(glm::vec3)> setCamPos;
     std::function<void(glm::vec3)> setCamDir;   // direction is normalised by the host
     std::function<void(float)>     setCamFov;
+    // Depth of field for the script's view: sharp up to nearM, fully blurred
+    // beyond farM. farM <= 0 hands the focus back to the view's own settings.
+    std::function<void(float nearM, float farM)> setFocus;
     // Render from the Camera component on this entity (-1 = the player view).
     std::function<void(int)>       setActiveCamera;
 
@@ -230,6 +252,9 @@ struct ScriptHost {
                       glm::vec3& outHit, float& outDist)> raycast;
     // Load another scene of the open project by name (deferred to frame end).
     std::function<void(const std::string&)> loadScene;
+    // Whose saves game.saveData / game.loadData keep (SaveData.hpp): the game
+    // being played, set by the host when Play starts. Empty = "default".
+    std::string saveGame;
     // Print a line to the console / editor log.
     std::function<void(const std::string&)> log;
 
@@ -248,4 +273,14 @@ struct ScriptHost {
     // game.setHud.
     int         score = 0;
     std::string hud;
+
+    // --- Script-drawn HUD -----------------------------------------------------
+    // Cleared by the host before the scripts tick each frame, drawn after the
+    // frame is rendered, so what a script queued is exactly one frame's HUD.
+    std::vector<ScriptHudCmd> hudCmds;
+    // game.setCrosshair: a game that draws its own HUD has no use for the
+    // editor's aiming cross. Reset to shown whenever Play starts.
+    bool crosshair = true;
+    // Width/height in HUD units of a line of text at `size` (see ScriptHudCmd).
+    std::function<glm::vec2(const std::string&, float size, bool bold)> measureText;
 };

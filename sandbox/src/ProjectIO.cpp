@@ -796,8 +796,19 @@ void copyUsedContent(Context& ctx, const std::filesystem::path& out,
     //    that isn't under the content root is a project asset already shipped in
     //    out/project, so it's skipped here.
     const auto rec = fs::copy_options::recursive | fs::copy_options::overwrite_existing;
-    if (fs::exists(contentRoot / "sounds", ec))
-        fs::copy(contentRoot / "sounds", out / "content" / "sounds", rec, ec);
+    if (fs::exists(contentRoot / "sounds", ec)) {
+        // copy() makes the target folder but not its parents, and nothing has
+        // made out/content yet at this point (the kept files below make it for
+        // themselves). Without this the copy failed on "path not found" and every
+        // trimmed export shipped without a single sound -- quietly, because the
+        // error code was never read.
+        std::error_code se;
+        fs::create_directories(out / "content", se);
+        fs::copy(contentRoot / "sounds", out / "content" / "sounds", rec, se);
+        if (se)
+            std::fprintf(stderr, "[Fitzel] export: copying content/sounds failed: %s\n",
+                         se.message().c_str());
+    }
 
     auto shipUnderContent = [&](const fs::path& src) {
         std::error_code re;

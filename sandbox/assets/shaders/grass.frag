@@ -52,15 +52,23 @@ void main() {
     float diff = max(dot(N, L), 0.0);
     float back = max(dot(-N, L), 0.0) * 0.3; // light wrapping through the blade
 
+    // Light that came THROUGH a blade has been filtered by it on the way in and
+    // again on the way out: chlorophyll takes the red and the blue twice, so it
+    // leaves as a purer green than the lit face reflects (and a straw blade as
+    // gold). Same peak, deeper hue. Without it a meadow seen into a low orange
+    // sun glows orange-olive, when what it does is glow green.
+    float peak    = max(max(albedo.r, albedo.g), max(albedo.b, 1e-4));
+    vec3  through = albedo * (albedo / peak);
+
     // Sun translucency: blades glow when the sun is behind them toward the eye,
-    // strongest at the tips -> the warm backlit shimmer of a real meadow.
+    // strongest at the tips -> the backlit shimmer of a real meadow.
     float trans = pow(max(dot(V, -L), 0.0), 3.0) * (0.35 + 0.65 * vH);
-    vec3  glow  = uLightColor * albedo * trans * 1.5;
+    vec3  glow  = uLightColor * through * trans * 1.5;
 
     // Every term the sun contributes goes dark in its shadow: the direct light,
     // the wrap through the blade and the backlit glow alike.
     vec3 color = albedo * uAmbient
-               + (uLightColor * albedo * (diff * 0.85 + 0.2 + back) + glow) * vSun;
+               + (uLightColor * (albedo * (diff * 0.85 + 0.2) + through * back) + glow) * vSun;
     color *= mix(mix(0.72, 1.0, vH), 1.0, farFade); // gentle base AO, none at distance
 
     color = applyFog(color, vWorldPos, uViewPos, uLightDir);

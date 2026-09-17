@@ -541,8 +541,9 @@ void updateGlider(RaceState& st, const RaceEnv& env) {
     // road, and if it later falls well off (far to the side, or well below the
     // road/bridge surface next to it -- i.e. off a bridge) pop it back onto the
     // last breadcrumb, facing along the track and stopped. Only meaningful with a
-    // road to reference; skipped during the countdown.
-    if (env.road.built() && !frozen) {
+    // road to reference; skipped during the countdown. A craft in free mode has
+    // no track to be kept on: neither this nor the barrier below applies to it.
+    if (env.road.built() && !frozen && !gc->freeMode) {
         glm::vec2 snapXZ; float lateral = 0.0f, roadYaw = 0.0f;
         if (roadSnap(env.road, st.gliderPos, snapXZ, lateral, roadYaw)) {
             // The raised edges are road too: a craft parked up the lip has not

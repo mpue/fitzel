@@ -48,6 +48,16 @@ bool inDiscs(const std::vector<glm::vec3>& discs, float x, float z) {
     return false;
 }
 
+float discGap(const std::vector<glm::vec3>& discs, float x, float z, float reach) {
+    float gap = reach;
+    for (const glm::vec3& d : discs) {
+        const float dx = x - d.x, dz = z - d.y, r = d.z + gap;
+        const float dd = dx * dx + dz * dz;
+        if (r > 0.0f && dd < r * r) gap = std::sqrt(dd) - d.z;   // only ever shrinks
+    }
+    return gap;
+}
+
 float rayAABB(const glm::vec3& ro, const glm::vec3& rd,
               const glm::vec3& bmin, const glm::vec3& bmax) {
     float tmin = 0.0f, tmax = 1e30f;

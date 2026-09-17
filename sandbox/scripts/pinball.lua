@@ -42,7 +42,7 @@ extraBallAt  = 75000   -- score that earns an extra ball (0 = never)
 centerPost   = false   -- a post between the flippers: fewer drains, easier game
 camHeight    = 17.0    -- camera height above the playfield
 camBack      = 11.0    -- how far behind the bottom edge the camera stands
-camFov       = 50.0
+camFov       = 60.0
 standHeight  = 3.0     -- playfield height above the carrier object
 sound        = true    -- play the cues (silently skipped if a file is absent)
 

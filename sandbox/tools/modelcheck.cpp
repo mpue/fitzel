@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json.hpp>
 
 #include "../src/Component.hpp"
@@ -430,12 +431,106 @@ void checkFaceUv() {
 
 } // namespace
 
+// --- 5. Corners and edges -----------------------------------------------------
+
+void checkVertsEdges() {
+    std::printf("\nCorners and edges\n");
+
+    const EditMesh box = EditMesh::box(glm::vec3(0.5f));
+    const std::vector<editmesh::EdgeInfo> es = editmesh::edges(box);
+    bool twoFaces = es.size() == 12;
+    for (const editmesh::EdgeInfo& e : es) twoFaces = twoFaces && e.f0 >= 0 && e.f1 >= 0;
+    check(twoFaces, "a box has twelve edges, each between two faces");
+
+    EditMesh tv = box;
+    editmesh::transformVerts(tv, {1, 1, 99, -3},
+                             glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f)));
+    check(std::fabs(tv.verts[1].x - (box.verts[1].x + 1.0f)) < 1e-5f &&
+          glm::length(tv.verts[0] - box.verts[0]) < 1e-6f,
+          "a corner listed twice moves once; bad indices are ignored");
+
+    // Split: the corner goes into BOTH faces beside the edge, or the surface cracks.
+    EditMesh sp = box;
+    const int nv = editmesh::splitEdge(sp, 4, 5, 0.5f);
+    int fives = 0;
+    for (const std::vector<int>& f : sp.faces) if (f.size() == 5) ++fives;
+    check(nv == 8 && fives == 2, "splitting an edge puts one corner into both its faces");
+    check(closed(sp) && sp.paint.size() == sp.verts.size(), "...and the box stays closed");
+    check(std::fabs(sp.verts[nv].x) < 1e-5f, "...in the middle of the edge");
+    check(editmesh::splitEdge(sp, 0, 6, 0.5f) == -1, "no edge, no split (a diagonal is not one)");
+
+    // Merge.
+    EditMesh mg = box;
+    mg.setFaceMaterial(3, idA());
+    const int kept = editmesh::mergeVerts(mg, {4, 5});
+    check(kept >= 0 && mg.verts.size() == 7 && mg.faces.size() == 6,
+          "merging two corners leaves seven, and every face still has three");
+    check(closed(mg), "...and a closed shape");
+    check(mg.faceMat.size() == mg.faces.size() && mg.faceUV.size() == mg.faces.size() &&
+          mg.paint.size() == mg.verts.size(), "...with every parallel array in step");
+    check(std::fabs(mg.verts[kept].x) < 1e-5f, "the merged corner sits between the two");
+
+    EditMesh py = box;
+    editmesh::mergeVerts(py, {4, 5, 6, 7});
+    check(py.faces.size() == 5 && py.verts.size() == 5 && closed(py),
+          "merging a face's four corners collapses it: a box becomes a pyramid");
+    int dressed = 0;
+    EditMesh pyd = box;
+    pyd.setFaceMaterial(2, idB());
+    editmesh::mergeVerts(pyd, {4, 5, 6, 7});
+    for (int f = 0; f < static_cast<int>(pyd.faces.size()); ++f)
+        if (pyd.faceMaterial(f) == idB()) ++dressed;
+    check(dressed == 1, "...and the side that wore a material still wears it");
+
+    // Delete corners.
+    EditMesh dv = box;
+    editmesh::deleteVerts(dv, {6});
+    check(dv.faces.size() == 3 && dv.verts.size() == 7,
+          "deleting a corner takes the three faces round it");
+
+    // Dissolve.
+    EditMesh ds = box;
+    ds.setFaceMaterial(0, idA());
+    const int joined = editmesh::dissolveEdge(ds, 7, 6);
+    check(joined >= 0 && ds.faces.size() == 5 && ds.faces[joined].size() == 6,
+          "dissolving an edge joins its two faces into one six-cornered face");
+    check(closed(ds), "...and the surface stays closed");
+    check(ds.faceMaterial(joined) == idA() && ds.faceMat.size() == ds.faces.size(),
+          "...wearing the first face's material");
+    EditMesh op = box;
+    editmesh::deleteFace(op, 4);
+    const std::vector<editmesh::EdgeInfo> oe = editmesh::edges(op);
+    int border = -1;
+    for (int k = 0; k < static_cast<int>(oe.size()) && border < 0; ++k)
+        if (oe[k].f1 < 0) border = k;
+    check(border >= 0 && editmesh::dissolveEdge(op, oe[border].a, oe[border].b) == -1,
+          "a border edge has nothing to join and is left alone");
+
+    // Loop cut across an edge: t runs along THAT edge from its lower corner,
+    // whichever side of the quad it is on and whichever way round it is named.
+    auto cutAt = [&](int a, int b, float t, float& value, int& axis) {
+        EditMesh lc = box;
+        const bool ok = editmesh::loopCutEdge(lc, a, b, t) >= 0 && closed(lc);
+        return ok && flatOnSomeAxis(addedVerts(box, lc), value, axis);
+    };
+    float value = 0.0f;
+    int   axis  = -1;
+    check(editmesh::loopLengthEdge(box, 4, 5) == 4, "the ring across an edge of a box is four");
+    check(cutAt(4, 5, 0.25f, value, axis) && axis == 0 && std::fabs(value + 0.25f) < 1e-4f,
+          "a cut across edge 4-5 at 0.25 falls a quarter from corner 4");
+    check(cutAt(5, 4, 0.25f, value, axis) && axis == 0 && std::fabs(value + 0.25f) < 1e-4f,
+          "...the same when the edge is named the other way round");
+    check(cutAt(6, 7, 0.25f, value, axis) && axis == 0 && std::fabs(value - 0.25f) < 1e-4f,
+          "...and on the far side of the quad, from ITS lower corner (6)");
+}
+
 int main() {
     std::printf("modelcheck -- loop cut, per-face materials and texture placement\n");
     checkLoopCut();
     checkFaceMaterials();
     checkCarry();
     checkFaceUv();
+    checkVertsEdges();
     std::printf("\n%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

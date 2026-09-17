@@ -167,6 +167,44 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 | `game.getScore()` | int | aktuelle Punktzahl |
 | `game.setHud(text)` | – | HUD-Text im Play-Overlay setzen |
 
+#### 3.6.1 Eigenes HUD zeichnen
+
+Für ein richtiges Spiel-HUD (Balken, Symbole, Banner, Titelbildschirm) zeichnet
+ein Skript selbst — mit einfachen 2D-Aufrufen auf eine **virtuelle Leinwand, die
+immer 1080 Einheiten hoch** ist und so breit, wie das Seitenverhältnis der Ansicht
+es ergibt (`game.hudSize()`). Ein einmal gebautes Layout sitzt so bei jeder
+Fenstergrösse und auch im eingefügten Viewport des Editors richtig. Ursprung ist
+oben links, y wächst nach unten. Farben sind vier Zahlen 0..1 (`a` optional, 1).
+
+| Aufruf | Beschreibung |
+|--------|--------------|
+| `game.hudSize()` → `w, h` | Leinwandgrösse (`h` ist immer 1080) |
+| `game.hudRect(x, y, w, h, r, g, b, a [, rund])` | gefülltes Rechteck, `rund` = Eckenradius |
+| `game.hudGradient(x, y, w, h, r, g, b, a, r2, g2, b2, a2)` | Rechteck mit Verlauf oben → unten |
+| `game.hudFrame(x, y, w, h, r, g, b, a [, dicke, rund])` | Rechteck-Umriss |
+| `game.hudLine(x1, y1, x2, y2, r, g, b, a [, dicke])` | Linie |
+| `game.hudCircle(x, y, radius, r, g, b, a [, dicke])` | Kreis — ohne `dicke` gefüllt |
+| `game.hudTri(x1, y1, x2, y2, x3, y3, r, g, b, a)` | gefülltes Dreieck |
+| `game.hudText(x, y, text, grösse, r, g, b, a [, align, bold])` | Text mit Schatten; `y` = Oberkante, `align` 0 links / 0.5 Mitte / 1 rechts |
+| `game.hudTextSize(text, grösse [, bold])` → `w, h` | Textmasse in Leinwand-Einheiten |
+| `game.setCrosshair(an)` | Fadenkreuz des Players ein/aus (ein Spiel mit eigenem HUD will es meist nicht) |
+
+Gezeichnet wird, was das Skript **in diesem Frame** aufgerufen hat: die Liste wird
+vor jedem Skript-Tick geleert — also jeden Frame neu zeichnen, wie bei ImGui.
+
+```lua
+function update(e, dt, t)
+    local w, h = game.hudSize()
+    game.hudRect(20, 20, 300, 18, 0.1, 0.1, 0.1, 0.7, 4)          -- Balken-Hintergrund
+    game.hudRect(22, 22, 296 * leben, 14, 1.0, 0.3, 0.2, 1.0, 3)  -- Lebensbalken
+    game.hudText(w * 0.5, 40, "SCORE " .. punkte, 36, 1, 1, 1, 1, 0.5, true)
+end
+```
+
+Um etwas an einer Stelle der Welt zu beschriften (Punkte über einem Gegner),
+rechnet das Skript die Weltposition selbst durch die Kamera, die es gesetzt hat —
+`shmup.lua` zeigt das in `project()`.
+
 Score/HUD liegen im **Host** (nicht in der isolierten Skript-Umgebung), sind also
 über alle Skripte hinweg geteilt.
 
@@ -321,21 +359,31 @@ game.setLight(e.id, { intensity = 6 + math.random() * 4 })  -- Flackern
 | `game.raycast(ox,oy,oz, dx,dy,dz [,maxDist])` | `id, hx, hy, hz, dist` oder `nil` | Strahl gegen die Pick-Boxen der Objekte (achsen-parallel, Rotation wird ignoriert); `maxDist` default 1000 |
 | `game.setCameraPos(x, y, z)` | – | Spielerkamera setzen |
 | `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
-| `game.setCameraFov(grad)` | – | Öffnungswinkel |
+| `game.setCameraFov(grad)` | – | vertikaler Öffnungswinkel der freien Kamera; gilt bis Play endet |
+| `game.setFocus(nah, fern)` | – | Tiefenschärfe der Skript-Kamera: scharf bis `nah`, ganz unscharf ab `fern` (Meter); `game.setFocus()` gibt die Einstellung der Ansicht zurück. Gilt bis Play endet |
 | `game.setCamera(entityId)` | – | Auf die Camera-Komponente eines Objekts umschalten; `-1` = Spielerkamera |
 | `game.screenSize()` | `w, h` | Viewport-Größe in Pixeln |
 | `game.loadScene(name)` | – | Andere Szene des Projekts laden (am Frame-Ende, Play läuft weiter) |
+| `game.saveData(slot, wert)` | bool | Spielstand speichern: Zahlen, Texte, Wahrheitswerte und (verschachtelte) Tabellen, als JSON pro Spiel im Benutzerordner (`%APPDATA%\fitzel\saves\<Projekt>\<slot>.json`); atomar geschrieben |
+| `game.loadData(slot)` | Wert oder `nil` | Spielstand lesen; `nil`, wenn es noch keinen gibt |
 | `game.log(...)` | – | Zeile auf die Konsole (stderr), beliebig viele Argumente wie `print` |
 
 **Achtung Kamera:** solange eine Camera-Komponente aktiv ist (`game.setCamera(id)`
 oder *Active on start*), überschreibt sie am Frame-Ende `setCameraPos`/`Dir`/`Fov`.
 Mit `game.setCamera(-1)` gibt man dem Skript die Kontrolle zurück.
+Ein Skript, das im Play `game.setCameraPos` aufruft, übernimmt das Auge ganz: der
+Läufer (Start „zu Fuss") bewegt die Kamera danach nicht mehr — sonst stünde sie zu
+Beginn jedes Frames wieder bei der Kapsel, und Terrain, Bäume und Gras würden dort
+gestreamt statt unter dem Bild, das das Skript zeigt.
 
 ### 3.13 Konstanten
 
 **Entity-Typen** (für `game.spawn`s `type`):
 `game.BOX` (0), `game.RAMP` (1), `game.CYLINDER` (2), `game.SPHERE` (3),
-`game.LIGHT` (4), `game.SUN` (5), `game.MODEL` (6), `game.EMPTY` (7)
+`game.LIGHT` (4), `game.SUN` (5), `game.MODEL` (6), `game.EMPTY` (7),
+`game.PLANE` (8) — eine flache, beidseitige Fläche mit UV 0..1 über die ganze
+Fläche: mit einem Textur-Material im Alpha-Modus `ALPHA_BLEND` ein Sprite
+(Wolke, Feuerball, Insel von oben)
 
 **Physik-Modi:** `game.PHYSICS_NONE` (0), `game.PHYSICS_STATIC` (1), `game.PHYSICS_DYNAMIC` (2)
 
@@ -538,6 +586,57 @@ Farbe **einen Frame später** (der `spawn` von eben existiert noch nicht, ein
 der Ansichtsdrehung gerechnet statt fest verdrahtet, damit „hoch" nach dem Drehen
 immer noch heisst, was der Spieler sieht.
 
+### `shmup.lua` — SKYSTRIKE, ein Vertical-Shoot'em-up
+Skript auf **ein** Empty legen, Play drücken, Enter. Vier Stages — Inselmeer,
+Flotte, Sturmfront (Regen, Blitze) und Küste mit Festland — mit Staffeln in
+Formationen auf Spline-Bahnen, Drohnenschwärmen, Kamikaze-Hornissen,
+Laser-Drohnen, Minen, Kanonenbooten, Panzern, Bunkern, einem Zwischenboss und vier
+Endbossen mit abschiessbaren Teilen und Angriffsphasen; danach beginnt die
+nächste Runde schneller. Zwei Schiffe (Vulcan-Streuung oder durchschlagender
+Laser, im Titel wählbar), fünf Waffenstufen, Bomben, Chain, Graze, Continue.
+Abgeschossenes stürzt brennend ins Meer, Schiffe sinken, der Boden läuft über
+Übergangskacheln (Küste, Wetterfront) von einer Landschaft in die nächste.
+
+Zeigt, wie weit man mit Primitiven kommt: rund 1700 Objekte werden in `start()`
+auf Vorrat gespawnt und nur noch per `setActive` geschaltet (§3.3 — ein Geschoss,
+das einen Frame zu spät erscheint, trifft aus dem Nichts). Wolken, Inseln, Meer,
+Feuer und Rauch sind texturierte `PLANE`-Sprites; das HUD mit Seitenleisten,
+Bossbalken und Bannern ist mit `game.hud*` gezeichnet (§3.6.1).
+
+Die Texturen erzeugt `tools/gen_shmup_textures.py` (braucht numpy). Die Sounds
+schneidet `tools/import_shmup_sounds.py <Sample-Bibliothek> content/sounds` aus
+aufgenommenen Explosionen und Foley (`skystrike_*.wav`, mehrere Varianten je
+Zweck, zufällig gewählt); dahinter liegen die synthetischen aus
+`tools/gen_shmup_sounds.py`. Ohne beides läuft das Spiel mit schlichten
+Materialien und den Standard-Sounds der Engine.
+
+**Über echter Landschaft.** Liegt das Skript in einer Szene mit Terrain (und
+`landscape` ist an), fliegt SKYSTRIKE statt über das gemalte Meer über die Szene
+selbst — Stage HIGH VALLEY. Der Ursprung der Flugebene wandert über die Welt
+(`OZ`), die Flugebene reitet auf dem höchsten Gelände im Bild (`BY`), und alles
+wird mit `SYS.LAND.scale` (5 m je Einheit) gezeichnet: Jäger, Panzer und Festung
+haben die Grösse neben echten Bäumen. Bodengegner stehen per
+`game.terrainHeight` auf dem Gelände. Der Träger (das Empty mit dem Skript) ist
+der Start der Route, ein Empty namens **„Shmup Arena"** der Platz der Festung
+(eine Lichtung — Wald wächst sonst durch sie hindurch). `nextScene` verbindet zwei
+Szenen zu einer Runde: im SKYSTRIKE-Projekt geht es nach der Küste in
+`hochland.fitzel` weiter und danach zurück aufs Meer; Punkte, Schiffe, Bomben und
+Waffe reisen in einer kleinen Datei neben dem Highscore mit. `hochland.fitzel`
+ist eine für den Blick von oben eingestellte Kopie der scaper-Landschaft
+(Impostoren mit Draufsicht und Kartenschatten, keine Mesh-Schatten, kein
+Fernterrain, Flüsse getönt) — im düsteren Abendlicht mit fester Belichtung. Über
+dem Tal brennt es: Feuer mit Glut und Rauchfahnen, die über die Kronen abziehen,
+jedes abgeschossene Bodenziel brennt weiter, und ab und zu wetterleuchtet es.
+
+**Hangar und Einsätze.** Das Titelmenü bietet KAMPAGNE, EINSÄTZE und HANGAR (Pfeile
+hoch/runter, Enter, Backspace zurück). Jede Runde zahlt Credits (ein Hundertstel
+der Punkte, beim ersten Abschluss eines Einsatzes ein Bonus); im Hangar kaufen sie
+Upgrades in drei Stufen — Feuerkraft, Feuerrate, Raketen, Schild, Triebwerke,
+Bombenschacht, Reserveschiff, Bergung —, und das Schiff trägt, was gekauft ist. Ein
+einmal geschaffter Einsatz lässt sich allein fliegen, auch über die Szenengrenze
+(das Tal aus der Meer-Szene und zurück ins Einsatz-Menü). Das Pilotenprofil liegt
+per `game.saveData("profile", …)` im Benutzerordner.
+
 ---
 
 ## 7. Gut zu wissen (Fallstricke)
@@ -565,6 +664,13 @@ immer noch heisst, was der Spieler sieht.
   reicht das, für exakte Treffer auf schrägen Modellen nicht.
 - **`game.log` schreibt nach stderr** (Konsolenfenster des Editors), es gibt kein
   Log-Panel in der UI.
+- **`game.setCameraFov` gilt erst seit 2026-09 wirklich.** Vorher setzte die freie
+  Kamera jeden Frame den Öffnungswinkel des Editors zurück (meist 60°) — ein Skript,
+  das damals mit einem anderen Wert „passend" eingestellt wurde, war in Wahrheit auf
+  60° abgestimmt und rahmt jetzt enger oder weiter.
+- **`game.loadScene` im Editor verwirft ungespeicherte Änderungen** der Szene, die
+  man verlässt: Play wird gestoppt, die neue Szene geladen und Play neu gestartet.
+  Wer ein Spiel mit Szenenwechsel im Editor testet, speichert vorher.
 
 ---
 

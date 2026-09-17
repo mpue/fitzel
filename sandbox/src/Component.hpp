@@ -636,6 +636,11 @@ public:
     // nimble racer, 20 is effectively the old instant behaviour.
     float steerResponse = 3.0f;
     bool  invertSteer = false;// swap A/D (left stick) so the craft steers the other way
+    // Free flight: the road stops being the course. No barrier at its edges and
+    // no rescue that puts a craft that has left it back on it -- the craft glides
+    // over whatever ground is under it, road or not. Off by default: a racer is
+    // meant to be kept on its track.
+    bool  freeMode    = false;
     float grip       = 3.0f;  // how fast sideways drift is killed (1/s; higher = less slide)
     float drag       = 0.4f;  // linear damping (1/s)
     // Manual boost (gamepad A / Left Shift): a tank the pilot spends rather than

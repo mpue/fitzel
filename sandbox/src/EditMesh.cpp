@@ -157,6 +157,88 @@ std::vector<RingStep> loopRing(const EditMesh& m, int face, int dir) {
     return ring;
 }
 
+// Drop the corners no face uses any more and renumber the faces onto what is
+// left, carrying the paint weights with their corners. Returns old -> new index
+// (-1 for a corner that went).
+std::vector<int> dropUnusedVerts(EditMesh& m) {
+    std::vector<int> remap(m.verts.size(), -1);
+    for (const std::vector<int>& f : m.faces)
+        for (int i : f)
+            if (i >= 0 && i < static_cast<int>(remap.size())) remap[i] = 0;
+    m.syncPaint();
+    std::vector<glm::vec3> kept;
+    std::vector<glm::vec4> keptPaint;
+    kept.reserve(m.verts.size());
+    keptPaint.reserve(m.paint.size());
+    for (std::size_t i = 0; i < m.verts.size(); ++i)
+        if (remap[i] == 0) {
+            remap[i] = static_cast<int>(kept.size());
+            kept.push_back(m.verts[i]);
+            keptPaint.push_back(m.paint[i]);   // weights follow their corner
+        }
+    m.verts = std::move(kept);
+    m.paint = std::move(keptPaint);
+    for (std::vector<int>& f : m.faces)
+        for (int& i : f) i = remap[i];
+    return remap;
+}
+
+// What merging corners leaves behind: loops that name the same corner twice in
+// a row, and faces with fewer than three distinct corners. Squeezes the first
+// and drops the second -- materials and placements with them -- then the
+// corners nobody uses. Returns old -> new FACE index (-1 for a face that went).
+std::vector<int> dropCollapsedFaces(EditMesh& m, std::vector<int>* vertRemap = nullptr) {
+    m.syncFaceMat();
+    m.syncFaceUv();
+    std::vector<int> faceRemap(m.faces.size(), -1);
+    std::size_t w = 0;
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        std::vector<int> loop;
+        loop.reserve(m.faces[f].size());
+        for (int i : m.faces[f])
+            if (loop.empty() || loop.back() != i) loop.push_back(i);
+        while (loop.size() > 1 && loop.front() == loop.back()) loop.pop_back();
+        std::vector<int> distinct = loop;
+        std::sort(distinct.begin(), distinct.end());
+        distinct.erase(std::unique(distinct.begin(), distinct.end()), distinct.end());
+        if (distinct.size() < 3) continue;
+        faceRemap[f] = static_cast<int>(w);
+        m.faces[w]   = std::move(loop);
+        if (w != f) {
+            m.faceMat[w] = m.faceMat[f];
+            m.faceUV[w]  = m.faceUV[f];
+        }
+        ++w;
+    }
+    m.faces.resize(w);
+    m.faceMat.resize(w);
+    m.faceUV.resize(w);
+    std::vector<int> vr = dropUnusedVerts(m);
+    if (vertRemap) *vertRemap = std::move(vr);
+    return faceRemap;
+}
+
+// Where edge (a, b) sits in face `f`'s loop: the index i with {fv[i], fv[i+1]}
+// == {a, b}, or -1.
+int edgeIndexIn(const EditMesh& m, int f, int a, int b) {
+    const std::vector<int>& fv = m.faces[f];
+    for (std::size_t i = 0; i < fv.size(); ++i) {
+        const int p = fv[i], q = fv[(i + 1) % fv.size()];
+        if ((p == a && q == b) || (p == b && q == a)) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+// The unique, in-range corners of a selection.
+std::vector<int> uniqueVerts(const EditMesh& m, const std::vector<int>& idx) {
+    std::vector<int> u;
+    for (int i : idx)
+        if (i >= 0 && i < static_cast<int>(m.verts.size())) u.push_back(i);
+    std::sort(u.begin(), u.end());
+    u.erase(std::unique(u.begin(), u.end()), u.end());
+    return u;
+}
+
 } // namespace
 
 EditMesh EditMesh::box(const glm::vec3& h) {
@@ -420,25 +502,7 @@ int deleteFace(EditMesh& m, int face) {
 
     // Drop the vertices no face uses any more and renumber, or a long editing
     // session leaves the mesh carrying every corner it ever had.
-    std::vector<int> remap(m.verts.size(), -1);
-    for (const std::vector<int>& f : m.faces)
-        for (int i : f)
-            if (i >= 0 && i < static_cast<int>(remap.size())) remap[i] = 0;
-    m.syncPaint();
-    std::vector<glm::vec3> kept;
-    std::vector<glm::vec4> keptPaint;
-    kept.reserve(m.verts.size());
-    keptPaint.reserve(m.paint.size());
-    for (std::size_t i = 0; i < m.verts.size(); ++i)
-        if (remap[i] == 0) {
-            remap[i] = static_cast<int>(kept.size());
-            kept.push_back(m.verts[i]);
-            keptPaint.push_back(m.paint[i]);   // weights follow their corner
-        }
-    m.verts = std::move(kept);
-    m.paint = std::move(keptPaint);
-    for (std::vector<int>& f : m.faces)
-        for (int& i : f) i = remap[i];
+    dropUnusedVerts(m);
 
     // Selecting the face that slid into the deleted one's place is what the hand
     // expects when clearing several in a row.
@@ -458,6 +522,139 @@ int transformFace(EditMesh& m, int face, const glm::mat4& xform) {
         if (!seen) m.verts[fv[k]] = glm::vec3(xform * glm::vec4(m.verts[fv[k]], 1.0f));
     }
     return face;
+}
+
+std::vector<EdgeInfo> edges(const EditMesh& m) {
+    std::vector<EdgeInfo> out;
+    std::unordered_map<std::uint64_t, int> slot;
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        const std::vector<int>& fv = m.faces[f];
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            const int a = fv[i], b = fv[(i + 1) % fv.size()];
+            if (a == b) continue;
+            auto [it, fresh] = slot.try_emplace(edgeKey(a, b), static_cast<int>(out.size()));
+            if (fresh) out.push_back(EdgeInfo{a, b, static_cast<int>(f), -1});
+            else if (out[it->second].f1 < 0 && out[it->second].f0 != static_cast<int>(f))
+                out[it->second].f1 = static_cast<int>(f);
+        }
+    }
+    return out;
+}
+
+void transformVerts(EditMesh& m, const std::vector<int>& idx, const glm::mat4& xform) {
+    for (int i : uniqueVerts(m, idx))
+        m.verts[i] = glm::vec3(xform * glm::vec4(m.verts[i], 1.0f));
+}
+
+int mergeVerts(EditMesh& m, const std::vector<int>& idx) {
+    const std::vector<int> u = uniqueVerts(m, idx);
+    if (u.size() < 2) return -1;
+    m.syncPaint();
+    glm::vec3 c(0.0f);
+    glm::vec4 w(0.0f);
+    for (int i : u) { c += m.verts[i]; w += m.paint[i]; }
+    const float n  = static_cast<float>(u.size());
+    const int keep = u[0];
+    m.verts[keep] = c / n;
+    m.paint[keep] = w / n;
+    for (std::vector<int>& f : m.faces)
+        for (int& i : f)
+            if (std::binary_search(u.begin(), u.end(), i)) i = keep;
+
+    std::vector<int> remap;
+    dropCollapsedFaces(m, &remap);
+    return remap[keep];
+}
+
+void deleteVerts(EditMesh& m, const std::vector<int>& idx) {
+    const std::vector<int> u = uniqueVerts(m, idx);
+    if (u.empty()) return;
+    for (std::vector<int>& f : m.faces)
+        for (int i : f)
+            if (std::binary_search(u.begin(), u.end(), i)) { f.clear(); break; }
+    dropCollapsedFaces(m);
+}
+
+int splitEdge(EditMesh& m, int a, int b, float t) {
+    const int nv = static_cast<int>(m.verts.size());
+    if (a < 0 || b < 0 || a >= nv || b >= nv || a == b) return -1;
+    int v = -1;
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        const int i = edgeIndexIn(m, static_cast<int>(f), a, b);
+        if (i < 0) continue;
+        if (v < 0)
+            v = addVert(m, glm::mix(m.verts[a], m.verts[b], t),
+                        glm::mix(m.paintAt(a), m.paintAt(b), t));
+        std::vector<int>& fv = m.faces[f];
+        fv.insert(fv.begin() + (i + 1), v);
+    }
+    return v;
+}
+
+int dissolveEdge(EditMesh& m, int a, int b) {
+    int f0 = -1, f1 = -1;
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        if (edgeIndexIn(m, static_cast<int>(f), a, b) < 0) continue;
+        if (f0 < 0) f0 = static_cast<int>(f);
+        else if (f1 < 0) f1 = static_cast<int>(f);
+        else return -1;   // three faces on one edge is not a surface
+    }
+    if (f0 < 0 || f1 < 0) return -1;
+
+    // f0 runs x -> y along the edge; a consistently wound neighbour runs y -> x.
+    const std::vector<int> p = m.faces[f0], q = m.faces[f1];
+    const int i0 = edgeIndexIn(m, f0, a, b);
+    const int x = p[i0], y = p[(i0 + 1) % p.size()];
+    const int j0 = edgeIndexIn(m, f1, a, b);
+    if (q[j0] != y || q[(j0 + 1) % q.size()] != x) return -1;
+
+    // Round f0 from y back to x, then on round f1 from just after x to just
+    // before y: one loop around both faces, the shared edge left out.
+    std::vector<int> joined;
+    for (std::size_t k = 0; k < p.size(); ++k)
+        joined.push_back(p[(i0 + 1 + k) % p.size()]);           // y ... x
+    for (std::size_t k = 2; k < q.size(); ++k)
+        joined.push_back(q[(j0 + k) % q.size()]);               // after x ... before y
+    m.faces[f0] = std::move(joined);
+    m.faces[f1].clear();
+    const std::vector<int> remap = dropCollapsedFaces(m);
+    return remap[f0];
+}
+
+namespace {
+// The quad beside edge (a, b) and the direction whose ring crosses it; false
+// when no quad borders the edge.
+bool edgeRing(const EditMesh& m, int a, int b, int& face, int& dir, int& k) {
+    for (std::size_t f = 0; f < m.faces.size(); ++f) {
+        if (m.faces[f].size() != 4) continue;
+        const int i = edgeIndexIn(m, static_cast<int>(f), a, b);
+        if (i < 0) continue;
+        face = static_cast<int>(f);
+        k    = i;
+        dir  = i & 1;   // loopRing crosses edges (dir & 1) and (dir & 1) + 2
+        return true;
+    }
+    return false;
+}
+} // namespace
+
+int loopCutEdge(EditMesh& m, int a, int b, float t) {
+    int face = -1, dir = 0, k = 0;
+    if (!edgeRing(m, a, b, face, dir, k)) return -1;
+    // loopCut measures from fv[dir] on the edge it starts on, and from the corner
+    // joined to that along the side on the opposite one. Turn `t` round when that
+    // is not this edge's lower-numbered corner, so the cut lands where the edge
+    // mode's preview (and the number) say.
+    const std::vector<int>& fv = m.faces[face];
+    const int from = (k == dir) ? fv[k] : fv[(k + 1) % 4];
+    const float tt = (from == std::min(a, b)) ? t : 1.0f - t;
+    return loopCut(m, face, dir, tt);
+}
+
+int loopLengthEdge(const EditMesh& m, int a, int b) {
+    int face = -1, dir = 0, k = 0;
+    if (!edgeRing(m, a, b, face, dir, k)) return 0;
+    return loopLength(m, face, dir);
 }
 
 glm::vec3 recenter(EditMesh& m) {

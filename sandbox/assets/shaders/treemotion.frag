@@ -7,9 +7,10 @@ out vec4 oMotion;
 
 uniform sampler2D uTex;
 uniform int uAlphaCutout;
+uniform float uAlphaCutoff;
 
 void main() {
-    if (uAlphaCutout == 1 && texture(uTex, vUv).a < 0.5) discard;
+    if (uAlphaCutout == 1 && texture(uTex, vUv).a < uAlphaCutoff) discard;
     // Renderer's convention: UV units, alpha 1 = measured.
     vec2 cur  = vCur.xy  / vCur.w;
     vec2 prev = vPrev.xy / vPrev.w;

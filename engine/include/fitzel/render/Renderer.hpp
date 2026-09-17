@@ -282,6 +282,13 @@ public:
     void renderScene(const glm::mat4& view, const glm::mat4& proj,
                      const glm::vec3& eye, const glm::vec4& clipPlane,
                      bool tonemap = true, bool skipReflective = false);
+    // Which half of the queue renderScene draws. The main view draws the solid
+    // half, then the host's own geometry (vegetation, water, rivers), then the
+    // see-through half: drawn in one go, a blended object -- a smoke puff, an
+    // explosion, a bullet -- came out UNDER every tree drawn after it, since it
+    // writes no depth for them to fail against.
+    enum class ScenePart { All, Opaque, Transparent };
+    void setScenePart(ScenePart p) { m_part = p; }
 
     // A clip plane that keeps every fragment (effectively no clipping).
     static const glm::vec4 kNoClip;
@@ -401,6 +408,7 @@ private:
     int               m_shadowDraws    = 0;   // see shadowDraws()
     long long         m_shadowTris     = 0;
     bool              m_shadowsEnabled = true;
+    ScenePart         m_part = ScenePart::All;
     int               m_shadingMode    = 0;
     Shader            m_depthShader;
     Shader            m_cubeDistShader;             // point-shadow distance pass

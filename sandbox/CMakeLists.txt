@@ -14,6 +14,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CameraPath.cpp
     src/ScriptSystem.cpp
     src/ScriptBridge.cpp
+    src/SaveData.cpp
     src/ProjectIO.cpp
     src/GameSettings.cpp
     # The circuit records. Runtime, not editor-only: the shipped player is where
@@ -186,6 +187,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/MixerPanel.cpp
     src/MeshPaintPanel.cpp
     src/ModelingPanel.cpp
+    # Vertex/edge/face selection, the viewport overlay and the floating toolbar.
+    src/ModelingTools.cpp
     src/UvPanel.cpp
     src/ModelsPanel.cpp
     src/PrefabsPanel.cpp

@@ -3,7 +3,8 @@
 // A tree past the mesh range, as one card of its baked impostor (see
 // VegetationSystem::bakeImpostor). The card turns about the trunk to face the
 // eye and leans back towards it the more the eye looks down, so the forest
-// still has crowns from a hilltop rather than a field of edge-on cards.
+// still has crowns from a hilltop rather than a field of edge-on cards. Seen
+// from high above it lies flat instead, showing the crown as baked from the sky.
 
 layout(location = 3) in vec3  iPos;
 layout(location = 4) in float iRot;
@@ -12,7 +13,8 @@ layout(location = 5) in float iScale;
 uniform mat4  uViewProj;
 uniform vec3  uCamPos;
 uniform float uAspect;      // one view's width / height (the tree is unit height)
-uniform float uViews;       // views in the atlas row
+uniform float uViews;       // side views in the atlas row
+uniform float uSideFrac;    // their share of the atlas width; the top view has the rest
 uniform float uStart;       // impostors take over here...
 uniform float uFadeWidth;   // ...crossfading with the meshes over this band
 uniform float uEnd;         // and fade out at the edge of the field
@@ -27,6 +29,7 @@ out vec3  vUp;
 out vec3  vFwd;
 out float vFade;
 out float vFlip;
+out float vLift;    // how far towards the sun the shadow is looked up (see below)
 
 void main() {
     int   id = gl_VertexID;
@@ -34,10 +37,36 @@ void main() {
     vec3  toCam  = uCamPos - iPos;
     float d      = length(toCam.xz);
     // 0 inside the mesh range, rising to 1 across the crossfade; out again at
-    // the far edge so the field ends in a fade, not a line.
-    vFade = smoothstep(uStart - uFadeWidth, uStart, d)
-          * (1.0 - smoothstep(uEnd * 0.92, uEnd, d));
+    // the far edge so the field ends in a fade, not a line. Measured from the
+    // eye, as the meshes measure it (tree.vert), so the two hand over at the
+    // same tree.
+    float de = length(toCam);
+    vFade = smoothstep(uStart - uFadeWidth, uStart, de)
+          * (1.0 - smoothstep(uEnd * 0.92, uEnd, de));
     if (vFade <= 0.0) { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); return; }
+
+    // Looked down on steeply: the crown from above, a card lying flat at crown
+    // height and turned with the tree (the bake's cell: x right, -z up it).
+    if (atan(max(toCam.y, 0.0), max(d, 1e-3)) > 0.87) {
+        float c = cos(iRot), s = sin(iRot);
+        vec3  R = vec3(c, 0.0, s);
+        vec3  U = vec3(s, 0.0, -c);
+        float reach = 0.52 * iScale * uAspect;       // the crown's radius
+        vec3  p = iPos + vec3(0.0, 0.72 * iScale, 0.0)
+                + (R * (corner.x - 0.5) + U * (corner.y - 0.5)) * 2.0 * reach;
+        p += treeWind(vec3(0.0, 0.72, 0.0), iPos, iScale, iRot, false);
+        vFlip = 0.0;
+        // The card lies inside its own tree's shadow caster: looked up where
+        // it is, half the crown would sit in the shade of itself.
+        vLift = 1.2 * reach;
+        vUv   = vec2(uSideFrac + corner.x * (1.0 - uSideFrac), corner.y);
+        vRight = R;
+        vUp    = U;
+        vFwd   = vec3(0.0, 1.0, 0.0);
+        vWorldPos = p;
+        gl_Position = uViewProj * vec4(p, 1.0);
+        return;
+    }
 
     vec3  fwd   = (d > 1e-3) ? vec3(toCam.x, 0.0, toCam.z) / d : vec3(0.0, 0.0, 1.0);
     vec3  right = vec3(fwd.z, 0.0, -fwd.x);
@@ -64,8 +93,9 @@ void main() {
     float r    = fract(iRot / 6.2831853);
     float view = floor(r * uViews);
     vFlip      = (fract(r * 7.31) > 0.5) ? 1.0 : 0.0;
+    vLift      = 0.0;
     float u    = (vFlip > 0.5) ? 1.0 - corner.x : corner.x;
-    vUv   = vec2((view + u) / uViews, corner.y);
+    vUv   = vec2((view + u) / uViews * uSideFrac, corner.y);
 
     vRight    = right;
     vUp       = up;

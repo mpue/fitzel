@@ -13,12 +13,13 @@ void drawPanel(const PanelState& s) {
         if (s.sculptMode)
             ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
                 s.tool == 8 ? "Press and drag to pull the ground out"
+              : s.tool == 9 ? "Click for a shower | hold to keep it raining there"
                             : "Hold LMB to sculpt | Alt inverts raise/lower");
         else
             ImGui::TextDisabled("Enable to reshape the ground with the brush");
 
         const char* tools[] = {"Raise", "Lower", "Smooth", "Flatten",
-                               "Erode", "Stamp", "Noise", "Carve", "Pull"};
+                               "Erode", "Stamp", "Noise", "Carve", "Pull", "Rain"};
         ImGui::Combo("Tool", &s.tool, tools, IM_ARRAYSIZE(tools));
         ImGui::SliderFloat("Radius", &s.radius, 1.0f, 40.0f, "%.1f m");
         // Pull has no rate: it is not a dab repeated while you hold the button,
@@ -31,6 +32,12 @@ void drawPanel(const PanelState& s) {
                                -40.0f, 60.0f, "%.1f m");
         if (s.tool == 4)
             ImGui::TextDisabled("Weathers slopes: material slides downhill.");
+        if (s.tool == 9) {
+            ImGui::TextDisabled("Raindrops run downhill, cut gullies into the slope\n"
+                                "and leave the silt in fans where it levels out.");
+            ImGui::TextDisabled("The rain stays where you pressed, however the\n"
+                                "cursor moves while you hold.");
+        }
         if (s.tool == 6)
             ImGui::SliderFloat("Feature size", &s.noiseFreq, 0.08f, 1.0f, "%.2f");
         if (s.tool == 7) {

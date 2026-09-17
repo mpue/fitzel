@@ -93,6 +93,7 @@
 #include "Autosave.hpp"
 #include "GridRenderer.hpp"
 #include "ModelingPanel.hpp"
+#include "ModelingTools.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
 #include "GraphPanel.hpp"
@@ -283,7 +284,20 @@ const Completion kGameMembers[] = {
     {"playSound", "playSound(name)"},
     {"addScore", "addScore(n)"}, {"getScore", "getScore() -> n"},
     {"setHud", "setHud(text)"},
+    {"hudRect", "hudRect(x, y, w, h, r, g, b, a, rounding)  -- 1080-high canvas"},
+    {"hudGradient", "hudGradient(x, y, w, h, r, g, b, a, r2, g2, b2, a2)"},
+    {"hudFrame", "hudFrame(x, y, w, h, r, g, b, a, thickness, rounding)"},
+    {"hudLine", "hudLine(x1, y1, x2, y2, r, g, b, a, thickness)"},
+    {"hudCircle", "hudCircle(x, y, radius, r, g, b, a, thickness)  -- no thickness = filled"},
+    {"hudTri", "hudTri(x1, y1, x2, y2, x3, y3, r, g, b, a)"},
+    {"hudText", "hudText(x, y, text, size, r, g, b, a, align, bold)"},
+    {"hudTextSize", "hudTextSize(text, size, bold) -> w, h"},
+    {"hudSize", "hudSize() -> w, h  (h is always 1080)"},
+    {"setCrosshair", "setCrosshair(on)"},
+    {"setCameraFov", "setCameraFov(degrees)"},
+    {"setFocus", "setFocus(near, far)  -- depth of field in metres; setFocus() = the view's own"},
     {"BOX", "type 0"}, {"RAMP", "type 1"}, {"CYLINDER", "type 2"}, {"SPHERE", "type 3"},
+    {"EMPTY", "type 7"}, {"PLANE", "type 8"},
     {"MOUSE_LEFT", "0"}, {"MOUSE_RIGHT", "1"}, {"MOUSE_MIDDLE", "2"},
     {"KEY_SPACE", "32"}, {"KEY_ENTER", "257"}, {"KEY_ESCAPE", "256"},
     {"KEY_LSHIFT", "340"}, {"KEY_LCTRL", "341"},
@@ -1734,7 +1748,7 @@ int main(int argc, char** argv) {
         };
         publishSculpt();                     // install the (empty) snapshot
         bool  sculptMode     = false;
-        int   sculptTool     = 0;            // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise
+        int   sculptTool     = 0;            // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve 8 pull 9 rain
         float sculptRadius   = 8.0f;         // world units
         float sculptStrength = 0.5f;         // 0..1 brush intensity
         float sculptFlattenH = 0.0f;         // flatten target height (grabbed on press)
@@ -1773,6 +1787,17 @@ int main(int argc, char** argv) {
         float     pullApplied = 0.0f;        // metres already written to the field
         float     pullStartY  = 0.0f;        // mouse Y at the press, in screen pixels
         float     pullScale   = 0.05f;       // world metres per screen pixel, at the anchor
+
+        // --- Rain: hydraulic erosion ----------------------------------------
+        // Anchored the way Pull is: the press decides where it rains, and holding
+        // keeps it raining THERE, so a hand that drifts or shakes does not smear
+        // the gullies across the slope. A click alone is one shower; held, the
+        // showers come at a fixed pace rather than one per frame.
+        bool          rainActive = false;
+        glm::vec2     rainCenter{0.0f};
+        float         rainRadius = 8.0f;
+        float         rainClock  = 0.0f;     // seconds to the next shower while held
+        std::uint32_t rainSeed   = 1;        // advanced per shower, so no two fall alike
 
         // --- Terrain texture painting --------------------------------------
         // A parallel sparse field of per-layer paint weights, baked into the terrain
@@ -2692,6 +2717,14 @@ int main(int argc, char** argv) {
         // branch: ImGuizmo measures that one from the start of the drag, not from
         // the last frame).
         glm::vec3 faceGizmoAccScale{1.0f};
+#ifndef FITZEL_PLAYER
+        // Corners and edges picked while modelling, and which of vertex / edge /
+        // face the viewport is picking (the face itself stays in meshFaceSel).
+        modeltools::Selection modelSel;
+        // Where the gizmo's pivot was in the world when the drag began, for the
+        // distance read-out next to the pointer.
+        glm::vec3 faceGizmoStartPivot{0.0f};
+#endif
         bool showVehiclePanel = false;
         bool showGliderPanel  = false;
         bool showEnv         = false;
@@ -3395,16 +3428,30 @@ int main(int argc, char** argv) {
             }
             mc.touch();
         };
+        // Mesh space -> world for an entity's editable mesh: the mesh is drawn
+        // stretched to the entity's half-extents, so the scale is half/bounds.
+        auto meshModelOf = [&](const Entity& e, const MeshComponent& mc) {
+            glm::vec3 mn, mx;
+            mc.mesh.bounds(mn, mx);
+            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
+            return composeModel(e.center, e.rotation, (e.half * 2.0f) / sz);
+        };
         // Run one face operation as one undoable step.
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
-                                 const char* /*label*/) {
+                                 const char* label) {
             if (!cursorHaveSel()) return;
             Entity& e = entities[sel.index()];
             MeshComponent* mc = e.components.get<MeshComponent>();
             if (!mc || !op) return;
             const Entity    before = e;
             const glm::vec3 scale  = meshScaleOf(e, *mc);
+            const glm::mat4 model  = meshModelOf(e, *mc);
+            const EditMesh  beforeMesh = mc->mesh;
             meshFaceSel = op(*mc);
+            // Before the re-centre: the world positions it computes with `model`
+            // are the ones the re-centred mesh keeps, and the edges that changed
+            // glow for a moment where they now are.
+            modeltools::flash(beforeMesh, mc->mesh, model, label);
             normalizeMeshEntity(e, *mc, scale);
             auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
             if (!cmd->trivial()) history.pushApplied(std::move(cmd));
@@ -3414,10 +3461,7 @@ int main(int argc, char** argv) {
         auto meshFaceWorld = [&](const Entity& e, const MeshComponent& mc, int face) {
             std::vector<glm::vec3> out;
             if (!mc.mesh.validFace(face)) return out;
-            glm::vec3 mn, mx;
-            mc.mesh.bounds(mn, mx);
-            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
-            const glm::mat4 m = composeModel(e.center, e.rotation, (e.half * 2.0f) / sz);
+            const glm::mat4 m = meshModelOf(e, mc);
             out.reserve(mc.mesh.faces[face].size());
             for (int i : mc.mesh.faces[face])
                 out.push_back(glm::vec3(m * glm::vec4(mc.mesh.verts[i], 1.0f)));
@@ -4587,6 +4631,7 @@ int main(int argc, char** argv) {
         addF("ecoSolitary", veg.eco.solitary);
         addF("ecoSlopeLove", veg.eco.slopeLove);
         addF("impostorStart", veg.impostorStart);
+        addF("impostorShadowDist", veg.impostorShadowDist);
         addF("forestRadius", veg.forestRadius);
         addI("forestFloorLayer", forestFloorLayer);
         addF("windStrength", windStrength);
@@ -5002,6 +5047,7 @@ int main(int argc, char** argv) {
             meadowTint            = 0.0f;
             veg.eco               = ecology::Params{};
             veg.impostorStart     = 130.0f;
+            veg.impostorShadowDist = 0.0f;
             veg.forestRadius      = 1600.0f;
             forestFloorLayer      = -1;
             windStrength = 0.2f; windAngle = 26.57f; windGust = 0.6f;
@@ -6306,6 +6352,16 @@ int main(int argc, char** argv) {
         glm::vec3 playCamPos{0.0f};
         float     playCamYaw = 0.0f, playCamPitch = 0.0f, playMoveSpeed = 20.0f;
         float     playCamFov = 60.0f;
+        // What game.setCameraFov asked for (0 = nothing): the free camera is put
+        // back to playCamFov every frame after the scripts ran, and a script's
+        // field of view has to survive that or setCameraFov does nothing.
+        float     scriptCamFov = 0.0f;
+        // game.setFocus: a script's depth of field (far 0 = the view's own).
+        // A camera it flies 200 m above a landscape is past the default focus.
+        float     scriptFocusNear = 0.0f, scriptFocusFar = 0.0f;
+        // A script placed the camera this Play (game.setCameraPos): it owns the
+        // eye, and the walking player leaves it alone until Play ends.
+        bool      scriptOwnsEye = false;
         bool      playPrevEdit = false;
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
         // Whose race you are watching: an opponent's entity id, or -1 for your
@@ -6532,14 +6588,32 @@ int main(int argc, char** argv) {
         // Camera control from a script. Position/direction drive the player view
         // (a Camera entity, if one is active, overwrites it again at frame end --
         // game.setCamera(-1) hands control back to the script).
-        host.setCamPos = [&](glm::vec3 p){ camera.setPosition(p); };
+        host.setCamPos = [&](glm::vec3 p){
+            camera.setPosition(p);
+            if (playMode) scriptOwnsEye = true;
+        };
         host.setCamDir = [&](glm::vec3 d){
             if (glm::length(d) < 1e-5f) return;
             d = glm::normalize(d);
             camera.setYaw(glm::degrees(std::atan2(d.z, d.x)));
             camera.setPitch(glm::degrees(std::asin(glm::clamp(d.y, -1.0f, 1.0f))));
         };
-        host.setCamFov = [&](float f){ camera.setFov(glm::clamp(f, 10.0f, 140.0f)); };
+        host.setCamFov = [&](float f){
+            scriptCamFov = glm::clamp(f, 10.0f, 140.0f);
+            camera.setFov(scriptCamFov);
+        };
+        host.setFocus = [&](float nearM, float farM) {
+            scriptFocusFar  = farM > 0.0f ? std::max(farM, nearM + 1.0f) : 0.0f;
+            scriptFocusNear = std::max(0.0f, nearM);
+        };
+        // HUD text sizes for a script's layout, in its 1080-high canvas units --
+        // the unit the draw calls take, whatever the view's pixel size.
+        host.measureText = [](const std::string& s, float size, bool bold) {
+            ImFont* f = (bold && ui::boldFont()) ? ui::boldFont() : ImGui::GetFont();
+            if (!f) return glm::vec2(0.0f);
+            const ImVec2 sz = f->CalcTextSizeA(size, FLT_MAX, 0.0f, s.c_str());
+            return glm::vec2(sz.x, sz.y);
+        };
         host.setActiveCamera = [&](int id){ activeCam = id; };
         // Driving an object's state machine from Lua. Each one resolves the
         // entity and its graph fresh: a script may name an object that has no
@@ -6804,6 +6878,15 @@ int main(int argc, char** argv) {
             scripts.reset(); // fresh VM: scripts reload, start() runs again
             host.score = 0;
             host.hud.clear();
+            host.hudCmds.clear();
+            host.crosshair = true;
+            scriptCamFov   = 0.0f;
+            scriptFocusFar = 0.0f;
+            scriptOwnsEye  = false;
+            // game.saveData keeps a game's saves under its project's name.
+            host.saveGame = currentProject.empty()
+                ? std::string()
+                : std::filesystem::path(currentProject).parent_path().filename().string();
             pendingSpawns.clear();
             pendingSpawnVel.clear();
             pendingDestroy.clear();
@@ -7236,6 +7319,9 @@ int main(int argc, char** argv) {
             camera.setPitch(playCamPitch);
             camera.moveSpeed = playMoveSpeed;
             camera.setFov(playCamFov);
+            scriptCamFov     = 0.0f;
+            scriptFocusFar   = 0.0f;
+            scriptOwnsEye    = false;
             entityEditMode = playPrevEdit;
             sel.clear();
         };
@@ -7642,7 +7728,7 @@ int main(int argc, char** argv) {
                     camera.setFov(p.fov);
                 } else {
                     activeCam = -1;              // target vanished -> free camera
-                    camera.setFov(playCamFov);
+                    camera.setFov(scriptCamFov > 0.0f ? scriptCamFov : playCamFov);
                 }
 
                 // Watching a rival (V). Last, so it wins over whatever the view
@@ -8111,6 +8197,9 @@ int main(int argc, char** argv) {
                 else if (splineEditMode && splinePtSel >= 0) { splinePtSel = -1; }
                 else if (riverEditMode && riverPtSel >= 0) { riverPtSel = -1; }
                 else if (placeMode) { placeMode = false; }
+#ifndef FITZEL_PLAYER
+                else if (showModeling && modelSel.any()) { modelSel.clear(); }
+#endif
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (sel.valid()) { sel.clear(); }
             }
@@ -8534,6 +8623,11 @@ int main(int argc, char** argv) {
                 } else {
                     driveGliderId2 = -1;
                 }
+            } else if (fpsMode && scriptOwnsEye) {
+                // A script flies the eye (see host.setCamPos): the walking player
+                // stands aside rather than pull the camera back to its capsule --
+                // everything streamed from here on (terrain, trees, grass) would
+                // gather round the capsule instead of the picture.
             } else if (fpsMode) {
                 // Mouse look is always active; movement is on the ground plane.
                 const glm::vec2 d = input.mouseDelta();
@@ -9216,6 +9310,15 @@ int main(int argc, char** argv) {
             light.color  *= glm::smoothstep(-0.03f, 0.03f, sunDir.y);
             light.ambient = glm::mix(glm::vec3(0.015f, 0.02f, 0.04f),
                                      glm::vec3(0.12f, 0.14f, 0.18f), dayF);
+            // The golden hour's fill. A low sun has lost most of its strength to
+            // the air and the sky it lights up has not, so shade at sunset is
+            // brighter against the sun than shade at noon -- and no bluer: half
+            // the dome is gold by then. Without it everything the sun does not
+            // reach directly goes to black-green while the sky burns.
+            // Weighted like the sky's golden hour (skyair.glsl).
+            light.ambient += glm::vec3(0.075f, 0.07f, 0.06f)
+                           * (1.0f - glm::smoothstep(0.0f, 0.35f, sunDir.y))
+                           * glm::smoothstep(-0.10f, 0.0f, sunDir.y);
             // The moonlit sky takes over the little the set sun used to give.
             light.ambient += glm::vec3(0.012f, 0.016f, 0.028f) *
                              (1.0f - glm::smoothstep(-0.03f, 0.03f, sunDir.y));
@@ -9239,8 +9342,15 @@ int main(int argc, char** argv) {
             fog.heightFalloff = skySet.fogFalloff;
             // Brighter, slightly warmer daytime haze so the distance reads as soft
             // atmosphere (like the reference) rather than a cool blue wash.
-            const glm::vec3 hazeDisp =
-                glm::mix(glm::vec3(0.03f, 0.04f, 0.09f), glm::vec3(0.76f, 0.82f, 0.90f), dayF);
+            // At the golden hour the haze takes the sky's horizon away from the
+            // sun (skyair.glsl, same colour, same weight) -- the sun's side is
+            // sunHazeDisp's. Mixed from the day and night hazes alone it was
+            // half night-blue with the sun still up.
+            const float gold = (1.0f - glm::smoothstep(0.0f, 0.35f, sunDir.y))
+                             * glm::smoothstep(-0.10f, 0.0f, sunDir.y);
+            const glm::vec3 hazeDisp = glm::mix(
+                glm::mix(glm::vec3(0.03f, 0.04f, 0.09f), glm::vec3(0.76f, 0.82f, 0.90f), dayF),
+                glm::vec3(0.42f, 0.42f, 0.50f), gold * 0.6f);
             const glm::vec3 sunHazeDisp =
                 glm::mix(hazeDisp, glm::vec3(1.0f, 0.66f, 0.38f), 0.7f * dayF);
             fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
@@ -9445,6 +9555,7 @@ int main(int argc, char** argv) {
                 host.camDir = camera.front();
                 host.screen = glm::vec2(static_cast<float>(viewW),
                                         static_cast<float>(viewH));
+                host.hudCmds.clear(); // this frame's HUD is what the scripts draw now
                 // Scripts and behaviours just write the entity's world transform;
                 // children follow via resolveHierarchy (below), no propagation.
                 // EVERY script component on the object, not the first.
@@ -11265,7 +11376,13 @@ int main(int argc, char** argv) {
                 // Drag an asset from the Assets browser into the viewport: a Model
                 // drops onto the terrain; a Texture drops onto the object under the
                 // cursor, making a fresh material that uses it and assigning it.
-                if (ImGui::BeginDragDropTarget()) {
+                //
+                // The target is the IMAGE's rect, named explicitly: the plain
+                // BeginDragDropTarget() binds to the last item, and over the
+                // scene that is whichever overlay widget was drawn last (the
+                // Play-as picker, the modelling toolbar), not the picture.
+                if (ImGui::BeginDragDropTargetCustom(ImRect(sceneMin, sceneMax),
+                                                     ImGui::GetID("##sceneDrop"))) {
                     if (const ImGuiPayload* pl =
                             ImGui::AcceptDragDropPayload("ASSET_GUID")) {
                         const AssetId gid = AssetId::fromString(std::string(
@@ -12311,10 +12428,43 @@ int main(int argc, char** argv) {
                         }
                     }
 
+                    // --- Rain: showers at the anchor ----------------------------
+                    if (sculptTool == 9) {
+                        if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                            rainActive = true;
+                            rainCenter = glm::vec2(center.x, center.z);
+                            rainRadius = sculptRadius;
+                            rainClock  = 0.0f;           // the click itself is a shower
+                        }
+                        if (rainActive && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+                            rainActive = false;
+                        if (rainActive) {
+                            rainClock -= dt;
+                            if (rainClock <= 0.0f) {
+                                rainClock = std::max(rainClock + 0.1f, 0.0f);
+                                // About 0.06 drops per square metre per shower at full
+                                // strength: ten showers a second cut clear gullies in
+                                // a couple of seconds of holding, while one click only
+                                // roughens the slope a little.
+                                const float area = 3.14159265f * rainRadius * rainRadius;
+                                const int drops = std::clamp(
+                                    static_cast<int>(area * sculptStrength * 0.06f), 4, 40000);
+                                const float reach = sculptWork.rain(streamer.settings(),
+                                    rainCenter, rainRadius, drops, rainSeed++);
+                                publishSculpt();
+                                const float m = reach + 3.0f * sculptWork.cell;
+                                streamer.editsChanged(
+                                    glm::vec2(rainCenter.x - m, rainCenter.y - m),
+                                    glm::vec2(rainCenter.x + m, rainCenter.y + m));
+                                veg.grassDirty = true;
+                            }
+                        }
+                    }
+
                     // Stamp drops a landform once per click; the other tools apply
                     // continuously while the button is held.
                     const bool stampTool = (sculptTool == 5);
-                    const bool apply = onGround && sculptTool != 8 &&
+                    const bool apply = onGround && sculptTool != 8 && sculptTool != 9 &&
                         (stampTool ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
                                    : ImGui::IsMouseDown(ImGuiMouseButton_Left));
                     if (apply) {
@@ -12371,13 +12521,16 @@ int main(int argc, char** argv) {
                     // Once a pull is under way the ring stays on its ANCHOR --
                     // that is where the edit is, and a ring that followed the
                     // cursor would be pointing at ground the tool is not touching.
-                    const bool ringHere = onGround || pullActive;
+                    const bool ringHere = onGround || pullActive || rainActive;
                     const glm::vec2 ringAt = pullActive ? pullCenter
+                                           : rainActive ? rainCenter
                                                         : glm::vec2(center.x, center.z);
-                    const float ringR = pullActive ? pullRadius : sculptRadius;
+                    const float ringR = pullActive ? pullRadius
+                                      : rainActive ? rainRadius : sculptRadius;
                     if (ringHere) {
                         ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = sculptTool == 8 ? IM_COL32(150, 255, 210, 235)
+                        const ImU32 col = sculptTool == 9 ? IM_COL32(70, 140, 235, 235)
+                                        : sculptTool == 8 ? IM_COL32(150, 255, 210, 235)
                                         : sculptTool == 2 ? IM_COL32(120, 200, 255, 225)
                                         : sculptTool == 3 ? IM_COL32(255, 210, 90, 225)
                                         : sculptTool == 4 ? IM_COL32(200, 150, 110, 225)
@@ -12704,31 +12857,27 @@ int main(int argc, char** argv) {
                             }
                         }
                     }
-                    // The face the modelling operations act on, outlined and
-                    // faintly filled. Drawn as a 2D overlay like the cursor: it is
-                    // an authoring mark, not something in the scene.
+                    // The mesh being modelled: wireframe, corners, the element under
+                    // the pointer, the selection, the preview of a hovered button
+                    // and the flash of the last edit. Drawn as a 2D overlay like
+                    // the cursor: authoring marks, not things in the scene.
                     if (showModeling && !playMode) {
                         if (const MeshComponent* mc = selectedMesh()) {
-                            const std::vector<glm::vec3> fw =
-                                meshFaceWorld(entities[sel.index()], *mc, meshFaceSel);
-                            std::vector<ImVec2> pts;
-                            bool onScreen = !fw.empty();
-                            for (const glm::vec3& p : fw) {
-                                const glm::vec4 cc = vp * glm::vec4(p, 1.0f);
-                                if (cc.w <= 1e-4f) { onScreen = false; break; }
-                                const glm::vec3 n = glm::vec3(cc) / cc.w;
-                                pts.push_back(ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                                     rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH));
-                            }
-                            if (onScreen && pts.size() >= 3) {
-                                ImDrawList* fdl = ImGui::GetWindowDrawList();
-                                fdl->AddConvexPolyFilled(pts.data(),
-                                                         static_cast<int>(pts.size()),
-                                                         IM_COL32(255, 170, 40, 55));
-                                fdl->AddPolyline(pts.data(), static_cast<int>(pts.size()),
-                                                 IM_COL32(255, 195, 70, 235),
-                                                 ImDrawFlags_Closed, 2.0f);
-                            }
+                            modeltools::View mv;
+                            mv.model = meshModelOf(entities[sel.index()], *mc);
+                            mv.vp    = vp;
+                            mv.min   = rmin;
+                            mv.size  = ImVec2(static_cast<float>(viewW), static_cast<float>(viewH));
+                            modeltools::Hit hov;
+                            const bool hovering =
+                                viewportHovered && !ImGuizmo::IsUsing() && !faceGizmoActive &&
+                                !ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                            if (hovering)
+                                hov = modeltools::pick(mc->mesh, mv, ImGui::GetIO().MousePos,
+                                                       modelSel.mode);
+                            modeltools::drawOverlay(ImGui::GetWindowDrawList(), mc->mesh, mv,
+                                                    modelSel, meshFaceSel,
+                                                    hovering ? &hov : nullptr);
                         }
                     }
 
@@ -12818,22 +12967,28 @@ int main(int argc, char** argv) {
                         MeshComponent* faceMc =
                             (showModeling && entityEditMode) ? b.components.get<MeshComponent>()
                                                              : nullptr;
-                        if (faceMc && !faceMc->mesh.validFace(meshFaceSel)) faceMc = nullptr;
+                        // What it drives: the selected face's corners, or in vertex
+                        // and edge mode the picked corners (both ends of each edge).
+                        const std::vector<int> gizmoVerts =
+                            faceMc ? modeltools::activeVerts(modelSel, faceMc->mesh, meshFaceSel)
+                                   : std::vector<int>{};
+                        if (gizmoVerts.empty()) faceMc = nullptr;
                         if (faceMc) {
-                            glm::vec3 mn, mx;
-                            faceMc->mesh.bounds(mn, mx);
-                            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
-                            const glm::mat4 M  =
-                                composeModel(b.center, b.rotation, (b.half * 2.0f) / sz);
+                            const glm::mat4 M = meshModelOf(b, *faceMc);
                             // The gizmo sits at the face's centre, oriented like
                             // the object. Handed over fresh each frame; what comes
                             // back is a DELTA, which is the only form that can be
                             // baked into geometry -- an absolute matrix would be
                             // re-applied on top of itself every frame and a scale
                             // drag would run away exponentially.
-                            const glm::mat4 F =
-                                glm::translate(glm::mat4(1.0f),
-                                               faceMc->mesh.faceCenter(meshFaceSel));
+                            glm::vec3 pivot(0.0f);
+                            if (modelSel.mode == modeltools::Mode::Face) {
+                                pivot = faceMc->mesh.faceCenter(meshFaceSel);
+                            } else {
+                                for (int vi : gizmoVerts) pivot += faceMc->mesh.verts[vi];
+                                pivot /= static_cast<float>(gizmoVerts.size());
+                            }
+                            const glm::mat4 F = glm::translate(glm::mat4(1.0f), pivot);
                             glm::mat4 world = M * F;
                             // A face snaps in steps from where it started: its
                             // corners, not its centre, are what would have to
@@ -12849,6 +13004,7 @@ int main(int argc, char** argv) {
                                 faceGizmoBefore   = b;   // one undo step per drag
                                 faceGizmoScale    = meshScaleOf(b, *faceMc);
                                 faceGizmoAccScale = glm::vec3(1.0f);
+                                faceGizmoStartPivot = glm::vec3(M * glm::vec4(pivot, 1.0f));
                             }
                             if (using3d) {
                                 const glm::mat4 D = glm::make_mat4(delta);
@@ -12874,7 +13030,7 @@ int main(int argc, char** argv) {
                                     // own space: p' = M^-1 * D * M * p.
                                     L = glm::inverse(M) * D * M;
                                 }
-                                editmesh::transformFace(faceMc->mesh, meshFaceSel, L);
+                                editmesh::transformVerts(faceMc->mesh, gizmoVerts, L);
                                 // Square the object's bounds with the new shape NOW,
                                 // not when the drag ends. The mesh is drawn at
                                 // half/bounds, so leaving `half` behind while the
@@ -12884,6 +13040,33 @@ int main(int argc, char** argv) {
                                 // and let go of it at the end to reveal a body
                                 // stretched to the horizon.
                                 normalizeMeshEntity(b, *faceMc, faceGizmoScale);
+
+                                // How far, next to the pointer: the drag says in
+                                // numbers what it is doing while it does it.
+                                char rd[96];
+                                if (gizmoOp == ImGuizmo::TRANSLATE) {
+                                    const glm::mat4 M2 = meshModelOf(b, *faceMc);
+                                    glm::vec3 p2(0.0f);
+                                    for (int vi : gizmoVerts) p2 += faceMc->mesh.verts[vi];
+                                    p2 /= static_cast<float>(gizmoVerts.size());
+                                    if (modelSel.mode == modeltools::Mode::Face)
+                                        p2 = faceMc->mesh.faceCenter(meshFaceSel);
+                                    const glm::vec3 d =
+                                        glm::vec3(M2 * glm::vec4(p2, 1.0f)) - faceGizmoStartPivot;
+                                    std::snprintf(rd, sizeof rd, "%.2f m   (%+.2f, %+.2f, %+.2f)",
+                                                  glm::length(d), d.x, d.y, d.z);
+                                } else if (gizmoOp == ImGuizmo::SCALE) {
+                                    std::snprintf(rd, sizeof rd, "x %.2f  %.2f  %.2f",
+                                                  faceGizmoAccScale.x, faceGizmoAccScale.y,
+                                                  faceGizmoAccScale.z);
+                                } else {
+                                    std::snprintf(rd, sizeof rd, "rotating %d corner%s",
+                                                  static_cast<int>(gizmoVerts.size()),
+                                                  gizmoVerts.size() == 1 ? "" : "s");
+                                }
+                                const ImVec2 mp = ImGui::GetIO().MousePos;
+                                modeltools::readout(ImGui::GetWindowDrawList(),
+                                                    ImVec2(mp.x + 18.0f, mp.y + 18.0f), rd);
                             } else if (faceGizmoActive) {
                                 // Drag finished: bank the whole of it as one
                                 // undoable step. The bounds are already square with
@@ -13176,29 +13359,22 @@ int main(int argc, char** argv) {
                         // anything else still selects objects as usual -- and
                         // clicking the object you already have selected was a
                         // no-op anyway, which is the click this borrows.
-                        int   faceHit = -1;
-                        float faceT   = 1e30f;
+                        bool meshTook = false;
                         if (showModeling) {
                             if (const MeshComponent* mc = selectedMesh()) {
-                                const Entity& me = entities[sel.index()];
-                                const glm::mat4 inv = glm::inverse(vp);
-                                glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                                glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                                const glm::vec3 ro = glm::vec3(pn);
-                                const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                                for (int f = 0; f < static_cast<int>(mc->mesh.faces.size()); ++f) {
-                                    const std::vector<glm::vec3> w = meshFaceWorld(me, *mc, f);
-                                    // Same fan the GPU mesh is built from, so what
-                                    // is picked is exactly what is drawn.
-                                    for (std::size_t i = 1; i + 1 < w.size(); ++i) {
-                                        const float t = rayTriangle(ro, rd, w[0], w[i], w[i + 1]);
-                                        if (t >= 0.0f && t < faceT) { faceT = t; faceHit = f; }
-                                    }
-                                }
+                                modeltools::View mv;
+                                mv.model = meshModelOf(entities[sel.index()], *mc);
+                                mv.vp    = vp;
+                                mv.min   = ImVec2(viewportRectMin.x, viewportRectMin.y);
+                                mv.size  = ImVec2(viewportRectSize.x, viewportRectSize.y);
+                                const modeltools::Hit h = modeltools::pick(
+                                    mc->mesh, mv, io.MousePos, modelSel.mode);
+                                meshTook = modeltools::click(modelSel, meshFaceSel, h,
+                                                             modelSel.additive || io.KeyShift);
                             }
                         }
-                        if (faceHit >= 0) {
-                            meshFaceSel = faceHit;   // the click went to the face
+                        if (meshTook) {
+                            // the click went to the mesh
                         } else {
                         // A click that missed every face lets go of the one that
                         // was selected -- which is also how the gizmo is handed
@@ -13223,7 +13399,29 @@ int main(int argc, char** argv) {
                     }
                     if (sel.valid() &&
                         ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        deleteSelection();
+                        // With corners or edges picked, Del means THOSE -- taking
+                        // the whole object would be the worst possible reading
+                        // of the key. Corners go with their faces; an edge is
+                        // dissolved (one at a time, like the toolbar's button).
+                        if (showModeling && modelSel.any()) {
+                            const modeltools::Selection pick = modelSel;
+                            if (pick.mode == modeltools::Mode::Vertex) {
+                                applyMeshEdit([pick](MeshComponent& m) {
+                                    editmesh::deleteVerts(m.mesh, pick.verts);
+                                    return -1;
+                                }, "Delete corners");
+                                modelSel.clear();
+                            } else if (pick.edges.size() == 1) {
+                                applyMeshEdit([pick](MeshComponent& m) {
+                                    editmesh::dissolveEdge(m.mesh, pick.edges[0].first,
+                                                           pick.edges[0].second);
+                                    return -1;
+                                }, "Dissolve edge");
+                                modelSel.clear();
+                            }
+                        } else {
+                            deleteSelection();
+                        }
                     }
                 }
             } else {
@@ -13344,7 +13542,8 @@ int main(int argc, char** argv) {
             // The landscape past the terrain: horizon, forest, wind, sun, life.
             natureui::drawPanel({showNature, farTerrainOn, farTerrain.snowLevel,
                                  farTerrain.treeLine, meadowTint, veg.grassDryGrowth,
-                                 veg.eco, veg.impostorStart, veg.forestRadius,
+                                 veg.eco, veg.impostorStart, veg.impostorShadowDist,
+                                 veg.forestRadius,
                                  forestFloorLayer, windStrength, windAngle, windGust,
                                  sunLatitude, sunDeclination, cloudShadowsOn,
                                  wildlifeOn, motesOn, soundscapeOn, timeFlows});
@@ -13955,21 +14154,32 @@ int main(int argc, char** argv) {
                 ImGui::EndPopup();
             }
 
+            // Modelling: one floating window over the viewport, with the
+            // picking modes, the operations, their amounts and the face's
+            // material in it. The viewport half of it -- what the pointer is
+            // over, the wireframe, the preview and the flash -- is drawn up in
+            // the Scene window (modeltools::drawOverlay).
             if (showModeling) {
                 MeshComponent* mc = selectedMesh();
                 const bool haveSel = cursorHaveSel();
                 // A face index belongs to one object's mesh and to one version of
                 // it: drop it when the selection moves, or when an undo left the
-                // mesh with fewer faces than the index.
+                // mesh with fewer faces than the index. validate() does the same
+                // for the picked corners and edges.
                 const int selId = haveSel ? entities[sel.index()].id : -1;
                 if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
                 if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
                     meshFaceSel = -1;
+                modeltools::validate(modelSel, selId, mc ? &mc->mesh : nullptr);
                 modelui::drawPanel({
-                    showModeling, mc, meshFaceSel, materials, haveSel,
+                    showModeling, mc, meshFaceSel, modelSel, materials, haveSel,
                     haveSel && !mc && entities[sel.index()].type == EntityType::Box,
+                    mc ? meshModelOf(entities[sel.index()], *mc) : glm::mat4(1.0f),
+                    ImVec2(viewportRectMin.x, viewportRectMin.y),
+                    ImVec2(viewportRectMin.x + viewportRectSize.x,
+                           viewportRectMin.y + viewportRectSize.y),
                     [&]{ convertToMesh(); }, applyMeshEdit,
-                    // "Edit this material" on a face: the surface itself is a
+                    // "Edit" on a face's material: the surface itself is a
                     // material, and the place to change one is the Materials
                     // panel. Reads only, so it is safe from inside the panel.
                     [&](AssetId id) {
@@ -15838,10 +16048,14 @@ int main(int argc, char** argv) {
                 // reflections from inside a tower.
                 // Player one's eye: the probe is captured once and shared by
                 // both panes, like the shadows above.
+                // Only a shown one: a game's pool of hidden objects parks them
+                // anywhere, under the ground included, and a probe captured
+                // down there mirrors the underside of the world into every river.
                 glm::vec3 probePos = camera.position();
                 for (const Entity& b : entities) {
                     const auto* mc = b.components.get<MaterialComponent>();
-                    if (b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
+                    if (b.activeInHierarchy &&
+                        b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
                         isMirror(materials[document.materialIndex(mc->material)])) {
                         probePos = b.center;
                         break;
@@ -15914,9 +16128,10 @@ int main(int argc, char** argv) {
             //
             // The plane is treated as infinite: if every corner of the view
             // frustum lands on the same side of it, it cannot be on screen.
-            // Terrain occlusion is deliberately ignored -- that would want an
-            // occlusion query, and erring that way only costs a pass that could
-            // have been skipped, never a missing reflection.
+            // Terrain occlusion is only asked about when looking steeply down
+            // (below); otherwise it would want an occlusion query, and erring
+            // that way only costs a pass that could have been skipped, never a
+            // missing reflection.
             const bool waterVisible = shadeFull && [&] {
                 const glm::mat4 invVP = glm::inverse(mainVP);
                 bool above = false, below = false;
@@ -15927,8 +16142,37 @@ int main(int argc, char** argv) {
                                           (i & 4) ? 1.0f : -1.0f, 1.0f);
                     if (std::abs(h.w) < 1e-6f) return true; // degenerate: don't gamble
                     ((h.y / h.w > waterLevel) ? above : below) = true;
-                    if (above && below) return true;        // frustum straddles it
                 }
+                if (!(above && below)) return false;
+                // The frustum straddles the plane. Looking steeply down on
+                // ground -- every corner ray of the view meets the plane short of
+                // the far plane, as from an aircraft -- the water can only show
+                // where the ground under a ray's crossing point lies below the
+                // level: anywhere else the ray met the ground first. So ask the
+                // terrain along a grid of rays. A view that sees the horizon
+                // keeps the plain answer: a lake far off is narrower than any
+                // grid worth sampling.
+                if (!terrainOn || camera.position().y <= waterLevel) return true;
+                const auto crossing = [&](float nx, float ny, glm::vec2& at) {
+                    const glm::vec4 n = invVP * glm::vec4(nx, ny, -1.0f, 1.0f);
+                    const glm::vec4 f = invVP * glm::vec4(nx, ny, 1.0f, 1.0f);
+                    const glm::vec3 a = glm::vec3(n) / n.w, b = glm::vec3(f) / f.w;
+                    if ((a.y - waterLevel) * (b.y - waterLevel) > 0.0f) return false;
+                    const float t = (a.y - waterLevel) / (a.y - b.y);
+                    at = glm::vec2(a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t);
+                    return true;
+                };
+                glm::vec2 at;
+                for (int i = 0; i < 4; ++i)
+                    if (!crossing((i & 1) ? 1.0f : -1.0f, (i & 2) ? 1.0f : -1.0f, at))
+                        return true;
+                constexpr int kGx = 16, kGy = 10;
+                for (int gy = 0; gy <= kGy; ++gy)
+                    for (int gx = 0; gx <= kGx; ++gx) {
+                        if (!crossing(-1.0f + 2.0f * gx / kGx, -1.0f + 2.0f * gy / kGy, at))
+                            continue;
+                        if (streamer.heightAt(at.x, at.y) < waterLevel + 0.5f) return true;
+                    }
                 return false;
             }();
 
@@ -16006,26 +16250,32 @@ int main(int argc, char** argv) {
                 glClear(GL_DEPTH_BUFFER_BIT);
             }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-            {
-                FZ_GPU_ZONE("GPU terrain + objects");
-                // Screen-space reflections out of last frame's picture -- for
-                // this pass only: the probe faces and the water mirror above
-                // look from elsewhere. Not on the very first frame, nor with the
-                // player's Reflections off, nor in split screen (the history is
-                // one pane's).
-                // Contact shadows read the same history, for short rays towards
-                // the sun; they go with the player's Shadows setting instead.
-                const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
-                                     glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
-                const bool ssr     = history && ssrEnabled && gfxSet.reflections > 0;
-                const bool contact = history && contactShadows && gfxSet.shadows > 0 &&
-                                     renderer.shadowsEnabled();
+            // Screen-space reflections out of last frame's picture -- for the
+            // main pass only: the probe faces and the water mirror above look
+            // from elsewhere. Not on the very first frame, nor with the player's
+            // Reflections off, nor in split screen (the history is one pane's).
+            // Contact shadows read the same history, for short rays towards the
+            // sun; they go with the player's Shadows setting instead.
+            const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
+                                 glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
+            const bool ssr     = history && ssrEnabled && gfxSet.reflections > 0;
+            const bool contact = history && contactShadows && gfxSet.shadows > 0 &&
+                                 renderer.shadowsEnabled();
+            // The scene in two halves: the solid objects now, the see-through
+            // ones after the vegetation and the water (below).
+            const auto sceneHalf = [&](Renderer::ScenePart part) {
                 if (ssr || contact)
                     renderer.setScreenHistory(post.historyColor(), post.historyDepth(),
                                               taaPrevVP[vi], vcam.nearPlane(), vcam.farPlane(),
                                               ssr, contact);
+                renderer.setScenePart(part);
                 renderer.renderScene(view, proj, camPos, Renderer::kNoClip, false);
+                renderer.setScenePart(Renderer::ScenePart::All);
                 renderer.clearScreenHistory();
+            };
+            {
+                FZ_GPU_ZONE("GPU terrain + objects");
+                sceneHalf(Renderer::ScenePart::Opaque);
             }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
@@ -16228,6 +16478,13 @@ int main(int argc, char** argv) {
             }
             spray.update(dt, waterLevel); // age the pool, then draw what survived
             spray.draw(gctx);
+            // The scene's see-through objects, over everything solid there is:
+            // the trees, the lake, the rivers. Before them, an explosion over a
+            // forest came out beneath its crowns.
+            {
+                FZ_GPU_ZONE("GPU transparent");
+                sceneHalf(Renderer::ScenePart::Transparent);
+            }
             // Authored emitters. Stepped with the frame clock rather than the
             // sim's fixed one: these are decoration, and a puff of smoke that
             // resolves one frame late is worth less than the code to avoid it.
@@ -16241,7 +16498,12 @@ int main(int argc, char** argv) {
                 motes.draw(gctx, static_cast<float>(fbH) * 0.5f * proj[1][1]);
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
-            veg.drawFireflies(mainVP, now, 1.0f - dayF, camPos);
+            // Out once the sun is down, not at half daylight: dayF is still only
+            // one half with the sun a hand above the ridge, and a meadow full of
+            // lit specks under a golden sunset is a screensaver, not a dusk.
+            veg.drawFireflies(mainVP, now,
+                              1.0f - glm::smoothstep(-0.10f, 0.0f, light.direction.y),
+                              camPos);
 
             // --- Volumetric fog: the marched mist volume, blended into the HDR
             //     buffer ------------------------------------------------------
@@ -16334,6 +16596,10 @@ int main(int argc, char** argv) {
                 pp.bloomIntensity = gate.bloomIntensity;
                 pp.rayIntensity   = gate.rayIntensity;
                 pp.dofNear = dofNear; pp.dofFar = dofFar; pp.dofMax = gate.dofMax;
+                if (playMode && scriptFocusFar > 0.0f) {
+                    pp.dofNear = scriptFocusNear;
+                    pp.dofFar  = scriptFocusFar;
+                }
                 pp.exposure = exposure;
                 pp.hueShift = hueShift; pp.saturation = saturation;
                 pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
@@ -16565,7 +16831,8 @@ int main(int argc, char** argv) {
 
                 // Crosshair, sized to the view. Hidden when disabled, and always
                 // hidden while driving (you aim on foot, not from the car).
-                if (showCrosshair && !vehicleMode && !gliderMode && !showroomUi.active()) {
+                if (showCrosshair && host.crosshair && !vehicleMode && !gliderMode &&
+                    !showroomUi.active()) {
                     const float ch = std::max(10.0f, vsize.y * 0.018f);
                     const ImU32 white = IM_COL32(255, 255, 255, 220);
                     dl->AddLine(ImVec2(c.x - ch, c.y), ImVec2(c.x + ch, c.y), white, 2.0f);
@@ -16587,6 +16854,66 @@ int main(int argc, char** argv) {
                 if (!host.hud.empty())
                     shadowText(vmin.x + pad, vmin.y + pad,
                                IM_COL32(235, 235, 240, 235), host.hud.c_str());
+                // What the scripts drew this frame (game.hudRect & co.), from
+                // their 1080-high canvas onto the view. Clipped to the view so a
+                // HUD laid out to the edge stays out of the editor's panels.
+                if (!host.hudCmds.empty()) {
+                    const float k = vsize.y / 1080.0f;
+                    auto P = [&](float x, float y) {
+                        return ImVec2(vmin.x + x * k, vmin.y + y * k);
+                    };
+                    dl->PushClipRect(vmin, ImVec2(vmin.x + vsize.x, vmin.y + vsize.y), true);
+                    for (const ScriptHudCmd& hc : host.hudCmds) {
+                        const float* a = hc.a;
+                        switch (hc.kind) {
+                        case ScriptHudCmd::Kind::Rect:
+                            dl->AddRectFilled(P(a[0], a[1]), P(a[0] + a[2], a[1] + a[3]),
+                                              hc.col, a[4] * k);
+                            break;
+                        case ScriptHudCmd::Kind::Gradient:
+                            dl->AddRectFilledMultiColor(P(a[0], a[1]),
+                                                        P(a[0] + a[2], a[1] + a[3]),
+                                                        hc.col, hc.col, hc.col2, hc.col2);
+                            break;
+                        case ScriptHudCmd::Kind::Frame:
+                            dl->AddRect(P(a[0], a[1]), P(a[0] + a[2], a[1] + a[3]),
+                                        hc.col, a[4] * k, 0, std::max(1.0f, hc.size * k));
+                            break;
+                        case ScriptHudCmd::Kind::Line:
+                            dl->AddLine(P(a[0], a[1]), P(a[2], a[3]), hc.col,
+                                        std::max(1.0f, hc.size * k));
+                            break;
+                        case ScriptHudCmd::Kind::Circle:
+                            dl->AddCircleFilled(P(a[0], a[1]), a[2] * k, hc.col);
+                            break;
+                        case ScriptHudCmd::Kind::Ring:
+                            dl->AddCircle(P(a[0], a[1]), a[2] * k, hc.col, 0,
+                                          std::max(1.0f, hc.size * k));
+                            break;
+                        case ScriptHudCmd::Kind::Tri:
+                            dl->AddTriangleFilled(P(a[0], a[1]), P(a[2], a[3]),
+                                                  P(a[4], a[5]), hc.col);
+                            break;
+                        case ScriptHudCmd::Kind::Text: {
+                            ImFont* f = (hc.bold && ui::boldFont()) ? ui::boldFont() : font;
+                            const float px = hc.size * k;
+                            const ImVec2 sz = f->CalcTextSizeA(px, FLT_MAX, 0.0f,
+                                                               hc.text.c_str());
+                            const ImVec2 at(P(a[0], a[1]).x - sz.x * hc.align,
+                                            P(a[0], a[1]).y);
+                            // The drop shadow keeps its strength with the text's own
+                            // alpha, so a fading line fades as one piece.
+                            const float off = std::max(1.0f, px * 0.06f);
+                            const unsigned alpha = (hc.col >> 24) & 0xFF;
+                            dl->AddText(f, px, ImVec2(at.x + off, at.y + off),
+                                        IM_COL32(0, 0, 0, alpha * 3 / 4), hc.text.c_str());
+                            dl->AddText(f, px, at, hc.col, hc.text.c_str());
+                            break;
+                        }
+                        }
+                    }
+                    dl->PopClipRect();
+                }
                 // Boat-mode banner while afloat: centred near the top of the view.
                 if (vehicleMode && boatMode) {
                     const char* bm = "~ BOAT MODE ~";

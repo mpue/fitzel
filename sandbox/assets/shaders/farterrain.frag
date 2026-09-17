@@ -121,21 +121,11 @@ float terrainShadow(vec3 p, vec3 n, vec3 L) {
 }
 
 // --- The air ----------------------------------------------------------------
-// The sky's own horizon gradient (sky.frag's skyColor without disc and stars):
-// the colour a range dissolves into has to be the colour of the sky behind it,
-// or every silhouette carries a seam.
-vec3 skyAir(vec3 dir) {
-    float day = smoothstep(-0.12, 0.18, uLightDir.y);
-    vec3 zen  = mix(vec3(0.01, 0.02, 0.06), vec3(0.20, 0.42, 0.80), day);
-    vec3 hor  = mix(vec3(0.04, 0.06, 0.12), vec3(0.70, 0.82, 0.95), day);
-    float h   = clamp(dir.y, 0.0, 1.0);
-    vec3 col  = mix(hor, zen, pow(h, 0.5));
-    float lowSun = (1.0 - smoothstep(0.0, 0.35, uLightDir.y)) * day;
-    float toSun  = max(dot(normalize(vec3(dir.x, 0.0, dir.z) + 1e-5),
-                           normalize(vec3(uLightDir.x, 0.0, uLightDir.z) + 1e-5)), 0.0);
-    col += vec3(0.85, 0.35, 0.10) * lowSun * pow(toSun, 3.0) * (1.0 - h);
-    return pow(col, vec3(2.2));
-}
+// The sky's own gradient, the same function sky.frag draws (skyair.glsl): the
+// colour a range dissolves into has to be the colour of the sky behind it, or
+// every silhouette carries a seam.
+#include "skyair.glsl"
+vec3 skyAir(vec3 dir) { return skyGradient(dir, uLightDir); }
 
 // Exponential height fog, exactly lit.frag's -- the streamed ground meets this
 // one at the ring's edge, and the two must fog alike or the seam is a line.

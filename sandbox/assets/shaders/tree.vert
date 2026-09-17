@@ -42,7 +42,8 @@ void main() {
 
     // LOD banding: this mesh level only draws within [uLodMin, uLodNear); the
     // finer level covers nearer trees, the coarser level / billboard covers farther.
-    float lodDist = length(iPos.xz - uCamPos.xz);
+    // From the eye, as VegetationSystem::cullInstances measures it.
+    float lodDist = length(iPos - uCamPos);
     vShare = (uHandoverWidth > 0.0)
            ? 1.0 - smoothstep(uHandover - uHandoverWidth, uHandover, lodDist) : 1.0;
     if (lodDist < uLodMin || lodDist > uLodNear) {

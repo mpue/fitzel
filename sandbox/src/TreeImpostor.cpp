@@ -142,7 +142,8 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
     maxR *= 1.03f;
     const float aspect = glm::clamp(2.0f * maxR / 1.04f, 0.2f, 2.5f);
     const int   vw = std::max(8, static_cast<int>(std::round(kViewH * aspect)));
-    const int   W  = vw * kViews, H = kViewH;
+    // The side views in a row, then one square cell for the view from above.
+    const int   W  = vw * kViews + kViewH, H = kViewH;
 
     // --- GL state we are about to disturb.
     GLint prevFbo = 0, prevVp[4];
@@ -201,20 +202,34 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
         const glm::mat4 proj = glm::ortho(-maxR, maxR, -0.02f, 1.02f, -(maxR + 1.0f),
                                           maxR + 1.0f);
         m_impostorBake.bind();
-        m_impostorBake.setMat4("uProj", proj);
         m_impostorBake.setInt("uTex", 0);
-        for (int v = 0; v < kViews; ++v) {
-            glViewport(v * vw, 0, vw, H);
-            m_impostorBake.setFloat("uYaw", static_cast<float>(v) * 1.5707963f);
+        const auto drawMesh = [&] {
             for (const TreeLOD::Prim& p : lod.prims) {
-                if (p.hasTex) p.tex.bind(0);
-                m_impostorBake.setInt("uHasTex", p.hasTex ? 1 : 0);
+                p.bindTex();
+                m_impostorBake.setInt("uHasTex", p.textured() ? 1 : 0);
                 m_impostorBake.setInt("uAlphaCutout", p.cutout ? 1 : 0);
+                m_impostorBake.setFloat("uAlphaCutoff", p.cutoff);
+                m_impostorBake.setVec3("uBaseColor", p.baseColor);
+                m_impostorBake.setVec3("uTint", p.tint);
                 glDrawElements(GL_TRIANGLES, p.count, GL_UNSIGNED_INT,
                                reinterpret_cast<const void*>(
                                    static_cast<std::uintptr_t>(p.first) * sizeof(std::uint32_t)));
             }
+        };
+        m_impostorBake.setMat4("uProj", proj);
+        m_impostorBake.setInt("uTop", 0);
+        for (int v = 0; v < kViews; ++v) {
+            glViewport(v * vw, 0, vw, H);
+            m_impostorBake.setFloat("uYaw", static_cast<float>(v) * 1.5707963f);
+            drawMesh();
         }
+        // From above: the crown's reach both ways, the height as depth (the
+        // shader lays the tree down so its top faces this camera).
+        glViewport(kViews * vw, 0, H, H);
+        m_impostorBake.setMat4("uProj", glm::ortho(-maxR, maxR, -maxR, maxR, -2.0f, 2.0f));
+        m_impostorBake.setInt("uTop", 1);
+        m_impostorBake.setFloat("uYaw", 0.0f);
+        drawMesh();
         glBindVertexArray(0);
 
         // Back to the CPU for the dilation and the coverage-keeping mips.
@@ -256,7 +271,8 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
         if (!sp.impNormal) glGenTextures(1, &sp.impNormal);
         uploadMipped(sp.impAlbedo, albedo, W, H, true);
         uploadMipped(sp.impNormal, normal, W, H, false);
-        sp.impAspect = 2.0f * maxR / 1.04f;
+        sp.impAspect   = 2.0f * maxR / 1.04f;
+        sp.impSideFrac = static_cast<float>(vw * kViews) / static_cast<float>(W);
         std::fprintf(stderr, "impostor %s: %dx%d, aspect %.2f\n", sp.name.c_str(), W, H,
                      sp.impAspect);
     }
@@ -273,6 +289,40 @@ void VegetationSystem::bakeImpostor(TreeSpecies& sp) {
     glDeleteRenderbuffers(1, &rbo);
     glDeleteTextures(2, tex);
     glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+// Past the meshes, the impostors: one card a tree, standing square to the sun,
+// so the shadow it throws is the tree's silhouette stretched along the ground
+// exactly as the mesh's would be. The mesh shadows only ever cover the near set
+// (sp.inst, gathered out to impostorStart + 20 m): the cards take over at `from`.
+// Inside the cascade pass, which put the state back afterwards.
+void VegetationSystem::drawImpostorShadows(const glm::mat4& lightSpace, glm::vec2 camXZ,
+                                           float from) {
+    // The sun's heading, out of the cascade's own matrix: an orthographic
+    // projection maps its depth axis back to the direction the light runs.
+    const glm::vec3 run = glm::vec3(glm::inverse(lightSpace) * glm::vec4(0, 0, 1, 0));
+    glm::vec2 h(run.x, run.z);
+    h = (glm::length(h) > 1e-4f) ? glm::normalize(h) : glm::vec2(1.0f, 0.0f);
+    glDisable(GL_CULL_FACE);   // a card is seen from either side
+    m_impostorShadow.bind();
+    m_impostorShadow.setMat4("uLightSpace", lightSpace);
+    m_impostorShadow.setVec3("uEye", glm::vec3(camXZ.x, 0.0f, camXZ.y));
+    m_impostorShadow.setFloat("uFrom", from);
+    m_impostorShadow.setFloat("uTo", impostorShadowDist);
+    m_impostorShadow.setVec3("uAcross", glm::vec3(-h.y, 0.0f, h.x));
+    m_impostorShadow.setFloat("uViews", static_cast<float>(kViews));
+    m_impostorShadow.setInt("uAlbedo", 0);
+    wind::apply(m_impostorShadow, wind, 1.0f);
+    glActiveTexture(GL_TEXTURE0);
+    for (const TreeSpecies& sp : m_species) {
+        if (!sp.enabled || sp.farCount == 0 || !sp.impAlbedo) continue;
+        m_impostorShadow.setFloat("uAspect", sp.impAspect);
+        m_impostorShadow.setFloat("uSideFrac", sp.impSideFrac);
+        glBindTexture(GL_TEXTURE_2D, sp.impAlbedo);
+        glBindVertexArray(sp.farVAO);
+        glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 4, sp.farCount);
+        m_shadowInst += sp.farCount;
+    }
 }
 
 void VegetationSystem::drawImpostors(const FrameContext& c) {
@@ -304,6 +354,7 @@ void VegetationSystem::drawImpostors(const FrameContext& c) {
     for (const TreeSpecies& sp : m_species) {
         if (!sp.enabled || sp.farCount == 0 || !sp.impAlbedo) continue;
         m_impostor.setFloat("uAspect", sp.impAspect);
+        m_impostor.setFloat("uSideFrac", sp.impSideFrac);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, sp.impAlbedo);
         glActiveTexture(GL_TEXTURE1);

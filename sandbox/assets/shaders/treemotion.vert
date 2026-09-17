@@ -42,6 +42,6 @@ void main() {
     vPrev = uPrevVP * vec4(then, 1.0);
     vUv   = aUv;
     gl_Position = uViewProj * vec4(now, 1.0);
-    float d = length(iPos.xz - uCamPos.xz);
+    float d = length(iPos - uCamPos);
     if (d < uLodMin || d > uLodNear) gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 }

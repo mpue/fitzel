@@ -47,6 +47,12 @@ void drawPanel(const PanelState& s) {
     ImGui::SliderFloat("Lone trees", &s.eco.solitary, 0.0f, 0.3f, "%.3f");
     ImGui::SliderFloat("Slopes wooded", &s.eco.slopeLove, 0.0f, 3.0f, "%.2f");
     ImGui::SliderFloat("Impostors from", &s.impostorStart, 40.0f, 400.0f, "%.0f m");
+    ImGui::SliderFloat("Impostor shadows", &s.impostorShadows, 0.0f, 1200.0f,
+                       s.impostorShadows <= 0.0f ? "off" : "%.0f m");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The far trees cast shadows too, out to this far:\n"
+                          "one card a tree, turned to the sun. Worth it where\n"
+                          "the forest is seen from high above.");
     ImGui::SliderFloat("Forest radius", &s.forestRadius, 200.0f, 4000.0f, "%.0f m");
     ImGui::SliderInt("Forest floor layer", &s.forestFloorLayer, -1, 5);
     ImGui::EndDisabled();

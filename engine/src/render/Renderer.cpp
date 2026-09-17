@@ -691,15 +691,24 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     const int cascades = m_csm.cascadeCount();
 
     const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
-    m_lastDrawn  = 0;
-    m_lastCulled = 0;
+    if (m_part != ScenePart::Transparent) {   // the second half adds to the count
+        m_lastDrawn  = 0;
+        m_lastCulled = 0;
+    }
 
     m_csm.bindTextureArray(kShadowMapUnit);
     glEnable(GL_CLIP_DISTANCE0);
 
+    // The clip plane culls as well as clips: the water's passes keep one side of
+    // the surface, and an object wholly on the other side would be sent down
+    // the pipe only for every one of its fragments to be clipped away. Seen from
+    // a plane above a lake that is everything flying -- the refraction pass
+    // drew each of them for nothing.
+    std::array<glm::vec4, 6> clipOnly{};
+    clipOnly[0] = clipPlane;
     auto drawOne = [&](const Renderable& r) {
-        if (!aabbVisible(planes, worldAabb(r.model, r.mesh->boundsMin(),
-                                           r.mesh->boundsMax()))) {
+        const WorldAabb box = worldAabb(r.model, r.mesh->boundsMin(), r.mesh->boundsMax());
+        if (!aabbVisible(planes, box) || !aabbVisible(clipOnly, box, 1)) {
             ++m_lastCulled;
             return;
         }
@@ -890,8 +899,9 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                              (r.opacity < 0.999f || r.forceTransparent);
         (blended ? transparent : opaque).push_back(&r);
     }
-    for (const Renderable* r : opaque) drawOne(*r);
-    if (!transparent.empty()) {
+    if (m_part != ScenePart::Transparent)
+        for (const Renderable* r : opaque) drawOne(*r);
+    if (m_part != ScenePart::Opaque && !transparent.empty()) {
         // Refraction needs the picture behind the glass, and the only moment it
         // exists is here: the opaque scene is finished and nothing transparent
         // has been drawn over it yet. Copied only when the frame has a

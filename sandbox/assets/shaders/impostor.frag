@@ -7,6 +7,7 @@ in vec3  vUp;
 in vec3  vFwd;
 in float vFade;
 in float vFlip;
+in float vLift;
 out vec4 FragColor;
 
 uniform sampler2D uAlbedo;
@@ -71,7 +72,7 @@ void main() {
     vec3  L   = normalize(uLightDir);
     float ndl = dot(N, L);
     float diff = leaf ? mix(max(ndl, 0.0), abs(ndl), 0.5) : max(ndl, 0.0);
-    float sun = 1.0 - sunShadow(vWorldPos, L, 4.0);
+    float sun = 1.0 - sunShadow(vWorldPos + L * vLift, L, 4.0);
     float up  = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
     vec3  amb = uAmbient * mix(0.45, 1.0, up);
     vec3 color = albedo * amb * 0.8 + uLightColor * albedo * (diff * 0.85 + 0.05) * sun;

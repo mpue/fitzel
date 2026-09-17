@@ -47,6 +47,11 @@ float gnoise(glm::vec2 p) {
     return glm::mix(glm::mix(a, b, f.x), glm::mix(c, d, f.x), f.y);
 }
 
+// How far from a wetted channel the sward stays closed (metres past the disc),
+// and how far the water table reaches into the meadow's colour.
+const float kBankGreen = 6.0f;
+const float kRiparian  = 25.0f;
+
 float fractSin(float x, float k) {
     const float s = std::sin(x) * k;
     return s - std::floor(s);
@@ -173,7 +178,10 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
         for (float lx = 0.0f; lx < size; lx += spacing) {
             const float wx = origin.x + lx, wz = origin.y + lz;
             if (roadDistanceSq(road, wx, wz) < roadClear * roadClear) continue;
-            if (inDiscs(wet, wx, wz)) continue;   // in a brook, not beside one
+            // How far the nearest brook is: in one, on its bank, or near enough
+            // to drink from it.
+            const float gap = discGap(wet, wx, wz, kRiparian);
+            if (gap < 0.0f) continue;             // in a brook, not beside one
             const float h = terrainHeight(s, wx, wz);
             if (h < waterLvl + 0.5f || h > snowLvl - 1.5f) continue;
             const float e = 1.0f;
@@ -182,10 +190,14 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
                 2.0f * e,
                 terrainHeight(s, wx, wz - e) - terrainHeight(s, wx, wz + e)));
             if (n.y < 0.82f) continue;
-            const float lush = glm::clamp(
+            float lush = glm::clamp(
                 terrainMoisture(s, wx, wz)
                     - glm::smoothstep(snowLvl - 8.0f, snowLvl, h) * 0.5f,
                 0.0f, 1.0f);
+            // The water table: the moisture noise knows nothing about the
+            // brooks, and a meadow running down to a river is at its greenest
+            // there, not at whatever the noise happened to say.
+            lush += (1.0f - lush) * 0.7f * (1.0f - glm::smoothstep(2.0f, kRiparian, gap));
             // Dry ground: nothing, as it always was -- or, with dryGrowth, a thin
             // straw-coloured sward, which is what a dry meadow actually is. A
             // valley floor with bare earth between green patches reads as desert.
@@ -206,7 +218,10 @@ void generateTile(std::int32_t tx, std::int32_t tz, glm::vec2 origin, float size
             const float bare   = valNoise2(wx * 0.13f + 19.0f, wz * 0.13f + 7.0f);
             const float bare2  = valNoise2(wx * 0.31f + 3.0f,  wz * 0.31f + 23.0f);
             // Broad bare patches always apply; the finer holes only with chaos.
-            if (bare < 0.26f || bare2 < 0.12f * chaos) continue;
+            // Except along the water: a bank is the wettest, most overgrown
+            // ground there is, and a hole in the sward there opens onto the
+            // river's gravel paint -- a shingle bar in the middle of a meadow.
+            if ((bare < 0.26f || bare2 < 0.12f * chaos) && gap >= kBankGreen) continue;
             const float densJit = 1.0f + (glm::mix(0.55f, 1.20f, patch2) - 1.0f) * chaos;
             const float dens    = glm::mix(0.25f, 1.25f, patch) * densJit;
             // Per-cell count jitter breaks the even grid density (chaos-scaled).

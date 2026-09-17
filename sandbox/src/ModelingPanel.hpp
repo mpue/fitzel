@@ -4,33 +4,48 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <imgui.h>
 
 #include <fitzel/asset/AssetId.hpp>
 
-#include "SceneTypes.hpp"   // MaterialDef (a face is dressed from the library)
+#include "ModelingTools.hpp" // the selection the viewport is picking
+#include "SceneTypes.hpp"    // MaterialDef (a face is dressed from the library)
 
 class MeshComponent;
 
-// The editor's "Modeling" panel: the face operations of a small box modeller.
+// The editor's Modeling panel: a small box modeller in one FLOATING window over
+// the viewport, next to the thing being shaped rather than docked at the edge of
+// the screen. It carries everything -- what is being picked (corners, edges or a
+// face), the operations for that, the amounts they apply, and the material a
+// face wears -- so shaping something is never a trip between two panels.
 //
 // Every operation is a BUTTON WITH A NUMBER, never a drag. That is not a
 // simplification of a gizmo-based tool that would otherwise be better -- it is
 // the point. Pulling a face out by exactly 0.4 m is a thing you can ask for and
 // get; doing it by dragging is a thing you can only approach, and only with a
 // steady hand. The numbers are also what makes the result repeatable across the
-// six faces of a building.
+// six faces of a building. Same for the amounts themselves: a step is picked
+// with a pair of big -/+ buttons, not by dragging a slider.
 //
-// Selection happens in the viewport (click a face); this panel acts on whatever
-// is selected and knows nothing about how it got there.
+// Picking happens in the viewport (click a corner, an edge or a face); this
+// panel acts on whatever is picked and knows nothing about how it got there --
+// see ModelingTools.hpp for that half.
 namespace modelui {
 
 struct PanelState {
-    bool&           show;
-    MeshComponent*  mesh;        // null: the selection has no editable mesh
-    int&            faceSel;     // index of the selected face, -1 for none
+    bool&                   show;
+    MeshComponent*          mesh;      // null: the selection has no editable mesh
+    int&                    faceSel;   // selected face, -1 for none
+    modeltools::Selection&  sel;       // corners / edges, and which mode
     const std::vector<MaterialDef>& materials; // the library a face is dressed from
-    bool            haveSelection = false; // an entity is selected at all
-    bool            canConvert    = false; // ...and it could become a mesh
+    bool                    haveSelection = false; // an entity is selected at all
+    bool                    canConvert    = false; // ...and it could become a mesh
+
+    // Mesh space -> world, so the nudge arrows can move a selection along the
+    // WORLD axes whatever the object's own rotation is.
+    glm::mat4 model{1.0f};
+    // The viewport's rect: only for where the window opens the first time.
+    ImVec2 viewMin{0, 0}, viewMax{0, 0};
 
     // Turn the selected entity into an editable mesh (Box -> its own geometry).
     std::function<void()> convert;
