@@ -92,8 +92,10 @@
 #ifndef FITZEL_PLAYER
 #include "Autosave.hpp"
 #include "GridRenderer.hpp"
+#include "ModelingKeys.hpp"
 #include "ModelingPanel.hpp"
 #include "ModelingTools.hpp"
+#include "SynthPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
 #include "GraphPanel.hpp"
@@ -150,6 +152,7 @@
 #include "TrailSystem.hpp"
 #include "WeaponSystem.hpp"
 #include "WorldAudio.hpp"
+#include "SynthSystem.hpp"
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
@@ -261,6 +264,7 @@ const Completion kTopLevel[] = {
     {"start", "start(e)  -- called once on spawn"},
     {"update", "update(e, dt, t)  -- called each frame"},
     {"game", "engine API table"},
+    {"synth", "Synth components: notes, dials, MIDI songs"},
     {"print", "print(...)"}, {"pairs", "pairs(t)"}, {"ipairs", "ipairs(t)"},
     {"tostring", "tostring(v)"}, {"tonumber", "tonumber(v)"}, {"type", "type(v)"},
     {"math", "math.*"}, {"string", "string.*"}, {"table", "table.*"},
@@ -303,6 +307,22 @@ const Completion kGameMembers[] = {
     {"KEY_LSHIFT", "340"}, {"KEY_LCTRL", "341"},
     {"KEY_LEFT", "263"}, {"KEY_RIGHT", "262"}, {"KEY_UP", "265"}, {"KEY_DOWN", "264"},
     {"KEY_W", "87"}, {"KEY_A", "65"}, {"KEY_S", "83"}, {"KEY_D", "68"},
+};
+
+// Members of the `synth` table, offered after "synth.". `id` is an object with a
+// Synth component; a note is a number (60) or a name ("C4", "F#3").
+const Completion kSynthMembers[] = {
+    {"play", "play(id) -> ok  -- start it, and its song if it has one"},
+    {"stop", "stop(id)"},
+    {"noteOn", "noteOn(id, note, velocity) -> ok  -- note 60 or \"C4\", velocity 0..1"},
+    {"noteOff", "noteOff(id, note)  -- noteOff(id) lets every note go"},
+    {"set", "set(id, dial, value) -> ok  -- a dial of the patch"},
+    {"playMidi", "playMidi(id, file, loop) -> ok  -- file under content/midi/"},
+    {"stopMidi", "stopMidi(id)"},
+    {"isPlaying", "isPlaying(id) -> bool  -- is its song playing"},
+    {"setTempo", "setTempo(id, scale)  -- 1 = as written"},
+    {"note", "note(\"A4\") -> 69"},
+    {"lastError", "lastError() -> text  -- why the last call said no"},
 };
 
 // New-script templates, offered in the "New Script" dialog. An "empty component"
@@ -653,6 +673,7 @@ struct Completions {
     int                     sel  = 0;           // highlighted match
     bool                    open = false;
     bool                    gameMember  = false; // completing after "game."
+    bool                    synthMember = false; // completing after "synth."
     bool                    manualClose = false; // Esc: stay closed until
     std::string             closedPrefix;        // the prefix changes
 };
@@ -677,13 +698,16 @@ void refreshCompletion(TextEditor& ed, Completions& c) {
     c.prefix = line.substr(start, idx - start);
     // "game." member context: a '.' right before the word, and the token before
     // the dot is exactly "game".
-    c.gameMember = false;
+    c.gameMember  = false;
+    c.synthMember = false;
     if (start > 0 && line[start - 1] == '.') {
         int ws = start - 1;
         while (ws > 0 && isIdent(line[ws - 1])) --ws;
-        c.gameMember = (line.substr(ws, (start - 1) - ws) == "game");
+        const std::string owner = line.substr(ws, (start - 1) - ws);
+        c.gameMember  = owner == "game";
+        c.synthMember = owner == "synth";
     }
-    if (c.prefix.empty() && !c.gameMember) {
+    if (c.prefix.empty() && !c.gameMember && !c.synthMember) {
         c.open = false; c.manualClose = false; return;
     }
     // Esc keeps the popup closed until the prefix actually changes.
@@ -701,6 +725,8 @@ void refreshCompletion(TextEditor& ed, Completions& c) {
     };
     if (c.gameMember)
         consider(kGameMembers, sizeof(kGameMembers) / sizeof(kGameMembers[0]));
+    else if (c.synthMember)
+        consider(kSynthMembers, sizeof(kSynthMembers) / sizeof(kSynthMembers[0]));
     else
         consider(kTopLevel, sizeof(kTopLevel) / sizeof(kTopLevel[0]));
     // Nothing useful to offer (no match, or the sole match is already typed).
@@ -2701,6 +2727,7 @@ int main(int argc, char** argv) {
         bool showUiOverlay   = false; // scene 2D UI overlay editor
         bool showCursor      = false; // 3D cursor panel
         bool showModeling    = false; // face-modelling panel
+        bool showSynth       = false; // the modular synth's patch editor
         bool showMeshPaint   = false; // painting layers onto a modelled mesh
         bool showUv          = false; // where a face's texture sits on it
         // Which face of the selected mesh the modelling operations act on. Reset
@@ -3456,6 +3483,34 @@ int main(int argc, char** argv) {
             auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
             if (!cmd->trivial()) history.pushApplied(std::move(cmd));
         };
+        // A modal edit of the modelling mode (G, E, Ctrl+B ...; ModelingKeys.hpp):
+        // every frame starts again from the entity as it was, so the operation
+        // is always "base + what the pointer says now", never a pile-up.
+        Entity    meshLiveBefore;
+        glm::vec3 meshLiveScale{1.0f};
+        auto meshLive = [&](modelkeys::Live ph, const std::function<void(EditMesh&)>& op,
+                            const char* label) {
+            if (!cursorHaveSel()) return;
+            Entity& e = entities[sel.index()];
+            if (ph == modelkeys::Live::Begin) {
+                meshLiveBefore = e;
+                if (const MeshComponent* mc = e.components.get<MeshComponent>())
+                    meshLiveScale = meshScaleOf(e, *mc);
+            } else if (ph == modelkeys::Live::Set || ph == modelkeys::Live::Cancel) {
+                e = meshLiveBefore;
+                MeshComponent* mc = e.components.get<MeshComponent>();
+                if (ph == modelkeys::Live::Set && mc && op) {
+                    op(mc->mesh);
+                    normalizeMeshEntity(e, *mc, meshLiveScale);
+                }
+            } else {
+                if (const MeshComponent* mc = e.components.get<MeshComponent>())
+                    if (const MeshComponent* b0 = meshLiveBefore.components.get<MeshComponent>())
+                        modeltools::flash(b0->mesh, mc->mesh, meshModelOf(meshLiveBefore, *b0), label);
+                auto cmd = std::make_unique<ModifyEntityCmd>(meshLiveBefore, e);
+                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
+            }
+        };
         // World-space corners of one face of the selected mesh, for picking and
         // for drawing the highlight. Empty when there is no such face.
         auto meshFaceWorld = [&](const Entity& e, const MeshComponent& mc, int face) {
@@ -4202,6 +4257,15 @@ int main(int argc, char** argv) {
         const std::string& soundDir = roots.sounds;
         WeatherSounds wx;
         loadWeatherSounds(audio, soundDir, wx);
+#ifndef FITZEL_PLAYER
+        // The synth's editor. After `audio` for the same reason as everything
+        // else here: the preview voice it holds belongs to that engine, and a
+        // voice outliving its mixer is the one way this all ends in a crash.
+        synthui::Panel synthPanel;
+#endif
+        // The Synth components' players. After `audio`, like every voice.
+        SynthSystem synths;
+        synths.bind(audio, document, currentProject);
         // Birdsong, insects, leaves (Soundscape.hpp). After `audio`, so it is
         // destroyed before it: its voices belong to that engine.
         Soundscape soundscape;
@@ -6574,6 +6638,7 @@ int main(int argc, char** argv) {
             if (it != audioVoices.end() && it->second.isValid()) it->second.stop();
         };
         host.playAudio = [&](int id){ startAudioSource(id); };
+        host.synths    = &synths;
         host.stopAudio = [&](int id){ stopAudioSource(id); };
         host.getVelocity = [&](int id, glm::vec3& out) -> bool {
             auto it = physicsBody.find(id);
@@ -7147,6 +7212,12 @@ int main(int argc, char** argv) {
                 if (const auto* a = e.components.get<AudioSourceComponent>();
                     a && a->playOnStart && e.activeInHierarchy)
                     startAudioSource(e.id);
+            // ...and every Synth: an editor preview stops, the game's music starts.
+            synths.clear();
+            for (const Entity& e : entities)
+                if (const auto* s = e.components.get<SynthComponent>();
+                    s && s->playOnStart && e.activeInHierarchy)
+                    synths.play(e.id);
 
             // --- ...and the game becomes it ----------------------------------
             // `startAs` was decided before the world was built (it had to be: it
@@ -7304,6 +7375,7 @@ int main(int argc, char** argv) {
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
             audioVoices.clear(); // stop + free any AudioSource voices
+            synths.clear();      // and the Synth players
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
@@ -7445,6 +7517,9 @@ int main(int argc, char** argv) {
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
             {"Assets",   "Scripts",            nullptr, &showScriptEditor},
+            // The synth lives with the assets it makes: a patch is a sound
+            // file's replacement, authored here and played by the game.
+            {"Assets",   "Synth",              nullptr, &showSynth},
             {"Assets",   nullptr,              nullptr, nullptr},
             {"Assets",   "Import Unity asset", nullptr, &showUnityImport},
             {"Presentation", "UI Overlay",     nullptr, &showUiOverlay},
@@ -7887,12 +7962,31 @@ int main(int argc, char** argv) {
                 prevF4 = f4;
             }
 
+#ifndef FITZEL_PLAYER
+            // The modelling mode -- Blender's Edit Mode: the Modeling panel open on
+            // an editable mesh. While it is on, the viewport's keys are Blender's
+            // (ModelingKeys.hpp) and the editor's own shortcuts below stand
+            // aside; everywhere else they are what they always were. Tab goes in
+            // and out, and a box becomes a mesh on the way in.
+            const bool modelling = showModeling && !playMode && selectedMesh() != nullptr;
+            const bool meshBusy  = modelling && modelkeys::busy();
+            if (!playMode && viewportHovered && !meshBusy && !ImGui::GetIO().WantTextInput &&
+                ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
+                if (!showModeling && !selectedMesh() && cursorHaveSel() &&
+                    entities[sel.index()].type == EntityType::Box)
+                    convertToMesh();
+                showModeling = !showModeling && selectedMesh() != nullptr;
+            }
+#else
+            const bool modelling = false, meshBusy = false;
+#endif
             // --- Input ---------------------------------------------------
             // F frames the selected object; Shift+F toggles first-person walk mode.
             const bool fDown  = input.isKeyDown(GLFW_KEY_F);
             const bool shiftF = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
                                 input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
-            if (fDown && !prevF && !vehicleMode && !gliderMode && !ImGui::GetIO().WantTextInput) {
+            if (fDown && !prevF && !vehicleMode && !gliderMode && !modelling &&
+                !ImGui::GetIO().WantTextInput) {
                 if (shiftF) { // Shift+F: toggle first-person (cursor locks, mouse-look)
                     fpsMode = !fpsMode;
                     input.setCursorLocked(fpsMode);
@@ -7910,6 +8004,11 @@ int main(int argc, char** argv) {
                     const float dist   = radius / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f;
                     camFocusTarget = e.center - camera.front() * dist;
                     camFocusing    = true;
+                    // Through an ortho lens the distance frames nothing -- the
+                    // zoom does. Same fit: the radius and its margin fill the
+                    // height the perspective cone would have at that distance.
+                    if (camera.orthographic())
+                        camera.setOrthoHalfHeight(radius * 1.3f);
                 }
             }
             prevF = fDown;
@@ -7930,7 +8029,7 @@ int main(int argc, char** argv) {
             // the model itself. With no scene vehicle, the primitive test car
             // behaves as before.
             const bool vDown = input.isKeyDown(GLFW_KEY_V);
-            if (vDown && !prevV && !ImGui::GetIO().WantTextInput) {
+            if (vDown && !prevV && !modelling && !ImGui::GetIO().WantTextInput) {
                 // The field, in scene order -- NOT in race order. A list that
                 // reshuffles as places change would step somewhere different
                 // every time it is pressed, and the one thing a view switch has
@@ -7983,7 +8082,7 @@ int main(int argc, char** argv) {
             // with a Glider component) and fly it with the arcade hover sim, in
             // the editor or in Play. Mutually exclusive with the car's drive mode.
             const bool gDown = input.isKeyDown(GLFW_KEY_G);
-            if (gDown && !prevG && !ImGui::GetIO().WantTextInput) {
+            if (gDown && !prevG && !modelling && !ImGui::GetIO().WantTextInput) {
                 gliderMode = !gliderMode;
                 if (gliderMode) {
                     if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
@@ -8189,6 +8288,8 @@ int main(int argc, char** argv) {
                 else if (vehicleMode)    { vehicleMode = false; endEditorDrive(); }
                 else if (gliderMode)     { gliderMode = false; endGliderDrive(); }
                 else if (fpsMode) { fpsMode = false; input.setCursorLocked(false); }
+                // Modelling: Esc only ever cancels an operation (ModelingKeys).
+                else if (modelling) {}
                 // Plain editor: Esc steps back to selection (drop the transform
                 // tool), then a second Esc clears the selection. Never quits.
                 // A road point selection is the innermost thing to let go of, so
@@ -8197,9 +8298,6 @@ int main(int argc, char** argv) {
                 else if (splineEditMode && splinePtSel >= 0) { splinePtSel = -1; }
                 else if (riverEditMode && riverPtSel >= 0) { riverPtSel = -1; }
                 else if (placeMode) { placeMode = false; }
-#ifndef FITZEL_PLAYER
-                else if (showModeling && modelSel.any()) { modelSel.clear(); }
-#endif
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (sel.valid()) { sel.clear(); }
             }
@@ -8212,7 +8310,7 @@ int main(int argc, char** argv) {
             // plain editor, never while a
             // camera-fly drag (right mouse) or a text field owns the keys.
             if (!playMode && !fpsMode && !vehicleMode && !gliderMode && !presentMode &&
-                !ImGui::GetIO().WantTextInput &&
+                !modelling && !ImGui::GetIO().WantTextInput &&
                 !input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)) {
                 const bool qd = input.isKeyDown(GLFW_KEY_Q);
                 const bool wd = input.isKeyDown(GLFW_KEY_W);
@@ -8801,7 +8899,7 @@ int main(int argc, char** argv) {
                 const bool shiftHeld = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
                                        input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
                 const bool mouseLook = input.isMouseButtonDown(GLFW_MOUSE_BUTTON_RIGHT)
-                                       && !shiftHeld
+                                       && !shiftHeld && !meshBusy
                                        && (viewportHovered || presentMode || input.isCursorLocked());
                 if (mouseLook != input.isCursorLocked()) {
                     input.setCursorLocked(mouseLook);
@@ -8862,7 +8960,8 @@ int main(int argc, char** argv) {
                 // can cancel a view change that is still swinging.
                 {
                     viewnav::Env nav{};
-                    nav.viewportHovered = viewportHovered || presentMode;
+                    nav.viewportHovered = (viewportHovered || presentMode) && !meshBusy;
+                    nav.numberRow       = !modelling;
                     // Number keys belong to the game while one is running, and to
                     // the text field while one is being typed into.
                     nav.keysFree  = !playMode && !playerMode &&
@@ -8879,6 +8978,16 @@ int main(int argc, char** argv) {
                 }
 #endif
             }
+
+            // The orthographic lens is the editor's free camera's alone. Play,
+            // walking, driving and a camera preview put an eye somewhere on
+            // purpose and look through it the way a player would; the wish
+            // stays in viewNav and comes back with the free camera.
+#ifndef FITZEL_PLAYER
+            camera.setOrthographic(viewNav.ortho() && !playMode && !playerMode &&
+                                   !fpsMode && !vehicleMode && !gliderMode &&
+                                   activeCam < 0);
+#endif
 
             // Focus (F): glide the camera to the target, cancelled by any manual
             // camera input (right-mouse fly, a pan, a standard view) or leaving
@@ -9263,6 +9372,9 @@ int main(int argc, char** argv) {
             } else {
                 worldAudio.setAmbience({}, 0.0f);
             }
+            // Synths: level, song settings, distance. Every frame and not only in
+            // Play, so the Inspector's preview is heard in the editor too.
+            synths.update(camera.position(), mix.ambientGain());
 
             // --- Day/night: advance time, derive sun direction and lighting ---
             // In Play the day can run on its own (scene setting timeFlows): the
@@ -11354,14 +11466,23 @@ int main(int argc, char** argv) {
                 // and back look identical until something moves, so a view you
                 // cannot name is one you have to test by nudging the camera --
                 // which is exactly what the standard views are for avoiding.
-                if (!playMode)
-                    if (const char* vl = viewnav::label(viewNav.current())) {
+                // The lens goes in the same place: an orthographic picture of a
+                // landscape is easy to mistake for a flat one.
+                if (!playMode) {
+                    const char* sv = viewnav::label(viewNav.current());
+                    const bool  ortho = camera.orthographic();
+                    char vl[48] = "";
+                    if (sv && ortho) std::snprintf(vl, sizeof vl, "%s (Ortho)", sv);
+                    else if (sv)     std::snprintf(vl, sizeof vl, "%s", sv);
+                    else if (ortho)   std::snprintf(vl, sizeof vl, "Orthographic");
+                    if (vl[0]) {
                         ImDrawList* vdl = ImGui::GetWindowDrawList();
                         const ImVec2 at(rmin.x + 12.0f, rmin.y + 10.0f);
                         vdl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
                                      IM_COL32(0, 0, 0, 160), vl);
                         vdl->AddText(at, IM_COL32(235, 240, 250, 225), vl);
                     }
+                }
 
                 // UI overlay authoring preview: while the overlay editor is open and
                 // we're not playing, draw the 2D elements over the viewport (clipped
@@ -11665,10 +11786,8 @@ int main(int argc, char** argv) {
                             // from it as you zoom in or out.
                             const glm::vec3 hw = handleWorld(roadSel);
                             const float dist = glm::length(hw - camera.position());
-                            const float mpp =
-                                2.0f * dist *
-                                std::tan(glm::radians(camera.fov() * 0.5f)) /
-                                std::max(1.0f, static_cast<float>(viewH));
+                            const float mpp = camera.metresPerPixel(
+                                dist, static_cast<float>(viewH));
                             const float dy = ImGui::GetIO().MouseDelta.y;
                             if (dy != 0.0f)
                                 road.setLift(roadSel,
@@ -12055,6 +12174,7 @@ int main(int argc, char** argv) {
                     sc.cameraPos   = camera.position();
                     sc.cameraFront = camera.front();
                     sc.cameraFov   = camera.fov();
+                    sc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
                     sc.pickTerrain = roadPickTerrain;
                     sc.groundAt    = [&streamer](float x, float z) {
                         return streamer.heightAt(x, z);
@@ -12106,6 +12226,7 @@ int main(int argc, char** argv) {
                         rc.cameraPos   = camera.position();
                         rc.cameraFront = camera.front();
                         rc.cameraFov   = camera.fov();
+                        rc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
                         rc.pickTerrain = roadPickTerrain;
                         rc.groundAt    = [&streamer](float x, float z) {
                             return streamer.heightAt(x, z);
@@ -12861,23 +12982,44 @@ int main(int argc, char** argv) {
                     // the pointer, the selection, the preview of a hovered button
                     // and the flash of the last edit. Drawn as a 2D overlay like
                     // the cursor: authoring marks, not things in the scene.
-                    if (showModeling && !playMode) {
-                        if (const MeshComponent* mc = selectedMesh()) {
-                            modeltools::View mv;
-                            mv.model = meshModelOf(entities[sel.index()], *mc);
-                            mv.vp    = vp;
-                            mv.min   = rmin;
-                            mv.size  = ImVec2(static_cast<float>(viewW), static_cast<float>(viewH));
+                    if (showModeling && !playMode && selectedMesh()) {
+                        modeltools::View mv;
+                        mv.vp   = vp;
+                        mv.min  = rmin;
+                        mv.size = ImVec2(static_cast<float>(viewW), static_cast<float>(viewH));
+                        modelkeys::Host kh;
+                        auto keyHost = [&] {   // fresh each call: a modal edit replaces the mesh
+                            kh.mesh      = selectedMesh();
+                            mv.model     = meshModelOf(entities[sel.index()], *kh.mesh);
+                            kh.sel       = &modelSel;
+                            kh.faceSel   = &meshFaceSel;
+                            kh.view      = mv;
+                            kh.hovered   = viewportHovered;
+                            kh.keysFree  = !ImGui::GetIO().WantTextInput;
+                            kh.gizmoOver = entityEditMode && (ImGuizmo::IsOver() || ImGuizmo::IsUsing());
+                            kh.edit      = applyMeshEdit;
+                            kh.live      = meshLive;
+                            kh.frame     = [&](const glm::vec3& c, float r) {
+                                const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
+                                camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
+                                camFocusing     = true;
+                                if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
+                            };
+                            return kh;
+                        };
+                        modelkeys::update(keyHost());
+                        if (const MeshComponent* mc = keyHost().mesh) {
                             modeltools::Hit hov;
                             const bool hovering =
                                 viewportHovered && !ImGuizmo::IsUsing() && !faceGizmoActive &&
-                                !ImGui::IsMouseDown(ImGuiMouseButton_Right);
+                                !modelkeys::busy() && !ImGui::IsMouseDown(ImGuiMouseButton_Right);
                             if (hovering)
                                 hov = modeltools::pick(mc->mesh, mv, ImGui::GetIO().MousePos,
                                                        modelSel.mode);
                             modeltools::drawOverlay(ImGui::GetWindowDrawList(), mc->mesh, mv,
                                                     modelSel, meshFaceSel,
                                                     hovering ? &hov : nullptr);
+                            modelkeys::drawHud(ImGui::GetWindowDrawList(), kh);
                         }
                     }
 
@@ -12921,7 +13063,7 @@ int main(int argc, char** argv) {
 
                     // Transform gizmo for the selected block (move / scale).
                     if (entityEditMode) {
-                        ImGuizmo::SetOrthographic(false);
+                        ImGuizmo::SetOrthographic(camera.orthographic());
                         ImGuizmo::SetDrawlist();
                         ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
                                                           static_cast<float>(viewH));
@@ -12965,8 +13107,8 @@ int main(int argc, char** argv) {
                         // different tools, and which one is right depends on the
                         // day and on the hand.
                         MeshComponent* faceMc =
-                            (showModeling && entityEditMode) ? b.components.get<MeshComponent>()
-                                                             : nullptr;
+                            (showModeling && entityEditMode && !meshBusy)
+                                ? b.components.get<MeshComponent>() : nullptr;
                         // What it drives: the selected face's corners, or in vertex
                         // and edge mode the picked corners (both ends of each edge).
                         const std::vector<int> gizmoVerts =
@@ -12981,13 +13123,9 @@ int main(int argc, char** argv) {
                             // baked into geometry -- an absolute matrix would be
                             // re-applied on top of itself every frame and a scale
                             // drag would run away exponentially.
-                            glm::vec3 pivot(0.0f);
-                            if (modelSel.mode == modeltools::Mode::Face) {
-                                pivot = faceMc->mesh.faceCenter(meshFaceSel);
-                            } else {
-                                for (int vi : gizmoVerts) pivot += faceMc->mesh.verts[vi];
-                                pivot /= static_cast<float>(gizmoVerts.size());
-                            }
+                            glm::vec3 pivot(0.0f);   // the centre of what it drives
+                            for (int vi : gizmoVerts) pivot += faceMc->mesh.verts[vi];
+                            pivot /= static_cast<float>(gizmoVerts.size());
                             const glm::mat4 F = glm::translate(glm::mat4(1.0f), pivot);
                             glm::mat4 world = M * F;
                             // A face snaps in steps from where it started: its
@@ -13049,8 +13187,6 @@ int main(int argc, char** argv) {
                                     glm::vec3 p2(0.0f);
                                     for (int vi : gizmoVerts) p2 += faceMc->mesh.verts[vi];
                                     p2 /= static_cast<float>(gizmoVerts.size());
-                                    if (modelSel.mode == modeltools::Mode::Face)
-                                        p2 = faceMc->mesh.faceCenter(meshFaceSel);
                                     const glm::vec3 d =
                                         glm::vec3(M2 * glm::vec4(p2, 1.0f)) - faceGizmoStartPivot;
                                     std::snprintf(rd, sizeof rd, "%.2f m   (%+.2f, %+.2f, %+.2f)",
@@ -13076,7 +13212,7 @@ int main(int argc, char** argv) {
                                 if (!cmd->trivial()) history.pushApplied(std::move(cmd));
                             }
                         }
-                        else if (entityEditMode && !vehGizmoOwnsMouse) {
+                        else if (entityEditMode && !vehGizmoOwnsMouse && !meshBusy) {
                             float model[16];
                             ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
                             ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
@@ -13286,7 +13422,7 @@ int main(int argc, char** argv) {
                         grassPaintMode || treePaintMode || flowerPaintMode ||
                         roadEditMode || sculptMode || paintMode || scatterMode ||
                         splineEditMode || meshPaintMode || riverEditMode ||
-                        vehGizmoOwnsMouse;
+                        vehGizmoOwnsMouse || modelling;
                     const ImGuiIO& io = ImGui::GetIO();
                     const bool selMod  = io.KeyCtrl; // Ctrl = modify-selection gesture
                     const bool canPick = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
@@ -13397,32 +13533,10 @@ int main(int argc, char** argv) {
                         }
                         }
                     }
-                    if (sel.valid() &&
-                        ImGui::IsKeyPressed(ImGuiKey_Delete)) {
-                        // With corners or edges picked, Del means THOSE -- taking
-                        // the whole object would be the worst possible reading
-                        // of the key. Corners go with their faces; an edge is
-                        // dissolved (one at a time, like the toolbar's button).
-                        if (showModeling && modelSel.any()) {
-                            const modeltools::Selection pick = modelSel;
-                            if (pick.mode == modeltools::Mode::Vertex) {
-                                applyMeshEdit([pick](MeshComponent& m) {
-                                    editmesh::deleteVerts(m.mesh, pick.verts);
-                                    return -1;
-                                }, "Delete corners");
-                                modelSel.clear();
-                            } else if (pick.edges.size() == 1) {
-                                applyMeshEdit([pick](MeshComponent& m) {
-                                    editmesh::dissolveEdge(m.mesh, pick.edges[0].first,
-                                                           pick.edges[0].second);
-                                    return -1;
-                                }, "Dissolve edge");
-                                modelSel.clear();
-                            }
-                        } else {
-                            deleteSelection();
-                        }
-                    }
+                    // While modelling, Del is the mesh's (the modelling mode's
+                    // delete menu) -- never the whole object.
+                    if (sel.valid() && !modelling && ImGui::IsKeyPressed(ImGuiKey_Delete))
+                        deleteSelection();
                 }
             } else {
                 viewportHovered = false;
@@ -14170,7 +14284,8 @@ int main(int argc, char** argv) {
                 if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
                 if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
                     meshFaceSel = -1;
-                modeltools::validate(modelSel, selId, mc ? &mc->mesh : nullptr);
+                modeltools::validate(modelSel, selId, mc ? &mc->mesh : nullptr, &meshFaceSel);
+                ImGui::BeginDisabled(modelkeys::busy());
                 modelui::drawPanel({
                     showModeling, mc, meshFaceSel, modelSel, materials, haveSel,
                     haveSel && !mc && entities[sel.index()].type == EntityType::Box,
@@ -14190,6 +14305,7 @@ int main(int argc, char** argv) {
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                     mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
                 });
+                ImGui::EndDisabled();
             }
 
             // Where the selected face's texture sits. Shares the Modeling
@@ -14216,6 +14332,11 @@ int main(int argc, char** argv) {
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                 });
             }
+
+            // The modular synth: building a patch and hearing it. Everything it
+            // needs is its own (see SynthPanel.hpp); it takes the engine to play
+            // through and the open project to keep its patches in.
+            if (showSynth) synthPanel.draw(showSynth, audio, currentProject);
 
             if (showMeshPaint) {
                 MeshComponent* mc  = selectedMesh();
@@ -14368,7 +14489,7 @@ int main(int argc, char** argv) {
                                     showMaterials, showModels, activeCam,
                                     entityNewHalf,
                                     animClips, animEditClip, animPlay, animAutoKey,
-                                    animGraphs, showGraphEditor});
+                                    animGraphs, showGraphEditor, &synths});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.
@@ -16256,7 +16377,10 @@ int main(int argc, char** argv) {
             // Reflections off, nor in split screen (the history is one pane's).
             // Contact shadows read the same history, for short rays towards the
             // sun; they go with the player's Shadows setting instead.
+            // Not through an orthographic lens either: both traces compare a
+            // ray's clip w against linearised depth, and w is 1 there.
             const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
+                                 !vcam.orthographic() &&
                                  glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
             const bool ssr     = history && ssrEnabled && gfxSet.reflections > 0;
             const bool contact = history && contactShadows && gfxSet.shadows > 0 &&
@@ -16348,6 +16472,7 @@ int main(int argc, char** argv) {
                 water.setInt("uRefractionDepth", 2);
                 water.setFloat("uNear", camera.nearPlane());
                 water.setFloat("uFar", camera.farPlane());
+                water.setInt("uOrtho", camera.orthographic() ? 1 : 0);
                 water.setFloat("uFoamWidth", foamWidth);
                 // Rain dimpling the lake. Full strength, with none of the road's
                 // wetness gate -- open water is wet whether or not it has been
@@ -16562,6 +16687,7 @@ int main(int argc, char** argv) {
                 pp.camPos    = camPos;
                 pp.nearPlane = vcam.nearPlane();
                 pp.farPlane  = vcam.farPlane();
+                pp.ortho     = vcam.orthographic();
                 pp.aspect    = aspect;
                 pp.sunDir    = sunDir;
                 pp.sunCol    = sunCol;

@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <string>
 #include <vector>
@@ -16,6 +18,7 @@ extern "C" {
 #include <fitzel/asset/Vfs.hpp>
 
 #include "SaveData.hpp"
+#include "SynthSystem.hpp"
 
 namespace {
 
@@ -341,6 +344,122 @@ int l_stopAudio(lua_State* L) {
     if (h && h->stopAudio) h->stopAudio(id);
     return 0;
 }
+// --- `synth` table: the Synth components (see SynthSystem) -------------------
+
+SynthSystem* synthsOf(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    return h ? h->synths : nullptr;
+}
+
+// A note name to its MIDI number: "C4" is middle C (60), "A4" is 69, "F#3",
+// "Bb2", "C-1" (0). No octave means the fourth. -1 if it is not a note.
+int parseNote(const char* s) {
+    if (!s || !*s) return -1;
+    static const int kFromA[7] = {9, 11, 0, 2, 4, 5, 7};   // A B C D E F G
+    const int letter = std::toupper(static_cast<unsigned char>(*s));
+    if (letter < 'A' || letter > 'G') return -1;
+    int n = kFromA[letter - 'A'];
+    ++s;
+    for (; *s == '#' || *s == 'b'; ++s) n += (*s == '#') ? 1 : -1;
+    int octave = 4;
+    if (*s) {
+        char* end = nullptr;
+        octave = static_cast<int>(std::strtol(s, &end, 10));
+        if (end == s || *end) return -1;
+    }
+    n += (octave + 1) * 12;
+    return (n >= 0 && n <= 127) ? n : -1;
+}
+
+// A note argument: a number or a name.
+int noteArg(lua_State* L, int i) {
+    if (lua_type(L, i) == LUA_TSTRING) {
+        const int n = parseNote(lua_tostring(L, i));
+        if (n < 0) luaL_argerror(L, i, "not a note name (try \"C4\", \"F#3\")");
+        return n;
+    }
+    return std::clamp(static_cast<int>(std::lround(luaL_checknumber(L, i))), 0, 127);
+}
+
+int l_synthPlay(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, s && s->play(id));
+    return 1;
+}
+int l_synthStop(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (s) s->stop(id);
+    return 0;
+}
+int l_synthNoteOn(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int id   = static_cast<int>(luaL_checkinteger(L, 1));
+    const int note = noteArg(L, 2);
+    float vel = static_cast<float>(luaL_optnumber(L, 3, 0.8));
+    if (vel > 1.0f) vel /= 127.0f;   // a MIDI velocity, 0..127
+    lua_pushboolean(L, s && s->noteOn(id, note, vel));
+    return 1;
+}
+int l_synthNoteOff(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (lua_isnoneornil(L, 2)) {
+        if (s) s->allNotesOff(id);
+    } else {
+        const int note = noteArg(L, 2);
+        if (s) s->noteOff(id, note);
+    }
+    return 0;
+}
+int l_synthSet(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int         id   = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string dial = luaL_checkstring(L, 2);
+    const float       v    = static_cast<float>(luaL_checknumber(L, 3));
+    lua_pushboolean(L, s && s->setDial(id, dial, v));
+    return 1;
+}
+int l_synthPlayMidi(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int         id   = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::string file = luaL_optstring(L, 2, "");
+    const int loop = lua_isnoneornil(L, 3) ? -1 : (lua_toboolean(L, 3) ? 1 : 0);
+    lua_pushboolean(L, s && s->playMidi(id, file, loop));
+    return 1;
+}
+int l_synthStopMidi(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (s) s->stopMidi(id);
+    return 0;
+}
+int l_synthIsPlaying(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    lua_pushboolean(L, s && s->midiPlaying(id));
+    return 1;
+}
+int l_synthSetTempo(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    const int   id    = static_cast<int>(luaL_checkinteger(L, 1));
+    const float scale = static_cast<float>(luaL_checknumber(L, 2));
+    lua_pushboolean(L, s && s->setTempo(id, scale));
+    return 1;
+}
+int l_synthNote(lua_State* L) {
+    const int n = parseNote(luaL_checkstring(L, 1));
+    if (n < 0) lua_pushnil(L);
+    else       lua_pushinteger(L, n);
+    return 1;
+}
+int l_synthError(lua_State* L) {
+    SynthSystem* s = synthsOf(L);
+    lua_pushstring(L, s ? s->lastError().c_str() : "");
+    return 1;
+}
+
 int l_addScore(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int n = static_cast<int>(luaL_optinteger(L, 1, 1));
@@ -1123,6 +1242,19 @@ void ScriptSystem::installApi() {
     }
 
     lua_setglobal(L, "game");
+
+    // The `synth` table: the Synth components, addressed by object id like
+    // game.playAudio. Its own table rather than more game.* names, because it
+    // is a small instrument API of its own (notes, dials, songs).
+    lua_newtable(L);
+    fn("play", l_synthPlay);          fn("stop", l_synthStop);
+    fn("noteOn", l_synthNoteOn);      fn("noteOff", l_synthNoteOff);
+    fn("set", l_synthSet);
+    fn("playMidi", l_synthPlayMidi);  fn("stopMidi", l_synthStopMidi);
+    fn("isPlaying", l_synthIsPlaying);
+    fn("setTempo", l_synthSetTempo);
+    fn("note", l_synthNote);          fn("lastError", l_synthError);
+    lua_setglobal(L, "synth");
 }
 
 std::string ScriptSystem::keyOf(int id, const std::string& file) {

@@ -24,6 +24,15 @@ add_library(fitzel STATIC
     src/ui/Gui.cpp
     src/audio/Audio.cpp
     src/audio/miniaudio_impl.cpp
+    # The modular synth: the sound-making primitives and the patch graph they
+    # run in. Part of the runtime, not the editor -- a shipped game plays the
+    # patches, it just cannot edit them.
+    src/audio/SynthDsp.cpp
+    src/audio/Synth.cpp
+    src/audio/SynthVoice.cpp
+    src/audio/SynthPoly.cpp
+    src/audio/SynthPlayer.cpp
+    src/audio/Midi.cpp
     src/asset/AssetId.cpp
     src/asset/AssetTypes.cpp
     src/asset/AssetDatabase.cpp

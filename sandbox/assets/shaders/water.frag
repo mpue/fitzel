@@ -11,6 +11,7 @@ uniform sampler2D uRefraction;
 uniform sampler2D uRefractionDepth; // scene depth behind the water
 uniform float uNear;
 uniform float uFar;
+uniform int   uOrtho;      // 1: orthographic view -- the depth buffer is linear already
 uniform float uFoamWidth; // world-ish depth over which shoreline foam fades
 uniform float uRainRings; // drop impacts: strength (0 = off)
 uniform float uRainDensity; // ...and how many land (0 = nothing falling)
@@ -70,6 +71,7 @@ float fbm(vec2 p) {
 // Window-space depth [0,1] -> linear eye distance.
 float linearDepth(float d) {
     float z = d * 2.0 - 1.0;
+    if (uOrtho == 1) return uNear + d * (uFar - uNear);
     return (2.0 * uNear * uFar) / (uFar + uNear - z * (uFar - uNear));
 }
 

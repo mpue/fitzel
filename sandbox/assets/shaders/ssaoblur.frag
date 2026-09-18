@@ -16,10 +16,12 @@ uniform sampler2D uDepth;  // full-res scene depth (same UVs)
 uniform vec2  uTexel;      // 1 / AO resolution
 uniform float uNear;
 uniform float uFar;
+uniform int   uOrtho;      // 1: orthographic view -- the depth buffer is linear already
 uniform float uDepthSigma; // metres of depth difference the blur tolerates
 
 float linearDepth(vec2 uv) {
     float d = texture(uDepth, uv).r * 2.0 - 1.0;
+    if (uOrtho == 1) return uNear + (d * 0.5 + 0.5) * (uFar - uNear);
     return (2.0 * uNear * uFar) / (uFar + uNear - d * (uFar - uNear));
 }
 

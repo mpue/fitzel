@@ -7,6 +7,8 @@
 
 #include <glm/glm.hpp>
 
+class SynthSystem;
+
 // The host bridge exposed to Lua scripts as the global `game` table. The sandbox
 // fills these callbacks and fields in before ticking scripts each frame; the
 // ScriptSystem's C functions call through them. Entity creation/removal is
@@ -266,6 +268,9 @@ struct ScriptHost {
     // game.stopAudio). No-ops on ids without an AudioSource.
     std::function<void(int)> playAudio;
     std::function<void(int)> stopAudio;
+    // The Synth components' players, for the `synth` table (synth.noteOn,
+    // synth.playMidi, ...). Null = every synth.* call is a no-op returning false.
+    SynthSystem* synths = nullptr;
 
     // --- Shared game state ----------------------------------------------------
     // Lua script environments are per-entity (isolated), so shared state like the

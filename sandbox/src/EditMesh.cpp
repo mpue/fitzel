@@ -1,11 +1,14 @@
 #include "EditMesh.hpp"
+#include "EditMeshDetail.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <unordered_map>
 
-namespace {
+// The helpers every operation is built from, shared with EditMeshTools.cpp (see
+// EditMeshDetail.hpp).
+namespace editmesh::detail {
 
 // Is `f` a usable index into a mesh with at least a triangle there?
 bool okFace(const EditMesh& m, int f) {
@@ -53,6 +56,12 @@ std::uint64_t edgeKey(int a, int b) {
     return (static_cast<std::uint64_t>(hi) << 32) | lo;
 }
 
+} // namespace editmesh::detail
+
+using namespace editmesh::detail;
+
+namespace {
+
 // One face of a loop cut: which quad, which of its four edges the cut crosses,
 // and which END of that edge `t` is measured from. That last one is the whole
 // bookkeeping of the walk -- neighbouring quads wind opposite ways round their
@@ -65,12 +74,14 @@ struct RingStep {
     int ref  = -1;  // the end of that edge `t` counts from
 };
 
+} // namespace
+
+namespace editmesh::detail {
+
 // Faces meeting at each edge, at most the two a surface can have. Built once per
 // loop cut: the mesh carries no adjacency of its own, and deriving it on demand
 // is cheaper in every sense than keeping a half-edge structure in step through
 // every operation above.
-using EdgeMap = std::unordered_map<std::uint64_t, std::pair<int, int>>;
-
 EdgeMap buildEdges(const EditMesh& m) {
     EdgeMap e;
     for (std::size_t f = 0; f < m.faces.size(); ++f) {
@@ -86,6 +97,10 @@ EdgeMap buildEdges(const EditMesh& m) {
     }
     return e;
 }
+
+} // namespace editmesh::detail
+
+namespace {
 
 // Walk the band one quad at a time, always leaving through the edge OPPOSITE the
 // one it came in by -- which is what makes the cut a straight line rather than a
@@ -157,6 +172,10 @@ std::vector<RingStep> loopRing(const EditMesh& m, int face, int dir) {
     return ring;
 }
 
+} // namespace
+
+namespace editmesh::detail {
+
 // Drop the corners no face uses any more and renumber the faces onto what is
 // left, carrying the paint weights with their corners. Returns old -> new index
 // (-1 for a corner that went).
@@ -187,7 +206,7 @@ std::vector<int> dropUnusedVerts(EditMesh& m) {
 // a row, and faces with fewer than three distinct corners. Squeezes the first
 // and drops the second -- materials and placements with them -- then the
 // corners nobody uses. Returns old -> new FACE index (-1 for a face that went).
-std::vector<int> dropCollapsedFaces(EditMesh& m, std::vector<int>* vertRemap = nullptr) {
+std::vector<int> dropCollapsedFaces(EditMesh& m, std::vector<int>* vertRemap) {
     m.syncFaceMat();
     m.syncFaceUv();
     std::vector<int> faceRemap(m.faces.size(), -1);
@@ -239,7 +258,7 @@ std::vector<int> uniqueVerts(const EditMesh& m, const std::vector<int>& idx) {
     return u;
 }
 
-} // namespace
+} // namespace editmesh::detail
 
 EditMesh EditMesh::box(const glm::vec3& h) {
     EditMesh m;
@@ -439,6 +458,12 @@ int subdivide(EditMesh& m, int face) {
 
 int loopLength(const EditMesh& m, int face, int dir) {
     return static_cast<int>(loopRing(m, face, dir).size());
+}
+
+std::vector<int> ringFaces(const EditMesh& m, int face, int dir) {
+    std::vector<int> out;
+    for (const RingStep& st : loopRing(m, face, dir)) out.push_back(st.face);
+    return out;
 }
 
 int loopCut(EditMesh& m, int face, int dir, float t) {

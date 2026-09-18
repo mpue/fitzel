@@ -31,6 +31,7 @@ uniform mat4  uInvViewProj;
 uniform sampler2D uDepth;
 uniform float uNear;
 uniform float uFar;
+uniform int   uOrtho;      // 1: orthographic view -- the depth buffer is linear already
 uniform float uFocusNear;   // metres: sharp up to here
 uniform float uFocusFar;    // metres: fully blurred beyond here
 uniform float uDofMax;      // max blur radius in pixels (0 = DOF off)
@@ -202,6 +203,7 @@ vec3 tonemapCurve(vec3 x) {
 // Eye-space distance from the depth buffer.
 float linearDepth(vec2 uv) {
     float d = texture(uDepth, uv).r * 2.0 - 1.0;
+    if (uOrtho == 1) return uNear + (d * 0.5 + 0.5) * (uFar - uNear);
     return (2.0 * uNear * uFar) / (uFar + uNear - d * (uFar - uNear));
 }
 // Blur amount 0..1 by distance (sharp foreground, blurred background).

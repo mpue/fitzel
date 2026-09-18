@@ -64,7 +64,10 @@ void main() {
     // World radius -> UV radius at this depth (vertical; x is corrected by aspect
     // below so the march stays a circle). Clamped so close geometry doesn't march
     // across half the screen and distant geometry still gets a few texels.
-    float projScale = 0.5 * uProjection[1][1] / max(-P.z, 1.0e-3);
+    // The clip w of P: -z under a perspective lens, 1 under an orthographic
+    // one, where a metre is the same size on screen at every depth.
+    float clipW     = uProjection[2][3] * P.z + uProjection[3][3];
+    float projScale = 0.5 * uProjection[1][1] / max(clipW, 1.0e-3);
     float radiusUv  = clamp(uRadius * projScale, 2.0 * texel.y, 0.08);
     vec2  aspectFix = vec2(size.y / size.x, 1.0);
 

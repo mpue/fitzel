@@ -43,6 +43,7 @@ struct Context {
     glm::vec3 cameraPos{0.0f};
     glm::vec3 cameraFront{0.0f, 0.0f, -1.0f};  // for the camera-relative nudge
     float     cameraFov = 60.0f;
+    float     orthoHalfH = 0.0f; // > 0: the view is orthographic, this tall (half)
 
     // Raycast the terrain under a viewport NDC point (main's roadPickTerrain),
     // and sample its height. Injected so this file stays free of the terrain.

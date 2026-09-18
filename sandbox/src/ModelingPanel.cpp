@@ -1,6 +1,7 @@
 #include "ModelingPanel.hpp"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -11,6 +12,7 @@
 #include <imgui.h>
 
 #include "Component.hpp"
+#include "Pictogram.hpp"
 #include "UiStyle.hpp"
 
 namespace modelui {
@@ -29,14 +31,6 @@ float em() { return ImGui::GetFontSize(); }
 // button gets -- so the rows line up and the targets stay large.
 float btnH() { return em() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f + 4.0f; }
 float smallH() { return ImGui::GetFrameHeight() + em() * 0.35f; }
-// Wide enough for the label's longest line, never narrower than `minEm` ems.
-ImVec2 fit(const char* label, float minEm, float h) {
-    const char*  end = std::strstr(label, "##");
-    const ImVec2 ts  = ImGui::CalcTextSize(label, end);
-    return ImVec2(std::max(ts.x + ImGui::GetStyle().FramePadding.x * 2.0f + em() * 0.6f,
-                           em() * minEm),
-                  h);
-}
 
 // The filter inside the face-material picker. One buffer: only one popup is open
 // at a time, and it starts empty each time so the picker never opens already
@@ -63,76 +57,41 @@ const MaterialDef* findMaterial(const PanelState& s, const fitzel::AssetId& id) 
 
 // --- Controls -----------------------------------------------------------------
 
-// A mode switch: filled when it is the current one.
-bool modeButton(const char* label, bool on, const char* tip) {
-    if (on) {
-        ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0.85f, 0.52f, 0.12f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.95f, 0.60f, 0.16f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1.00f, 0.66f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text,          ImVec4(0.08f, 0.06f, 0.03f, 1.0f));
-    }
-    const bool clicked = ImGui::Button(label, fit(label, 3.6f, btnH()));
-    if (on) ImGui::PopStyleColor(4);
-    ImGui::SetItemTooltip("%s", tip);
-    return clicked;
+// A mode switch, drawn as what it picks: the corners of a box, one of its
+// edges, one of its faces. The one that is on sits on the accent. (It used to
+// be a word on a button -- "Vertex" -- which is jargon to anyone who has not
+// modelled before, where three pictures of the same box are not.)
+bool modeButton(const char* id, picto::Icon icon, bool on, const char* tip) {
+    return picto::button(id, icon, tip, true, on, btnH());
 }
 
-// An amount, changed by a pair of big buttons rather than by dragging: a value
-// you can only approach with a steady hand is a value this editor does not ask
-// for (see the panel header). The steps are the round numbers one actually
-// builds with, so "half a metre" is one click from "a quarter", not a slide.
-void stepper(const char* id, float& v, float step, float lo, float hi, const char* fmt,
-             float width) {
-    ImGui::PushID(id);
+// The amount controls are ui::stepper (UiStyle.hpp): the same number field the
+// rest of the editor uses, and the same rule -- clicks, never a drag.
+using ui::stepper;
+using ui::stepperWidth;
+
+// One operation: a picture of what it does, and under it the amount it
+// applies. Both the same width, so a row of operations reads as columns rather
+// than as a heap. `amount` may be null for an operation that has no number
+// (Subdivide, Delete). `badge`, when given, is a small number in the corner --
+// how many faces a loop cut would split, which is worth seeing before pressing.
+bool opColumn(const char* id, picto::Icon icon, bool enabled, const char* tip,
+              const Op& previewOp, float* amount, float step, float lo, float hi,
+              const char* fmt, const char* badge = nullptr) {
+    const float w = std::max(btnH(), amount ? stepperWidth(fmt) : 0.0f);
     ImGui::BeginGroup();
-    const ImVec2 bs(std::max(em() * 1.6f, 26.0f), smallH());
-    if (ImGui::Button("-", bs)) v = std::max(lo, v - step);
-    ImGui::SetItemTooltip("%.2f less", step);
-    ImGui::SameLine(0.0f, 3.0f);
-    // The value between them reads as a field, not as a third target: it is
-    // drawn in the frame colour and does nothing when pressed.
-    char buf[48];
-    std::snprintf(buf, sizeof buf, fmt, v);
-    const ImVec4 frame = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
-    ImGui::PushStyleColor(ImGuiCol_Button, frame);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, frame);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, frame);
-    ImGui::Button(buf, ImVec2(std::max(width - 2.0f * bs.x - 6.0f, em() * 2.5f), bs.y));
-    ImGui::PopStyleColor(3);
-    ImGui::SameLine(0.0f, 3.0f);
-    if (ImGui::Button("+", bs)) v = std::min(hi, v + step);
-    ImGui::SetItemTooltip("%.2f more", step);
-    ImGui::EndGroup();
-    ImGui::PopID();
-}
-
-// How wide a stepper has to be for its number to fit whatever the format puts
-// in it -- "0.50 m" clipped to "0.50 n" is the kind of read-out that sends you
-// looking for a bug in the geometry.
-float stepperWidth(const char* fmt) {
-    char wide[48];
-    std::snprintf(wide, sizeof wide, fmt, -8.88f);
-    return 2.0f * std::max(em() * 1.6f, 26.0f) + 6.0f +
-           ImGui::CalcTextSize(wide).x + ImGui::GetStyle().FramePadding.x * 2.0f +
-           em() * 0.4f;
-}
-
-// One operation: the button, and under it the amount it applies. Both the same
-// width, so a row of operations reads as columns rather than as a heap. `amount`
-// may be null for an operation that has no number (Subdivide, Delete).
-bool opColumn(const char* label, bool enabled, const char* tip, const Op& previewOp,
-              float* amount, float step, float lo, float hi, const char* fmt) {
-    const float w = std::max(fit(label, 4.6f, 0.0f).x,
-                             amount ? stepperWidth(fmt) : 0.0f);
-    ImGui::BeginGroup();
-    ImGui::BeginDisabled(!enabled);
-    const bool clicked = ImGui::Button(label, ImVec2(w, btnH()));
-    ImGui::EndDisabled();
+    const bool clicked = picto::buttonSized(id, icon, tip, enabled, false, ImVec2(w, btnH()));
     if (enabled && previewOp && ImGui::IsItemHovered()) modeltools::preview(previewOp);
-    ImGui::SetItemTooltip("%s", tip);
-    if (amount) stepper(label, *amount, step, lo, hi, fmt, w);
+    if (badge && *badge) {
+        const ImVec2 mx = ImGui::GetItemRectMax();
+        const ImVec2 ts = ImGui::CalcTextSize(badge);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(mx.x - ts.x - 4.0f, mx.y - ts.y - 2.0f),
+            ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled), badge);
+    }
+    if (amount) stepper(id, *amount, step, lo, hi, fmt, w);
     ImGui::EndGroup();
-    return clicked && enabled;
+    return clicked;
 }
 
 void gap() { ImGui::SameLine(0.0f, 14.0f); }
@@ -149,6 +108,10 @@ void drawPanel(const PanelState& s) {
     ImGui::SetNextWindowPos(ImVec2(s.viewMin.x + 16.0f, s.viewMin.y + 56.0f),
                             ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.94f);
+    // A floor under the width. The window sizes itself to its content, and with
+    // pictures instead of words the content can be one small button -- which
+    // left the explaining text beside it wrapping after every word.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(em() * 22.0f, 0.0f), ImVec2(FLT_MAX, FLT_MAX));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 10.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(5.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
@@ -179,7 +142,10 @@ void drawPanel(const PanelState& s) {
                          "but with corners, edges and faces you can shape.\n"
                          "Nothing else about it changes.");
                 ImGui::Spacing();
-                if (ImGui::Button("Make editable", fit("Make editable", 8.0f, btnH())) &&
+                if (picto::button("makeedit", picto::Icon::MakeEditable,
+                                  "Make editable\nThe same box, with corners, edges\n"
+                                  "and faces you can shape",
+                                  true, false, btnH()) &&
                     s.convert)
                     pending = s.convert;
             } else {
@@ -213,49 +179,45 @@ void drawPanel(const PanelState& s) {
         };
 
         // --- What is being picked ------------------------------------------
-        if (modeButton("Vertex", sel.mode == Mode::Vertex,
-                       "Pick corners. Move them with the gizmo (Q/W/E) or the\n"
+        if (modeButton("vertex", picto::Icon::ModeVertex, sel.mode == Mode::Vertex,
+                       "Corners\nPick corners. Move them with the gizmo (Q/W/E) or the\n"
                        "arrows below; merge or delete them."))
             pending = [&s, mc] { modeltools::setMode(s.sel, Mode::Vertex, mc->mesh, s.faceSel); };
         ImGui::SameLine();
-        if (modeButton("Edge", sel.mode == Mode::Edge,
-                       "Pick edges. Split, collapse or dissolve them, or run a\n"
+        if (modeButton("edge", picto::Icon::ModeEdge, sel.mode == Mode::Edge,
+                       "Edges\nPick edges. Split, collapse or dissolve them, or run a\n"
                        "loop cut across one."))
             pending = [&s, mc] { modeltools::setMode(s.sel, Mode::Edge, mc->mesh, s.faceSel); };
         ImGui::SameLine();
-        if (modeButton("Face", sel.mode == Mode::Face,
-                       "Pick a face. Extrude, inset, scale, cut or delete it,\n"
+        if (modeButton("face", picto::Icon::ModeFace, sel.mode == Mode::Face,
+                       "Faces\nPick a face. Extrude, inset, scale, cut or delete it,\n"
                        "and give it a material of its own."))
             pending = [&s, mc] { modeltools::setMode(s.sel, Mode::Face, mc->mesh, s.faceSel); };
 
         gap();
-        if (modeButton("Add", sel.additive,
-                       "While this is on, a click ADDS to the selection (and a\n"
-                       "second click on the same element takes it out again)\n"
-                       "instead of replacing it. Shift+click does the same once."))
+        if (modeButton("add", picto::Icon::SelectAdd, sel.additive,
+                       "Add to the selection\nWhile this is on, a click ADDS to what is\n"
+                       "picked (a second click on the same element takes it out\n"
+                       "again) instead of replacing it. Shift+click does the same once."))
             sel.additive = !sel.additive;
         ImGui::SameLine();
-        ImGui::BeginDisabled(sel.mode == Mode::Face);
-        if (ImGui::Button("All", fit("All", 2.8f, btnH()))) {
-            pending = [&s, mc] {
-                modeltools::Selection& ss = s.sel;
-                ss.clear();
-                if (ss.mode == Mode::Vertex)
-                    for (int i = 0; i < static_cast<int>(mc->mesh.verts.size()); ++i)
-                        ss.verts.push_back(i);
-                else
-                    for (const editmesh::EdgeInfo& e : editmesh::edges(mc->mesh))
-                        ss.edges.push_back({std::min(e.a, e.b), std::max(e.a, e.b)});
-            };
-        }
-        ImGui::EndDisabled();
-        ImGui::SetItemTooltip("Select every corner / every edge.");
+        if (picto::button("all", picto::Icon::SelectAll,
+                          "Pick everything\nEvery corner, every edge or every face.",
+                          true, false, btnH()))
+            pending = [&s, mc] { modeltools::selectAll(s.sel, mc->mesh, s.faceSel); };
         ImGui::SameLine();
-        if (ImGui::Button("None", fit("None", 2.8f, btnH()))) {
+        if (picto::button("grow", picto::Icon::Grow,
+                          "Grow the selection\nAdd the ring around what is picked: the\n"
+                          "neighbouring faces, corners or edges. A few presses\n"
+                          "pick a whole side without aiming at every piece.",
+                          sel.any() || face >= 0, false, btnH()))
+            pending = [&s, mc] { modeltools::grow(s.sel, mc->mesh, s.faceSel); };
+        ImGui::SameLine();
+        if (picto::button("none", picto::Icon::SelectNone,
+                          "Let go of the selection (Esc does too)", true, false, btnH())) {
             sel.clear();
             s.faceSel = -1;
         }
-        ImGui::SetItemTooltip("Let go of the selection (Esc does too).");
 
         // What is picked, and what the mesh is made of.
         {
@@ -268,6 +230,9 @@ void drawPanel(const PanelState& s) {
                 std::snprintf(what, sizeof what, "%d edge%s picked",
                               static_cast<int>(sel.edges.size()),
                               sel.edges.size() == 1 ? "" : "s");
+            else if (modeltools::selectedFaces(sel, m, face).size() > 1)
+                std::snprintf(what, sizeof what, "%d faces picked",
+                              static_cast<int>(modeltools::selectedFaces(sel, m, face).size()));
             else if (m.validFace(face))
                 std::snprintf(what, sizeof what, "face %d picked (%d corners)", face,
                               static_cast<int>(m.faces[face].size()));
@@ -281,23 +246,29 @@ void drawPanel(const PanelState& s) {
         // --- What can be done with it ---------------------------------------
         char lbl[64];
         if (sel.mode == Mode::Face) {
-            const bool have = m.validFace(face);
-            const bool quad = have && m.faces[face].size() == 4;
+            // Every operation here takes all the picked faces; the active one
+            // (the last clicked) goes first and is the one that stays active.
+            const std::vector<int> fs = modeltools::selectedFaces(sel, m, face);
+            const bool have = !fs.empty();
+            const bool quad = m.validFace(face) && m.faces[face].size() == 4;
+            bool anyQuad = false;
+            for (int f : fs) anyQuad = anyQuad || m.faces[f].size() == 4;
 
             const float ex = am.extrude;
-            Op opEx = [face, ex](EditMesh& mm) { return editmesh::extrude(mm, face, ex); };
-            if (opColumn("Extrude", have,
-                         "Pull the face out by the amount below and wall in the\n"
+            Op opEx = [fs, ex](EditMesh& mm) { return editmesh::extrudeFaces(mm, fs, ex); };
+            if (opColumn("extrude", picto::Icon::Extrude, have,
+                         "Extrude\nPull the face out by the amount below and wall in the\n"
                          "gap. The new face keeps the selection, so pressing it\n"
-                         "again builds another step. A negative amount pushes in.",
+                         "again builds another step. A negative amount pushes in.\n"
+                         "Several faces that touch go out together, as one piece.",
                          opEx, &am.extrude, 0.05f, -20.0f, 20.0f, "%.2f m"))
                 run("Extrude", opEx, nullptr);
             ImGui::SameLine();
 
             const float mv = am.move;
-            Op opMv = [face, mv](EditMesh& mm) { return editmesh::moveFace(mm, face, mv); };
-            if (opColumn("Move", have,
-                         "Slide the face along its normal without adding anything:\n"
+            Op opMv = [fs, mv](EditMesh& mm) { return editmesh::moveFaces(mm, fs, mv); };
+            if (opColumn("move", picto::Icon::MoveNormal, have,
+                         "Move\nSlide the face along its normal without adding anything:\n"
                          "the neighbours stretch to follow, so the whole shape\n"
                          "grows instead.",
                          opMv, &am.move, 0.05f, -20.0f, 20.0f, "%.2f m"))
@@ -305,20 +276,22 @@ void drawPanel(const PanelState& s) {
             ImGui::SameLine();
 
             const float in = am.inset;
-            Op opIn = [face, in](EditMesh& mm) { return editmesh::inset(mm, face, in); };
-            if (opColumn("Inset", have,
-                         "Lay a border of that width inside the face and select\n"
-                         "the middle. Inset, then extrude inwards: a window.",
+            Op opIn = [fs, in](EditMesh& mm) { return editmesh::insetFaces(mm, fs, in); };
+            if (opColumn("inset", picto::Icon::Inset, have,
+                         "Inset\nLay a border of that width inside the face and select\n"
+                         "the middle. Inset, then extrude inwards: a window.\n"
+                         "Several faces get a border each.",
                          opIn, &am.inset, 0.05f, 0.0f, 10.0f, "%.2f m"))
                 run("Inset", opIn, nullptr);
             ImGui::SameLine();
 
             const float sc = am.scale;
-            Op opSc = [face, sc](EditMesh& mm) { return editmesh::scaleFace(mm, face, sc); };
-            if (opColumn("Scale", have,
-                         "Scale the face about its own centre. Shrinking the top\n"
+            Op opSc = [fs, sc](EditMesh& mm) { return editmesh::scaleFaces(mm, fs, sc); };
+            if (opColumn("scale", picto::Icon::ScaleFace, have,
+                         "Scale\nScale the face about its own centre. Shrinking the top\n"
                          "of a box gives a frustum -- the corners are shared, so\n"
-                         "the sides come along.",
+                         "the sides come along. Faces that do not touch each\n"
+                         "scale about their own centre.",
                          opSc, &am.scale, 0.05f, 0.0f, 4.0f, "%.2fx"))
                 run("Scale face", opSc, nullptr);
 
@@ -336,42 +309,55 @@ void drawPanel(const PanelState& s) {
             const int   dir = am.loopDir;
             const float at  = am.loopAt;
             const int   n   = g_ringLen[dir & 1];
-            std::snprintf(lbl, sizeof lbl, "Loop cut\n%d face%s", n, n == 1 ? "" : "s");
+            std::snprintf(lbl, sizeof lbl, "%d", n);
             Op opLc = [face, dir, at](EditMesh& mm) {
                 return editmesh::loopCut(mm, face, dir, at);
             };
-            if (opColumn(lbl, quad && n > 0,
+            if (opColumn("loopcut", dir ? picto::Icon::LoopCutV : picto::Icon::LoopCutH,
+                         quad && n > 0,
+                         "Loop cut (the number: how many faces it splits)\n"
                          "Run a new edge right round the band this face lies in\n"
                          "and split every quad it crosses -- a storey line on a\n"
                          "tower, a joint to bend a wall at. Only quads.\n"
                          "The number below is where along the band it falls.",
-                         opLc, &am.loopAt, 0.05f, 0.05f, 0.95f, "cut at %.2f"))
+                         opLc, &am.loopAt, 0.05f, 0.05f, 0.95f, "cut at %.2f", lbl))
                 run("Loop cut", opLc, nullptr);
             ImGui::SameLine();
-            std::snprintf(lbl, sizeof lbl, "Turn cut\n%s", dir ? "across" : "along");
             Op opLt = [face, dir, at](EditMesh& mm) {
                 return editmesh::loopCut(mm, face, dir ^ 1, at);
             };
-            if (opColumn(lbl, quad,
-                         "Swap which of the two bands through this face the cut\n"
+            // Drawn as the OTHER direction: what pressing it would switch to.
+            if (opColumn("turncut", dir ? picto::Icon::LoopCutH : picto::Icon::LoopCutV, quad,
+                         "Turn the cut\nSwap which of the two bands through this face the cut\n"
                          "runs in. The preview shows the other one.",
                          opLt, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 am.loopDir ^= 1;
             ImGui::SameLine();
-            Op opSd = [face](EditMesh& mm) { return editmesh::subdivide(mm, face); };
-            if (opColumn("Subdivide\ninto four", quad, "Split the quad into four.",
+            Op opSd = [fs](EditMesh& mm) { return editmesh::subdivideFaces(mm, fs); };
+            if (opColumn("subdivide", picto::Icon::Subdivide, anyQuad,
+                         "Subdivide\nSplit each picked quad into four.",
                          opSd, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Subdivide", opSd, nullptr);
             ImGui::SameLine();
-            Op opDf = [face](EditMesh& mm) { return editmesh::deleteFace(mm, face); };
-            if (opColumn("Delete\nface", have, "Remove the face, leaving a hole.",
+            Op opFl = [fs](EditMesh& mm) { return editmesh::flipFaces(mm, fs); };
+            if (opColumn("flip", picto::Icon::Flip, have,
+                         "Flip\nTurn the face inside out: its front becomes its back.\n"
+                         "The cure for a face that is dark, or invisible, from\n"
+                         "the side you look at it from.",
+                         opFl, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Flip faces", opFl, nullptr);
+            ImGui::SameLine();
+            Op opDf = [fs](EditMesh& mm) { editmesh::deleteFaces(mm, fs); return -1; };
+            if (opColumn("delface", picto::Icon::Trash, have,
+                         "Delete\nRemove the picked faces, leaving holes (Del does too).\n"
+                         "Fill a hole again from the edge mode.",
                          opDf, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
-                run("Delete face", opDf, nullptr);
+                run("Delete faces", opDf, [&s](int) { s.sel.clear(); });
         } else if (sel.mode == Mode::Vertex) {
             const std::vector<int> vs = sel.verts;
             Op opMg = [vs](EditMesh& mm) { return editmesh::mergeVerts(mm, vs); };
-            if (opColumn("Merge\ncorners", vs.size() >= 2,
-                         "Collapse the picked corners into one, at their centre.\n"
+            if (opColumn("merge", picto::Icon::Merge, vs.size() >= 2,
+                         "Merge corners\nCollapse the picked corners into one, at their centre.\n"
                          "Faces that shrink to nothing go with them.",
                          opMg, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Merge corners", opMg, [&s](int r) {
@@ -379,9 +365,48 @@ void drawPanel(const PanelState& s) {
                     if (r >= 0) s.sel.verts.push_back(r);
                 });
             ImGui::SameLine();
+            const float wd = am.weld;
+            Op opWd = [vs, wd](EditMesh& mm) { editmesh::weldVerts(mm, vs, wd); return -1; };
+            if (opColumn("weld", picto::Icon::Weld, vs.size() >= 2,
+                         "Weld\nMerge those of the picked corners that lie closer\n"
+                         "together than the distance below -- the tidy-up after\n"
+                         "moving corners onto each other. Pick all first to\n"
+                         "weld the whole mesh.",
+                         opWd, &am.weld, 0.005f, 0.0f, 1.0f, "%.3f m"))
+                run("Weld corners", opWd, [&s](int) { s.sel.clear(); });
+            ImGui::SameLine();
+            Op opCn = [vs](EditMesh& mm) {
+                return vs.size() == 2 ? editmesh::connectVerts(mm, vs[0], vs[1]) : -1;
+            };
+            // Only when some face has both corners and they are not already
+            // neighbours on it -- otherwise there is nothing to cut.
+            bool canConnect = false;
+            if (vs.size() == 2)
+                for (const std::vector<int>& fv : m.faces) {
+                    const auto pa = std::find(fv.begin(), fv.end(), vs[0]);
+                    const auto pb = std::find(fv.begin(), fv.end(), vs[1]);
+                    if (pa == fv.end() || pb == fv.end()) continue;
+                    const int n = static_cast<int>(fv.size());
+                    const int g = (static_cast<int>(pb - pa) + n) % n;
+                    if (g != 1 && g != n - 1) canConnect = true;
+                }
+            if (opColumn("connect", picto::Icon::Connect, canConnect,
+                         "Connect\nDraw a new edge between two corners of the same face,\n"
+                         "cutting it in two. Pick exactly two corners.",
+                         opCn, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Connect corners", opCn, nullptr);
+            ImGui::SameLine();
+            Op opMf = [vs](EditMesh& mm) { editmesh::makeFace(mm, vs); return -1; };
+            if (opColumn("makeface", picto::Icon::MakeFace, vs.size() >= 3,
+                         "Make a face\nClose the picked corners with a new face. The order\n"
+                         "you picked them in does not matter; the face turns to\n"
+                         "match the faces around it.",
+                         opMf, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Make face", opMf, nullptr);
+            ImGui::SameLine();
             Op opDv = [vs](EditMesh& mm) { editmesh::deleteVerts(mm, vs); return -1; };
-            if (opColumn("Delete\ncorners", !vs.empty(),
-                         "Remove the corners and every face that uses them.",
+            if (opColumn("delcorners", picto::Icon::Trash, !vs.empty(),
+                         "Delete corners\nRemove the corners and every face that uses them.",
                          opDv, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Delete corners", opDv, [&s](int) { s.sel.clear(); });
         } else {
@@ -394,8 +419,8 @@ void drawPanel(const PanelState& s) {
                 for (const auto& e : es) editmesh::splitEdge(mm, e.first, e.second, 0.5f);
                 return -1;
             };
-            if (opColumn("Split", !es.empty(),
-                         "Put a new corner in the middle of each picked edge.\n"
+            if (opColumn("split", picto::Icon::SplitEdge, !es.empty(),
+                         "Split\nPut a new corner in the middle of each picked edge.\n"
                          "The two halves stay picked, ready to be moved.",
                          opSp, nullptr, 0.0f, 0.0f, 0.0f, nullptr)) {
                 pending = [&s, es]() {
@@ -416,29 +441,83 @@ void drawPanel(const PanelState& s) {
             std::vector<int> ends;
             for (const auto& e : es) { ends.push_back(e.first); ends.push_back(e.second); }
             Op opCo = [ends](EditMesh& mm) { return editmesh::mergeVerts(mm, ends); };
-            if (opColumn("Collapse", !es.empty(),
-                         "Shrink the picked edges to a single corner.",
+            if (opColumn("collapse", picto::Icon::Collapse, !es.empty(),
+                         "Collapse\nShrink the picked edges to a single corner.",
                          opCo, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Collapse edge", opCo, [&s](int) { s.sel.clear(); });
             ImGui::SameLine();
             Op opDs = [ea, eb](EditMesh& mm) { return editmesh::dissolveEdge(mm, ea, eb); };
-            if (opColumn("Dissolve", one,
-                         "Remove the edge by joining the two faces either side of\n"
+            if (opColumn("dissolve", picto::Icon::Dissolve, one,
+                         "Dissolve\nRemove the edge by joining the two faces either side of\n"
                          "it into one. One edge at a time.",
                          opDs, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Dissolve edge", opDs, [&s](int) { s.sel.clear(); });
             ImGui::SameLine();
             const int n = one ? editmesh::loopLengthEdge(m, ea, eb) : 0;
-            std::snprintf(lbl, sizeof lbl, "Loop cut\n%d face%s", n, n == 1 ? "" : "s");
+            std::snprintf(lbl, sizeof lbl, "%d", n);
             const float at = am.loopAt;
             Op opLc = [ea, eb, at](EditMesh& mm) {
                 return editmesh::loopCutEdge(mm, ea, eb, at);
             };
-            if (opColumn(lbl, n > 0,
+            if (opColumn("edgeloop", picto::Icon::LoopCutV, n > 0,
+                         "Loop cut (the number: how many faces it splits)\n"
                          "Run a new edge right round the mesh, crossing this one.\n"
                          "The number below says where along it the cut falls.",
-                         opLc, &am.loopAt, 0.05f, 0.05f, 0.95f, "cut at %.2f"))
+                         opLc, &am.loopAt, 0.05f, 0.05f, 0.95f, "cut at %.2f", lbl))
                 run("Loop cut", opLc, [&s](int) { s.sel.clear(); });
+
+            ImGui::Spacing();
+            const float bw   = am.bevel;
+            const int   segs = static_cast<int>(std::lround(am.bevelSegs));
+            Op opBv = [es, bw, segs](EditMesh& mm) {
+                editmesh::bevelEdges(mm, es, bw, segs);
+                return -1;
+            };
+            if (opColumn("bevel", picto::Icon::Bevel, !es.empty(),
+                         "Bevel\nCut the picked edges back into a strip of the width\n"
+                         "below: flat with one segment, rounded with more. The\n"
+                         "width is held under half the shortest edge beside it.\n"
+                         "Pick all edges first to round off a whole box.",
+                         opBv, &am.bevel, 0.02f, 0.01f, 5.0f, "%.2f m"))
+                run("Bevel", opBv, [&s](int) { s.sel.clear(); });
+            ImGui::SameLine();
+            {
+                // How round: a stepper under a caption rather than a second
+                // button -- it is the bevel's setting, not an operation.
+                const float w = stepperWidth("%.0f seg");
+                ImGui::BeginGroup();
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                ImGui::Dummy(ImVec2(w, btnH()));
+                const char* cap = segs > 1 ? "rounded" : "flat";
+                const ImVec2 ts = ImGui::CalcTextSize(cap);
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (btnH() - ts.y) * 0.5f),
+                    ImGui::GetColorU32(ImGuiCol_TextDisabled), cap);
+                ImGui::SetItemTooltip("Bevel segments\n1 cuts a flat chamfer, more round it off.");
+                stepper("bevelsegs", am.bevelSegs, 1.0f, 1.0f, 8.0f, "%.0f seg", w);
+                ImGui::EndGroup();
+            }
+            ImGui::SameLine();
+            std::vector<int> endsMf;
+            for (const auto& e : es) { endsMf.push_back(e.first); endsMf.push_back(e.second); }
+            Op opMf = [endsMf](EditMesh& mm) { editmesh::makeFace(mm, endsMf); return -1; };
+            if (opColumn("makefaceedge", picto::Icon::MakeFace, es.size() >= 2,
+                         "Make a face\nClose the picked edges with a new face -- pick the two\n"
+                         "opposite edges of a gap to bridge it.",
+                         opMf, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Make face", opMf, [&s](int) { s.sel.clear(); });
+            ImGui::SameLine();
+            Op opFh = [ea, eb](EditMesh& mm) { editmesh::fillHole(mm, ea, eb); return -1; };
+            bool border = false;
+            if (one)
+                for (const editmesh::EdgeInfo& e : editmesh::edges(m))
+                    if (e.f1 < 0 && std::min(e.a, e.b) == ea && std::max(e.a, e.b) == eb)
+                        border = true;
+            if (opColumn("fillhole", picto::Icon::FillHole, border,
+                         "Fill the hole\nClose the hole this edge runs along with one face. One\n"
+                         "edge of its rim is enough; the whole rim is followed.",
+                         opFh, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
+                run("Fill hole", opFh, [&s](int) { s.sel.clear(); });
         }
 
         // --- Nudge: exact steps along the world axes -------------------------
@@ -448,13 +527,28 @@ void drawPanel(const PanelState& s) {
         ImGui::Spacing();
         const std::vector<int> act = modeltools::activeVerts(sel, m, face);
         ImGui::BeginDisabled(act.empty());
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Nudge");
+        {
+            // Not a word but the four-way arrow: "move it by a step".
+            const float  ps = smallH();
+            const ImVec2 p  = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(ps, ps));
+            picto::draw(ImGui::GetWindowDrawList(), picto::Icon::Nudge,
+                        ImVec2(p.x + ps * 0.5f, p.y + ps * 0.5f), ps * 0.36f,
+                        ImGui::GetColorU32(act.empty() ? ImGuiCol_TextDisabled : ImGuiCol_Text));
+            ImGui::SetItemTooltip("Nudge: move what is picked by exactly the step");
+        }
         ImGui::SameLine();
         stepper("nudge", am.nudge, 0.05f, 0.01f, 5.0f, "%.2f m", stepperWidth("%.2f m"));
         ImGui::SameLine(0.0f, 12.0f);
 
         static const char*  kAxis[6]    = {"-X", "+X", "-Y", "+Y", "-Z", "+Z"};
+        // An arrow per direction, in the axis's colour. X and Y are the screen's
+        // own left/right and down/up; Z has no direction on a flat screen, so it
+        // is drawn the way depth is drawn on the box icons: towards you is down
+        // and to the left, away is up and to the right.
+        static const picto::Icon kArrow[6] = {picto::Icon::ArrowLeft, picto::Icon::ArrowRight,
+                                              picto::Icon::ArrowDown, picto::Icon::ArrowUp,
+                                              picto::Icon::ArrowIn,   picto::Icon::ArrowOut};
         static const ImVec4 kAxisCol[3] = {ImVec4(0.75f, 0.25f, 0.25f, 1.0f),
                                            ImVec4(0.30f, 0.62f, 0.25f, 1.0f),
                                            ImVec4(0.25f, 0.42f, 0.80f, 1.0f)};
@@ -472,11 +566,13 @@ void drawPanel(const PanelState& s) {
             const ImVec4& ac = kAxisCol[k / 2];
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(ac.x, ac.y, ac.z, 0.55f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ac);
-            const bool clicked = ImGui::Button(kAxis[k], fit("+X", 2.8f, smallH()));
+            char tip[64];
+            std::snprintf(tip, sizeof tip, "%s %.2f m\nMove what is picked along world %s",
+                          kAxis[k], am.nudge, kAxis[k]);
+            const bool clicked = picto::buttonSized(kAxis[k], kArrow[k], tip, !act.empty(),
+                                                    false, ImVec2(smallH() * 1.25f, smallH()));
             ImGui::PopStyleColor(2);
             if (!act.empty() && ImGui::IsItemHovered()) modeltools::preview(op);
-            ImGui::SetItemTooltip("Move what is picked %.2f m along world %s.",
-                                  am.nudge, kAxis[k]);
             if (clicked && !act.empty()) run("Nudge", op, nullptr);
         }
         ImGui::EndDisabled();
@@ -527,10 +623,15 @@ void drawPanel(const PanelState& s) {
                                   "from the Assets browser onto a face in the viewport.");
             if (md) {
                 ImGui::SameLine();
-                if (ImGui::Button("Edit") && s.editMaterial) s.editMaterial(cur);
-                ImGui::SetItemTooltip("Open this material in the Materials panel.");
+                if (picto::button("editmat", picto::Icon::Pencil,
+                                  "Edit this material\n(opens it in the Materials panel)",
+                                  true, false, ImGui::GetFrameHeight()) &&
+                    s.editMaterial)
+                    s.editMaterial(cur);
                 ImGui::SameLine();
-                if (ImGui::Button("Back to the object's")) {
+                if (picto::button("backmat", picto::Icon::Undo,
+                                  "Back to the object's own material", true, false,
+                                  ImGui::GetFrameHeight())) {
                     wantSet = true;
                     wantId  = fitzel::AssetId{};
                 }
@@ -551,8 +652,9 @@ void drawPanel(const PanelState& s) {
 
         // The one line that is worth having on screen rather than in a tooltip.
         ui::hint(sel.mode == Mode::Face
-                     ? "Click a face in the viewport. The gizmo (Q/W/E) drags its\n"
-                       "corners; Esc hands it back to the whole object."
+                     ? "Click a face in the viewport (Shift+click, or the pointer\n"
+                       "with the plus, adds more). The gizmo (Q/W/E) drags them;\n"
+                       "Del removes them; Esc hands it back to the whole object."
                      : sel.mode == Mode::Vertex
                            ? "Click corners in the viewport. The gizmo (Q/W/E) moves\n"
                              "every one that is picked; Del removes them."
@@ -562,11 +664,12 @@ void drawPanel(const PanelState& s) {
         // Outside every read of the mesh: applying this runs host code that
         // re-centres the geometry the widgets above were drawing from.
         if (wantSet && s.edit) {
-            const fitzel::AssetId id = wantId;
-            const int             f  = face;
-            pending = [&s, f, id]() {
-                s.edit([f, id](MeshComponent& comp) {
-                    comp.mesh.setFaceMaterial(f, id);
+            const fitzel::AssetId  id = wantId;
+            const std::vector<int> fs = modeltools::selectedFaces(sel, m, face);
+            const int              f  = face;
+            pending = [&s, fs, f, id]() {
+                s.edit([fs, f, id](MeshComponent& comp) {
+                    for (int k : fs) comp.mesh.setFaceMaterial(k, id);
                     return f;
                 }, "Face material");
             };

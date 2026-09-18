@@ -1,6 +1,7 @@
 #include "fitzel/scene/Camera.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -16,7 +17,21 @@ glm::mat4 Camera::viewMatrix() const {
 }
 
 glm::mat4 Camera::projectionMatrix(float aspect) const {
-    return glm::perspective(glm::radians(m_fovDegrees), aspect, m_near, m_far);
+    return projectionMatrix(aspect, m_near, m_far);
+}
+
+glm::mat4 Camera::projectionMatrix(float aspect, float nearZ, float farZ) const {
+    if (m_ortho) {
+        const float h = m_orthoHalfH, w = m_orthoHalfH * aspect;
+        return glm::ortho(-w, w, -h, h, nearZ, farZ);
+    }
+    return glm::perspective(glm::radians(m_fovDegrees), aspect, nearZ, farZ);
+}
+
+float Camera::metresPerPixel(float dist, float viewportH) const {
+    const float span = m_ortho ? 2.0f * m_orthoHalfH
+                               : 2.0f * dist * std::tan(glm::radians(m_fovDegrees) * 0.5f);
+    return span / std::max(viewportH, 1.0f);
 }
 
 void Camera::processKeyboard(Direction dir, float deltaSeconds) {

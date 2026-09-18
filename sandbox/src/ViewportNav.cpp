@@ -158,6 +158,21 @@ void Nav::finishGlide(fitzel::Camera& cam) {
     m_glide = false;
 }
 
+void Nav::toggleOrtho(fitzel::Camera& cam, const glm::vec3& piv) {
+    const float halfTan = std::tan(glm::radians(std::max(cam.fov(), 1.0f) * 0.5f));
+    const float dist    = std::max(glm::dot(piv - cam.position(), cam.front()), 0.5f);
+    m_ortho = !m_ortho;
+    if (m_ortho) {
+        cam.setOrthoHalfHeight(dist * halfTan);
+    } else {
+        // Back to the lens: step along the view until the pivot is framed the
+        // way the zoom left it. Only ever as far as the zoom went -- an ortho
+        // view never zoomed hands back exactly the perspective one it came from.
+        const float want = cam.orthoHalfHeight() / halfTan;
+        cam.setPosition(cam.position() + cam.front() * (dist - want));
+    }
+}
+
 void Nav::update(fitzel::Camera& cam, const fitzel::Input& in, const Env& env, float dt) {
     // Looking around by hand ends the standard view -- both the glide, which is
     // now fighting the mouse over the same two angles, and the claim in the
@@ -190,10 +205,8 @@ void Nav::update(fitzel::Camera& cam, const fitzel::Input& in, const Env& env, f
             // One pixel of drag moves the world under the cursor by one pixel's
             // worth of world AT THE PIVOT'S DEPTH. That is what makes a pan feel
             // like dragging the scene rather than nudging a camera: whatever you
-            // grabbed stays under the pointer.
-            const float wpp = 2.0f * dist *
-                              std::tan(glm::radians(std::max(cam.fov(), 1.0f) * 0.5f)) /
-                              std::max(env.viewportH, 1.0f);
+            // grabbed stays under the pointer. (In ortho every depth agrees.)
+            const float wpp = cam.metresPerPixel(dist, env.viewportH);
             // The scene follows the mouse, so the camera goes the other way.
             // (Input::mouseDelta already has y pointing up.)
             cam.setPosition(cam.position() -
@@ -217,7 +230,14 @@ void Nav::update(fitzel::Camera& cam, const fitzel::Input& in, const Env& env, f
     if (wheel != 0.0f) {
         const bool ctrl = in.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
                           in.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
-        if (ctrl) {
+        if (m_ortho) {
+            // An orthographic view has no parallax to walk into, and walking
+            // the eye -- which is also the near plane -- up to what you are
+            // looking at would only slice it open. So the wheel zooms, by the
+            // same fraction a dolly notch covers, with or without Ctrl.
+            const float f = std::pow(1.0f - std::clamp(dollyStep, 0.01f, 0.5f), wheel);
+            cam.setOrthoHalfHeight(std::clamp(cam.orthoHalfHeight() * f, 0.05f, 20000.0f));
+        } else if (ctrl) {
             // Wheel forward narrows the angle, i.e. the view closes in -- the
             // same direction of travel as the dolly, so the two do not disagree
             // about which way "in" is. (Camera clamps to a sane 1..90 degrees.)
@@ -247,10 +267,23 @@ void Nav::update(fitzel::Camera& cam, const fitzel::Input& in, const Env& env, f
         m_request = StdView::User;
     }
 
+    // Num 5 (or 5 on the number row, for the laptops): perspective <-> ortho.
+    const bool orthoKey = env.keysFree && (in.isKeyDown(GLFW_KEY_KP_5) ||
+                                           (env.numberRow && in.isKeyDown(GLFW_KEY_5)));
+    if (orthoKey && !m_prevOrthoKey) m_orthoRequest = true;
+    m_prevOrthoKey = orthoKey;
+    if (m_orthoRequest) {
+        m_orthoRequest = false;
+        finishGlide(cam);   // the pivot a half-turned view would give is neither
+        toggleOrtho(cam, pivot(cam, env));
+    }
+
     const bool ctrl = in.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
                       in.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
     for (int i = 0; i < kBindingCount; ++i) {
-        const bool down = env.keysFree && in.isKeyDown(kBindings[i].key);
+        const bool numpad = kBindings[i].key >= GLFW_KEY_KP_0 && kBindings[i].key <= GLFW_KEY_KP_9;
+        const bool down = env.keysFree && (numpad || env.numberRow) &&
+                          in.isKeyDown(kBindings[i].key);
         // Edge, not level: held down, a view key would restart its own glide
         // every frame and the camera would never arrive.
         if (down && !m_prevKey[i])
@@ -285,6 +318,8 @@ void Nav::drawMenu() {
     for (const Item& it : items)
         if (ImGui::MenuItem(label(it.v), it.shortcut, m_view == it.v))
             m_request = it.v;
+    ImGui::Separator();
+    if (ImGui::MenuItem("Orthographic", "Num 5", m_ortho)) m_orthoRequest = true;
     ImGui::EndMenu();
 }
 

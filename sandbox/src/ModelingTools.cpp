@@ -263,7 +263,7 @@ bool hasEdge(const Selection& s, int a, int b) {
 
 Amounts& amounts() { return g_amounts; }
 
-void validate(Selection& s, int ownerId, const EditMesh* mesh) {
+void validate(Selection& s, int ownerId, const EditMesh* mesh, int* faceSel) {
     if (ownerId != s.owner || !mesh) {
         s.owner = ownerId;
         s.clear();
@@ -280,13 +280,85 @@ void validate(Selection& s, int ownerId, const EditMesh* mesh) {
                                             e.first == e.second;
                                  }),
                   s.edges.end());
-    if (s.mode == Mode::Face) s.clear();
+    if (s.mode != Mode::Face) {
+        s.faces.clear();
+        return;
+    }
+    s.verts.clear();
+    s.edges.clear();
+    s.faces.erase(std::remove_if(s.faces.begin(), s.faces.end(),
+                                 [&](int f) { return !mesh->validFace(f); }),
+                  s.faces.end());
+    if (!faceSel) return;
+    if (*faceSel < 0) s.faces.clear();
+    else if (std::find(s.faces.begin(), s.faces.end(), *faceSel) == s.faces.end())
+        s.faces = {*faceSel};   // chosen some other way (a drop, an edit's result)
+}
+
+std::vector<int> selectedFaces(const Selection& s, const EditMesh& m, int faceSel) {
+    std::vector<int> out;
+    if (m.validFace(faceSel)) out.push_back(faceSel);
+    for (int f : s.faces)
+        if (m.validFace(f) && std::find(out.begin(), out.end(), f) == out.end())
+            out.push_back(f);
+    return out;
+}
+
+void selectAll(Selection& s, const EditMesh& m, int& faceSel) {
+    s.clear();
+    if (s.mode == Mode::Vertex) {
+        for (int i = 0; i < static_cast<int>(m.verts.size()); ++i) s.verts.push_back(i);
+    } else if (s.mode == Mode::Edge) {
+        for (const editmesh::EdgeInfo& e : editmesh::edges(m))
+            s.edges.push_back({std::min(e.a, e.b), std::max(e.a, e.b)});
+    } else {
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f)
+            if (m.validFace(f)) s.faces.push_back(f);
+        if (!m.validFace(faceSel)) faceSel = s.faces.empty() ? -1 : s.faces.front();
+    }
+}
+
+void grow(Selection& s, const EditMesh& m, int& faceSel) {
+    const std::vector<editmesh::EdgeInfo> es = editmesh::edges(m);
+    if (s.mode == Mode::Face) {
+        std::vector<int> fs = selectedFaces(s, m, faceSel);
+        std::vector<char> in(m.faces.size(), 0);
+        for (int f : fs) in[f] = 1;
+        std::vector<int> add;
+        for (const editmesh::EdgeInfo& e : es)
+            if (e.f0 >= 0 && e.f1 >= 0 && in[e.f0] != in[e.f1])
+                add.push_back(in[e.f0] ? e.f1 : e.f0);
+        for (int f : add)
+            if (!in[f]) { in[f] = 1; fs.push_back(f); }
+        s.faces = fs;
+        if (!m.validFace(faceSel) && !fs.empty()) faceSel = fs.front();
+    } else if (s.mode == Mode::Vertex) {
+        std::vector<char> in(m.verts.size(), 0);
+        for (int v : s.verts) in[v] = 1;
+        std::vector<int> add;
+        for (const editmesh::EdgeInfo& e : es) {
+            if (in[e.a] && !in[e.b]) add.push_back(e.b);
+            if (in[e.b] && !in[e.a]) add.push_back(e.a);
+        }
+        for (int v : add)
+            if (!in[v]) { in[v] = 1; s.verts.push_back(v); }
+    } else {
+        std::vector<char> at(m.verts.size(), 0);
+        for (const auto& e : s.edges) at[e.first] = at[e.second] = 1;
+        for (const editmesh::EdgeInfo& e : es) {
+            const std::pair<int, int> k{std::min(e.a, e.b), std::max(e.a, e.b)};
+            if ((at[e.a] || at[e.b]) &&
+                std::find(s.edges.begin(), s.edges.end(), k) == s.edges.end())
+                s.edges.push_back(k);
+        }
+    }
 }
 
 std::vector<int> activeVerts(const Selection& s, const EditMesh& m, int faceSel) {
     std::vector<int> out;
     if (s.mode == Mode::Face) {
-        if (m.validFace(faceSel)) out = m.faces[faceSel];
+        for (int f : selectedFaces(s, m, faceSel))
+            out.insert(out.end(), m.faces[f].begin(), m.faces[f].end());
     } else if (s.mode == Mode::Vertex) {
         out = s.verts;
     } else {
@@ -316,13 +388,15 @@ void setMode(Selection& s, Mode mode, const EditMesh& m, int& faceSel) {
                 s.edges.push_back({std::min(e.a, e.b), std::max(e.a, e.b)});
         faceSel = -1;
     } else {
-        // The first face all of whose corners were selected.
+        // Every face all of whose corners were selected; the first is active.
         faceSel = -1;
-        for (int f = 0; f < static_cast<int>(m.faces.size()) && faceSel < 0 && !corners.empty(); ++f) {
+        for (int f = 0; f < static_cast<int>(m.faces.size()) && !corners.empty(); ++f) {
             bool all = m.validFace(f);
             for (int i : m.faces[f])
                 all = all && std::binary_search(corners.begin(), corners.end(), i);
-            if (all) faceSel = f;
+            if (!all) continue;
+            s.faces.push_back(f);
+            if (faceSel < 0) faceSel = f;
         }
     }
 }
@@ -394,8 +468,29 @@ Hit pick(const EditMesh& m, const View& v, ImVec2 mouse, Mode mode) {
 
 bool click(Selection& s, int& faceSel, const Hit& h, bool additive) {
     if (s.mode == Mode::Face) {
-        faceSel = h.face;
-        return h.face >= 0;
+        if (h.face < 0) {   // past the mesh: object picking gets the click
+            s.faces.clear();
+            faceSel = -1;
+            return false;
+        }
+        if (!additive) {
+            s.faces = {h.face};
+            faceSel = h.face;
+            return true;
+        }
+        // Adding: the face clicked becomes the active one; clicked again, it is
+        // let go and the most recent one left takes over.
+        if (faceSel >= 0 && std::find(s.faces.begin(), s.faces.end(), faceSel) == s.faces.end())
+            s.faces.push_back(faceSel);
+        auto it = std::find(s.faces.begin(), s.faces.end(), h.face);
+        if (it != s.faces.end()) {
+            s.faces.erase(it);
+            faceSel = s.faces.empty() ? -1 : s.faces.back();
+        } else {
+            s.faces.push_back(h.face);
+            faceSel = h.face;
+        }
+        return true;
     }
     if (s.mode == Mode::Vertex && h.vert >= 0) {
         auto it = std::find(s.verts.begin(), s.verts.end(), h.vert);
@@ -417,6 +512,237 @@ bool click(Selection& s, int& faceSel, const Hit& h, bool additive) {
     // careful ones); past the mesh it hands the click back to object picking.
     if (!additive || !h.onMesh) s.clear();
     return h.onMesh;
+}
+
+// =============================================================================
+// Blender-style picking
+// =============================================================================
+
+bool toScreen(const View& v, const glm::vec3& world, ImVec2& out) { return point(v, world, out); }
+void rayThrough(const View& v, ImVec2 px, glm::vec3& ro, glm::vec3& rd) { rayAt(v, px, ro, rd); }
+
+namespace {
+using EdgeSel = std::pair<int, int>;
+EdgeSel ordered(int a, int b) { return {std::min(a, b), std::max(a, b)}; }
+
+template <class T>
+void combine(std::vector<T>& into, const std::vector<T>& hits, BoxOp op) {
+    if (op == BoxOp::Set) { into = hits; return; }
+    for (const T& h : hits) {
+        auto it = std::find(into.begin(), into.end(), h);
+        if (op == BoxOp::Add && it == into.end()) into.push_back(h);
+        if (op == BoxOp::Subtract && it != into.end()) into.erase(it);
+    }
+}
+
+// The active face after the picked faces changed: kept if still picked, else
+// the first picked one, else none.
+void settleActive(Selection& s, int& faceSel) {
+    if (std::find(s.faces.begin(), s.faces.end(), faceSel) == s.faces.end())
+        faceSel = s.faces.empty() ? -1 : s.faces.front();
+}
+
+// Corners joined through faces, as a component id per corner.
+std::vector<int> components(const EditMesh& m) {
+    std::vector<int> parent(m.verts.size());
+    for (std::size_t i = 0; i < parent.size(); ++i) parent[i] = static_cast<int>(i);
+    auto find = [&](int i) {
+        while (parent[i] != i) i = parent[i] = parent[parent[i]];
+        return i;
+    };
+    for (const std::vector<int>& f : m.faces)
+        for (std::size_t i = 1; i < f.size(); ++i) parent[find(f[i])] = find(f[0]);
+    for (std::size_t i = 0; i < parent.size(); ++i) parent[i] = find(static_cast<int>(i));
+    return parent;
+}
+} // namespace
+
+void boxSelect(Selection& s, int& faceSel, const EditMesh& m, const View& v,
+               ImVec2 a, ImVec2 b, BoxOp op) {
+    const ImVec2 lo(std::min(a.x, b.x), std::min(a.y, b.y));
+    const ImVec2 hi(std::max(a.x, b.x), std::max(a.y, b.y));
+    auto inside = [&](ImVec2 p) { return p.x >= lo.x && p.x <= hi.x && p.y >= lo.y && p.y <= hi.y; };
+    const std::vector<glm::vec3> w = worldVerts(m, v.model);
+
+    if (s.mode == Mode::Vertex) {
+        std::vector<int> hits;
+        for (int i = 0; i < static_cast<int>(w.size()); ++i) {
+            ImVec2 p;
+            if (!point(v, w[i], p) || !inside(p)) continue;
+            if (occluded(m, w, v, w[i], [&](int f) { return faceHas(m, f, i); })) continue;
+            hits.push_back(i);
+        }
+        combine(s.verts, hits, op);
+    } else if (s.mode == Mode::Edge) {
+        std::vector<EdgeSel> hits;
+        for (const editmesh::EdgeInfo& e : editmesh::edges(m)) {
+            ImVec2 pa, pb;
+            if (!point(v, w[e.a], pa) || !point(v, w[e.b], pb) || !inside(pa) || !inside(pb))
+                continue;
+            if (occluded(m, w, v, 0.5f * (w[e.a] + w[e.b]),
+                         [&](int f) { return f == e.f0 || f == e.f1; }))
+                continue;
+            hits.push_back(ordered(e.a, e.b));
+        }
+        combine(s.edges, hits, op);
+    } else {
+        std::vector<int> hits;
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f) {
+            if (!m.validFace(f) || !frontFacing(m, w, f, v)) continue;
+            glm::vec3 c(0.0f);
+            for (int i : m.faces[f]) c += w[i];
+            c /= static_cast<float>(m.faces[f].size());
+            ImVec2 p;
+            if (!point(v, c, p) || !inside(p)) continue;
+            if (occluded(m, w, v, c, [&](int g) { return g == f; })) continue;
+            hits.push_back(f);
+        }
+        if (op != BoxOp::Set && faceSel >= 0 &&
+            std::find(s.faces.begin(), s.faces.end(), faceSel) == s.faces.end())
+            s.faces.push_back(faceSel);
+        combine(s.faces, hits, op);
+        settleActive(s, faceSel);
+    }
+}
+
+bool loopSelect(Selection& s, int& faceSel, const EditMesh& m, const View& v,
+                ImVec2 mouse, bool add) {
+    if (s.mode == Mode::Face) {
+        const Hit h = pick(m, v, mouse, Mode::Face);
+        if (h.face < 0) return false;
+        // The edge of that face nearest the pointer says which way the ring runs:
+        // across it, as Blender's face loop does.
+        const std::vector<glm::vec3> w = worldVerts(m, v.model);
+        const std::vector<int>& fv = m.faces[h.face];
+        int best = 0;
+        float bestD = 1e30f;
+        for (std::size_t i = 0; i < fv.size(); ++i) {
+            ImVec2 pa, pb;
+            if (!segment(v, w[fv[i]], w[fv[(i + 1) % fv.size()]], pa, pb)) continue;
+            const float d = distToSegment(mouse, pa, pb);
+            if (d < bestD) { bestD = d; best = static_cast<int>(i); }
+        }
+        std::vector<int> ring = fv.size() == 4 ? editmesh::ringFaces(m, h.face, best & 1)
+                                               : std::vector<int>{h.face};
+        if (ring.empty()) ring = {h.face};
+        if (add && faceSel >= 0 &&
+            std::find(s.faces.begin(), s.faces.end(), faceSel) == s.faces.end())
+            s.faces.push_back(faceSel);
+        combine(s.faces, ring, add ? BoxOp::Add : BoxOp::Set);
+        faceSel = h.face;
+        return true;
+    }
+    const Hit h = pick(m, v, mouse, Mode::Edge);
+    if (h.ea < 0) return false;
+    const std::vector<EdgeSel> loop = editmesh::edgeLoop(m, h.ea, h.eb);
+    if (s.mode == Mode::Edge) {
+        combine(s.edges, loop, add ? BoxOp::Add : BoxOp::Set);
+    } else {
+        std::vector<int> vs;
+        for (const EdgeSel& e : loop) { vs.push_back(e.first); vs.push_back(e.second); }
+        std::sort(vs.begin(), vs.end());
+        vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+        combine(s.verts, vs, add ? BoxOp::Add : BoxOp::Set);
+    }
+    return true;
+}
+
+void selectLinked(Selection& s, int& faceSel, const EditMesh& m, const Hit* under) {
+    const std::vector<int> comp = components(m);
+    std::vector<char> want(m.verts.size(), 0);
+    std::vector<int> seeds;
+    if (under) {
+        if (under->vert >= 0) seeds.push_back(under->vert);
+        if (under->ea >= 0) seeds.push_back(under->ea);
+        if (under->face >= 0) seeds.insert(seeds.end(), m.faces[under->face].begin(),
+                                           m.faces[under->face].end());
+    } else {
+        seeds = activeVerts(s, m, faceSel);
+    }
+    std::vector<char> root(m.verts.size(), 0);
+    for (int v : seeds)
+        if (v >= 0 && v < static_cast<int>(comp.size())) root[comp[v]] = 1;
+    for (std::size_t i = 0; i < comp.size(); ++i) want[i] = root[comp[i]];
+
+    if (s.mode == Mode::Vertex) {
+        std::vector<int> hits;
+        for (int i = 0; i < static_cast<int>(want.size()); ++i) if (want[i]) hits.push_back(i);
+        combine(s.verts, hits, BoxOp::Add);
+    } else if (s.mode == Mode::Edge) {
+        std::vector<EdgeSel> hits;
+        for (const editmesh::EdgeInfo& e : editmesh::edges(m))
+            if (want[e.a]) hits.push_back(ordered(e.a, e.b));
+        combine(s.edges, hits, BoxOp::Add);
+    } else {
+        std::vector<int> hits;
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f)
+            if (m.validFace(f) && want[m.faces[f][0]]) hits.push_back(f);
+        if (faceSel >= 0 && std::find(s.faces.begin(), s.faces.end(), faceSel) == s.faces.end())
+            s.faces.push_back(faceSel);
+        combine(s.faces, hits, BoxOp::Add);
+        if (under && under->face >= 0) faceSel = under->face;
+        settleActive(s, faceSel);
+    }
+}
+
+void invert(Selection& s, int& faceSel, const EditMesh& m) {
+    if (s.mode == Mode::Vertex) {
+        std::vector<int> out;
+        for (int i = 0; i < static_cast<int>(m.verts.size()); ++i)
+            if (std::find(s.verts.begin(), s.verts.end(), i) == s.verts.end()) out.push_back(i);
+        s.verts = out;
+    } else if (s.mode == Mode::Edge) {
+        std::vector<EdgeSel> out;
+        for (const editmesh::EdgeInfo& e : editmesh::edges(m))
+            if (std::find(s.edges.begin(), s.edges.end(), ordered(e.a, e.b)) == s.edges.end())
+                out.push_back(ordered(e.a, e.b));
+        s.edges = out;
+    } else {
+        const std::vector<int> had = selectedFaces(s, m, faceSel);
+        std::vector<int> out;
+        for (int f = 0; f < static_cast<int>(m.faces.size()); ++f)
+            if (m.validFace(f) && std::find(had.begin(), had.end(), f) == had.end())
+                out.push_back(f);
+        s.faces = out;
+        faceSel = out.empty() ? -1 : out.front();
+    }
+}
+
+void shrink(Selection& s, int& faceSel, const EditMesh& m) {
+    const std::vector<editmesh::EdgeInfo> es = editmesh::edges(m);
+    if (s.mode == Mode::Face) {
+        const std::vector<int> had = selectedFaces(s, m, faceSel);
+        std::vector<char> in(m.faces.size(), 0);
+        for (int f : had) in[f] = 1;
+        std::vector<char> rim(m.faces.size(), 0);
+        for (const editmesh::EdgeInfo& e : es) {
+            const bool a = e.f0 >= 0 && in[e.f0], b = e.f1 >= 0 && in[e.f1];
+            if (a && !b) rim[e.f0] = 1;
+            if (b && !a) rim[e.f1] = 1;
+        }
+        std::vector<int> out;
+        for (int f : had) if (!rim[f]) out.push_back(f);
+        s.faces = out;
+        settleActive(s, faceSel);
+        return;
+    }
+    std::vector<char> in(m.verts.size(), 0);
+    for (int v : activeVerts(s, m, faceSel)) in[v] = 1;
+    std::vector<char> edge(m.verts.size(), 0);   // a corner with an unpicked neighbour
+    for (const editmesh::EdgeInfo& e : es) {
+        if (in[e.a] && !in[e.b]) edge[e.a] = 1;
+        if (in[e.b] && !in[e.a]) edge[e.b] = 1;
+    }
+    if (s.mode == Mode::Vertex) {
+        std::vector<int> out;
+        for (int v : s.verts) if (!edge[v]) out.push_back(v);
+        s.verts = out;
+    } else {
+        std::vector<EdgeSel> out;
+        for (const EdgeSel& e : s.edges)
+            if (!edge[e.first] && !edge[e.second]) out.push_back(e);
+        s.edges = out;
+    }
 }
 
 // =============================================================================
@@ -476,8 +802,14 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
 
     // --- Face mode -----------------------------------------------------------
     if (s.mode == Mode::Face) {
-        if (hover && hover->face >= 0 && hover->face != faceSel)
+        const std::vector<int> picked = selectedFaces(s, m, faceSel);
+        if (hover && hover->face >= 0 &&
+            std::find(picked.begin(), picked.end(), hover->face) == picked.end())
             drawFace(dl, w, m.faces[hover->face], v, kHoverFill, kHover, 1.8f);
+        // The others first, thinner: the active one is drawn last and boldest,
+        // since it is the one the material and the loop cut go by.
+        for (std::size_t k = 1; k < picked.size(); ++k)
+            drawFace(dl, w, m.faces[picked[k]], v, kSelFill, kSelEdge, 1.6f);
         if (m.validFace(faceSel)) {
             drawFace(dl, w, m.faces[faceSel], v, kSelFill, kSelEdge, 2.4f);
             // Which way is "out": extrude and move go along this.
@@ -549,8 +881,11 @@ void drawOverlay(ImDrawList* dl, const EditMesh& m, const View& v,
         std::vector<std::pair<glm::vec3, glm::vec3>> added, removed;
         edgeDiff(m, after, &added, &removed);
         const std::vector<glm::vec3> wa = worldVerts(after, v.model);
+        // The operations keep face indices, so the picked faces in `after` are
+        // the same numbers -- all of them are shown where they would end up.
         if (s.mode == Mode::Face && after.validFace(res))
-            drawFace(dl, wa, after.faces[res], v, kAddFill, 0, 0.0f);
+            for (int f : selectedFaces(s, after, res))
+                drawFace(dl, wa, after.faces[f], v, kAddFill, 0, 0.0f);
         for (const auto& r : removed) {
             ImVec2 pa, pb;
             if (segment(v, xf(v.model, r.first), xf(v.model, r.second), pa, pb))

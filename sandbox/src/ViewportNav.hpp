@@ -15,12 +15,14 @@ namespace fitzel { class Camera; class Input; }
 // read. None of this touches the scene either -- it moves an eye, so it can live
 // on its own with the camera and a handful of facts about the frame.
 //
-// WHY NOT ORTHOGRAPHIC. Blender's numpad views are orthographic; these are not.
-// The projection is perspective everywhere in the engine -- the shadow cascades,
-// the frustum culling, the gizmo scaling and the picking ray all derive from
-// Camera::projectionMatrix -- so an ortho editor view is a change to all of
-// them, not to this. Looking straight down an axis is the part that makes a
-// front view useful for placing things; that part is here.
+// ORTHOGRAPHIC is a switch of its own (Num 5, or View > Viewpoint), not a side
+// effect of the standard views: a top view in perspective is still the better
+// one for judging how high something stands, and which of the two is wanted is
+// the user's call. This module only holds the wish; main hands it to the Camera
+// while the editor's free camera is the one in use, so play, the drive modes
+// and a camera preview always look through a real lens. In ortho the eye stays
+// where it was -- it still decides what the near plane cuts away -- and the
+// wheel zooms instead of walking (see update()).
 namespace viewnav {
 
 // Where the camera is looking, when it is looking along an axis at all. `User`
@@ -36,6 +38,8 @@ struct Env {
     bool  viewportHovered = false; // pointer over the scene viewport
     bool  keysFree        = true;  // no text field / running game owns the keyboard
     bool  looking         = false; // right-mouse fly is active this frame
+    bool  numberRow       = true;  // 1/3/5/7 on the number row too (off while
+                                   // modelling: there they pick corner/edge/face)
     float viewportH       = 1.0f;  // scene viewport height in pixels
 
     // What the view swings around. A selection is the obvious answer; without
@@ -69,6 +73,11 @@ public:
     // requiring a steady hand or a full-size keyboard for anything.
     void drawMenu();
 
+    // The orthographic wish, and the way to change it. A request lands on the
+    // next update(), which knows the pivot the new lens has to match.
+    bool ortho() const { return m_ortho; }
+    void requestOrthoToggle() { m_orthoRequest = true; }
+
     StdView current()  const { return m_view; }
     bool    gliding()  const { return m_glide; }
     bool    panning()  const { return m_panning; }
@@ -95,6 +104,15 @@ private:
     glm::vec3 pivot(const fitzel::Camera& cam, const Env& env,
                     bool* aimed = nullptr) const;
     void      finishGlide(fitzel::Camera& cam);
+
+    // Switch the lens over at the pivot's distance, so what sits there keeps its
+    // size on screen: a toggle that also rescaled the picture would be two
+    // changes for the price of one keypress.
+    void      toggleOrtho(fitzel::Camera& cam, const glm::vec3& piv);
+
+    bool m_ortho        = false;
+    bool m_orthoRequest = false;
+    bool m_prevOrthoKey = false;
 
     StdView m_view    = StdView::User;
     StdView m_request = StdView::User;  // pending menu click

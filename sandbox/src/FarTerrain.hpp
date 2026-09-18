@@ -25,9 +25,14 @@
 // frame, so TAA resolves the horizon instead of smearing it.
 inline glm::mat4 farProjection(const fitzel::Camera& cam, float aspect,
                                const glm::vec2& jitter) {
-    glm::mat4 p = glm::perspective(glm::radians(cam.fov()), aspect, 50.0f, 60000.0f);
-    p[2][0] -= jitter.x;
-    p[2][1] -= jitter.y;
+    glm::mat4 p = cam.projectionMatrix(aspect, 50.0f, 60000.0f);
+    if (cam.orthographic()) {            // w = 1: the translation column moves it
+        p[3][0] += jitter.x;
+        p[3][1] += jitter.y;
+    } else {
+        p[2][0] -= jitter.x;
+        p[2][1] -= jitter.y;
+    }
     return p;
 }
 

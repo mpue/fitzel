@@ -101,8 +101,10 @@ void CascadedShadowMap::update(const Camera& camera, float aspect,
 glm::mat4 CascadedShadowMap::fitCascade(const Camera& camera, float aspect,
                                         float nearDist, float farDist,
                                         const glm::vec3& lightDir) const {
-    const glm::mat4 proj =
-        glm::perspective(glm::radians(camera.fov()), aspect, nearDist, farDist);
+    // The camera's own lens over this slice -- a box when the view is
+    // orthographic, where a perspective cone would fit the cascades to a
+    // frustum nobody is looking through.
+    const glm::mat4 proj = camera.projectionMatrix(aspect, nearDist, farDist);
     const glm::mat4 inv = glm::inverse(proj * camera.viewMatrix());
 
     // Eight world-space corners of this sub-frustum.

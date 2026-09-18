@@ -1429,6 +1429,39 @@ public:
     }
 };
 
+// --- Built-in component: Synth (a patch that plays notes or a MIDI song) -------
+// A patch from the Synth panel (content/patches/) played by the object: a whole
+// song from a .mid file (content/midi/), notes a script sends it (synth.noteOn),
+// or -- for a patch without a gate -- a drone whose dials the game turns
+// (synth.set). `voices` is how many notes sound at once. The running player is
+// owned by SynthSystem, not by the component, so a copied or undone entity never
+// carries a live voice with it.
+class SynthComponent : public ComponentBase {
+public:
+    std::string patch;                // file under content/patches/ ("" = none)
+    std::string midi;                 // file under content/midi/ ("" = none)
+    float       volume      = 0.8f;   // 0..1
+    bool        playOnStart = true;   // start (and play the song) when Play begins
+    bool        loopMidi    = true;   // the song comes round again
+    int         voices      = 8;      // notes at once, 1..32
+    int         channel     = 0;      // MIDI channel to play, 1..16; 0 = all
+    bool        drums       = false;  // play channel 10 too (it is usually drums)
+    float       tempo       = 1.0f;   // 1 = as written
+    bool        spatial     = false;  // fade with distance vs everywhere (music)
+    float       radius      = 25.0f;  // audible distance when spatial
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SynthComponent>(*this);
+    }
+    const char* typeId() const override { return "synth"; }
+    const char* displayName() const override { return "Synth"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
+        if (spatial) g.sphere(c, radius, {0.85f, 0.6f, 1.0f, 0.8f}); // audible range
+    }
+};
+
 // --- Built-in component: Camera (a viewpoint you can switch to in Play) --------
 // Attach to an entity to make it a camera: in Play the view can render from its
 // position + orientation at this `fov`. `activeOnStart` makes it the initial view

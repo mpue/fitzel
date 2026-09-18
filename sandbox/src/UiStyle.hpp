@@ -53,4 +53,18 @@ bool icontains(const char* hay, const char* needle);
 bool searchBox(const char* id, char* buf, std::size_t cap,
                const char* placeholder = "Search...");
 
+// A number with a big minus and a big plus either side of it, and no drag
+// anywhere. The editor's rule for every amount (see ModelingPanel.hpp): a value
+// you can only approach with a steady hand is a value this editor does not ask
+// for, so one click means exactly one step. `fmt` is a printf format for one
+// float ("%.2f m"). Returns true on the frames the value changed.
+//
+// The width is the WHOLE control; the number in the middle takes what the two
+// buttons leave, and never less than the formatted value needs.
+bool stepper(const char* id, float& v, float step, float lo, float hi,
+             const char* fmt, float width = 0.0f);
+// What `stepper` needs to show `fmt` without clipping it -- for laying a column
+// out around it.
+float stepperWidth(const char* fmt);
+
 } // namespace ui

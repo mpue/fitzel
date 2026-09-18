@@ -1,5 +1,8 @@
 #include "UiStyle.hpp"
 
+#include <algorithm>
+#include <cstdio>
+
 #include <cctype>
 #include <cfloat>
 #include <cstdarg>
@@ -84,6 +87,44 @@ bool searchBox(const char* id, char* buf, std::size_t cap, const char* placehold
     ImGui::InputTextWithHint(id, placeholder, buf, cap,
                              ImGuiInputTextFlags_EscapeClearsAll);
     return buf[0] != 0;
+}
+
+float stepperWidth(const char* fmt) {
+    char wide[64];
+    std::snprintf(wide, sizeof wide, fmt, -8.88f);
+    const float em = ImGui::GetFontSize();
+    return 2.0f * std::max(em * 1.6f, 26.0f) + 6.0f +
+           ImGui::CalcTextSize(wide).x + ImGui::GetStyle().FramePadding.x * 2.0f +
+           em * 0.4f;
+}
+
+bool stepper(const char* id, float& v, float step, float lo, float hi,
+             const char* fmt, float width) {
+    const float em = ImGui::GetFontSize();
+    if (width <= 0.0f) width = stepperWidth(fmt);
+    bool changed = false;
+    ImGui::PushID(id);
+    ImGui::BeginGroup();
+    const ImVec2 bs(std::max(em * 1.6f, 26.0f), ImGui::GetFrameHeight() + em * 0.35f);
+    if (ImGui::Button("-", bs)) { v = std::max(lo, v - step); changed = true; }
+    ImGui::SetItemTooltip("%.3g less", step);
+    ImGui::SameLine(0.0f, 3.0f);
+    char buf[64];
+    std::snprintf(buf, sizeof buf, fmt, v);
+    // The value between them reads as a field, not as a third target: drawn in
+    // the frame colour, and pressing it does nothing.
+    const ImVec4 frame = ImGui::GetStyleColorVec4(ImGuiCol_FrameBg);
+    ImGui::PushStyleColor(ImGuiCol_Button, frame);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, frame);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, frame);
+    ImGui::Button(buf, ImVec2(std::max(width - 2.0f * bs.x - 6.0f, em * 2.5f), bs.y));
+    ImGui::PopStyleColor(3);
+    ImGui::SameLine(0.0f, 3.0f);
+    if (ImGui::Button("+", bs)) { v = std::min(hi, v + step); changed = true; }
+    ImGui::SetItemTooltip("%.3g more", step);
+    ImGui::EndGroup();
+    ImGui::PopID();
+    return changed;
 }
 
 } // namespace ui

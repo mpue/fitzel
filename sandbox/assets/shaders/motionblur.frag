@@ -23,9 +23,11 @@ uniform float uAmount;      // streak length scale (0 = off); grows with speed
 uniform int   uSamples;     // taps along each streak
 uniform float uNear;        // camera near/far, to linearize depth
 uniform float uFar;
+uniform int   uOrtho;      // 1: orthographic view -- the depth buffer is linear already
 
 float linearDepth(vec2 uv) {
     float d = texture(uDepth, uv).r * 2.0 - 1.0;
+    if (uOrtho == 1) return uNear + (d * 0.5 + 0.5) * (uFar - uNear);
     return (2.0 * uNear * uFar) / (uFar + uNear - d * (uFar - uNear));
 }
 

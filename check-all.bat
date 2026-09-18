@@ -119,6 +119,18 @@ REM  ein Loop Cut, der die Seite vergisst, von der er misst, schneidet einen
 REM  Zickzack statt einer Linie -- und ein Face-Material ist ein Array neben
 REM  einem anderen, also landet es Schnitte spaeter auf der falschen Flaeche.
 call :run modelcheck
+REM  synthcheck rendert den modularen Synth OFFLINE und misst ihn. Klang faellt
+REM  aus, ohne zu scheitern: ein Filter, der 6 dB daneben liegt, eine Huellkurve
+REM  in Samples statt Sekunden, ein Delay, dessen Interpolation nie laeuft --
+REM  alles spielt vergnuegt weiter. Dazu die zwei Invarianten, die man erst spaet
+REM  hoert: Blockgroesse aendert den Klang nicht, und nichts verlaesst den Ausgang,
+REM  das nicht endlich und im Bereich ist.
+call :run synthcheck
+REM  synthplaycheck spielt die Kette, die ein Spiel benutzt: Patch und Song als
+REM  Dateien in einem Wegwerf-Projekt, eine Synth-Komponente, die sie nennt, und
+REM  ein echtes Lua-Skript, das synth.noteOn / synth.playMidi ruft. Jedes Glied
+REM  ist ein Name, der zu einem Namen passen muss. Braucht ein Audiogeraet.
+call :run synthplaycheck
 REM  importcheck misst, ob ein als viele Objekte gebautes Modell auch als
 REM  viele Objekte ankommt. Der Fehler hat kein Symptom: ein Import, der die
 REM  Struktur verliert, zeichnet dasselbe Bild -- er ist nur EIN Objekt statt

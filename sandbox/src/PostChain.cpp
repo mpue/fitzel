@@ -203,6 +203,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     m_ssaoBlur.setVec2("uTexel", {1.0f / m_ssaoRT.width(), 1.0f / m_ssaoRT.height()});
     m_ssaoBlur.setFloat("uNear", p.nearPlane);
     m_ssaoBlur.setFloat("uFar", p.farPlane);
+    m_ssaoBlur.setInt("uOrtho", p.ortho ? 1 : 0);
     m_ssaoBlur.setFloat("uDepthSigma", 0.4f);
     fsQuad.draw();
 
@@ -293,6 +294,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
     hdr.bindDepthTexture(1);   m_composite.setInt("uDepth", 1);
     m_composite.setFloat("uNear", p.nearPlane);
     m_composite.setFloat("uFar", p.farPlane);
+    m_composite.setInt("uOrtho", p.ortho ? 1 : 0);
     m_composite.setFloat("uFocusNear", p.dofNear);
     m_composite.setFloat("uFocusFar", p.dofFar);
     m_composite.setFloat("uDofMax", p.dofMax);
@@ -355,6 +357,7 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
         m_motionBlur.setInt("uSamples", 16);
         m_motionBlur.setFloat("uNear", p.nearPlane);
         m_motionBlur.setFloat("uFar", p.farPlane);
+        m_motionBlur.setInt("uOrtho", p.ortho ? 1 : 0);
         fsQuad.draw();
         m_result = &m_mbRT;
     }

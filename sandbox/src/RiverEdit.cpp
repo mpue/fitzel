@@ -121,8 +121,9 @@ void handle(const Context& c) {
             // cursor instead of drifting away from it as you zoom in or out.
             const glm::vec3 hw = handleWorld(c, c.sel, c.ptSel);
             const float dist = glm::length(hw - c.cameraPos);
-            const float mpp = 2.0f * dist *
-                              std::tan(glm::radians(c.cameraFov * 0.5f)) /
+            const float mpp = (c.orthoHalfH > 0.0f
+                                   ? 2.0f * c.orthoHalfH
+                                   : 2.0f * dist * std::tan(glm::radians(c.cameraFov * 0.5f))) /
                               std::max(1.0f, c.viewH);
             const float dy = ImGui::GetIO().MouseDelta.y;
             if (dy != 0.0f)

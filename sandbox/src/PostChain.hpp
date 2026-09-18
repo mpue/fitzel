@@ -50,6 +50,7 @@ public:
         glm::mat4 viewProj{1.0f};    // ...and its full VP, for the sun and the blur anchor
         glm::vec3 camPos{0.0f};
         float     nearPlane = 0.1f, farPlane = 600.0f;
+        bool      ortho = false;     // orthographic view: depth is linear, not 1/z
         float     aspect = 1.0f;
 
         // Sun, for the god rays and the flare: the direction it comes FROM and

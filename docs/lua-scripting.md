@@ -159,6 +159,71 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 | `game.playAudio(id)` | AudioSource-Komponente eines Objekts starten |
 | `game.stopAudio(id)` | AudioSource-Komponente eines Objekts stoppen |
 
+#### 3.5.1 Synth: Noten, Regler, MIDI-Songs
+
+Ein Objekt mit einer **Synth**-Komponente spielt einen Patch aus dem Synth-Panel
+(`content/patches/<name>.json`). Es kann einen ganzen Song aus einer MIDI-Datei
+spielen (`content/midi/<name>.mid`), Noten, die ein Skript schickt, oder – bei
+einem Patch ohne `gate` – einfach durchklingen, während das Spiel an seinen
+Reglern dreht (Motor, Wind, Alarm). Alle Aufrufe nehmen die **ID des Objekts**
+wie `game.playAudio`. Der Synth wird beim ersten Aufruf gebaut; „Play on start“
+in der Komponente ist dafür nicht nötig.
+
+Eine Note ist eine Zahl (`60` = eingestrichenes C) oder ein Name: `"C4"`, `"F#3"`,
+`"Bb2"`, `"A4"` (= 69). Die Lautstärke (velocity) geht von 0 bis 1. Werte über 1
+werden als MIDI-Wert 0..127 gelesen.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `synth.play(id)` | bool | Synth starten, dazu den Song der Komponente, falls einer eingetragen ist |
+| `synth.stop(id)` | – | alles verstummt: Song stoppt, Noten werden losgelassen |
+| `synth.noteOn(id, note [, vel])` | bool | Note anschlagen (`vel` Standard 0.8) |
+| `synth.noteOff(id [, note])` | – | Note loslassen; ohne `note` alle |
+| `synth.set(id, regler, wert)` | bool | einen Regler (Dial) des Patches setzen, z. B. `"rpm"` |
+| `synth.playMidi(id [, datei [, loop]])` | bool | Song von vorn spielen; ohne `datei` den der Komponente, `loop` überschreibt „Loop song“ |
+| `synth.stopMidi(id)` | – | Song anhalten (der Synth bleibt an) |
+| `synth.isPlaying(id)` | bool | läuft der Song noch? |
+| `synth.setTempo(id, faktor)` | bool | 1 = wie notiert, 2 = doppelt so schnell |
+| `synth.note(name)` | int / nil | Notenname → MIDI-Nummer (`synth.note("A4")` → 69) |
+| `synth.lastError()` | string | warum der letzte Aufruf `false` gab (Patch fehlt, Regler unbekannt …) |
+
+Ein Patch für Noten braucht die Regler `pitch` (MIDI-Note) und `gate` (Taste
+gedrückt), optional `velocity`. Jede gleichzeitig klingende Note bekommt eine
+eigene Stimme. Wie viele es höchstens gibt, stellt „Voices“ in der Komponente
+ein. Alle anderen Regler gelten für alle Stimmen zugleich. Kanal 10 eines
+MIDI-Songs ist fast immer Schlagzeug und wird übersprungen, außer „Play drum
+channel“ ist an.
+
+```lua
+-- Eine kleine Fanfare, wenn der Spieler das Ziel erreicht
+local fanfare = { "C4", "E4", "G4", "C5" }
+local step, clock = 0, 0
+
+function update(e, dt, t)
+    if game.keyPressed(game.KEY_F) then step, clock = 1, 0 end
+    if step > 0 then
+        clock = clock + dt
+        if clock > 0.15 then
+            synth.noteOff(e.id)
+            if step <= #fanfare then synth.noteOn(e.id, fanfare[step], 0.9) end
+            step, clock = step + 1, 0
+            if step > #fanfare + 1 then step = 0 end
+        end
+    end
+end
+```
+
+```lua
+-- Musik: im Kampf schneller, am Ende eines Levels ein anderer Song
+function update(e, dt, t)
+    synth.setTempo(e.id, inBattle and 1.25 or 1.0)
+    if levelDone and not switched then
+        synth.playMidi(e.id, "finale.mid", false)
+        switched = true
+    end
+end
+```
+
 ### 3.6 Punktestand & HUD (gemeinsamer Zustand)
 
 | Aufruf | Rückgabe | Beschreibung |

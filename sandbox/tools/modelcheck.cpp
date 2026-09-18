@@ -524,6 +524,234 @@ void checkVertsEdges() {
           "...and on the far side of the quad, from ITS lower corner (6)");
 }
 
+// Every corner inside the box [-h, h]^3 (with a hair of slack): a bevel only
+// ever takes material away.
+bool inside(const EditMesh& m, float h) {
+    for (const glm::vec3& v : m.verts)
+        if (std::fabs(v.x) > h + 1e-4f || std::fabs(v.y) > h + 1e-4f || std::fabs(v.z) > h + 1e-4f)
+            return false;
+    return true;
+}
+
+// Consistently wound: every edge is run once each way. A face that came out
+// facing inwards passes closed() and fails this -- and shows up as a dark or
+// missing face the moment it is lit.
+bool oriented(const EditMesh& m) {
+    std::map<std::pair<int, int>, int> half;
+    for (const std::vector<int>& f : m.faces)
+        for (std::size_t i = 0; i < f.size(); ++i)
+            ++half[{f[i], f[(i + 1) % f.size()]}];
+    for (const auto& h : half)
+        if (h.second != 1 || !half.count({h.first.second, h.first.first})) return false;
+    return true;
+}
+
+// Wound consistently where it is open too: no edge is run twice the same way
+// (which is what two neighbouring faces facing opposite ways do).
+bool consistent(const EditMesh& m) {
+    std::map<std::pair<int, int>, int> half;
+    for (const std::vector<int>& f : m.faces)
+        for (std::size_t i = 0; i < f.size(); ++i)
+            if (++half[{f[i], f[(i + 1) % f.size()]}] > 1) return false;
+    return true;
+}
+
+bool arraysInStep(const EditMesh& m) {
+    return m.faceMat.size() == m.faces.size() && m.faceUV.size() == m.faces.size() &&
+           m.paint.size() == m.verts.size();
+}
+
+void checkNewTools() {
+    std::printf("\nSeveral faces, making faces, bevel\n");
+    // Faces of the unit box: 0 +Z {4,5,6,7}, 1 -Z, 2 +X, 3 -X, 4 +Y {3,7,6,2}, 5 -Y.
+    const EditMesh box = EditMesh::box(glm::vec3(0.5f));
+
+    // Region extrude: top and front pulled out together stay one piece.
+    EditMesh rx = box;
+    rx.setFaceMaterial(4, idA());
+    const int keep = editmesh::extrudeFaces(rx, {4, 0}, 0.5f);
+    check(keep == 4, "a region extrude keeps the active face first");
+    check(rx.faces.size() == 12, "top + front out together: six walls round the rim, none between");
+    check(closed(rx) && noDoubledVerts(rx), "...closed, no doubled corners");
+    bool topUp = true, frontOut = true;
+    for (int v : rx.faces[4]) topUp = topUp && std::fabs(rx.verts[v].y - 1.0f) < 1e-4f;
+    for (int v : rx.faces[0]) frontOut = frontOut && std::fabs(rx.verts[v].z - 1.0f) < 1e-4f;
+    check(topUp && frontOut, "...and each face went its full 0.5 m along its own normal");
+    check(arraysInStep(rx), "...with the parallel arrays in step");
+
+    // Move two opposite faces: the box gets wider on both sides.
+    EditMesh mv = box;
+    editmesh::moveFaces(mv, {2, 3}, 0.25f);
+    glm::vec3 mn, mx;
+    mv.bounds(mn, mx);
+    check(std::fabs(mx.x - mn.x - 1.5f) < 1e-4f && std::fabs(mx.y - mn.y - 1.0f) < 1e-4f,
+          "moving +X and -X out by 0.25 makes the box 1.5 wide and no taller");
+
+    // Scale two faces that do not touch: each about its own centre.
+    EditMesh sc = box;
+    const glm::vec3 c2 = sc.faceCenter(2), c3 = sc.faceCenter(3);
+    editmesh::scaleFaces(sc, {2, 3}, 0.5f);
+    check(glm::length(sc.faceCenter(2) - c2) < 1e-5f && glm::length(sc.faceCenter(3) - c3) < 1e-5f,
+          "faces that do not touch scale in place, each about its own centre");
+
+    // Delete several.
+    EditMesh df = box;
+    editmesh::deleteFaces(df, {4, 5, 4});
+    check(df.faces.size() == 4 && df.verts.size() == 8 && arraysInStep(df),
+          "deleting top and bottom (one named twice) leaves the four sides");
+
+    // Flip.
+    EditMesh fl = box;
+    editmesh::flipFaces(fl, {0});
+    check(glm::dot(fl.faceNormal(0), glm::vec3(0, 0, 1)) < -0.99f, "a flipped face looks the other way");
+    check(fl.faces[0][0] == box.faces[0][0], "...and keeps its first corner");
+
+    // Fill a hole from one of its edges.
+    EditMesh fh = box;
+    editmesh::deleteFace(fh, 4);
+    check(!closed(fh), "a box with its top taken off is open");
+    const int filled = editmesh::fillHole(fh, 7, 6);
+    check(filled >= 0 && closed(fh), "fill hole from one rim edge closes it again");
+    check(filled >= 0 && glm::dot(fh.faceNormal(filled), glm::vec3(0, 1, 0)) > 0.99f,
+          "...with the new face looking out, not in");
+    EditMesh whole = box;
+    check(editmesh::fillHole(whole, 7, 6) == -1, "an edge with faces on both sides is no rim");
+
+    // Make a face from corners picked in any order.
+    EditMesh mf = box;
+    editmesh::deleteFace(mf, 4);
+    const int made = editmesh::makeFace(mf, {6, 3, 2, 7});
+    check(made >= 0 && closed(mf), "a face through four picked corners closes the top");
+    check(made >= 0 && mf.faces[made].size() == 4 &&
+              glm::dot(mf.faceNormal(made), glm::vec3(0, 1, 0)) > 0.99f,
+          "...wound to agree with its neighbours, whatever order they were picked in");
+    check(editmesh::makeFace(mf, {6, 3, 2, 7}) == -1, "...and not a second time");
+    EditMesh loose;
+    loose.verts = {{0, 0, 0}, {1, 0, 0}, {2, 0, 0}};
+    loose.syncPaint();
+    check(editmesh::makeFace(loose, {0, 1, 2}) == -1, "three corners in a line make no face");
+
+    // Connect two corners across a face.
+    EditMesh cn = box;
+    const int half = editmesh::connectVerts(cn, 4, 6);
+    check(half == 0 && cn.faces.size() == 7 && closed(cn) && arraysInStep(cn),
+          "connecting opposite corners of a quad cuts it into two triangles");
+    check(editmesh::connectVerts(cn, 4, 5) == -1, "neighbouring corners are already joined");
+
+    // Weld: a zero-distance extrude doubles four corners; welding undoes it.
+    EditMesh wd = box;
+    editmesh::extrude(wd, 0, 0.0f);
+    std::vector<int> all;
+    for (int i = 0; i < static_cast<int>(wd.verts.size()); ++i) all.push_back(i);
+    const int gone = editmesh::weldVerts(wd, all, 1e-3f);
+    check(gone == 4 && wd.verts.size() == 8 && wd.faces.size() == 6 && closed(wd),
+          "welding a flat extrude takes the four doubles and the four flat walls");
+    check(arraysInStep(wd), "...with the arrays in step");
+
+    // Bevel one edge (top-front, 6-7): a flat chamfer.
+    EditMesh b1 = box;
+    b1.setFaceMaterial(4, idA());
+    check(editmesh::bevelEdges(b1, {{6, 7}}, 0.1f, 1) == 1, "one edge bevels");
+    check(b1.faces.size() == 7 && b1.verts.size() == 10, "...into one strip and two new corners each end");
+    check(closed(b1) && noDoubledVerts(b1) && inside(b1, 0.5f), "...closed, and only material taken away");
+    check(arraysInStep(b1), "...with the arrays in step");
+    // Rounded.
+    EditMesh b3 = box;
+    check(editmesh::bevelEdges(b3, {{6, 7}}, 0.2f, 3) == 1 && b3.faces.size() == 9 && closed(b3),
+          "three segments: three strips, the end faces take the curve");
+    check(inside(b3, 0.5f) && noDoubledVerts(b3), "...inside the box, no doubled corners");
+    // The four top edges: two bevels meet at every top corner.
+    EditMesh bt = box;
+    check(editmesh::bevelEdges(bt, {{3, 7}, {7, 6}, {6, 2}, {2, 3}}, 0.1f, 1) == 4 &&
+              bt.faces.size() == 10 && closed(bt) && inside(bt, 0.5f),
+          "the four top edges: four strips meeting in mitres, closed");
+    EditMesh bt2 = box;
+    check(editmesh::bevelEdges(bt2, {{3, 7}, {7, 6}, {6, 2}, {2, 3}}, 0.1f, 2) == 4 &&
+              closed(bt2) && noDoubledVerts(bt2),
+          "...rounded, the strips share the curve they meet along");
+    // Every edge: three meet at each corner, and each corner gets a patch.
+    std::vector<std::pair<int, int>> every;
+    for (const editmesh::EdgeInfo& e : editmesh::edges(box)) every.push_back({e.a, e.b});
+    EditMesh ba = box;
+    check(editmesh::bevelEdges(ba, every, 0.1f, 1) == 12 && ba.faces.size() == 26 && closed(ba),
+          "all twelve edges: 6 faces + 12 strips + 8 corner patches, closed");
+    check(inside(ba, 0.5f) && noDoubledVerts(ba) && arraysInStep(ba), "...inside the box, arrays in step");
+    EditMesh ba2 = box;
+    check(editmesh::bevelEdges(ba2, every, 0.1f, 2) == 12 && ba2.faces.size() == 38 && closed(ba2),
+          "...rounded with two segments: 24 strips, still closed");
+    EditMesh bw = box;
+    editmesh::bevelEdges(bw, {{6, 7}}, 5.0f, 1);
+    check(closed(bw) && inside(bw, 0.5f), "a bevel far wider than the box is held back, not inverted");
+    check(oriented(rx) && oriented(fh) && oriented(mf) && oriented(cn) && oriented(wd) &&
+              oriented(b1) && oriented(b3) && oriented(bt) && oriented(bt2) &&
+              oriented(ba) && oriented(ba2) && oriented(bw),
+          "every result is wound consistently (each edge run once each way)");
+    EditMesh bo = box;
+    editmesh::deleteFace(bo, 4);
+    check(editmesh::bevelEdges(bo, {{6, 7}}, 0.1f, 1) == 0, "a border edge is not bevelled");
+}
+
+// Edges run by one face only: the rim of an open mesh.
+int borderEdges(const EditMesh& m) {
+    int n = 0;
+    for (const editmesh::EdgeInfo& e : editmesh::edges(m)) n += e.f1 < 0 ? 1 : 0;
+    return n;
+}
+
+void checkBlenderOps() {
+    std::printf("\nThe modelling mode's operations\n");
+    const EditMesh box = EditMesh::box(glm::vec3(0.5f));
+
+    // Extrude edges: the rim of an open box pulled up into a taller wall.
+    EditMesh open = box;
+    editmesh::deleteFace(open, 4);
+    const std::vector<std::pair<int, int>> rim = {{3, 7}, {7, 6}, {6, 2}, {2, 3}};
+    EditMesh ex = open;
+    const auto made = editmesh::extrudeEdges(ex, rim);
+    check(made.size() == 4 && ex.faces.size() == 9 && ex.verts.size() == 12,
+          "extruding the four rim edges makes four quads and four new corners");
+    std::vector<int> moved;
+    for (const auto& e : made) { moved.push_back(e.first); moved.push_back(e.second); }
+    editmesh::transformVerts(ex, moved, glm::translate(glm::mat4(1.0f), glm::vec3(0, 0.5f, 0)));
+    check(consistent(ex) && borderEdges(ex) == 4, "...wound with their neighbours, the rim moved up with them");
+    check(arraysInStep(ex), "...with the arrays in step");
+
+    // Duplicate.
+    EditMesh dp = box;
+    const std::vector<int> copies = editmesh::duplicateFaces(dp, {0, 4});
+    check(copies.size() == 2 && dp.faces.size() == 8 && dp.verts.size() == 8 + 6,
+          "duplicating two touching faces copies them with six corners of their own");
+    check(glm::length(dp.faceNormal(copies[0]) - dp.faceNormal(0)) < 1e-5f &&
+              glm::length(dp.faceCenter(copies[1]) - dp.faceCenter(4)) < 1e-5f,
+          "...sitting exactly on the originals, facing the same way");
+
+    // Recalculate outside.
+    EditMesh bad = box;
+    editmesh::flipFaces(bad, {0, 3});
+    check(!oriented(bad), "a box with two faces turned round is inconsistent");
+    const int turned = editmesh::recalcNormals(bad, {});
+    check(turned == 2 && oriented(bad), "recalculate turns exactly those two back");
+    check(glm::dot(bad.faceNormal(4), glm::vec3(0, 1, 0)) > 0.99f, "...and the box looks outward");
+    EditMesh inside = box;
+    editmesh::flipFaces(inside, {0, 1, 2, 3, 4, 5});
+    check(editmesh::recalcNormals(inside, {}) == 6 &&
+              glm::dot(inside.faceNormal(4), glm::vec3(0, 1, 0)) > 0.99f,
+          "a box turned inside out is turned right way out");
+
+    // Rings and loops.
+    check(editmesh::ringFaces(box, 0, 0).size() == 4, "the ring through a box face is four faces");
+    check(editmesh::edgeLoop(box, 4, 5).size() == 1,
+          "a box corner has three edges, so an edge loop stops there at once");
+    EditMesh cut = box;
+    editmesh::loopCut(cut, 0, 0, 0.5f);
+    const int nv = static_cast<int>(box.verts.size());
+    check(editmesh::edgeLoop(cut, nv, nv + 1).size() == 4 ||
+              editmesh::edgeLoop(cut, nv, nv + 2).size() == 4 ||
+              editmesh::edgeLoop(cut, nv, nv + 3).size() == 4,
+          "the loop a cut made runs all four edges round the box");
+    check(editmesh::edgeLoop(open, 7, 6).size() == 4, "from a border edge, the loop follows the border");
+}
+
 int main() {
     std::printf("modelcheck -- loop cut, per-face materials and texture placement\n");
     checkLoopCut();
@@ -531,6 +759,8 @@ int main() {
     checkCarry();
     checkFaceUv();
     checkVertsEdges();
+    checkNewTools();
+    checkBlenderOps();
     std::printf("\n%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

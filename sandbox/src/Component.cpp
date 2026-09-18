@@ -481,6 +481,65 @@ const std::vector<Property>& AudioSourceComponent::properties() {
     return props;
 }
 
+const std::vector<Property>& SynthComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto self = [](void* o) { return static_cast<SynthComponent*>(o); };
+        Property patch;
+        patch.label = "Patch"; patch.key = "patch"; patch.kind = PropKind::Text;
+        patch.field = [self](void* o) -> void* { return &self(o)->patch; };
+        p.push_back(std::move(patch));
+        Property midi;
+        midi.label = "MIDI song"; midi.key = "midi"; midi.kind = PropKind::Text;
+        midi.field = [self](void* o) -> void* { return &self(o)->midi; };
+        p.push_back(std::move(midi));
+        Property vol;
+        vol.label = "Volume"; vol.key = "volume"; vol.kind = PropKind::Float;
+        vol.slider = true; vol.min = 0.0f; vol.max = 1.0f; vol.fmt = "%.2f";
+        vol.field = [self](void* o) -> void* { return &self(o)->volume; };
+        p.push_back(std::move(vol));
+        Property pos;
+        pos.label = "Play on start"; pos.key = "playOnStart"; pos.kind = PropKind::Bool;
+        pos.field = [self](void* o) -> void* { return &self(o)->playOnStart; };
+        p.push_back(std::move(pos));
+        Property loop;
+        loop.label = "Loop song"; loop.key = "loopMidi"; loop.kind = PropKind::Bool;
+        loop.field = [self](void* o) -> void* { return &self(o)->loopMidi; };
+        p.push_back(std::move(loop));
+        Property voices;
+        voices.label = "Voices"; voices.key = "voices"; voices.kind = PropKind::Int;
+        voices.min = 1.0f; voices.max = 32.0f; voices.speed = 1.0f;
+        voices.field = [self](void* o) -> void* { return &self(o)->voices; };
+        p.push_back(std::move(voices));
+        Property ch;
+        ch.label = "Channel (0 = all)"; ch.key = "channel"; ch.kind = PropKind::Int;
+        ch.min = 0.0f; ch.max = 16.0f; ch.speed = 1.0f;
+        ch.field = [self](void* o) -> void* { return &self(o)->channel; };
+        p.push_back(std::move(ch));
+        Property drums;
+        drums.label = "Play drum channel"; drums.key = "drums"; drums.kind = PropKind::Bool;
+        drums.field = [self](void* o) -> void* { return &self(o)->drums; };
+        p.push_back(std::move(drums));
+        Property tempo;
+        tempo.label = "Tempo"; tempo.key = "tempo"; tempo.kind = PropKind::Float;
+        tempo.slider = true; tempo.min = 0.25f; tempo.max = 3.0f; tempo.fmt = "%.2fx";
+        tempo.field = [self](void* o) -> void* { return &self(o)->tempo; };
+        p.push_back(std::move(tempo));
+        Property sp;
+        sp.label = "Spatial (3D)"; sp.key = "spatial"; sp.kind = PropKind::Bool;
+        sp.field = [self](void* o) -> void* { return &self(o)->spatial; };
+        p.push_back(std::move(sp));
+        Property rad;
+        rad.label = "Radius"; rad.key = "radius"; rad.kind = PropKind::Float;
+        rad.slider = true; rad.min = 1.0f; rad.max = 150.0f; rad.fmt = "%.1f m";
+        rad.visible = [](const void* o) { return static_cast<const SynthComponent*>(o)->spatial; };
+        rad.field = [self](void* o) -> void* { return &self(o)->radius; };
+        p.push_back(std::move(rad));
+        return p;
+    }();
+    return props;
+}
+
 const std::vector<Property>& GridPositionComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -1857,6 +1916,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<TriggerSoundComponent>()); }});
         components::registerType({"audio_source", "Audio Source",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AudioSourceComponent>()); }});
+        components::registerType({"synth", "Synth",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SynthComponent>()); }});
         components::registerType({"mover", "Mover",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<MoverComponent>()); }});
         components::registerType({"spawner", "Spawner",

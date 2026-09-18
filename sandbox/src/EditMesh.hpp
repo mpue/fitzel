@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -241,6 +242,93 @@ int dissolveEdge(EditMesh& m, int a, int b);
 // numbered corner. Returns the cut face (as loopCut), -1 when no quad borders it.
 int loopCutEdge(EditMesh& m, int a, int b, float t);
 int loopLengthEdge(const EditMesh& m, int a, int b);
+
+// --- Several faces at once (EditMeshTools.cpp) ------------------------------
+// The face operations for a selection of faces. Each one KEEPS THE INDICES of
+// the faces it was handed -- the new geometry is appended -- so the host's
+// selection is still the same faces afterwards and pressing Extrude twice builds
+// two storeys of the same region. They return the first of `faces` (the one the
+// caller treats as active), -1 when none of them was a face.
+
+// Extrude the faces as one REGION: where two picked faces share an edge no wall
+// grows between them, and a corner they share moves once. Each corner moves
+// along the average of the picked normals around it, lengthened so every face
+// ends up `dist` out along its own normal (a box's top and front pulled out
+// together stay square).
+int extrudeFaces(EditMesh& m, const std::vector<int>& faces, float dist);
+// Slide them along those same directions, neighbours stretching to follow.
+int moveFaces(EditMesh& m, const std::vector<int>& faces, float dist);
+// Scale each connected group of them about ITS OWN centre: five windows on two
+// walls shrink in place, instead of all drifting towards a point between them.
+int scaleFaces(EditMesh& m, const std::vector<int>& faces, float factor);
+// Inset each face on its own.
+int insetFaces(EditMesh& m, const std::vector<int>& faces, float amount);
+// Subdivide each quad among them into four (other faces are left alone).
+int subdivideFaces(EditMesh& m, const std::vector<int>& faces);
+// Remove them all, leaving holes.
+void deleteFaces(EditMesh& m, const std::vector<int>& faces);
+// Turn them inside out: reverse the winding, so the normal points the other way.
+// The cure for a face that is dark from outside or invisible from one side.
+int flipFaces(EditMesh& m, const std::vector<int>& faces);
+
+// --- Making faces --------------------------------------------------------------
+
+// A new face through these corners (three or more). They are ordered round their
+// centre in the plane they lie closest to, so the order they were picked in does
+// not matter; it is wound to agree with the faces it borders, or -- touching
+// none -- to face away from the middle of the mesh. Returns the new face, -1 when
+// the corners are fewer than three, in a line, or already a face.
+int makeFace(EditMesh& m, const std::vector<int>& verts);
+
+// Close the hole whose rim runs through border edge (a, b): the whole rim is
+// walked, so one picked edge is enough. Returns the new face, -1 when (a, b) is
+// not on a border or the rim does not close.
+int fillHole(EditMesh& m, int a, int b);
+
+// Split the face that has both corners a and b in two along a new edge between
+// them. The corners must not be neighbours already. Returns the half that keeps
+// the face's index, -1 when no face has both.
+int connectVerts(EditMesh& m, int a, int b);
+
+// Merge those of these corners that lie within `dist` of each other ("merge by
+// distance"): the tidy-up after snapping corners together by hand. Returns how
+// many corners went.
+int weldVerts(EditMesh& m, const std::vector<int>& idx, float dist);
+
+// Bevel these edges: each is replaced by a strip `width` wide -- flat with one
+// segment, rounded with more -- and the corners they meet at are cut back to
+// fit. Only edges with a face on both sides can be bevelled. The width is
+// measured along the neighbouring edges and held below half of the shortest,
+// so two bevels on one face never cross. Returns how many edges were bevelled.
+int bevelEdges(EditMesh& m, const std::vector<std::pair<int, int>>& edges,
+               float width, int segments);
+
+// --- For the Blender-style modelling mode (ModelingKeys.cpp) ------------------
+
+// Pull these edges out into new quads (Blender's E on edges): every corner of
+// them gets a copy, and each edge a quad joining it to its copy. The copies sit
+// where the originals are -- the caller moves them. Returns the new edges, in
+// the order given, as (copy of a, copy of b).
+std::vector<std::pair<int, int>> extrudeEdges(EditMesh& m,
+                                              const std::vector<std::pair<int, int>>& edges);
+
+// Copy these faces with corners of their own (Shift+D). Returns the copies'
+// indices, in the order given; they sit exactly on the originals.
+std::vector<int> duplicateFaces(EditMesh& m, const std::vector<int>& faces);
+
+// Make the winding agree across every edge, then turn each connected piece so
+// its faces look outward ("Recalculate Outside"). `faces` empty means all of
+// them. Returns how many faces were flipped.
+int recalcNormals(EditMesh& m, const std::vector<int>& faces);
+
+// The faces of the band a loop cut would split (Alt+click in face mode).
+std::vector<int> ringFaces(const EditMesh& m, int face, int dir);
+
+// The edge loop through edge (a, b) (Alt+click in edge mode): on through every
+// corner where four edges meet, taking the edge that shares no face with the
+// one it came along -- or, from a border edge, round the border. Each edge as
+// (lower, higher) corner.
+std::vector<std::pair<int, int>> edgeLoop(const EditMesh& m, int a, int b);
 
 // Shift the mesh so its bounding box is centred on the object's origin, and
 // report the shift (in the mesh's own space). Callers move the entity by the

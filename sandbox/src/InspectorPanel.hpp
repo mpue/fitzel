@@ -34,6 +34,8 @@ namespace fitzel { class TerrainStreamer; }
 //
 // Editor-only, and it has no `show` flag: Inspector is always open, like
 // Hierarchy.
+class SynthSystem;
+
 namespace inspectorui {
 
 // A script's exported parameters (its module-level globals), as scanned from the
@@ -139,6 +141,10 @@ struct PanelState {
     // way its "Edit graph..." button reaches the editor that draws them.
     std::vector<animgraph::Graph>& graphs;
     bool&         showGraphEditor;
+
+    // The Synth card's preview: it plays the object's synth right here, in the
+    // editor, through the same players Play uses.
+    SynthSystem*  synths = nullptr;
 };
 
 void drawPanel(const PanelState& s);

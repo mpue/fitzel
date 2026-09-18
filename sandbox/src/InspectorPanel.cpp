@@ -1,6 +1,8 @@
 #include "InspectorPanel.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <initializer_list>
 #include <cstdio>
 #include <filesystem>
 #include <string>
@@ -19,10 +21,12 @@
 #include "MultiShot.hpp"
 #include "ParticleSystem.hpp"
 #include "PrefabSystem.hpp"
+#include "Pictogram.hpp"
 #include "PropertyMeta.hpp"
 #include "RaceGrid.hpp"
 #include "RoadSet.hpp"
 #include "ScriptSystem.hpp"
+#include "SynthSystem.hpp"
 #include "TimelinePanel.hpp"   // the key diamond, shared with the Timeline
 #include <fitzel/world/Terrain.hpp>
 #include "UiStyle.hpp"
@@ -84,6 +88,90 @@ void animProp(const PanelState& s, const Property& pr, void* owner, const char* 
         s.history.touch();
     }
 }
+
+// --- The Synth card -------------------------------------------------------------
+
+// The project's files of one kind under content/<folder>/, by name -- what the
+// Synth panel saves patches as and where songs are put. Read from disk only
+// while the combo is open.
+std::vector<std::string> projectFiles(const std::string& projectFile, const char* folder,
+                                      std::initializer_list<const char*> exts) {
+    std::vector<std::string> out;
+    if (projectFile.empty()) return out;
+    const std::filesystem::path dir =
+        std::filesystem::path(projectFile).parent_path() / "content" / folder;
+    std::error_code ec;
+    for (const auto& de : std::filesystem::directory_iterator(dir, ec)) {
+        if (!de.is_regular_file(ec)) continue;
+        std::string ext = de.path().extension().string();
+        for (char& ch : ext) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        for (const char* e : exts)
+            if (ext == e) out.push_back(de.path().filename().string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// A combo over those files. A name that is not there is said so, the same
+// way the sound pickers do it: a missing file looks like a working one until
+// Play, and then it is silence.
+void fileCombo(const char* label, std::string& field, const std::string& projectFile,
+               const char* folder, std::initializer_list<const char*> exts) {
+    if (ImGui::BeginCombo(label, field.empty() ? "(none)" : field.c_str())) {
+        if (ImGui::Selectable("(none)", field.empty())) field.clear();
+        const std::vector<std::string> names = projectFiles(projectFile, folder, exts);
+        for (const std::string& n : names)
+            if (ImGui::Selectable(n.c_str(), field == n)) field = n;
+        if (names.empty())
+            ImGui::TextDisabled("Nothing in content/%s yet", folder);
+        ImGui::EndCombo();
+    }
+    if (!field.empty() && !projectFile.empty()) {
+        std::filesystem::path f = std::filesystem::path(projectFile).parent_path() /
+                                  "content" / folder / field;
+        std::error_code ec;
+        if (!std::filesystem::exists(f, ec) && !f.has_extension()) {
+            f += *exts.begin();
+        }
+        if (!std::filesystem::exists(f, ec))
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "Missing: content/%s/%s",
+                               folder, field.c_str());
+    }
+}
+
+void synthCard(const PanelState& s, SynthComponent& sy, int id) {
+    fileCombo("Patch", sy.patch, s.currentProject, "patches", {".json"});
+    fileCombo("MIDI song", sy.midi, s.currentProject, "midi", {".mid", ".midi"});
+    for (const Property& pr : sy.props())
+        if (pr.key != "patch" && pr.key != "midi" && pr.key != "voices" && pr.key != "channel")
+            animProp(s, pr, &sy, sy.typeId());
+
+    // Whole numbers with a plus and a minus, never a drag (UiStyle.hpp).
+    float voices = static_cast<float>(sy.voices);
+    if (ui::stepper("##synthVoices", voices, 1.0f, 1.0f, 32.0f, "%.0f voices"))
+        sy.voices = static_cast<int>(voices);
+    float channel = static_cast<float>(sy.channel);
+    if (ui::stepper("##synthChannel", channel, 1.0f, 0.0f, 16.0f,
+                    sy.channel == 0 ? "all channels" : "channel %.0f"))
+        sy.channel = static_cast<int>(channel);
+
+    // Hear it here, without entering Play. Reloads the files, so an edit saved
+    // from the Synth panel is what plays.
+    if (!s.synths) return;
+    const bool running = s.synths->running(id);
+    if (picto::button("##synthPreview", picto::Icon::Play, "Play it here",
+                      !sy.patch.empty(), running))
+        s.synths->play(id, true);
+    ImGui::SameLine();
+    if (picto::button("##synthStop", picto::Icon::Stop, "Stop", running))
+        s.synths->stop(id);
+    if (!s.synths->lastError().empty() && !running) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f), "%s",
+                           s.synths->lastError().c_str());
+    }
+}
+
 
 } // namespace
 
@@ -615,6 +703,8 @@ void drawPanel(const PanelState& s) {
                     ImGui::SameLine();
                     if (ImGui::Button("Stop##audiosrc")) s.stopAudioSource(be.id);
                     ImGui::EndDisabled();
+                } else if (auto* sy = dynamic_cast<SynthComponent*>(c)) {
+                    synthCard(s, *sy, be.id);
                 } else if (auto* cam = dynamic_cast<CameraComponent*>(c)) {
                     // FOV from metadata; the Main Camera button marks this
                     // the view Play and the exported game start from,

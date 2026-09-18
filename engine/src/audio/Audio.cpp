@@ -17,6 +17,8 @@
 
 #include "fitzel/asset/Vfs.hpp"
 
+#include "AudioInternal.hpp"
+
 namespace fitzel {
 
 namespace {
@@ -90,13 +92,6 @@ FitzelVfs g_vfs{{vfsOpen, nullptr, vfsClose, vfsRead, nullptr, vfsSeek, vfsTell,
 
 } // namespace
 
-struct Audio::Impl {
-    ma_engine       engine;
-    ma_sound_group  sfx;        // one-shot bus (mixer "SFX" channel)
-    bool            sfxOk = false;
-    bool            ok    = false;
-};
-
 Audio::Audio(int outputChannels) : m_impl(std::make_unique<Impl>()) {
     ma_engine_config cfg    = ma_engine_config_init();
     cfg.pResourceManagerVFS = &g_vfs;
@@ -164,15 +159,25 @@ void Audio::playOneShot(const std::string& path) {
                              m_impl->sfxOk ? &m_impl->sfx : nullptr);
 }
 
+// The engine voice lives and dies with the Impl, not with the Sound that
+// happens to hold it. That distinction is the whole bug this replaced: the
+// uninit used to sit in ~Sound, and the defaulted move ASSIGNMENT never runs
+// ~Sound on what it overwrites -- it only frees the old Impl. So
+// `snd = Sound::fromFile(...)` over a live sound freed its memory while the
+// voice stayed hooked into the mixer graph, and the audio thread went on reading
+// it: the "never re-load a playing Sound, it crashes" rule every audio file in
+// the sandbox has been working around. With the uninit here, replacing a sound
+// is just replacing a sound.
 struct Sound::Impl {
     ma_sound sound;
     bool     valid = false;
+    ~Impl() {
+        if (valid) ma_sound_uninit(&sound);
+    }
 };
 
 Sound::Sound()  = default;
-Sound::~Sound() {
-    if (m_impl && m_impl->valid) ma_sound_uninit(&m_impl->sound);
-}
+Sound::~Sound() = default;
 
 Sound::Sound(Sound&& other) noexcept            = default;
 Sound& Sound::operator=(Sound&& other) noexcept = default;

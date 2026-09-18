@@ -31,11 +31,15 @@ struct Selection {
     Mode                             mode = Mode::Face;
     std::vector<int>                 verts;   // vertex mode
     std::vector<std::pair<int, int>> edges;   // edge mode, (lower, higher) corner
+    // Face mode: every picked face. The ACTIVE one -- the one the material, the
+    // UV panel and the loop cut act on -- is the host's faceSel, which is always
+    // in here too (validate() sees to that).
+    std::vector<int>                 faces;
     bool                             additive = false;   // clicks add instead of replace
     int                              owner    = -1;      // entity the indices belong to
 
-    bool any() const { return !verts.empty() || !edges.empty(); }
-    void clear() { verts.clear(); edges.clear(); }
+    bool any() const { return !verts.empty() || !edges.empty() || !faces.empty(); }
+    void clear() { verts.clear(); edges.clear(); faces.clear(); }
 };
 
 // The amounts the operations apply, shared by the panel and the toolbar. They
@@ -49,12 +53,27 @@ struct Amounts {
     float loopAt  = 0.5f;    // where a loop cut falls, 0..1
     int   loopDir = 0;       // which of the two bands through a quad
     float nudge   = 0.25f;   // metres per click of the nudge arrows
+    float bevel   = 0.1f;    // bevel width, metres
+    float bevelSegs = 1.0f;  // 1 = a flat chamfer, more = rounded (a whole number)
+    float weld    = 0.01f;   // corners closer than this merge
 };
 Amounts& amounts();
 
 // Drop indices that no longer mean anything: the selection moved to another
-// object (`ownerId`), or an undo left the mesh smaller than the indices.
-void validate(Selection& s, int ownerId, const EditMesh* mesh);
+// object (`ownerId`), or an undo left the mesh smaller than the indices. With
+// `faceSel` it also keeps the picked faces and the active one agreeing: no
+// active face means none picked, and an active face is always among them.
+void validate(Selection& s, int ownerId, const EditMesh* mesh, int* faceSel = nullptr);
+
+// The picked faces, the active one first. What every face operation is handed.
+std::vector<int> selectedFaces(const Selection& s, const EditMesh& m, int faceSel);
+
+// Everything, in the current mode (every corner / edge / face).
+void selectAll(Selection& s, const EditMesh& m, int& faceSel);
+// One ring more: the faces sharing an edge with a picked face, the corners one
+// edge from a picked corner, the edges touching a picked edge. Pressed a few
+// times it picks a whole side without aiming at every piece of it.
+void grow(Selection& s, const EditMesh& m, int& faceSel);
 
 // Switch between vertex, edge and face selection, carrying what is selected
 // across (a face becomes its corners, corners become the face they close...).
@@ -86,6 +105,33 @@ Hit pick(const EditMesh& m, const View& v, ImVec2 mouse, Mode mode);
 // A click at `h`. Returns true when the mesh took it (the caller then does not
 // go on to select objects).
 bool click(Selection& s, int& faceSel, const Hit& h, bool additive);
+
+// --- Blender-style picking (the modelling mode, ModelingKeys.cpp) ------------
+
+// Everything in the screen rectangle a..b that is in view (not hidden behind the
+// mesh): corners inside it, edges with both ends inside, faces turned towards
+// the camera whose centre is inside. Replaces, adds to or takes from the pick.
+enum class BoxOp { Set, Add, Subtract };
+void boxSelect(Selection& s, int& faceSel, const EditMesh& m, const View& v,
+               ImVec2 a, ImVec2 b, BoxOp op);
+
+// Alt+click: the loop through what is under the pointer -- the edge loop in edge
+// and vertex mode, the ring of faces across the nearest edge in face mode.
+// Returns false when there was nothing there.
+bool loopSelect(Selection& s, int& faceSel, const EditMesh& m, const View& v,
+                ImVec2 mouse, bool add);
+
+// Everything joined to the pointer's element (L; `under` the pointer's hit) or
+// to what is picked already (Ctrl+L; `under` null), added to the pick.
+void selectLinked(Selection& s, int& faceSel, const EditMesh& m, const Hit* under);
+// Ctrl+I, and Ctrl+Numpad minus: the pick turned inside out, one ring less.
+void invert(Selection& s, int& faceSel, const EditMesh& m);
+void shrink(Selection& s, int& faceSel, const EditMesh& m);
+
+// A world point on the viewport (false behind the camera), and the ray under a
+// pixel -- the two conversions every pointer-driven operation is made of.
+bool toScreen(const View& v, const glm::vec3& world, ImVec2& out);
+void rayThrough(const View& v, ImVec2 px, glm::vec3& ro, glm::vec3& rd);
 
 // An operation as the preview runs it: on a copy of the mesh.
 using Op = std::function<int(EditMesh&)>;

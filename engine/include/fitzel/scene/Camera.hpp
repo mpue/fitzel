@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include <glm/glm.hpp>
 
 namespace fitzel {
@@ -16,6 +18,24 @@ public:
 
     glm::mat4 viewMatrix() const;
     glm::mat4 projectionMatrix(float aspect) const;
+    // The same lens over another depth range (shadow cascades, the far terrain).
+    glm::mat4 projectionMatrix(float aspect, float nearZ, float farZ) const;
+
+    // Orthographic projection: parallel rays, no foreshortening. The eye still
+    // sits at position() and the near plane still clips in front of it -- the
+    // picture is the perspective one flattened, so flying and picking keep
+    // working unchanged. What the lens covers is orthoHalfHeight(): half the
+    // view's height in metres, whatever the distance.
+    bool  orthographic() const { return m_ortho; }
+    void  setOrthographic(bool on) { m_ortho = on; }
+    float orthoHalfHeight() const { return m_orthoHalfH; }
+    void  setOrthoHalfHeight(float h) { m_orthoHalfH = std::max(h, 0.01f); }
+
+    // World metres one pixel spans at `dist` metres in front of the eye, for a
+    // viewport `viewportH` pixels tall. The one question a drag, a pan or a
+    // "how big is this on screen" test asks of the lens; in ortho the distance
+    // drops out.
+    float metresPerPixel(float dist, float viewportH) const;
 
     void processKeyboard(Direction dir, float deltaSeconds);
     void processMouse(float deltaX, float deltaY, bool constrainPitch = true);
@@ -79,6 +99,8 @@ private:
     float m_fovDegrees = 60.0f;
     float m_near       = 0.1f;
     float m_far        = 600.0f;
+    bool  m_ortho      = false;
+    float m_orthoHalfH = 10.0f;
 };
 
 } // namespace fitzel
