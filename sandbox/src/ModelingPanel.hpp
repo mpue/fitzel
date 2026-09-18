@@ -12,6 +12,7 @@
 #include "SceneTypes.hpp"    // MaterialDef (a face is dressed from the library)
 
 class MeshComponent;
+class SplineSystem;
 
 // The editor's Modeling panel: a small box modeller in one FLOATING window over
 // the viewport, next to the thing being shaped rather than docked at the edge of
@@ -61,6 +62,11 @@ struct PanelState {
 
     // Live read-outs for the header (0 when nothing is selected).
     int faceCount = 0, vertCount = 0;
+
+    // The 3D cursor (world), one of the points a spin can turn about.
+    glm::vec3 cursor{0.0f};
+    // The scene's spline paths, for duplicating along one. Null: none offered.
+    const SplineSystem* splines = nullptr;
 };
 
 void drawPanel(const PanelState& s);

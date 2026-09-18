@@ -8,7 +8,7 @@ set(SANDBOX_RUNTIME_SOURCES
     # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
     # the shipped player has to be able to build and draw it too. Only the panel
     # that edits one is editor-only.
-    src/EditMesh.cpp src/EditMeshTools.cpp
+    src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
     src/ModelLibrary.cpp
     src/SandboxMath.cpp
     src/CameraPath.cpp
@@ -190,6 +190,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/MeshPaintPanel.cpp
     src/ModelingKeys.cpp
     src/ModelingPanel.cpp
+    src/ModelingSweep.cpp
     # Vertex/edge/face selection, the viewport overlay and the floating toolbar.
     src/ModelingTools.cpp
     # Building and hearing a synth patch. The patches themselves are runtime
@@ -335,7 +336,7 @@ target_link_libraries(audiocheck PRIVATE fitzel)
 #  name -- Component.cpp calls into it, so anything that links the components
 #  links this too. It pulls in nothing of its own.)
 add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
-                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
@@ -361,7 +362,7 @@ target_link_libraries(weathercheck PRIVATE fitzel glm::glm
 add_executable(autosavecheck tools/autosavecheck.cpp src/Autosave.cpp
                              src/ProjectIO.cpp src/GameSettings.cpp
                              src/Selection.cpp
-                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                              src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(autosavecheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(autosavecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
@@ -374,7 +375,7 @@ target_link_libraries(autosavecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # by looking at the viewport. Built with FITZEL_PLAYER, like the other harnesses.
 #   build/release/bin/meshpaintcheck.exe
 add_executable(meshpaintcheck tools/meshpaintcheck.cpp src/MeshPaint.cpp
-                              src/EditMesh.cpp src/EditMeshTools.cpp src/SandboxMath.cpp
+                              src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp
                               src/CameraPath.cpp src/Component.cpp
                               src/Primitives.cpp src/PropertyMeta.cpp
                               src/MultiShot.cpp)
@@ -390,7 +391,7 @@ target_link_libraries(meshpaintcheck PRIVATE fitzel nlohmann_json::nlohmann_json
 # the cut is planar and leaves the surface closed, and that a dressing survives
 # every operation and the scene file.
 #   build/release/bin/modelcheck.exe
-add_executable(modelcheck tools/modelcheck.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+add_executable(modelcheck tools/modelcheck.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp
                           src/Component.cpp src/Primitives.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
@@ -418,7 +419,7 @@ target_link_libraries(synthcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 add_executable(synthplaycheck tools/synthplaycheck.cpp
                               src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
                               src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
-                              src/EditMesh.cpp src/EditMeshTools.cpp src/MultiShot.cpp src/SandboxMath.cpp)
+                              src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
 target_include_directories(synthplaycheck PRIVATE src)
 target_compile_definitions(synthplaycheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(synthplaycheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
@@ -440,7 +441,7 @@ target_link_libraries(importcheck PRIVATE fitzel)
 # pose" look identical in a screenshot. This is where the difference is caught.
 #   build/release/bin/softcheck.exe
 add_executable(softcheck tools/softcheck.cpp src/SoftBodySystem.cpp
-                         src/EditMesh.cpp src/EditMeshTools.cpp src/SandboxMath.cpp src/CameraPath.cpp
+                         src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/SandboxMath.cpp src/CameraPath.cpp
                          src/Component.cpp src/Primitives.cpp src/PropertyMeta.cpp
                          src/MultiShot.cpp)
 target_compile_definitions(softcheck PRIVATE FITZEL_PLAYER)
@@ -461,7 +462,7 @@ add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp
                          src/ProjectIO.cpp src/GameSettings.cpp
                          src/Selection.cpp
                          src/ModelLibrary.cpp src/Component.cpp
-                         src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                         src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(viewcheck PRIVATE FITZEL_PLAYER
     # The same engine content root the editor falls back to, so a material's
@@ -521,7 +522,7 @@ add_executable(levelcheck tools/levelcheck.cpp
                           src/LevelGen.cpp src/SandboxMath.cpp
                           src/RoadSide.cpp src/RoadLoop.cpp
                           src/CityGen.cpp src/BuildingGen.cpp
-                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(levelcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(levelcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
@@ -554,7 +555,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
                          src/RoadSide.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
-                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp
                          src/SandboxMath.cpp)
 target_compile_definitions(roadcheck PRIVATE FITZEL_PLAYER
@@ -584,7 +585,7 @@ add_executable(prefabeditcheck tools/prefabeditcheck.cpp
                                src/ProjectIO.cpp src/GameSettings.cpp
                                src/SceneGraph.cpp src/Selection.cpp
                                src/ModelLibrary.cpp src/Component.cpp
-                               src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                               src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                                src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(prefabeditcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(prefabeditcheck PRIVATE fitzel imgui stb_headers
@@ -603,7 +604,7 @@ add_executable(splineplacecheck tools/splineplacecheck.cpp
                                 src/ProjectIO.cpp src/GameSettings.cpp
                                 src/SceneGraph.cpp src/Selection.cpp
                                 src/ModelLibrary.cpp src/Component.cpp
-                                src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                                src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                                 src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(splineplacecheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(splineplacecheck PRIVATE fitzel imgui stb_headers
@@ -619,7 +620,7 @@ target_link_libraries(splineplacecheck PRIVATE fitzel imgui stb_headers
 # assets.
 #   build/release/bin/gridcheck.exe
 add_executable(gridcheck tools/gridcheck.cpp src/RaceGrid.cpp src/SandboxMath.cpp
-                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(gridcheck PRIVATE fitzel glm::glm
                                         nlohmann_json::nlohmann_json)
@@ -636,7 +637,7 @@ target_compile_definitions(gridcheck PRIVATE FITZEL_PLAYER)
 #   build/release/bin/camcheck.exe
 add_executable(camcheck tools/camcheck.cpp src/CameraSystem.cpp src/SceneGraph.cpp
                         src/SandboxMath.cpp src/Component.cpp src/Primitives.cpp
-                        src/EditMesh.cpp src/EditMeshTools.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+                        src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(camcheck PRIVATE fitzel imgui glm::glm
                                        nlohmann_json::nlohmann_json)
 target_compile_definitions(camcheck PRIVATE FITZEL_PLAYER)
@@ -732,7 +733,7 @@ target_link_libraries(capturecheck PRIVATE fitzel stb_headers)
 # Nothing in the editor fails visibly when this breaks, so it is measured rather
 # than looked at. Pure bookkeeping on a list: no GL, no window, no assets.
 add_executable(selcheck tools/selcheck.cpp src/Selection.cpp src/Component.cpp
-                        src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/PropertyMeta.cpp
+                        src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/PropertyMeta.cpp
                         src/MultiShot.cpp)
 target_link_libraries(selcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(selcheck PRIVATE FITZEL_PLAYER)
@@ -745,7 +746,7 @@ target_compile_definitions(selcheck PRIVATE FITZEL_PLAYER)
 # missing one does nothing at all -- neither of which looks like a bug on screen.
 # Arithmetic and a lookup: no GL, no window, no assets.
 add_executable(animcheck tools/animcheck.cpp src/AnimSystem.cpp src/Component.cpp
-                         src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/PropertyMeta.cpp
+                         src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/PropertyMeta.cpp
                          src/MultiShot.cpp)
 target_link_libraries(animcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(animcheck PRIVATE FITZEL_PLAYER)

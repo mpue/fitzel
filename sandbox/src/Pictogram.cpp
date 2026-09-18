@@ -537,6 +537,91 @@ void draw(ImDrawList* dl, Icon icon, ImVec2 c, float r, ImU32 col) {
         }
         break;
     }
+    case Icon::Spin: {
+        // An upright profile on the right, the path it sweeps round a dashed
+        // axis, and a faint copy of it where the sweep has got to.
+        const ImVec2 axTop = at(c, r, 0.0f, -0.95f), axBot = at(c, r, 0.0f, 0.95f);
+        for (int i = 0; i < 6; ++i) {
+            const float u0 = i / 6.0f, u1 = (i + 0.5f) / 6.0f;
+            dl->AddLine(ImVec2(axTop.x, axTop.y + (axBot.y - axTop.y) * u0),
+                        ImVec2(axTop.x, axTop.y + (axBot.y - axTop.y) * u1), fade(col, 0.45f), t * 0.7f);
+        }
+        const float rx = 0.78f, ry = 0.3f, cy = 0.3f;
+        ImVec2 pts[25];
+        const int   n  = 24;
+        const float a1 = 1.55f * kPi;
+        for (int i = 0; i <= n; ++i) {
+            const float a = a1 * static_cast<float>(i) / static_cast<float>(n);
+            pts[i] = at(c, r, std::cos(a) * rx, cy + std::sin(a) * ry);
+        }
+        dl->AddPolyline(pts, n + 1, col, ImDrawFlags_None, t);
+        const ImVec2 d(pts[n].x - pts[n - 1].x, pts[n].y - pts[n - 1].y);
+        const float  dl2 = std::max(1e-3f, std::hypot(d.x, d.y));
+        arrowHead(dl, pts[n], ImVec2(d.x / dl2, d.y / dl2), r * 0.3f, col);
+        dl->AddLine(at(c, r, -rx, cy), at(c, r, -rx, cy - 1.0f), fade(col, 0.4f), t);
+        dl->AddLine(at(c, r, rx, cy), at(c, r, rx, cy - 1.0f), col, t * 1.6f);
+        dl->AddCircleFilled(at(c, r, rx, cy), r * 0.13f, col, 8);
+        dl->AddCircleFilled(at(c, r, rx, cy - 1.0f), r * 0.13f, col, 8);
+        break;
+    }
+    case Icon::Duplicate: {
+        // A face and its copy, offset: the one behind faint, the new one solid.
+        dl->AddRect(at(c, r, -0.88f, -0.88f), at(c, r, 0.3f, 0.3f), fade(col, 0.55f), 0.0f, 0, t * 0.8f);
+        dl->AddRectFilled(at(c, r, -0.3f, -0.3f), at(c, r, 0.88f, 0.88f), fade(col, 0.5f));
+        dl->AddRect(at(c, r, -0.3f, -0.3f), at(c, r, 0.88f, 0.88f), col, 0.0f, 0, t);
+        break;
+    }
+    case Icon::DuplicatePath: {
+        // A winding path with copies standing along it.
+        const ImVec2 p0 = at(c, r, -0.92f, 0.7f), p1 = at(c, r, -0.25f, -1.1f);
+        const ImVec2 p2 = at(c, r, 0.25f, 1.1f),  p3 = at(c, r, 0.92f, -0.7f);
+        dl->AddBezierCubic(p0, p1, p2, p3, fade(col, 0.6f), t * 0.8f, 20);
+        for (float u : {0.1f, 0.5f, 0.9f}) {
+            const float  v = 1.0f - u;
+            const ImVec2 q(v * v * v * p0.x + 3 * v * v * u * p1.x + 3 * v * u * u * p2.x + u * u * u * p3.x,
+                           v * v * v * p0.y + 3 * v * v * u * p1.y + 3 * v * u * u * p2.y + u * u * u * p3.y);
+            const float  s = r * 0.24f;
+            dl->AddRectFilled(ImVec2(q.x - s, q.y - s), ImVec2(q.x + s, q.y + s), col);
+        }
+        break;
+    }
+    case Icon::AlignPath: {
+        // A bend with an arrow following it: "turn with the path".
+        const ImVec2 p0 = at(c, r, -0.85f, 0.8f), p1 = at(c, r, -0.85f, -0.4f);
+        const ImVec2 p2 = at(c, r, -0.2f, -0.75f), p3 = at(c, r, 0.55f, -0.75f);
+        dl->AddBezierCubic(p0, p1, p2, p3, col, t, 16);
+        arrowHead(dl, at(c, r, 0.92f, -0.75f), ImVec2(1.0f, 0.0f), r * 0.38f, col);
+        break;
+    }
+    case Icon::PivotOrigin: {
+        // The object, and the point in its middle it turns about.
+        drawBox(dl, box(c, r), fade(col, 0.5f), t * 0.7f);
+        dl->AddCircleFilled(c, r * 0.22f, col, 12);
+        dl->AddCircle(c, r * 0.38f, col, 14, t * 0.8f);
+        break;
+    }
+    case Icon::PivotSelection: {
+        // What is picked, and the middle of it.
+        dashedRect(dl, at(c, r, -0.85f, -0.85f), at(c, r, 0.85f, 0.85f), col, t * 0.8f, r * 0.14f);
+        dl->AddCircleFilled(at(c, r, -0.85f, -0.85f), r * 0.14f, fade(col, 0.7f), 8);
+        dl->AddCircleFilled(at(c, r, 0.85f, 0.85f), r * 0.14f, fade(col, 0.7f), 8);
+        dl->AddCircleFilled(c, r * 0.22f, col, 12);
+        plus(dl, c, r * 0.45f, col, t * 0.8f);
+        break;
+    }
+    case Icon::PivotCursor: {
+        // Blender's 3D cursor: a ring of alternating dashes with ticks.
+        const float R = r * 0.55f;
+        for (int s = 0; s < 8; ++s) {
+            dl->PathArcTo(c, R, s * kPi * 0.25f, (s + 1) * kPi * 0.25f, 6);
+            dl->PathStroke(s % 2 ? fade(col, 0.4f) : col, ImDrawFlags_None, t);
+        }
+        dl->AddLine(at(c, r, 0.0f, -0.95f), at(c, r, 0.0f, -0.7f), col, t);
+        dl->AddLine(at(c, r, 0.0f, 0.95f), at(c, r, 0.0f, 0.7f), col, t);
+        dl->AddLine(at(c, r, -0.95f, 0.0f), at(c, r, -0.7f, 0.0f), col, t);
+        dl->AddLine(at(c, r, 0.95f, 0.0f), at(c, r, 0.7f, 0.0f), col, t);
+        break;
+    }
     case Icon::Pencil: {
         const ImVec2 p0 = at(c, r, 0.72f, -0.52f), p1 = at(c, r, 0.52f, -0.72f);
         const ImVec2 p2 = at(c, r, -0.48f, 0.28f), p3 = at(c, r, -0.28f, 0.48f);

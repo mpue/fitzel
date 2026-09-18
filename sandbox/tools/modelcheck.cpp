@@ -752,6 +752,170 @@ void checkBlenderOps() {
     check(editmesh::edgeLoop(open, 7, 6).size() == 4, "from a border edge, the loop follows the border");
 }
 
+// One quad in the XY plane, facing +Z: corners 0 (x0,0) 1 (x1,0) 2 (x1,1) 3 (x0,1).
+EditMesh plane(float x0, float x1) {
+    EditMesh m;
+    m.verts = {{x0, 0, 0}, {x1, 0, 0}, {x1, 1, 0}, {x0, 1, 0}};
+    m.faces = {{0, 1, 2, 3}};
+    m.syncPaint();
+    m.syncFaceMat();
+    m.syncFaceUv();
+    return m;
+}
+
+float radiusXZ(const glm::vec3& p) { return std::sqrt(p.x * p.x + p.z * p.z); }
+
+void checkSweep() {
+    std::printf("\nSpin and copies\n");
+    const float     kPi  = 3.14159265f;
+    const glm::mat4 I(1.0f);
+    const glm::vec3 Y(0, 1, 0);
+
+    // A full turn of the plane's outer edge (x = 2) round Y: an open tube.
+    EditMesh tube = plane(1.0f, 2.0f);
+    tube.setFaceMaterial(0, idA());
+    const glm::mat4 st = editmesh::spinStep(I, glm::vec3(0.0f), Y, 2.0f * kPi, 0.0f, 12);
+    check(editmesh::spinCloses(2.0f * kPi, 0.0f) && !editmesh::spinCloses(2.0f * kPi, 1.0f) &&
+              !editmesh::spinCloses(kPi, 0.0f),
+          "only a full turn without rise closes");
+    const auto end = editmesh::spinEdges(tube, {{1, 2}}, st, 12, true);
+    check(tube.faces.size() == 13 && tube.verts.size() == 4 + 2 * 11,
+          "a closed 12-step turn lays 12 quads and copies each end 11 times, not 12");
+    check(end.size() == 1 && end[0] == std::make_pair(1, 2),
+          "...and hands back the edge it started from");
+    check(noDoubledVerts(tube) && arraysInStep(tube), "...no doubled corners at the seam, arrays in step");
+    bool onRadius = true, outward = true;
+    for (int f = 1; f < static_cast<int>(tube.faces.size()); ++f) {
+        for (int v : tube.faces[f]) onRadius = onRadius && std::fabs(radiusXZ(tube.verts[v]) - 2.0f) < 1e-4f;
+        const glm::vec3 c = tube.faceCenter(f);
+        outward = outward && glm::dot(tube.faceNormal(f), glm::normalize(glm::vec3(c.x, 0, c.z))) > 0.9f;
+    }
+    check(onRadius, "every corner of the tube stays 2 m from the axis");
+    check(outward, "...and it looks out, continuing the face the edge came from");
+    int wearing = 0;
+    for (int f = 1; f < static_cast<int>(tube.faces.size()); ++f) wearing += tube.faceMaterial(f) == idA();
+    check(wearing == 12, "...dressed like that face, too");
+    EditMesh tubeOnly = tube;
+    editmesh::deleteFace(tubeOnly, 0);
+    check(consistent(tubeOnly) && borderEdges(tubeOnly) == 24,
+          "the tube alone is wound consistently, open only at its two rims");
+
+    // A quarter turn, open: the plane and the new strip meet like neighbours.
+    EditMesh quarter = plane(1.0f, 2.0f);
+    const auto qe = editmesh::spinEdges(
+        quarter, {{1, 2}}, editmesh::spinStep(I, glm::vec3(0.0f), Y, 0.5f * kPi, 0.0f, 3), 3, false);
+    check(quarter.faces.size() == 4 && consistent(quarter),
+          "a quarter turn in three steps: three quads, wound with the face beside them");
+    bool quarterEnd = qe.size() == 1;
+    if (quarterEnd)
+        for (int v : {qe[0].first, qe[0].second})
+            quarterEnd = quarterEnd && std::fabs(quarter.verts[v].x) < 1e-4f &&
+                         std::fabs(std::fabs(quarter.verts[v].z) - 2.0f) < 1e-4f;
+    check(quarterEnd, "...and hands back the edge where it stopped, a quarter round");
+
+    // A corner on the axis stays one corner: the bottom edge sweeps a disc of
+    // triangles, the two edges together a disc and a wall, wound as one piece.
+    EditMesh disc = plane(0.0f, 1.0f);
+    const glm::mat4 st8 = editmesh::spinStep(I, glm::vec3(0.0f), Y, 2.0f * kPi, 0.0f, 8);
+    editmesh::spinEdges(disc, {{0, 1}}, st8, 8, true);
+    bool tris = disc.faces.size() == 9;
+    for (int f = 1; f < static_cast<int>(disc.faces.size()); ++f) tris = tris && disc.faces[f].size() == 3;
+    check(tris && disc.verts.size() == 4 + 7,
+          "an edge from the axis sweeps a fan of triangles; the corner on the axis is not copied");
+    EditMesh cup = plane(0.0f, 1.0f);
+    editmesh::spinEdges(cup, {{0, 1}, {1, 2}}, st8, 8, true);
+    check(cup.faces.size() == 1 + 16 && cup.verts.size() == 4 + 14 && noDoubledVerts(cup),
+          "two edges in a row: bottom and wall, the corner they share copied once per step");
+    EditMesh cupOnly = cup;
+    editmesh::deleteFace(cupOnly, 0);
+    check(consistent(cupOnly) && borderEdges(cupOnly) == 8,
+          "...one consistently wound cup, open only at its rim");
+    check(glm::dot(cupOnly.faceNormal(0), Y) < -0.9f,
+          "...whose bottom looks down, out of the cup");
+
+    // A screw: a full turn that rises does not close, and ends one rise higher.
+    EditMesh screw = plane(1.0f, 2.0f);
+    const auto se = editmesh::spinEdges(
+        screw, {{1, 2}}, editmesh::spinStep(I, glm::vec3(0.0f), Y, 2.0f * kPi, 1.5f, 12), 12, false);
+    bool risen = se.size() == 1;
+    if (risen) {
+        const glm::vec3 a = screw.verts[se[0].first], b = screw.verts[se[0].second];
+        risen = std::fabs(std::min(a.y, b.y) - 1.5f) < 1e-3f && std::fabs(std::max(a.y, b.y) - 2.5f) < 1e-3f &&
+                std::fabs(a.x - 2.0f) < 1e-3f && std::fabs(a.z) < 1e-3f;
+    }
+    check(risen && screw.verts.size() == 4 + 2 * 12, "a turn with 1.5 m of rise ends right above where it began");
+
+    // A spin in a transformed object is the world's spin: an object scaled 2x in
+    // X still sweeps a round tube in the world, not an oval.
+    const glm::mat4 M = glm::translate(I, glm::vec3(5, 0, 0)) * glm::scale(I, glm::vec3(2, 1, 1));
+    EditMesh obj = plane(-0.5f, 0.5f);   // world x from 4 to 6
+    editmesh::spinEdges(obj, {{1, 2}}, editmesh::spinStep(M, glm::vec3(5, 0, 0), Y, 2.0f * kPi, 0.0f, 12), 12, true);
+    bool round = true;
+    for (const glm::vec3& v : obj.verts) {
+        if (std::fabs(v.x + 0.5f) < 1e-4f && std::fabs(v.z) < 1e-4f) continue;   // the inner edge
+        const glm::vec3 w(M * glm::vec4(v, 1.0f));
+        round = round && std::fabs(radiusXZ(w - glm::vec3(5, 0, 0)) - 1.0f) < 1e-4f;
+    }
+    check(round, "in a scaled object the sweep is round in the world");
+
+    EditMesh none = plane(1.0f, 2.0f);
+    check(editmesh::spinEdges(none, {{0, 2}}, st, 12, true).empty() && none.faces.size() == 1,
+          "a pair of corners that is no edge sweeps nothing");
+    EditMesh axisOnly = plane(0.0f, 1.0f);
+    check(editmesh::spinEdges(axisOnly, {{0, 3}}, st, 12, true).empty() && axisOnly.faces.size() == 1,
+          "an edge lying on the axis sweeps nothing");
+
+    // Copies at transforms.
+    const EditMesh box = EditMesh::box(glm::vec3(0.5f));
+    EditMesh row = box;
+    row.setFaceMaterial(4, idA());
+    std::vector<glm::mat4> xs;
+    for (int k = 1; k <= 3; ++k) xs.push_back(glm::translate(I, glm::vec3(1.5f * k, 0, 0)));
+    const std::vector<int> cp = editmesh::duplicateFacesAt(row, {4}, xs);
+    check(cp.size() == 3 && row.faces.size() == 9 && row.verts.size() == 8 + 12 && arraysInStep(row),
+          "three copies of the top: three faces with four corners each");
+    bool placed = cp.size() == 3;
+    for (int k = 0; placed && k < 3; ++k)
+        placed = glm::length(row.faceCenter(cp[k]) - (box.faceCenter(4) + glm::vec3(1.5f * (k + 1), 0, 0))) < 1e-5f &&
+                 row.faceMaterial(cp[k]) == idA();
+    check(placed, "...each where its transform put it, wearing the original's material");
+    EditMesh mir = box;
+    const auto mc = editmesh::duplicateFacesAt(mir, {2}, {glm::scale(I, glm::vec3(-1, 1, 1))});
+    check(mc.size() == 1 && glm::dot(mir.faceNormal(mc[0]), glm::vec3(-1, 0, 0)) > 0.99f,
+          "a mirrored copy of the +X side looks out along -X, not into the box");
+    EditMesh whole = box;
+    const auto wc = editmesh::duplicateFacesAt(whole, {0, 1, 2, 3, 4, 5},
+                                               {glm::translate(I, glm::vec3(0, 0, 3))});
+    check(wc.size() == 6 && oriented(whole) && closed(whole) && whole.verts.size() == 16,
+          "a copy of a whole box is a second closed box beside it");
+
+    // Places along a path.
+    const std::vector<glm::vec3> straight = {{0, 0, 0}, {4, 0, 0}, {10, 0, 0}};
+    const auto fr = editmesh::framesAlong(straight, false, 3, true);
+    check(fr.size() == 3 && glm::length(glm::vec3(fr[0][3]) - glm::vec3(0, 0, 0)) < 1e-5f &&
+              glm::length(glm::vec3(fr[1][3]) - glm::vec3(5, 0, 0)) < 1e-5f &&
+              glm::length(glm::vec3(fr[2][3]) - glm::vec3(10, 0, 0)) < 1e-5f,
+          "three places on an open line: both ends and the middle, by length not by point");
+    check(glm::length(glm::vec3(fr[1][0]) - glm::vec3(1, 0, 0)) < 1e-5f &&
+              glm::length(glm::vec3(fr[1][1]) - Y) < 1e-5f,
+          "...each with X along the line and Y up");
+    const std::vector<glm::vec3> square = {{0, 0, 0}, {4, 0, 0}, {4, 0, 4}, {0, 0, 4}};
+    const auto fs = editmesh::framesAlong(square, true, 4, true);
+    check(fs.size() == 4 && glm::length(glm::vec3(fs[2][3]) - glm::vec3(4, 0, 4)) < 1e-5f &&
+              glm::length(glm::vec3(fs[3][0]) - glm::vec3(0, 0, -1)) < 1e-5f,
+          "four places round a closed square: its corners, the seam not doubled, turning with it");
+    const auto ramp = editmesh::framesAlong({{0, 0, 0}, {3, 3, 0}}, false, 2, true);
+    const glm::mat3 R(ramp[0]);
+    check(ramp.size() == 2 && std::fabs(glm::determinant(R) - 1.0f) < 1e-4f &&
+              std::fabs(glm::dot(R[0], R[1])) < 1e-5f && R[1].y > 0.7f,
+          "on a ramp the frame leans with it and stays a rotation");
+    const auto flat = editmesh::framesAlong(square, true, 4, false);
+    check(glm::mat3(flat[3]) == glm::mat3(1.0f), "without aligning, a place only moves");
+    check(std::fabs(editmesh::lineLength(square, true) - 16.0f) < 1e-5f &&
+              std::fabs(editmesh::lineLength(square, false) - 12.0f) < 1e-5f,
+          "a closed line is one side longer than the same line open");
+}
+
 int main() {
     std::printf("modelcheck -- loop cut, per-face materials and texture placement\n");
     checkLoopCut();
@@ -761,6 +925,7 @@ int main() {
     checkVertsEdges();
     checkNewTools();
     checkBlenderOps();
+    checkSweep();
     std::printf("\n%d checks, %d failed\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }
