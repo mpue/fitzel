@@ -330,6 +330,56 @@ std::vector<int> ringFaces(const EditMesh& m, int face, int dir);
 // (lower, higher) corner.
 std::vector<std::pair<int, int>> edgeLoop(const EditMesh& m, int a, int b);
 
+// --- Spin and copies (EditMeshSweep.cpp) ------------------------------------
+// Operations Blender has as tools rather than keys. Each takes its transforms
+// already in MESH space: the panel works them out in the world (an axis, the
+// 3D cursor, a spline), and conjugating by the object's transform is its job,
+// not the mesh's.
+
+// Sweep these edges round, `steps` times the transform `step` (spinStep builds
+// one): a profile turned on a lathe. Between every edge and its next position
+// lies a quad. Edges that share corners sweep as one strip, wound one way along
+// it -- taken from the face beside it where the strip runs along a border, so
+// the new surface continues that face instead of meeting it back to front.
+//
+// A corner the step does not move (one ON the axis) is not copied: the quads
+// beside it close into triangles, a cone's tip rather than a pinch of slivers.
+// `close` joins the last step back to the edges themselves (a full turn) instead
+// of laying new corners on top of the first ones.
+//
+// Returns where the profile ended up -- the last copies of the edges, (lower,
+// higher) corner -- or the edges themselves after a closed turn. Empty when no
+// edge could be swept.
+std::vector<std::pair<int, int>> spinEdges(EditMesh& m,
+                                           const std::vector<std::pair<int, int>>& edges,
+                                           const glm::mat4& step, int steps, bool close);
+
+// One step of a spin, in mesh space: `angle` radians (the WHOLE turn, split
+// over `steps`) about the world line through `centre` along `axis`, plus `rise`
+// metres (also the whole) along that axis -- a screw, a spiral stair. `model`
+// is mesh -> world. With `rise` 0 and a full turn the sweep closes (see
+// spinCloses).
+glm::mat4 spinStep(const glm::mat4& model, const glm::vec3& centre, const glm::vec3& axis,
+                   float angle, float rise, int steps);
+bool spinCloses(float angle, float rise);
+
+// Copies of these faces, one set per transform (mesh space), each with corners
+// of its own. A mirroring transform winds its copy the other way round, so a
+// mirrored copy still looks out. Returns the new faces, set after set.
+std::vector<int> duplicateFacesAt(EditMesh& m, const std::vector<int>& faces,
+                                  const std::vector<glm::mat4>& xforms);
+
+// `count` places spread evenly along a polyline (world space, e.g. a spline
+// path's centreline): both ends included on an open line, the seam not repeated
+// on a closed one. Each is a frame -- origin on the line and, with `align`, X
+// along the line and Y as close to up as the slope allows; without it, the
+// world's own axes. Empty when the line is shorter than two points.
+std::vector<glm::mat4> framesAlong(const std::vector<glm::vec3>& line, bool closed,
+                                   int count, bool align);
+
+// Length of a polyline (closing segment included when `closed`).
+float lineLength(const std::vector<glm::vec3>& line, bool closed);
+
 // Shift the mesh so its bounding box is centred on the object's origin, and
 // report the shift (in the mesh's own space). Callers move the entity by the
 // same amount so nothing appears to jump: this is what keeps the entity's

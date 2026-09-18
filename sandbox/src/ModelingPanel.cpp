@@ -12,25 +12,70 @@
 #include <imgui.h>
 
 #include "Component.hpp"
+#include "ModelingPanelParts.hpp"
 #include "Pictogram.hpp"
 #include "UiStyle.hpp"
 
 namespace modelui {
 
-namespace {
-
-using modeltools::Mode;
-using modeltools::Op;
-
 // --- Metrics ------------------------------------------------------------------
 // Sizes follow the UI font, never fixed pixels: the editor runs at whatever font
 // size and display scale the user picked, and a 40 px button clips its label at
 // 150 %.
-float em() { return ImGui::GetFontSize(); }
+float parts::em() { return ImGui::GetFontSize(); }
 // Tall enough for a two-line label ("Extrude / 0.50 m"), which every operation
 // button gets -- so the rows line up and the targets stay large.
-float btnH() { return em() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f + 4.0f; }
-float smallH() { return ImGui::GetFrameHeight() + em() * 0.35f; }
+float parts::btnH() { return em() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f + 4.0f; }
+float parts::smallH() { return ImGui::GetFrameHeight() + em() * 0.35f; }
+void  parts::gap() { ImGui::SameLine(0.0f, 14.0f); }
+
+// The amount controls are ui::stepper (UiStyle.hpp): the same number field the
+// rest of the editor uses, and the same rule -- clicks, never a drag.
+//
+// One operation: a picture of what it does, and under it the amount it
+// applies. Both the same width, so a row of operations reads as columns rather
+// than as a heap. `amount` may be null for an operation that has no number
+// (Subdivide, Delete). `badge`, when given, is a small number in the corner --
+// how many faces a loop cut would split, which is worth seeing before pressing.
+bool parts::opColumn(const char* id, picto::Icon icon, bool enabled, const char* tip,
+                     const modeltools::Op& previewOp, float* amount, float step, float lo,
+                     float hi, const char* fmt, const char* badge) {
+    const float w = std::max(btnH(), amount ? ui::stepperWidth(fmt) : 0.0f);
+    ImGui::BeginGroup();
+    const bool clicked = picto::buttonSized(id, icon, tip, enabled, false, ImVec2(w, btnH()));
+    if (enabled && previewOp && ImGui::IsItemHovered()) modeltools::preview(previewOp);
+    if (badge && *badge) {
+        const ImVec2 mx = ImGui::GetItemRectMax();
+        const ImVec2 ts = ImGui::CalcTextSize(badge);
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(mx.x - ts.x - 4.0f, mx.y - ts.y - 2.0f),
+            ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled), badge);
+    }
+    if (amount) ui::stepper(id, *amount, step, lo, hi, fmt, w);
+    ImGui::EndGroup();
+    return clicked;
+}
+
+void parts::captionColumn(const char* id, const char* caption, const char* tip, float& value,
+                          float step, float lo, float hi, const char* fmt) {
+    const float w = ui::stepperWidth(fmt);
+    ImGui::BeginGroup();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, btnH()));
+    const ImVec2 ts = ImGui::CalcTextSize(caption);
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (btnH() - ts.y) * 0.5f),
+        ImGui::GetColorU32(ImGuiCol_TextDisabled), caption);
+    if (tip) ImGui::SetItemTooltip("%s", tip);
+    ui::stepper(id, value, step, lo, hi, fmt, w);
+    ImGui::EndGroup();
+}
+
+namespace {
+
+using modeltools::Mode;
+using modeltools::Op;
+using namespace parts;
 
 // The filter inside the face-material picker. One buffer: only one popup is open
 // at a time, and it starts empty each time so the picker never opens already
@@ -65,36 +110,8 @@ bool modeButton(const char* id, picto::Icon icon, bool on, const char* tip) {
     return picto::button(id, icon, tip, true, on, btnH());
 }
 
-// The amount controls are ui::stepper (UiStyle.hpp): the same number field the
-// rest of the editor uses, and the same rule -- clicks, never a drag.
 using ui::stepper;
 using ui::stepperWidth;
-
-// One operation: a picture of what it does, and under it the amount it
-// applies. Both the same width, so a row of operations reads as columns rather
-// than as a heap. `amount` may be null for an operation that has no number
-// (Subdivide, Delete). `badge`, when given, is a small number in the corner --
-// how many faces a loop cut would split, which is worth seeing before pressing.
-bool opColumn(const char* id, picto::Icon icon, bool enabled, const char* tip,
-              const Op& previewOp, float* amount, float step, float lo, float hi,
-              const char* fmt, const char* badge = nullptr) {
-    const float w = std::max(btnH(), amount ? stepperWidth(fmt) : 0.0f);
-    ImGui::BeginGroup();
-    const bool clicked = picto::buttonSized(id, icon, tip, enabled, false, ImVec2(w, btnH()));
-    if (enabled && previewOp && ImGui::IsItemHovered()) modeltools::preview(previewOp);
-    if (badge && *badge) {
-        const ImVec2 mx = ImGui::GetItemRectMax();
-        const ImVec2 ts = ImGui::CalcTextSize(badge);
-        ImGui::GetWindowDrawList()->AddText(
-            ImVec2(mx.x - ts.x - 4.0f, mx.y - ts.y - 2.0f),
-            ImGui::GetColorU32(enabled ? ImGuiCol_Text : ImGuiCol_TextDisabled), badge);
-    }
-    if (amount) stepper(id, *amount, step, lo, hi, fmt, w);
-    ImGui::EndGroup();
-    return clicked;
-}
-
-void gap() { ImGui::SameLine(0.0f, 14.0f); }
 
 } // namespace
 
@@ -481,22 +498,11 @@ void drawPanel(const PanelState& s) {
                          opBv, &am.bevel, 0.02f, 0.01f, 5.0f, "%.2f m"))
                 run("Bevel", opBv, [&s](int) { s.sel.clear(); });
             ImGui::SameLine();
-            {
-                // How round: a stepper under a caption rather than a second
-                // button -- it is the bevel's setting, not an operation.
-                const float w = stepperWidth("%.0f seg");
-                ImGui::BeginGroup();
-                const ImVec2 p = ImGui::GetCursorScreenPos();
-                ImGui::Dummy(ImVec2(w, btnH()));
-                const char* cap = segs > 1 ? "rounded" : "flat";
-                const ImVec2 ts = ImGui::CalcTextSize(cap);
-                ImGui::GetWindowDrawList()->AddText(
-                    ImVec2(p.x + (w - ts.x) * 0.5f, p.y + (btnH() - ts.y) * 0.5f),
-                    ImGui::GetColorU32(ImGuiCol_TextDisabled), cap);
-                ImGui::SetItemTooltip("Bevel segments\n1 cuts a flat chamfer, more round it off.");
-                stepper("bevelsegs", am.bevelSegs, 1.0f, 1.0f, 8.0f, "%.0f seg", w);
-                ImGui::EndGroup();
-            }
+            // How round: a stepper under a caption rather than a second button --
+            // it is the bevel's setting, not an operation.
+            captionColumn("bevelsegs", segs > 1 ? "rounded" : "flat",
+                          "Bevel segments\n1 cuts a flat chamfer, more round it off.",
+                          am.bevelSegs, 1.0f, 1.0f, 8.0f, "%.0f seg");
             ImGui::SameLine();
             std::vector<int> endsMf;
             for (const auto& e : es) { endsMf.push_back(e.first); endsMf.push_back(e.second); }
@@ -519,6 +525,9 @@ void drawPanel(const PanelState& s) {
                          opFh, nullptr, 0.0f, 0.0f, 0.0f, nullptr))
                 run("Fill hole", opFh, [&s](int) { s.sel.clear(); });
         }
+
+        // --- Spin, duplicate, duplicate along a path (ModelingSweep.cpp) -----
+        sweepTools(s, pending);
 
         // --- Nudge: exact steps along the world axes -------------------------
         // A click moves what is picked by exactly the step. This is the drag-free

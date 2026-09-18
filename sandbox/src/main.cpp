@@ -14304,6 +14304,7 @@ int main(int argc, char** argv) {
                     },
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                     mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
+                    cursor3D, &splines,
                 });
                 ImGui::EndDisabled();
             }

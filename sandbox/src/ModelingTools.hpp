@@ -56,6 +56,28 @@ struct Amounts {
     float bevel   = 0.1f;    // bevel width, metres
     float bevelSegs = 1.0f;  // 1 = a flat chamfer, more = rounded (a whole number)
     float weld    = 0.01f;   // corners closer than this merge
+
+    // Spin: the whole turn, how many steps it is laid in, how far it climbs
+    // along the axis on the way (0 = a lathe, more = a screw), the WORLD axis it
+    // turns about (0..2) and what the axis runs through.
+    enum class Pivot { Origin, Selection, Cursor };
+    float spinAngle = 360.0f;  // degrees
+    float spinSteps = 12.0f;   // a whole number
+    float spinRise  = 0.0f;    // metres
+    int   spinAxis  = 1;       // Y: a lathe stands upright
+    Pivot spinPivot = Pivot::Origin;
+
+    // Duplicate: how many copies, which way (0..5 = -X +X -Y +Y -Z +Z, world)
+    // and the gap between one copy and the next -- 0 lays them edge to edge.
+    float dupCount = 1.0f;
+    int   dupDir   = 1;
+    float dupGap   = 0.0f;
+
+    // Duplicate along a spline path: which path (index into the scene's
+    // splines), how many copies spread along it, and whether they turn with it.
+    int   pathIndex = 0;
+    float pathCount = 8.0f;
+    bool  pathAlign = true;
 };
 Amounts& amounts();
 

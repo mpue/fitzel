@@ -35,6 +35,9 @@ enum class Icon {
     Extrude, MoveNormal, Inset, ScaleFace, LoopCutH, LoopCutV, Subdivide,
     Merge, SplitEdge, Collapse, Dissolve, Pencil,
     Bevel, MakeFace, FillHole, Connect, Flip, Weld, Grow,
+    Spin, Duplicate, DuplicatePath, AlignPath,
+    // modelling: what a spin turns about
+    PivotOrigin, PivotSelection, PivotCursor,
     // directions
     Nudge, ArrowLeft, ArrowRight, ArrowUp, ArrowDown, ArrowIn, ArrowOut,
 };
