@@ -327,6 +327,7 @@ input[type=range]::-moz-range-thumb{
 }
 .checks td:last-child{color:var(--ink-2);line-height:1.5}
 .tablewrap{overflow-x:auto}
+.sec > *{min-width:0}
 
 .stacktable{width:100%;border-collapse:collapse;font-size:15.5px}
 .stacktable td{padding:11px 16px 11px 0;border-top:1px solid var(--line);vertical-align:baseline}
@@ -344,6 +345,15 @@ input[type=range]::-moz-range-thumb{
   font-family:var(--f-mono);font-size:11.5px;line-height:1.55;color:var(--ink-3);
   padding:11px 14px;
 }
+.duo{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:2px;background:var(--line)}
+.duo figure{background:var(--surface);margin:0}
+.duo img{display:block;width:100%;height:auto}
+.duo figcaption{font-family:var(--f-mono);font-size:11.5px;line-height:1.55;color:var(--ink-3);padding:11px 14px}
+.games{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:1px}
+.games div{box-shadow:0 0 0 1px var(--line);background:var(--surface);padding:16px 18px 18px;font-size:14.5px;line-height:1.5;color:var(--ink-2)}
+.games b{display:block;color:var(--ink);font-family:var(--f-mono);font-size:12px;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px}
+@media (max-width:1280px){.topnav{gap:13px}.topnav a{font-size:10.5px;letter-spacing:.08em}}
+@media (max-width:1120px){.topnav{display:none}}
 .compare .bad figcaption b{color:#E2705F}
 .compare .good figcaption b{color:var(--green)}
 .compare figcaption b{display:block;font-weight:500;letter-spacing:.09em;text-transform:uppercase;font-size:10.5px;margin-bottom:5px}
@@ -407,10 +417,13 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
     </a>
     <nav class="topnav">
       <a href="#welt"><span class="de">Welt</span><span class="en">World</span></a>
+      <a href="#landschaft"><span class="de">Landschaft</span><span class="en">Landscape</span></a>
       <a href="#editor"><span class="de">Editor</span><span class="en">Editor</span></a>
+      <a href="#modellieren"><span class="de">Modellieren</span><span class="en">Modelling</span></a>
       <a href="#bild"><span class="de">Bild</span><span class="en">Picture</span></a>
       <a href="#offline"><span class="de">Offline</span><span class="en">Offline</span></a>
       <a href="#animation"><span class="de">Animation</span><span class="en">Animation</span></a>
+      <a href="#spiel"><span class="de">Spiel</span><span class="en">Game</span></a>
       <a href="#pruefen"><span class="de">Pr&#252;fen</span><span class="en">Checks</span></a>
       <a href="#ausliefern"><span class="de">Ausliefern</span><span class="en">Shipping</span></a>
     </nav>
@@ -449,9 +462,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
 
 <div class="stats">
   <div class="stats-in">
-    <div class="stat"><b><span class="de">87.700</span><span class="en">87,700</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
-    <div class="stat"><b>43</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
-    <div class="stat"><b>22</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
+    <div class="stat"><b><span class="de">127.800</span><span class="en">127,800</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
+    <div class="stat"><b>71</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
+    <div class="stat"><b>33</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
     <div class="stat"><b>14</b><span class="de">Abh&#228;ngigkeiten &#8212; keine im Repo</span><span class="en">Dependencies &#8212; none vendored</span></div>
     <div class="stat"><b>0</b><span class="de">systemweite Installationen</span><span class="en">System-wide installs</span></div>
   </div>
@@ -548,7 +561,81 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Vegetation auf der GPU</b><b class="en">Vegetation on the GPU</b>
           <span class="de">Gras und B&#228;ume als Tile-gestreutes Instancing, das mit dem Streaming-Radius mitwandert.</span>
           <span class="en">Grass and trees as tile-streamed instanced scatter that follows the streaming radius.</span></li>
+        <li><b class="de">Stra&#223;en, die sich treffen</b><b class="en">Roads that meet</b>
+          <span class="de">Kreuzungen werden nicht gebaut, sondern gefunden: jede Stra&#223;e wird f&#252;r sich verfolgt, die Schnittpunkte ergeben Einm&#252;ndungen und Kreuzungen &#8212; ein zweites Build ist identisch mit dem ersten.</span>
+          <span class="en">Junctions are found, not built: each road is traced on its own, the crossings among the traces become junctions and T-joins &#8212; and a second Build over them is identical to the first.</span></li>
+        <li><b class="de">Ein Rundkurs aus einem Seed</b><b class="en">A circuit from one seed</b>
+          <span class="de">Landschaft, geschlossene Strecke, Rennlogik und Ausstattung aus einer Zahl &#8212; rein berechnet, deshalb misst <code>levelcheck</code> ein paar hundert Seeds ohne Fenster.</span>
+          <span class="en">Landscape, closed track, race logic and dressing from one number &#8212; pure by construction, so <code>levelcheck</code> measures a few hundred seeds with no window open.</span></li>
+        <li><b class="de">Objekte entlang eines Pfads</b><b class="en">Objects along a path</b>
+          <span class="de">Ein nackter Pfad tr&#228;gt nichts &#8212; au&#223;er Kopien eines Objekts oder Prefabs alle N Meter, als echte Entities, in einem Undo-Schritt, vorher im Viewport angezeigt.</span>
+          <span class="en">A bare path carries nothing &#8212; except copies of an object or prefab every N metres, as real entities, in one undo step, previewed in the viewport first.</span></li>
       </ul>
+    </div>
+  </section>
+
+
+  <!-- ============ LANDSCHAFT ============ -->
+  <section class="sec reveal" id="landschaft">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Landschaft</p><p class="eyebrow en">Landscape</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Ein Tal bis zum Horizont &#8212; und etwas lebt darin.</h2>
+      <h2 class="en">A valley out to the horizon &#8212; with something living in it.</h2>
+
+      <div class="prose de">
+        <p>Eine Landschaft von ein paar hundert Metern endete im Dunst am Rand des gestreamten Rings und las sich wie ein Garten. Jetzt zeichnet dieselbe H&#246;henfunktion <strong>f&#252;nf verschachtelte Ringe bis 30 km</strong> hinaus, mit Gebirgsz&#252;gen um ein Tal, dessen Boden unangetastet bleibt &#8212; Skulptieren, Malen und Pflanzen funktionieren dort wie vorher. Eine echte Sonnenbahn aus Breitengrad und Deklination legt die T&#228;ler abends in den Schatten der Berge, w&#228;hrend die Gipfel noch gl&#252;hen.</p>
+        <p>Und das Tal ist bewohnt: Starenschw&#228;rme, Schwalben dicht &#252;ber der Wiese, Greifv&#246;gel in der Thermik, Schmetterlinge von Bl&#252;te zu Bl&#252;te, Fische, die Ringe ins Wasser springen, eine grasende Herde &#8212; und darunter ein Klangteppich aus synthetisierten Vogelstimmen, Grillen und Laub im Wind. Alles davon wird pro Szene eingeschaltet; alte Szenen sehen aus wie vorher.</p>
+      </div>
+      <div class="prose en">
+        <p>A landscape a few hundred metres across ended in haze at the edge of the streamed ring and read as a garden. Now the same height function is drawn as <strong>five nested rings out to 30 km</strong>, with mountain ranges around a valley whose floor is left exactly as it was &#8212; sculpting, paint and planting work there as before. A real sun path from latitude and declination puts the valleys into the mountains' shadow in the evening while the summits still glow.</p>
+        <p>And the valley is inhabited: starling flocks, swallows hawking low over the meadow, raptors circling in thermals, butterflies going bloom to bloom, fish jumping rings into the water, a grazing herd &#8212; and under it all a soundscape of synthesised birdsong, crickets and leaves in the wind. All of it is switched on per scene; old scenes look as they did.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/valley.jpg" alt="Ein Alpental mit Fluss, hohem Gras und grasenden Pferden vor Gebirgsz&#252;gen" loading="lazy">
+        <figcaption class="de">Ein Standbild aus dem Play-Modus, von <code>--shots</code> an einer festen Kamera aufgenommen. Die Pferde sind ein animiertes Modell des Projekts, jedes auf eigener Uhr; ihr Tempo wird an den Hufen gemessen, damit sie gehen statt zu gleiten. Die Berge dahinter sind Fernterrain, keine Kulisse.</figcaption>
+        <figcaption class="en">A still from Play, taken by <code>--shots</code> from a fixed camera. The horses are the project's own animated model, each on its own clock; their pace is measured from the hooves so they walk instead of gliding. The mountains behind are far terrain, not a backdrop.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Wald aus einer Regel</b><b class="en">A forest from one rule</b>
+          <span class="de">Eine &#214;kologie entscheidet, wo Wald steht &#8212; Best&#228;nde mit ausgefransten R&#228;ndern, Wiesen, Solit&#228;rb&#228;ume, Hang, Baumgrenze, Wasser &#8212;, bitgleich auf CPU und GPU. Nahe B&#228;ume sind Meshes, der Rest Impostoren bis 1,6 km.</span>
+          <span class="en">One ecology decides where forest stands &#8212; stands with ragged edges, meadows, solitary trees, slope, tree line, water &#8212; bit-identical on CPU and GPU. Near trees are meshes, the rest impostors out to 1.6 km.</span></li>
+        <li><b class="de">LODs, die niemand modelliert</b><b class="en">LODs nobody models</b>
+          <span class="de">Quadric-Error-Kantenkollaps f&#252;r die Rinde, stochastisches Ausd&#252;nnen f&#252;r Blattkarten. Baumschatten in der Beispielszene: 164 M auf 21 M Dreiecke pro Frame.</span>
+          <span class="en">Quadric-error edge collapse for bark, stochastic pruning for leaf cards. Tree shadows in the sample scene: 164 M down to 21 M triangles a frame.</span></li>
+        <li><b class="de">Eine Luft f&#252;r alles</b><b class="en">One air for everything</b>
+          <span class="de">Richtung, St&#228;rke und B&#246;en als Feld, das mit 7 m/s &#252;ber die Wiese l&#228;uft: das Gras zeigt seine hellere Seite, der Wald antwortet einen Moment sp&#228;ter.</span>
+          <span class="en">Direction, strength and gusts as a field carried downwind at 7 m/s: the grass shows its paler side, and the wood answers a moment later.</span></li>
+        <li><b class="de">Wolken und Berge werfen Schatten</b><b class="en">Clouds and mountains cast shadows</b>
+          <span class="de">Die Cumulus-Dichte wird jeden Frame zur Sonne gemarcht, auf eine 16-km-Bodenkarte; eine 8-km-Karte sagt, wie hoch ein Punkt reichen muss, um die Sonne &#252;ber den K&#228;mmen zu sehen.</span>
+          <span class="en">The cumulus density is marched towards the sun every frame into a 16 km ground map; an 8 km map says how high a point must reach to see the sun over the ridges.</span></li>
+        <li><b class="de">Tiere als Instanzen</b><b class="en">Wildlife as instances</b>
+          <span class="de">Ein instanzierter Draw pro K&#246;rperart, Fl&#252;gel im Vertex-Shader gestellt, beleuchtet und im Schatten von Sonne und Wolken.</span>
+          <span class="en">One instanced draw per body type, wings posed in the vertex shader, lit and in the sun's and the clouds' shadow.</span></li>
+        <li><b class="de">Klang, der die Uhrzeit kennt</b><b class="en">Sound that knows the hour</b>
+          <span class="de">S&#228;nger setzen sich auf B&#228;ume in der N&#228;he und wiederholen ihr Lied; Morgenchor, Mittagsruhe, D&#228;mmerung &#8212; und Regen l&#228;sst sie verstummen.</span>
+          <span class="en">Singers settle on nearby trees and repeat their song; dawn chorus, midday lull, dusk &#8212; and rain silences them.</span></li>
+      </ul>
+
+      <div class="duo reveal">
+        <figure>
+          <img src="img/forest.jpg" alt="Luftbild: Waldbest&#228;nde und Wiesen, ein Fluss, Gebirge bis zum Horizont" loading="lazy">
+          <figcaption><span class="de">Von oben: Best&#228;nde und Wiesen aus der &#214;kologie, der Fluss aus einem Spline, Fernterrain bis zum Horizont.</span><span class="en">From above: stands and meadows from the ecology, a river from a spline, far terrain to the horizon.</span></figcaption>
+        </figure>
+        <figure>
+          <img src="img/herd.jpg" alt="Ein Pferd grast am Flussufer" loading="lazy">
+          <figcaption><span class="de">Die Herde bleibt beisammen, sucht frisches Gras und meidet das Wasser. Das Gras weicht ihr aus.</span><span class="en">The herd keeps together, walks to fresh grass and keeps off the water. The grass parts around it.</span></figcaption>
+        </figure>
+        <figure>
+          <img src="img/alpenglow.jpg" alt="Abendlicht &#252;ber einem See, die Gipfel im letzten Licht" loading="lazy">
+          <figcaption><span class="de">Abends auf 47&#176; Breite: das Tal liegt im Bergschatten, die Gipfel noch nicht.</span><span class="en">Evening at 47&#176; latitude: the valley is in the mountains' shadow, the summits not yet.</span></figcaption>
+        </figure>
+      </div>
     </div>
   </section>
 
@@ -581,6 +668,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
           <span class="de">Nichts einzuschalten, nichts zu lernen.</span><span class="en">Nothing to switch on, nothing to learn.</span></div>
         <div><b class="de">Play kann nichts kaputt machen</b><b class="en">Play cannot break anything</b>
           <span class="de">Szene und Materialien werden kopiert und zur&#252;ckgestellt.</span><span class="en">Scene and materials are copied and restored.</span></div>
+        <div><b class="de">Ein gefundener Wert bleibt</b><b class="en">A value once found stays</b>
+          <span class="de">Strg rastert das Gizmo: aufs Gitter, in 15&#176;- und 10-%-Schritten.</span><span class="en">Ctrl snaps the gizmo: to the grid, in 15&#176; and 10 % steps.</span></div>
       </div>
     </div>
 
@@ -589,6 +678,56 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <figcaption class="de">Hierarchie, Inspector, Asset-Browser, Materialbibliothek und ein Frame-Zeit-Panel, das nicht nur FPS zeigt, sondern wohin die Zeit geht &#8212; Shadows, Present, Draw-Aufrufe, sichtbar gegen gecullt.</figcaption>
       <figcaption class="en">Hierarchy, inspector, asset browser, material library &#8212; and a frame-time panel that reports not just FPS but where the time went: shadows, present, draw calls, visible versus culled.</figcaption>
     </figure>
+  </section>
+
+
+  <!-- ============ MODELLIEREN ============ -->
+  <section class="sec reveal" id="modellieren">
+    <div class="rail"><div class="rail-in">
+      <span class="marker"></span>
+      <p class="eyebrow de">Modellieren</p><p class="eyebrow en">Modelling</p>
+    </div></div>
+
+    <div class="stack">
+      <h2 class="de">Modellieren wie in Blender &#8212; oder mit Kn&#246;pfen, die nicht wandern.</h2>
+      <h2 class="en">Model the Blender way &#8212; or with buttons that stay put.</h2>
+
+      <div class="prose de">
+        <p>Tab macht aus einem Kasten ein Mesh, und der Viewport spricht Blender: <code>1</code>/<code>2</code>/<code>3</code> f&#252;r Ecken, Kanten, Fl&#228;chen; <code>G</code>/<code>R</code>/<code>S</code> mit Achsen und getippten Werten; <code>E</code>, <code>I</code>, <code>Strg+B</code>, <code>Strg+R</code>, <code>Shift+D</code>, <code>F</code>, <code>J</code>, <code>M</code>, <code>X</code>. Modale Operationen ver&#228;ndern das echte Mesh, solange sie laufen &#8212; Esc stellt alles zur&#252;ck, Enter bucht einen Undo-Schritt. Au&#223;erhalb des Modus gilt die gewohnte Belegung unver&#228;ndert: niemand muss Blender kennen, um den Editor zu benutzen.</p>
+        <p>Dasselbe Werkzeug gibt es f&#252;r H&#228;nde, die nicht ziehen wollen: ein <strong>schwebendes Panel</strong> mit Piktogramm-Kn&#246;pfen, jeder Wert mit &#8722;/+ daneben. Ein Knopf unter dem Zeiger zeigt vorher als Geist, was er tun wird &#8212; cyan, was dazukommt, rot, was wegf&#228;llt &#8212;, und die Kanten, die eine Aktion ge&#228;ndert hat, blitzen danach kurz auf. Das Fenster w&#228;chst nur nach rechts und unten: als zentrierte Leiste verschoben sich die Kn&#246;pfe beim Moduswechsel, und im Test traf der n&#228;chste Klick den Nachbarn.</p>
+      </div>
+      <div class="prose en">
+        <p>Tab turns a box into a mesh and the viewport speaks Blender: <code>1</code>/<code>2</code>/<code>3</code> for corners, edges, faces; <code>G</code>/<code>R</code>/<code>S</code> with axes and typed values; <code>E</code>, <code>I</code>, <code>Ctrl+B</code>, <code>Ctrl+R</code>, <code>Shift+D</code>, <code>F</code>, <code>J</code>, <code>M</code>, <code>X</code>. Modal operations change the real mesh while they run &#8212; Esc puts everything back, Enter banks one undo step. Outside the mode the usual keys are what they always were: nobody has to know Blender to use the editor.</p>
+        <p>The same toolbox exists for hands that would rather not drag: a <strong>floating panel</strong> of pictogram buttons, every amount with a &#8722;/+ beside it. A button under the pointer draws a ghost of its result first &#8212; cyan for what it adds, red for what it takes away &#8212; and the edges an edit changed flash for a moment afterwards. The window only grows to the right and down: as a centred strip its buttons moved on a mode switch, and in testing the next click landed on the neighbour.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/modeling.jpg" alt="Edit Mode im Editor: das Modeling-Panel neben einem gew&#228;hlten Kasten, unten die Tastenbelegung" loading="lazy">
+        <figcaption class="de">Edit Mode auf einem frisch gesetzten Kasten. Im Panel: die drei Modi, Extrudieren, Verschieben, Inset, Skalieren, Loop Cut, Duplizieren in Reihe und entlang eines Pfads, Nudge und das Fl&#228;chenmaterial. Unten steht die Belegung, solange der Modus aktiv ist.</figcaption>
+        <figcaption class="en">Edit Mode on a freshly placed box. In the panel: the three modes, extrude, move, inset, scale, loop cut, duplicate in a row and along a path, nudge and the face material. The keys are listed at the bottom for as long as the mode is on.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Fl&#228;chen zu mehreren</b><b class="en">Faces by the handful</b>
+          <span class="de">Als eine Region extrudieren, verschieben, um die eigene Mitte skalieren, Inset, Subdivide, L&#246;schen, Umdrehen &#8212; die Auswahl meint danach noch dieselben Fl&#228;chen.</span>
+          <span class="en">Extrude as one region, move, scale about each group's own centre, inset, subdivide, delete, flip &#8212; and the selection still means the same faces afterwards.</span></li>
+        <li><b>Bevel &amp; Loop Cut</b>
+          <span class="de">Bevel mit Segmenten und Eck-Patches, Loop Cut &#252;ber eine benannte Kante; Paint, Material und UV laufen mit. Dazu Fill Hole, Connect, Weld, Merge, Dissolve.</span>
+          <span class="en">Bevel with segments and corner patches, a loop cut across a named edge; paint, material and UV follow along. Plus fill hole, connect, weld, merge, dissolve.</span></li>
+        <li><b>Spin</b>
+          <span class="de">Kanten um eine Weltachse drehen &#8212; durch Ursprung, Auswahlmitte oder 3D-Cursor. Mit Steigung eine Schraube, eine Wendeltreppe; volle 360&#176; schlie&#223;en ohne doppelte Naht.</span>
+          <span class="en">Turn edges round a world axis &#8212; through the origin, the pick's middle or the 3D cursor. With a rise it is a screw, a spiral stair; a full 360&#176; closes with no doubled seam.</span></li>
+        <li><b class="de">Duplizieren in Reihe und am Pfad</b><b class="en">Duplicate in a row, or along a path</b>
+          <span class="de">Jede Kopie ihre eigene Breite plus Abstand weiter, ohne zu messen &#8212; oder nach Bogenl&#228;nge auf einem Spline verteilt, auf Wunsch mit ihm gedreht.</span>
+          <span class="en">Each copy its own width plus a gap on, with no measuring &#8212; or spread by arc length over a spline, turning with it if asked.</span></li>
+        <li><b class="de">Material pro Fl&#228;che, Farbe per Pinsel</b><b class="en">Material per face, paint by brush</b>
+          <span class="de">Jede Fl&#228;che darf ihr eigenes Material tragen; Terrain-Layer lassen sich direkt auf Objekte malen.</span>
+          <span class="en">Every face may carry its own material, and the terrain layers can be painted straight onto objects.</span></li>
+        <li><b class="de">Orthografisch, wenn es sein muss</b><b class="en">Orthographic when it has to be</b>
+          <span class="de">Num 5 schaltet die Linse um; Kaskaden, Fernterrain und Gizmo folgen der Projektion. <code>modelcheck</code> h&#228;lt 167 Pr&#252;fungen, auch dass jedes Ergebnis konsistent gewunden ist.</span>
+          <span class="en">Num 5 switches the lens; cascades, far terrain and gizmo follow the projection. <code>modelcheck</code> holds 167 checks, including that every result is wound consistently.</span></li>
+      </ul>
+    </div>
   </section>
 
   <!-- ============ BILD / RENDERING ============ -->
@@ -603,10 +742,10 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <h2 class="en">A forward renderer that reads like footage.</h2>
 
       <div class="prose de">
-        <p>Die Szene rendert linear in einen HDR-Puffer. Ein Composite-Pass legt <strong>Bloom</strong>, <strong>God Rays</strong> (radialer March von der Bildschirmposition der Sonne) und eine analytische <strong>Lens Flare</strong> darauf, dann <strong>ACES</strong>-Tonemapping, Belichtung und Gamma. Autorenfarben werden bei Benutzung linearisiert, die Sonne ist eine echte HDR-Radiance &#8212; deshalb liest sie sich als Sonne.</p>
+        <p>Die Szene rendert linear in einen HDR-Puffer. Ein Composite-Pass legt <strong>Bloom</strong>, <strong>God Rays</strong> (radialer March von der Bildschirmposition der Sonne) und eine analytische <strong>Lens Flare</strong> darauf, dann eine Tonkurve &#8212; <strong>AgX</strong> als Standard, ACES und Khronos PBR Neutral zur Wahl &#8212;, Belichtung, Vignette und Dither gegen Banding. Autorenfarben werden bei Benutzung linearisiert, die Sonne ist eine echte HDR-Radiance &#8212; deshalb liest sie sich als Sonne.</p>
       </div>
       <div class="prose en">
-        <p>The scene renders linear into an HDR buffer. A composite pass adds <strong>bloom</strong>, <strong>god rays</strong> (a radial march from the sun's screen position) and an analytic <strong>lens flare</strong>, then applies <strong>ACES</strong> filmic tonemapping, exposure and gamma. Authored colours are linearised on use and the sun is a real HDR radiance &#8212; which is why it reads as a sun.</p>
+        <p>The scene renders linear into an HDR buffer. A composite pass adds <strong>bloom</strong>, <strong>god rays</strong> (a radial march from the sun's screen position) and an analytic <strong>lens flare</strong>, then a tone curve &#8212; <strong>AgX</strong> by default, ACES or Khronos PBR Neutral if chosen &#8212; exposure, a vignette and a dither against banding. Authored colours are linearised on use and the sun is a real HDR radiance &#8212; which is why it reads as a sun.</p>
       </div>
 
       <ul class="feats">
@@ -625,6 +764,24 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b>SSAO</b>
           <span class="de">Halbaufgel&#246;st aus der Tiefe rekonstruiert &#8212; f&#228;ngt die feinen Falten, f&#252;r die das Probe-Gitter zu grob ist.</span>
           <span class="en">Half-res, reconstructed from depth &#8212; it catches the fine creases the probe grid is too coarse for.</span></li>
+        <li><b class="de">Ein BRDF f&#252;r Viewport und Tracer</b><b class="en">One BRDF for viewport and tracer</b>
+          <span class="de">GGX mit h&#246;henkorrelierter Smith-Sichtbarkeit und Schlick-Fresnel, Term f&#252;r Term wie im Pathtracer &#8212; ein Render zeigt keine Materialien mehr, die der Viewport nie hatte.</span>
+          <span class="en">GGX with height-correlated Smith visibility and Schlick Fresnel, term for term as in the path tracer &#8212; a render no longer shows materials the viewport never had.</span></li>
+        <li><b class="de">Temporales Anti-Aliasing</b><b class="en">Temporal anti-aliasing</b>
+          <span class="de">Halton-Jitter, Bewegungsvektoren f&#252;r alles, was sich bewegt, Reprojektion aus der Tiefe f&#252;r den Rest, Varianz-Clipping in YCoCg. Grashalme und Zaundr&#228;hte flimmern nicht mehr.</span>
+          <span class="en">Halton jitter, motion vectors for whatever moved, reprojection from depth for the rest, variance clipping in YCoCg. Grass blades and fence wires stop crawling.</span></li>
+        <li><b class="de">Spiegelungen aus dem letzten Bild</b><b class="en">Reflections from the last frame</b>
+          <span class="de">Screen-Space Reflections im Vorw&#228;rts-Renderer: die nasse Stra&#223;e spiegelt das Auto daneben, nicht nur den Himmel einer Sonde.</span>
+          <span class="en">Screen-space reflections in a forward renderer: a wet road reflects the car beside it, not only a probe's sky.</span></li>
+        <li><b class="de">Kontaktschatten</b><b class="en">Contact shadows</b>
+          <span class="de">Ein kurzer Strahl zur Sonne durch die Tiefe f&#228;ngt, was die Kaskaden verlieren &#8212; R&#228;der stehen auf der Stra&#223;e, statt zu schweben.</span>
+          <span class="en">A short ray towards the sun through the depth catches what the cascades lose &#8212; wheels stand on the road instead of floating.</span></li>
+        <li><b class="de">Laub im Gegenlicht</b><b class="en">Leaves against the light</b>
+          <span class="de">Blattkarten lassen die Sonne durch und leuchten in ihrer eigenen Farbe; Ambient l&#228;uft vom Himmel oben zum Boden unten.</span>
+          <span class="en">Leaf cards transmit the sun and glow in their own colour; ambient runs from the sky above to the ground below.</span></li>
+        <li><b class="de">Ein Himmel in Schichten</b><b class="en">A sky in layers</b>
+          <span class="de">Jede Wolkenart ist eine Schicht mit eigener H&#246;he, Deckung und eigenem Wind &#8212; Stratus unter dem Cumulus, Kondensstreifen auf eigenem Kurs. Genau eine wird gemarcht.</span>
+          <span class="en">Every cloud type is a layer with its own height, coverage and wind &#8212; stratus under the cumulus, contrails on their own heading. Exactly one is marched.</span></li>
         <li><b class="de">Frustum-Culling pro Pass</b><b class="en">Per-pass frustum culling</b>
           <span class="de">Jeder Pass zieht seine eigenen sechs Ebenen (Gribb-Hartmann); das Panel meldet sichtbar gegen gecullt.</span>
           <span class="en">Each pass extracts its own six planes (Gribb-Hartmann); the panel reports visible versus culled.</span></li>
@@ -753,8 +910,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
           <span class="de">Ein Regler, und jede Schattenkante im Bild h&#246;rt auf, die harte Linie zu sein, die eine Shadow Map zeichnet. Die wirksamste Einstellung dagegen, wie ein Screenshot auszusehen.</span>
           <span class="en">One slider, and every shadow edge stops being the hard line a shadow map draws. The most effective setting here for not looking like a screenshot.</span></li>
         <li><b class="de">Derselbe Grade wie im Viewport</b><b class="en">The same grade as the viewport</b>
-          <span class="de">Gleiches Albedo/Roughness, gleiche Lampenabnahme, gleiche ACES-Kurve &#8212; <em>und derselbe Farb-Grade</em>. Ein Render liest sich als dieselbe Szene, besser beleuchtet, nicht als ein anderes Spiel.</span>
-          <span class="en">The same albedo/roughness, the same lamp falloff, the same ACES curve &#8212; <em>and the same colour grade</em>. A render reads as the same scene, better lit, rather than as a different game.</span></li>
+          <span class="de">Gleiches Albedo/Roughness, gleiche Lampenabnahme, gleiche Tonkurve &#8212; <em>und derselbe Farb-Grade</em>. Ein Render liest sich als dieselbe Szene, besser beleuchtet, nicht als ein anderes Spiel.</span>
+          <span class="en">The same albedo/roughness, the same lamp falloff, the same tone curve &#8212; <em>and the same colour grade</em>. A render reads as the same scene, better lit, rather than as a different game.</span></li>
         <li><b class="de">Es verfeinert sich beim Zusehen</b><b class="en">It refines while you watch</b>
           <span class="de">Stop beh&#228;lt, was angekommen ist &#8212; &#8222;wie viele Samples braucht dieser Shot" hat keine Antwort au&#223;er hinsehen. Gespeichert wird ein lineares <code>.exr</code> neben dem PNG.</span>
           <span class="en">Stop keeps what has arrived &#8212; "how many samples does this shot need" has no answer except watching one. Saving writes a linear <code>.exr</code> beside the PNG.</span></li>
@@ -909,8 +1066,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
 
       <ul class="feats">
         <li><b class="de">Was gebunden ist</b><b class="en">What is bound</b>
-          <span class="de">Eingabe, Kamera, Spawn/Destroy, Prefabs, Jolt-Physik (Velocity, Impulse), Audio, Score und HUD, Objekte finden und umh&#228;ngen, Raycast, Terrainh&#246;he.</span>
-          <span class="en">Input, camera, spawn/destroy, prefabs, Jolt physics (velocity, impulses), audio, score and HUD, finding and reparenting objects, raycast, terrain height.</span></li>
+          <span class="de">Eingabe, Kamera, Spawn/Destroy, Prefabs, Jolt-Physik (Velocity, Impulse), Audio und Synth, Score, ein HUD zum Zeichnen, Spielst&#228;nde, Objekte finden und umh&#228;ngen, Raycast, Terrainh&#246;he.</span>
+          <span class="en">Input, camera, spawn/destroy, prefabs, Jolt physics (velocity, impulses), audio and synth, score, a HUD to draw on, save data, finding and reparenting objects, raycast, terrain height.</span></li>
         <li><b class="de">Fest getakteter Arcade-Kern</b><b class="en">A fixed-step arcade core</b>
           <span class="de">Auto und Gleiter integrieren bei 1/120 s mit Render-Interpolation &#8212; Fahrverhalten h&#228;ngt nicht an der Bildrate.</span>
           <span class="en">Car and glider integrate at 1/120 s with render interpolation &#8212; handling does not depend on frame rate.</span></li>
@@ -920,7 +1077,39 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Dazu, ohne dass es geschrieben werden muss</b><b class="en">In the box already</b>
           <span class="de">Rennlogik, Runden und Bestenliste, Verfolgerkamera, Splitscreen, Partikel, Lock-on-Raketen, Gegner-KI, Ladebildschirm.</span>
           <span class="en">Race logic, laps and a leaderboard, a chase camera, split screen, particles, lock-on missiles, opponent AI, a loading screen.</span></li>
+        <li><b class="de">Cockpit und Startaufstellung</b><b class="en">Cockpit and starting grid</b>
+          <span class="de">Kameras fest im Fahrzeug, mehrere pro Fahrzeug, mit C durchgeschaltet. Grid-Position-Marker bauen das Feld selbst; der Platz des Spielers wird gelost.</span>
+          <span class="en">Cameras bolted into the craft, several per craft, stepped through with C. Grid Position markers build the field themselves; the player's slot is drawn.</span></li>
+        <li><b class="de">Stoff, der h&#228;ngt</b><b class="en">Cloth that hangs</b>
+          <span class="de">Vorh&#228;nge an Ringen mit Falten, Banner, Flaggen: der Wind dr&#252;ckt auf jedes Dreieck nach seinem Winkel zur Str&#246;mung, mit B&#246;en und einer Welle, die mitl&#228;uft.</span>
+          <span class="en">Curtains on rings with pleats, banners, flags: the wind pushes on every triangle by its angle to the flow, with gusts and a ripple running downwind.</span></li>
+        <li><b class="de">Ein modularer Synth</b><b class="en">A modular synth</b>
+          <span class="de">Oszillatoren, H&#252;llkurven, Filter und Delay als Graph, gespielt als volle Engine-Stimme mit Spatializer und Doppler; dazu ein MIDI-Player und <code>synth.*</code> in Lua.</span>
+          <span class="en">Oscillators, envelopes, filters and delay as a graph, played as a full engine voice with spatializer and Doppler; plus a MIDI player and <code>synth.*</code> in Lua.</span></li>
       </ul>
+
+      <h3 class="de" style="margin-top:14px">Ganze Spiele, nur in Lua</h3>
+      <h3 class="en" style="margin-top:14px">Whole games, in Lua alone</h3>
+      <div class="prose de">
+        <p>Ein Skript auf ein leeres Objekt, Play dr&#252;cken &#8212; und es ist ein Spiel da. Nichts sonst muss in der Szene stehen: Spielfeld, Figuren, HUD und Sound entstehen im Skript und verschwinden beim Stoppen. Sie liegen als Beispiele im Repo, und sie sind der Beweis, dass die Skript-API f&#252;r mehr reicht, als ein Objekt anzustupsen.</p>
+      </div>
+      <div class="prose en">
+        <p>Put one script on an empty object, press Play &#8212; and there is a game. Nothing else has to be in the scene: playfield, pieces, HUD and sound are made by the script and removed when Play stops. They ship as examples in the repo, and they are the proof that the scripting API is enough for more than nudging an object.</p>
+      </div>
+
+      <div class="games">
+        <div><b>SKYSTRIKE</b><span class="de">Vertikaler Shoot'em up: Bosse mit Mustern, Bomben, vier Waffenstufen, Hangar-Upgrades und ein Spielstand &#252;ber <code>game.saveData</code>.</span><span class="en">A vertical shoot'em up: bosses with patterns, bombs, four gun levels, hangar upgrades and a profile kept with <code>game.saveData</code>.</span></div>
+        <div><b>Pinball</b><span class="de">Eigene 2D-Simulation auf dem Spielfeld bei 720 Hz, damit nichts durchtunnelt; Drop Targets, Saucer, Ball Save, Tilt.</span><span class="en">Its own 2D simulation on the playfield at 720 Hz so nothing tunnels; drop targets, saucer, ball save, tilt.</span></div>
+        <div><b>Sokoban</b><span class="de">Zw&#246;lf eigene Level, maschinell auf L&#246;sbarkeit gepr&#252;ft, Undo bis zum Levelstart, eine Ansicht, die sich dreht.</span><span class="en">Twelve original levels, machine-checked for solvability, undo back to the start, a view that turns.</span></div>
+        <div><b>Space Invaders</b><span class="de">Die Regeln der Spielhalle: 55 Invader, die schneller werden, je weniger &#252;brig sind, vier Bunker, ein Mystery-Schiff, das Sch&#252;sse z&#228;hlt.</span><span class="en">The arcade's rules: 55 invaders that speed up as they thin out, four bunkers, a mystery ship that counts your shots.</span></div>
+        <div><b>Arkanoid</b><span class="de">Elf Runden, Kapseln wie im Original, Silber braucht zwei Treffer, Gold keinen &#8212; und dann alles noch einmal, schneller.</span><span class="en">Eleven rounds, capsules as in the original, silver takes two hits, gold none &#8212; and then all of it again, faster.</span></div>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/skystrike.jpg" alt="SKYSTRIKE: ein Bossgegner &#252;ber dem Meer, Sch&#252;sse, Inseln und Wolken, HUD links und rechts" loading="lazy">
+        <figcaption class="de">SKYSTRIKE im Play-Modus: ein Bossgegner &#252;ber der Korallensee. Schiffe, Sch&#252;sse, Wolken und das HUD links und rechts kommen aus <code>shmup.lua</code> &#8212; Hunderte Objekte, einmal gespawnt und per <code>setActive</code> umgeschaltet.</figcaption>
+        <figcaption class="en">SKYSTRIKE in Play: a boss over the coral sea. Ships, shots, clouds and the HUD on either side all come from <code>shmup.lua</code> &#8212; hundreds of objects, spawned once and switched with <code>setActive</code>.</figcaption>
+      </figure>
     </div>
   </section>
 
@@ -964,6 +1153,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
             <tr><td>gridcheck</td><td><span class="de">Stehen beim Start die richtigen Gleiter an den richtigen Pl&#228;tzen? Die Startaufstellung entsteht in der halben Sekunde zwischen Startknopf und Ampel, sie ist jedes Rennen anders (der Platz des Spielers wird gelost) &#8212; und jeder Fehler sieht aus dem Cockpit wie eine plausible Aufstellung aus. Also wird gez&#228;hlt statt hingeschaut.</span><span class="en">Do the right craft stand in the right places at the start? The grid is built in the half second between pressing start and the lights, it is different every race (the player's slot is drawn) &#8212; and every fault looks, from the cockpit, like one plausible grid. So it is counted rather than looked at.</span></td></tr>
             <tr><td>camcheck</td><td><span class="de">Sitzt eine ins Cockpit geschraubte Kamera wirklich fest? Gemessen wird der Abstand zwischen dem Auge und seinem Sitz &#8212; bei Frame-Zeiten, die springen wie unter VSync. Der Fehler ist bei Renntempo Meter gro&#223;, sieht aber aus, als ruckle das <em>Fahrzeug</em>, und schickt einen damit in das Flugmodell statt in die Kamera.</span><span class="en">Does a camera bolted into the cockpit actually stay put? It measures the gap between the eye and its seat over frame times that jump the way vsync'd ones do. At racing speed the error is metres wide, but it looks like the <em>craft</em> juddering, which sends you into the flight model instead of the camera.</span></td></tr>
             <tr><td>animcheck &#183; graphcheck</td><td><span class="de">Halten die Keyframe-Spuren den Wert, den sie bekommen haben, und finden sie ihre Eigenschaft nach dem Speichern wieder? Und geht die Zustandsmaschine dahin, wo ihre Pfeile hinzeigen? Beides f&#228;llt still aus: eine Spur, die danebengreift, schreibt eine plausible Zahl an eine plausible Stelle, und ein FSM f&#228;llt aus, indem es <em>sitzenbleibt</em> &#8212; am Bildschirm sieht beides aus wie ein Graph, den niemand fertig gezeichnet hat.</span><span class="en">Do keyframe tracks hold the value they were given, and find their property again after a save? And does the state machine go where its arrows say? Both fail quietly: a track that resolves wrongly writes a plausible number into a plausible place, and an FSM fails by <em>sitting</em> somewhere &#8212; on screen both look like a graph nobody finished drawing.</span></td></tr>
+            <tr><td>modelcheck</td><td><span class="de">Bleibt ein Mesh nach jeder Modellier-Operation geschlossen <em>und</em> konsistent gewunden? <code>closed()</code> allein l&#228;sst eine umgedrehte Fl&#228;che durch &#8212; sie f&#228;llt erst auf, wenn das Licht falsch herum darauf liegt.</span><span class="en">Does a mesh stay closed <em>and</em> consistently wound after every modelling operation? <code>closed()</code> alone passes a face turned inside out &#8212; it only shows once the light sits on it the wrong way round.</span></td></tr>
+            <tr><td>roadcheck &#183; levelcheck</td><td><span class="de">Treffen sich zwei Stra&#223;en ohne Stufe, und ist ein zweites Build identisch mit dem ersten? Und hat ein generierter Kurs eine Kurve, die kein Fahrzeug h&#228;lt, einen Checkpoint, den die Gegner nie z&#228;hlen, eine verkehrte Querneigung? Nichts davon sieht man auf einem Screenshot.</span><span class="en">Do two roads meet without a step, and is a second Build identical to the first? And does a generated circuit have a corner no craft can hold, a checkpoint the opponents never count, banking the wrong way? None of it shows in a screenshot.</span></td></tr>
+            <tr><td>gpucheck</td><td><span class="de">Zeigt die GPU-Vorschau des Tracers dasselbe Bild wie der CPU-Render &#8212; f&#252;r alle drei Tonkurven, mit Vignette und mit h&#246;hengemischtem Terrain?</span><span class="en">Does the tracer's GPU preview show the same picture as the CPU render &#8212; for all three tone curves, with a vignette and with height-blended terrain?</span></td></tr>
             <tr><td>citycheck</td><td><span class="de">Ragt ein generiertes Haus &#252;ber den Bordstein? Ein Turm &#252;ber der Stra&#223;e ist eine Wand, in die man bei Tempo f&#228;hrt, auf einem Abschnitt, der frei aussah.</span><span class="en">Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear.</span></td></tr>
             <tr><td>iconcheck</td><td><span class="de">Benutzt Windows wirklich das Icon, das &#8222;Export Game" ins Exe geschrieben hat?</span><span class="en">Will Windows really use the icon "Export Game" wrote into the exe?</span></td></tr>
             <tr><td>audiocheck</td><td><span class="de">Gibt das Ger&#228;t der Engine mehr als einen Ausgabekanal? Ein Mono-Ausgang ist der wahrscheinlichste Grund f&#252;r eine Welt ohne Richtung.</span><span class="en">Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it.</span></td></tr>
