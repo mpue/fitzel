@@ -543,8 +543,30 @@ void drawPanel(const PanelState& s) {
                 } else if (auto* tr = dynamic_cast<TriggerComponent*>(c)) {
                     // Radius/once/message from metadata; Sound is a picker.
                     for (const Property& pr : tr->props())
-                        if (pr.key != "sound") animProp(s, pr, tr, c->typeId());
+                        if (pr.key != "sound" && !pr.visible) animProp(s, pr, tr, c->typeId());
                     s.soundPickerCombo("Sound", tr->sound);
+                    // Synth gate: the object whose Synth it plays, then the
+                    // note (named, not just numbered) and how hard.
+                    const Entity* syn = s.document.find(tr->synthTarget);
+                    const std::string synLabel = syn ? syn->name : "(none)";
+                    if (ImGui::BeginCombo("Synth", synLabel.c_str())) {
+                        if (ImGui::Selectable("(none)", tr->synthTarget < 0))
+                            tr->synthTarget = -1;
+                        for (const Entity& te : s.entities)
+                            if (te.components.get<SynthComponent>())
+                                if (ImGui::Selectable(te.name.c_str(), tr->synthTarget == te.id))
+                                    tr->synthTarget = te.id;
+                        ImGui::EndCombo();
+                    }
+                    if (tr->synthTarget >= 0) {
+                        for (const Property& pr : tr->props())
+                            if (pr.visible) animProp(s, pr, tr, c->typeId());
+                        static const char* kNames[12] = {"C", "C#", "D", "D#", "E", "F",
+                                                         "F#", "G", "G#", "A", "A#", "B"};
+                        const int n = std::clamp(tr->synthNote, 0, 127);
+                        ImGui::TextDisabled("Gate on %s%d while the player is inside",
+                                            kNames[n % 12], n / 12 - 1);
+                    }
                 } else if (auto* stc = dynamic_cast<SceneTriggerComponent*>(c)) {
                     // Radius/once from metadata; Scene is a picker over the
                     // project's other scenes (chosen, not typed).

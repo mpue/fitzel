@@ -9810,13 +9810,23 @@ int main(int argc, char** argv) {
                             }
                         }
                         // Trigger: on entry (edge), set the HUD message / play the
-                        // sound. `once` latches via the transient `fired` flag.
+                        // sound / open the Synth's gate. `once` latches via the
+                        // transient `fired` flag. The gate closes on exit, even
+                        // for a `once` trigger, so no note is left hanging.
                         if (auto* tr = e.components.get<TriggerComponent>()) {
                             const bool inside = glm::distance(playerC, e.center) <= tr->radius;
                             if (inside && !tr->insideLast && !(tr->once && tr->fired)) {
                                 tr->fired = true;
                                 if (!tr->message.empty()) host.hud = tr->message;
                                 if (!tr->sound.empty()) host.playSound(tr->sound);
+                                if (tr->synthTarget >= 0 && !tr->gateOpen)
+                                    tr->gateOpen = synths.noteOn(tr->synthTarget,
+                                                                 std::clamp(tr->synthNote, 0, 127),
+                                                                 tr->synthVelocity);
+                            }
+                            if (!inside && tr->gateOpen) {
+                                synths.noteOff(tr->synthTarget, std::clamp(tr->synthNote, 0, 127));
+                                tr->gateOpen = false;
                             }
                             tr->insideLast = inside;
                         }

@@ -317,15 +317,25 @@ public:
 // flags are transient (not serialized) and reset for free when Play stops (the
 // scene is restored from its pre-play backup). Attach to any entity (typically
 // an invisible marker) for checkpoints, messages, "level complete", etc.
+//
+// It can also play a Synth like a key: `synthTarget` names an object with a
+// Synth component, and entering opens its gate on `synthNote` (a note-on),
+// leaving closes it again (the note-off) -- the gate is held exactly as long as
+// the player is inside. `once` limits the note-on like every other effect; the
+// note-off always follows, so a note can never be left hanging.
 class TriggerComponent : public ComponentBase {
 public:
     float       radius = 2.0f;  // activation distance from the player (metres)
     bool        once   = true;  // fire only once per Play session
     std::string message;        // shown on the HUD on entry ("" = none)
     std::string sound;          // one-shot file under the project's sounds/ ("" = none)
+    int         synthTarget   = -1;    // entity id with a Synth (-1 = none)
+    int         synthNote     = 60;    // MIDI note the gate plays (60 = C4)
+    float       synthVelocity = 1.0f;  // 0..1
 
     bool insideLast = false;    // runtime: player was inside last frame (edge detect)
     bool fired      = false;    // runtime: has fired (for `once`)
+    bool gateOpen   = false;    // runtime: our note is held on the synth
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<TriggerComponent>(*this);
@@ -334,6 +344,8 @@ public:
     const char* displayName() const override { return "Trigger"; }
     const std::vector<Property>& props() const override { return properties(); }
     static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
     void onGizmo(GizmoDraw& g, const glm::vec3& c, const glm::quat&) const override {
         g.sphere(c, radius, {0.3f, 0.8f, 1.0f, 0.9f}); // cyan activation zone
     }

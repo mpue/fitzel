@@ -301,9 +301,34 @@ const std::vector<Property>& TriggerComponent::properties() {
         sound.label = "Sound"; sound.key = "sound"; sound.kind = PropKind::Text;
         sound.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->sound; };
         p.push_back(std::move(sound));
+        // The Synth gate. The target object is a picker in the inspector and
+        // saved by hand (see save/load), like the Animation Trigger's target.
+        auto hasSynth = [](const void* o) {
+            return static_cast<const TriggerComponent*>(o)->synthTarget >= 0;
+        };
+        Property note;
+        note.label = "Synth note"; note.key = "synthNote"; note.kind = PropKind::Int;
+        note.slider = true; note.min = 0.0f; note.max = 127.0f;
+        note.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->synthNote; };
+        note.visible = hasSynth;
+        p.push_back(std::move(note));
+        Property vel;
+        vel.label = "Synth velocity"; vel.key = "synthVelocity"; vel.kind = PropKind::Float;
+        vel.slider = true; vel.min = 0.0f; vel.max = 1.0f; vel.fmt = "%.2f";
+        vel.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->synthVelocity; };
+        vel.visible = hasSynth;
+        p.push_back(std::move(vel));
         return p;
     }();
     return props;
+}
+void TriggerComponent::save(nlohmann::json& j) const {
+    writeProps(j, props(), this);
+    j["synthTarget"] = synthTarget;
+}
+void TriggerComponent::load(const nlohmann::json& j) {
+    readProps(j, props(), this);
+    synthTarget = j.value("synthTarget", -1);
 }
 
 const std::vector<Property>& SceneTriggerComponent::properties() {
