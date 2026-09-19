@@ -1,6 +1,7 @@
 #include "fitzel/world/Terrain.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 
 #include <stb_perlin.h>
@@ -879,6 +880,7 @@ void TerrainStreamer::workerLoop() {
             job = std::move(m_jobs.front());
             m_jobs.pop();
         }
+        if (job.generation != m_liveGeneration.load()) continue; // rebuilt since
         MeshData data = TerrainChunk::buildMeshData(job.settings, job.coord);
         {
             std::lock_guard<std::mutex> lock(m_resultMutex);
@@ -925,8 +927,12 @@ int TerrainStreamer::update(const std::vector<glm::vec3>& viewers, int maxUpload
     }
     for (Result& r : ready) {
         const std::int64_t k = key(r.coord);
+        // A result from before the last rebuild says nothing about what is
+        // pending now: the same chunk may well be queued again for the current
+        // generation, and forgetting THAT would queue it a second time.
+        if (r.generation != m_generation) continue;
         m_pending.erase(k);
-        const bool stale = (r.generation != m_generation) || !inRangeOfAny(r.coord);
+        const bool stale = !inRangeOfAny(r.coord);
         if (!stale) {
             // insert_or_assign so a sculpt rebuild swaps the mesh in place (the
             // old one kept rendering until now -> no hole). The replaced Mesh's
@@ -967,6 +973,19 @@ int TerrainStreamer::update(const std::vector<glm::vec3>& viewers, int maxUpload
             }
         }
         if (!newJobs.empty()) {
+            // Nearest first: the ground under the viewer is what is missed, the
+            // ring's corners are what nobody looks at yet. Queued row by row, the
+            // chunk underfoot waited behind half the ring.
+            auto dist = [&](const Job& j) {
+                int best = INT_MAX;
+                for (const glm::ivec2& c : m_centers) {
+                    const glm::ivec2 d = j.coord - c;
+                    best = std::min(best, d.x * d.x + d.y * d.y);
+                }
+                return best;
+            };
+            std::stable_sort(newJobs.begin(), newJobs.end(),
+                             [&](const Job& a, const Job& b) { return dist(a) < dist(b); });
             std::lock_guard<std::mutex> lock(m_jobMutex);
             for (Job& j : newJobs) m_jobs.push(std::move(j));
             m_jobCv.notify_all();
@@ -1010,6 +1029,17 @@ int TerrainStreamer::update(const std::vector<glm::vec3>& viewers, int maxUpload
 void TerrainStreamer::rebuild() {
     // Bump generation so in-flight results are discarded; clear loaded + pending.
     ++m_generation;
+    m_liveGeneration.store(m_generation);
+    // ...and throw away what was queued for the old one, built or not: a
+    // worker would skip those jobs anyway, and nothing will read those results.
+    {
+        std::lock_guard<std::mutex> lock(m_jobMutex);
+        m_jobs = {};
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_resultMutex);
+        m_results = {};
+    }
     m_chunks.clear();
     m_pending.clear();
     m_visible.clear();

@@ -361,6 +361,12 @@ private:
     std::vector<glm::ivec2> m_centers;
     bool            m_dirty = true;
     std::uint64_t   m_generation = 0;
+    // The same number, for the workers: a job queued before the last rebuild()
+    // is skipped rather than built. Without it every rebuild left its whole ring
+    // in the queue, and dragging a terrain slider (a rebuild per frame) stacked
+    // up tens of thousands of chunks nobody would ever draw -- all built, in
+    // order, before the ground that was actually wanted.
+    std::atomic<std::uint64_t> m_liveGeneration{0};
 
     std::unordered_map<std::int64_t, TerrainChunk> m_chunks;
     std::unordered_set<std::int64_t>               m_pending; // queued/in-flight

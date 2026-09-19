@@ -657,6 +657,13 @@ target_link_libraries(collidecheck PRIVATE fitzel imgui glm::glm
                                            nlohmann_json::nlohmann_json)
 target_compile_definitions(collidecheck PRIVATE FITZEL_PLAYER)
 
+# streamcheck (sandbox/tools/streamcheck.cpp): how long until the terrain is back
+# after a run of rebuilds -- what dragging a terrain slider in the Inspector does.
+# Drives the real TerrainStreamer with a hidden GL context (chunks are uploaded).
+#   build/release/bin/streamcheck.exe
+add_executable(streamcheck tools/streamcheck.cpp)
+target_link_libraries(streamcheck PRIVATE fitzel glfw glm::glm)
+
 # The sky look (sandbox/tools/skycheck.cpp): renders sky.vert/sky.frag on its own
 # into an offscreen buffer, from a camera pointed where the clouds actually are,
 # and writes the frames out as PNGs. Not a test -- nothing passes or fails. The
