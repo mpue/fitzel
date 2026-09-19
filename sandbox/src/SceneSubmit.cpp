@@ -145,11 +145,8 @@ void submit(const Context& c, Scratch& scratch) {
         // the Scale gizmo -- and then the shape scales with the box, which
         // is what dragging it is asking for.
         if (const auto* meshC = b.components.get<MeshComponent>()) {
-            glm::vec3 mn, mx;
-            meshC->mesh.bounds(mn, mx);
-            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
-            const glm::mat4 mm =
-                c.composeModel(b.center, b.rotation, (b.half * 2.0f) / sz);
+            const glm::mat4 mm = c.composeModel(
+                b.center, b.rotation, editmesh::fitScale(meshC->mesh, b.half));
             const auto* mc = b.components.get<MaterialComponent>();
             const int   own = c.document.materialIndex(mc ? mc->material : AssetId{});
             // Painted? Then this object needs a material of its own: its

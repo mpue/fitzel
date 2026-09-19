@@ -16,7 +16,7 @@ class MeshComponent;
 // The terrain's layers have nothing to do with it: painting a wall with brick
 // must not put brick on the ground.
 //
-// Only an editable mesh can be painted. A box becomes one in a click (the same
+// Only an editable mesh can be painted. A built-in shape becomes one in a click (the same
 // "Make editable" the Modeling panel offers); imported models cannot, because
 // their geometry is shared by every copy in the scene and painting one would
 // paint them all.
@@ -66,7 +66,7 @@ struct PanelState {
     // one undo step once drawPanel has returned. See SlotEdit.
     SlotEdit& edit;
 
-    std::function<void()> convert;    // Box -> editable mesh
+    std::function<void()> convert;    // built-in shape -> editable mesh
     std::function<void()> clearPaint; // drop this mesh's paint (one undo step)
     // Open the Materials panel on a slot's material, for editing the texture
     // itself rather than which one it is.

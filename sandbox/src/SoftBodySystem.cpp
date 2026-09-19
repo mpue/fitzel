@@ -197,8 +197,7 @@ Surface hangingSurface(glm::vec3 half, int res, int pinning, int rings, float fo
 Surface meshSurface(const EditMesh& m, glm::vec3 half) {
     glm::vec3 mn, mx;
     m.bounds(mn, mx);
-    const glm::vec3 size  = glm::max(mx - mn, glm::vec3(1.0e-4f));
-    const glm::vec3 scale = (half * 2.0f) / size;
+    const glm::vec3 scale = editmesh::fitScale(m, half);
     const glm::vec3 mid   = 0.5f * (mn + mx);
     Surface s;
     s.verts.reserve(m.verts.size());

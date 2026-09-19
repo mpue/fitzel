@@ -44,7 +44,7 @@ void drawPanel(const PanelState& s) {
                 ui::hint("Select an object first. Paint goes onto the object's own\n"
                          "corners, so it belongs to that object and moves with it.");
             } else if (s.canConvert) {
-                ui::hint("This box can become an editable mesh -- the same shape,\n"
+                ui::hint("This shape can become an editable mesh -- the same shape,\n"
                          "with faces the brush can split and paint.");
                 ImGui::Spacing();
                 if (bigButton("Make editable") && s.convert) s.convert();

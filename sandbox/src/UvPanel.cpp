@@ -66,10 +66,10 @@ void drawPanel(const PanelState& s) {
         ui::sectionText("No editable mesh");
         if (!s.haveSelection) {
             ui::hint("Select an object first. This panel places the texture on\n"
-                     "the faces of a mesh fitzel made -- a box you made editable.\n"
+                     "the faces of a mesh fitzel made -- a shape you made editable.\n"
                      "An imported model keeps the UVs its author gave it.");
         } else if (s.canConvert) {
-            ui::hint("This box can become an editable mesh. Then every face has\n"
+            ui::hint("This shape can become an editable mesh. Then every face has\n"
                      "its own texture placement, and this panel sets it.");
             ImGui::Spacing();
             if (bigButton("Make editable") && s.convert) s.convert();

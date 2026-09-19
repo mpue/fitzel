@@ -47,6 +47,16 @@ struct EditMesh {
 
     // A unit box, the starting point for everything: 8 corners, 6 quads.
     static EditMesh box(const glm::vec3& half);
+    // The other built-in solids, the same way: centred, filling +/- half, and
+    // face for face the shape the renderer draws for that primitive -- so a
+    // ramp or a cylinder made editable does not change by a pixel. The sphere
+    // is the one exception: coarser than the drawn one, whose smooth normals
+    // hide 768 facets that nobody wants to pick one by one. The plane is a
+    // single quad facing +Y, seen from above only, as Blender's is.
+    static EditMesh ramp(const glm::vec3& half);
+    static EditMesh cylinder(const glm::vec3& half, int segments = 20);
+    static EditMesh sphere(const glm::vec3& half, int stacks = 12, int slices = 24);
+    static EditMesh plane(const glm::vec3& half);
 
     // Weights of corner `i`, zero where the mesh carries none. Read through this
     // rather than indexing `paint`, which is empty on an unpainted mesh.
@@ -386,6 +396,13 @@ float lineLength(const std::vector<glm::vec3>& line, bool closed);
 // half-extents -- and with them the pick box, the gizmo and the collider -- an
 // honest description of the geometry after every edit.
 glm::vec3 recenter(EditMesh& m);
+
+// The scale that stretches the mesh to fill the entity's center +/- half -- what
+// it is drawn, picked, painted and edited through. One function because five
+// places need the same number. 1 along an axis the mesh has no extent in: a
+// plane made editable is flat, and dividing its pick-box thickness by nothing
+// would store every later extrusion squashed by a factor of hundreds.
+glm::vec3 fitScale(const EditMesh& m, const glm::vec3& half);
 
 // One drawable piece of a mesh: the faces that wear one material, triangulated.
 // `material` invalid means the object's own material -- the piece every mesh has

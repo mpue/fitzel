@@ -79,6 +79,8 @@
 #include "Selection.hpp"
 #include "SceneGraph.hpp"
 #include "SceneSubmit.hpp"
+#include "PhysicsShapes.hpp"
+#include "MeshQuery.hpp"
 #include "HierarchyPanel.hpp"
 #include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
@@ -3408,18 +3410,25 @@ int main(int argc, char** argv) {
             if (!cursorHaveSel()) return nullptr;
             return entities[sel.index()].components.get<MeshComponent>();
         };
-        // Turn the selected box into an editable mesh of exactly the same size --
+        // Turn the selected solid into an editable mesh of exactly the same size --
         // built at the object's real dimensions, so a metre in the modelling
         // panel is a metre in the world rather than a fraction of a unit cube.
         // Nothing else about the object changes: same transform, same material,
-        // same collider.
+        // and the same type, so it keeps the collider of the shape it started
+        // as (a ramp stays a slope to walk and hover up), fitted to its bounds.
         auto convertToMesh = [&] {
             if (!cursorHaveSel()) return;
             Entity& e = entities[sel.index()];
-            if (e.type != EntityType::Box || e.components.get<MeshComponent>()) return;
+            if (!isSolidPrimitive(e.type) || e.components.get<MeshComponent>()) return;
             const Entity before = e;
             auto mc = std::make_unique<MeshComponent>();
-            mc->mesh = EditMesh::box(e.half);
+            switch (e.type) {
+                case EntityType::Ramp:     mc->mesh = EditMesh::ramp(e.half);     break;
+                case EntityType::Cylinder: mc->mesh = EditMesh::cylinder(e.half); break;
+                case EntityType::Sphere:   mc->mesh = EditMesh::sphere(e.half);   break;
+                case EntityType::Plane:    mc->mesh = EditMesh::plane(e.half);    break;
+                default:                   mc->mesh = EditMesh::box(e.half);      break;
+            }
             mc->touch();
             e.components.items.push_back(std::move(mc));
             meshFaceSel = -1;
@@ -3429,9 +3438,7 @@ int main(int argc, char** argv) {
         // dragged the Scale gizmo). Read before an edit and re-applied after, or
         // re-deriving the half-extents from raw bounds would quietly undo it.
         auto meshScaleOf = [](const Entity& e, const MeshComponent& mc) {
-            glm::vec3 mn, mx;
-            mc.mesh.bounds(mn, mx);
-            return (e.half * 2.0f) / glm::max(mx - mn, glm::vec3(1e-4f));
+            return editmesh::fitScale(mc.mesh, e.half);
         };
         // What every mesh edit ends with, whichever way it was made -- a panel
         // button or a gizmo drag: re-centre the geometry on the object's origin,
@@ -3458,10 +3465,7 @@ int main(int argc, char** argv) {
         // Mesh space -> world for an entity's editable mesh: the mesh is drawn
         // stretched to the entity's half-extents, so the scale is half/bounds.
         auto meshModelOf = [&](const Entity& e, const MeshComponent& mc) {
-            glm::vec3 mn, mx;
-            mc.mesh.bounds(mn, mx);
-            const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
-            return composeModel(e.center, e.rotation, (e.half * 2.0f) / sz);
+            return composeModel(e.center, e.rotation, editmesh::fitScale(mc.mesh, e.half));
         };
         // Run one face operation as one undoable step.
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
@@ -5866,6 +5870,15 @@ int main(int argc, char** argv) {
                 if (isRacerPart(e)) continue;
                 if (!isSolidPrimitive(e.type) && e.type != EntityType::Model)
                     continue;
+                // A modelled mesh is ground where its faces are, turned the way
+                // it is drawn: the craft flies under an arch and over the notch
+                // of an L rather than over their bounding boxes.
+                if (const auto* mc = e.components.get<MeshComponent>()) {
+                    float top;
+                    if (meshquery::surfaceBelow(e, mc->mesh, x, z, yMax, top) && top > h)
+                        h = top;
+                    continue;
+                }
                 if (x < e.center.x - e.half.x || x > e.center.x + e.half.x) continue;
                 if (z < e.center.z - e.half.z || z > e.center.z + e.half.z) continue;
                 const float top = e.center.y + e.half.y;
@@ -7133,49 +7146,9 @@ int main(int argc, char** argv) {
                 // would be a second, differently shaped copy fighting the first.
                 if (e.components.get<SoftBodyComponent>()) continue;
                 const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
-                const glm::quat q = glm::quat(glm::radians(e.rotation));
-                PhysicsBodyId id = 0;
-                switch (e.type) {
-                    case EntityType::Sphere:
-                        id = physics->addSphere(
-                            (e.half.x + e.half.y + e.half.z) / 3.0f, e.center, m);
-                        break;
-                    case EntityType::Cylinder:
-                        id = physics->addCylinder(e.half.x, e.half.y, e.center, q, m);
-                        break;
-                    case EntityType::Ramp: {
-                        // Triangular-prism wedge: rises along +Z (front-bottom to
-                        // back-top), matching the ramp mesh and the walk collider.
-                        const glm::vec3 h = e.half;
-                        const glm::vec3 pts[6] = {
-                            {-h.x, -h.y, -h.z}, { h.x, -h.y, -h.z},
-                            {-h.x, -h.y,  h.z}, { h.x, -h.y,  h.z},
-                            {-h.x,  h.y,  h.z}, { h.x,  h.y,  h.z}};
-                        id = physics->addConvexHull(pts, 6, e.center, q, m);
-                        break;
-                    }
-                    case EntityType::Model: {
-                        // Convex hull of the model's vertices (centred + scaled to
-                        // match the render), falling back to the AABB box.
-                        const auto* mdl = e.components.get<ModelComponent>();
-                        LoadedModel* lm = mdl ? models.byId(mdl->modelId) : nullptr;
-                        if (lm && lm->hullPoints.size() >= 4) {
-                            const glm::vec3 c = lm->center();
-                            std::vector<glm::vec3> pts;
-                            pts.reserve(lm->hullPoints.size());
-                            for (const glm::vec3& v : lm->hullPoints)
-                                pts.push_back((v - c) * mdl->scale);
-                            id = physics->addConvexHull(
-                                pts.data(), static_cast<int>(pts.size()),
-                                e.center, q, m);
-                        }
-                        if (!id) id = physics->addBox(e.half, e.center, q, m);
-                        break;
-                    }
-                    default: // Box
-                        id = physics->addBox(e.half, e.center, q, m);
-                        break;
-                }
+                const auto* mdl = e.components.get<ModelComponent>();
+                const PhysicsBodyId id = addEntityBody(
+                    *physics, e, m, mdl ? models.byId(mdl->modelId) : nullptr);
                 if (id) physicsBody[e.id] = id;
             }
             // Jelly, balloons and cloth. After the loop above and after the world's
@@ -7967,13 +7940,13 @@ int main(int argc, char** argv) {
             // an editable mesh. While it is on, the viewport's keys are Blender's
             // (ModelingKeys.hpp) and the editor's own shortcuts below stand
             // aside; everywhere else they are what they always were. Tab goes in
-            // and out, and a box becomes a mesh on the way in.
+            // and out, and a solid becomes a mesh on the way in.
             const bool modelling = showModeling && !playMode && selectedMesh() != nullptr;
             const bool meshBusy  = modelling && modelkeys::busy();
             if (!playMode && viewportHovered && !meshBusy && !ImGui::GetIO().WantTextInput &&
                 ImGui::IsKeyPressed(ImGuiKey_Tab, false)) {
                 if (!showModeling && !selectedMesh() && cursorHaveSel() &&
-                    entities[sel.index()].type == EntityType::Box)
+                    isSolidPrimitive(entities[sel.index()].type))
                     convertToMesh();
                 showModeling = !showModeling && selectedMesh() != nullptr;
             }
@@ -8840,7 +8813,18 @@ int main(int argc, char** argv) {
                 // A block is a wall for us only where it spans our body above the
                 // step height (low blocks are steps we climb, not walls).
                 const float bodyLo = feetY + stepH, bodyHi = feetY + eyeHeight;
+                // A modelled mesh is asked at the body's centre and four points
+                // on its rim -- its faces, not its box (see MeshQuery.hpp).
+                static const float rimX[5] = {0.0f, 1.0f, -1.0f, 0.0f, 0.0f};
+                static const float rimZ[5] = {0.0f, 0.0f, 0.0f, 1.0f, -1.0f};
                 auto wallHit = [&](const Entity& b, float px, float pz) {
+                    if (const auto* mc = b.components.get<MeshComponent>()) {
+                        for (int k = 0; k < 5; ++k)
+                            if (meshquery::blocks(b, mc->mesh, px + rimX[k] * pr,
+                                                  pz + rimZ[k] * pr, bodyLo, bodyHi))
+                                return true;
+                        return false;
+                    }
                     if (b.type != EntityType::Box && b.type != EntityType::Cylinder &&
                         b.type != EntityType::Sphere) return false;
                     if (bodyHi <= b.center.y - b.half.y || bodyLo >= b.center.y + b.half.y) return false;
@@ -8848,20 +8832,42 @@ int main(int argc, char** argv) {
                     if (pz + pr <= b.center.z - b.half.z || pz - pr >= b.center.z + b.half.z) return false;
                     return true;
                 };
+                // A mesh has no edge to be pushed out to, so it just holds the
+                // step back -- unless we already stand inside it (placed there,
+                // or it was modelled round us), where holding would trap us.
                 float nx = pos.x + mvx; // move X, then Z -> slide along faces
                 for (const Entity& b : entities)
-                    if (wallHit(b, nx, pos.z))
-                        nx = (mvx > 0.0f) ? b.center.x - b.half.x - pr : b.center.x + b.half.x + pr;
+                    if (wallHit(b, nx, pos.z)) {
+                        if (!b.components.get<MeshComponent>())
+                            nx = (mvx > 0.0f) ? b.center.x - b.half.x - pr : b.center.x + b.half.x + pr;
+                        else if (!wallHit(b, pos.x, pos.z))
+                            nx = pos.x;
+                    }
                 pos.x = nx;
                 float nz = pos.z + mvz;
                 for (const Entity& b : entities)
-                    if (wallHit(b, pos.x, nz))
-                        nz = (mvz > 0.0f) ? b.center.z - b.half.z - pr : b.center.z + b.half.z + pr;
+                    if (wallHit(b, pos.x, nz)) {
+                        if (!b.components.get<MeshComponent>())
+                            nz = (mvz > 0.0f) ? b.center.z - b.half.z - pr : b.center.z + b.half.z + pr;
+                        else if (!wallHit(b, pos.x, pos.z))
+                            nz = pos.z;
+                    }
                 pos.z = nz;
 
                 // Ground = terrain, raised to the top of any block we stand over.
                 float groundY = streamer.heightAt(pos.x, pos.z);
                 for (const Entity& b : entities) {
+                    if (const auto* mc = b.components.get<MeshComponent>()) {
+                        for (int k = 0; k < 5; ++k) {
+                            float top;
+                            if (meshquery::surfaceBelow(b, mc->mesh, pos.x + rimX[k] * pr,
+                                                        pos.z + rimZ[k] * pr,
+                                                        feetY + stepH + 0.01f, top) &&
+                                top > groundY)
+                                groundY = top;
+                        }
+                        continue;
+                    }
                     if (b.type == EntityType::Light || b.type == EntityType::Sun ||
                         b.type == EntityType::Model || b.type == EntityType::Empty)
                         continue; // markers/models: no AABB stand surface
@@ -10226,20 +10232,9 @@ int main(int argc, char** argv) {
                     if (physics && pc && e.type != EntityType::Light &&
                         e.type != EntityType::Sun) {
                         const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
-                        const glm::quat q = glm::quat(glm::radians(e.rotation));
-                        PhysicsBodyId id = 0;
-                        switch (e.type) {
-                            case EntityType::Sphere:
-                                id = physics->addSphere(
-                                    (e.half.x + e.half.y + e.half.z) / 3.0f, e.center, m);
-                                break;
-                            case EntityType::Cylinder:
-                                id = physics->addCylinder(e.half.x, e.half.y, e.center, q, m);
-                                break;
-                            default:
-                                id = physics->addBox(e.half, e.center, q, m);
-                                break;
-                        }
+                        const auto* mdl = e.components.get<ModelComponent>();
+                        const PhysicsBodyId id = addEntityBody(
+                            *physics, e, m, mdl ? models.byId(mdl->modelId) : nullptr);
                         if (id) {
                             physicsBody[e.id] = id;
                             auto vit = pendingSpawnVel.find(e.id);
@@ -12786,11 +12781,8 @@ int main(int argc, char** argv) {
                         // The matrix the mesh is DRAWN through, so the brush
                         // measures metres where the user sees them even on an
                         // object somebody scaled.
-                        glm::vec3 mn, mx;
-                        mc->mesh.bounds(mn, mx);
-                        const glm::vec3 sz = glm::max(mx - mn, glm::vec3(1e-4f));
-                        const glm::mat4 mm =
-                            composeModel(me.center, me.rotation, (me.half * 2.0f) / sz);
+                        const glm::mat4 mm = composeModel(
+                            me.center, me.rotation, editmesh::fitScale(mc->mesh, me.half));
 
                         const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                         const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
@@ -14288,7 +14280,7 @@ int main(int argc, char** argv) {
                 ImGui::BeginDisabled(modelkeys::busy());
                 modelui::drawPanel({
                     showModeling, mc, meshFaceSel, modelSel, materials, haveSel,
-                    haveSel && !mc && entities[sel.index()].type == EntityType::Box,
+                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
                     mc ? meshModelOf(entities[sel.index()], *mc) : glm::mat4(1.0f),
                     ImVec2(viewportRectMin.x, viewportRectMin.y),
                     ImVec2(viewportRectMin.x + viewportRectSize.x,
@@ -14328,7 +14320,7 @@ int main(int argc, char** argv) {
                         objMat = mcp->material;
                 uvui::drawPanel({
                     showUv, mc, meshFaceSel, materials, objMat, haveSel,
-                    haveSel && !mc && entities[sel.index()].type == EntityType::Box,
+                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
                     [&]{ convertToMesh(); }, applyMeshEdit,
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                 });
@@ -14362,7 +14354,7 @@ int main(int argc, char** argv) {
                     materials, meshPaintSlot, meshPaintRadius, meshPaintStrength,
                     meshPaintDetail, meshPaintErase,
                     mc, haveSel,
-                    haveSel && !mc && entities[sel.index()].type == EntityType::Box,
+                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0, painted,
                     slotEdit,
                     [&]{ convertToMesh(); },

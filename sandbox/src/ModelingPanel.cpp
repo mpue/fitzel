@@ -152,22 +152,23 @@ void drawPanel(const PanelState& s) {
 
         if (!s.mesh) {
             if (!s.haveSelection) {
-                ui::hint("Select an object first. A box becomes editable in one\n"
-                         "click, and from there you shape it corner by corner.");
+                ui::hint("Select an object first. A box, ramp, cylinder, sphere or\n"
+                         "plane becomes editable in one click, and from there you\n"
+                         "shape it corner by corner.");
             } else if (s.canConvert) {
-                ui::hint("This box can become an editable mesh: the same shape,\n"
+                ui::hint("This shape can become an editable mesh: the same shape,\n"
                          "but with corners, edges and faces you can shape.\n"
                          "Nothing else about it changes.");
                 ImGui::Spacing();
                 if (picto::button("makeedit", picto::Icon::MakeEditable,
-                                  "Make editable\nThe same box, with corners, edges\n"
+                                  "Make editable\nThe same shape, with corners, edges\n"
                                   "and faces you can shape",
                                   true, false, btnH()) &&
                     s.convert)
                     pending = s.convert;
             } else {
-                ui::hint("Only boxes become meshes. Imported models are left as\n"
-                         "their author made them.");
+                ui::hint("Only the built-in shapes become meshes. Imported models\n"
+                         "are left as their author made them.");
             }
             ImGui::End();
             ImGui::PopStyleVar(3);

@@ -3,6 +3,8 @@
 set(SANDBOX_RUNTIME_SOURCES
     src/SceneGraph.cpp
     src/SceneSubmit.cpp
+    src/PhysicsShapes.cpp
+    src/MeshQuery.cpp
     src/main.cpp
     src/Primitives.cpp
     # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
@@ -641,6 +643,19 @@ add_executable(camcheck tools/camcheck.cpp src/CameraSystem.cpp src/SceneGraph.c
 target_link_libraries(camcheck PRIVATE fitzel imgui glm::glm
                                        nlohmann_json::nlohmann_json)
 target_compile_definitions(camcheck PRIVATE FITZEL_PLAYER)
+
+# collidecheck (sandbox/tools/collidecheck.cpp): does a modelled mesh collide as
+# the shape that is drawn? Drops balls on an L-shaped mesh -- one over the notch
+# lands in it only if the collider is the mesh itself, not a hull or a box --
+# plus a made-editable ramp and plane, and a dynamic mesh on a floor. No GL.
+#   build/release/bin/collidecheck.exe
+add_executable(collidecheck tools/collidecheck.cpp src/PhysicsShapes.cpp src/MeshQuery.cpp src/SceneGraph.cpp
+                            src/SandboxMath.cpp src/Component.cpp src/Primitives.cpp
+                            src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                            src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(collidecheck PRIVATE fitzel imgui glm::glm
+                                           nlohmann_json::nlohmann_json)
+target_compile_definitions(collidecheck PRIVATE FITZEL_PLAYER)
 
 # The sky look (sandbox/tools/skycheck.cpp): renders sky.vert/sky.frag on its own
 # into an offscreen buffer, from a camera pointed where the clouds actually are,

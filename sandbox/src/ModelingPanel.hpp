@@ -48,7 +48,7 @@ struct PanelState {
     // The viewport's rect: only for where the window opens the first time.
     ImVec2 viewMin{0, 0}, viewMax{0, 0};
 
-    // Turn the selected entity into an editable mesh (Box -> its own geometry).
+    // Turn the selected entity into an editable mesh (a built-in shape -> its own geometry).
     std::function<void()> convert;
     // Run an edit: the callback is handed the mesh and returns the face to keep
     // selected. The host wraps it in one undo step, re-centres the geometry and

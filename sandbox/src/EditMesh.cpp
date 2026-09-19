@@ -279,6 +279,93 @@ EditMesh EditMesh::box(const glm::vec3& h) {
     return m;
 }
 
+EditMesh EditMesh::ramp(const glm::vec3& h) {
+    EditMesh m;
+    // The corners of makeRampVerts (and of the physics wedge): the ramp rises
+    // along +Z, its top edge at the back.
+    m.verts = {
+        {-h.x, -h.y, -h.z}, { h.x, -h.y, -h.z},     // 0 1  front, on the ground
+        {-h.x, -h.y,  h.z}, { h.x, -h.y,  h.z},     // 2 3  back, on the ground
+        {-h.x,  h.y,  h.z}, { h.x,  h.y,  h.z},     // 4 5  back, at the top
+    };
+    m.faces = {
+        {0, 1, 3, 2},   // -Y  bottom
+        {2, 3, 5, 4},   // +Z  back wall
+        {0, 4, 5, 1},   //     slope
+        {0, 2, 4},      // -X  side
+        {1, 5, 3},      // +X  side
+    };
+    m.syncPaint();
+    return m;
+}
+
+EditMesh EditMesh::cylinder(const glm::vec3& h, int seg) {
+    seg = std::max(seg, 3);
+    EditMesh m;
+    const float TAU = 6.28318530718f;
+    // Bottom ring 0..seg-1, top ring seg..2seg-1, at the angles makeCylinderYVerts
+    // uses -- whose sides are flat-shaded per segment already, so this one looks
+    // exactly like it.
+    for (int ring = 0; ring < 2; ++ring)
+        for (int i = 0; i < seg; ++i) {
+            const float a = static_cast<float>(i) / seg * TAU;
+            m.verts.push_back({h.x * std::cos(a), ring ? h.y : -h.y, h.z * std::sin(a)});
+        }
+    for (int i = 0; i < seg; ++i) {
+        const int j = (i + 1) % seg;
+        m.faces.push_back({i, seg + i, seg + j, j});
+    }
+    std::vector<int> top, bottom;
+    for (int i = 0; i < seg; ++i) {
+        bottom.push_back(i);
+        top.push_back(seg + (seg - 1 - i));   // reversed: counter-clockwise from above
+    }
+    m.faces.push_back(top);
+    m.faces.push_back(bottom);
+    m.syncPaint();
+    return m;
+}
+
+EditMesh EditMesh::sphere(const glm::vec3& h, int stacks, int slices) {
+    stacks = std::max(stacks, 2);
+    slices = std::max(slices, 3);
+    EditMesh m;
+    const float PI = 3.14159265358979f, TAU = 6.28318530718f;
+    // A pole, the rings between, the other pole -- the layout of makeSphereVerts
+    // with the poles welded to one corner each, so a face at the top is a
+    // triangle and every one below it a quad.
+    m.verts.push_back({0.0f, h.y, 0.0f});
+    for (int st = 1; st < stacks; ++st) {
+        const float phi = PI * static_cast<float>(st) / stacks;
+        for (int sl = 0; sl < slices; ++sl) {
+            const float th = TAU * static_cast<float>(sl) / slices;
+            m.verts.push_back({h.x * std::sin(phi) * std::cos(th), h.y * std::cos(phi),
+                               h.z * std::sin(phi) * std::sin(th)});
+        }
+    }
+    m.verts.push_back({0.0f, -h.y, 0.0f});
+    const int south = static_cast<int>(m.verts.size()) - 1;
+    auto ring = [&](int st, int sl) { return 1 + (st - 1) * slices + (sl % slices); };
+    for (int sl = 0; sl < slices; ++sl)
+        m.faces.push_back({0, ring(1, sl + 1), ring(1, sl)});
+    for (int st = 1; st < stacks - 1; ++st)
+        for (int sl = 0; sl < slices; ++sl)
+            m.faces.push_back({ring(st, sl), ring(st, sl + 1),
+                               ring(st + 1, sl + 1), ring(st + 1, sl)});
+    for (int sl = 0; sl < slices; ++sl)
+        m.faces.push_back({ring(stacks - 1, sl), ring(stacks - 1, sl + 1), south});
+    m.syncPaint();
+    return m;
+}
+
+EditMesh EditMesh::plane(const glm::vec3& h) {
+    EditMesh m;
+    m.verts = {{-h.x, 0.0f, -h.z}, {-h.x, 0.0f, h.z}, {h.x, 0.0f, h.z}, {h.x, 0.0f, -h.z}};
+    m.faces = {{0, 1, 2, 3}};   // +Y, counter-clockwise seen from above
+    m.syncPaint();
+    return m;
+}
+
 bool EditMesh::painted() const {
     for (const glm::vec4& w : paint)
         if (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f || w.w > 0.0f) return true;
@@ -690,6 +777,15 @@ glm::vec3 recenter(EditMesh& m) {
     if (glm::dot(shift, shift) < 1e-12f) return glm::vec3(0.0f);
     for (glm::vec3& v : m.verts) v -= shift;
     return shift;
+}
+
+glm::vec3 fitScale(const EditMesh& m, const glm::vec3& half) {
+    glm::vec3 mn, mx;
+    m.bounds(mn, mx);
+    glm::vec3 s(1.0f);
+    for (int k = 0; k < 3; ++k)
+        if (mx[k] - mn[k] > 1e-4f) s[k] = half[k] * 2.0f / (mx[k] - mn[k]);
+    return s;
 }
 
 std::vector<glm::vec2> faceUvs(const EditMesh& m, int face) {

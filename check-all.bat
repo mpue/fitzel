@@ -137,6 +137,7 @@ REM  Struktur verliert, zeichnet dasselbe Bild -- er ist nur EIN Objekt statt
 REM  zwanzig, und das merkt man erst beim Anklicken eines Rades.
 call :run importcheck
 call :run softcheck
+call :run collidecheck
 call :run shotcheck
 call :run pathcheck "%OUT%"
 REM  gpucheck haelt den GPU-Pfadtracer gegen den CPU-Tracer: dieselbe Szene,
