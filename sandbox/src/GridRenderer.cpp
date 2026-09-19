@@ -42,7 +42,7 @@ void GridRenderer::draw(const FrameContext& ctx) {
     m_shader.bind();
     m_shader.setMat4("uViewProj", ctx.viewProj);
     m_shader.setVec3("uCamPos", ctx.camPos);
-    m_shader.setFloat("uPlaneY", plane);
+    m_shader.setFloat("uPlaneY", plane + lift);
     m_shader.setFloat("uExtent", extent);
     m_shader.setFloat("uCell", cell);
     m_shader.setFloat("uFade", fade);

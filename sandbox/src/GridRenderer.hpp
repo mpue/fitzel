@@ -53,6 +53,11 @@ public:
     bool      enabled = true;
     float     cell    = 1.0f;   // fine cell size (m); bold line every ten
     float     plane   = 0.0f;   // world Y the grid lies on
+    // Drawn this far above `plane`. On flat terrain the ground IS the cursor's
+    // plane, and a grid in the same plane loses the depth test to it every other
+    // pixel -- it shimmers. A few centimetres are invisible as an offset and end
+    // that; the snapping still happens at `plane`, only the picture is lifted.
+    float     lift    = 0.03f;
     float     fade    = 220.0f; // distance at which it has gone entirely (m)
     glm::vec3 color{0.62f, 0.66f, 0.72f};
     float     opacity = 1.0f;
