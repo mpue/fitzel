@@ -421,4 +421,336 @@ inline std::shared_ptr<pathtrace::Scene> furnaceScene() {
     return sc;
 }
 
+// --- Instances --------------------------------------------------------------
+// The look frame's three boxes again, but as PLACEMENTS of one unit box: turned,
+// squashed out of true, one of them mirrored, each drawn in its own material by
+// the instance's override. `flatten` builds the identical scene the old way --
+// every placement's triangles baked into the world list -- so the two pictures
+// can be held against each other. They have to agree: an instance is a promise
+// about memory, not a different object.
+//
+// The non-uniform scale and the mirror are the point. A uniform scale would let
+// a missing inverse transpose on the normals, or a winding flipped by a mirror,
+// through unnoticed.
+inline std::shared_ptr<pathtrace::Scene> instanceScene(bool flatten) {
+    auto sc = lookScene();
+    // Keep the ground (its first two triangles) and drop the three boxes.
+    sc->triangles.resize(2);
+
+    pathtrace::Scene box;
+    addBox(box, {0.0f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f}, 0);
+
+    auto place = [](const glm::vec3& at, float yaw, const glm::vec3& scale) {
+        const float c = std::cos(yaw), s = std::sin(yaw);
+        glm::mat4 m(1.0f);
+        m[0] = glm::vec4( c * scale.x, 0.0f, -s * scale.x, 0.0f);
+        m[1] = glm::vec4( 0.0f,        scale.y, 0.0f,      0.0f);
+        m[2] = glm::vec4( s * scale.z, 0.0f,  c * scale.z, 0.0f);
+        m[3] = glm::vec4(at, 1.0f);
+        return m;
+    };
+    const glm::mat4 xf[3] = {
+        place({-2.2f, 0.8f, 0.0f}, 0.4f,  {1.6f, 1.6f, 1.2f}),
+        place({ 0.0f, 0.9f, 0.0f}, -0.7f, {1.0f, 1.8f, 1.6f}),
+        place({ 2.2f, 0.6f, 0.0f}, 0.2f,  {-1.4f, 1.2f, 1.6f}),  // mirrored
+    };
+    const int mats[3] = {1, 2, 3};
+
+    if (!flatten) {
+        pathtrace::Mesh mesh;
+        mesh.triangles = box.triangles;
+        sc->meshes.push_back(std::move(mesh));
+        for (int i = 0; i < 3; ++i) {
+            pathtrace::Instance in;
+            in.transform = xf[i];
+            in.mesh      = 0;
+            in.material  = mats[i];
+            sc->instances.push_back(in);
+        }
+        return sc;
+    }
+    for (int i = 0; i < 3; ++i) {
+        const glm::mat3 nm = glm::transpose(glm::inverse(glm::mat3(xf[i])));
+        for (pathtrace::Triangle t : box.triangles) {
+            t.p0 = glm::vec3(xf[i] * glm::vec4(t.p0, 1.0f));
+            t.p1 = glm::vec3(xf[i] * glm::vec4(t.p1, 1.0f));
+            t.p2 = glm::vec3(xf[i] * glm::vec4(t.p2, 1.0f));
+            t.n0 = nm * t.n0; t.n1 = nm * t.n1; t.n2 = nm * t.n2;
+            t.material = mats[i];
+            sc->triangles.push_back(t);
+        }
+    }
+    return sc;
+}
+
+// --- A glow -----------------------------------------------------------------
+// A lit ground seen from above, and -- when asked -- an additive quad over part
+// of it. A spark, a mote or a puff of spray is light that is ADDED and blocks
+// nothing, so the picture with it must be the picture without it plus its glow,
+// and the ground under it must not go into shadow.
+inline std::shared_ptr<pathtrace::Scene> glowScene(bool withGlow, bool overhead) {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material ground;
+    ground.albedo    = glm::vec3(0.5f);
+    ground.roughness = 1.0f;
+    pathtrace::Material glow;
+    glow.albedo           = glm::vec3(0.0f);
+    glow.emission         = glm::vec3(1.0f);
+    glow.emissionStrength = 0.5f;
+    glow.additive         = true;
+    sc->materials = {ground, glow};
+
+    addQuad(*sc, {-30, 0, -30}, {30, 0, -30}, {30, 0, 30}, {-30, 0, 30}, {0, 1, 0}, 0);
+    // Overhead: well above the camera, between the sun and everything it
+    // sees -- a blocker would black the whole frame out. Otherwise in front of
+    // the camera, covering all of the view.
+    const float y = overhead ? 12.0f : 2.0f;
+    if (withGlow)
+        addQuad(*sc, {-30, y, -30}, {30, y, -30}, {30, y, 30}, {-30, y, 30}, {0, 1, 0}, 1);
+
+    sc->sun.direction        = glm::vec3(0.0f, 1.0f, 0.0f);
+    sc->sun.color            = glm::vec3(2.0f);
+    sc->sun.angularRadiusDeg = 0.0f;
+    sc->env.zenith = sc->env.horizon = sc->env.ground = glm::vec3(0.1f);
+    sc->camera = lookAt({0.0f, 6.0f, 0.01f}, {0.0f, 0.0f, 0.0f}, 40.0f);
+    return sc;
+}
+
+// --- Leaves and glow --------------------------------------------------------
+// A row of translucent cards standing in a low sun, one of them a cutout, and a
+// glow in front of it all -- the three things a meadow, a forest and a
+// waterfall's spray are made of and no other frame here has. Lit from BEHIND,
+// so most of what reaches the camera went through a leaf, which is exactly the
+// term a port that forgot the far side of the lobe would lose.
+inline std::shared_ptr<pathtrace::Scene> leafScene() {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material ground;
+    ground.albedo    = glm::vec3(0.35f, 0.33f, 0.30f);
+    ground.roughness = 0.9f;
+    pathtrace::Material leaf;
+    leaf.albedo       = glm::vec3(0.30f, 0.55f, 0.12f);
+    leaf.roughness    = 0.6f;
+    leaf.translucency = 0.5f;
+    pathtrace::Material cut = leaf;
+    cut.texture     = 0;
+    cut.alphaMode   = 1;
+    cut.alphaCutoff = 0.5f;
+    cut.tint        = glm::vec3(0.4f, 0.8f, 0.3f);
+    pathtrace::Material glow;
+    glow.albedo           = glm::vec3(0.0f);
+    glow.emission         = glm::vec3(1.0f, 0.8f, 0.5f);
+    glow.emissionStrength = 0.6f;
+    glow.additive         = true;
+    sc->materials = {ground, leaf, cut, glow};
+    // A checker whose dark squares are holes: alpha 0 there, 1 elsewhere.
+    pathtrace::Image img = checkerImage(16, glm::vec3(1.0f), glm::vec3(1.0f));
+    for (int y = 0; y < img.height; ++y)
+        for (int x = 0; x < img.width; ++x)
+            img.pixels[(static_cast<std::size_t>(y) * img.width + x) * 4 + 3] =
+                ((x * 4 / img.width + y * 4 / img.height) & 1) ? 0 : 255;
+    sc->textures.push_back(img);
+
+    addQuad(*sc, {-20, 0, -20}, {20, 0, -20}, {20, 0, 20}, {-20, 0, 20}, {0, 1, 0}, 0);
+    for (int i = 0; i < 4; ++i) {
+        const float x = -2.4f + 1.6f * static_cast<float>(i);
+        addQuad(*sc, {x - 0.6f, 0.0f, 0.0f}, {x + 0.6f, 0.0f, 0.0f},
+                {x + 0.6f, 1.8f, 0.0f}, {x - 0.6f, 1.8f, 0.0f}, {0, 0, 1},
+                i == 2 ? 2 : 1);
+    }
+    addQuad(*sc, {-0.6f, 0.4f, 2.0f}, {0.6f, 0.4f, 2.0f}, {0.6f, 1.2f, 2.0f},
+            {-0.6f, 1.2f, 2.0f}, {0, 0, 1}, 3);
+
+    sc->sun.direction        = glm::normalize(glm::vec3(0.2f, 0.35f, -1.0f)); // behind
+    sc->sun.color            = glm::vec3(3.0f, 2.7f, 2.2f);
+    sc->sun.angularRadiusDeg = 0.8f;
+    sc->env.zenith  = glm::vec3(0.12f, 0.18f, 0.30f);
+    sc->env.horizon = glm::vec3(0.25f, 0.28f, 0.32f);
+    sc->env.ground  = glm::vec3(0.06f);
+    sc->camera = lookAt({0.3f, 1.4f, 5.5f}, {0.0f, 0.9f, 0.0f}, 45.0f);
+    return sc;
+}
+
+// --- A panorama -------------------------------------------------------------
+// The look frame lit by an HDRI instead of the gradient: a sky with a small,
+// very bright patch low in it -- the case importance sampling exists for, and
+// the one where two renderers sampling two different distributions part
+// company fastest -- and a captured backdrop with a different colour, so the
+// camera's view of the sky and the light the sky casts are told apart.
+inline std::shared_ptr<pathtrace::Scene> hdriScene() {
+    auto sc = lookScene();
+    sc->sun.enabled = false;
+    const int W = 256, H = 128;
+    sc->env.width  = W;
+    sc->env.height = H;
+    sc->env.pixels.assign(static_cast<std::size_t>(W) * H * 3, 0.0f);
+    const glm::vec3 spot = glm::normalize(glm::vec3(-0.6f, 0.35f, 0.5f));
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            // Row 0 is the ground: the loader hands panoramas over bottom-up.
+            const float v = (static_cast<float>(y) + 0.5f) / static_cast<float>(H);
+            const float u = (static_cast<float>(x) + 0.5f) / static_cast<float>(W);
+            const float elev = 3.14159265f * (v - 0.5f);
+            const float phi  = 2.0f * 3.14159265f * (u - 0.5f);
+            const glm::vec3 d(std::cos(elev) * std::cos(phi), std::sin(elev),
+                              std::cos(elev) * std::sin(phi));
+            glm::vec3 c = d.y > 0.0f ? glm::mix(glm::vec3(0.5f, 0.55f, 0.6f),
+                                                glm::vec3(0.2f, 0.3f, 0.6f), d.y)
+                                     : glm::vec3(0.12f, 0.10f, 0.08f);
+            if (glm::dot(d, spot) > 0.995f) c = glm::vec3(60.0f, 55.0f, 45.0f);
+            float* p = &sc->env.pixels[(static_cast<std::size_t>(y) * W + x) * 3];
+            p[0] = c.r; p[1] = c.g; p[2] = c.b;
+        }
+    sc->env.intensity = 0.8f;
+    sc->env.backdropWidth  = 64;
+    sc->env.backdropHeight = 32;
+    sc->env.backdrop.assign(64 * 32 * 3, 0.0f);
+    for (std::size_t i = 0; i < sc->env.backdrop.size(); i += 3) {
+        sc->env.backdrop[i] = 0.9f; sc->env.backdrop[i + 1] = 0.5f; sc->env.backdrop[i + 2] = 0.3f;
+    }
+    return sc;
+}
+
+// --- Water ------------------------------------------------------------------
+// A pale lake bed `depth` metres under a water surface, seen from the bank. The
+// water is glass with a BODY: light that goes in is absorbed per metre and the
+// water's own lit colour fills in what was lost. So a shallow lake shows its bed
+// and a deep one shows its colour -- which is a statement about numbers, and
+// pathcheck holds the tracer to it.
+inline std::shared_ptr<pathtrace::Scene> waterScene(float depth) {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material bed;
+    bed.albedo    = glm::vec3(0.75f, 0.70f, 0.60f);
+    bed.roughness = 0.9f;
+    pathtrace::Material water;
+    water.albedo      = glm::vec3(1.0f);
+    water.roughness   = 0.02f;
+    water.glass       = true;
+    water.ior         = 1.33f;
+    water.absorption  = glm::vec3(0.30f, 0.14f, 0.10f);
+    water.mediumColor = glm::vec3(0.08f, 0.24f, 0.30f);
+    sc->materials = {bed, water};
+    addQuad(*sc, {-60, -depth, -60}, {60, -depth, -60}, {60, -depth, 60}, {-60, -depth, 60},
+            {0, 1, 0}, 0);
+    addQuad(*sc, {-60, 0, -60}, {60, 0, -60}, {60, 0, 60}, {-60, 0, 60}, {0, 1, 0}, 1);
+    sc->sun.direction        = glm::normalize(glm::vec3(0.3f, 1.0f, 0.2f));
+    sc->sun.color            = glm::vec3(2.5f);
+    sc->sun.angularRadiusDeg = 0.5f;
+    sc->env.zenith  = glm::vec3(0.25f, 0.35f, 0.55f);
+    sc->env.horizon = glm::vec3(0.45f, 0.50f, 0.58f);
+    sc->env.ground  = glm::vec3(0.10f);
+    sc->camera = lookAt({0.0f, 6.0f, 6.0f}, {0.0f, -depth, -2.0f}, 45.0f);
+    return sc;
+}
+
+// --- Clouds -----------------------------------------------------------------
+// The shadow frame again, with a cloud-shadow map over it that lets through 20%
+// of the sun on the half of the world with negative x and all of it elsewhere.
+inline std::shared_ptr<pathtrace::Scene> cloudScene() {
+    auto sc = shadowScene();
+    pathtrace::SunMask& m = sc->sunMask;
+    m.width = m.height = 32;
+    m.origin = glm::vec2(-100.0f, -100.0f);
+    m.size   = 200.0f;
+    m.refY   = 0.0f;
+    m.sunDir = glm::normalize(sc->sun.direction);
+    m.values.assign(32 * 32, 1.0f);
+    for (int y = 0; y < 32; ++y)
+        for (int x = 0; x < 16; ++x) m.values[static_cast<std::size_t>(y) * 32 + x] = 0.2f;
+    return sc;
+}
+
+// --- The ground past its bands ------------------------------------------------
+// The terrain frame with lit.frag's meadow and woods switched on (GroundLook):
+// the field's colour fading in a few metres from the eye, a moisture grid that
+// dries one side of it to straw, and small stands of wood whose floor is the
+// rock layer. Sharp for comparing two renderers: three noise functions, a
+// bilinear grid and two distance fades, all of which have to land on the same
+// ground in both.
+inline std::shared_ptr<pathtrace::Scene> groundScene(bool meadow = true) {
+    auto sc = terrainScene();
+    pathtrace::GroundLook& g = sc->ground;
+    g.meadowNear   = 3.0f;
+    g.meadowFar    = meadow ? 9.0f : 0.0f;
+    g.meadowAmount = 1.0f;
+    g.meadowLush   = 0.62f;
+    g.grassTint    = glm::vec3(1.0f, 1.05f, 0.95f);
+    g.grassTop     = 9.0f;
+    g.grassDry     = 0.3f;
+    g.waterLevel   = -3.0f;
+    g.moistSamples = 8;
+    g.moistOrigin  = glm::vec2(-12.0f, -12.0f);
+    g.moistCell    = 3.0f;
+    g.moisture.resize(64);
+    for (int z = 0; z < 8; ++z)
+        for (int x = 0; x < 8; ++x) g.moisture[static_cast<std::size_t>(z) * 8 + x] = x / 7.0f;
+    g.forestLayer  = 1;
+    g.ecoCover     = 0.5f;
+    g.ecoStandSize = 14.0f;
+    g.ecoSlopeLove = 0.9f;
+    g.canopy       = glm::vec3(0.02f, 0.035f, 0.012f);
+    g.canopyFrom   = 10.0f;
+    g.canopyTo     = 16.0f;
+    return sc;
+}
+
+// --- Far mountains -------------------------------------------------------------
+// A range seen from kilometres off, in the far terrain's own colours
+// (Material::farGround): meadow in the valley, the ecology's forest up the
+// slopes, rock where it is steep, snow above a line that wanders, and the air
+// between the eye and all of it. Big enough that every band of that colouring
+// is in the frame, and far enough that the aerial perspective is not a rounding
+// error.
+inline std::shared_ptr<pathtrace::Scene> mountainScene() {
+    auto sc = std::make_shared<pathtrace::Scene>();
+    pathtrace::Material far;
+    far.farGround = true;
+    far.roughness = 0.95f;
+    sc->materials = {far};
+    const int n = 96;
+    const float size = 9000.0f, cell = size / n;
+    auto height = [](float x, float z) {
+        const float r = std::sqrt(x * x + (z + 3500.0f) * (z + 3500.0f));
+        return 2100.0f * std::exp(-r * r / (2.0f * 1800.0f * 1800.0f)) +
+               180.0f * std::sin(x * 0.0021f) * std::cos(z * 0.0017f);
+    };
+    for (int j = 0; j < n; ++j)
+        for (int i = 0; i < n; ++i) {
+            const float x0 = -size * 0.5f + i * cell, z0 = -size + j * cell;
+            const glm::vec3 a(x0, height(x0, z0), z0), b(x0 + cell, height(x0 + cell, z0), z0);
+            const glm::vec3 c(x0 + cell, height(x0 + cell, z0 + cell), z0 + cell);
+            const glm::vec3 d(x0, height(x0, z0 + cell), z0 + cell);
+            for (int t = 0; t < 2; ++t) {
+                pathtrace::Triangle tri;
+                tri.p0 = a;
+                tri.p1 = t == 0 ? d : c;
+                tri.p2 = t == 0 ? c : b;
+                const glm::vec3 nn = glm::normalize(glm::cross(tri.p1 - tri.p0, tri.p2 - tri.p0));
+                tri.n0 = tri.n1 = tri.n2 = nn.y < 0.0f ? -nn : nn;
+                // The moisture rides in uv.x, as the harvest carries it.
+                const float m = 0.3f + 0.4f * (0.5f + 0.5f * std::sin(x0 * 0.001f));
+                tri.uv0 = tri.uv1 = tri.uv2 = glm::vec2(m, 0.0f);
+                tri.material = 0;
+                sc->triangles.push_back(tri);
+            }
+        }
+    pathtrace::GroundLook& g = sc->ground;
+    g.ecoOn        = true;
+    g.ecoStandSize = 340.0f;
+    g.ecoCover     = 0.5f;
+    g.ecoTreeLine  = 1100.0f;
+    g.ecoWater     = -1000.0f;
+    g.farTreeLine  = 1100.0f;
+    g.farSnowLevel = 1500.0f;
+    g.canopy       = glm::vec3(0.02f, 0.035f, 0.012f);
+    g.airSun       = glm::vec3(1.0f, 0.75f, 0.5f);
+    sc->sun.direction        = glm::normalize(glm::vec3(0.4f, 0.6f, 0.5f));
+    sc->sun.color            = glm::vec3(2.4f, 2.3f, 2.1f);
+    sc->sun.angularRadiusDeg = 0.5f;
+    sc->env.zenith  = glm::vec3(0.18f, 0.28f, 0.50f);
+    sc->env.horizon = glm::vec3(0.45f, 0.52f, 0.62f);
+    sc->env.ground  = glm::vec3(0.10f);
+    sc->camera = lookAt({0.0f, 250.0f, 2500.0f}, {0.0f, 900.0f, -3500.0f}, 50.0f);
+    return sc;
+}
+
 } // namespace tracescenes

@@ -279,117 +279,156 @@ void appendToScene(pathtrace::Scene& scene, const Field& f,
     const std::int32_t t1z = static_cast<std::int32_t>(
         std::floor((opt.centerXZ.y + radius) / ts));
 
-    // The fade band, in the shader's own terms: uFadeEnd is the disc's edge and
-    // uFadeStart is one margin inside it.
-    const float fadeEnd   = radius;
-    const float fadeStart = std::max(0.0f, radius - std::max(0.0f, opt.fadeMargin));
-
     const glm::vec2 windDir = (glm::length(opt.windDir) > 1e-6f)
                                   ? glm::normalize(opt.windDir)
                                   : glm::vec2(1.0f, 0.0f);
 
-    std::vector<float> inst;
-    bool stop = false;
+    // One blade, expanded: grass.vert from here down. `hs` is the height the
+    // shader's distance fade leaves it (1 = full height).
+    auto emitBlade = [&](const glm::vec3& iPos, float iRot, float iHeight,
+                         float iPhase, float iLush, float hs) {
+        // grass.vert, from here down. The frustum cull is deliberately
+        // NOT ported: a blade behind the camera still lights what is in
+        // front of it, and culling it would leave a hole in every
+        // reflection and every bounce.
+        const float r1 = fractSin(iPhase * 91.17f + iRot * 13.30f, 43758.5453f);
+        const float r2 = fractSin(iPhase * 44.53f + iRot * 7.13f + 2.7f, 24634.6345f);
+        const float r3 = fractSin(iPos.x * 12.9898f + iPos.z * 78.233f, 43758.5453f);
 
-    for (std::int32_t tz = t0z; tz <= t1z && !stop; ++tz) {
-        for (std::int32_t tx = t0x; tx <= t1x && !stop; ++tx) {
+
+        const float widthVar = glm::mix(0.70f, 1.65f, r2);
+        const float c = std::cos(iRot), s = std::sin(iRot);
+
+        const float leanAng = iRot + (r3 - 0.5f) * 2.5f;
+        const glm::vec2 leanDir(std::cos(leanAng), std::sin(leanAng));
+        const float leanAmt = glm::mix(0.03f, 0.17f, r1);
+
+        const float along = glm::dot(glm::vec2(iPos.x, iPos.z), windDir);
+        // wind.glsl's gust field (Wind.hpp), posed at the tracer's time.
+        wind::State ws;
+        ws.dir = windDir;
+        ws.gustiness = opt.windGust;
+        ws.time = opt.windTime;
+        const float gust = wind::gust(ws, glm::vec2(iPos.x, iPos.z));
+        const float sway = std::sin(opt.windTime * (1.35f + 0.6f * r2)
+                                    + iPhase + along * 0.25f);
+        const float stiff = glm::mix(0.65f, 1.25f, r1);
+        const float bladeH = iHeight * hs;
+        const float bendGain = glm::clamp(bladeH / 0.35f, 0.20f, 1.70f);
+        const float bendAmt = opt.windStrength * gust * stiff
+                            * (0.30f + 0.70f * sway) * bendGain;
+
+        // The blade's seven world-space vertices.
+        glm::vec3 v[7];
+        for (int k = 0; k < 7; ++k) {
+            const float ax  = kBlade[k * 2];
+            const float h01 = kBlade[k * 2 + 1];
+            const float w   = 0.016f * widthVar * (1.0f - 0.4f * h01);
+            glm::vec3 local(ax * 2.0f * w, h01 * iHeight * hs, 0.0f);
+            local = glm::vec3(local.x * c, local.y, local.x * s);
+            local.x += leanDir.x * (leanAmt * h01 * h01);
+            local.z += leanDir.y * (leanAmt * h01 * h01);
+            const float bend = bendAmt * h01 * h01;
+            local.x += windDir.x * bend;
+            local.z += windDir.y * bend;
+            v[k] = iPos + local;
+        }
+
+        // One normal for the whole blade -- the ribbon's own, tilted
+        // toward up by however much the caller asked for (see
+        // TraceOptions::normalUpBias).
+        const glm::vec3 N =
+            glm::normalize(glm::vec3(-s, opt.normalUpBias, c));
+
+        const BladeColor bc = bladeColor(iPos, iLush, r1, r2);
+
+        // Five triangles from the strip. Each takes the colour at its own
+        // height, which is the raster path's per-fragment gradient
+        // resolved to five steps -- a blade is a few pixels tall in a
+        // still and the difference does not survive the pixel.
+        for (int k = 0; k + 2 < 7; ++k) {
+            pathtrace::Triangle t;
+            // Strip winding: flip every other triangle so the fronts
+            // agree. The tracer is two-sided, so this costs nothing and
+            // keeps the geometry honest for anything that reads it later.
+            if (k & 1) { t.p0 = v[k + 1]; t.p1 = v[k]; t.p2 = v[k + 2]; }
+            else       { t.p0 = v[k];     t.p1 = v[k + 1]; t.p2 = v[k + 2]; }
+            t.n0 = t.n1 = t.n2 = N;
+            const float hMid = (kBlade[k * 2 + 1] + kBlade[(k + 1) * 2 + 1]
+                                + kBlade[(k + 2) * 2 + 1]) / 3.0f;
+            t.material = palette.index(glm::mix(bc.base, bc.tip, hMid));
+            scene.triangles.push_back(t);
+            ++rep.triangles;
+        }
+        ++rep.blades;
+    };
+
+    // The field, gathered first and expanded second. Gathering is the cheap
+    // half (seven floats a blade); expanding is five triangles a blade, and a
+    // dense meadow is more of those than a render can hold. So the budget is
+    // spent from the eye OUTWARD: if the whole disc does not fit, the disc is
+    // shrunk to the radius that does, and the viewport's own soft fade is put at
+    // that edge -- a full-density meadow to where the budget ends, rather than
+    // the first rows of tiles in memory order and a bare hole where the camera
+    // actually stands, which is what running out mid-loop used to leave.
+    std::vector<float> field;      // 7 floats + distance per blade
+    std::vector<float> inst;
+    for (std::int32_t tz = t0z; tz <= t1z; ++tz)
+        for (std::int32_t tx = t0x; tx <= t1x; ++tx) {
             inst.clear();
             generateTile(tx, tz, glm::vec2(tx * ts, tz * ts), ts, f, inst);
-
             for (std::size_t i = 0; i + 6 < inst.size(); i += 7) {
-                const glm::vec3 iPos(inst[i], inst[i + 1], inst[i + 2]);
-                const float iRot    = inst[i + 3];
-                const float iHeight = inst[i + 4];
-                const float iPhase  = inst[i + 5];
-                const float iLush   = inst[i + 6];
-
                 // The disc is round; the tiles that cover it are not.
-                const float fdist = glm::length(glm::vec2(iPos.x, iPos.z) - opt.centerXZ);
-                if (fdist > radius) continue;
-
-                if (rep.triangles + 5 > opt.maxTriangles) { stop = true; break; }
-
-                // grass.vert, from here down. The frustum cull is deliberately
-                // NOT ported: a blade behind the camera still lights what is in
-                // front of it, and culling it would leave a hole in every
-                // reflection and every bounce.
-                const float r1 = fractSin(iPhase * 91.17f + iRot * 13.30f, 43758.5453f);
-                const float r2 = fractSin(iPhase * 44.53f + iRot * 7.13f + 2.7f, 24634.6345f);
-                const float r3 = fractSin(iPos.x * 12.9898f + iPos.z * 78.233f, 43758.5453f);
-
-                const float hs = 1.0f - glm::smoothstep(fadeStart, fadeEnd, fdist);
-                if (hs <= 1e-3f) continue;   // faded to nothing at the edge
-
-                const float widthVar = glm::mix(0.70f, 1.65f, r2);
-                const float c = std::cos(iRot), s = std::sin(iRot);
-
-                const float leanAng = iRot + (r3 - 0.5f) * 2.5f;
-                const glm::vec2 leanDir(std::cos(leanAng), std::sin(leanAng));
-                const float leanAmt = glm::mix(0.03f, 0.17f, r1);
-
-                const float along = glm::dot(glm::vec2(iPos.x, iPos.z), windDir);
-                // wind.glsl's gust field (Wind.hpp), posed at the tracer's time.
-                wind::State ws;
-                ws.dir = windDir;
-                ws.gustiness = opt.windGust;
-                ws.time = opt.windTime;
-                const float gust = wind::gust(ws, glm::vec2(iPos.x, iPos.z));
-                const float sway = std::sin(opt.windTime * (1.35f + 0.6f * r2)
-                                            + iPhase + along * 0.25f);
-                const float stiff = glm::mix(0.65f, 1.25f, r1);
-                const float bladeH = iHeight * hs;
-                const float bendGain = glm::clamp(bladeH / 0.35f, 0.20f, 1.70f);
-                const float bendAmt = opt.windStrength * gust * stiff
-                                    * (0.30f + 0.70f * sway) * bendGain;
-
-                // The blade's seven world-space vertices.
-                glm::vec3 v[7];
-                for (int k = 0; k < 7; ++k) {
-                    const float ax  = kBlade[k * 2];
-                    const float h01 = kBlade[k * 2 + 1];
-                    const float w   = 0.016f * widthVar * (1.0f - 0.4f * h01);
-                    glm::vec3 local(ax * 2.0f * w, h01 * iHeight * hs, 0.0f);
-                    local = glm::vec3(local.x * c, local.y, local.x * s);
-                    local.x += leanDir.x * (leanAmt * h01 * h01);
-                    local.z += leanDir.y * (leanAmt * h01 * h01);
-                    const float bend = bendAmt * h01 * h01;
-                    local.x += windDir.x * bend;
-                    local.z += windDir.y * bend;
-                    v[k] = iPos + local;
-                }
-
-                // One normal for the whole blade -- the ribbon's own, tilted
-                // toward up by however much the caller asked for (see
-                // TraceOptions::normalUpBias).
-                const glm::vec3 N =
-                    glm::normalize(glm::vec3(-s, opt.normalUpBias, c));
-
-                const BladeColor bc = bladeColor(iPos, iLush, r1, r2);
-
-                // Five triangles from the strip. Each takes the colour at its own
-                // height, which is the raster path's per-fragment gradient
-                // resolved to five steps -- a blade is a few pixels tall in a
-                // still and the difference does not survive the pixel.
-                for (int k = 0; k + 2 < 7; ++k) {
-                    pathtrace::Triangle t;
-                    // Strip winding: flip every other triangle so the fronts
-                    // agree. The tracer is two-sided, so this costs nothing and
-                    // keeps the geometry honest for anything that reads it later.
-                    if (k & 1) { t.p0 = v[k + 1]; t.p1 = v[k]; t.p2 = v[k + 2]; }
-                    else       { t.p0 = v[k];     t.p1 = v[k + 1]; t.p2 = v[k + 2]; }
-                    t.n0 = t.n1 = t.n2 = N;
-                    const float hMid = (kBlade[k * 2 + 1] + kBlade[(k + 1) * 2 + 1]
-                                        + kBlade[(k + 2) * 2 + 1]) / 3.0f;
-                    t.material = palette.index(glm::mix(bc.base, bc.tip, hMid));
-                    scene.triangles.push_back(t);
-                    ++rep.triangles;
-                }
-                ++rep.blades;
+                const float d = glm::length(glm::vec2(inst[i], inst[i + 2]) - opt.centerXZ);
+                if (d > radius) continue;
+                field.insert(field.end(), inst.begin() + static_cast<std::ptrdiff_t>(i),
+                             inst.begin() + static_cast<std::ptrdiff_t>(i) + 7);
+                field.push_back(d);
             }
+        }
+    const std::size_t blades = field.size() / 8;
+    const long long painted = opt.painted ? static_cast<long long>(opt.painted->size() / 7) : 0;
+    const long long budget  = std::max<long long>(0, opt.maxTriangles / 5 - painted);
+
+    float edge = radius;
+    if (static_cast<long long>(blades) > budget) {
+        std::vector<float> dist(blades);
+        for (std::size_t i = 0; i < blades; ++i) dist[i] = field[i * 8 + 7];
+        const std::size_t k = static_cast<std::size_t>(budget);
+        std::nth_element(dist.begin(), dist.begin() + static_cast<std::ptrdiff_t>(k), dist.end());
+        edge = k < dist.size() ? dist[k] : radius;
+        rep.truncated = true;
+    }
+    rep.radius = edge;
+
+    // The fade band, in the shader's own terms: uFadeEnd is the disc's edge and
+    // uFadeStart one margin inside it -- a margin that shrinks with the disc, so
+    // a meadow cut to ten metres does not spend all ten of them fading.
+    const float fadeEnd   = edge;
+    const float fadeStart = std::max(edge * 0.6f, edge - std::max(0.0f, opt.fadeMargin));
+    for (std::size_t i = 0; i < blades; ++i) {
+        const float* b = &field[i * 8];
+        if (b[7] >= edge) continue;
+        const float hs = 1.0f - glm::smoothstep(fadeStart, fadeEnd, b[7]);
+        if (hs <= 1e-3f) continue;   // faded to nothing at the edge
+        emitBlade(glm::vec3(b[0], b[1], b[2]), b[3], b[4], b[5], b[6], hs);
+    }
+    bool stop = false;
+
+    // The blades somebody painted by hand. Every one of them, at any distance:
+    // the viewport draws them with no fade at all, and their stored height is
+    // RELATIVE -- the field's blade height multiplies it in, exactly as
+    // uHeightScale does for their draw in drawGrass.
+    if (opt.painted) {
+        const std::vector<float>& pb = *opt.painted;
+        for (std::size_t i = 0; i + 6 < pb.size() && !stop; i += 7) {
+            if (rep.triangles + 5 > opt.maxTriangles) { stop = true; break; }
+            emitBlade(glm::vec3(pb[i], pb[i + 1], pb[i + 2]), pb[i + 3],
+                      pb[i + 4] * opt.paintedHeightScale, pb[i + 5], pb[i + 6], 1.0f);
         }
     }
 
-    rep.truncated = stop;
+    rep.truncated = rep.truncated || stop;
     rep.materials = palette.size();
     rep.seconds = std::chrono::duration<double>(
                       std::chrono::steady_clock::now() - t0).count();

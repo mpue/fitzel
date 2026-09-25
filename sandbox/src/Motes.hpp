@@ -52,6 +52,11 @@ public:
     void drawReactive(const glm::mat4& viewProj);
     int drawn() const { return static_cast<int>(m_data.size() / kFloats); }
 
+    // This frame's visible motes, for the path tracer (WorldTrace.cpp): 6
+    // floats each -- pos3, radius (m), kind (0 pollen, 1 fluff, 2 dust), phase.
+    const std::vector<float>& traceData() const { return m_data; }
+    float traceClear() const { return 1.0f - std::clamp(m_weather / 0.85f, 0.0f, 1.0f); }
+
 private:
     struct Mote {
         glm::vec3 pos{0.0f};

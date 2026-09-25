@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -15,6 +16,11 @@
 #include <fitzel/graphics/Texture3D.hpp>
 #include <fitzel/scene/Camera.hpp>
 
+#include <chrono>
+
+#include <glad/gl.h>
+
+#include "GpuTrace.hpp"
 #include "UiStyle.hpp"
 
 namespace pathpanel {
@@ -81,7 +87,7 @@ void drawNotes(const pathcapture::Report& rep) {
     // Shown, not hidden behind a log. Every entry here is a way the render
     // differs from the viewport, and an author who does not know about them
     // spends the difference looking for a bug in their scene.
-    if (ui::header("What is not in the render")) {
+    if (ui::header("What is in the render, and what is not")) {
         for (const std::string& n : rep.notes) {
             ImGui::Bullet();
             ImGui::TextWrapped("%s", n.c_str());
@@ -110,6 +116,10 @@ void draw(State& st, lightgrid::Runtime& light,
     }
 
     const bool running = st.job.running();
+    if (st.focusPending && st.job.samplesDone() > 0) {
+        st.focusDistance = st.job.focusDistance();
+        st.focusPending  = false;
+    }
 
     ui::title("Offline render");
     ui::hint("Traces the scene the way it is framed in the viewport right now:\n"
@@ -213,6 +223,38 @@ void draw(State& st, lightgrid::Runtime& light,
              "landscape. Too low and a reflection shows a hole where the world\n"
              "was cut away -- raise it if a mirror looks wrong.");
     ImGui::Checkbox("Include glass and transparency", &st.capture.includeTransparent);
+
+    // --- The world beyond the render queue --------------------------------
+    // All of it on by default: a render is supposed to show the scene the
+    // viewport shows. The switches are for the shot that wants less -- a car
+    // on an empty plain, a building without its weather.
+    ImGui::Spacing();
+    ui::sectionText("World");
+    worldtrace::Options& w = st.world;
+    ImGui::Checkbox("Trees", &w.trees);
+    ImGui::SameLine(160.0f);
+    ImGui::Checkbox("Flowers", &w.flowers);
+    ImGui::Checkbox("Lake and rivers", &w.water);
+    ImGui::SameLine(160.0f);
+    ImGui::Checkbox("Far mountains", &w.farTerrain);
+    ImGui::Checkbox("Birds, butterflies, fish", &w.creatures);
+    ImGui::Checkbox("Particles, spray, pollen", &w.particles);
+    ImGui::Checkbox("Rain", &w.rain);
+    ImGui::SameLine(160.0f);
+    ImGui::Checkbox("Cloud shadows", &w.clouds);
+    ImGui::Checkbox("The viewport's sky as background", &w.sky);
+    ImGui::BeginDisabled(!w.trees);
+    ImGui::SliderFloat("Forest reach", &w.treeRadius, 50.0f, 3000.0f, "%.0f m",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!w.farTerrain);
+    ImGui::SliderFloat("Mountain reach", &w.farRadius, 1000.0f, 16000.0f, "%.0f m",
+                       ImGuiSliderFlags_Logarithmic);
+    ImGui::EndDisabled();
+    ui::hint("Trees are traced as the real meshes all the way out -- the\n"
+             "viewport's far cards are a stand-in the tracer does not need.\n"
+             "Every tree of a kind shares one copy of its mesh, so a big forest\n"
+             "costs render time, not memory.");
     ImGui::EndDisabled();
 
     // --- Baked light ------------------------------------------------------
@@ -360,6 +402,102 @@ void draw(State& st, lightgrid::Runtime& light,
     ImGui::End();
 }
 
+void attachToShots(State& st, shotlist::Runner& shots, int samples,
+                   const std::function<void(int&, int&)>& windowSize, bool gpuToo) {
+    shots.startTrace = [&st, samples, windowSize] {
+        int w = 1280, h = 720;
+        if (windowSize) windowSize(w, h);
+        // The window's shape, at most 1280 across: this is a check to look at,
+        // and a 3440-wide still at any sample count is minutes per view.
+        if (w > 1280) {
+            h = h * 1280 / w;
+            w = 1280;
+        }
+        st.settings.width   = std::max(64, w);
+        st.settings.height  = std::max(64, h);
+        st.settings.samples = std::max(1, samples);
+        // FITZEL_SHOTS_SHOW=1/2/3: the diagnostic views (base colour, normals,
+        // depth) instead of the render -- the first thing to reach for when a
+        // traced still and the raster one disagree about a surface.
+        if (const char* show = std::getenv("FITZEL_SHOTS_SHOW"))
+            st.settings.show = static_cast<pathtrace::Show>(std::clamp(std::atoi(show), 0, 3));
+        st.previewSamples   = -1;
+        st.captureRequested = true;
+    };
+    // Done once the request has been taken, the job has run and stopped, and
+    // there is a picture -- in that order, or the first poll after the request
+    // would see the PREVIOUS render's finished image.
+    shots.traceDone = [&st] {
+        return !st.captureRequested && !st.job.running() && st.job.hasImage() &&
+               st.job.samplesDone() >= st.job.samplesTotal();
+    };
+    shots.saveTrace = [&st, gpuToo, samples](const std::string& path) {
+        std::vector<unsigned char> px;
+        if (!st.job.snapshotLdr(px)) return false;
+        const int w = st.job.settings().width, h = st.job.settings().height;
+        // What went into it, beside it: the panel's notes are the first thing
+        // to read when a traced still disagrees with the raster one.
+        std::string txt = path;
+        const std::size_t dot = txt.find_last_of('.');
+        if (dot != std::string::npos) txt.resize(dot);
+        if (std::FILE* f = std::fopen((txt + ".txt").c_str(), "w")) {
+            std::fprintf(f, "%dx%d, %d samples, %.1fs (build %.2fs)\n%s\n", w, h,
+                         st.job.samplesDone(), st.job.elapsedSeconds(),
+                         st.job.buildSeconds(), st.reportLine.c_str());
+            for (const std::string& n : st.report.notes) std::fprintf(f, "- %s\n", n.c_str());
+            std::fclose(f);
+        }
+        if (gpuToo && st.lastScene && gputrace::available()) {
+            // The same scene through the GPU tracer, in dispatches of a few
+            // samples (one long one trips the driver's watchdog), resolved on
+            // the CPU through the same curve the still uses.
+            gputrace::Tracer gpu;
+            const auto t0 = std::chrono::steady_clock::now();
+            bool ok = gpu.init("assets/shaders/gputrace.comp") && gpu.upload(*st.lastScene);
+            if (ok) {
+                gpu.setCamera(st.lastScene->camera);
+                gpu.setPath(st.job.settings().maxBounces, st.job.settings().clampIndirect);
+                ok = gpu.resize(w, h);
+            }
+            for (int done = 0; ok && done < samples; done += 4)
+                ok = gpu.accumulate(std::min(4, samples - done));
+            std::vector<float> hdr;
+            if (ok) ok = gpu.snapshotHdr(hdr);
+            glFinish();
+            const double secs = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - t0).count();
+            if (ok) {
+                std::vector<unsigned char> g(static_cast<std::size_t>(w) * h * 4, 255);
+                const pathtrace::Scene& sc = *st.lastScene;
+                for (int y = 0; y < h; ++y)
+                    for (int x = 0; x < w; ++x) {
+                        const std::size_t i = static_cast<std::size_t>(y) * w + x;
+                        glm::vec3 c = pathtrace::tonemap(
+                            glm::vec3(hdr[i * 3], hdr[i * 3 + 1], hdr[i * 3 + 2]),
+                            sc.exposure, sc.grade);
+                        c *= pathtrace::vignette((x + 0.5f) / w, (y + 0.5f) / h,
+                                                 static_cast<float>(w) / h, sc.grade.vignette);
+                        c = glm::clamp(c, glm::vec3(0.0f), glm::vec3(1.0f));
+                        for (int k = 0; k < 3; ++k)
+                            g[i * 4 + k] = static_cast<unsigned char>(c[k] * 255.0f + 0.5f);
+                    }
+                std::string gp = txt + "_gpu.png";
+                stbi_write_png(gp.c_str(), w, h, 4, g.data(), w * 4);
+            }
+            if (std::FILE* f = std::fopen((txt + ".txt").c_str(), "a")) {
+                std::fprintf(f, "GPU: %s in %.1fs, %d instances, tree depth %d/%d, "
+                             "%d maps (%d shrunk, %d dropped)%s%s\n",
+                             ok ? "rendered" : "FAILED", secs, gpu.instanceCount(),
+                             gpu.bvhDepth(), gpu.tlasDepth(), gpu.textureCount(),
+                             gpu.texturesShrunk(), gpu.texturesDropped(), ok ? "" : " -- ",
+                             ok ? "" : gpu.error().c_str());
+                std::fclose(f);
+            }
+        }
+        return stbi_write_png(path.c_str(), w, h, 4, px.data(), w * 4) != 0;
+    };
+}
+
 State::~State() {
     // The bake thread outlives nothing. Cancelling and joining here is what
     // makes closing the editor mid-bake a close rather than a crash.
@@ -423,24 +561,33 @@ void service(State& st, lightgrid::Runtime& light,
         gopt.centerXZ = glm::vec2(camera.position().x, camera.position().z);
         gopt.radius   = look.grassRadius;
         gopt.windTime = look.grassWindTime;
+        gopt.painted  = look.paintedGrass;
+        gopt.paintedHeightScale = look.grassHeight;
         grassfield::TraceReport grep;
         grassfield::appendToScene(*scenePtr, *look.grass, gopt, &grep);
+        followGrass(scenePtr->ground, grep.radius);
         if (grep.blades > 0) {
             char buf[192];
             std::snprintf(buf, sizeof(buf),
-                          "grass: %lld blades, %lld triangles, %d colours%s",
-                          grep.blades, grep.triangles, grep.materials,
-                          grep.truncated ? " (hit the triangle ceiling)" : "");
+                          "grass: %lld blades, %lld triangles, %d colours, to %.0f m%s",
+                          grep.blades, grep.triangles, grep.materials, grep.radius,
+                          grep.truncated ? " (cut from the field's radius to fit the "
+                                           "triangle ceiling)" : "");
             st.report.notes.emplace_back(buf);
-            st.report.triangles += grep.triangles;
         }
-        st.reportLine = st.report.summary();
     }
 
-    if (scenePtr->triangles.empty()) {
+    // Everything else the queue does not carry. Not for a bake: a bake covers
+    // the ground a car drives over, and the far mountains and a forest to the
+    // horizon would stretch its grid across kilometres of nothing.
+    if (look.world && !wantBake)
+        look.world(*scenePtr, st.world, false, st.report.notes);
+    st.report.triangles = scenePtr->triangleCount();
+    st.reportLine = st.report.summary();
+
+    if (scenePtr->triangleCount() == 0) {
         (wantBake ? st.gridStatus : st.status) =
-            "nothing to work with: the frame has no geometry the tracer can "
-            "read (grass, water and particles do not count).";
+            "nothing to work with: the frame has no geometry the tracer can read.";
         return;
     }
 
@@ -473,19 +620,15 @@ void service(State& st, lightgrid::Runtime& light,
     // --- A still ----------------------------------------------------------
     st.job.cancel();
     scenePtr->camera.apertureRadius = std::max(0.0f, st.aperture);
-    if (st.aperture > 0.0f) {
-        if (st.autoFocus) {
-            const float d = pathtrace::firstHitDistance(
-                *scenePtr, scenePtr->camera.position, scenePtr->camera.forward);
-            // Nothing under the crosshair (the camera is pointed at the sky):
-            // keep the last distance rather than focusing at zero, which would
-            // blur the entire picture and look like a bug.
-            if (d > 0.0f) st.focusDistance = d;
-        }
-        scenePtr->camera.focusDistance = std::max(0.1f, st.focusDistance);
-    }
+    // The focus is measured by the job, once its accelerator exists, rather
+    // than here by a brute-force walk over every triangle before it does: on a
+    // scene with a forest in it that one question cost more than the build.
+    scenePtr->camera.focusDistance = std::max(0.1f, st.focusDistance);
+    st.settings.autoFocus = st.aperture > 0.0f && st.autoFocus;
+    st.focusPending       = st.settings.autoFocus;
 
     st.previewSamples = -1;
+    st.lastScene = scenePtr;
     st.job.start(std::move(scenePtr), st.settings);
     st.status = "rendering";
 }

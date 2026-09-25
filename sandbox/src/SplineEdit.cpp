@@ -69,10 +69,8 @@ constexpr float kGrabRadius = 14.0f;
 
 // Where a control point's handle sits in the world: on the run itself, not on
 // the bare ground, so a raised point is grabbable where its fence actually is.
-glm::vec3 handleWorld(const Context& c, const SplineSystem::Path& p, int i) {
-    const glm::vec2 q = p.points[i];
-    const float g = c.groundAt ? c.groundAt(q.x, q.y) : 0.0f;
-    return glm::vec3(q.x, g + 0.15f + c.splines.liftOf(c.sel, i), q.y);
+glm::vec3 handleWorld(const Context& c, int i) {
+    return c.splines.pointWorld(c.sel, i) + glm::vec3(0.0f, 0.15f, 0.0f);
 }
 
 // Which control point a click at `P` (world XZ) should be spliced in front of:
@@ -128,12 +126,8 @@ void handle(const Context& c) {
             const SplineSystem::Path& p = sp.paths[pi];
             if (!p.enabled) continue;
             for (int i = 0; i < static_cast<int>(p.points.size()); ++i) {
-                const glm::vec2 q = p.points[i];
-                const float g = c.groundAt ? c.groundAt(q.x, q.y) : 0.0f;
-                const float lift = (pi < static_cast<int>(sp.paths.size()) &&
-                                    i < static_cast<int>(p.lifts.size())) ? p.lifts[i] : 0.0f;
                 ImVec2 s;
-                if (!toScreen(glm::vec3(q.x, g + 0.15f + lift, q.y), s)) continue;
+                if (!toScreen(sp.pointWorld(pi, i) + glm::vec3(0.0f, 0.15f, 0.0f), s)) continue;
                 const float d = std::hypot(s.x - c.mousePos.x, s.y - c.mousePos.y);
                 if (d < bestD) { bestD = d; hoverPath = pi; hoverPt = i; }
             }
@@ -174,7 +168,7 @@ void handle(const Context& c) {
         if (c.dragHeight) {
             // Metres per pixel at the handle's own depth, so the point tracks the
             // cursor instead of drifting away from it as you zoom in or out.
-            const glm::vec3 hw = handleWorld(c, sp.paths[c.sel], c.ptSel);
+            const glm::vec3 hw = handleWorld(c, c.ptSel);
             const float dist = glm::length(hw - c.cameraPos);
             const float mpp = (c.orthoHalfH > 0.0f
                                    ? 2.0f * c.orthoHalfH
@@ -255,7 +249,9 @@ void handle(const Context& c) {
             const glm::vec2 q = p.points[i];
             const float g = c.groundAt ? c.groundAt(q.x, q.y) : 0.0f;
             const float lift = i < static_cast<int>(p.lifts.size()) ? p.lifts[i] : 0.0f;
-            const glm::vec3 hw(q.x, g + 0.15f + lift, q.y);
+            // On the run itself -- for a bridge that is its deck, however far
+            // above the ground the point is.
+            const glm::vec3 hw = sp.pointWorld(pi, i) + glm::vec3(0.0f, 0.15f, 0.0f);
             ImVec2 s;
             if (!toScreen(hw, s)) continue;
             const bool sel   = active && i == c.ptSel;
@@ -267,9 +263,9 @@ void handle(const Context& c) {
                                      : IM_COL32(130, 170, 210, 150);
             // A raised point gets a stalk down to the ground it left: without it a
             // lifted handle just looks like a point somewhere else on the terrain.
-            if (lift != 0.0f) {
+            if (std::abs(hw.y - 0.15f - g) > 0.05f) {
                 ImVec2 gp;
-                if (toScreen(glm::vec3(hw.x, hw.y - lift, hw.z), gp)) {
+                if (toScreen(glm::vec3(hw.x, g + 0.15f, hw.z), gp)) {
                     dl->AddLine(gp, s, IM_COL32(255, 210, 60, 140), 1.5f);
                     dl->AddCircle(gp, 2.5f, IM_COL32(255, 210, 60, 160), 0, 1.5f);
                 }

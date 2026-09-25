@@ -66,6 +66,15 @@ public:
     // target: the yaw/pitch stand.
     std::function<bool(int, glm::vec3&)> target;
 
+    // Optional (`--shots-trace <samples>`): after each view's picture, a
+    // PATH-TRACED one of the same view, written beside it as <name>_traced.png.
+    // The runner holds the view while it renders. startTrace asks the host to
+    // harvest and render; traceDone says when it has finished; saveTrace writes
+    // it. All three empty: raster pictures only.
+    std::function<void()>                   startTrace;
+    std::function<bool()>                   traceDone;
+    std::function<bool(const std::string&)> saveTrace;
+
 private:
     std::vector<Shot> m_shots;
     std::string       m_outDir;
@@ -73,6 +82,7 @@ private:
     int               m_frame = 0;      // within a sequence
     double            m_since = 0.0;    // when the current shot / frame began
     bool              m_done  = false;
+    bool              m_tracing = false; // holding the view for a traced still
 };
 
 } // namespace shotlist

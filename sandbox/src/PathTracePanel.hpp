@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -10,10 +11,15 @@
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/graphics/Texture3D.hpp>
 
+#include <functional>
+#include <vector>
+
 #include "LightGrid.hpp"
 #include "GrassTrace.hpp"
 #include "PathTrace.hpp"
 #include "PathTraceCapture.hpp"
+#include "ShotList.hpp"
+#include "WorldTrace.hpp"
 
 namespace fitzel {
 class Camera;
@@ -42,6 +48,8 @@ struct State {
     // --- What the author set ---
     pathcapture::Options capture;
     pathtrace::Settings  settings;
+    // What of the world beyond the render queue goes in, and how far out.
+    worldtrace::Options  world;
     int  resolutionPreset = 1;      // index into the preset list in the .cpp
     bool saveExrToo       = true;   // write the linear image beside the PNG
 
@@ -51,9 +59,15 @@ struct State {
     float aperture      = 0.0f;     // metres; 0 = everything sharp
     bool  autoFocus     = true;
     float focusDistance = 10.0f;
+    // The job measures the focus once its accelerator is built; the panel
+    // picks the answer up from it so the slider shows where the lens went.
+    bool  focusPending  = false;
 
     // --- The running render ---
     pathtrace::Job      job;
+    // The scene the job was started on, kept so a shot list can render the
+    // very same harvest on the GPU as well (attachToShots' `gpuToo`).
+    std::shared_ptr<const pathtrace::Scene> lastScene;
     pathcapture::Report report;
     std::string         reportLine;
     std::string         status;
@@ -125,6 +139,18 @@ struct SceneLook {
     const grassfield::Field* grass = nullptr;
     float grassRadius = 40.0f;  // metres of field around the camera
     float grassWindTime = 0.0f; // the instant of wind the still is taken at
+    // The blades painted by hand (7 floats each, relative height) and the
+    // field's blade height that scales them. Null = none.
+    const std::vector<float>* paintedGrass = nullptr;
+    float grassHeight = 0.35f;
+
+    // Everything else the render queue does not carry -- the forest, flowers,
+    // water, far terrain, wildlife, particles, rain, the clouds' shadow and the
+    // sky (WorldTrace.hpp). Handed in as a call rather than as the systems
+    // themselves, so neither the panel nor the preview has to know what a
+    // forest is. `preview` asks for the near world only. Empty: none of it.
+    std::function<void(pathtrace::Scene&, const worldtrace::Options&, bool preview,
+                       std::vector<std::string>& notes)> world;
 };
 
 // Fulfil a pending request. Call once per frame from the render loop, AFTER the
@@ -135,6 +161,27 @@ struct SceneLook {
 // `scenePath` when the scene changes, and finishes a bake that has completed on
 // its worker thread -- all of which need a current GL context and the render
 // loop's own moment, which is why they live here rather than in draw().
+// Let a shot list (`--shots-trace <samples>`) take a traced still of each of its
+// views through this panel: the same harvest, settings and file format as the
+// Render button, at the size of the window and `samples` per pixel.
+// With `gpuToo`, the same harvest is rendered by the GPU tracer as well and
+// written as <name>_gpu.png -- the viewport preview's renderer, on the scene the
+// still was made from, so the two can be held against each other.
+void attachToShots(State& state, shotlist::Runner& shots, int samples,
+                   const std::function<void(int&, int&)>& windowSize,
+                   bool gpuToo = false);
+
+// The meadow's colour (GroundLook) fades in where the viewport's blades fade
+// out: from 30% to 95% of the grass radius. The traced field can be cut shorter
+// than the viewport's (the triangle ceiling, the preview's smaller disc), and
+// the fade then follows the TRACED edge -- or there is bare soil between the
+// last blade and the first of the meadow's colour.
+inline void followGrass(pathtrace::GroundLook& g, float tracedRadius) {
+    if (tracedRadius <= 0.0f || !g.meadowOn()) return;
+    g.meadowNear = std::min(g.meadowNear, 0.3f * tracedRadius);
+    g.meadowFar  = std::min(g.meadowFar, 0.95f * tracedRadius);
+}
+
 void service(State& state, lightgrid::Runtime& light,
              fitzel::Renderer& renderer, const fitzel::Camera& camera,
              const SceneLook& look, const std::filesystem::path& scenePath);

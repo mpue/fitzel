@@ -33,6 +33,9 @@ add_library(fitzel STATIC
     src/audio/SynthPoly.cpp
     src/audio/SynthPlayer.cpp
     src/audio/Midi.cpp
+    # A song with a clock, a filter and an analyser tap, plus the band analysis
+    # a rhythm game finds its beats in.
+    src/audio/MusicPlayer.cpp
     src/asset/AssetId.cpp
     src/asset/AssetTypes.cpp
     src/asset/AssetDatabase.cpp

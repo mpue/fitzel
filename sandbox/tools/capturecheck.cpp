@@ -54,6 +54,27 @@ void check(bool ok, const char* what, const std::string& detail = {}) {
 }
 
 bool near(float a, float b, float eps = 1e-3f) { return std::fabs(a - b) <= eps; }
+// The scene as the picture sees it: the world's triangles plus every placed
+// mesh's, carried into the world. The harvest keeps a mesh drawn more than once
+// as ONE mesh and a placement per draw; what these checks ask -- did every draw
+// arrive, where, facing which way -- is about the world, so they read it here.
+std::vector<pathtrace::Triangle> worldTriangles(const pathtrace::Scene& sc) {
+    std::vector<pathtrace::Triangle> out = sc.triangles;
+    for (const pathtrace::Instance& in : sc.instances) {
+        if (in.mesh < 0 || in.mesh >= static_cast<int>(sc.meshes.size())) continue;
+        const glm::mat3 nm = glm::transpose(glm::inverse(glm::mat3(in.transform)));
+        for (pathtrace::Triangle t : sc.meshes[static_cast<std::size_t>(in.mesh)].triangles) {
+            t.p0 = glm::vec3(in.transform * glm::vec4(t.p0, 1.0f));
+            t.p1 = glm::vec3(in.transform * glm::vec4(t.p1, 1.0f));
+            t.p2 = glm::vec3(in.transform * glm::vec4(t.p2, 1.0f));
+            t.n0 = nm * t.n0; t.n1 = nm * t.n1; t.n2 = nm * t.n2;
+            if (in.material >= 0) t.material = in.material;
+            out.push_back(t);
+        }
+    }
+    return out;
+}
+
 bool near3(const glm::vec3& a, const glm::vec3& b, float eps = 1e-3f) {
     return near(a.x, b.x, eps) && near(a.y, b.y, eps) && near(a.z, b.z, eps);
 }
@@ -511,8 +532,17 @@ int main(int argc, char** argv) {
     std::printf("  %s\n", rep.summary().c_str());
 
     // Four quads survive the distance cull, two triangles each.
-    check(scene->triangles.size() == 8, "every submitted mesh arrived",
-          std::to_string(scene->triangles.size()) + " triangles");
+    const std::vector<pathtrace::Triangle> world = worldTriangles(*scene);
+    check(world.size() == 8, "every submitted mesh arrived",
+          std::to_string(world.size()) + " triangles");
+    // ...and the one mesh drawn five times is kept ONCE and placed four times
+    // (the fifth is the distant one), not copied four times over.
+    check(scene->meshes.size() == 1 && scene->instances.size() == 4 &&
+              scene->triangles.empty(),
+          "a mesh drawn many times is kept once and placed",
+          std::to_string(scene->meshes.size()) + " meshes, " +
+          std::to_string(scene->instances.size()) + " placements, " +
+          std::to_string(scene->triangles.size()) + " loose triangles");
     check(rep.meshes == 1, "the shared mesh was read back once, not once per draw",
           std::to_string(rep.meshes) + " readbacks for " +
           std::to_string(rep.instances) + " draws");
@@ -526,7 +556,7 @@ int main(int argc, char** argv) {
         // to (2, 1, 0) lands at (-2, 1, -0.5). If the readback lost the vertex
         // stride, or the transform was applied in the wrong order, it will not.
         bool found = false;
-        for (const pathtrace::Triangle& t : scene->triangles)
+        for (const pathtrace::Triangle& t : world)
             for (const glm::vec3& p : {t.p0, t.p1, t.p2})
                 if (near3(p, glm::vec3(-2.0f, 1.0f, -0.5f))) found = true;
         check(found, "a vertex landed where the model matrix says it should",
@@ -536,7 +566,7 @@ int main(int argc, char** argv) {
         // would give the same answer here, so the test that matters is the
         // rotated quad below -- this one catches a normal that was scaled.
         bool flatNormalsUp = true;
-        for (const pathtrace::Triangle& t : scene->triangles) {
+        for (const pathtrace::Triangle& t : world) {
             const glm::vec3 n = glm::normalize(t.n0);
             if (near3(t.p0, glm::vec3(-2.0f, 1.0f, -0.5f), 4.0f) &&
                 std::fabs(n.y) < 0.99f && std::fabs(n.z) < 0.99f)
@@ -546,7 +576,7 @@ int main(int argc, char** argv) {
 
         // The tipped quad: rotating +Y by 90 degrees about +X gives -Z.
         bool tippedFound = false;
-        for (const pathtrace::Triangle& t : scene->triangles) {
+        for (const pathtrace::Triangle& t : world) {
             const glm::vec3 n = glm::normalize(t.n0);
             if (near3(n, glm::vec3(0.0f, 0.0f, 1.0f), 1e-3f)) tippedFound = true;
         }

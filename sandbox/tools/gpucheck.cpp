@@ -13,10 +13,9 @@
 //
 // WHAT IS BEING COMPARED: the whole path -- bounces, next-event estimation,
 // MIS, glass, Russian roulette, the firefly clamp -- plus base-colour maps with
-// their tints and alpha modes, and the terrain's layers. What the kernel still
-// does not have is an HDRI and depth of field, so the frames here carry neither
-// and the environment is the gradient both sides fall back to. See
-// gputrace.comp's header for the standing list.
+// their tints and alpha modes, the terrain's layers, instances, translucent
+// leaves, glows, an importance-sampled HDRI with a captured backdrop, and the
+// lens. See gputrace.comp's header for the standing list.
 //
 // The two will never be bit-identical and are not asked to be: different random
 // sequences, different orders of summation, and 32-bit floats. They are asked
@@ -31,6 +30,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <string>
@@ -228,9 +228,43 @@ int main(int argc, char** argv) {
         // whose tree is deeper, the case where that arithmetic is wrong is the
         // case nothing here renders.
         {"dense",   tracescenes::terrainScene(160), 0.03, 0.20},
+        // Placements: one mesh three times, turned, squashed and mirrored, each
+        // in its own material -- walked through the second level of the tree,
+        // the one a forest lives in.
+        {"instances", tracescenes::instanceScene(false), 0.06, 0.40},
+        // Light through leaves, a cutout leaf, and a glow in front of it all.
+        {"leaves",  tracescenes::leafScene(),      0.04, 0.20},
+        // An HDRI with a tiny bright patch, importance-sampled on both sides
+        // from the same distribution, and a backdrop the camera sees instead.
+        {"hdri",    tracescenes::hdriScene(),      0.06, 0.40},
+        // A lake: glass with a body -- absorbed per metre, filled in with the
+        // water's own lit colour -- and a bed seen through it.
+        {"water",   tracescenes::waterScene(2.0f), 0.04, 0.30},
+        // The clouds' shadow on the ground, read from a map.
+        {"clouds",  tracescenes::cloudScene(),     0.02, 0.10},
+        // The terrain's woods past its bands: the forest floor where the
+        // ecology puts a stand, and the canopy's colour past the traced trees.
+        // Integer-hash noise, so the two sides land on the same stands exactly.
+        {"woods",   tracescenes::groundScene(false), 0.02, 0.10},
+        // ...and with the meadow's colour over it. meadow.glsl hashes with
+        // fract(sin(x) * 43758), which multiplies the last bits of sin() by
+        // forty thousand; the card's sin is not the CPU's, so the two meadows
+        // are the same field in different patches -- held to the same AMOUNT of
+        // light within the spread a few twenty-metre patches allow, not to the
+        // same pixels. (The viewport's own sin is a third one again.)
+        {"meadow",  tracescenes::groundScene(true),  0.10, 0.30},
+        // Far mountains in the far terrain's own colours, hazed by the air.
+        {"mountains", tracescenes::mountainScene(),  0.03, 0.20},
     };
 
-    for (const Frame& f : frames) {
+    // FITZEL_GPUCHECK_HUGE=<n>: one more frame, the terrain at n x n cells --
+    // for finding out what a scene the size of a real meadow does to the card.
+    // Off by default: it is minutes, not seconds.
+    std::vector<Frame> all(std::begin(frames), std::end(frames));
+    if (const char* huge = std::getenv("FITZEL_GPUCHECK_HUGE"))
+        all.push_back({"huge", tracescenes::terrainScene(std::atoi(huge)), 0.05, 0.30});
+
+    for (const Frame& f : all) {
         std::printf("\n%s\n", f.name);
         auto scene = f.scene;
 
@@ -384,6 +418,37 @@ int main(int argc, char** argv) {
                  cpu, s.width, s.height);
         writePng(outDir / (std::string("gpucheck-") + f.name + "-gpu.png"),
                  gpuImg, s.width, s.height);
+    }
+
+    // --- More maps than the card has room for --------------------------------
+    // The textured frame again, with a budget smaller than its maps. Every map
+    // must survive at a lower resolution -- none dropped, which is what turned a
+    // forest white -- and the picture must still be the CPU's, near enough: a
+    // halved checker averages to the same colour.
+    std::printf("\nmaps over budget (shrunk, not dropped)\n");
+    {
+        auto scene = tracescenes::textureScene();
+        std::size_t texels = 0;
+        for (const pathtrace::Image& img : scene->textures)
+            texels += static_cast<std::size_t>(img.width) * img.height;
+        gpu.setTextureBudget(texels / 3);
+        bool ok = gpu.upload(*scene) && gpu.resize(s.width, s.height);
+        for (int done = 0; ok && done < s.samples; done += s.batch)
+            ok = gpu.accumulate(std::min(s.batch, s.samples - done));
+        std::vector<float> img;
+        ok = ok && gpu.snapshotHdr(img);
+        gpu.setTextureBudget(0);
+        check(ok, "the GPU rendered it", gpu.error());
+        check(gpu.texturesDropped() == 0 && gpu.texturesShrunk() > 0,
+              "every map is kept, the big ones at a lower resolution",
+              std::to_string(gpu.texturesShrunk()) + " shrunk, " +
+              std::to_string(gpu.texturesDropped()) + " dropped");
+        const std::vector<float> cpu = cpuHdr(scene, s);
+        const double mc = mean(cpu), mg = mean(img);
+        const double rel = std::fabs(mg - mc) / std::max(mc, 1e-6);
+        char detail[128];
+        std::snprintf(detail, sizeof detail, "cpu %.5f vs gpu %.5f (%.2f%%)", mc, mg, rel * 100.0);
+        check(ok && rel < 0.05, "and the frame keeps its colours", detail);
     }
 
     glfwTerminate();

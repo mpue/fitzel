@@ -161,6 +161,7 @@ void readStyle(const nlohmann::json& j, splinegen::Style& s) {
     col("colorA", s.colorA);
     col("colorB", s.colorB);
     col("colorC", s.colorC);
+    if (j.contains("bridge") && j["bridge"].is_object()) bridgegen::load(j["bridge"], s.bridge);
 }
 
 } // namespace
@@ -234,6 +235,22 @@ void SplineSystem::setLift(int path, int i, float lift) {
     touch(path);
 }
 
+glm::vec3 SplineSystem::pointWorld(int path, int i) const {
+    if (path < 0 || path >= static_cast<int>(paths.size())) return glm::vec3(0.0f);
+    const Path& q = paths[path];
+    if (i < 0 || i >= static_cast<int>(q.points.size())) return glm::vec3(0.0f);
+    const glm::vec2 xz = q.points[i];
+    // A bridge's point sits on its deck, which only the built line knows.
+    if (q.kind == splinegen::Kind::Bridge && path < static_cast<int>(m_built.size())) {
+        const Built& b = m_built[path];
+        if (i < static_cast<int>(b.ptSample.size()) && b.ptSample[i] >= 0 &&
+            b.ptSample[i] < static_cast<int>(b.line.size()))
+            return glm::vec3(xz.x, b.line[b.ptSample[i]].y, xz.y);
+    }
+    const float g = groundAt ? groundAt(xz.x, xz.y) : 0.0f;
+    return glm::vec3(xz.x, g + liftOf(path, i), xz.y);
+}
+
 void SplineSystem::touch(int path) {
     m_built.resize(paths.size());
     m_runs.resize(paths.size());
@@ -272,10 +289,12 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
 
     const Path& p = paths[i];
     if (!p.enabled || p.points.size() < 2) return;
+    const bool bridge = p.kind == splinegen::Kind::Bridge;
+    const bool closed = p.closed && !bridge;   // a bridge has two ends
 
     // The path itself: the same centripetal spline the road runs on (see
     // sampleSpline), draped on the terrain and raised by the per-point lifts.
-    const std::vector<glm::vec2> flat = sampleSpline(p.points, p.closed, &b.ptSample);
+    const std::vector<glm::vec2> flat = sampleSpline(p.points, closed, &b.ptSample);
     if (flat.size() < 2) return;
 
     std::vector<float> lifts = p.lifts;
@@ -283,13 +302,32 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
     const bool anyLift = std::any_of(lifts.begin(), lifts.end(),
                                      [](float v) { return v != 0.0f; });
     const std::vector<float> ramp =
-        anyLift ? liftRamp(lifts, b.ptSample, flat.size(), p.closed)
+        anyLift ? liftRamp(lifts, b.ptSample, flat.size(), closed)
                 : std::vector<float>(flat.size(), 0.0f);
 
+    auto ground = [&](glm::vec2 q) { return groundAt ? groundAt(q.x, q.y) : 0.0f; };
     b.line.reserve(flat.size());
-    for (std::size_t s = 0; s < flat.size(); ++s) {
-        const float y = (groundAt ? groundAt(flat[s].x, flat[s].y) : 0.0f) + ramp[s];
-        b.line.emplace_back(flat[s].x, y, flat[s].y);
+    if (bridge) {
+        // A bridge does not drape -- following the valley floor is exactly what
+        // it is there not to do. The deck runs straight from the ground at its
+        // first point to the ground at its last; the point heights shape it from
+        // there, the camber humps it, Raise lifts all of it.
+        std::vector<float> st(flat.size(), 0.0f);
+        for (std::size_t s = 1; s < flat.size(); ++s)
+            st[s] = st[s - 1] + glm::length(flat[s] - flat[s - 1]);
+        const float total = std::max(st.back(), 1e-3f);
+        const float ga = ground(flat.front()), gb = ground(flat.back());
+        for (std::size_t s = 0; s < flat.size(); ++s) {
+            const float u = st[s] / total;
+            const float y = glm::mix(ga, gb, u) + ramp[s] + p.style.lift +
+                            p.style.bridge.camber * std::sin(u * 3.14159265f);
+            b.line.emplace_back(flat[s].x, y, flat[s].y);
+        }
+        const splinegen::Palette pal = splinegen::ensurePalette(materials, p.kind, p.style);
+        r.geo = splinegen::generateBridge(p.style, b.line, groundAt, pal);
+    } else {
+        for (std::size_t s = 0; s < flat.size(); ++s)
+            b.line.emplace_back(flat[s].x, ground(flat[s]) + ramp[s], flat[s].y);
     }
 
     // A bare path stops at the line: it has no parts, and asking for a palette
@@ -298,9 +336,11 @@ void SplineSystem::rebuild(int i, std::vector<MaterialDef>& materials) {
         r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, {});
         return;
     }
-    const splinegen::Palette pal =
-        splinegen::ensurePalette(materials, p.kind, p.style);
-    r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, pal);
+    if (!bridge) {
+        const splinegen::Palette pal =
+            splinegen::ensurePalette(materials, p.kind, p.style);
+        r.geo = splinegen::generate(p.kind, p.style, b.line, p.closed, pal);
+    }
 
     // Upload and release the CPU copy: keeping a second copy of a kilometre of
     // ballast costs tens of megabytes for nothing (the AABB and material stay).
@@ -335,6 +375,9 @@ void SplineSystem::save(nlohmann::json& j) const {
         e["lifts"] = std::move(lifts);
         nlohmann::json st;
         writeStyle(st, p.style);
+        // Only a bridge carries the bridge rule; a fence would just be saving
+        // thirty numbers nobody reads.
+        if (p.kind == splinegen::Kind::Bridge) bridgegen::save(st["bridge"], p.style.bridge);
         e["style"] = std::move(st);
         arr.push_back(std::move(e));
     }

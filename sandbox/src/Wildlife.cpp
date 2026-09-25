@@ -163,6 +163,14 @@ bool Wildlife::init() {
     return true;
 }
 
+std::vector<float> Wildlife::traceMesh(int kind) {
+    const std::vector<V> m = kind == 0 ? birdMesh() : kind == 1 ? flyMesh() : fishMesh();
+    std::vector<float> out;
+    out.reserve(m.size() * 6);
+    for (const V& v : m) out.insert(out.end(), {v.x, v.y, v.z, v.wing, v.u, v.v});
+    return out;
+}
+
 bool Wildlife::findWater(const World& w, float minDist, float maxDist, float depth,
                          glm::vec2& at, float* surface) {
     if (!w.water && (!w.ground || w.waterLevel < -999.0f)) return false;

@@ -218,6 +218,30 @@ int main(int argc, char** argv) {
               std::to_string(rep.materials) + " materials");
         check(!rep.truncated, "the ceiling is not in the way at 8 m");
 
+        // Over the ceiling, the field is cut from the OUTSIDE in: the blades
+        // that make it are the nearest ones, and the disc shrinks to where the
+        // budget ends. Running out in tile order used to keep the first rows of
+        // memory and drop the ground under the camera.
+        pathtrace::Scene small;
+        grassfield::TraceOptions topt;
+        topt.centerXZ     = glm::vec2(0.0f);
+        topt.radius       = 12.0f;
+        topt.maxTriangles = rep.triangles / 2;
+        grassfield::TraceReport cut;
+        grassfield::appendToScene(small, testField(true), topt, &cut);
+        float farthest = 0.0f;
+        for (const pathtrace::Triangle& t : small.triangles)
+            farthest = std::max(farthest, glm::length(glm::vec2(t.p0.x, t.p0.z)));
+        check(cut.truncated && cut.radius < 12.0f && cut.radius > 2.0f,
+              "over budget, the disc shrinks to what fits",
+              "to " + std::to_string(cut.radius) + " m");
+        check(cut.triangles <= topt.maxTriangles && cut.blades > 0,
+              "and stays inside the budget",
+              std::to_string(cut.triangles) + " of " + std::to_string(topt.maxTriangles));
+        check(farthest < cut.radius + 0.5f,
+              "keeping the NEAREST blades, not the first ones generated",
+              "farthest blade at " + std::to_string(farthest) + " m");
+
         // A blade stands on the ground and does not reach the sky. Measured
         // against the terrain, not against zero: even the flat world's height is
         // whatever the generator's constant term happens to be, and a test that

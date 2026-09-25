@@ -32,13 +32,15 @@
 // rather than as a different game. Where the two differ it is because the
 // approximation was the difference.
 //
-// WHAT IT DELIBERATELY LEAVES OUT (v1, hero shots). Vegetation, particles and
-// water: grass and trees are gl_VertexID instances whose geometry only exists
-// inside a vertex shader, and water is a displaced procedural surface. None of
-// the three can be read back off the GPU as triangles, so none of them is here.
-// That is a scope decision, not an oversight -- the shot this serves is a
-// vehicle or a building, framed close, and none of the missing three is what
-// the picture is of.
+// WHAT IS IN THE PICTURE. Everything the viewport draws, not only what goes
+// through the render queue. v1 left vegetation, water and particles out because
+// their geometry only exists inside a vertex shader; they now reach the scene by
+// being REGENERATED on the CPU from the data the shaders are fed (GrassTrace,
+// WorldTrace). The one thing that made that affordable is instancing: a forest
+// is a few meshes of a hundred thousand triangles each, drawn tens of thousands
+// of times, and flattened it is more triangles than the machine has memory for.
+// Here it is one copy of each mesh plus a transform per tree (Scene::meshes /
+// Scene::instances), walked through a two-level accelerator.
 //
 // NO GL IN THIS FILE. Everything here is plain data and arithmetic, which is
 // what lets the tracer be tested headless by tools/pathcheck.cpp against known
@@ -93,6 +95,18 @@ struct Material {
     // render was window glass -- water read as glass, a gem read as glass,
     // and the one number that tells them apart was not in the scene at all.
     float     ior          = 1.5f;
+    // What the BODY of a glass surface does to light crossing it -- a lake, a
+    // river. Read only when `glass` is on, and only by rays that went in.
+    //
+    // A pane is a thin sheet and its tint is per crossing; water is a volume,
+    // and what makes it water is that it gets darker and bluer with depth: a
+    // shallow ford shows its stones, a deep pool shows its own colour. So a ray
+    // that refracts INTO the surface carries this with it until it refracts
+    // back out: every metre it travels is attenuated by exp(-absorption), and
+    // what is lost is replaced by the water's own colour lit by the sky above
+    // it (mediumColor) -- the same two terms water.frag mixes by thickness.
+    glm::vec3 absorption{0.0f};     // extinction per metre, linear (0 = clear)
+    glm::vec3 mediumColor{0.0f};    // sRGB albedo of the water body
     glm::vec3 emission{0.0f};       // emissive colour, sRGB
     float     emissionStrength = 1.0f; // linear multiplier (>1 for a real glow)
     // How much of the diffuse albedo leaves through the FAR side of the surface
@@ -112,6 +126,21 @@ struct Material {
     // duplicated. A translucent surface is not a brighter one, it is one whose
     // light comes out somewhere else.
     float     translucency = 0.0f;
+    // Light that is ADDED and blocks nothing: a spark, a mote of pollen, a
+    // puff of spray. The raster path draws these with additive blending and no
+    // depth write, which is a surface that glows and that everything behind it
+    // shows straight through -- a ray passes on through it and it casts no
+    // shadow. Its emission is scaled by its coverage (texture alpha times
+    // opacity), as the blend scales it, and it is SEEN but lights nothing: only
+    // a ray from the eye (or off a mirror, through glass) collects it, exactly
+    // as the viewport's sparks light nothing around them.
+    bool      additive     = false;
+    // The far terrain's ground (farterrain.frag): no map and no layers, but a
+    // colour worked out from where it is -- meadow, alpine grass, the ecology's
+    // forest, scree, rock by slope, snow above a wandering line -- with the
+    // moisture it grows by carried in the triangle's uv.x. Seen from the eye it
+    // also takes the far terrain's aerial perspective. See GroundLook.
+    bool      farGround    = false;
     int       texture      = -1;    // index into Scene::textures, -1 = flat
     // 0 opaque / 1 cutout / 2 blend, matching AlphaMode in SceneTypes.hpp.
     int       alphaMode    = 0;
@@ -162,6 +191,35 @@ struct BvhData {
 // tracer's, handed out.
 [[nodiscard]] BvhData buildBvh(const std::vector<Triangle>& triangles);
 
+// A mesh that is drawn more than once: its triangles in OBJECT space, each
+// carrying its own material exactly as a world triangle does.
+struct Mesh {
+    std::vector<Triangle> triangles;
+};
+
+// One placement of a Mesh. `material` >= 0 replaces the material of every
+// triangle in it -- the same mesh drawn twice in two colours is one mesh and two
+// instances, not two meshes.
+struct Instance {
+    glm::mat4 transform{1.0f};  // object -> world; may scale non-uniformly
+    int       mesh     = 0;     // index into Scene::meshes
+    int       material = -1;    // -1: the triangles' own
+};
+
+struct Scene;
+
+// The whole two-level accelerator, handed out for the same reason buildBvh is:
+// the GPU tracer walks exactly the tree the CPU tracer walks, never one of its
+// own. `world` is over Scene::triangles, `meshes[i]` over Scene::meshes[i]
+// (object space), and `instances` is the top level, over the instances' world
+// bounds -- its leaves' indices name instances rather than triangles.
+struct AccelData {
+    BvhData              world;
+    std::vector<BvhData> meshes;
+    BvhData              instances;
+};
+[[nodiscard]] AccelData buildAccel(const Scene& scene);
+
 // The sun. `angularRadiusDeg` is what makes a shadow's edge soft: zero is the
 // hard-edged raster look, half a degree is roughly the real sun, and a few
 // degrees reads as an overcast day. It is the single most effective dial in
@@ -201,9 +259,133 @@ struct Environment {
     glm::vec3 horizon{0.70f, 0.78f, 0.88f};
     glm::vec3 ground{0.22f, 0.21f, 0.20f};
 
+    // What the sky LOOKS like, as opposed to how it lights: the viewport's own
+    // background (the procedural sky with its clouds), captured into an
+    // equirectangular panorama, linear radiance, same layout as `pixels`.
+    //
+    // Two maps because the viewport itself has two. Without an HDRI it lights
+    // every diffuse surface from one flat ambient colour -- which the gradient
+    // above reproduces -- while the camera, and anything mirror-like, sees the
+    // sky shader's clouds. A tracer that lit from the cloud picture would
+    // disagree with the viewport's brightness on every surface in the frame; one
+    // that showed the gradient as its background put a flat colour ramp where the
+    // author had a sky. So rays that come straight from the camera, or off a
+    // mirror or through glass, see this; everything that scattered sees the
+    // lighting environment. Empty when the background IS the lighting HDRI.
+    std::vector<float> backdrop;
+    int   backdropWidth = 0, backdropHeight = 0;
+
     bool      hasMap() const { return !pixels.empty() && width > 0 && height > 0; }
+    bool      hasBackdrop() const {
+        return !backdrop.empty() && backdropWidth > 0 && backdropHeight > 0;
+    }
     glm::vec3 sample(const glm::vec3& dir) const;
+    // The backdrop where there is one, otherwise sample() * intensity -- i.e.
+    // what the camera sees in that direction.
+    glm::vec3 sampleSeen(const glm::vec3& dir) const;
 };
+
+// How a lighting panorama is importance-sampled: luminance per coarse cell
+// (weighted by the solid angle its row covers), a conditional CDF per row and a
+// marginal CDF down the rows. Handed out so the GPU tracer samples from the SAME
+// distribution the CPU tracer does rather than one of its own -- an importance
+// sampler that differs is an estimator that differs, and every difference in
+// the two pictures would then have two explanations.
+struct EnvDistribution {
+    int w = 0, h = 0;
+    std::vector<float> func;     // w*h
+    std::vector<float> condCdf;  // h * (w + 1), each row normalised
+    std::vector<float> margCdf;  // h + 1, normalised
+    float total = 0.0f;
+    bool valid() const { return total > 1e-12f && w > 0 && h > 0; }
+};
+[[nodiscard]] EnvDistribution buildEnvDistribution(const Environment& env);
+
+// How much of the sun reaches a point past what the scene's own geometry
+// blocks: the clouds' shadow on the ground. The raster path marches its cumulus
+// towards the sun into a ground map every frame (CloudShadow.hpp) and every
+// receiver of the sun reads it; the tracer has no clouds to cast with, so it
+// reads the SAME map, handed over as numbers. Without it a render of an overcast
+// valley comes out in full sun beside a viewport that has it half in shade.
+//
+// cloudshadow.glsl's lookup, transcribed: the point is carried along the sun to
+// the map's plane, looked up bilinearly, and faded to full sun over the map's
+// outer edge so its border is never a line on the ground.
+struct SunMask {
+    std::vector<float> values;   // width*height, 1 = full sun; row 0 = the map's v = 0
+    int       width = 0, height = 0;
+    glm::vec2 origin{0.0f};      // world XZ of the map's corner
+    float     size = 1.0f;       // world metres across
+    float     refY = 0.0f;       // the plane the map was cast onto
+    glm::vec3 sunDir{0.0f, 1.0f, 0.0f};  // the sun it was cast from
+
+    bool  valid() const { return !values.empty() && width > 0 && height > 0; }
+    float at(const glm::vec3& p) const;
+};
+
+// What lit.frag does to the terrain past its layer bands, for the materials
+// that have layers. Two things, both of which a landscape is mostly made of:
+//
+// THE MEADOW (meadow.glsl). The grass is real geometry out to its radius and
+// nothing past it, so beyond it the ground would be bare soil -- from the air a
+// green disc around the camera in a desert. The shader paints the field's own
+// colour there instead, faded in by distance from the eye, keyed by moisture
+// (dry ground goes to straw), thinned on steep ground, under water and above the
+// snow line. Here the fade starts where the TRACED grass ends.
+//
+// THE WOODS (ecology.glsl). Where the ecology puts a stand of trees the forest
+// floor layer replaces the height/slope bands -- leaf litter, not meadow. Past
+// the traced forest's reach (and only there) the floor goes the canopy's colour,
+// as the viewport does past its tree meshes.
+struct GroundLook {
+    // The meadow. meadowFar <= 0: off.
+    float     meadowNear = 0.0f, meadowFar = 0.0f;
+    float     meadowAmount = 1.0f;
+    float     meadowLush   = 0.62f;       // the moisture where there is no map
+    glm::vec3 grassTint{1.0f};            // linear
+    float     grassTop  = 1e9f;           // no meadow above this (the snow line)
+    float     grassDry  = 0.0f;           // thin dry sward where it is too dry
+    float     waterLevel = -1000.0f;
+    // The moisture the grass grows by (the far terrain's finest ring): samples
+    // x samples values, row z-major, origin/cell as FarTerrain::fineRect.
+    std::vector<float> moisture;
+    int       moistSamples = 0;
+    glm::vec2 moistOrigin{0.0f};
+    float     moistCell = 1.0f;
+
+    // The woods. forestLayer < 0: off.
+    int       forestLayer = -1;
+    float     ecoCover = 0.45f, ecoStandSize = 340.0f, ecoTreeLine = 750.0f;
+    float     ecoWater = -1000.0f, ecoSolitary = 0.035f, ecoSlopeLove = 0.9f;
+    glm::vec3 canopy{0.0f};               // linear; the floor's colour past the trees
+    float     canopyFrom = 1e30f, canopyTo = 1e30f;   // from the eye, metres
+
+    // The far terrain's own look (farterrain.frag), for Material::farGround.
+    bool      ecoOn      = false;         // the ecology decides where forest is
+    float     farTreeLine = 750.0f;       // FarTerrain::treeLine
+    float     farSnowLevel = 1100.0f;     // FarTerrain::snowLevel
+    glm::vec3 airSun{1.0f, 0.75f, 0.5f};  // forward scatter colour in the air (the fog's sun colour)
+
+    bool meadowOn() const { return meadowFar > 0.0f; }
+    bool woodsOn()  const { return forestLayer >= 0; }
+    // The moisture at a point: the map where it covers, meadowLush elsewhere.
+    float lushAt(float x, float z) const;
+};
+
+// meadow.glsl's colour and cover, and ecology.glsl's stands -- transcribed,
+// and exposed so the GPU kernel's copies can be checked against them.
+glm::vec3 meadowColour(glm::vec2 xz, float lush);
+float     meadowCover(glm::vec2 xz, float h, float ny, float waterLevel, float top);
+float     woodsAt(const GroundLook& g, glm::vec2 xz, float ny); // 0 meadow .. 1 a stand
+// farterrain.frag's ground colour (LINEAR) at a point with normal `n` and
+// moisture `moist`, before light.
+glm::vec3 farGroundAlbedo(const GroundLook& g, const glm::vec3& wp, const glm::vec3& n,
+                          float moist);
+// skyair.glsl's skyGradient: the sky's own colour with nothing in it -- no
+// cloud, no disc -- LINEAR. What the far terrain dissolves into with distance
+// (farterrain.frag's skyAir), so the tracer's far ranges fade into the colour
+// the viewport's do rather than into whatever clouds the backdrop holds.
+glm::vec3 skyGradient(const glm::vec3& dir, const glm::vec3& sunDir);
 
 // The eye. Given as a basis rather than yaw/pitch because that is what the
 // scene's cameras produce (see Camera::setBasis) and because a shot may be
@@ -272,7 +454,11 @@ inline float vignette(float u, float v, float aspect, float strength) {
 // a Job as a shared_ptr and never touched again: the editor is free to carry on
 // editing the scene while a render of the old one finishes.
 struct Scene {
+    // Geometry drawn once, in world space.
     std::vector<Triangle> triangles;
+    // Geometry drawn many times: one copy of each mesh, and where it stands.
+    std::vector<Mesh>     meshes;
+    std::vector<Instance> instances;
     // Terrain paint weights, three per triangle, parallel to `triangles`.
     //
     // Kept beside the triangles rather than inside them because it is dead
@@ -287,9 +473,16 @@ struct Scene {
     std::vector<Lamp>     lamps;
     Environment           env;
     FogDesc               fog;
+    SunMask               sunMask;   // clouds' shadow; empty = none
+    GroundLook            ground;    // the terrain's meadow and woods
     CameraDesc            camera;
     float                 exposure = 1.0f;
     Grade                 grade;
+
+    // Triangles as the picture sees them: the world's plus every instance's.
+    long long triangleCount() const;
+    // World-space bounds of everything, instances included. False when empty.
+    bool bounds(glm::vec3& lo, glm::vec3& hi) const;
 };
 
 // What to put in the picture. Anything other than Full is a diagnostic, and
@@ -315,6 +508,12 @@ struct Settings {
     bool tonemap   = true; // ACES + gamma, as the viewport does
     unsigned seed  = 1u;
     Show show      = Show::Full;
+
+    // Put the lens' focus on whatever the centre of the frame is pointed at,
+    // measured once the accelerator exists. Only matters with an aperture. The
+    // distance it found is Job::focusDistance(); nothing under the crosshair
+    // keeps the camera's own.
+    bool autoFocus = false;
 
     // Ceiling on what a SINGLE indirect path may contribute, in linear
     // radiance. 0 turns it off.
@@ -362,7 +561,10 @@ public:
     // because a slow render is far more often a huge scene than a slow tracer,
     // and the panel should be able to say which.
     long long triangleCount() const { return m_triangles; }
-    double    buildSeconds()  const { return m_buildSeconds; }
+    double    buildSeconds()  const { return m_buildSeconds.load(); }
+    // Where the lens ended up focused: Settings::autoFocus's measurement once
+    // the build is done, otherwise the camera's own distance.
+    float     focusDistance() const { return m_focus.load(); }
 
     const Settings& settings() const { return m_settings; }
 
@@ -401,7 +603,8 @@ private:
     int m_tilesX = 0, m_tilesY = 0;
 
     long long m_triangles    = 0;
-    double    m_buildSeconds = 0.0;
+    std::atomic<double> m_buildSeconds{0.0};
+    std::atomic<float>  m_focus{10.0f};
     std::chrono::steady_clock::time_point m_started{};
     std::atomic<double> m_elapsed{0.0};
 };
@@ -456,12 +659,17 @@ std::vector<ProbeSh> bakeProbes(const Scene& scene,
                                 const BakeSettings& settings,
                                 const std::function<bool(float)>& progress = {});
 
-// Distance from `origin` along `dir` to the nearest surface, or 0 when the ray
-// hits nothing. Brute force over every triangle, no accelerator: it is called
-// once per render -- to put the lens' focus on whatever the frame is pointed at
-// -- and building a BVH to answer a single question costs more than the answer.
+// Distance from `origin` along `dir` to the nearest surface, instances
+// included, or 0 when the ray hits nothing. Brute force, no accelerator -- a
+// render that wants its focus measured asks the Job (Settings::autoFocus),
+// which has one already; this is for a single question outside a render.
 float firstHitDistance(const Scene& scene, const glm::vec3& origin,
                        const glm::vec3& dir);
+
+// The light a lit water body glows with, per unit of its (linear) colour: the
+// sun and the sky falling on a horizontal surface, divided by pi. One number
+// for the whole scene, shared with the GPU tracer so both colour water alike.
+glm::vec3 mediumLight(const Scene& scene);
 
 // Tile edge in pixels. Exposed because a snapshot's per-tile sample counts only
 // mean anything against it, and pathcheck asserts on both.

@@ -1,14 +1,17 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <fitzel/asset/AssetId.hpp>
 #include <fitzel/graphics/Mesh.hpp>   // fitzel::MeshData (CPU-side, no GPU)
 
+#include "BridgeGen.hpp"              // bridgegen::Style
 #include "SceneTypes.hpp"             // MaterialDef
 
 // Spline-derived linear structures: fences, walls and railway track.
@@ -40,7 +43,12 @@ namespace splinegen {
 // palette materials. It exists to be a guide -- the line objects are placed
 // along (see SplinePlace.hpp) -- and it is appended after the others because
 // the kind is saved as its index.
-enum class Kind { Fence, Wall, Rail, Path, Count };
+//
+// Bridge is a deck carried over whatever is below it, on piers, arches, a truss
+// or cables (see BridgeGen.hpp). It is the one kind that does NOT drape: the
+// deck runs straight from its first point to its last, and it stands on the
+// ground rather than following it. Appended last for the same reason Path is.
+enum class Kind { Fence, Wall, Rail, Path, Bridge, Count };
 
 const char* kindName(Kind k);
 
@@ -157,6 +165,11 @@ struct Style {
     // different boards on their panels while sharing their posts.
     fitzel::AssetId matA, matB, matC;
 
+    // --- Bridge --------------------------------------------------------------
+    // Its own struct, because a bridge has more knobs than the other three kinds
+    // together and none of them mean anything to a fence. See BridgeGen.hpp.
+    bridgegen::Style bridge;
+
     bool operator==(const Style& o) const;
     bool operator!=(const Style& o) const { return !(*this == o); }
 };
@@ -175,8 +188,12 @@ enum class Preset {
     Parapet, SeaWall, LowBoundary,
     // Track
     StandardGauge, NarrowGauge, Tram, Siding,
-    // The bare path (Kind::Path). Last, because presets are saved by index.
+    // The bare path (Kind::Path). Presets are saved by index, so everything
+    // from here on is appended.
     Bare,
+    // Bridges (Kind::Bridge)
+    BeamBridge, Footbridge, Viaduct, DeckArch, TiedArch, TrussBridge,
+    Suspension, CableStayed,
     Count
 };
 
@@ -222,6 +239,15 @@ struct Collider {
     glm::vec3 center{0.0f};
     glm::vec3 half{1.0f};
     float     yaw = 0.0f;   // degrees about +Y
+    // Degrees the box's +Z end is raised by, about its own right axis. Only a
+    // bridge deck climbs; everything else stands level and leaves this 0.
+    float     pitch = 0.0f;
+
+    // Yaw, then pitch -- what the physics world wants for the box.
+    glm::quat rotation() const {
+        return glm::angleAxis(glm::radians(yaw), glm::vec3(0.0f, 1.0f, 0.0f)) *
+               glm::angleAxis(glm::radians(-pitch), glm::vec3(1.0f, 0.0f, 0.0f));
+    }
 };
 
 struct Result {
@@ -245,6 +271,14 @@ struct Result {
 // not reshuffle a fence the author has been looking at.
 Result generate(Kind k, const Style& s, const std::vector<glm::vec3>& path,
                 bool closed, const Palette& pal, int maxPieces = 4000);
+
+// Kind::Bridge, which generate() does not build: piers and footings have to
+// reach the ground, so a bridge needs the terrain as well as its deck line.
+// `deck` is the top of the deck along the centre, already laid out by
+// SplineSystem (straight end to end, not draped). Implemented in BridgeGen.cpp.
+Result generateBridge(const Style& s, const std::vector<glm::vec3>& deck,
+                      const std::function<float(float, float)>& groundAt,
+                      const Palette& pal, int maxPieces = 6000);
 
 // A place along the path at a true metre spacing -- the same walk the posts and
 // sleepers are stood on, exposed for putting OBJECTS on a path (SplinePlace).

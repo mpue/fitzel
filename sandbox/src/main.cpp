@@ -98,6 +98,7 @@
 #include "ModelingPanel.hpp"
 #include "ModelingTools.hpp"
 #include "SynthPanel.hpp"
+#include "LuaApiPanel.hpp"
 #include "UvPanel.hpp"
 #include "ViewportNav.hpp"
 #include "GraphPanel.hpp"
@@ -154,6 +155,7 @@
 #include "TrailSystem.hpp"
 #include "WeaponSystem.hpp"
 #include "WorldAudio.hpp"
+#include "MusicSystem.hpp"
 #include "SynthSystem.hpp"
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
@@ -454,6 +456,9 @@ struct BootConfig {
     // (see ShotList.hpp). `--shots-out <dir>` says where the PNGs go.
     std::string shotsPath;
     std::string shotsOut;
+    // `--shots-trace <samples>`: a path-traced still of every shot as well.
+    int         shotsTrace = 0;
+    bool        shotsTraceGpu = false;   // `--shots-trace-gpu 1`: the GPU tracer too
     // `--open <project>`: the editor starts with this project open (not Play).
     std::string editorOpen;
 };
@@ -480,6 +485,8 @@ BootConfig loadBootConfig(int argc, char** argv) {
             cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
         else if (a == "--shots")      cfg.shotsPath   = argv[i + 1];
         else if (a == "--shots-out")  cfg.shotsOut    = argv[i + 1];
+        else if (a == "--shots-trace") cfg.shotsTrace = std::atoi(argv[i + 1]);
+        else if (a == "--shots-trace-gpu") cfg.shotsTraceGpu = std::atoi(argv[i + 1]) != 0;
         else if (a == "--open")       cfg.editorOpen  = argv[i + 1];
     }
     return cfg;
@@ -2717,6 +2724,9 @@ int main(int argc, char** argv) {
 #endif // !FITZEL_PLAYER
         bool showScriptEditor = false;
         bool showAbout       = false;
+#ifndef FITZEL_PLAYER
+        luaapi::State luaApi;             // Help -> Lua API
+#endif
         bool showStats       = false;
         bool showNature      = false;   // Advanced nature (NaturePanel.hpp)
         // Frame-cost window (F3). Lives outside the editor-only block: the
@@ -4348,6 +4358,8 @@ int main(int argc, char** argv) {
         // The Synth components' players. After `audio`, like every voice.
         SynthSystem synths;
         synths.bind(audio, document, currentProject);
+        // A script's song (the `music` table). After `audio`, like every voice.
+        MusicSystem musicSys;
         // Birdsong, insects, leaves (Soundscape.hpp). After `audio`, so it is
         // destroyed before it: its voices belong to that engine.
         Soundscape soundscape;
@@ -6730,6 +6742,8 @@ int main(int argc, char** argv) {
         };
         host.playAudio = [&](int id){ startAudioSource(id); };
         host.synths    = &synths;
+        musicSys.bind(audio, resolveSoundPath);
+        host.music     = &musicSys;
         host.stopAudio = [&](int id){ stopAudioSource(id); };
         host.getVelocity = [&](int id, glm::vec3& out) -> bool {
             auto it = physicsBody.find(id);
@@ -7190,16 +7204,14 @@ int main(int argc, char** argv) {
                                         0.0f);
                     }
             }
-            // Fences, walls and track: one static box per short run of path (see
-            // splinegen::Collider). Coarse on purpose -- a car needs the wall to
-            // be there, not to be able to thread the gap between two rails -- and
-            // discarded with the physics world when Play stops, like the road's.
+            // Fences, walls, track and bridges: one static box per short run of
+            // path (see splinegen::Collider). Coarse on purpose -- a car needs the
+            // wall to be there, not to be able to thread the gap between two
+            // rails -- and discarded with the physics world when Play stops.
             for (const SplineSystem::Run& run : splines.runs())
                 for (const splinegen::Collider& col : run.geo.colliders)
                     physics->addBox(glm::max(col.half, glm::vec3(0.02f)), col.center,
-                                    glm::angleAxis(glm::radians(col.yaw),
-                                                   glm::vec3(0, 1, 0)),
-                                    0.0f);
+                                    col.rotation(), 0.0f);
 
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
@@ -7427,6 +7439,7 @@ int main(int argc, char** argv) {
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
             audioVoices.clear(); // stop + free any AudioSource voices
             synths.clear();      // and the Synth players
+            musicSys.clear();    // and a script's song
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
@@ -7544,7 +7557,7 @@ int main(int argc, char** argv) {
             {"Planting", "Vegetation",         nullptr, &showVegetation},
             {"Planting", "Scatter",            nullptr, &showScatter},
             {"Track",    "Roads",              nullptr, &showRoads},
-            {"Track",    "Splines",            nullptr, &showSplines},
+            {"Track",    "Splines & bridges", nullptr, &showSplines},
             {"Track",    "City",               nullptr, &showCity},
             {"Track",    "Level generator",    nullptr, &showLevelGen},
             {"Track",    "Buildings",          nullptr, &showBuildings},
@@ -7597,6 +7610,10 @@ int main(int argc, char** argv) {
         shotlist::Runner shotRunner;
         if (!boot.shotsPath.empty() && !bootProject.empty())
             shotRunner.load(boot.shotsPath, boot.shotsOut);
+        if (boot.shotsTrace > 0)
+            pathpanel::attachToShots(pathRender, shotRunner, boot.shotsTrace,
+                                     [&](int& w, int& h) { window.framebufferSize(w, h); },
+                                     boot.shotsTraceGpu);
         shotRunner.target = [&](int i, glm::vec3& t) {
             if (i == 2000 || i == 2001) {      // "@2000" = the fish, or its last ring
                 if (i == 2001) wildlife.fishRate = 6.0f;   // ...and "@2001" with them busy
@@ -9460,6 +9477,7 @@ int main(int argc, char** argv) {
             // Synths: level, song settings, distance. Every frame and not only in
             // Play, so the Inspector's preview is heard in the editor too.
             synths.update(camera.position(), mix.ambientGain());
+            musicSys.update(mix.ambientGain());
 
             // --- Day/night: advance time, derive sun direction and lighting ---
             // In Play the day can run on its own (scene setting timeFlows): the
@@ -10917,6 +10935,8 @@ int main(int argc, char** argv) {
                 drawEditMenu(editMenu);
                 drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild);
                 if (ImGui::BeginMenu("Help")) {
+                    if (ImGui::MenuItem("Lua API")) luaapi::show(luaApi);
+                    ImGui::Separator();
                     if (ImGui::MenuItem("About Fitzel...")) showAbout = true;
                     ImGui::EndMenu();
                 }
@@ -13626,6 +13646,8 @@ int main(int argc, char** argv) {
             ImGui::End();
             ImGui::PopStyleVar();
 
+            luaapi::draw(luaApi, gui.monoFont());
+
             if (showAbout) {
                 ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
                 if (ImGui::Begin("About Fitzel", &showAbout,
@@ -16044,41 +16066,6 @@ int main(int argc, char** argv) {
                                  ? std::filesystem::path()
                                  : std::filesystem::path(currentProject),
                              renderer);
-#ifndef FITZEL_PLAYER
-            // The offline renderer harvests HERE and nowhere else: every
-            // system has submitted, the lights are set, and begin() has not
-            // yet cleared the queue. Costs a bool test unless somebody has
-            // actually pressed Render.
-            pathpanel::SceneLook ptLook;
-            ptLook.hdriPath      = hdriAbsPath;
-            ptLook.hdriIntensity = iblEnabled ? iblIntensity : 0.0f;
-            // The grade the post chain will put on this very frame. Without it a
-            // render comes out flat and cool beside the viewport, because the
-            // viewport never shows an ungraded image -- not even in a project
-            // nobody has touched the Colour grade panel in.
-            ptLook.grade.hueShift   = hueShift;
-            ptLook.grade.saturation = saturation;
-            ptLook.grade.value      = valueGain;
-            ptLook.grade.warmth     = warmth;
-            ptLook.grade.contrast   = contrast;
-            ptLook.grade.curve      = tonemapCurve;
-            ptLook.grade.vignette   = vignette;
-            // The grass, which the harvest cannot see: the tracer regenerates it
-            // from the same parameters the streamed field was built from.
-            if (veg.grassEnabled) {
-                ptLook.grass       = &veg.traceField();
-                ptLook.grassRadius = veg.grassRadius;
-                ptLook.grassWindTime = static_cast<float>(glfwGetTime());
-            }
-            pathpanel::service(pathRender, lightGrid, renderer, camera, ptLook,
-                               currentProject.empty()
-                                   ? std::filesystem::path()
-                                   : std::filesystem::path(currentProject));
-            // The path-traced viewport harvests from the same window and for
-            // the same reason. Off, this is one early return.
-            viewtrace::service(viewTrace, shade == kShadePathTraced, renderer,
-                               camera, ptLook, viewW, viewH, now);
-#endif
             renderer.preparePointShadows(); // omni shadow cubemaps (opt-in lights)
 
             // --- Multi-pass render with sky and planar water ------------
@@ -16227,6 +16214,86 @@ int main(int argc, char** argv) {
                 glEnable(GL_DEPTH_TEST);
                 glEnable(GL_CULL_FACE);
             };
+
+#ifndef FITZEL_PLAYER
+            // The offline renderer harvests HERE: every system has submitted,
+            // the lights are set, begin() has not yet cleared the queue -- and
+            // the sky (drawBackground, just above) and this frame's cloud
+            // shadow exist, which the tracer captures too. Costs a bool test
+            // unless somebody has actually pressed Render.
+            pathpanel::SceneLook ptLook;
+            ptLook.hdriPath      = hdriAbsPath;
+            ptLook.hdriIntensity = iblEnabled ? iblIntensity : 0.0f;
+            // The grade the post chain will put on this very frame. Without it a
+            // render comes out flat and cool beside the viewport, because the
+            // viewport never shows an ungraded image -- not even in a project
+            // nobody has touched the Colour grade panel in.
+            ptLook.grade.hueShift   = hueShift;
+            ptLook.grade.saturation = saturation;
+            ptLook.grade.value      = valueGain;
+            ptLook.grade.warmth     = warmth;
+            ptLook.grade.contrast   = contrast;
+            ptLook.grade.curve      = tonemapCurve;
+            ptLook.grade.vignette   = vignette;
+            // The grass, which the harvest cannot see: the tracer regenerates it
+            // from the same parameters the streamed field was built from.
+            if (veg.grassEnabled) {
+                ptLook.grass       = &veg.traceField();
+                ptLook.grassRadius = veg.grassRadius;
+                ptLook.grassWindTime = static_cast<float>(glfwGetTime());
+                ptLook.paintedGrass  = &veg.paintedBlades;
+                ptLook.grassHeight   = veg.grassHeight;
+            }
+            // Everything else the queue does not carry, rebuilt from the
+            // systems' own data (WorldTrace.hpp). Called synchronously from
+            // inside service(), so capturing this frame's locals is safe.
+            ptLook.world = [&](pathtrace::Scene& sc, const worldtrace::Options& wo,
+                               bool preview, std::vector<std::string>& notes) {
+                worldtrace::Sources ws;
+                ws.veg       = &veg;
+                ws.rivers    = &rivers;
+                ws.wildlife  = (wildlifeOn && veg.birdsEnabled) ? &wildlife : nullptr;
+                ws.particles = &particles;
+                ws.spray     = &spray;
+                ws.motes     = (shadeFull && motesOn) ? &motes : nullptr;
+                ws.motesRadius = motes.radius;
+                ws.rain      = &rain;
+                ws.clouds    = &cloudShadow;
+                ws.terrain   = &streamer.settings();
+                ws.farTerrainOn = farTerrainOn && veg.terrainPresent;
+                const glm::vec4 nr = farTerrain.nearRect();
+                ws.nearMin = glm::vec2(nr.x, nr.y);
+                ws.nearMax = glm::vec2(nr.z, nr.w);
+                ws.farLook   = &farTerrain;
+                ws.moistTex  = farTerrain.ready() ? farTerrain.fineTexture() : 0u;
+                ws.moistRect = farTerrain.fineRect();
+                ws.waterLevel   = waterLevel;
+                ws.waterColor   = waterColor;
+                ws.waterClarity = waterClarity;
+                ws.waterIor     = waterIor;
+                ws.time     = static_cast<float>(now);
+                ws.weather  = storm;
+                ws.ambient  = light.ambient;
+                ws.sunColor = light.color;
+                ws.sunDir   = light.direction;
+                ws.drawSky  = [&](const glm::mat4& ivp, const glm::vec3& eye) {
+                    drawBackground(ivp, eye, false);
+                };
+                ws.skyIsLightingHdri = iblSkybox && environment.valid() && iblEnabled;
+                worldtrace::append(sc, ws, wo, camera.position(), camera.right(),
+                                   camera.up(), camera.fov(), preview, notes);
+            };
+            // The preview shows what the still would: the same switches.
+            viewTrace.world = pathRender.world;
+            pathpanel::service(pathRender, lightGrid, renderer, camera, ptLook,
+                               currentProject.empty()
+                                   ? std::filesystem::path()
+                                   : std::filesystem::path(currentProject));
+            // The path-traced viewport harvests from the same window and for
+            // the same reason. Off, this is one early return.
+            viewtrace::service(viewTrace, shade == kShadePathTraced, renderer,
+                               camera, ptLook, viewW, viewH, now);
+#endif
 
             // Instanced 3D trees for a given view (used by the main pass and the
             // water reflection, so trees mirror in the water). Two-sided.

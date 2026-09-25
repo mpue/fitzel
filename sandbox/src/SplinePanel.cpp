@@ -5,6 +5,7 @@
 
 #include <imgui.h>
 
+#include "SplinePanelParts.hpp"
 #include "SplineSystem.hpp"
 #include "UiStyle.hpp"
 
@@ -16,11 +17,13 @@ using splinegen::Preset;
 
 constexpr int kPresetCount = static_cast<int>(Preset::Count);
 
+} // namespace
+
 // A slider that brackets itself into one undo step and marks the path for
 // regeneration. Every control in this panel goes through it, so "did I remember
 // to rebuild" is not a question the rest of the file has to keep answering.
 bool slider(const PanelState& s, int path, const char* label, float* v,
-            float lo, float hi, const char* fmt = "%.2f m") {
+            float lo, float hi, const char* fmt) {
     const bool changed = ImGui::SliderFloat(label, v, lo, hi, fmt);
     if (ImGui::IsItemActivated())            s.beginEdit();
     if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit(label);
@@ -36,6 +39,8 @@ bool sliderInt(const PanelState& s, int path, const char* label, int* v,
     if (changed) s.splines.touch(path);
     return changed;
 }
+
+namespace {
 
 bool colorEdit(const PanelState& s, int path, const char* label, glm::vec3& c) {
     const bool changed = ImGui::ColorEdit3(label, &c.x);
@@ -153,6 +158,7 @@ const char* slotName(Kind k, int slot) {
     switch (k) {
         case Kind::Wall:  return slot == 0 ? "Face"  : slot == 1 ? "Coping"   : "Piers";
         case Kind::Rail:  return slot == 0 ? "Steel" : slot == 1 ? "Sleepers" : "Ballast";
+        case Kind::Bridge: return slot == 0 ? "Deck"  : slot == 1 ? "Structure" : "Piers";
         case Kind::Path:   // no parts, so never asked
         case Kind::Fence:
         case Kind::Count: break;
@@ -362,7 +368,7 @@ void drawPanel(const PanelState& s) {
         // A bare path first: it has no presets to choose between, so it is one
         // click rather than a menu.
         const float w = (ImGui::GetContentRegionAvail().x -
-                         ImGui::GetStyle().ItemSpacing.x * 3.0f) / 4.0f;
+                         ImGui::GetStyle().ItemSpacing.x * 4.0f) / 5.0f;
         if (ImGui::Button("Path", ImVec2(w, 0.0f))) {
             s.beginEdit();
             s.sel   = sp.addPath(Preset::Bare, "Path");
@@ -374,8 +380,9 @@ void drawPanel(const PanelState& s) {
             ImGui::SetTooltip("A bare path: just the curve, no geometry.\n"
                               "Lay it out, then place objects along it.");
         const struct { Kind k; const char* label; } kinds[] = {
-            {Kind::Fence, "Fence"}, {Kind::Wall, "Wall"}, {Kind::Rail, "Track"}};
-        for (int i = 0; i < 3; ++i) {
+            {Kind::Fence, "Fence"}, {Kind::Wall, "Wall"}, {Kind::Rail, "Track"},
+            {Kind::Bridge, "Bridge"}};
+        for (int i = 0; i < 4; ++i) {
             ImGui::SameLine();
             char lbl[32];
             std::snprintf(lbl, sizeof(lbl), "%s...", kinds[i].label);
@@ -455,7 +462,7 @@ void drawPanel(const PanelState& s) {
     if (ImGui::BeginCombo("Type", splinegen::presetName(p.preset))) {
         const struct { Kind k; const char* label; } groups[] = {
             {Kind::Path, "Path"}, {Kind::Fence, "Fences"}, {Kind::Wall, "Walls"},
-            {Kind::Rail, "Track"}};
+            {Kind::Rail, "Track"}, {Kind::Bridge, "Bridges"}};
         for (const auto& g : groups) {
             ui::sectionText(g.label);
             const int picked = presetMenu(g.k, static_cast<int>(p.preset));
@@ -472,7 +479,8 @@ void drawPanel(const PanelState& s) {
         ui::hint("Picking one re-seeds every number below. Your material choices "
                  "survive it.");
 
-    if (ImGui::Checkbox("Closed loop", &p.closed)) {
+    const bool bridge = (p.kind == Kind::Bridge);
+    if (!bridge && ImGui::Checkbox("Closed loop", &p.closed)) {   // a bridge has two ends
         p.closed = !p.closed;
         s.beginEdit();
         p.closed = !p.closed;
@@ -480,7 +488,7 @@ void drawPanel(const PanelState& s) {
         sp.touch(i);
     }
     if (!bare) {   // a bare path has nothing to collide with
-        ImGui::SameLine();
+        if (!bridge) ImGui::SameLine();
         if (ImGui::Checkbox("Solid", &st.collide)) {
             st.collide = !st.collide;
             s.beginEdit();
@@ -518,8 +526,12 @@ void drawPanel(const PanelState& s) {
             sp.setLift(i, s.ptSel, lift);
         if (ImGui::IsItemActivated())            s.beginEdit();
         if (ImGui::IsItemDeactivatedAfterEdit()) s.endEdit("Point height");
-        ui::hint("Point #%d of %d. 0 follows the ground.", s.ptSel,
-                 static_cast<int>(p.points.size()));
+        if (bridge)
+            ui::hint("Point #%d of %d. 0 keeps the deck on the straight line "
+                     "between the two ends.", s.ptSel, static_cast<int>(p.points.size()));
+        else
+            ui::hint("Point #%d of %d. 0 follows the ground.", s.ptSel,
+                     static_cast<int>(p.points.size()));
     }
 
     // --- A bare path: nothing to style, only things to put on it -------------
@@ -560,15 +572,18 @@ void drawPanel(const PanelState& s) {
         switch (p.kind) {
             case Kind::Wall: wallStyle(s, i, st); break;
             case Kind::Rail: railStyle(s, i, st); break;
+            case Kind::Bridge: bridgeStyle(s, i, st); break;
             case Kind::Path:   // returned above -- a bare path has no shape
             case Kind::Fence:
             case Kind::Count: fenceStyle(s, i, st); break;
         }
         ui::sectionText("Ground");
-        slider(s, i, "Sink", &st.sink, 0.0f, 2.0f);
-        ui::hint("Metres buried, so no daylight shows under the run on rough "
-                 "ground.");
-        slider(s, i, "Raise", &st.lift, -10.0f, 10.0f);
+        slider(s, i, "Sink", &st.sink, 0.0f, bridge ? 5.0f : 2.0f);
+        ui::hint(bridge ? "Metres the piers and footings reach into the ground."
+                        : "Metres buried, so no daylight shows under the run on rough "
+                          "ground.");
+        slider(s, i, "Raise", &st.lift, bridge ? -30.0f : -10.0f, bridge ? 60.0f : 10.0f);
+        if (bridge) ui::hint("Lifts the whole deck, both ends included.");
     }
 
     // Any path can carry objects as well -- lamps along a wall, signals beside

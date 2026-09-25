@@ -787,6 +787,292 @@ int main(int argc, char** argv) {
         }
     }
 
+    // --- 10b. Instances ----------------------------------------------------
+    // One mesh placed three times -- turned, squashed out of true, mirrored,
+    // each in its own material -- against the same boxes baked into the world
+    // list. Same seed, same paths: the two pictures may differ in the last bits
+    // of a few intersections, never in what is where.
+    std::printf("\ninstances (placed vs baked)\n");
+    {
+        pathtrace::Settings s;
+        s.width = 96; s.height = 64; s.samples = 64; s.batch = 16;
+        s.maxBounces = 4; s.tonemap = false; s.seed = 5u;
+        auto placed = instanceScene(false);
+        auto baked  = instanceScene(true);
+        placed->camera.apertureRadius = baked->camera.apertureRadius = 0.0f;
+        const std::vector<float> a = renderHdr(placed, s);
+        const std::vector<float> b = renderHdr(baked, s);
+        const float err = rms(a, b), mean = meanOf(b);
+        check(mean > 0.02f, "the baked frame is lit", std::to_string(mean));
+        check(err < mean * 0.03f,
+              "a placed mesh renders as the same mesh baked in place",
+              "rms " + std::to_string(err) + " against a mean of " + std::to_string(mean));
+        check(placed->triangleCount() == baked->triangleCount(),
+              "and counts the same triangles",
+              std::to_string(placed->triangleCount()) + " vs " +
+              std::to_string(baked->triangleCount()));
+        glm::vec3 plo, phi, blo, bhi;
+        placed->bounds(plo, phi);
+        baked->bounds(blo, bhi);
+        check(glm::length(plo - blo) < 1e-3f && glm::length(phi - bhi) < 1e-3f,
+              "and has the same bounds");
+    }
+
+    // --- 10c. The parallel build ------------------------------------------
+    // Enough triangles that the top of the tree is split serially and the rest
+    // built side by side and spliced. A splice that is off by one does not
+    // crash -- it points a node at somebody else's children, and the picture
+    // quietly loses a patch. So the tree is checked as a STRUCTURE: every
+    // triangle in exactly one leaf, every child inside its parent.
+    std::printf("\nthe accelerator (parallel build)\n");
+    {
+        pathtrace::Scene big;
+        big.materials.emplace_back();
+        std::uint32_t h = 12345u;
+        auto rnd = [&h] {
+            h = h * 1664525u + 1013904223u;
+            return static_cast<float>(h >> 8) * (1.0f / 16777216.0f);
+        };
+        for (int i = 0; i < 180000; ++i) {
+            pathtrace::Triangle t;
+            const glm::vec3 c(rnd() * 400.0f - 200.0f, rnd() * 20.0f, rnd() * 400.0f - 200.0f);
+            t.p0 = c;
+            t.p1 = c + glm::vec3(rnd(), rnd(), rnd()) * 0.6f;
+            t.p2 = c + glm::vec3(rnd(), rnd(), rnd()) * 0.6f;
+            t.n0 = t.n1 = t.n2 = glm::vec3(0, 1, 0);
+            big.triangles.push_back(t);
+        }
+        const pathtrace::BvhData a = pathtrace::buildBvh(big.triangles);
+        const pathtrace::BvhData b = pathtrace::buildBvh(big.triangles);
+        check(a.index == b.index && a.nodes.size() == b.nodes.size(),
+              "the build is deterministic");
+
+        std::vector<int> seen(big.triangles.size(), 0);
+        bool contained = true, sane = true;
+        std::vector<int> stack{0};
+        while (!stack.empty()) {
+            const int ni = stack.back();
+            stack.pop_back();
+            if (ni < 0 || ni >= static_cast<int>(a.nodes.size())) { sane = false; break; }
+            const pathtrace::BvhNode& n = a.nodes[static_cast<std::size_t>(ni)];
+            auto inside = [&](const glm::vec3& p) {
+                return glm::all(glm::greaterThanEqual(p, n.lo - 1e-4f)) &&
+                       glm::all(glm::lessThanEqual(p, n.hi + 1e-4f));
+            };
+            if (n.count > 0) {
+                for (int i = 0; i < n.count; ++i) {
+                    const int ti = a.index[static_cast<std::size_t>(n.leftFirst + i)];
+                    ++seen[static_cast<std::size_t>(ti)];
+                    const pathtrace::Triangle& t = big.triangles[static_cast<std::size_t>(ti)];
+                    if (!inside(t.p0) || !inside(t.p1) || !inside(t.p2)) contained = false;
+                }
+                continue;
+            }
+            for (int c = 0; c < 2; ++c) {
+                const int ci = n.leftFirst + c;
+                if (ci <= ni || ci >= static_cast<int>(a.nodes.size())) { sane = false; continue; }
+                const pathtrace::BvhNode& ch = a.nodes[static_cast<std::size_t>(ci)];
+                if (!inside(ch.lo) || !inside(ch.hi)) contained = false;
+                stack.push_back(ci);
+            }
+        }
+        const bool once = std::all_of(seen.begin(), seen.end(), [](int k) { return k == 1; });
+        check(sane, "every inner node points forward at a real pair of children");
+        check(once, "every triangle sits in exactly one leaf");
+        check(contained, "and every child lies inside its parent");
+    }
+
+    // --- 10d. Glow --------------------------------------------------------
+    std::printf("\nadditive glow\n");
+    {
+        pathtrace::Settings s;
+        s.width = 48; s.height = 48; s.samples = 32; s.batch = 8;
+        s.maxBounces = 2; s.tonemap = false; s.seed = 9u;
+        const float plain = meanOf(renderHdr(glowScene(false, false), s));
+        const float front = meanOf(renderHdr(glowScene(true, false), s));
+        const float over  = meanOf(renderHdr(glowScene(true, true), s));
+        check(std::fabs(front - (plain + 0.5f)) < 0.02f + plain * 0.03f,
+              "a glow in front of the ground adds its light to it",
+              std::to_string(plain) + " -> " + std::to_string(front));
+        check(std::fabs(over - plain) < plain * 0.03f,
+              "and one between the ground and the sun casts no shadow",
+              std::to_string(plain) + " -> " + std::to_string(over));
+    }
+
+    // --- 10e. The backdrop ------------------------------------------------
+    // The captured sky is what the camera SEES; the light is still the lighting
+    // environment. A backdrop that leaked into the light would change every
+    // surface's brightness against the viewport.
+    std::printf("\nthe backdrop (seen, not lit by)\n");
+    {
+        pathtrace::Settings s;
+        s.width = 48; s.height = 32; s.samples = 32; s.batch = 8;
+        s.maxBounces = 3; s.tonemap = false; s.seed = 4u;
+        auto withBd = furnaceScene();
+        auto plain  = furnaceScene();
+        withBd->env.backdropWidth  = 8;
+        withBd->env.backdropHeight = 4;
+        withBd->env.backdrop.assign(8 * 4 * 3, 0.0f);
+        for (std::size_t i = 0; i < withBd->env.backdrop.size(); i += 3)
+            withBd->env.backdrop[i] = 3.0f;          // pure red, and bright
+        // Looking straight at the plane: every pixel is ground, lit by the
+        // furnace's white sky and never by the red one.
+        withBd->camera = plain->camera = lookAt({0, 3, 0.01f}, {0, 0, 0}, 40.0f);
+        const std::vector<float> a = renderHdr(withBd, s);
+        const std::vector<float> b = renderHdr(plain, s);
+        check(rms(a, b) < 0.02f, "a backdrop does not light the scene",
+              "rms " + std::to_string(rms(a, b)));
+        // Looking up: nothing but sky, which must be the backdrop.
+        withBd->camera = lookAt({0, 3, 0}, {0.01f, 10, 0}, 40.0f);
+        const std::vector<float> up = renderHdr(withBd, s);
+        float r = 0.0f, g = 0.0f;
+        for (std::size_t i = 0; i + 2 < up.size(); i += 3) { r += up[i]; g += up[i + 1]; }
+        check(r > 2.5f * static_cast<float>(up.size() / 3) && g < 0.01f * r,
+              "and the camera sees it where it sees sky");
+    }
+
+    // --- 10f. Autofocus ---------------------------------------------------
+    std::printf("\nautofocus\n");
+    {
+        auto sc = lookScene();
+        const float expect = pathtrace::firstHitDistance(*sc, sc->camera.position,
+                                                         sc->camera.forward);
+        pathtrace::Settings s;
+        s.width = 32; s.height = 24; s.samples = 1; s.batch = 1;
+        s.autoFocus = true;
+        pathtrace::Job job;
+        job.start(sc, s);
+        while (job.running()) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(expect > 0.0f && std::fabs(job.focusDistance() - expect) < 1e-3f,
+              "the lens focuses on what the frame is pointed at",
+              std::to_string(job.focusDistance()) + " vs " + std::to_string(expect));
+        auto placed = instanceScene(false);
+        const float viaInst = pathtrace::firstHitDistance(*placed, placed->camera.position,
+                                                          placed->camera.forward);
+        check(viaInst > 0.0f && viaInst < 20.0f,
+              "and the brute-force answer sees placed meshes too",
+              std::to_string(viaInst));
+    }
+
+    // --- 10g. Water ------------------------------------------------------
+    // The same pale bed under half a metre of water and under ten. Shallow, the
+    // bed shows through; deep, the water's own colour takes over -- bluer and
+    // darker, because red is what water absorbs first.
+    std::printf("\nwater (a body, not a pane)\n");
+    {
+        pathtrace::Settings s;
+        s.width = 64; s.height = 48; s.samples = 64; s.batch = 16;
+        s.maxBounces = 5; s.tonemap = false; s.seed = 12u;
+        const std::vector<float> shallow = renderHdr(waterScene(0.5f), s);
+        const std::vector<float> deep    = renderHdr(waterScene(10.0f), s);
+        auto channel = [](const std::vector<float>& img, int c) {
+            double sum = 0.0;
+            for (std::size_t i = static_cast<std::size_t>(c); i < img.size(); i += 3) sum += img[i];
+            return static_cast<float>(sum / static_cast<double>(img.size() / 3));
+        };
+        const float rs = channel(shallow, 0), bs = channel(shallow, 2);
+        const float rd = channel(deep, 0),    bd = channel(deep, 2);
+        check(rs > rd * 2.0f, "a deep lake hides its bed where a shallow one shows it",
+              "red " + std::to_string(rs) + " shallow vs " + std::to_string(rd) + " deep");
+        check(bd > rd * 1.5f, "and deep water is blue, not merely dark",
+              "blue " + std::to_string(bd) + " vs red " + std::to_string(rd));
+        check(bs > 0.0f && bd > 0.0f, "and neither is black");
+    }
+
+    // --- 10h. Clouds ------------------------------------------------------
+    std::printf("\nthe clouds' shadow\n");
+    {
+        pathtrace::Settings s;
+        s.width = 64; s.height = 64; s.samples = 32; s.batch = 8;
+        s.maxBounces = 1; s.tonemap = false; s.seed = 2u;
+        auto sc = cloudScene();
+        sc->env.zenith = sc->env.horizon = sc->env.ground = glm::vec3(0.0f);
+        sc->camera = lookAt({0, 30, 0.01f}, {0, 0, 0}, 60.0f);
+        const std::vector<float> img = renderHdr(sc, s);
+        // Well clear of the box's own shadow in the middle: a strip down each side.
+        auto meanCols = [&](int x0, int x1) {
+            double sum = 0.0; int n = 0;
+            for (int y = 8; y < 56; ++y)
+                for (int x = x0; x < x1; ++x) {
+                    sum += img[(static_cast<std::size_t>(y) * 64 + x) * 3 + 1];
+                    ++n;
+                }
+            return static_cast<float>(sum / std::max(n, 1));
+        };
+        // lookAt from straight above with world up: +x is on the RIGHT.
+        const float left = meanCols(4, 16), right = meanCols(48, 60);
+        check(right > 0.1f, "the open half is in full sun", std::to_string(right));
+        check(std::fabs(left / right - 0.2f) < 0.03f,
+              "the half under the cloud map gets its share of the sun and no more",
+              std::to_string(left / right));
+    }
+
+    // --- 10i. The ground past its bands -------------------------------------
+    // The meadow's colour where the blades end, and the forest floor under the
+    // woods. Seen in the base-colour view, which is the surface's own colour
+    // and nothing else: the far ground has to have turned the field's green,
+    // and the moisture grid has to have dried one side of it.
+    std::printf("\nthe ground past its bands (meadow, woods)\n");
+    {
+        pathtrace::Settings s;
+        s.width = 96; s.height = 64; s.samples = 4; s.batch = 4;
+        s.show = pathtrace::Show::BaseColor;
+        const std::vector<float> bare = renderHdr(terrainScene(), s);
+        const std::vector<float> look = renderHdr(groundScene(), s);
+        auto greenness = [](const std::vector<float>& img) {
+            double g = 0.0, rb = 0.0;
+            for (std::size_t i = 0; i + 2 < img.size(); i += 3) {
+                g += img[i + 1];
+                rb += 0.5 * (img[i] + img[i + 2]);
+            }
+            return static_cast<float>(g / std::max(rb, 1e-6));
+        };
+        check(rms(bare, look) > 0.01f, "the meadow and the woods change the ground",
+              "rms " + std::to_string(rms(bare, look)));
+        const glm::vec3 wet = pathtrace::meadowColour(glm::vec2(3.0f, 1.0f), 0.95f);
+        const glm::vec3 dry = pathtrace::meadowColour(glm::vec2(3.0f, 1.0f), 0.05f);
+        check(wet.g > wet.r && dry.r > dry.g * 0.9f,
+              "wet meadow is green, dry meadow is straw",
+              "wet g/r " + std::to_string(wet.g / wet.r) + ", dry g/r " +
+              std::to_string(dry.g / dry.r));
+        check(greenness(look) > 0.0f, "and it renders",
+              std::to_string(greenness(bare)) + " -> " + std::to_string(greenness(look)));
+    }
+
+    // --- 10j. The far ground ------------------------------------------------
+    // farterrain.frag's colouring, on the CPU: snow high up, green down low,
+    // rock where it is steep -- and the far range fading into the air.
+    std::printf("\nthe far ground (snow, forest, meadow, air)\n");
+    {
+        pathtrace::GroundLook g = mountainScene()->ground;
+        const glm::vec3 up(0.0f, 1.0f, 0.0f), steep = glm::normalize(glm::vec3(1.0f, 0.4f, 0.0f));
+        const glm::vec3 peak   = pathtrace::farGroundAlbedo(g, {10.0f, 2600.0f, 10.0f}, up, 0.5f);
+        // The valley over a grid of points: its patches swing from lush to
+        // straw by design, so one point says nothing; the valley as a whole
+        // has to come out green.
+        glm::vec3 valley(0.0f);
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 16; ++x)
+                valley += pathtrace::farGroundAlbedo(
+                    g, {x * 97.0f, 20.0f, z * 89.0f}, up, 0.8f) / 256.0f;
+        const glm::vec3 cliff  = pathtrace::farGroundAlbedo(g, {10.0f, 600.0f, 10.0f}, steep, 0.5f);
+        check(peak.r > 0.7f && peak.b > 0.7f, "snow lies on the high flats",
+              std::to_string(peak.r) + " " + std::to_string(peak.g) + " " + std::to_string(peak.b));
+        check(valley.g > valley.r && valley.g > valley.b, "the valley floor is green",
+              std::to_string(valley.r) + " " + std::to_string(valley.g) + " " + std::to_string(valley.b));
+        check(std::fabs(cliff.r - cliff.g) < 0.08f && cliff.r > 0.08f,
+              "a cliff is bare rock, grey or warm, not green",
+              std::to_string(cliff.r) + " " + std::to_string(cliff.g) + " " + std::to_string(cliff.b));
+
+        pathtrace::Settings s;
+        s.width = 96; s.height = 64; s.samples = 16; s.batch = 8;
+        s.maxBounces = 2; s.tonemap = false; s.seed = 21u;
+        const std::vector<float> img = renderHdr(mountainScene(), s);
+        bool finite = !img.empty();
+        for (float v : img) if (!(v == v) || v < 0.0f) finite = false;
+        check(finite && meanOf(img) > 0.05f, "and the range renders", std::to_string(meanOf(img)));
+    }
+
     // --- 11. Pictures -------------------------------------------------------
 
     std::printf("\nwriting look frames\n");

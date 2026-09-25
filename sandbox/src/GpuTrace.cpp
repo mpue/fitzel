@@ -42,13 +42,54 @@ struct GpuMat {
     float albedoRough[4];
     float emissionRefl[4];
     float misc[4];
-    float tint[4];      // rgb: multiplies the base-colour map; a unused
+    float tint[4];      // rgb: multiplies the base-colour map; a = detail scale
+    float extra[4];     // x = translucency, y = additive (1 = a glow)
+    float absorb[4];    // rgb = extinction per metre of the body (glass only)
+    float medium[4];    // rgb = the body's own colour, sRGB
     // An enum in its own integer rather than squeezed into a float and rounded
     // back: that trick works until the day somebody adds a fourth mode.
     // y is the base-colour map, -1 for a material that has none.
     int   modeTex[4];   // x = AlphaMode (0 opaque, 1 cutout, 2 blend), y = texture
 };
-static_assert(sizeof(GpuMat) == 80, "GpuMat must match its std430 counterpart");
+static_assert(sizeof(GpuMat) == 128, "GpuMat must match its std430 counterpart");
+
+// One placement: world -> object as three rows of a 3x4, the normal matrix
+// (object -> world, inverse transpose) as three rows, and where the mesh's tree
+// starts plus the material that overrides its own.
+struct GpuInst {
+    float toObj[3][4];
+    float nrm[3][4];
+    int   meta[4];      // x = root node, y = material override (-1 none)
+};
+static_assert(sizeof(GpuInst) == 112, "GpuInst must match its std430 counterpart");
+
+// The widest panorama handed to the card. A 4K HDRI is a hundred megabytes of
+// floats, which is more than a preview has any business taking and more than
+// some drivers will put in one buffer; halving it costs detail in the sky's
+// background and nothing in its light, which comes from the coarse
+// distribution either way.
+constexpr int kMaxPanoramaWidth = 2048;
+
+// Box-halve an RGB float panorama until it fits.
+void shrinkPanorama(std::vector<float>& px, int& w, int& h) {
+    while (w > kMaxPanoramaWidth && h > 1) {
+        const int nw = w / 2, nh = h / 2;
+        std::vector<float> out(static_cast<std::size_t>(nw) * nh * 3);
+        for (int y = 0; y < nh; ++y)
+            for (int x = 0; x < nw; ++x)
+                for (int c = 0; c < 3; ++c) {
+                    auto at = [&](int xx, int yy) {
+                        return px[(static_cast<std::size_t>(yy) * w + xx) * 3 + c];
+                    };
+                    out[(static_cast<std::size_t>(y) * nw + x) * 3 + c] =
+                        0.25f * (at(2 * x, 2 * y) + at(2 * x + 1, 2 * y) +
+                                 at(2 * x, 2 * y + 1) + at(2 * x + 1, 2 * y + 1));
+                }
+        px.swap(out);
+        w = nw;
+        h = nh;
+    }
+}
 
 // One terrain layer: the height/slope window it covers, how it tiles, and which
 // map it is. Kept in one flat array for the whole scene, with each material
@@ -57,7 +98,7 @@ static_assert(sizeof(GpuMat) == 80, "GpuMat must match its std430 counterpart");
 struct GpuLayer {
     float band[4];      // height start/end, slope start/end (degrees)
     float scaleTex[4];  // x = world->texture scale, y = texture index, as a float,
-                        // z = the material's height blend
+                        // z = the material's height blend, w = 1 on the forest floor
 };
 static_assert(sizeof(GpuLayer) == 32, "GpuLayer must match its std430 counterpart");
 
@@ -193,16 +234,16 @@ bool Tracer::init(const std::string& shaderPath, const std::string& resolvePath)
     return true;
 }
 
-// Compile the kernel with `stackSize` traversal entries per thread. Cheap enough
-// to do on a scene change (tens of milliseconds) and worth it: half the speed
-// rides on this number, and only a scene can say what it has to be.
+// Compile the kernel with `stackSize` traversal entries per thread. Cheap
+// enough to do on a scene change (tens of milliseconds) and worth it: half the
+// speed rides on this number, and only a scene can say what it has to be.
 bool Tracer::build(int stackSize) {
     if (m_source.empty()) { m_error = "no kernel source to build"; return false; }
-    // Already built once at this size? Then it is a pointer, not a compile. This
-    // driver takes the better part of a second over this kernel, and a scene
-    // being edited crosses a depth bracket and crosses back -- paying that twice
-    // for the same program would be a visible stall in the middle of dragging
-    // something.
+    // Already built once at this size? Then it is a pointer, not a compile.
+    // This driver takes the better part of a second over this kernel, and a
+    // scene being edited crosses a depth bracket and crosses back -- paying that
+    // twice for the same program would be a visible stall in the middle of
+    // dragging something.
     auto cached = m_programs.find(stackSize);
     if (cached != m_programs.end()) {
         m_program   = cached->second;
@@ -314,28 +355,62 @@ bool Tracer::uploadBuffer(std::uint32_t& id, int binding, const void* data,
 
 bool Tracer::upload(const pathtrace::Scene& scene) {
     if (!m_program) { m_error = "upload() before a kernel was built"; return false; }
-    if (scene.triangles.empty()) {
+    if (scene.triangleCount() <= 0) {
         m_error = "the scene has no triangles";
         return false;
     }
 
-    // The tracer's own accelerator, not one of ours. See BvhNode in
-    // PathTrace.hpp for why that matters more than it looks.
-    const pathtrace::BvhData bvh = pathtrace::buildBvh(scene.triangles);
+    // The tracer's own accelerator, both levels of it, not one of ours. See
+    // BvhNode in PathTrace.hpp for why that matters more than it looks.
+    const pathtrace::AccelData acc = pathtrace::buildAccel(scene);
 
-    // How deep this tree is decides how much scratch memory each thread needs,
+    // --- One address space for every tree ---------------------------------
+    // The world's triangles first, then each mesh's; the leaf slots (index /
+    // corners) in the same order, since a tree has exactly one slot per
+    // triangle; the nodes of the world's tree, then each mesh's, then the top
+    // level's. Every tree's pointers are rebased onto that layout here, once,
+    // so the kernel walks them all with the one loop.
+    const int worldTris = static_cast<int>(scene.triangles.size());
+    std::vector<int> triBase(scene.meshes.size(), 0), nodeBase(scene.meshes.size(), 0);
+    int triCount  = worldTris;
+    int nodeCount = static_cast<int>(acc.world.nodes.size());
+    for (std::size_t k = 0; k < scene.meshes.size(); ++k) {
+        triBase[k]  = triCount;
+        nodeBase[k] = nodeCount;
+        triCount   += static_cast<int>(scene.meshes[k].triangles.size());
+        nodeCount  += static_cast<int>(acc.meshes[k].nodes.size());
+    }
+    const bool haveTop  = !acc.instances.nodes.empty();
+    const int  tlasBase = nodeCount;
+    nodeCount += static_cast<int>(acc.instances.nodes.size());
+
+    // How deep the trees are decides how much scratch memory each thread needs,
     // and that decides how many threads the card runs at once. Measured rather
-    // than assumed, and the kernel rebuilt when the answer changes bracket: a
-    // preview of a handful of objects walks a tree sixteen deep and has no
-    // business paying for a stack that could hold a hundred and twenty-eight.
-    m_bvhDepth = treeDepth(bvh.nodes);
-    const int want = stackSizeFor(m_bvhDepth);
+    // than assumed, and the kernel rebuilt when the answer changes bracket.
+    int depth = treeDepth(acc.world.nodes);
+    for (const pathtrace::BvhData& m : acc.meshes) depth = std::max(depth, treeDepth(m.nodes));
+    m_bvhDepth  = depth;
+    m_tlasDepth = haveTop ? treeDepth(acc.instances.nodes) : 0;
+    // One stack walks both levels (see the kernel's closest()): the top
+    // level's depth, the widest top-level leaf's enter markers, one exit
+    // marker, and then the deepest mesh tree under it.
+    int widestTop = 0;
+    for (const pathtrace::BvhNode& n : acc.instances.nodes) widestTop = std::max(widestTop, n.count);
+    const int want = stackSizeFor(m_bvhDepth + (haveTop ? m_tlasDepth + widestTop + 1 : 0));
     if (want != m_stackSize && !build(want)) return false;
 
-    std::vector<GpuTri> tris(scene.triangles.size());
-    for (std::size_t i = 0; i < scene.triangles.size(); ++i) {
-        const pathtrace::Triangle& t = scene.triangles[i];
-        GpuTri& g = tris[i];
+    auto triAt = [&](int id) -> const pathtrace::Triangle& {
+        if (id < worldTris) return scene.triangles[static_cast<std::size_t>(id)];
+        // Which mesh: the last base not past the id.
+        const auto it = std::upper_bound(triBase.begin(), triBase.end(), id);
+        const std::size_t k = static_cast<std::size_t>(it - triBase.begin()) - 1;
+        return scene.meshes[k].triangles[static_cast<std::size_t>(id - triBase[k])];
+    };
+
+    std::vector<GpuTri> tris(static_cast<std::size_t>(triCount));
+    for (int i = 0; i < triCount; ++i) {
+        const pathtrace::Triangle& t = triAt(i);
+        GpuTri& g = tris[static_cast<std::size_t>(i)];
         put3(g.n0, t.n0); put3(g.n1, t.n1); put3(g.n2, t.n2);
         g.uv01[0] = t.uv0.x; g.uv01[1] = t.uv0.y;
         g.uv01[2] = t.uv1.x; g.uv01[3] = t.uv1.y;
@@ -345,23 +420,64 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         g.uv2mat[3] = 0.0f;
     }
 
-    // The corners, and the only place they are held: three vec4 per triangle,
-    // contiguous, as p0/e1/e2 -- the form the intersection wants, which also
-    // saves it two subtractions per test. This is what the traversal reads and
-    // all it reads.
-    std::vector<float> pos(scene.triangles.size() * 12);
-    for (std::size_t i = 0; i < scene.triangles.size(); ++i) {
-        const pathtrace::Triangle& t = scene.triangles[i];
-        put3(&pos[i * 12 + 0], t.p0);
-        put3(&pos[i * 12 + 4], t.p1 - t.p0);
-        put3(&pos[i * 12 + 8], t.p2 - t.p0);
-    }
+    // Leaf slots: which triangle each one is, and its corners as p0/e1/e2 --
+    // the form the intersection wants, which also saves it two subtractions per
+    // test. In slot order, so a leaf is one contiguous run; this is what the
+    // traversal reads and all it reads.
+    std::vector<int>   index(static_cast<std::size_t>(triCount));
+    std::vector<float> pos(static_cast<std::size_t>(triCount) * 12);
+    auto putSlots = [&](const pathtrace::BvhData& b, int base) {
+        for (std::size_t s = 0; s < b.index.size(); ++s) {
+            const int id = b.index[s] + base;
+            const std::size_t slot = static_cast<std::size_t>(base) + s;
+            index[slot] = id;
+            const pathtrace::Triangle& t = triAt(id);
+            put3(&pos[slot * 12 + 0], t.p0);
+            put3(&pos[slot * 12 + 4], t.p1 - t.p0);
+            put3(&pos[slot * 12 + 8], t.p2 - t.p0);
+        }
+    };
+    putSlots(acc.world, 0);
+    for (std::size_t k = 0; k < acc.meshes.size(); ++k)
+        putSlots(acc.meshes[k], triBase[k]);
 
-    std::vector<GpuNode> nodes(bvh.nodes.size());
-    for (std::size_t i = 0; i < bvh.nodes.size(); ++i) {
-        const pathtrace::BvhNode& n = bvh.nodes[i];
-        put3(nodes[i].lo, n.lo, asFloat(n.leftFirst));
-        put3(nodes[i].hi, n.hi, asFloat(n.count));
+    std::vector<GpuNode> nodes(static_cast<std::size_t>(std::max(nodeCount, 1)));
+    auto putNodes = [&](const std::vector<pathtrace::BvhNode>& src, int nodeOff,
+                        int slotOff, bool top) {
+        for (std::size_t i = 0; i < src.size(); ++i) {
+            const pathtrace::BvhNode& n = src[i];
+            const int lf = n.count > 0 ? n.leftFirst + slotOff : n.leftFirst + nodeOff;
+            GpuNode& g = nodes[static_cast<std::size_t>(nodeOff) + i];
+            put3(g.lo, n.lo, asFloat(lf));
+            // A top-level leaf holds instances, and says so by the sign of its
+            // count: the kernel walks both levels in one loop and this is how
+            // it knows which kind of leaf it is standing on.
+            put3(g.hi, n.hi, asFloat(top && n.count > 0 ? -n.count : n.count));
+        }
+    };
+    putNodes(acc.world.nodes, 0, 0, false);
+    for (std::size_t k = 0; k < acc.meshes.size(); ++k)
+        putNodes(acc.meshes[k].nodes, nodeBase[k], triBase[k], false);
+    // The top level's leaves name instance SLOTS -- the instances are laid out
+    // below in its leaf order -- so only its inner pointers move.
+    putNodes(acc.instances.nodes, tlasBase, 0, true);
+
+    std::vector<GpuInst> insts(std::max<std::size_t>(acc.instances.index.size(), 1));
+    for (std::size_t j = 0; j < acc.instances.index.size(); ++j) {
+        const pathtrace::Instance& in =
+            scene.instances[static_cast<std::size_t>(acc.instances.index[j])];
+        const glm::mat4 inv = glm::inverse(in.transform);
+        const glm::mat3 nrm = glm::transpose(glm::inverse(glm::mat3(in.transform)));
+        GpuInst& g = insts[j];
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 4; ++c) g.toObj[r][c] = inv[c][r];
+            for (int c = 0; c < 3; ++c) g.nrm[r][c] = nrm[c][r];
+            g.nrm[r][3] = 0.0f;
+        }
+        g.meta[0] = nodeBase[static_cast<std::size_t>(in.mesh)];
+        g.meta[1] = in.material;
+        g.meta[2] = 0;
+        g.meta[3] = 0;
     }
 
     std::vector<GpuMat> mats(std::max<std::size_t>(scene.materials.size(), 1));
@@ -378,6 +494,12 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         // slot, and no way for the two to disagree.
         g.misc[3] = m.glass ? std::max(1.0f, m.ior) : 0.0f;
         put3(g.tint, m.tint, m.detailScale);
+        g.extra[0] = m.translucency;
+        g.extra[1] = m.additive ? 1.0f : 0.0f;
+        g.extra[2] = m.farGround ? 1.0f : 0.0f;
+        g.extra[3] = 0.0f;
+        put3(g.absorb, m.absorption);
+        put3(g.medium, m.mediumColor);
         g.modeTex[0] = m.alphaMode;
         g.modeTex[1] = -1;              // filled below, once the blob is packed
         g.modeTex[2] = 0;               // ...and so are the layers
@@ -388,28 +510,81 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
     // RGBA8 as one uint per texel, in the order the CPU tracer's Image holds
     // them, so the sampling code on the other side is the same arithmetic on the
     // same bytes rather than a second interpretation of them.
+    //
+    // What does not fit is SHRUNK, not dropped. Dropping was the first version,
+    // and on a real landscape -- half a gigabyte of maps -- it took the ones that
+    // happened to come last, which were the forest's: every tree in the preview
+    // turned white. So each map gets a level (how many times it is halved), the
+    // biggest map is halved until the whole set fits, and every surface keeps
+    // its colour at whatever resolution the card has room for.
     std::vector<GpuTexMeta>    texMeta;
     std::vector<std::uint32_t> texels;
     std::vector<int>           texSlot(scene.textures.size(), -1);
-    const std::size_t          texelCap = maxTextureTexels();
+    const std::size_t          texelCap = m_texelBudget > 0 ? m_texelBudget : maxTextureTexels();
     m_texturesDropped = 0;
-    for (std::size_t i = 0; i < scene.textures.size(); ++i) {
+    m_texturesShrunk  = 0;
+    std::vector<int> level(scene.textures.size(), 0);
+    auto dims = [&](std::size_t i) {
         const pathtrace::Image& img = scene.textures[i];
-        const std::size_t count = static_cast<std::size_t>(std::max(img.width, 0)) *
-                                  static_cast<std::size_t>(std::max(img.height, 0));
-        if (count == 0 || img.pixels.size() < count * 4) continue;
-        if (texels.size() + count > texelCap) { ++m_texturesDropped; continue; }
-        texSlot[i] = static_cast<int>(texMeta.size());
-        texMeta.push_back(GpuTexMeta{static_cast<int>(texels.size()),
-                                     img.width, img.height, 0});
-        texels.reserve(texels.size() + count);
-        for (std::size_t p = 0; p < count; ++p) {
-            const unsigned char* q = &img.pixels[p * 4];
-            texels.push_back(static_cast<std::uint32_t>(q[0]) |
-                             (static_cast<std::uint32_t>(q[1]) << 8) |
-                             (static_cast<std::uint32_t>(q[2]) << 16) |
-                             (static_cast<std::uint32_t>(q[3]) << 24));
+        return glm::ivec2(std::max(1, img.width >> level[i]), std::max(1, img.height >> level[i]));
+    };
+    auto usable = [&](std::size_t i) {
+        const pathtrace::Image& img = scene.textures[i];
+        return img.width > 0 && img.height > 0 &&
+               img.pixels.size() >= static_cast<std::size_t>(img.width) * img.height * 4;
+    };
+    {
+        std::size_t total = 0;
+        for (std::size_t i = 0; i < scene.textures.size(); ++i)
+            if (usable(i)) { const glm::ivec2 d = dims(i); total += static_cast<std::size_t>(d.x) * d.y; }
+        while (total > texelCap) {
+            std::size_t big = scene.textures.size();
+            std::size_t bigCount = 0;
+            for (std::size_t i = 0; i < scene.textures.size(); ++i) {
+                if (!usable(i)) continue;
+                const glm::ivec2 d = dims(i);
+                const std::size_t c = static_cast<std::size_t>(d.x) * d.y;
+                if (c > bigCount && d.x > 8 && d.y > 8) { bigCount = c; big = i; }
+            }
+            if (big == scene.textures.size()) break;   // nothing left worth halving
+            ++level[big];
+            const glm::ivec2 d = dims(big);
+            total = total - bigCount + static_cast<std::size_t>(d.x) * d.y;
         }
+    }
+    for (std::size_t i = 0; i < scene.textures.size(); ++i) {
+        if (!usable(i)) continue;
+        const pathtrace::Image& img = scene.textures[i];
+        const glm::ivec2 d = dims(i);
+        const std::size_t count = static_cast<std::size_t>(d.x) * d.y;
+        if (texels.size() + count > texelCap) { ++m_texturesDropped; continue; }
+        if (level[i] > 0) ++m_texturesShrunk;
+        texSlot[i] = static_cast<int>(texMeta.size());
+        texMeta.push_back(GpuTexMeta{static_cast<int>(texels.size()), d.x, d.y, 0});
+        texels.reserve(texels.size() + count);
+        // A box filter over the 2^level square each texel stands for -- the
+        // same averaging the harvest's own downsample does.
+        const int f = 1 << level[i];
+        for (int y = 0; y < d.y; ++y)
+            for (int x = 0; x < d.x; ++x) {
+                unsigned acc[4] = {0, 0, 0, 0};
+                unsigned n = 0;
+                for (int by = 0; by < f; ++by) {
+                    const int sy = y * f + by;
+                    if (sy >= img.height) break;
+                    for (int bx = 0; bx < f; ++bx) {
+                        const int sx = x * f + bx;
+                        if (sx >= img.width) break;
+                        const unsigned char* q =
+                            &img.pixels[(static_cast<std::size_t>(sy) * img.width + sx) * 4];
+                        for (int c = 0; c < 4; ++c) acc[c] += q[c];
+                        ++n;
+                    }
+                }
+                n = std::max(n, 1u);
+                texels.push_back((acc[0] / n) | ((acc[1] / n) << 8) | ((acc[2] / n) << 16) |
+                                 ((acc[3] / n) << 24));
+            }
     }
     for (std::size_t i = 0; i < scene.materials.size(); ++i) {
         const int t = scene.materials[i].texture;
@@ -427,7 +602,9 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
         if (m.layers.empty()) continue;
         mats[i].modeTex[2] = static_cast<int>(layers.size());
         int kept = 0;
+        int li = -1;
         for (const pathtrace::TerrainLayer& L : m.layers) {
+            ++li;
             // A layer whose map did not fit the blob is dropped rather than
             // left pointing at nothing: it would otherwise contribute white.
             const int slot = (L.texture >= 0 && L.texture < static_cast<int>(texSlot.size()))
@@ -439,6 +616,9 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
             g.scaleTex[0] = L.scale;
             g.scaleTex[1] = static_cast<float>(slot);
             g.scaleTex[2] = m.heightBlend;   // the material's, repeated per layer
+            // Flagged on the layer rather than named by index: a layer that did
+            // not fit the blob is dropped, and every index after it would move.
+            g.scaleTex[3] = li == scene.ground.forestLayer ? 1.0f : 0.0f;
             layers.push_back(g);
             ++kept;
         }
@@ -447,11 +627,13 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
     m_layerCount = static_cast<int>(layers.size());
 
     // --- The terrain's hand-painted weights ---------------------------------
-    // Three per triangle, in the triangles' own order -- so a hit's triangle
-    // index reaches them without a second table, exactly as paintAt() does on
-    // the CPU. Absent on every scene whose terrain nobody has painted, which is
-    // most of them, and then it is one dummy entry and a switched-off flag.
-    const bool havePaint = scene.vertexPaint.size() >= scene.triangles.size() * 3;
+    // Three per WORLD triangle, in the triangles' own order -- so a hit's
+    // triangle index reaches them without a second table, exactly as paintAt()
+    // does on the CPU. Absent on every scene whose terrain nobody has painted,
+    // which is most of them, and then it is one dummy entry and a switched-off
+    // flag.
+    const bool havePaint = worldTris > 0 &&
+        scene.vertexPaint.size() >= static_cast<std::size_t>(worldTris) * 3;
     m_havePaint = havePaint;
     std::vector<float> paint;
     if (havePaint) {
@@ -460,6 +642,66 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
             paint.push_back(w.x); paint.push_back(w.y);
             paint.push_back(w.z); paint.push_back(w.w);
         }
+    }
+
+    // --- The sky --------------------------------------------------------------
+    // The lighting panorama, the CPU's importance distribution over it (built
+    // from the FULL panorama, so the card aims where the CPU aims), and the
+    // backdrop, one after another in one float buffer.
+    std::vector<float> env;
+    m_envSize = glm::ivec2(0);
+    m_distSize = glm::ivec2(0);
+    m_backSize = glm::ivec2(0);
+    m_envPixOff = m_distFuncOff = m_distCondOff = m_distMargOff = m_backOff = 0;
+    m_distTotal = 0.0f;
+    if (scene.env.hasMap()) {
+        const pathtrace::EnvDistribution dist = pathtrace::buildEnvDistribution(scene.env);
+        std::vector<float> px = scene.env.pixels;
+        int w = scene.env.width, h = scene.env.height;
+        shrinkPanorama(px, w, h);
+        m_envPixOff = static_cast<int>(env.size());
+        env.insert(env.end(), px.begin(), px.end());
+        m_envSize = glm::ivec2(w, h);
+        if (dist.valid()) {
+            m_distFuncOff = static_cast<int>(env.size());
+            env.insert(env.end(), dist.func.begin(), dist.func.end());
+            m_distCondOff = static_cast<int>(env.size());
+            env.insert(env.end(), dist.condCdf.begin(), dist.condCdf.end());
+            m_distMargOff = static_cast<int>(env.size());
+            env.insert(env.end(), dist.margCdf.begin(), dist.margCdf.end());
+            m_distSize  = glm::ivec2(dist.w, dist.h);
+            m_distTotal = dist.total;
+        }
+    }
+    m_maskSize = glm::ivec2(0);
+    m_maskOff  = 0;
+    if (scene.sunMask.valid()) {
+        m_maskOff  = static_cast<int>(env.size());
+        env.insert(env.end(), scene.sunMask.values.begin(), scene.sunMask.values.end());
+        m_maskSize = glm::ivec2(scene.sunMask.width, scene.sunMask.height);
+        m_maskRect = glm::vec4(scene.sunMask.origin, 1.0f / std::max(scene.sunMask.size, 1e-3f),
+                               scene.sunMask.refY);
+        m_maskSun  = scene.sunMask.sunDir;
+    }
+    m_mediumGlow = pathtrace::mediumLight(scene);
+    m_ground = scene.ground;
+    m_ground.moisture.clear();       // lives in the buffer, not twice in memory
+    m_moistOff = 0;
+    if (scene.ground.moistSamples > 0 &&
+        scene.ground.moisture.size() >= static_cast<std::size_t>(scene.ground.moistSamples) *
+                                            scene.ground.moistSamples) {
+        m_moistOff = static_cast<int>(env.size());
+        env.insert(env.end(), scene.ground.moisture.begin(), scene.ground.moisture.end());
+    } else {
+        m_ground.moistSamples = 0;
+    }
+    if (scene.env.hasBackdrop()) {
+        std::vector<float> px = scene.env.backdrop;
+        int w = scene.env.backdropWidth, h = scene.env.backdropHeight;
+        shrinkPanorama(px, w, h);
+        m_backOff = static_cast<int>(env.size());
+        env.insert(env.end(), px.begin(), px.end());
+        m_backSize = glm::ivec2(w, h);
     }
 
     std::vector<GpuLamp> lamps(scene.lamps.size());
@@ -478,8 +720,7 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
     bool ok = true;
     ok = ok && uploadBuffer(m_ssbo[0], 1, tris.data(),  tris.size()  * sizeof(GpuTri));
     ok = ok && uploadBuffer(m_ssbo[1], 2, nodes.data(), nodes.size() * sizeof(GpuNode));
-    ok = ok && uploadBuffer(m_ssbo[2], 3, bvh.index.data(),
-                            bvh.index.size() * sizeof(int));
+    ok = ok && uploadBuffer(m_ssbo[2], 3, index.data(), index.size() * sizeof(int));
     ok = ok && uploadBuffer(m_ssbo[3], 4, mats.data(),  mats.size()  * sizeof(GpuMat));
     ok = ok && uploadBuffer(m_ssbo[4], 5, lamps.data(), lamps.size() * sizeof(GpuLamp));
     ok = ok && uploadBuffer(m_ssbo[5], 6, texMeta.data(),
@@ -490,9 +731,15 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
                             layers.size() * sizeof(GpuLayer));
     ok = ok && uploadBuffer(m_ssbo[8], 9, paint.data(), paint.size() * sizeof(float));
     ok = ok && uploadBuffer(m_ssbo[9], 10, pos.data(), pos.size() * sizeof(float));
+    ok = ok && uploadBuffer(m_ssbo[10], 11, insts.data(), insts.size() * sizeof(GpuInst));
+    ok = ok && uploadBuffer(m_ssbo[11], 12, env.data(), env.size() * sizeof(float));
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
     if (!ok) { m_error = "uploading the scene failed"; return false; }
 
+    m_worldTris    = worldTris;
+    m_haveWorld    = !acc.world.nodes.empty();
+    m_tlasRoot     = haveTop ? tlasBase : -1;
+    m_instCount    = static_cast<int>(acc.instances.index.size());
     m_camera       = scene.camera;
     m_sun          = scene.sun;
     m_fog          = scene.fog;
@@ -501,7 +748,7 @@ bool Tracer::upload(const pathtrace::Scene& scene) {
     m_envGround    = scene.env.ground;
     m_envIntensity = scene.env.intensity;
     m_lampCount    = static_cast<int>(scene.lamps.size());
-    m_triangles    = static_cast<long long>(scene.triangles.size());
+    m_triangles    = scene.triangleCount();
     m_haveScene    = true;
     m_samples      = 0;
     return true;
@@ -552,6 +799,10 @@ bool Tracer::accumulate(int samples) {
     setInt(m_program, "uLampCount", m_lampCount);
     setInt(m_program, "uTexCount", m_textureCount);
     setInt(m_program, "uHavePaint", m_havePaint ? 1 : 0);
+    setInt(m_program, "uWorldTris", m_worldTris);
+    setInt(m_program, "uHaveWorld", m_haveWorld ? 1 : 0);
+    setInt(m_program, "uTlasRoot", m_tlasRoot);
+    setInt(m_program, "uInstCount", m_instCount);
     setInt(m_program, "uMaxBounces", m_maxBounces);
     setFloat(m_program, "uClampIndirect", m_clampIndirect);
 
@@ -563,6 +814,8 @@ bool Tracer::accumulate(int samples) {
     setVec3(m_program, "uCamRight", glm::normalize(m_camera.right));
     setFloat(m_program, "uHalfV", halfV);
     setFloat(m_program, "uHalfU", halfV * aspect);
+    setFloat(m_program, "uAperture", std::max(0.0f, m_camera.apertureRadius));
+    setFloat(m_program, "uFocus", std::max(0.1f, m_camera.focusDistance));
 
     // The sun, resolved exactly as pathtrace::Tracer's constructor resolves it:
     // `color` is the irradiance the directional light was authored as, and
@@ -585,6 +838,37 @@ bool Tracer::accumulate(int samples) {
     setVec3(m_program, "uEnvHorizon", m_envHorizon);
     setVec3(m_program, "uEnvGround", m_envGround);
     setFloat(m_program, "uEnvIntensity", m_envIntensity);
+    glUniform2i(glGetUniformLocation(m_program, "uEnvSize"), m_envSize.x, m_envSize.y);
+    setInt(m_program, "uEnvPixOff", m_envPixOff);
+    glUniform2i(glGetUniformLocation(m_program, "uDistSize"), m_distSize.x, m_distSize.y);
+    setInt(m_program, "uDistFuncOff", m_distFuncOff);
+    setInt(m_program, "uDistCondOff", m_distCondOff);
+    setInt(m_program, "uDistMargOff", m_distMargOff);
+    setFloat(m_program, "uDistTotal", m_distTotal);
+    glUniform2i(glGetUniformLocation(m_program, "uBackSize"), m_backSize.x, m_backSize.y);
+    setInt(m_program, "uBackOff", m_backOff);
+    glUniform2i(glGetUniformLocation(m_program, "uMaskSize"), m_maskSize.x, m_maskSize.y);
+    setInt(m_program, "uMaskOff", m_maskOff);
+    glUniform4f(glGetUniformLocation(m_program, "uMaskRect"),
+                m_maskRect.x, m_maskRect.y, m_maskRect.z, m_maskRect.w);
+    setVec3(m_program, "uMaskSun", m_maskSun);
+    setVec3(m_program, "uMediumGlow", m_mediumGlow);
+    const pathtrace::GroundLook& g = m_ground;
+    glUniform4f(glGetUniformLocation(m_program, "uMeadow"),
+                g.meadowNear, g.meadowFar, g.meadowAmount, g.meadowLush);
+    setVec3(m_program, "uGrassTint", g.grassTint);
+    setVec3(m_program, "uGrassTopDryWater", glm::vec3(g.grassTop, g.grassDry, g.waterLevel));
+    setInt(m_program, "uMoistSamples", g.moistSamples);
+    setInt(m_program, "uMoistOff", m_moistOff);
+    setVec3(m_program, "uMoistRect", glm::vec3(g.moistOrigin, g.moistCell));
+    setInt(m_program, "uWoodsOn", g.woodsOn() ? 1 : 0);
+    setVec3(m_program, "uEco", glm::vec3(g.ecoCover, g.ecoStandSize, g.ecoSlopeLove));
+    setVec3(m_program, "uCanopy", g.canopy);
+    setVec3(m_program, "uFarLook", glm::vec3(g.ecoOn ? 1.0f : 0.0f, g.farTreeLine, g.farSnowLevel));
+    setVec3(m_program, "uEco2", glm::vec3(g.ecoTreeLine, g.ecoWater, g.ecoSolitary));
+    setVec3(m_program, "uAirSun", g.airSun);
+    glUniform2f(glGetUniformLocation(m_program, "uCanopyRange"),
+                std::min(g.canopyFrom, 1e30f), std::min(g.canopyTo, 1e30f));
 
     setVec3(m_program, "uFogColor", m_fog.color);
     setVec3(m_program, "uFogSunColor", m_fog.sunColor);

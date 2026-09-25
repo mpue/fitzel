@@ -82,6 +82,19 @@ public:
     static bool speedSource(const std::vector<Entity>& entities, const Entity& e,
                             float& topSpeed, std::string& name);
 
+    // What one draw needs, gathered per emitter during update so draw() does no
+    // scene walking of its own.
+    struct Batch {
+        std::shared_ptr<fitzel::Texture> tex;
+        bool  additive = false;
+        float stretch  = 0.0f;
+        std::vector<float> data;   // packed instances
+        float depth = 0.0f;        // distance to the camera, for back-to-front order
+    };
+    // This frame's draws, for the path tracer (WorldTrace.cpp): 12 floats a
+    // particle -- pos3, size, rot, rgba (linear, unlit), vel3.
+    const std::vector<Batch>& batches() const { return m_batches; }
+
 private:
     struct Particle {
         glm::vec3 pos{0.0f}, vel{0.0f};
@@ -107,15 +120,6 @@ private:
         bool  storedLocal = false;
     };
 
-    // What one draw needs, gathered per emitter during update so draw() does no
-    // scene walking of its own.
-    struct Batch {
-        std::shared_ptr<fitzel::Texture> tex;
-        bool  additive = false;
-        float stretch  = 0.0f;
-        std::vector<float> data;   // packed instances
-        float depth = 0.0f;        // distance to the camera, for back-to-front order
-    };
 
     std::unordered_map<int, Pool> m_pools;
     std::vector<Batch>            m_batches;

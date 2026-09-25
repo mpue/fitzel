@@ -87,6 +87,9 @@ public:
     // Droplet scale, set by whichever vehicle is doing the splashing.
     float sizeScale = 1.0f;
 
+    // The live droplets and foam, for the path tracer (WorldTrace.cpp).
+    const SprayPool& pool() const { return m_pool; }
+
 private:
     SprayPool          m_pool;
     std::vector<float> m_scratch; // packed upload buffer, kept to avoid a per-frame alloc

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -52,7 +53,20 @@ public:
     static constexpr float kMaxAmount = 2.0f;
     float amount = 1.0f;
 
+    // The streaks as rain.vert places them at `time` around `eye` -- for the
+    // path tracer, which has no vertex shader to do it. `a` is the tail, `b`
+    // the head, `fade` the box-edge fade. Empty when it is not raining.
+    struct Streak { glm::vec3 a, b; float fade; };
+    std::vector<Streak> streaks(const glm::vec3& eye, float time, float weather) const;
+    // rain.vert's colour: the sky it falls through, not the sun.
+    static glm::vec3 color(const glm::vec3& ambient, const glm::vec3& light) {
+        return glm::clamp(ambient * 2.5f + light * 0.12f, glm::vec3(0.0f), glm::vec3(2.0f));
+    }
+
 private:
     fitzel::Shader m_shader;
     std::uint32_t  m_vao = 0, m_vbo = 0;
+    // The drops as uploaded (5 floats a vertex, two vertices a drop), kept so
+    // streaks() places exactly the drops the viewport draws.
+    std::vector<float> m_drops;
 };

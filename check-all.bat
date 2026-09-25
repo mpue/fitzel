@@ -118,6 +118,9 @@ REM  immer zu. Beides sieht aus wie ein halb gezeichneter Graph.
 call :run graphcheck
 call :run autosavecheck "%OUT%\autosave"
 call :run meshpaintcheck
+REM  bridgecheck baut jede Bruecken-Vorlage ueber einem Tal: Flaechen richtig
+REM  gewunden, Stuetzen bis in den Boden, Deck-Kollision steigt mit der Fahrbahn.
+call :run bridgecheck
 REM  modelcheck misst die beiden Modellier-Werkzeuge, die still danebengehen:
 REM  ein Loop Cut, der die Seite vergisst, von der er misst, schneidet einen
 REM  Zickzack statt einer Linie -- und ein Face-Material ist ein Array neben
@@ -130,11 +133,20 @@ REM  alles spielt vergnuegt weiter. Dazu die zwei Invarianten, die man erst spae
 REM  hoert: Blockgroesse aendert den Klang nicht, und nichts verlaesst den Ausgang,
 REM  das nicht endlich und im Bereich ist.
 call :run synthcheck
+REM  musiccheck misst die Band-Analyse eines Rhythmusspiels an einem synthetischen
+REM  120-BPM-Track (Bass-Flux auf jeder Kick, Hoehen auf jeder Hat) -- und mit
+REM  einem Audiogeraet die Songuhr: Start, Tempo 1.00x, Pause, Vorlauf.
+call :run musiccheck
 REM  synthplaycheck spielt die Kette, die ein Spiel benutzt: Patch und Song als
 REM  Dateien in einem Wegwerf-Projekt, eine Synth-Komponente, die sie nennt, und
 REM  ein echtes Lua-Skript, das synth.noteOn / synth.playMidi ruft. Jedes Glied
 REM  ist ein Name, der zu einem Namen passen muss. Braucht ein Audiogeraet.
 call :run synthplaycheck
+REM  luadoccheck haelt die Lua-Referenz vollstaendig: jede Funktion und
+REM  Konstante in game / synth / music muss in docs\lua-scripting.md stehen
+REM  (die Help / Lua API zeigt), und jeder dort gezeigte Aufruf muss noch
+REM  existieren. Eine gebundene Funktion ohne Zeile findet niemand.
+call :run luadoccheck
 REM  importcheck misst, ob ein als viele Objekte gebautes Modell auch als
 REM  viele Objekte ankommt. Der Fehler hat kein Symptom: ein Import, der die
 REM  Struktur verliert, zeichnet dasselbe Bild -- er ist nur EIN Objekt statt

@@ -95,10 +95,12 @@ set(SANDBOX_RUNTIME_SOURCES
     src/RaceHud.cpp
     src/Showroom.cpp
     src/RoadSide.cpp
-    # Fences, walls and railway track along a spline. Runtime, not editor-only:
-    # a run is derived from its path + rule on load, so the shipped player has to
-    # be able to build it too -- the scene file holds the rule, not the geometry.
+    # Fences, walls, railway track and bridges along a spline. Runtime, not
+    # editor-only: a run is derived from its path + rule on load, so the shipped
+    # player has to be able to build it too -- the scene file holds the rule,
+    # not the geometry.
     src/SplineGen.cpp
+    src/BridgeGen.cpp
     src/SplineSystem.cpp
     # Brooks, rivers and canals. Runtime, and more so than the fences: a
     # watercourse CUTS THE TERRAIN, so the shipped player has to re-derive the
@@ -201,6 +203,8 @@ set(SANDBOX_EDITOR_SOURCES
     # Building and hearing a synth patch. The patches themselves are runtime
     # (fitzel::synth) -- a shipped game plays them, it just cannot edit them.
     src/SynthPanel.cpp
+    # Help -> Lua API: docs/lua-scripting.md, read and searched in the editor.
+    src/LuaApiPanel.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -218,6 +222,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/LevelPanel.cpp
     src/RoadPanel.cpp
     src/SplinePanel.cpp
+    src/BridgePanel.cpp
     src/SplineEdit.cpp
     src/RiverPanel.cpp
     src/RiverEdit.cpp
@@ -251,6 +256,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/PathTrace.cpp
     src/PathTraceCapture.cpp
     src/PathTracePanel.cpp
+    # Everything the viewport draws that the render queue does not carry --
+    # forest, flowers, water, far terrain, wildlife, particles, rain, clouds,
+    # sky -- rebuilt for the tracer from the systems' own data.
+    src/WorldTrace.cpp
     # The same tracer on the GPU. Editor-only like the rest of it -- and unlike
     # the rest of it, optional at RUNTIME too: a context below 4.3 has no
     # compute shaders and the machine renders on the CPU (see gputrace::available).
@@ -271,6 +280,13 @@ set(SANDBOX_EDITOR_SOURCES
     src/ShotList.cpp)
 
 # The editor: full sandbox with all panels/tools.
+# main.cpp is past MSVC's default 65k sections per object file (every lambda
+# handed to a std::function is a few of them). /bigobj lifts the limit and costs
+# nothing at run time; it is not a licence to keep growing the file -- see the
+# note on keeping main small.
+if(MSVC)
+    set_source_files_properties(src/main.cpp PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
 add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})
 
 # The Render panel writes the finished image out: stb_image_write for the PNG,
@@ -430,6 +446,15 @@ add_executable(synthcheck tools/synthcheck.cpp)
 target_compile_definitions(synthcheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(synthcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
+# musiccheck (sandbox/tools/musiccheck.cpp): MusicPlayer and the band analysis a
+# rhythm game builds its chart from. The analysis is measured offline on a
+# synthetic 120 BPM track; the song clock (start, pace, pause, lead-in) on the
+# real device, skipped without one. With a song: --dump writes its bands as Lua.
+#   build/release/bin/musiccheck.exe [song.mp3] [--dump bands.lua]
+add_executable(musiccheck tools/musiccheck.cpp)
+target_compile_definitions(musiccheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(musiccheck PRIVATE fitzel)
+
 # synthplaycheck (sandbox/tools/synthplaycheck.cpp): the game's half of the
 # synth -- a patch and a song saved in a throwaway project, a Synth component
 # naming them, SynthSystem finding them and a real Lua script driving it through
@@ -442,6 +467,19 @@ add_executable(synthplaycheck tools/synthplaycheck.cpp
 target_include_directories(synthplaycheck PRIVATE src)
 target_compile_definitions(synthplaycheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(synthplaycheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+
+# luadoccheck (sandbox/tools/luadoccheck.cpp): the Lua reference is complete.
+# Builds the script VM as Play does, lists every function and constant in the
+# game / synth / music tables, and fails when docs/lua-scripting.md misses one
+# -- or still shows a call that is no longer bound.
+#   build/release/bin/luadoccheck.exe [docs/lua-scripting.md]
+add_executable(luadoccheck tools/luadoccheck.cpp
+                           src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                           src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                           src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
+target_include_directories(luadoccheck PRIVATE src)
+target_compile_definitions(luadoccheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(luadoccheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
 
 # importcheck (sandbox/tools/importcheck.cpp): a model authored as many objects
 # has to arrive as many objects. This one fails without any symptom at all -- a
@@ -618,7 +656,7 @@ target_link_libraries(prefabeditcheck PRIVATE fitzel imgui stb_headers
 #   build/release/bin/splineplacecheck.exe
 add_executable(splineplacecheck tools/splineplacecheck.cpp
                                 src/SplinePlace.cpp src/SplineSystem.cpp
-                                src/SplineGen.cpp src/SandboxMath.cpp
+                                src/SplineGen.cpp src/BridgeGen.cpp src/SandboxMath.cpp
                                 src/RoadPrefab.cpp src/PrefabSystem.cpp
                                 src/ProjectIO.cpp src/GameSettings.cpp
                                 src/SceneGraph.cpp src/Selection.cpp
@@ -628,6 +666,14 @@ add_executable(splineplacecheck tools/splineplacecheck.cpp
 target_compile_definitions(splineplacecheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(splineplacecheck PRIVATE fitzel imgui stb_headers
                                                nlohmann_json::nlohmann_json)
+
+# bridgecheck -- every bridge preset built over a synthetic valley: faces wound
+# to their normals, supports reaching the ground, deck colliders pitched up the
+# climb, and the rule surviving a save/load. Pure geometry, no GL.
+#   build/release/bin/bridgecheck.exe
+add_executable(bridgecheck tools/bridgecheck.cpp src/BridgeGen.cpp src/SplineGen.cpp
+                           src/Primitives.cpp)
+target_link_libraries(bridgecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # gridcheck -- the starting grid: are the right craft in the right places?
 # The grid is built in the half second between pressing start and the lights, it
@@ -848,9 +894,15 @@ add_custom_command(OUTPUT ${FITZEL_ASSET_STAMP}
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
             $<TARGET_FILE_DIR:sandbox>/third-party-licenses.md
+    # The Lua reference, for Help -> Lua API. Beside the exe, not in assets/:
+    # it is the editor's manual, not something a game ships.
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
+            $<TARGET_FILE_DIR:sandbox>/lua-scripting.md
     COMMAND ${CMAKE_COMMAND} -E touch ${FITZEL_ASSET_STAMP}
     DEPENDS ${FITZEL_SANDBOX_ASSETS} ${CMAKE_SOURCE_DIR}/images/splash.png
             ${CMAKE_SOURCE_DIR}/docs/third-party-licenses.md
+            ${CMAKE_SOURCE_DIR}/docs/lua-scripting.md
     COMMENT "Copying sandbox assets")
 add_custom_target(sandbox_assets ALL DEPENDS ${FITZEL_ASSET_STAMP})
 # Both executables share one bin/ dir, so one copy serves both.

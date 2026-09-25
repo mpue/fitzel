@@ -84,6 +84,16 @@ public:
     struct Splash { glm::vec3 pos; float strength; };
     std::vector<Splash> takeSplashes() { std::vector<Splash> s; s.swap(m_splashes); return s; }
     int fishJumps() const { return m_fishJumps; }
+
+    // For the path tracer (WorldTrace.cpp): the three creature meshes, a
+    // triangle list of 6 floats a vertex (body-frame x right, y up, z forward;
+    // the wing coordinate; u, v), and this frame's instances, 13 floats each
+    // (pos3, yaw, pitch, bank, phase, flap, scale, rgb, belly) -- exactly what
+    // the creature shader is fed. kind: 0 birds, 1 butterflies, 2 fish.
+    static std::vector<float> traceMesh(int kind);
+    const std::vector<float>& traceInstances(int kind) const {
+        return kind == 0 ? m_birdData : kind == 1 ? m_flyData : m_fishData;
+    }
     glm::vec3 lastRipple() const { return m_lastRipple; }
     float fishRate = 1.0f;             // jumps per usual interval (shots turn it up)
     // A fish in the air right now (for a shot to look at), or false.

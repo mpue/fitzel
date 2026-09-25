@@ -77,6 +77,26 @@ bool Runner::afterFrame(double now, int w, int h) {
         return false;
     }
     const Shot& s = m_shots[static_cast<std::size_t>(m_index)];
+
+    // A traced still of this view is rendering: hold the view until it is done,
+    // then write it and move on.
+    if (m_tracing) {
+        if (traceDone && !traceDone()) return false;
+        const std::string out = m_outDir + "/" + s.name + "_traced.png";
+        const bool ok = saveTrace && saveTrace(out);
+        const std::string line = s.name + "_traced  " + (ok ? "written" : "FAILED");
+        std::fprintf(stderr, "shots: %s\n", line.c_str());
+        if (std::FILE* f = std::fopen((m_outDir + "/shots.log").c_str(), "a")) {
+            std::fprintf(f, "%s\n", line.c_str());
+            std::fclose(f);
+        }
+        m_tracing = false;
+        m_frame   = 0;
+        m_since   = now;
+        if (++m_index >= static_cast<int>(m_shots.size())) m_done = true;
+        return m_done;
+    }
+
     const double due = (m_frame == 0) ? s.settle : s.every;
     if (now - m_since < due) return false;
 
@@ -117,6 +137,11 @@ bool Runner::afterFrame(double now, int w, int h) {
     // takes most of a second, and a wait measured from before it would be
     // over by the next frame -- every short settle silently became "one frame".
     m_since = now + std::chrono::duration<double>(std::chrono::steady_clock::now() - wroteStart).count();
+    if (startTrace && m_frame + 1 >= s.frames) {
+        startTrace();
+        m_tracing = true;
+        return false;
+    }
     if (++m_frame >= s.frames) {
         m_frame = 0;
         if (++m_index >= static_cast<int>(m_shots.size())) m_done = true;

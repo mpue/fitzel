@@ -1028,6 +1028,43 @@ void VegetationSystem::rebuildTreeBuffers() {
     }
 }
 
+void VegetationSystem::gatherTrees(glm::vec2 c, float radius,
+                                   std::vector<std::vector<float>>& per) const {
+    per.assign(m_species.size(), {});
+    if (!treeEnabled || !terrainPresent) return;
+    const float r2 = radius * radius;
+    auto near = [&](const float* t) {
+        const float dx = t[0] - c.x, dz = t[2] - c.y;
+        return radius <= 0.0f || dx * dx + dz * dz <= r2;
+    };
+    if (eco.enabled) {
+        // The field holds every procedural tree to the forest's edge; the
+        // painted ones ride along beside it, as they do into the impostors.
+        if (treeProcedural) m_treeField.gather(c, radius, per);
+        if (treePainted)
+            for (std::size_t t = 0; t + 6 <= paintedTrees.size(); t += 6) {
+                const int s = static_cast<int>(std::lround(paintedTrees[t + 5]));
+                if (s < 0 || s >= static_cast<int>(per.size())) continue;
+                if (!near(&paintedTrees[t])) continue;
+                per[static_cast<std::size_t>(s)].insert(
+                    per[static_cast<std::size_t>(s)].end(),
+                    paintedTrees.begin() + static_cast<std::ptrdiff_t>(t),
+                    paintedTrees.begin() + static_cast<std::ptrdiff_t>(t) + 5);
+            }
+    } else {
+        // Without the ecology the species' own lists are the whole forest
+        // (procedural prefix + painted), exactly what drawTrees draws.
+        for (std::size_t s = 0; s < m_species.size(); ++s) {
+            const std::vector<float>& in = m_species[s].inst;
+            for (std::size_t t = 0; t + 5 <= in.size(); t += 5)
+                if (near(&in[t])) per[s].insert(per[s].end(), in.begin() + static_cast<std::ptrdiff_t>(t),
+                                                in.begin() + static_cast<std::ptrdiff_t>(t) + 5);
+        }
+    }
+    for (std::size_t s = 0; s < m_species.size(); ++s)
+        if (!m_species[s].enabled || m_species[s].lods.empty()) per[s].clear();
+}
+
 // Stable per-cell seed from a lattice cell's integer coords. Same cell -> same
 // seed -> same tree, so regrowing the forest never reshuffles what's on screen.
 static std::uint32_t treeCellHash(int gx, int gz) {

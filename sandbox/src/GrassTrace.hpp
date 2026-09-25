@@ -136,13 +136,20 @@ struct TraceOptions {
     // than an allocation the size of the machine. Generation stops when it is
     // reached and the report says so.
     long long maxTriangles = 8000000;
+
+    // The hand-painted blades (VegetationSystem::paintedBlades): 7 floats each
+    // like the field's, but with a RELATIVE height that the field's blade
+    // height scales -- as uHeightScale does for their draw. Null = none.
+    const std::vector<float>* painted = nullptr;
+    float paintedHeightScale = 0.35f;
 };
 
 struct TraceReport {
     long long blades    = 0;
     long long triangles = 0;
     int       materials = 0;   // distinct quantised blade colours
-    bool      truncated = false;
+    bool      truncated = false;  // the disc was cut to fit the triangle ceiling
+    float     radius    = 0.0f;   // ...to this, from the centre (else the asked-for radius)
     double    seconds   = 0.0;
 };
 

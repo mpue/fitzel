@@ -486,9 +486,21 @@ because the approximation was the difference.
 - **The sun has a size.** One slider, and every shadow edge in the picture stops being
   the hard line a shadow map draws. It is the most effective setting here for not
   looking like a screenshot.
-- **The distance limit is the render time.** A landscape is millions of triangles of
-  which a hero shot sees a few hundred thousand. It is a radius, not a frustum cull:
-  what is behind the camera still shows up in the flank of a car.
+- **The rest of the world is rebuilt, not skipped.** Grass, trees, flowers, the lake and
+  the rivers, the far mountains, birds and fish, particles, spray, pollen, rain, the
+  clouds' shadow and the sky itself are each drawn by their own shader from data that
+  never reaches the render queue. The tracer regenerates them on the CPU from that same
+  data (`GrassTrace`, `WorldTrace`) -- the forest field's placements with the species'
+  own meshes, this frame's creatures, the river runs, the far terrain's height function
+  -- and the panel's **World** switches take any of them out of a shot that wants less.
+- **A forest costs memory once.** A mesh drawn many times -- every tree of a species,
+  every fence post, a repeated prop -- is kept once and placed per copy, and walked
+  through a two-level accelerator. A valley with 130,000 trees is fifteen billion
+  triangles as the camera sees them and a few million in memory.
+- **The distance limit is the render time** for the things standing on the ground. It
+  is a radius, not a frustum cull: what is behind the camera still shows up in the flank
+  of a car. The terrain itself is never cut -- the far mountains leave a hole for it, and
+  a ground cut short opened a gap the lake showed through.
 - **The image refines while you watch it** and Stop keeps what has arrived, because
   "how many samples does this shot need" has no answer except watching one.
 - **Saving writes a linear `.exr` beside the PNG**, since the PNG has already been
@@ -502,10 +514,28 @@ jitters the band edges has to be faded out in the shader wherever a pixel covers
 than one period of it, while the tracer takes tens of jittered samples per pixel and so
 resolves it instead.
 
-Not traced, and said so in the panel rather than left to be noticed: grass, trees,
-particles, rain and water, whose geometry only ever exists inside a vertex shader; and
-the terrain layers' normal maps, so the ground is the right colour and lit as the smooth
-surface it geometrically is.
+Past its bands the ground is coloured as `lit.frag` colours it: the meadow's own colour
+where the traced grass ends, dried to straw where the moisture map says so, and the
+forest floor under the ecology's stands. The far mountains take `farterrain.frag`'s
+colours -- meadow, alpine grass, forest, scree, rock by slope, snow above a wandering
+line -- and its aerial perspective. Water is glass with a *body*: light is absorbed per
+metre it travels and replaced by the water's own colour, so a ford shows its stones and
+a deep pool shows its colour.
+
+Not traced, and said so in the panel rather than left to be noticed: wind (everything
+stands at rest except the grass, which is posed at the still's instant), the lake's
+waves (the surface is a true mirror), volumetric fog volumes, and the terrain layers'
+normal maps, so the ground is the right colour and lit as the smooth surface it
+geometrically is. Where the viewport uses a stand-in the tracer does not need -- tree
+impostors and billboards past a hundred metres -- it traces the real mesh instead, which
+is why a species whose billboard does not match its model looks different in a render.
+
+**Checking a render without the editor.** A shot list takes path-traced stills as well
+as raster ones: `sandbox.exe --play <project> --shots <list> --shots-out <dir>
+--shots-trace <samples>` writes `<name>_traced.png` beside every `<name>.png`, and a
+`<name>_traced.txt` with the harvest's report; `--shots-trace-gpu 1` renders the same
+harvest on the GPU tracer too (`<name>_traced_gpu.png`), and `FITZEL_SHOTS_SHOW=1`
+switches the stills to the base-colour view.
 
 #### When a render disagrees with the viewport
 

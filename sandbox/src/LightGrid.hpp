@@ -38,6 +38,13 @@ namespace fitzel { class Renderer; }
 // No GL in this file, so the bake and the layout can be checked headless.
 namespace lightgrid {
 
+// A cap on what one Bake button press may cost. Chosen as a wall-clock promise
+// rather than a memory one: at a hundred and twenty-eight rays a probe, this is
+// a couple of minutes on a desktop, and a grid that takes longer than somebody
+// will wait for is a grid nobody bakes twice. Read by the layout (the bake) and
+// by the loader, which refuses a file claiming more.
+inline constexpr int kMaxProbes = 200000;
+
 struct Settings {
     // Probes along the longest horizontal axis; the others follow so cells stay
     // roughly cubic. The cost is cubic in this, so it is the one number worth

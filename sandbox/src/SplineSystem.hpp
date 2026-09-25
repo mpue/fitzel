@@ -13,7 +13,7 @@
 #include "SplineGen.hpp"
 
 // The scene's spline structures: any number of independent paths, each carrying
-// a fence, a wall or a railway track (see SplineGen.hpp for what those are) --
+// a fence, a wall, a railway track or a bridge (see SplineGen.hpp / BridgeGen.hpp) --
 // or nothing at all, a bare path that objects are placed along (SplinePlace.hpp).
 //
 // This is the scene-level half: it owns the control points, samples them into a
@@ -73,6 +73,9 @@ public:
     void insertPoint(int path, int at, glm::vec2 p, float lift = 0.0f);
     void erasePoint(int path, int at);
     float liftOf(int path, int i) const;
+    // Where control point `i` is in the world: on the ground plus its lift --
+    // or, for a bridge, on the deck. What the editor puts the handle on.
+    glm::vec3 pointWorld(int path, int i) const;
     void  setLift(int path, int i, float lift);
     // Mark one path (or all of them) for regeneration on the next update().
     void touch(int path = -1);

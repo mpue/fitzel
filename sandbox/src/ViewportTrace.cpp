@@ -150,15 +150,22 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
                 gopt.centerXZ = glm::vec2(camera.position().x, camera.position().z);
                 gopt.radius   = glm::min(look.grassRadius, 24.0f);
                 gopt.windTime = look.grassWindTime;
-                grassfield::appendToScene(*st.scene, *look.grass, gopt);
+                gopt.painted  = look.paintedGrass;
+                gopt.paintedHeightScale = look.grassHeight;
+                grassfield::TraceReport grep;
+                grassfield::appendToScene(*st.scene, *look.grass, gopt, &grep);
+                pathpanel::followGrass(st.scene->ground, grep.radius);
             }
+            // ...and the rest of the world, near only: the preview re-harvests
+            // on every edit, and a forest to the horizon is a still's business.
+            if (look.world) look.world(*st.scene, st.world, true, st.report.notes);
             st.needCapture = false;
         }
         // Cancel() has joined the workers, so nothing else is holding the scene
         // and re-aiming it here is safe.
         aim(*st.scene, camera);
 
-        if (st.scene->triangles.empty()) {
+        if (st.scene->triangleCount() == 0) {
             st.status = "nothing to trace: no geometry the tracer can read";
             return;
         }
@@ -235,6 +242,9 @@ void service(State& st, bool enabled, fitzel::Renderer& renderer,
         if (onGpu && st.gpu.texturesDropped() > 0)
             st.status += " -- " + std::to_string(st.gpu.texturesDropped()) +
                          " map(s) too large for this card, drawn flat";
+        else if (onGpu && st.gpu.texturesShrunk() > 0)
+            st.status += " -- " + std::to_string(st.gpu.texturesShrunk()) +
+                         " map(s) at reduced resolution to fit the card";
     }
 }
 

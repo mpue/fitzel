@@ -50,6 +50,7 @@ bool RainRenderer::init() {
         data.insert(data.end(), {bx, ys, bz, sp, 1.0f}); // head
     }
 
+    m_drops = data;
     glGenVertexArrays(1, &m_vao);
     glBindVertexArray(m_vao);
     glGenBuffers(1, &m_vbo);
@@ -66,6 +67,49 @@ bool RainRenderer::init() {
     glVertexAttribPointer(2, 1, GL_FLOAT, GL_FALSE, stride, (void*)(4 * sizeof(float)));
     glBindVertexArray(0);
     return true;
+}
+
+namespace {
+// rain.vert's hash21, for the per-fall jitter.
+float rainHash(glm::vec2 p) {
+    p = glm::fract(p * glm::vec2(123.34f, 345.45f));
+    p += glm::dot(p, p + 34.345f);
+    return glm::fract(p.x * p.y);
+}
+} // namespace
+
+std::vector<RainRenderer::Streak> RainRenderer::streaks(const glm::vec3& eye, float time,
+                                                        float weather) const {
+    std::vector<Streak> out;
+    const float fall = rainIntensityFor(weather) * glm::clamp(amount, 0.0f, kMaxAmount);
+    if (!enabled || m_drops.empty() || fall <= 0.001f) return out;
+    const int drops = glm::clamp(static_cast<int>(kDrops * fall), 1,
+                                 static_cast<int>(kDrops * kMaxAmount));
+    const glm::vec3 wind = glm::normalize(glm::vec3(0.6f, 0.0f, 0.3f)) *
+                           glm::mix(0.05f, 0.6f, weather);
+    const glm::vec3 dir  = glm::normalize(glm::vec3(wind.x, -1.0f, wind.z));
+    const float streak   = glm::mix(1.2f, 3.0f, weather);
+    out.reserve(static_cast<std::size_t>(drops));
+    for (int i = 0; i < drops; ++i) {
+        const float* d = &m_drops[static_cast<std::size_t>(i) * 10];  // the tail vertex
+        const glm::vec3 base(d[0], d[1], d[2]);
+        const float speed = d[3];
+        const float ph  = (base.y - time * speed) / kBoxH;
+        const float y   = (ph - std::floor(ph)) * kBoxH;
+        const float cyc = std::fmod(std::floor(ph), 97.0f);
+        const glm::vec2 jit = (glm::vec2(rainHash(glm::vec2(base.x, base.z) + cyc * 0.53f),
+                                         rainHash(glm::vec2(base.z, base.x) * 1.7f + cyc * 0.31f)) -
+                               0.5f) * 1.8f;
+        const glm::vec3 pos(eye.x + base.x + jit.x, eye.y - kBoxH * 0.5f + y,
+                            eye.z + base.z + jit.y);
+        Streak s;
+        s.a    = pos;
+        s.b    = pos - dir * streak;
+        s.fade = 1.0f - glm::smoothstep(kBoxHalf * 0.55f, kBoxHalf,
+                                        glm::length(glm::vec2(base.x, base.z)));
+        out.push_back(s);
+    }
+    return out;
 }
 
 void RainRenderer::draw(const FrameContext& ctx) {

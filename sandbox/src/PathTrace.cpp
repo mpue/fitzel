@@ -225,10 +225,23 @@ struct Ray {
     }
 };
 
+// Where a ray stopped. `inst` is -1 for a world triangle and otherwise the
+// instance whose mesh `tri` indexes into.
 struct Hit {
     float t  = kInf;
     float u  = 0.0f, v = 0.0f;
-    int   tri = -1;
+    int   tri  = -1;
+    int   inst = -1;
+};
+
+// A triangle as the intersection wants it and nothing else: one corner and the
+// two edges from it. Thirty-six bytes against the hundred and eight of a whole
+// Triangle, stored in the order the tree's leaves visit them -- so a leaf is
+// one run of memory rather than four jumps through an index into a structure
+// two thirds of which the test never reads. The walk is bandwidth-bound, and
+// this is the bandwidth.
+struct TriPos {
+    glm::vec3 p0, e1, e2;
 };
 
 // Moeller-Trumbore, two-sided. Two-sided on purpose: a fair amount of scene
@@ -236,135 +249,118 @@ struct Hit {
 // winding) is single-sided in the raster path only because backface culling
 // hides the problem, and a tracer that honoured the winding would put holes
 // where the viewport shows a surface.
-bool intersectTri(const Triangle& tri, const Ray& r, float tMax, float& t,
-                  float& u, float& v) {
-    const glm::vec3 e1 = tri.p1 - tri.p0;
-    const glm::vec3 e2 = tri.p2 - tri.p0;
-    const glm::vec3 p  = glm::cross(r.d, e2);
-    const float det = glm::dot(e1, p);
+inline bool intersectPos(const TriPos& tp, const Ray& r, float tMax, float& t,
+                         float& u, float& v) {
+    const glm::vec3 p  = glm::cross(r.d, tp.e2);
+    const float det = glm::dot(tp.e1, p);
     if (std::fabs(det) < 1e-12f) return false;
     const float inv = 1.0f / det;
-    const glm::vec3 s = r.o - tri.p0;
+    const glm::vec3 s = r.o - tp.p0;
     u = glm::dot(s, p) * inv;
     if (u < -1e-6f || u > 1.0f + 1e-6f) return false;
-    const glm::vec3 q = glm::cross(s, e1);
+    const glm::vec3 q = glm::cross(s, tp.e1);
     v = glm::dot(r.d, q) * inv;
     if (v < -1e-6f || u + v > 1.0f + 1e-6f) return false;
-    t = glm::dot(e2, q) * inv;
+    t = glm::dot(tp.e2, q) * inv;
     return t > kRayEps && t < tMax;
 }
 
-// --- The accelerator --------------------------------------------------------
+inline TriPos posOf(const Triangle& tri) {
+    return {tri.p0, tri.p1 - tri.p0, tri.p2 - tri.p0};
+}
+
+bool intersectTri(const Triangle& tri, const Ray& r, float tMax, float& t,
+                  float& u, float& v) {
+    return intersectPos(posOf(tri), r, tMax, t, u, v);
+}
+
+// --- The accelerator build --------------------------------------------------
 // A binned-SAH BVH. Chosen over a median split because scene geometry here is
 // wildly non-uniform -- a 200-metre terrain chunk sits in the same list as a
 // wing mirror -- and a median split over that produces nodes that overlap
 // everything, which costs far more at trace time than the better build costs
 // once.
-struct Bvh {
-    // The node layout lives in the header now: it is handed out to anyone who
-    // has to walk this tree rather than build one of their own (see BvhNode).
-    using Node = BvhNode;
-
-    std::vector<Node> nodes;
-    std::vector<int>  index;     // triangle indices, reordered by the build
-    const std::vector<Triangle>* tris = nullptr;
-
-    static constexpr int kLeafSize = 4;
-    static constexpr int kBins     = 12;
-
-    void build(const std::vector<Triangle>& triangles);
-    bool closest(const Ray& r, float tMax, Hit& hit) const;
-    // Every hit along the ray, as a product of transmittances. Not a boolean:
-    // the scene has glass and cutout foliage in it, and a shadow ray that
-    // stopped at the first triangle would put a solid black shadow under a
-    // windscreen.
-    template <typename AlphaFn>
-    glm::vec3 transmittance(const Ray& r, float tMax, const AlphaFn& alphaAt) const;
-
-private:
-    void growTo(Node& n, const Triangle& t) const {
-        n.lo = glm::min(n.lo, glm::min(t.p0, glm::min(t.p1, t.p2)));
-        n.hi = glm::max(n.hi, glm::max(t.p0, glm::max(t.p1, t.p2)));
-    }
-};
-
-glm::vec3 triCentroid(const Triangle& t) {
-    return (t.p0 + t.p1 + t.p2) * (1.0f / 3.0f);
-}
-
+//
+// One builder for both levels. It knows primitives only as boxes, so the same
+// code splits a mesh's triangles and the top level's instances -- and the two
+// levels cannot drift into two ideas of what a good split is.
 float surfaceArea(const glm::vec3& lo, const glm::vec3& hi) {
     const glm::vec3 e = glm::max(hi - lo, glm::vec3(0.0f));
     return 2.0f * (e.x * e.y + e.y * e.z + e.z * e.x);
 }
 
-void Bvh::build(const std::vector<Triangle>& triangles) {
-    tris = &triangles;
-    nodes.clear();
-    index.clear();
-    if (triangles.empty()) return;
+struct TreeBuilder {
+    // Per primitive, computed ONCE. The old build recomputed a triangle's box
+    // from its three corners every time a bin or a child touched it -- several
+    // times per level, on every level -- and that, not the SAH, was what the
+    // build spent its time on.
+    const std::vector<glm::vec3>& lo;
+    const std::vector<glm::vec3>& hi;
+    const std::vector<glm::vec3>& cen;
+    std::vector<int>&             index;
+    int                           leafSize;
 
-    index.resize(triangles.size());
-    for (std::size_t i = 0; i < triangles.size(); ++i) index[i] = static_cast<int>(i);
+    static constexpr int kBins = 16;
 
-    // Centroids are computed once. Recomputing them inside the binning loop is
-    // the single easiest way to make a BVH build take minutes on a big scene.
-    std::vector<glm::vec3> centroid(triangles.size());
-    for (std::size_t i = 0; i < triangles.size(); ++i)
-        centroid[i] = triCentroid(triangles[i]);
+    void bound(BvhNode& n) const {
+        n.lo = glm::vec3(kInf);
+        n.hi = glm::vec3(-kInf);
+        for (int i = 0; i < n.count; ++i) {
+            const int p = index[n.leftFirst + i];
+            n.lo = glm::min(n.lo, lo[p]);
+            n.hi = glm::max(n.hi, hi[p]);
+        }
+    }
 
-    nodes.reserve(triangles.size() * 2);
-    nodes.push_back({});
-    Node& root = nodes[0];
-    root.lo = glm::vec3(kInf);
-    root.hi = glm::vec3(-kInf);
-    root.leftFirst = 0;
-    root.count     = static_cast<int>(triangles.size());
-    for (const Triangle& t : triangles) growTo(root, t);
-
-    std::vector<int> stack;
-    stack.push_back(0);
-
-    while (!stack.empty()) {
-        const int ni = stack.back();
-        stack.pop_back();
-        if (nodes[ni].count <= kLeafSize) continue;
-
+    // Split node `ni` in two, appending the children to `nodes`. False when it
+    // is better left a leaf. Splitting has to beat leaving the node alone, or a
+    // leaf is the right answer -- this is the termination rule, not the depth.
+    bool split(std::vector<BvhNode>& nodes, int ni) const {
         const int first = nodes[ni].leftFirst;
         const int count = nodes[ni].count;
+        if (count <= leafSize) return false;
 
         // Bin over the centroid bounds, not the node bounds: a handful of huge
         // triangles otherwise stretch the range so far that every centroid
         // lands in bin 0 and no split is ever found.
         glm::vec3 cLo(kInf), cHi(-kInf);
         for (int i = 0; i < count; ++i) {
-            const glm::vec3& c = centroid[index[first + i]];
+            const glm::vec3& c = cen[index[first + i]];
             cLo = glm::min(cLo, c);
             cHi = glm::max(cHi, c);
+        }
+
+        // All three axes binned in ONE pass over the primitives rather than
+        // three: the bins are small and hot, the primitives are not.
+        glm::vec3 binLo[3][kBins], binHi[3][kBins];
+        int       binN[3][kBins];
+        glm::vec3 scale(0.0f);
+        for (int a = 0; a < 3; ++a) {
+            const float ext = cHi[a] - cLo[a];
+            scale[a] = ext > 1e-6f ? static_cast<float>(kBins) / ext : 0.0f;
+            for (int b = 0; b < kBins; ++b) {
+                binLo[a][b] = glm::vec3(kInf);
+                binHi[a][b] = glm::vec3(-kInf);
+                binN[a][b]  = 0;
+            }
+        }
+        for (int i = 0; i < count; ++i) {
+            const int p = index[first + i];
+            for (int a = 0; a < 3; ++a) {
+                if (scale[a] == 0.0f) continue;
+                int b = static_cast<int>((cen[p][a] - cLo[a]) * scale[a]);
+                b = b < 0 ? 0 : (b >= kBins ? kBins - 1 : b);
+                ++binN[a][b];
+                binLo[a][b] = glm::min(binLo[a][b], lo[p]);
+                binHi[a][b] = glm::max(binHi[a][b], hi[p]);
+            }
         }
 
         float bestCost = kInf;
         int   bestAxis = -1;
         float bestSplit = 0.0f;
-
-        for (int axis = 0; axis < 3; ++axis) {
-            const float lo = cLo[axis], hi = cHi[axis];
-            if (hi - lo < 1e-6f) continue;
-            const float scale = static_cast<float>(kBins) / (hi - lo);
-
-            glm::vec3 binLo[kBins], binHi[kBins];
-            int       binN[kBins] = {0};
-            for (int b = 0; b < kBins; ++b) { binLo[b] = glm::vec3(kInf); binHi[b] = glm::vec3(-kInf); }
-
-            for (int i = 0; i < count; ++i) {
-                const int ti = index[first + i];
-                int b = static_cast<int>((centroid[ti][axis] - lo) * scale);
-                b = std::clamp(b, 0, kBins - 1);
-                const Triangle& t = triangles[ti];
-                binN[b]++;
-                binLo[b] = glm::min(binLo[b], glm::min(t.p0, glm::min(t.p1, t.p2)));
-                binHi[b] = glm::max(binHi[b], glm::max(t.p0, glm::max(t.p1, t.p2)));
-            }
-
+        for (int a = 0; a < 3; ++a) {
+            if (scale[a] == 0.0f) continue;
             // Sweep from both ends so each candidate plane knows the cost of
             // both sides in one pass.
             float leftArea[kBins], rightArea[kBins];
@@ -372,69 +368,168 @@ void Bvh::build(const std::vector<Triangle>& triangles) {
             glm::vec3 acLo(kInf), acHi(-kInf);
             int acN = 0;
             for (int b = 0; b < kBins; ++b) {
-                acLo = glm::min(acLo, binLo[b]);
-                acHi = glm::max(acHi, binHi[b]);
-                acN += binN[b];
+                acLo = glm::min(acLo, binLo[a][b]);
+                acHi = glm::max(acHi, binHi[a][b]);
+                acN += binN[a][b];
                 leftN[b]    = acN;
                 leftArea[b] = acN ? surfaceArea(acLo, acHi) : 0.0f;
             }
             acLo = glm::vec3(kInf); acHi = glm::vec3(-kInf); acN = 0;
             for (int b = kBins - 1; b >= 0; --b) {
-                acLo = glm::min(acLo, binLo[b]);
-                acHi = glm::max(acHi, binHi[b]);
-                acN += binN[b];
+                acLo = glm::min(acLo, binLo[a][b]);
+                acHi = glm::max(acHi, binHi[a][b]);
+                acN += binN[a][b];
                 rightN[b]    = acN;
                 rightArea[b] = acN ? surfaceArea(acLo, acHi) : 0.0f;
             }
-
             for (int b = 0; b < kBins - 1; ++b) {
                 if (leftN[b] == 0 || rightN[b + 1] == 0) continue;
                 const float cost = leftArea[b] * static_cast<float>(leftN[b]) +
                                    rightArea[b + 1] * static_cast<float>(rightN[b + 1]);
                 if (cost < bestCost) {
                     bestCost  = cost;
-                    bestAxis  = axis;
-                    bestSplit = lo + (static_cast<float>(b) + 1.0f) / scale;
+                    bestAxis  = a;
+                    bestSplit = cLo[a] + (static_cast<float>(b) + 1.0f) / scale[a];
                 }
             }
         }
 
-        // Splitting has to beat leaving the node alone, or a leaf is the right
-        // answer -- this is the termination rule, not the depth.
         const float leafCost = surfaceArea(nodes[ni].lo, nodes[ni].hi) *
                                static_cast<float>(count);
-        if (bestAxis < 0 || bestCost >= leafCost) continue;
+        if (bestAxis < 0 || bestCost >= leafCost) return false;
 
         const auto mid = std::partition(
             index.begin() + first, index.begin() + first + count,
-            [&](int ti) { return centroid[ti][bestAxis] < bestSplit; });
+            [&](int p) { return cen[p][bestAxis] < bestSplit; });
         const int leftCount = static_cast<int>(mid - (index.begin() + first));
-        if (leftCount == 0 || leftCount == count) continue;
+        if (leftCount == 0 || leftCount == count) return false;
 
         const int leftIdx = static_cast<int>(nodes.size());
-        Node left{}, right{};
-        left.lo = right.lo = glm::vec3(kInf);
-        left.hi = right.hi = glm::vec3(-kInf);
+        BvhNode left{}, right{};
         left.leftFirst  = first;
         left.count      = leftCount;
         right.leftFirst = first + leftCount;
         right.count     = count - leftCount;
-        for (int i = 0; i < leftCount; ++i)      growTo(left,  triangles[index[first + i]]);
-        for (int i = leftCount; i < count; ++i)  growTo(right, triangles[index[first + i]]);
-
+        bound(left);
+        bound(right);
         nodes.push_back(left);
         nodes.push_back(right);
         nodes[ni].leftFirst = leftIdx;
         nodes[ni].count     = 0;
+        return true;
+    }
 
-        stack.push_back(leftIdx);
-        stack.push_back(leftIdx + 1);
+    // Everything under `root`, depth first, into `nodes`.
+    void buildAll(std::vector<BvhNode>& nodes, int root) const {
+        std::vector<int> stack{root};
+        while (!stack.empty()) {
+            const int ni = stack.back();
+            stack.pop_back();
+            if (split(nodes, ni)) {
+                const int l = nodes[ni].leftFirst;
+                stack.push_back(l);
+                stack.push_back(l + 1);
+            }
+        }
+    }
+};
+
+// Primitives below this many are built on one thread. Above it, the top of the
+// tree is split serially until every open node is under it, and those subtrees
+// are then built side by side and spliced in. A meadow is millions of blade
+// triangles, and a single-threaded build of that was most of the wait before
+// the first sample.
+constexpr int kParallelGrain = 1 << 15;
+
+// The tree over a set of boxes. Deterministic whatever the thread count: each
+// subtree is a pure function of its primitive range, and they are spliced in a
+// fixed order, so a render is reproducible to the bit on any machine.
+void buildTree(const std::vector<glm::vec3>& lo, const std::vector<glm::vec3>& hi,
+               const std::vector<glm::vec3>& cen, int leafSize,
+               std::vector<BvhNode>& nodes, std::vector<int>& index) {
+    nodes.clear();
+    index.clear();
+    const int n = static_cast<int>(lo.size());
+    if (n == 0) return;
+    index.resize(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) index[static_cast<std::size_t>(i)] = i;
+
+    TreeBuilder tb{lo, hi, cen, index, std::max(1, leafSize)};
+    nodes.reserve(static_cast<std::size_t>(n) * 2 / static_cast<std::size_t>(tb.leafSize) + 1);
+    BvhNode root{};
+    root.leftFirst = 0;
+    root.count     = n;
+    tb.bound(root);
+    nodes.push_back(root);
+
+    const int hw = static_cast<int>(std::thread::hardware_concurrency());
+    if (n < kParallelGrain * 2 || hw < 2) {
+        tb.buildAll(nodes, 0);
+        return;
+    }
+
+    // The top, serially, parking every node that is small enough to be a job.
+    std::vector<int> deferred;
+    {
+        std::vector<int> stack{0};
+        while (!stack.empty()) {
+            const int ni = stack.back();
+            stack.pop_back();
+            if (nodes[ni].count <= kParallelGrain) {
+                if (nodes[ni].count > tb.leafSize) deferred.push_back(ni);
+                continue;
+            }
+            if (tb.split(nodes, ni)) {
+                const int l = nodes[ni].leftFirst;
+                stack.push_back(l);
+                stack.push_back(l + 1);
+            }
+        }
+    }
+    if (deferred.empty()) return;
+
+    // Each parked node becomes the root of a private tree. The primitive
+    // ranges are disjoint, so the partitions inside them never touch.
+    std::vector<std::vector<BvhNode>> sub(deferred.size());
+    std::atomic<std::size_t> next{0};
+    auto work = [&] {
+        for (;;) {
+            const std::size_t k = next.fetch_add(1);
+            if (k >= deferred.size()) return;
+            sub[k].reserve(static_cast<std::size_t>(nodes[deferred[k]].count) * 2 /
+                           static_cast<std::size_t>(tb.leafSize) + 1);
+            sub[k].push_back(nodes[deferred[k]]);
+            tb.buildAll(sub[k], 0);
+        }
+    };
+    const int threads = std::clamp(hw, 1, std::min<int>(64, static_cast<int>(deferred.size())));
+    std::vector<std::thread> pool;
+    for (int t = 1; t < threads; ++t) pool.emplace_back(work);
+    work();
+    for (std::thread& t : pool) t.join();
+
+    // Splice. A private tree's node j > 0 lands at offset + j - 1; its root
+    // replaces the parked node in place, so the parent's pointer still holds.
+    for (std::size_t k = 0; k < deferred.size(); ++k) {
+        std::vector<BvhNode>& s = sub[k];
+        const int offset = static_cast<int>(nodes.size());
+        auto remap = [offset](BvhNode& nd) {
+            if (nd.count == 0) nd.leftFirst = offset + nd.leftFirst - 1;
+        };
+        for (std::size_t j = 1; j < s.size(); ++j) {
+            BvhNode nd = s[j];
+            remap(nd);
+            nodes.push_back(nd);
+        }
+        BvhNode rootNode = s[0];
+        remap(rootNode);
+        nodes[deferred[k]] = rootNode;
     }
 }
 
 // Slab test. Returns the near distance so the traversal can visit the closer
 // child first and cull the far one against a hit it already has.
-inline bool slab(const Bvh::Node& n, const Ray& r, float tMax, float& tNear) {
+inline bool slab(const BvhNode& n, const Ray& r, float tMax, float& tNear) {
     const glm::vec3 t0 = (n.lo - r.o) * r.invD;
     const glm::vec3 t1 = (n.hi - r.o) * r.invD;
     const glm::vec3 lo = glm::min(t0, t1);
@@ -445,96 +540,331 @@ inline bool slab(const Bvh::Node& n, const Ray& r, float tMax, float& tNear) {
     return a <= b;
 }
 
-bool Bvh::closest(const Ray& r, float tMax, Hit& hit) const {
-    if (nodes.empty()) return false;
-    const std::vector<Triangle>& T = *tris;
+// --- One level: a tree over triangles ---------------------------------------
+struct Blas {
+    std::vector<BvhNode> nodes;
+    std::vector<int>     index;   // leaf slot -> triangle
+    std::vector<TriPos>  pos;     // leaf slot order: what the walk reads
 
-    int   stack[128];
-    float stackT[128];
-    int   sp = 0;
-    int   node = 0;
-    float nodeT = 0.0f;
-    if (!slab(nodes[0], r, tMax, nodeT)) return false;
+    static constexpr int kLeafSize = 4;
+    static constexpr int kStack    = 128;
 
-    hit.t = tMax;
-    for (;;) {
-        const Node& n = nodes[node];
-        if (n.count > 0) {
-            for (int i = 0; i < n.count; ++i) {
-                const int ti = index[n.leftFirst + i];
-                float t, u, v;
-                if (intersectTri(T[ti], r, hit.t, t, u, v)) {
-                    hit.t = t; hit.u = u; hit.v = v; hit.tri = ti;
+    void build(const std::vector<Triangle>& tris) {
+        const std::size_t n = tris.size();
+        std::vector<glm::vec3> lo(n), hi(n), cen(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const Triangle& t = tris[i];
+            // Centroids are computed once. Recomputing them inside the binning
+            // loop is the single easiest way to make a build take minutes.
+            lo[i]  = glm::min(t.p0, glm::min(t.p1, t.p2));
+            hi[i]  = glm::max(t.p0, glm::max(t.p1, t.p2));
+            cen[i] = (t.p0 + t.p1 + t.p2) * (1.0f / 3.0f);
+        }
+        buildTree(lo, hi, cen, kLeafSize, nodes, index);
+        pos.resize(index.size());
+        for (std::size_t s = 0; s < index.size(); ++s)
+            pos[s] = posOf(tris[static_cast<std::size_t>(index[s])]);
+    }
+
+    bool empty() const { return nodes.empty(); }
+
+    // Nearest hit closer than hit.t; on success hit.t/u/v/tri are updated and
+    // the caller stamps whose triangle it was.
+    bool closest(const Ray& r, Hit& hit) const {
+        if (nodes.empty()) return false;
+        int   stack[kStack];
+        float stackT[kStack];
+        int   sp = 0;
+        int   node = 0;
+        float nodeT = 0.0f;
+        if (!slab(nodes[0], r, hit.t, nodeT)) return false;
+
+        int slotHit = -1;
+        for (;;) {
+            const BvhNode& n = nodes[node];
+            if (n.count > 0) {
+                const TriPos* tp = &pos[static_cast<std::size_t>(n.leftFirst)];
+                for (int i = 0; i < n.count; ++i) {
+                    float t, u, v;
+                    if (intersectPos(tp[i], r, hit.t, t, u, v)) {
+                        hit.t = t; hit.u = u; hit.v = v;
+                        slotHit = n.leftFirst + i;
+                    }
                 }
+            } else {
+                const int  l = n.leftFirst, rr = n.leftFirst + 1;
+                float tl, tr;
+                const bool hl = slab(nodes[l],  r, hit.t, tl);
+                const bool hr = slab(nodes[rr], r, hit.t, tr);
+                if (hl && hr) {
+                    // Nearer child first: the far one is then very often already
+                    // behind a confirmed hit and never opened at all.
+                    const int  nearI = tl <= tr ? l : rr;
+                    const int  farI  = tl <= tr ? rr : l;
+                    const float farT = tl <= tr ? tr : tl;
+                    if (sp < kStack) { stack[sp] = farI; stackT[sp] = farT; ++sp; }
+                    node = nearI;
+                    continue;
+                }
+                if (hl) { node = l;  continue; }
+                if (hr) { node = rr; continue; }
             }
-        } else {
-            const int  l = n.leftFirst, rr = n.leftFirst + 1;
-            float tl, tr;
-            const bool hl = slab(nodes[l],  r, hit.t, tl);
-            const bool hr = slab(nodes[rr], r, hit.t, tr);
-            if (hl && hr) {
-                // Nearer child first: the far one is then very often already
-                // behind a confirmed hit and never opened at all.
-                const int  nearI = tl <= tr ? l : rr;
-                const int  farI  = tl <= tr ? rr : l;
-                const float farT = tl <= tr ? tr : tl;
-                if (sp < 128) { stack[sp] = farI; stackT[sp] = farT; ++sp; }
-                node = nearI;
-                continue;
+            // Pop, discarding anything the closest hit has already overtaken.
+            bool popped = false;
+            while (sp > 0) {
+                --sp;
+                if (stackT[sp] > hit.t) continue;
+                node = stack[sp];
+                popped = true;
+                break;
             }
-            if (hl) { node = l;  continue; }
-            if (hr) { node = rr; continue; }
+            if (!popped) break;
         }
-        // Pop, discarding anything the closest hit has already overtaken.
-        do {
-            if (sp == 0) return hit.tri >= 0;
-            --sp;
-            node  = stack[sp];
-            nodeT = stackT[sp];
-        } while (nodeT > hit.t);
+        if (slotHit < 0) return false;
+        hit.tri = index[static_cast<std::size_t>(slotHit)];
+        return true;
     }
-}
 
-template <typename AlphaFn>
-glm::vec3 Bvh::transmittance(const Ray& r, float tMax, const AlphaFn& alphaAt) const {
-    if (nodes.empty()) return glm::vec3(1.0f);
-    const std::vector<Triangle>& T = *tris;
+    // Every hit along the ray, multiplied into `tr`. False once nothing gets
+    // through, so the caller can stop walking the other levels too. Not a
+    // boolean at heart: the scene has glass and cutout foliage in it, and a
+    // shadow ray that stopped at the first triangle would put a solid black
+    // shadow under a windscreen.
+    template <typename AlphaFn>
+    bool transmittance(const Ray& r, float tMax, glm::vec3& tr,
+                       const AlphaFn& alphaAt) const {
+        if (nodes.empty()) return true;
+        int stack[kStack];
+        int sp = 0;
+        int node = 0;
+        float dummy;
+        if (!slab(nodes[0], r, tMax, dummy)) return true;
 
-    glm::vec3 tr(1.0f);
-    int stack[128];
-    int sp = 0;
-    int node = 0;
-    float dummy;
-    if (!slab(nodes[0], r, tMax, dummy)) return tr;
-
-    for (;;) {
-        const Node& n = nodes[node];
-        if (n.count > 0) {
-            for (int i = 0; i < n.count; ++i) {
-                const int ti = index[n.leftFirst + i];
-                float t, u, v;
-                if (!intersectTri(T[ti], r, tMax, t, u, v)) continue;
-                tr *= alphaAt(ti, u, v);
-                // Fully blocked: nothing further along the ray can matter.
-                if (luminance(tr) < 1e-4f) return glm::vec3(0.0f);
+        for (;;) {
+            const BvhNode& n = nodes[node];
+            if (n.count > 0) {
+                const TriPos* tp = &pos[static_cast<std::size_t>(n.leftFirst)];
+                for (int i = 0; i < n.count; ++i) {
+                    float t, u, v;
+                    if (!intersectPos(tp[i], r, tMax, t, u, v)) continue;
+                    tr *= alphaAt(index[static_cast<std::size_t>(n.leftFirst + i)], u, v, t);
+                    // Fully blocked: nothing further along the ray can matter.
+                    if (luminance(tr) < 1e-4f) { tr = glm::vec3(0.0f); return false; }
+                }
+            } else {
+                const int l = n.leftFirst, rr = n.leftFirst + 1;
+                float tl, trr;
+                const bool hl = slab(nodes[l],  r, tMax, tl);
+                const bool hr = slab(nodes[rr], r, tMax, trr);
+                if (hl && hr) {
+                    if (sp < kStack) stack[sp++] = rr;
+                    node = l;
+                    continue;
+                }
+                if (hl) { node = l;  continue; }
+                if (hr) { node = rr; continue; }
             }
-        } else {
-            const int l = n.leftFirst, rr = n.leftFirst + 1;
-            float tl, trr;
-            const bool hl = slab(nodes[l],  r, tMax, tl);
-            const bool hr = slab(nodes[rr], r, tMax, trr);
-            if (hl && hr) {
-                if (sp < 128) stack[sp++] = rr;
-                node = l;
-                continue;
-            }
-            if (hl) { node = l;  continue; }
-            if (hr) { node = rr; continue; }
+            if (sp == 0) return true;
+            node = stack[--sp];
         }
-        if (sp == 0) return tr;
-        node = stack[--sp];
     }
-}
+};
+
+// --- Two levels: the world, and the instances over it ------------------------
+// An instance is a transform and a mesh. A ray meets it by being carried INTO
+// the mesh's space rather than the mesh being carried out to the ray's -- the
+// direction is transformed but not normalised, so the distance along it stays
+// the world distance and a hit in one mesh compares directly with a hit in any
+// other.
+struct InstXf {
+    glm::mat4 toObject{1.0f};
+    glm::mat3 normalToWorld{1.0f};  // inverse transpose of the object->world part
+    int       mesh     = -1;        // -1: unusable (degenerate transform, no mesh)
+    int       material = -1;
+};
+
+struct Accel {
+    Blas                 world;
+    std::vector<Blas>    meshes;
+    std::vector<BvhNode> top;        // over the instances' world boxes
+    std::vector<int>     topIndex;   // leaf slot -> instance
+    std::vector<InstXf>  xf;         // per instance, in Scene::instances order
+
+    static constexpr int kStack = 64;
+
+    void build(const Scene& sc) {
+        world.build(sc.triangles);
+
+        // The meshes side by side: a forest is a handful of species of a
+        // hundred thousand triangles each, and nothing ties one build to the
+        // next. (Each build parallelises itself too when it is big enough.)
+        meshes.assign(sc.meshes.size(), Blas{});
+        {
+            std::atomic<std::size_t> next{0};
+            auto work = [&] {
+                for (;;) {
+                    const std::size_t k = next.fetch_add(1);
+                    if (k >= sc.meshes.size()) return;
+                    meshes[k].build(sc.meshes[k].triangles);
+                }
+            };
+            const int threads = std::clamp(
+                static_cast<int>(std::thread::hardware_concurrency()), 1,
+                std::max(1, static_cast<int>(sc.meshes.size())));
+            std::vector<std::thread> pool;
+            for (int t = 1; t < threads; ++t) pool.emplace_back(work);
+            work();
+            for (std::thread& t : pool) t.join();
+        }
+
+        const std::size_t n = sc.instances.size();
+        xf.assign(n, InstXf{});
+        std::vector<glm::vec3> lo, hi, cen;
+        std::vector<int>       ids;   // box k -> instance
+        lo.reserve(n); hi.reserve(n); cen.reserve(n); ids.reserve(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const Instance& in = sc.instances[i];
+            if (in.mesh < 0 || in.mesh >= static_cast<int>(meshes.size())) continue;
+            const Blas& b = meshes[static_cast<std::size_t>(in.mesh)];
+            if (b.empty()) continue;
+            const glm::mat3 m3(in.transform);
+            // A transform that flattens its mesh to nothing has no inverse, and
+            // the NaNs an inverse would hand out poison every ray near it.
+            if (std::fabs(glm::determinant(m3)) < 1e-12f) continue;
+            InstXf& x = xf[i];
+            x.toObject      = glm::inverse(in.transform);
+            x.normalToWorld = glm::transpose(glm::inverse(m3));
+            x.mesh          = in.mesh;
+            x.material      = in.material;
+
+            // The mesh's box, carried to the world by its eight corners.
+            const BvhNode& r = b.nodes[0];
+            glm::vec3 wl(kInf), wh(-kInf);
+            for (int c = 0; c < 8; ++c) {
+                const glm::vec3 p((c & 1) ? r.hi.x : r.lo.x,
+                                  (c & 2) ? r.hi.y : r.lo.y,
+                                  (c & 4) ? r.hi.z : r.lo.z);
+                const glm::vec3 w = glm::vec3(in.transform * glm::vec4(p, 1.0f));
+                wl = glm::min(wl, w);
+                wh = glm::max(wh, w);
+            }
+            lo.push_back(wl);
+            hi.push_back(wh);
+            cen.push_back((wl + wh) * 0.5f);
+            ids.push_back(static_cast<int>(i));
+        }
+        // One instance per leaf: two trees whose boxes overlap are better told
+        // apart by the tree than by walking both of them.
+        buildTree(lo, hi, cen, 1, top, topIndex);
+        for (int& k : topIndex) k = ids[static_cast<std::size_t>(k)];
+    }
+
+    // A world-space ray, carried into instance `i`'s mesh space.
+    Ray toObject(const Ray& r, int i) const {
+        const InstXf& x = xf[static_cast<std::size_t>(i)];
+        Ray o;
+        o.o = glm::vec3(x.toObject * glm::vec4(r.o, 1.0f));
+        o.d = glm::mat3(x.toObject) * r.d;
+        o.prepare();
+        return o;
+    }
+
+    bool closest(const Ray& r, float tMax, Hit& hit) const {
+        hit = Hit{};
+        hit.t = tMax;
+        if (world.closest(r, hit)) hit.inst = -1;
+        if (top.empty()) return hit.tri >= 0;
+
+        int   stack[kStack];
+        float stackT[kStack];
+        int   sp = 0, node = 0;
+        float nodeT = 0.0f;
+        if (!slab(top[0], r, hit.t, nodeT)) return hit.tri >= 0;
+        for (;;) {
+            const BvhNode& n = top[node];
+            if (n.count > 0) {
+                for (int i = 0; i < n.count; ++i) {
+                    const int inst = topIndex[static_cast<std::size_t>(n.leftFirst + i)];
+                    const Ray lr = toObject(r, inst);
+                    if (meshes[static_cast<std::size_t>(xf[static_cast<std::size_t>(inst)].mesh)]
+                            .closest(lr, hit))
+                        hit.inst = inst;
+                }
+            } else {
+                const int l = n.leftFirst, rr = n.leftFirst + 1;
+                float tl, tr;
+                const bool hl = slab(top[l],  r, hit.t, tl);
+                const bool hr = slab(top[rr], r, hit.t, tr);
+                if (hl && hr) {
+                    const int  nearI = tl <= tr ? l : rr;
+                    const int  farI  = tl <= tr ? rr : l;
+                    const float farT = tl <= tr ? tr : tl;
+                    if (sp < kStack) { stack[sp] = farI; stackT[sp] = farT; ++sp; }
+                    node = nearI;
+                    continue;
+                }
+                if (hl) { node = l;  continue; }
+                if (hr) { node = rr; continue; }
+            }
+            bool popped = false;
+            while (sp > 0) {
+                --sp;
+                if (stackT[sp] > hit.t) continue;
+                node = stack[sp];
+                popped = true;
+                break;
+            }
+            if (!popped) break;
+        }
+        return hit.tri >= 0;
+    }
+
+    // alphaAt(inst, tri, u, v, t): the colour one crossing, t along the ray,
+    // lets through.
+    template <typename AlphaFn>
+    glm::vec3 transmittance(const Ray& r, float tMax, const AlphaFn& alphaAt) const {
+        glm::vec3 tr(1.0f);
+        if (!world.transmittance(r, tMax, tr, [&](int tri, float u, float v, float t) {
+                return alphaAt(-1, tri, u, v, t);
+            }))
+            return glm::vec3(0.0f);
+        if (top.empty()) return tr;
+
+        int stack[kStack];
+        int sp = 0, node = 0;
+        float dummy;
+        if (!slab(top[0], r, tMax, dummy)) return tr;
+        for (;;) {
+            const BvhNode& n = top[node];
+            if (n.count > 0) {
+                for (int i = 0; i < n.count; ++i) {
+                    const int inst = topIndex[static_cast<std::size_t>(n.leftFirst + i)];
+                    const Ray lr = toObject(r, inst);
+                    const Blas& b =
+                        meshes[static_cast<std::size_t>(xf[static_cast<std::size_t>(inst)].mesh)];
+                    if (!b.transmittance(lr, tMax, tr, [&](int tri, float u, float v, float t) {
+                            return alphaAt(inst, tri, u, v, t);
+                        }))
+                        return glm::vec3(0.0f);
+                }
+            } else {
+                const int l = n.leftFirst, rr = n.leftFirst + 1;
+                float tl, trr;
+                const bool hl = slab(top[l],  r, tMax, tl);
+                const bool hr = slab(top[rr], r, tMax, trr);
+                if (hl && hr) {
+                    if (sp < kStack) stack[sp++] = rr;
+                    node = l;
+                    continue;
+                }
+                if (hl) { node = l;  continue; }
+                if (hr) { node = rr; continue; }
+            }
+            if (sp == 0) return tr;
+            node = stack[--sp];
+        }
+    }
+};
 
 // Holds one tile while its sums and its sample count are brought into step.
 // A spin lock rather than a mutex: the critical section is a thousand adds, and
@@ -718,12 +1048,31 @@ float misWeight(float a, float b) {
     return a2 / std::max(a2 + b2, 1e-9f);
 }
 
+// What a ray hit, resolved into the world: the triangle it was, the material
+// it is drawn with, and its normals carried out of the instance's space. Every
+// consumer of a hit goes through this, so no part of the integrator has to know
+// whether the surface was drawn once or ten thousand times.
+struct HitInfo {
+    const Triangle* tri = nullptr;
+    int       material = 0;
+    glm::vec3 N{0.0f, 1.0f, 0.0f};   // interpolated shading normal, world
+    glm::vec3 faceN{0.0f, 1.0f, 0.0f}; // geometric normal (winding), world, unnormalised
+    glm::vec2 uv{0.0f};
+};
+
 struct Tracer {
     const Scene&      sc;
-    const Bvh&        bvh;
+    const Accel&      bvh;
     const EnvSampler& envDist;
     int               maxBounces;
     float             clampIndirect;
+    // Whether a ray that came straight from the camera, or off a delta lobe,
+    // sees the captured backdrop (Environment::backdrop) rather than the
+    // lighting environment. On for a picture; off for the light-probe bake,
+    // whose rays are not an eye's and must only ever see the light.
+    bool              useBackdrop = true;
+    // What a lit water body glows with per unit of its colour (mediumLight()).
+    glm::vec3         mediumGlow{0.0f};
 
     // The sun as a disc rather than a direction. Both estimators need it: the
     // light sampler needs its solid angle, and a ray that escapes needs to be
@@ -739,7 +1088,7 @@ struct Tracer {
     // across the sky, so the sun is the one light it must not include.
     bool      sunOn = true;
 
-    Tracer(const Scene& scene, const Bvh& accel, const EnvSampler& env,
+    Tracer(const Scene& scene, const Accel& accel, const EnvSampler& env,
            int bounces, float clamp)
         : sc(scene), bvh(accel), envDist(env), maxBounces(bounces),
           clampIndirect(clamp) {
@@ -754,6 +1103,18 @@ struct Tracer {
             // brightness as the viewport whatever angle the disc is given.
             sunRadiance = sc.sun.color / solid;
         }
+        mediumGlow = mediumLight(sc);
+    }
+
+    // What `dist` metres of a water body do to a path inside it: the light
+    // behind is attenuated, and the water's own lit colour fills in what was
+    // lost. Nothing at all outside a medium.
+    void throughMedium(const glm::vec3& sigma, const glm::vec3& glow, float dist,
+                       glm::vec3& beta, glm::vec3& L, int bounce) const {
+        if (sigma.x <= 0.0f && sigma.y <= 0.0f && sigma.z <= 0.0f) return;
+        const glm::vec3 T = dist < kInf ? glm::exp(-sigma * dist) : glm::vec3(0.0f);
+        L    += clamped(beta * glow * (glm::vec3(1.0f) - T), bounce);
+        beta *= T;
     }
 
     // Ceiling on one indirect sample. See Settings::clampIndirect for why this
@@ -794,39 +1155,97 @@ struct Tracer {
         return texA * m.opacity;
     }
 
-    glm::vec2 uvAt(int tri, float u, float v) const {
-        const Triangle& t = sc.triangles[tri];
+    const Triangle& triOf(int inst, int tri) const {
+        if (inst < 0) return sc.triangles[static_cast<std::size_t>(tri)];
+        const Instance& in = sc.instances[static_cast<std::size_t>(inst)];
+        return sc.meshes[static_cast<std::size_t>(in.mesh)]
+                   .triangles[static_cast<std::size_t>(tri)];
+    }
+
+    int materialOf(int inst, const Triangle& t) const {
+        int m = t.material;
+        if (inst >= 0) {
+            const int o = sc.instances[static_cast<std::size_t>(inst)].material;
+            if (o >= 0) m = o;
+        }
+        return (m >= 0 && m < static_cast<int>(sc.materials.size())) ? m : 0;
+    }
+
+    static glm::vec2 uvOf(const Triangle& t, float u, float v) {
         const float w = 1.0f - u - v;
         return t.uv0 * w + t.uv1 * u + t.uv2 * v;
     }
 
+    // Everything about a hit that is not the light: which triangle, which
+    // material, and its normals in WORLD space. An instanced triangle's normals
+    // are carried out through the inverse transpose, so a tree scaled to twice
+    // its height is still lit as the tree and not as a sheared one.
+    HitInfo resolve(const Hit& h) const {
+        HitInfo r;
+        const Triangle& t = triOf(h.inst, h.tri);
+        r.tri      = &t;
+        r.material = materialOf(h.inst, t);
+        r.uv       = uvOf(t, h.u, h.v);
+        const float w = 1.0f - h.u - h.v;
+        glm::vec3 N  = t.n0 * w + t.n1 * h.u + t.n2 * h.v;
+        glm::vec3 fN = glm::cross(t.p1 - t.p0, t.p2 - t.p0);
+        if (h.inst >= 0) {
+            const glm::mat3& nm = bvh.xf[static_cast<std::size_t>(h.inst)].normalToWorld;
+            N  = nm * N;
+            fN = nm * fN;
+        }
+        r.faceN = fN;
+        // A triangle with no area AND no usable vertex normal has no side to
+        // shade; up is as good an answer as any and, unlike normalize(0), is a
+        // number -- a NaN here would be every direction the path takes next.
+        if (glm::dot(N, N) >= 1e-12f)       r.N = glm::normalize(N);
+        else if (glm::dot(fN, fN) >= 1e-24f) r.N = glm::normalize(fN);
+        else                                r.N = glm::vec3(0.0f, 1.0f, 0.0f);
+        return r;
+    }
+
     // The terrain paint at a hit. Zero when the scene carries none, which is
     // the same answer an unpainted terrain gives -- so nothing downstream has
-    // to know whether the side table exists.
-    glm::vec4 paintAt(int tri, float u, float v) const {
-        if (sc.vertexPaint.empty()) return glm::vec4(0.0f);
-        const std::size_t o = static_cast<std::size_t>(tri) * 3;
+    // to know whether the side table exists. Instanced geometry is never
+    // painted terrain.
+    glm::vec4 paintAt(const Hit& h) const {
+        if (h.inst >= 0 || sc.vertexPaint.empty()) return glm::vec4(0.0f);
+        const std::size_t o = static_cast<std::size_t>(h.tri) * 3;
         if (o + 2 >= sc.vertexPaint.size()) return glm::vec4(0.0f);
-        const float w = 1.0f - u - v;
-        return sc.vertexPaint[o] * w + sc.vertexPaint[o + 1] * u +
-               sc.vertexPaint[o + 2] * v;
+        const float w = 1.0f - h.u - h.v;
+        return sc.vertexPaint[o] * w + sc.vertexPaint[o + 1] * h.u +
+               sc.vertexPaint[o + 2] * h.v;
+    }
+
+    // A surface's own colour at a UV, sRGB, before any light: the map times its
+    // tint where there is one, the flat albedo where there is not.
+    glm::vec3 baseAt(const Material& m, const glm::vec2& uv) const {
+        if (m.texture >= 0 && m.texture < static_cast<int>(sc.textures.size()))
+            return glm::vec3(sc.textures[static_cast<std::size_t>(m.texture)]
+                                 .sample(uv.x, uv.y)) * m.tint;
+        return m.albedo;
     }
 
     // How much light survives one crossing of this triangle, as a colour. Glass
     // tints what passes through it, which is what stops a green-tinted
     // windscreen from casting a grey shadow.
-    glm::vec3 shadowFactor(int tri, float u, float v) const {
-        const Material& m = sc.materials[sc.triangles[tri].material];
-        const float a = coverageAt(m, uvAt(tri, u, v));
+    glm::vec3 shadowFactor(int inst, int tri, float u, float v) const {
+        const Triangle& t = triOf(inst, tri);
+        const Material& m = sc.materials[static_cast<std::size_t>(materialOf(inst, t))];
+        // A glow blocks nothing: light goes straight through a spark.
+        if (m.additive) return glm::vec3(1.0f);
+        const glm::vec2 uv = uvOf(t, u, v);
+        const float a = coverageAt(m, uv);
         if (m.translucency > 0.0f && !m.glass) {
             // A leaf between a point and the sun does not black it out; it
             // dims and tints what gets past, and a canopy is mostly this. The
-            // tint is the leaf's own colour, linearised as everywhere else --
-            // which is why light under grass is green rather than merely less.
-            const glm::vec3 tint = glm::pow(glm::max(m.albedo, glm::vec3(0.0f)),
+            // tint is the leaf's own colour -- its map where it has one, which
+            // is every tree leaf -- linearised as everywhere else, which is why
+            // light under grass is green rather than merely less.
+            const glm::vec3 tint = glm::pow(glm::max(baseAt(m, uv), glm::vec3(0.0f)),
                                             glm::vec3(2.2f));
-            const float t = glm::clamp(m.translucency, 0.0f, 1.0f);
-            return glm::mix(glm::vec3(1.0f - a), tint, t);
+            const float tl = glm::clamp(m.translucency, 0.0f, 1.0f);
+            return glm::mix(glm::vec3(1.0f - a), tint * a + glm::vec3(1.0f - a), tl);
         }
         if (a >= 0.999f && !m.glass) return glm::vec3(0.0f);
         if (m.glass) {
@@ -845,6 +1264,43 @@ struct Tracer {
     bool terrainColorAt(const Material& m, const glm::vec3& wp, const glm::vec3& n,
                         const glm::vec4& paint, glm::vec3& out) const {
         if (m.layers.empty()) return false;
+        const GroundLook& g = sc.ground;
+        // The woods: this point's share of a stand (ecology.glsl's .y).
+        const float woods = g.woodsOn() ? woodsAt(g, glm::vec2(wp.x, wp.z), n.y) : 0.0f;
+        glm::vec3 col;
+        if (!layeredColour(m, wp, n, paint, woods, col)) return false;
+        const float dist = glm::distance(wp, sc.camera.position);
+        // Past the traced forest the floor goes the canopy's colour -- the
+        // shader's stand-in for crowns it no longer draws.
+        if (woods > 0.0f && g.canopyFrom < 1e29f) {
+            const float t = woods * glm::smoothstep(g.canopyFrom, g.canopyTo, dist);
+            col = glm::mix(col, glm::pow(g.canopy * 0.55f, glm::vec3(1.0f / 2.2f)), 0.7f * t);
+        }
+        // Past the traced blades, the field's colour.
+        if (g.meadowOn()) {
+            const float t = glm::smoothstep(g.meadowNear, g.meadowFar, dist) * g.meadowAmount;
+            if (t > 0.0f) {
+                const float lush = g.lushAt(wp.x, wp.z);
+                const float thin = lush < 0.22f ? g.grassDry * glm::mix(0.35f, 0.75f, lush / 0.22f)
+                                                : 1.0f;
+                const float cover = t * meadowCover(glm::vec2(wp.x, wp.z), wp.y, n.y,
+                                                    g.waterLevel, g.grassTop) *
+                                    (1.0f - 0.9f * woods) * glm::clamp(thin * 1.4f, 0.0f, 1.0f);
+                const glm::vec3 mc = glm::pow(
+                    glm::pow(meadowColour(glm::vec2(wp.x, wp.z), lush), glm::vec3(2.2f)) *
+                        g.grassTint, glm::vec3(1.0f / 2.2f));
+                col = glm::mix(col, mc, cover);
+            }
+        }
+        out = col;
+        return true;
+    }
+
+    // The layers alone: height and slope bands, the forest floor in the woods,
+    // and the hand-painted weights over both.
+    bool layeredColour(const Material& m, const glm::vec3& wp, const glm::vec3& n,
+                       const glm::vec4& paint, float woods, glm::vec3& out) const {
+        const int forestLayer = sc.ground.forestLayer;
 
         // The height-edge jitter. The shader fades this noise out where a pixel
         // covers more than about one period of it, because it has one sample
@@ -871,8 +1327,13 @@ struct Tracer {
         const std::size_t count = std::min(m.layers.size(), kMax);
         for (std::size_t i = 0; i < count; ++i) {
             const TerrainLayer& L = m.layers[i];
-            const float autoW = band(h, L.band.x, L.band.y, 1.5f) *
-                                band(slopeDeg, L.band.z, L.band.w, 6.0f);
+            float autoW = band(h, L.band.x, L.band.y, 1.5f) *
+                          band(slopeDeg, L.band.z, L.band.w, 6.0f);
+            // In the woods the forest floor layer wins over whatever the
+            // height and slope bands would have laid there.
+            if (forestLayer >= 0 && woods > 0.0f)
+                autoW = static_cast<int>(i) == forestLayer ? std::max(autoW, woods * 1.3f)
+                                                           : autoW * (1.0f - 0.85f * woods);
             const float pw = i < 4 ? p[static_cast<int>(i)] : 0.0f;
             const float w  = autoW * (1.0f - cover) + pw;
             if (w <= 0.0f) continue;
@@ -941,6 +1402,13 @@ struct Tracer {
         s.alpha     = r * r;
         s.emission  = glm::pow(glm::max(m.emission, glm::vec3(0.0f)),
                                glm::vec3(2.2f)) * m.emissionStrength;
+        if (m.farGround) {
+            // Already linear: farterrain.frag works in linear throughout.
+            base = farGroundAlbedo(sc.ground, wp, n, uv.x);
+            s.baseColor = base;
+            s.diffuse   = base;
+            s.F0        = glm::vec3(0.04f);
+        }
         s.coverage  = coverageAt(m, uv);
         s.glass     = m.glass;
         s.translucency = glm::clamp(m.translucency, 0.0f, 1.0f);
@@ -1005,10 +1473,42 @@ struct Tracer {
     // comes from here: the sun is sampled across its disc and a lamp across its
     // bulb, so a shadow gains a penumbra that widens with distance the way a
     // real one does.
+    // `sigma` is the medium the point sits in (zero outside one): a lake bed's
+    // shadow ray is attenuated by the water column up to the surface it leaves
+    // through, the nearest glass crossing along it.
     glm::vec3 directLight(const glm::vec3& P, const glm::vec3& N, const glm::vec3& V,
-                          const Surface& s, float pSpec, Rng& rng) const {
+                          const Surface& s, float pSpec, Rng& rng,
+                          const glm::vec3& sigma = glm::vec3(0.0f)) const {
         glm::vec3 L(0.0f);
-        const auto alphaFn = [&](int tri, float u, float v) { return shadowFactor(tri, u, v); };
+        const bool inMedium = sigma.x > 0.0f || sigma.y > 0.0f || sigma.z > 0.0f;
+        float exitT = kInf;
+        const auto alphaFn = [&](int inst, int tri, float u, float v, float t) {
+            if (inMedium && t < exitT) {
+                const Triangle& tt = triOf(inst, tri);
+                if (sc.materials[static_cast<std::size_t>(materialOf(inst, tt))].glass)
+                    exitT = t;
+            }
+            return shadowFactor(inst, tri, u, v);
+        };
+        // The column of water between the point and where its shadow ray
+        // leaves it. A ray that never leaves (the medium is all there is in
+        // that direction) is swallowed.
+        const auto column = [&](float tMax) {
+            if (!inMedium) return glm::vec3(1.0f);
+            const float d = std::min(exitT, tMax);
+            return d < kInf ? glm::exp(-sigma * d) : glm::vec3(0.0f);
+        };
+        // One shadow ray: the walk, and THEN the water column it measured. Two
+        // statements on purpose -- written as one product, the order the two
+        // operands are evaluated in is the compiler's choice, and MSVC chose to
+        // measure the column before the walk had found the surface: every lake
+        // bed in the picture lost its sun.
+        const auto shadowRay = [&](const Ray& sr, float tMax) {
+            exitT = kInf;
+            glm::vec3 tr = bvh.transmittance(sr, tMax, alphaFn);
+            tr *= column(tMax);
+            return tr;
+        };
 
         if (sunOn && luminance(sc.sun.color) > 1e-5f) {
             const glm::vec3 dir = sunPdf > 0.0f ? sampleCone(sunAxis, sunCosMax, rng)
@@ -1024,7 +1524,11 @@ struct Tracer {
                 sr.o = P + (behind ? -N : N) * kRayEps;
                 sr.d = dir;
                 sr.prepare();
-                const glm::vec3 tr = bvh.transmittance(sr, kInf, alphaFn);
+                // The clouds first: a point in their shadow needs no shadow
+                // ray to know it is dark.
+                const float clouds = sc.sunMask.valid() ? sc.sunMask.at(P) : 1.0f;
+                const glm::vec3 tr = clouds > 1e-4f ? shadowRay(sr, kInf) * clouds
+                                                    : glm::vec3(0.0f);
                 if (luminance(tr) > 1e-4f) {
                     // sun.color is already radiance divided by this sampler's
                     // own pdf, which is why it appears here unscaled.
@@ -1058,7 +1562,7 @@ struct Tracer {
                 sr.o = P + (envBehind ? -N : N) * kRayEps;
                 sr.d = dir;
                 sr.prepare();
-                const glm::vec3 tr = bvh.transmittance(sr, kInf, alphaFn);
+                const glm::vec3 tr = shadowRay(sr, kInf);
                 if (luminance(tr) > 1e-4f) {
                     const glm::vec3 Le = sc.env.sample(dir) * sc.env.intensity;
                     const float wgt = misWeight(pdfE, pdfBsdf(s, N, V, dir, pSpec));
@@ -1133,7 +1637,7 @@ struct Tracer {
             sr.o = P + N * kRayEps;
             sr.d = sd;
             sr.prepare();
-            const glm::vec3 tr = bvh.transmittance(sr, sdist - kRayEps, alphaFn);
+            const glm::vec3 tr = shadowRay(sr, sdist - kRayEps);
             if (luminance(tr) < 1e-4f) continue;
             L += lamp.color * att * tr * evalBsdf(wide, N, V, d, specScale) * NoL;
         }
@@ -1161,47 +1665,52 @@ struct Tracer {
     // The diagnostic modes. One camera ray, no lighting, no tonemap: whatever
     // comes back is the raw value of one stage of the pipeline, shown as colour.
     glm::vec3 probe(Ray ray, Show mode) const {
-        ray.prepare();
+        // Through what the eye would see through -- a leaf card's holes, a glow
+        // -- or every cut-out tree reads as a stack of white quads.
+        const glm::vec3 eye0 = ray.o;
         Hit hit;
-        if (!bvh.closest(ray, kInf, hit)) return glm::vec3(0.0f);
-
-        const Triangle& tri = sc.triangles[hit.tri];
-        const Material& mat = sc.materials[tri.material];
-        const float w = 1.0f - hit.u - hit.v;
-        const glm::vec2 uv = tri.uv0 * w + tri.uv1 * hit.u + tri.uv2 * hit.v;
+        HitInfo hi;
+        const Material* found = nullptr;
+        for (int pass = 0; pass < 64; ++pass) {
+            ray.prepare();
+            if (!bvh.closest(ray, kInf, hit)) return glm::vec3(0.0f);
+            hi = resolve(hit);
+            const Material& m = sc.materials[static_cast<std::size_t>(hi.material)];
+            const bool hole = m.additive ||
+                              (m.alphaMode == 1 && texAlphaAt(m, hi.uv) < m.alphaCutoff);
+            if (!hole) { found = &m; break; }
+            ray.o = ray.o + ray.d * (hit.t + kRayEps);
+        }
+        if (!found) return glm::vec3(0.0f);
+        const Material& mat = *found;
 
         if (mode == Show::BaseColor) {
             // As AUTHORED, before the sRGB->linear step, so the image is
             // literally the colour the texture holds and the inspector shows.
             // Linearising here would make every diagnostic look too dark and
             // start a second hunt.
-            glm::vec3 N = tri.n0 * w + tri.n1 * hit.u + tri.n2 * hit.v;
-            N = glm::dot(N, N) < 1e-12f
-              ? glm::normalize(glm::cross(tri.p1 - tri.p0, tri.p2 - tri.p0))
-              : glm::normalize(N);
             glm::vec3 terrain;
-            if (terrainColorAt(mat, ray.o + ray.d * hit.t, N,
-                               paintAt(hit.tri, hit.u, hit.v), terrain))
+            if (terrainColorAt(mat, ray.o + ray.d * hit.t, hi.N, paintAt(hit), terrain))
                 return terrain;
-            if (mat.texture >= 0 && mat.texture < static_cast<int>(sc.textures.size()))
-                return glm::vec3(sc.textures[mat.texture].sample(uv.x, uv.y)) * mat.tint;
-            return mat.albedo;
+            if (mat.farGround)   // worked out in linear; shown as authored colours are
+                return glm::pow(farGroundAlbedo(sc.ground, ray.o + ray.d * hit.t, hi.N, hi.uv.x),
+                                glm::vec3(1.0f / 2.2f));
+            return baseAt(mat, hi.uv);
         }
-        if (mode == Show::Normal) {
-            glm::vec3 N = tri.n0 * w + tri.n1 * hit.u + tri.n2 * hit.v;
-            N = glm::dot(N, N) < 1e-12f
-              ? glm::normalize(glm::cross(tri.p1 - tri.p0, tri.p2 - tri.p0))
-              : glm::normalize(N);
-            return N * 0.5f + 0.5f;
-        }
+        if (mode == Show::Normal) return hi.N * 0.5f + 0.5f;
         // Depth, on a soft ramp so both a wing mirror and a distant hill land
         // somewhere readable rather than at the ends.
-        const float d = hit.t / (hit.t + 20.0f);
+        const float t = glm::distance(eye0, ray.o + ray.d * hit.t);
+        const float d = t / (t + 20.0f);
         return glm::vec3(d);
     }
 
     glm::vec3 radiance(Ray ray, Rng& rng) const {
         glm::vec3 L(0.0f), beta(1.0f);
+        // Whether the first surface is the far terrain's ground, which takes
+        // the air's colour with distance as farterrain.frag's applyAir gives it.
+        bool primaryFar = false;
+        glm::vec3 primaryPos(0.0f);
         // Distance to the first SURFACE. It stays negative when the camera ray
         // reaches the sky, because the sky must not be fogged: lit.frag hazes a
         // fragment by its own depth, and the sky is drawn by a different shader
@@ -1223,11 +1732,24 @@ struct Tracer {
         float lastPdf   = 0.0f;
         bool  lastDelta = true;
 
+        // The water body the path is inside, if any: its extinction and the
+        // lit colour it fills in with. Set when a ray refracts INTO a glass
+        // surface that has a body, cleared when it refracts back out.
+        glm::vec3 sigma(0.0f), glow(0.0f);
+
         for (int bounce = 0; bounce <= maxBounces; ++bounce) {
             ray.prepare();
             Hit hit;
-            if (!bvh.closest(ray, kInf, hit)) {
-                glm::vec3 sky = sc.env.sample(ray.d) * sc.env.intensity;
+            const bool found = bvh.closest(ray, kInf, hit);
+            throughMedium(sigma, glow, found ? hit.t : kInf, beta, L, bounce);
+            if (!found) {
+                // Straight from the camera, or off a mirror or through glass,
+                // a ray sees what the viewport shows there: the captured sky
+                // where there is one (see Environment::backdrop). Everything
+                // that scattered sees the light the scene is lit by.
+                glm::vec3 sky = lastDelta && useBackdrop
+                              ? sc.env.sampleSeen(ray.d)
+                              : sc.env.sample(ray.d) * sc.env.intensity;
                 // The sky is now also aimed at by the light sampler, so a ray
                 // that arrives here by scattering only claims its share --
                 // except off a delta lobe or straight from the camera, where
@@ -1245,27 +1767,34 @@ struct Tracer {
                 L += clamped(beta * sky, bounce);
                 break;
             }
-            if (primaryDist < 0.0f) primaryDist = hit.t;
-
-            const Triangle& tri = sc.triangles[hit.tri];
-            const Material& mat = sc.materials[tri.material];
-            const float w = 1.0f - hit.u - hit.v;
+            const HitInfo hi = resolve(hit);
+            const Material& mat = sc.materials[static_cast<std::size_t>(hi.material)];
             const glm::vec3 P = ray.o + ray.d * hit.t;
-            const glm::vec2 uv = tri.uv0 * w + tri.uv1 * hit.u + tri.uv2 * hit.v;
 
-            glm::vec3 N = tri.n0 * w + tri.n1 * hit.u + tri.n2 * hit.v;
-            if (glm::dot(N, N) < 1e-12f)
-                N = glm::normalize(glm::cross(tri.p1 - tri.p0, tri.p2 - tri.p0));
-            else
-                N = glm::normalize(N);
+            glm::vec3 N = hi.N;
             const glm::vec3 gN = N;
             if (glm::dot(N, -ray.d) < 0.0f) N = -N; // shade the side we can see
 
             float texA = 1.0f;
             // gN, not N: the slope a layer band tests is the ground's, not the
             // one turned to face the eye.
-            const Surface s = surfaceAt(mat, uv, P, gN,
-                                        paintAt(hit.tri, hit.u, hit.v), texA);
+            const Surface s = surfaceAt(mat, hi.uv, P, gN, paintAt(hit), texA);
+
+            // A glow: its light is added and the ray carries on through it, as
+            // the additive blend the viewport draws it with does. Not a bounce.
+            //
+            // SEEN, never lit by -- only a ray straight from the eye (or off a
+            // mirror, through glass) collects it, like the backdrop. The
+            // viewport's sparks light nothing around them, and a cloud of tiny
+            // bright emitters found by chance from every diffuse bounce is the
+            // purest firefly generator a scene can contain.
+            if (mat.additive) {
+                if (lastDelta) L += clamped(beta * s.emission * s.coverage, bounce);
+                if (++passthrough > 64) break;
+                ray.o = P + ray.d * kRayEps;
+                --bounce;
+                continue;
+            }
 
             // Cutout and blended surfaces: decide whether this ray sees the
             // surface at all before doing any shading work.
@@ -1277,10 +1806,18 @@ struct Tracer {
                                     s.coverage < 0.999f &&
                                     rng.uniform() > s.coverage;
             if (cutoutMiss || blendMiss) {
-                if (++passthrough > 32) break;
+                if (++passthrough > 64) break;
                 ray.o = P + ray.d * kRayEps;
                 --bounce; // a pane is not a bounce
                 continue;
+            }
+            // Measured from the eye, not from wherever the ray was last
+            // restarted: a leaf hole or a spark in front of a surface must not
+            // make that surface read as nearer, and so less fogged, than it is.
+            if (primaryDist < 0.0f) {
+                primaryDist = glm::distance(eye, P);
+                primaryFar  = mat.farGround;
+                primaryPos  = P;
             }
 
             L += clamped(beta * s.emission, bounce);
@@ -1308,9 +1845,21 @@ struct Tracer {
                 if (rng.uniform() < F) {
                     ray.d = glm::reflect(ray.d, N);
                 } else {
-                    ray.d = glm::refract(ray.d, N, ior);
-                    if (glm::dot(ray.d, ray.d) < 1e-8f) ray.d = glm::reflect(ray.d, N);
-                    beta *= s.baseColor; // the tint the pane carries
+                    const glm::vec3 refr = glm::refract(ray.d, N, ior);
+                    if (glm::dot(refr, refr) < 1e-8f) {
+                        ray.d = glm::reflect(ray.d, N);
+                    } else {
+                        ray.d = refr;
+                        beta *= s.baseColor; // the tint the pane carries
+                        // Through the surface: into its body, or back out.
+                        if (entering) {
+                            sigma = glm::max(mat.absorption, glm::vec3(0.0f));
+                            glow  = glm::pow(glm::max(mat.mediumColor, glm::vec3(0.0f)),
+                                             glm::vec3(2.2f)) * mediumGlow;
+                        } else {
+                            sigma = glow = glm::vec3(0.0f);
+                        }
+                    }
                 }
                 ray.o = P + ray.d * kRayEps;
                 lastDelta = true;
@@ -1321,7 +1870,7 @@ struct Tracer {
             // estimation has to weigh itself against the SAME densities the
             // scatter below will use, or the two strategies do not add up to one.
             const float pSpec = specProbability(s);
-            L += clamped(beta * directLight(P, N, V, s, pSpec, rng), bounce);
+            L += clamped(beta * directLight(P, N, V, s, pSpec, rng, sigma), bounce);
 
             if (bounce == maxBounces) break;
 
@@ -1375,8 +1924,31 @@ struct Tracer {
         if (!(L.x == L.x) || !(L.y == L.y) || !(L.z == L.z)) return glm::vec3(0.0f);
         L = glm::min(L, glm::vec3(50000.0f));
         if (primaryDist > 0.0f) L = applyFog(L, eye, eyeDir, primaryDist);
+        if (primaryFar) L = applyAir(L, eye, primaryPos);
         if (!(L.x == L.x) || !(L.y == L.y) || !(L.z == L.z)) return glm::vec3(0.0f);
         return L;
+    }
+
+    // farterrain.frag's applyAir: the far ground fades towards the colour of the
+    // air in front of it, by an exponential atmosphere 1.6 km deep with 17 km to
+    // 1/e at sea level. The air's colour is the sky's own gradient just above
+    // that bearing (skyGradient, as the far terrain's skyAir), plus the sun's
+    // forward scatter.
+    glm::vec3 applyAir(const glm::vec3& color, const glm::vec3& eye, const glm::vec3& p) const {
+        const glm::vec3 to = p - eye;
+        const float dist = glm::length(to);
+        if (dist < 1e-3f) return color;
+        const glm::vec3 rd = to / dist;
+        constexpr float Hs = 1600.0f, Lair = 17000.0f;
+        const float y0 = std::max(eye.y, 0.0f), y1 = std::max(p.y, 0.0f);
+        const float avgD = std::fabs(y1 - y0) > 1.0f
+                         ? Hs * (std::exp(-y0 / Hs) - std::exp(-y1 / Hs)) / (y1 - y0)
+                         : std::exp(-y0 / Hs);
+        const float a = 1.0f - std::exp(-dist / Lair * avgD);
+        glm::vec3 air = skyGradient(glm::normalize(glm::vec3(rd.x, std::max(rd.y, 0.015f), rd.z)),
+                                    sc.sun.direction);
+        air += sc.ground.airSun * std::pow(std::max(glm::dot(rd, sunAxis), 0.0f), 8.0f) * 0.18f;
+        return glm::mix(color, air, a);
     }
 };
 
@@ -1397,7 +1969,10 @@ glm::vec4 Image::sample(float u, float v) const {
     const float fx = x - static_cast<float>(x0);
     const float fy = y - static_cast<float>(y0);
 
-    auto wrap = [](int a, int n) { const int m = a % n; return m < 0 ? m + n : m; };
+    auto wrap = [](int a, int n) {
+        const int m = a % n;
+        return std::clamp(m < 0 ? m + n : m, 0, n - 1);
+    };
     const int xs[2] = {wrap(x0, width),  wrap(x0 + 1, width)};
     const int ys[2] = {wrap(y0, height), wrap(y0 + 1, height)};
 
@@ -1413,54 +1988,75 @@ glm::vec4 Image::sample(float u, float v) const {
     return c * (1.0f / 255.0f);
 }
 
+namespace {
+
+// One equirectangular panorama, looked up. Shared by the lighting map and the
+// backdrop so the two can never disagree about which way is up.
+glm::vec3 samplePanorama(const std::vector<float>& pixels, int width, int height,
+                         const glm::vec3& dir) {
+    if (!std::isfinite(dir.x) || !std::isfinite(dir.y) || !std::isfinite(dir.z))
+        return glm::vec3(0.0f);
+    // Exactly EnvironmentIBL's sampleSpherical(): atan2(z, x) across,
+    // asin(y) down, both scaled and biased by a half.
+    //
+    // asin and not acos, and this is not a nicety. The loader hands the
+    // panorama over BOTTOM-UP (it flips .hdr on load and flips .exr by
+    // hand), so row 0 is the ground and the last row is the zenith, which
+    // is what the GL mapping's v = asin(y)/pi + 0.5 expects. acos gives
+    // exactly the mirror of that -- a sky rendered with the ground's colours
+    // above the horizon and the sky's below it.
+    const float u = std::atan2(dir.z, dir.x) / (2.0f * kPi) + 0.5f;
+    const float v = std::asin(glm::clamp(dir.y, -1.0f, 1.0f)) / kPi + 0.5f;
+
+    // Bilinear, and not a refinement: a 4K panorama shown as the background
+    // of a 1080p still is being minified about four to one, and picking one
+    // texel out of every sixteen turns a corrugated roof or a row of railings
+    // into moire. It reads as the map having the wrong colours -- which is
+    // exactly how it was described -- because a stripe pattern sampled off
+    // its own frequency comes back as a flat wrong shade rather than as
+    // something recognisably aliased.
+    //
+    // Wrapped across, clamped down: a panorama joins itself at the seam
+    // behind the camera, and does not join itself at the poles.
+    const float fx = u * static_cast<float>(width)  - 0.5f;
+    const float fy = v * static_cast<float>(height) - 0.5f;
+    const int x0 = static_cast<int>(std::floor(fx));
+    const int y0 = static_cast<int>(std::floor(fy));
+    const float tx = fx - static_cast<float>(x0);
+    const float ty = fy - static_cast<float>(y0);
+
+    // Clamped after the wrap: a non-finite direction arrives here as INT_MIN,
+    // and the remainder of that is not something to index with.
+    auto wrapX = [width](int a) {
+        const int m = a % width;
+        return std::clamp(m < 0 ? m + width : m, 0, width - 1);
+    };
+    const int xs[2] = {wrapX(x0), wrapX(x0 + 1)};
+    const int ys[2] = {std::clamp(y0,     0, height - 1),
+                       std::clamp(y0 + 1, 0, height - 1)};
+    const float wx[2] = {1.0f - tx, tx};
+    const float wy[2] = {1.0f - ty, ty};
+
+    glm::vec3 c(0.0f);
+    for (int j = 0; j < 2; ++j)
+        for (int i = 0; i < 2; ++i) {
+            const std::size_t o =
+                (static_cast<std::size_t>(ys[j]) * width + xs[i]) * 3;
+            c += glm::vec3(pixels[o], pixels[o + 1], pixels[o + 2]) *
+                 (wx[i] * wy[j]);
+        }
+    return c;
+}
+
+} // namespace
+
+glm::vec3 Environment::sampleSeen(const glm::vec3& dir) const {
+    if (hasBackdrop()) return samplePanorama(backdrop, backdropWidth, backdropHeight, dir);
+    return sample(dir) * intensity;
+}
+
 glm::vec3 Environment::sample(const glm::vec3& dir) const {
-    if (hasMap()) {
-        // Exactly EnvironmentIBL's sampleSpherical(): atan2(z, x) across,
-        // asin(y) down, both scaled and biased by a half.
-        //
-        // asin and not acos, and this is not a nicety. The loader hands the
-        // panorama over BOTTOM-UP (it flips .hdr on load and flips .exr by
-        // hand), so row 0 is the ground and the last row is the zenith, which
-        // is what the GL mapping's v = asin(y)/pi + 0.5 expects. acos gives
-        // exactly the mirror of that -- a sky rendered with the ground's colours
-        // above the horizon and the sky's below it.
-        const float u = std::atan2(dir.z, dir.x) / (2.0f * kPi) + 0.5f;
-        const float v = std::asin(glm::clamp(dir.y, -1.0f, 1.0f)) / kPi + 0.5f;
-
-        // Bilinear, and not a refinement: a 4K panorama shown as the background
-        // of a 1080p still is being minified about four to one, and picking one
-        // texel out of every sixteen turns a corrugated roof or a row of railings
-        // into moire. It reads as the map having the wrong colours -- which is
-        // exactly how it was described -- because a stripe pattern sampled off
-        // its own frequency comes back as a flat wrong shade rather than as
-        // something recognisably aliased.
-        //
-        // Wrapped across, clamped down: a panorama joins itself at the seam
-        // behind the camera, and does not join itself at the poles.
-        const float fx = u * static_cast<float>(width)  - 0.5f;
-        const float fy = v * static_cast<float>(height) - 0.5f;
-        const int x0 = static_cast<int>(std::floor(fx));
-        const int y0 = static_cast<int>(std::floor(fy));
-        const float tx = fx - static_cast<float>(x0);
-        const float ty = fy - static_cast<float>(y0);
-
-        auto wrapX = [this](int a) { const int m = a % width; return m < 0 ? m + width : m; };
-        const int xs[2] = {wrapX(x0), wrapX(x0 + 1)};
-        const int ys[2] = {std::clamp(y0,     0, height - 1),
-                           std::clamp(y0 + 1, 0, height - 1)};
-        const float wx[2] = {1.0f - tx, tx};
-        const float wy[2] = {1.0f - ty, ty};
-
-        glm::vec3 c(0.0f);
-        for (int j = 0; j < 2; ++j)
-            for (int i = 0; i < 2; ++i) {
-                const std::size_t o =
-                    (static_cast<std::size_t>(ys[j]) * width + xs[i]) * 3;
-                c += glm::vec3(pixels[o], pixels[o + 1], pixels[o + 2]) *
-                     (wx[i] * wy[j]);
-            }
-        return c;
-    }
+    if (hasMap()) return samplePanorama(pixels, width, height, dir);
     // No panorama: the flat ambient the raster path would have used, spread
     // over a horizon so that a surface facing up and one facing down are not
     // lit identically. Not a sky model, and not pretending to be one.
@@ -1476,8 +2072,8 @@ std::vector<ProbeSh> bakeProbes(const Scene& scene,
     std::vector<ProbeSh> out(points.size());
     if (points.empty()) return out;
 
-    Bvh bvh;
-    bvh.build(scene.triangles);
+    Accel bvh;
+    bvh.build(scene);
     EnvSampler envDist;
     envDist.build(scene.env);
 
@@ -1493,7 +2089,8 @@ std::vector<ProbeSh> bakeProbes(const Scene& scene,
 
     auto worker = [&]() {
         Tracer tracer(scene, bvh, envDist, settings.maxBounces, 0.0f);
-        tracer.sunOn = settings.includeSun;
+        tracer.sunOn       = settings.includeSun;
+        tracer.useBackdrop = false;  // a probe is not an eye
         for (;;) {
             const std::size_t i = next.fetch_add(1);
             if (i >= points.size() || stop.load()) return;
@@ -1523,10 +2120,7 @@ std::vector<ProbeSh> bakeProbes(const Scene& scene,
                 probe.prepare();
                 Hit hit;
                 if (bvh.closest(probe, kInf, hit)) {
-                    const Triangle& t = scene.triangles[hit.tri];
-                    const glm::vec3 gN =
-                        glm::cross(t.p1 - t.p0, t.p2 - t.p0);
-                    if (glm::dot(gN, d) > 0.0f) ++backfaces;
+                    if (glm::dot(tracer.resolve(hit).faceN, d) > 0.0f) ++backfaces;
                 }
 
                 Ray ray;
@@ -1589,7 +2183,343 @@ float firstHitDistance(const Scene& scene, const glm::vec3& origin,
         float t, u, v;
         if (intersectTri(tri, r, best, t, u, v)) best = t;
     }
+    for (const Instance& in : scene.instances) {
+        if (in.mesh < 0 || in.mesh >= static_cast<int>(scene.meshes.size())) continue;
+        if (std::fabs(glm::determinant(glm::mat3(in.transform))) < 1e-12f) continue;
+        const glm::mat4 inv = glm::inverse(in.transform);
+        Ray lr;
+        lr.o = glm::vec3(inv * glm::vec4(r.o, 1.0f));
+        lr.d = glm::mat3(inv) * r.d;
+        for (const Triangle& tri : scene.meshes[static_cast<std::size_t>(in.mesh)].triangles) {
+            float t, u, v;
+            if (intersectTri(tri, lr, best, t, u, v)) best = t;
+        }
+    }
     return best < kInf ? best : 0.0f;
+}
+
+namespace {
+// meadow.glsl's value noise (a sin hash, not ecology's integer one).
+float meadowHash(glm::vec2 p) {
+    const float v = std::sin(glm::dot(p, glm::vec2(127.1f, 311.7f))) * 43758.5453f;
+    return v - std::floor(v);
+}
+float meadowNoise(glm::vec2 p) {
+    const glm::vec2 i = glm::floor(p);
+    glm::vec2 f = p - i;
+    f = f * f * (3.0f - 2.0f * f);
+    const float a = meadowHash(i), b = meadowHash(i + glm::vec2(1, 0));
+    const float c = meadowHash(i + glm::vec2(0, 1)), d = meadowHash(i + glm::vec2(1, 1));
+    return glm::mix(glm::mix(a, b, f.x), glm::mix(c, d, f.x), f.y);
+}
+// ecology.glsl's integer-hash noise -- uint arithmetic wraps the same on both
+// sides, so the stands land exactly where the forest field put the trees.
+std::uint32_t ecoHash(std::int32_t x, std::int32_t z, std::uint32_t seed) {
+    std::uint32_t h = static_cast<std::uint32_t>(x) * 0x8da6b343u ^
+                      static_cast<std::uint32_t>(z) * 0xd8163841u ^ seed * 0xcb1ab31fu;
+    h ^= h >> 13u;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15u;
+    return h;
+}
+float ecoNoise(glm::vec2 p, std::uint32_t seed) {
+    const float fx = std::floor(p.x), fz = std::floor(p.y);
+    const std::int32_t ix = static_cast<std::int32_t>(fx), iz = static_cast<std::int32_t>(fz);
+    float tx = p.x - fx, tz = p.y - fz;
+    tx = tx * tx * (3.0f - 2.0f * tx);
+    tz = tz * tz * (3.0f - 2.0f * tz);
+    const float k = 1.0f / 16777216.0f;
+    const float a = static_cast<float>(ecoHash(ix, iz, seed) & 0xffffffu) * k;
+    const float b = static_cast<float>(ecoHash(ix + 1, iz, seed) & 0xffffffu) * k;
+    const float c = static_cast<float>(ecoHash(ix, iz + 1, seed) & 0xffffffu) * k;
+    const float d = static_cast<float>(ecoHash(ix + 1, iz + 1, seed) & 0xffffffu) * k;
+    const float ab = a + (b - a) * tx, cd = c + (d - c) * tx;
+    return ab + (cd - ab) * tz;
+}
+float ecoFbm(glm::vec2 p, int octaves, std::uint32_t seed) {
+    float sum = 0.0f, amp = 0.5f, norm = 0.0f;
+    for (int i = 0; i < octaves; ++i) {
+        sum  += amp * ecoNoise(p, seed + static_cast<std::uint32_t>(i) * 101u);
+        norm += amp;
+        p     = p * 2.03f + glm::vec2(17.3f, -9.1f);
+        amp  *= 0.5f;
+    }
+    return sum / norm;
+}
+} // namespace
+
+glm::vec3 meadowColour(glm::vec2 xz, float lush) {
+    // Taken at full detail: the tracer supersamples every pixel, so the noise
+    // the shader fades out past a pixel's footprint is averaged here instead.
+    const float meadow = meadowNoise(xz * 0.05f);
+    const float hueN   = meadowNoise(xz * 0.11f + 31.0f);
+    const float shade  = meadowNoise(xz * 0.035f + 5.0f);
+    const float green  = glm::clamp(lush - (1.0f - meadow) * 0.55f - 0.125f - 0.04f, 0.0f, 1.0f);
+    const glm::vec3 dryBase(0.16f, 0.14f, 0.06f), dryTip(0.50f, 0.45f, 0.22f);
+    const glm::vec3 lushBase(0.05f, 0.13f, 0.04f);
+    const glm::vec3 lushTip = glm::mix(glm::vec3(0.14f, 0.36f, 0.13f),
+                                       glm::vec3(0.44f, 0.54f, 0.16f), hueN * hueN);
+    const float bright = (0.55f + 0.55f * shade) * 0.98f * glm::mix(0.85f, 1.05f, lush);
+    const glm::vec3 base = glm::mix(dryBase, lushBase, green) * bright;
+    const glm::vec3 tip  = glm::mix(dryTip, lushTip, green) * bright;
+    return glm::mix(base, tip, 0.6f);
+}
+
+float meadowCover(glm::vec2 xz, float h, float ny, float waterLevel, float top) {
+    const float c = glm::smoothstep(0.80f, 0.86f, ny) *
+                    glm::smoothstep(waterLevel + 0.3f, waterLevel + 0.9f, h) *
+                    (1.0f - glm::smoothstep(top - 3.0f, top, h));
+    const float bare = meadowNoise(xz * 0.13f + glm::vec2(19.0f, 7.0f));
+    return c * glm::mix(0.5f, 1.0f, glm::smoothstep(0.20f, 0.32f, bare));
+}
+
+float woodsAt(const GroundLook& g, glm::vec2 xz, float ny) {
+    // ecology.glsl's ecoSample(...).y: the stand, before the height and water
+    // cuts -- which is what lit.frag's forest floor keys off.
+    const float stands = ecoFbm(xz / g.ecoStandSize, 4, 0x51edu);
+    const float ragged = ecoFbm(xz / (g.ecoStandSize * 0.18f), 2, 0x3a7cu);
+    const float f   = stands + 0.22f * (ragged - 0.5f) + g.ecoSlopeLove * (1.0f - ny);
+    const float cut = 0.5f + (0.5f - g.ecoCover) * 0.45f;
+    return glm::smoothstep(cut - 0.035f, cut + 0.035f, f);
+}
+
+namespace {
+// farterrain.frag's own value noise (its hash is not lit.frag's).
+float farHash21(glm::vec2 p) {
+    p = glm::fract(p * glm::vec2(123.34f, 456.21f));
+    p += glm::dot(p, p + 45.32f);
+    return glm::fract(p.x * p.y);
+}
+float farNoise(glm::vec2 p) {
+    const glm::vec2 i = glm::floor(p);
+    glm::vec2 f = p - i;
+    f = f * f * (3.0f - 2.0f * f);
+    const float a = farHash21(i), b = farHash21(i + glm::vec2(1, 0));
+    const float c = farHash21(i + glm::vec2(0, 1)), d = farHash21(i + glm::vec2(1, 1));
+    return glm::mix(glm::mix(a, b, f.x), glm::mix(c, d, f.x), f.y);
+}
+// fbmPx at a footprint of zero: every octave, as a supersampled pixel wants.
+float farFbm(glm::vec2 p, float scale) {
+    float s = 0.0f, a = 0.5f, f = 1.0f / scale;
+    for (int i = 0; i < 5; ++i) {
+        s += a * (farNoise(p * f) - 0.5f);
+        f *= 2.07f;
+        a *= 0.5f;
+    }
+    return s;
+}
+glm::vec3 lin(float r, float g, float b) {
+    return glm::pow(glm::vec3(r, g, b), glm::vec3(2.2f));
+}
+// ecology.glsl's ecoSample(...).x: trees per cell, with the slope, tree-line and
+// water cuts -- what the far terrain paints its canopy by.
+float ecoDensity(const GroundLook& g, glm::vec2 xz, float h, float ny) {
+    const float stands = ecoFbm(xz / g.ecoStandSize, 4, 0x51edu);
+    const float ragged = ecoFbm(xz / (g.ecoStandSize * 0.18f), 2, 0x3a7cu);
+    const float f      = stands + 0.22f * (ragged - 0.5f) + g.ecoSlopeLove * (1.0f - ny);
+    const float cut    = 0.5f + (0.5f - g.ecoCover) * 0.45f;
+    const float forest = glm::smoothstep(cut - 0.035f, cut + 0.035f, f);
+    float d = std::max(forest, g.ecoSolitary);
+    d *= glm::smoothstep(0.62f, 0.72f, ny);
+    const float tl = g.ecoTreeLine + (ragged - 0.5f) * 180.0f;
+    d *= 1.0f - glm::smoothstep(tl - 140.0f, tl + 30.0f, h);
+    d *= glm::smoothstep(g.ecoWater + 0.6f, g.ecoWater + 1.6f, h);
+    return d;
+}
+} // namespace
+
+glm::vec3 farGroundAlbedo(const GroundLook& g, const glm::vec3& wp, const glm::vec3& n,
+                          float moist) {
+    const glm::vec2 xz(wp.x, wp.z);
+    const float h = wp.y;
+    const float slope = glm::degrees(std::acos(glm::clamp(n.y, -1.0f, 1.0f)));
+    const float n1 = farFbm(xz, 190.0f) + 0.5f;
+    const float n2 = farFbm(xz + 71.0f, 45.0f) + 0.5f;
+    const float n3 = farFbm(xz - 233.0f, 900.0f) + 0.5f;
+
+    const glm::vec3 meadow = glm::pow(meadowColour(xz, moist), glm::vec3(2.2f)) * g.grassTint;
+    const glm::vec3 alpine = glm::mix(lin(0.33f, 0.40f, 0.19f), lin(0.45f, 0.43f, 0.24f), n2);
+    glm::vec3 forest = glm::mix(lin(0.085f, 0.13f, 0.07f), lin(0.12f, 0.15f, 0.08f), n2) *
+                       (0.8f + 0.4f * (farFbm(xz, 14.0f) + 0.5f));
+    const glm::vec3 rockCool = glm::mix(lin(0.36f, 0.36f, 0.37f), lin(0.50f, 0.50f, 0.50f), n1);
+    const glm::vec3 rockWarm = glm::mix(lin(0.44f, 0.39f, 0.33f), lin(0.58f, 0.53f, 0.45f), n1);
+    glm::vec3 rock = glm::mix(rockCool, rockWarm, glm::smoothstep(0.35f, 0.65f, n3));
+    const float bed = h * 0.028f + n2 * 5.0f + n1 * 3.0f + glm::dot(xz, glm::vec2(0.0011f, -0.0007f));
+    rock *= 0.9f + 0.14f * glm::smoothstep(0.35f, 0.65f, farNoise(glm::vec2(bed, n3 * 3.0f)));
+    const glm::vec3 scree = glm::mix(lin(0.52f, 0.50f, 0.46f), lin(0.62f, 0.59f, 0.54f), n2);
+    const glm::vec3 snow  = lin(0.93f, 0.95f, 0.98f);
+
+    glm::vec3 albedo = meadow;
+    const float alpineAmt = glm::smoothstep(g.farTreeLine - 60.0f, g.farTreeLine + 120.0f,
+                                            h + (n1 - 0.5f) * 220.0f);
+    albedo = glm::mix(albedo, alpine, alpineAmt);
+    float forestAmt;
+    if (g.ecoOn) {
+        forestAmt = glm::clamp(ecoDensity(g, xz, h, n.y) * 1.3f, 0.0f, 1.0f);
+        forest = g.canopy * 0.75f * (0.75f + 0.5f * (farFbm(xz, 14.0f) + 0.5f)) *
+                 glm::mix(0.85f, 1.1f, n2);
+    } else {
+        const float woods = glm::smoothstep(0.28f, 0.5f, moist + (n2 - 0.5f) * 0.35f);
+        const float valleyPatch = glm::mix(glm::smoothstep(0.42f, 0.62f, n1 * 0.6f + n3 * 0.6f),
+                                           1.0f, glm::smoothstep(40.0f, 180.0f, h));
+        forestAmt = woods * valleyPatch * (1.0f - alpineAmt) *
+                    (1.0f - glm::smoothstep(30.0f, 40.0f, slope));
+    }
+    albedo = glm::mix(albedo, forest, forestAmt);
+    const float screeAmt = glm::smoothstep(24.0f, 32.0f, slope + (n1 - 0.5f) * 10.0f) *
+                           (1.0f - forestAmt) *
+                           glm::smoothstep(g.farTreeLine - 200.0f, g.farTreeLine + 100.0f, h);
+    albedo = glm::mix(albedo, scree, screeAmt * 0.8f);
+    const float rockSlope = glm::mix(44.0f, 32.0f, alpineAmt);
+    float rockAmt = glm::smoothstep(rockSlope, rockSlope + 12.0f, slope + (n2 - 0.5f) * 16.0f);
+    rockAmt = std::max(rockAmt, alpineAmt * glm::smoothstep(0.55f, 0.8f, n1) *
+                                    glm::smoothstep(g.farTreeLine + 150.0f, g.farTreeLine + 500.0f, h));
+    albedo = glm::mix(albedo, rock, rockAmt);
+    const float snowLine = g.farSnowLevel + (n3 - 0.5f) * 320.0f + (n1 - 0.5f) * 140.0f;
+    float snowAmt = glm::smoothstep(snowLine - 50.0f, snowLine + 50.0f, h) *
+                    (1.0f - glm::smoothstep(36.0f, 50.0f, slope + (n2 - 0.5f) * 12.0f));
+    snowAmt = std::max(snowAmt, glm::smoothstep(snowLine + 350.0f, snowLine + 700.0f, h) *
+                                    (1.0f - glm::smoothstep(55.0f, 68.0f, slope)));
+    albedo = glm::mix(albedo, snow, snowAmt);
+    albedo *= glm::mix(1.0f, 0.55f, 1.0f - glm::smoothstep(g.waterLevel, g.waterLevel + 1.5f, h));
+    return albedo;
+}
+
+glm::vec3 skyGradient(const glm::vec3& dir, const glm::vec3& sunDirIn) {
+    const glm::vec3 sunDir = glm::normalize(sunDirIn);
+    const float day = glm::smoothstep(-0.12f, 0.18f, sunDir.y);
+    const float h = glm::clamp(dir.y, 0.0f, 1.0f);
+    glm::vec3 zenith  = glm::mix(glm::vec3(0.01f, 0.02f, 0.06f), glm::vec3(0.20f, 0.42f, 0.80f), day);
+    glm::vec3 horizon = glm::mix(glm::vec3(0.04f, 0.06f, 0.12f), glm::vec3(0.70f, 0.82f, 0.95f), day);
+    const float lowSun = (1.0f - glm::smoothstep(0.0f, 0.35f, sunDir.y)) * day;
+    const float gold   = (1.0f - glm::smoothstep(0.0f, 0.35f, sunDir.y)) *
+                         glm::smoothstep(-0.10f, 0.0f, sunDir.y);
+    const glm::vec3 flatDir = glm::normalize(glm::vec3(dir.x, 0.0f, dir.z) + 1e-5f);
+    const glm::vec3 flatSun = glm::normalize(glm::vec3(sunDir.x, 0.0f, sunDir.z) + 1e-5f);
+    const float sunSide = std::pow(0.5f + 0.5f * glm::dot(flatDir, flatSun), 5.0f);
+    zenith  = glm::mix(zenith, glm::mix(glm::vec3(0.26f, 0.27f, 0.38f),
+                                        glm::vec3(0.32f, 0.29f, 0.36f), sunSide), gold * 0.60f);
+    horizon = glm::mix(horizon, glm::mix(glm::vec3(0.42f, 0.42f, 0.50f),
+                                         glm::vec3(0.52f, 0.44f, 0.42f), sunSide), gold * 0.60f);
+    glm::vec3 col = glm::mix(horizon, zenith, std::pow(h, 0.5f));
+    const float toSun = std::max(glm::dot(flatDir, flatSun), 0.0f);
+    col += glm::vec3(0.85f, 0.35f, 0.10f) * glm::mix(1.0f, 0.6f, gold) * lowSun *
+           std::pow(toSun, 3.0f) * (1.0f - h);
+    const float sd   = std::max(glm::dot(dir, sunDir), 0.0f);
+    const float core = std::pow(sd, 24.0f);
+    const float wide = std::pow(sd, 4.0f) * (1.0f - 0.5f * h);
+    col += (glm::vec3(1.00f, 0.76f, 0.38f) * core * 0.55f +
+            glm::vec3(0.95f, 0.55f, 0.30f) * wide * 0.06f) * gold;
+    return glm::pow(glm::max(col, glm::vec3(0.0f)), glm::vec3(2.2f));
+}
+
+float GroundLook::lushAt(float x, float z) const {
+    if (moistSamples <= 0 || moisture.size() < static_cast<std::size_t>(moistSamples) * moistSamples)
+        return meadowLush;
+    // lit.frag: muv = ((xz - origin) / cell + 0.5) / samples, sampled linearly.
+    const float u = ((x - moistOrigin.x) / moistCell + 0.5f) / static_cast<float>(moistSamples);
+    const float v = ((z - moistOrigin.y) / moistCell + 0.5f) / static_cast<float>(moistSamples);
+    if (!(u > 0.0f && u < 1.0f && v > 0.0f && v < 1.0f)) return meadowLush;
+    const float fx = u * moistSamples - 0.5f, fy = v * moistSamples - 0.5f;
+    const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, moistSamples - 1);
+    const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, moistSamples - 1);
+    const int x1 = std::min(x0 + 1, moistSamples - 1), y1 = std::min(y0 + 1, moistSamples - 1);
+    const float tx = glm::clamp(fx - static_cast<float>(x0), 0.0f, 1.0f);
+    const float ty = glm::clamp(fy - static_cast<float>(y0), 0.0f, 1.0f);
+    auto at = [&](int xx, int yy) {
+        return moisture[static_cast<std::size_t>(yy) * moistSamples + xx];
+    };
+    return glm::mix(glm::mix(at(x0, y0), at(x1, y0), tx), glm::mix(at(x0, y1), at(x1, y1), tx), ty);
+}
+
+float SunMask::at(const glm::vec3& p) const {
+    if (!valid() || sunDir.y < 0.03f) return 1.0f;
+    // Along the sun to the map's plane, then into the map.
+    const glm::vec2 q(p.x - sunDir.x * ((p.y - refY) / sunDir.y),
+                      p.z - sunDir.z * ((p.y - refY) / sunDir.y));
+    const glm::vec2 uv = (q - origin) / size;
+    const glm::vec2 e  = glm::min(uv, glm::vec2(1.0f) - uv);
+    const float t    = glm::clamp(std::min(e.x, e.y) / 0.12f, 0.0f, 1.0f);
+    const float edge = t * t * (3.0f - 2.0f * t);
+    if (edge <= 0.0f) return 1.0f;
+    // Bilinear, clamped: GL_LINEAR with CLAMP_TO_EDGE, as the map is sampled.
+    const float fx = glm::clamp(uv.x, 0.0f, 1.0f) * static_cast<float>(width)  - 0.5f;
+    const float fy = glm::clamp(uv.y, 0.0f, 1.0f) * static_cast<float>(height) - 0.5f;
+    const int x0 = static_cast<int>(std::floor(fx)), y0 = static_cast<int>(std::floor(fy));
+    const float tx = fx - static_cast<float>(x0), ty = fy - static_cast<float>(y0);
+    auto v = [&](int x, int y) {
+        x = std::clamp(x, 0, width - 1);
+        y = std::clamp(y, 0, height - 1);
+        return values[static_cast<std::size_t>(y) * width + x];
+    };
+    const float m = (v(x0, y0) * (1.0f - tx) + v(x0 + 1, y0) * tx) * (1.0f - ty) +
+                    (v(x0, y0 + 1) * (1.0f - tx) + v(x0 + 1, y0 + 1) * tx) * ty;
+    return 1.0f + (m - 1.0f) * edge;
+}
+
+glm::vec3 mediumLight(const Scene& scene) {
+    // The sky's irradiance on a horizontal surface, integrated over a fixed
+    // set of directions -- deterministic, so the CPU and the GPU are handed the
+    // same number -- plus the sun's, all over pi: the radiance a white
+    // Lambertian surface lying in the open would reflect.
+    glm::vec3 sky(0.0f);
+    constexpr int kTheta = 16, kPhi = 32;
+    for (int i = 0; i < kTheta; ++i) {
+        // Cosine-weighted rings: cos(theta) = sqrt(1 - u).
+        const float u  = (static_cast<float>(i) + 0.5f) / kTheta;
+        const float ct = std::sqrt(1.0f - u);
+        const float st = std::sqrt(std::max(0.0f, 1.0f - ct * ct));
+        for (int j = 0; j < kPhi; ++j) {
+            const float phi = 2.0f * kPi * (static_cast<float>(j) + 0.5f) / kPhi;
+            sky += scene.env.sample(glm::vec3(st * std::cos(phi), ct, st * std::sin(phi)));
+        }
+    }
+    // With cosine-weighted directions the mean IS irradiance / pi.
+    glm::vec3 e = sky / static_cast<float>(kTheta * kPhi) * scene.env.intensity;
+    if (scene.sun.enabled) {
+        const glm::vec3 d = glm::normalize(scene.sun.direction);
+        e += scene.sun.color * std::max(d.y, 0.0f) / kPi;
+    }
+    return e;
+}
+
+long long Scene::triangleCount() const {
+    long long n = static_cast<long long>(triangles.size());
+    for (const Instance& in : instances)
+        if (in.mesh >= 0 && in.mesh < static_cast<int>(meshes.size()))
+            n += static_cast<long long>(meshes[static_cast<std::size_t>(in.mesh)].triangles.size());
+    return n;
+}
+
+bool Scene::bounds(glm::vec3& lo, glm::vec3& hi) const {
+    lo = glm::vec3(kInf);
+    hi = glm::vec3(-kInf);
+    for (const Triangle& t : triangles) {
+        lo = glm::min(lo, glm::min(t.p0, glm::min(t.p1, t.p2)));
+        hi = glm::max(hi, glm::max(t.p0, glm::max(t.p1, t.p2)));
+    }
+    // A mesh's own box once, then its eight corners per placement: walking
+    // every triangle of every tree would cost more than the question is worth.
+    std::vector<glm::vec3> mlo(meshes.size(), glm::vec3(kInf)), mhi(meshes.size(), glm::vec3(-kInf));
+    for (std::size_t m = 0; m < meshes.size(); ++m)
+        for (const Triangle& t : meshes[m].triangles) {
+            mlo[m] = glm::min(mlo[m], glm::min(t.p0, glm::min(t.p1, t.p2)));
+            mhi[m] = glm::max(mhi[m], glm::max(t.p0, glm::max(t.p1, t.p2)));
+        }
+    for (const Instance& in : instances) {
+        if (in.mesh < 0 || in.mesh >= static_cast<int>(meshes.size())) continue;
+        const std::size_t m = static_cast<std::size_t>(in.mesh);
+        if (mlo[m].x > mhi[m].x) continue;
+        for (int c = 0; c < 8; ++c) {
+            const glm::vec3 p((c & 1) ? mhi[m].x : mlo[m].x,
+                              (c & 2) ? mhi[m].y : mlo[m].y,
+                              (c & 4) ? mhi[m].z : mlo[m].z);
+            const glm::vec3 w = glm::vec3(in.transform * glm::vec4(p, 1.0f));
+            lo = glm::min(lo, w);
+            hi = glm::max(hi, w);
+        }
+    }
+    return lo.x <= hi.x;
 }
 
 namespace {
@@ -1766,8 +2696,9 @@ void Job::start(std::shared_ptr<const Scene> scene, const Settings& settings) {
     m_done.store(0);
     m_pixels.store(static_cast<int>(n));
     m_elapsed.store(0.0);
-    m_triangles    = static_cast<long long>(m_scene ? m_scene->triangles.size() : 0);
-    m_buildSeconds = 0.0;
+    m_triangles    = m_scene ? m_scene->triangleCount() : 0;
+    m_buildSeconds.store(0.0);
+    m_focus.store(m_scene ? m_scene->camera.focusDistance : 10.0f);
     m_stop.store(false);
     m_running.store(true);
     m_started = std::chrono::steady_clock::now();
@@ -1790,16 +2721,38 @@ void Job::run() {
     const Scene& sc = *m_scene;
 
     const auto buildStart = std::chrono::steady_clock::now();
-    Bvh bvh;
-    bvh.build(sc.triangles);
+    Accel bvh;
+    bvh.build(sc);
     EnvSampler envDist;
     envDist.build(sc.env);
-    m_buildSeconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - buildStart).count();
+    m_buildSeconds.store(std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - buildStart).count());
+    if (m_stop.load()) {
+        m_running.store(false);
+        return;
+    }
 
     const int W = m_settings.width, H = m_settings.height;
     const float aspect = static_cast<float>(W) / static_cast<float>(H);
     const CameraDesc& cam = sc.camera;
+
+    // The focus, measured with the tree that now exists rather than by a
+    // brute-force pass over every triangle before it did -- which on a forest
+    // was the better part of a minute spent answering one question. Nothing
+    // under the crosshair (the camera is pointed at the sky) keeps the
+    // camera's own distance rather than focusing at zero, which would blur the
+    // entire picture and look like a bug.
+    float focusDist = cam.focusDistance;
+    if (m_settings.autoFocus && cam.apertureRadius > 1e-5f) {
+        Ray r;
+        r.o = cam.position;
+        r.d = glm::normalize(cam.forward);
+        r.prepare();
+        Hit h;
+        if (bvh.closest(r, kInf, h)) focusDist = h.t;
+    }
+    focusDist = std::max(0.1f, focusDist);
+    m_focus.store(focusDist);
     const float halfV = std::tan(glm::radians(cam.fovDegrees) * 0.5f);
     const float halfU = halfV * aspect;
 
@@ -1864,7 +2817,7 @@ void Job::run() {
                             // aperture and still passes through the focal point,
                             // so the focal plane stays sharp and the rest opens up.
                             const glm::vec3 focus = org + dir *
-                                (cam.focusDistance / std::max(1e-4f, glm::dot(dir, cam.forward)));
+                                (focusDist / std::max(1e-4f, glm::dot(dir, cam.forward)));
                             const glm::vec2 lens = sampleDisk(rng) * cam.apertureRadius;
                             org += cam.right * lens.x + cam.up * lens.y;
                             dir = glm::normalize(focus - org);
@@ -2003,11 +2956,41 @@ bool Job::snapshotLdr(std::vector<unsigned char>& out) const {
 // way a line above; this exists so a second renderer does not have to have a
 // BVH build of its own to disagree with.
 BvhData buildBvh(const std::vector<Triangle>& triangles) {
-    Bvh bvh;
-    bvh.build(triangles);
+    Blas b;
+    b.build(triangles);
     BvhData out;
-    out.nodes = std::move(bvh.nodes);
-    out.index = std::move(bvh.index);
+    out.nodes = std::move(b.nodes);
+    out.index = std::move(b.index);
+    return out;
+}
+
+EnvDistribution buildEnvDistribution(const Environment& env) {
+    EnvSampler e;
+    e.build(env);
+    EnvDistribution d;
+    if (!e.valid()) return d;
+    d.w = e.w;
+    d.h = e.h;
+    d.func    = std::move(e.func);
+    d.condCdf = std::move(e.condCdf);
+    d.margCdf = std::move(e.margCdf);
+    d.total   = e.total;
+    return d;
+}
+
+AccelData buildAccel(const Scene& scene) {
+    Accel a;
+    a.build(scene);
+    AccelData out;
+    out.world.nodes = std::move(a.world.nodes);
+    out.world.index = std::move(a.world.index);
+    out.meshes.resize(a.meshes.size());
+    for (std::size_t i = 0; i < a.meshes.size(); ++i) {
+        out.meshes[i].nodes = std::move(a.meshes[i].nodes);
+        out.meshes[i].index = std::move(a.meshes[i].index);
+    }
+    out.instances.nodes = std::move(a.top);
+    out.instances.index = std::move(a.topIndex);
     return out;
 }
 

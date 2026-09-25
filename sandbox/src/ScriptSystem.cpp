@@ -18,6 +18,7 @@ extern "C" {
 #include <fitzel/asset/Vfs.hpp>
 
 #include "SaveData.hpp"
+#include "MusicSystem.hpp"
 #include "SynthSystem.hpp"
 
 namespace {
@@ -457,6 +458,148 @@ int l_synthNote(lua_State* L) {
 int l_synthError(lua_State* L) {
     SynthSystem* s = synthsOf(L);
     lua_pushstring(L, s ? s->lastError().c_str() : "");
+    return 1;
+}
+
+// --- `music` table: the game's song (see MusicSystem) ------------------------
+
+MusicSystem* musicOf(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    return h ? h->music : nullptr;
+}
+fitzel::MusicPlayer* musicPlayer(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    return m ? m->player() : nullptr;
+}
+
+void pushFloats(lua_State* L, const std::vector<float>& v) {
+    lua_createtable(L, static_cast<int>(v.size()), 0);
+    for (std::size_t i = 0; i < v.size(); ++i) {
+        lua_pushnumber(L, v[i]);
+        lua_rawseti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+}
+
+// music.load(name) -> true, seconds | false, why
+int l_musicLoad(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    const std::string name = luaL_checkstring(L, 1);
+    fitzel::MusicPlayer* p = m ? m->player() : nullptr;
+    std::string err = m && !p ? m->error() : std::string("no audio");
+    if (p && p->load(m->resolve(name), &err)) {
+        lua_pushboolean(L, 1);
+        lua_pushnumber(L, p->duration());
+        return 2;
+    }
+    lua_pushboolean(L, 0);
+    lua_pushstring(L, err.c_str());
+    return 2;
+}
+int l_musicPlay(lua_State* L) {
+    if (auto* p = musicPlayer(L)) p->play(luaL_optnumber(L, 1, 0.0));
+    return 0;
+}
+int l_musicStop(lua_State* L) {
+    if (MusicSystem* m = musicOf(L)) if (auto* p = m->existing()) p->stop();
+    return 0;
+}
+int l_musicPause(lua_State* L) {
+    if (MusicSystem* m = musicOf(L)) if (auto* p = m->existing()) p->pause();
+    return 0;
+}
+int l_musicResume(lua_State* L) {
+    if (MusicSystem* m = musicOf(L)) if (auto* p = m->existing()) p->resume();
+    return 0;
+}
+int l_musicFade(lua_State* L) {
+    const double sec = luaL_optnumber(L, 1, 1.0);
+    if (MusicSystem* m = musicOf(L)) if (auto* p = m->existing()) p->fadeOut(sec);
+    return 0;
+}
+int l_musicTime(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    auto* p = m ? m->existing() : nullptr;
+    lua_pushnumber(L, p ? p->time() : 0.0);
+    return 1;
+}
+int l_musicDuration(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    auto* p = m ? m->existing() : nullptr;
+    lua_pushnumber(L, p ? p->duration() : 0.0);
+    return 1;
+}
+int l_musicIsPlaying(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    auto* p = m ? m->existing() : nullptr;
+    lua_pushboolean(L, p && p->playing());
+    return 1;
+}
+int l_musicIsPaused(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    auto* p = m ? m->existing() : nullptr;
+    lua_pushboolean(L, p && p->paused());
+    return 1;
+}
+// music.setFilter(cutoffHz, gain, shelfDb [, smoothSec=0.12])
+int l_musicSetFilter(lua_State* L) {
+    const float cut   = static_cast<float>(luaL_checknumber(L, 1));
+    const float gain  = static_cast<float>(luaL_optnumber(L, 2, 1.0));
+    const float shelf = static_cast<float>(luaL_optnumber(L, 3, 0.0));
+    const float tc    = static_cast<float>(luaL_optnumber(L, 4, 0.12));
+    if (auto* p = musicPlayer(L)) p->setFilter(cut, gain, shelf, tc);
+    return 0;
+}
+int l_musicSetVolume(lua_State* L) {
+    if (MusicSystem* m = musicOf(L)) m->setVolume(static_cast<float>(luaL_checknumber(L, 1)));
+    return 0;
+}
+int l_musicSampleRate(lua_State* L) {
+    auto* p = musicPlayer(L);
+    lua_pushinteger(L, p ? p->sampleRate() : 48000);
+    return 1;
+}
+// music.spectrum() -> 512 bins 0..1 (call once a frame, see MusicPlayer)
+int l_musicSpectrum(lua_State* L) {
+    std::vector<float> v;
+    MusicSystem* m = musicOf(L);
+    if (auto* p = m ? m->existing() : nullptr) p->spectrum(v);
+    else v.assign(512, 0.0f);
+    pushFloats(L, v);
+    return 1;
+}
+int l_musicWaveform(lua_State* L) {
+    const int n = static_cast<int>(luaL_optinteger(L, 1, 128));
+    std::vector<float> v;
+    MusicSystem* m = musicOf(L);
+    if (auto* p = m ? m->existing() : nullptr) p->waveform(v, n);
+    else v.assign(static_cast<std::size_t>(std::clamp(n, 1, 1024)), 0.0f);
+    pushFloats(L, v);
+    return 1;
+}
+// music.analyze(name) -> { duration, rate, hop, frames, lowFlux, midFlux,
+// highFlux, lowRms, midRms, highRms } | nil, why. Blocks while it decodes.
+int l_musicAnalyze(lua_State* L) {
+    MusicSystem* m = musicOf(L);
+    const std::string name = luaL_checkstring(L, 1);
+    fitzel::music::Bands bands;
+    std::string err = "no music system";
+    if (!m || !fitzel::music::analyzeBands(m->resolve(name), bands, &err)) {
+        lua_pushnil(L);
+        lua_pushstring(L, err.c_str());
+        return 2;
+    }
+    lua_newtable(L);
+    lua_pushnumber(L, bands.duration);  lua_setfield(L, -2, "duration");
+    lua_pushinteger(L, bands.rate);     lua_setfield(L, -2, "rate");
+    lua_pushinteger(L, bands.hop);      lua_setfield(L, -2, "hop");
+    lua_pushinteger(L, static_cast<lua_Integer>(bands.flux[0].size()));
+    lua_setfield(L, -2, "frames");
+    static const char* kFlux[3] = {"lowFlux", "midFlux", "highFlux"};
+    static const char* kRms[3]  = {"lowRms", "midRms", "highRms"};
+    for (int b = 0; b < 3; ++b) {
+        pushFloats(L, bands.flux[b]); lua_setfield(L, -2, kFlux[b]);
+        pushFloats(L, bands.rms[b]);  lua_setfield(L, -2, kRms[b]);
+    }
     return 1;
 }
 
@@ -1255,6 +1398,19 @@ void ScriptSystem::installApi() {
     fn("setTempo", l_synthSetTempo);
     fn("note", l_synthNote);          fn("lastError", l_synthError);
     lua_setglobal(L, "synth");
+
+    // The `music` table: one song with a clock, for rhythm games (MusicSystem).
+    lua_newtable(L);
+    fn("load", l_musicLoad);          fn("play", l_musicPlay);
+    fn("stop", l_musicStop);          fn("pause", l_musicPause);
+    fn("resume", l_musicResume);      fn("fade", l_musicFade);
+    fn("time", l_musicTime);          fn("duration", l_musicDuration);
+    fn("isPlaying", l_musicIsPlaying); fn("isPaused", l_musicIsPaused);
+    fn("setFilter", l_musicSetFilter); fn("setVolume", l_musicSetVolume);
+    fn("sampleRate", l_musicSampleRate);
+    fn("spectrum", l_musicSpectrum);  fn("waveform", l_musicWaveform);
+    fn("analyze", l_musicAnalyze);
+    lua_setglobal(L, "music");
 }
 
 std::string ScriptSystem::keyOf(int id, const std::string& file) {

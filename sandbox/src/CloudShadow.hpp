@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include <glm/glm.hpp>
 
@@ -40,6 +41,11 @@ public:
     void render(const Params& p, const std::function<void()>& drawQuad);
     // Nothing casts this frame (no cumulus, night): consumers see full sun.
     void disable();
+
+    // The map as numbers, row 0 = the texture's v = 0, 1 = full sun -- for the
+    // path tracer, which reads the same shadow the viewport's receivers read.
+    // False when there is no map this frame (cloudShadowInfo().on is false).
+    bool readback(std::vector<float>& out) const;
 
     // Where consumers find it (FrameRender.hpp publishes this to the shaders).
     static constexpr int kUnit = 31;

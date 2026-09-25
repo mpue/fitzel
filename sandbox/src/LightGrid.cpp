@@ -11,12 +11,6 @@
 namespace lightgrid {
 namespace {
 
-// A cap on what one Bake button press may cost. Chosen as a wall-clock promise
-// rather than a memory one: at a hundred and twenty-eight rays a probe, this is
-// a couple of minutes on a desktop, and a grid that takes longer than somebody
-// will wait for is a grid nobody bakes twice.
-constexpr int kMaxProbes = 200000;
-
 const char kMagic[6] = {'F', 'G', 'R', 'I', 'D', '1'};
 
 } // namespace
@@ -41,54 +35,6 @@ std::vector<float> Grid::channel(int c) const {
         out[o + 3] = p.shZ[c];
     }
     return out;
-}
-
-Grid layout(const pathtrace::Scene& scene, const Settings& settings) {
-    Grid g;
-    if (scene.triangles.empty()) return g;
-
-    constexpr float inf = std::numeric_limits<float>::max();
-    glm::vec3 lo(inf), hi(-inf);
-    for (const pathtrace::Triangle& t : scene.triangles) {
-        lo = glm::min(lo, glm::min(t.p0, glm::min(t.p1, t.p2)));
-        hi = glm::max(hi, glm::max(t.p0, glm::max(t.p1, t.p2)));
-    }
-
-    const float pad = std::max(0.0f, settings.padding);
-    lo -= glm::vec3(pad);
-    hi += glm::vec3(pad);
-    // Vertically the grid is cut to what a surface can actually sample: from a
-    // little below the lowest geometry to a little above the highest. A racing
-    // world is wide and shallow, and probes far over the tarmac are probes
-    // nothing will ever look up.
-    hi.y = (hi.y - pad) + std::max(0.0f, settings.headroom);
-
-    const glm::vec3 size = glm::max(hi - lo, glm::vec3(1.0f));
-    const int res = std::clamp(settings.resolution, 2, 128);
-
-    // Cells kept roughly cubic: the longest HORIZONTAL axis gets `res`, and the
-    // others are scaled to match its cell size. Horizontal rather than longest
-    // overall, because a scene with one tall tower in it should not spend its
-    // whole budget on the tower.
-    const float horizontal = std::max(size.x, size.z);
-    const float cell = horizontal / static_cast<float>(res);
-    g.nx = std::clamp(static_cast<int>(std::lround(size.x / cell)), 2, 256);
-    g.ny = std::clamp(static_cast<int>(std::lround(size.y / cell)), 2, 64);
-    g.nz = std::clamp(static_cast<int>(std::lround(size.z / cell)), 2, 256);
-
-    // Back off uniformly rather than clipping one axis, so an over-large scene
-    // gets a coarser grid rather than a lopsided one.
-    while (g.nx * g.ny * g.nz > kMaxProbes) {
-        g.nx = std::max(2, g.nx * 3 / 4);
-        g.ny = std::max(2, g.ny * 3 / 4);
-        g.nz = std::max(2, g.nz * 3 / 4);
-        if (g.nx == 2 && g.ny == 2 && g.nz == 2) break;
-    }
-
-    g.lo = lo;
-    g.hi = hi;
-    g.probes.assign(static_cast<std::size_t>(g.count()), pathtrace::ProbeSh{});
-    return g;
 }
 
 bool save(const Grid& grid, const std::filesystem::path& file) {

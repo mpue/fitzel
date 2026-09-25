@@ -19,10 +19,10 @@
 // is worse than none, because from then on every difference in a picture has
 // two possible explanations.
 //
-// WHAT IT DOES NOT DO YET: no HDRI (the environment is the gradient the CPU
-// falls back to) and no depth of field. Base-colour maps, tints, the three
-// alpha modes and the terrain's layers ARE here. See the kernel's header for
-// the standing list and gpucheck for what the difference costs.
+// It does everything the CPU does: base-colour maps, tints, the three alpha
+// modes, the terrain's layers, instances (two-level walk), translucent leaves,
+// glows, an importance-sampled HDRI, the captured sky backdrop and the lens.
+// The kernel's header keeps the standing list; gpucheck keeps it honest.
 namespace gputrace {
 
 // Whether the current context can run this at all: OpenGL 4.3, i.e. compute
@@ -107,6 +107,11 @@ public:
     // material that is simply the wrong colour.
     int  textureCount()    const { return m_textureCount; }
     int  texturesDropped() const { return m_texturesDropped; }
+    // ...and how many were halved (once or more) so that all of them fit.
+    int  texturesShrunk()  const { return m_texturesShrunk; }
+    // The texel budget the maps are fitted into; 0 = the card's (see
+    // maxTextureTexels). Settable so gpucheck can make a small scene overflow.
+    void setTextureBudget(std::size_t texels) { m_texelBudget = texels; }
     const std::string& error() const { return m_error; }
 
     // How many traversal entries the kernel it is currently running was built
@@ -117,6 +122,10 @@ public:
     // it; worth showing because a frame that suddenly costs more is usually a
     // tree that got deeper, not a kernel that got slower.
     int  bvhDepth()  const { return m_bvhDepth; }
+    // The depth of the top level, the tree over the instances (0: none). The
+    // one traversal stack is sized for both levels together.
+    int  tlasDepth()     const { return m_tlasDepth; }
+    int  instanceCount() const { return m_instCount; }
 
     // What one sample per pixel cost on this card, in milliseconds, from the
     // last dispatch the GPU has finished reporting on. 0 until there is one.
@@ -146,8 +155,8 @@ private:
     std::unordered_map<int, std::uint32_t> m_programs;
     std::uint32_t m_accum   = 0;   // RGBA32F, the running sum
     // tris, nodes, index, mats, lamps, texture table, texture pixels,
-    // terrain layers, terrain paint, triangle corners
-    std::uint32_t m_ssbo[10] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // terrain layers, terrain paint, triangle corners, instances, sky
+    std::uint32_t m_ssbo[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
     int           m_width = 0, m_height = 0;
     int           m_samples = 0;
     int           m_lampCount = 0;
@@ -156,10 +165,32 @@ private:
     long long     m_triangles = 0;
     int           m_textureCount = 0;
     int           m_texturesDropped = 0;
+    int           m_texturesShrunk = 0;
+    std::size_t   m_texelBudget = 0;
     int           m_layerCount = 0;
     std::string   m_source;        // the kernel, unbuilt (rebuilt per stack size)
     int           m_stackSize = 0; // traversal entries the built kernel has
     int           m_bvhDepth  = 0; // ...and the tree depth that asked for them
+    int           m_tlasDepth = 0; // the depth of the tree over the instances
+    int           m_worldTris = 0;
+    bool          m_haveWorld = false;
+    int           m_tlasRoot  = -1;
+    int           m_instCount = 0;
+    // Where the sky's pieces sit in its buffer (see upload()).
+    glm::ivec2    m_envSize{0}, m_distSize{0}, m_backSize{0};
+    int           m_envPixOff = 0, m_distFuncOff = 0, m_distCondOff = 0;
+    int           m_distMargOff = 0, m_backOff = 0;
+    float         m_distTotal = 0.0f;
+    // The clouds' shadow, if the scene carries one, and the water's glow.
+    glm::ivec2    m_maskSize{0};
+    int           m_maskOff = 0;
+    glm::vec4     m_maskRect{0.0f};
+    glm::vec3     m_maskSun{0.0f, 1.0f, 0.0f};
+    glm::vec3     m_mediumGlow{0.0f};
+    // The ground past its bands, minus its moisture grid (that is in the sky
+    // buffer, at m_moistOff).
+    pathtrace::GroundLook m_ground;
+    int           m_moistOff = 0;
     std::uint32_t m_query = 0;     // GL_TIME_ELAPSED around one dispatch
     bool          m_queryPending = false;
     int           m_queriedSamples = 0;

@@ -369,6 +369,24 @@ public:
     glm::vec3 canopyColour() const;
     int forestTrees() const { return m_treeField.treeCount(); }
 
+    // --- For the path tracer (WorldTrace.cpp) ---------------------------------
+    // The raster path builds all of this on the GPU; the tracer rebuilds it on
+    // the CPU from the same data, so these hand the data over rather than a
+    // second copy of how it is placed.
+    //
+    // The species as they are drawn: their LOD meshes (kept on the CPU as
+    // TreeLOD::cpuVerts/cpuIdx), their parts and materials.
+    const std::vector<TreeSpecies>& species() const { return m_species; }
+    // Every tree whose base stands within `radius` of `c`, per species, 5
+    // floats each (pos3, yaw, scale) -- the forest field's (or, without the
+    // ecology, the near scatter's) plus the painted ones: the set the meshes
+    // and the impostors show between them. Species that draw nothing get an
+    // empty list.
+    void gatherTrees(glm::vec2 c, float radius,
+                     std::vector<std::vector<float>>& perSpecies) const;
+    // Every bloom, procedural and painted: 8 floats each (pos3, yaw, scale, rgb).
+    const std::vector<float>& flowerInstances() const { return m_flowerInst; }
+
 private:
     void bakeImpostor(TreeSpecies& sp);
     void drawImpostors(const FrameContext& ctx);

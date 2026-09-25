@@ -224,6 +224,64 @@ function update(e, dt, t)
 end
 ```
 
+#### 3.5.2 Musik: ein Song mit Uhr, Filter und Analyse
+
+Die globale Tabelle `music` spielt **den einen Song** des Spiels – gedacht für
+Rhythmusspiele und alles, was wissen muss, *wo* die Musik gerade ist. Anders als
+eine AudioSource kann er bei jeder Sekunde starten, sagt seine Position (so, wie
+sie aus den Lautsprechern kommt) und lässt sich während des Spielens filtern.
+Namen werden aufgelöst wie bei `game.playSound` (Asset-Datenbank, dann
+`content/sounds`); ein Song im `music/`-Ordner des Projekts wird am Dateinamen
+gefunden. Beim Ende von Play verstummt er.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `music.load(name)` | `true, sekunden` / `false, warum` | Song laden (ersetzt und stoppt den alten) |
+| `music.play([ab])` | – | ab Sekunde `ab` spielen (Standard 0); **negativ** = so viele Sekunden Stille vorweg |
+| `music.stop()` | – | anhalten |
+| `music.pause()` / `music.resume()` | – | pausieren / weiterspielen |
+| `music.fade([sek])` | – | über `sek` (Standard 1) ausblenden, dann stoppen |
+| `music.time()` | Zahl | Position in Sekunden, wie gehört (Puffer abgezogen, geglättet, läuft nie rückwärts) |
+| `music.duration()` | Zahl | Länge des Songs in Sekunden |
+| `music.isPlaying()` / `music.isPaused()` | bool | Zustand |
+| `music.setFilter(hz [, gain [, shelfDb [, glätten]]])` | – | Tiefpass bei `hz`, lineare Verstärkung `gain` (Standard 1), Bass-Shelf bei 120 Hz in dB (Standard 0); alles gleitet mit Zeitkonstante `glätten` (Standard 0.12 s, 0 = sofort) |
+| `music.setVolume(v)` | – | Lautstärke des Skripts (unter dem Mixer-Pegel) |
+| `music.sampleRate()` | int | Abtastrate des Songs |
+| `music.spectrum()` | Array (512) | Spektrum 0..1 (FFT 1024, −100..−30 dB), **einmal pro Frame** aufrufen – die Glättung schreitet pro Aufruf fort |
+| `music.waveform([n])` | Array | die letzten `n` (Standard 128, max. 1024) Samples, −1..1 |
+| `music.analyze(name)` | Tabelle / `nil, warum` | Bänder-Analyse für die Beat-Erkennung (siehe unten); **blockiert**, während dekodiert wird |
+
+`music.analyze` dekodiert den Song zu Mono mit 22 050 Hz und teilt ihn in Bass
+(< 140 Hz), Mitten (um 1,8 kHz) und Höhen (> 7 kHz). Pro Stück von `hop` Samples
+(256 ≈ 11,6 ms) gibt es je Band einen RMS-Wert und einen „Flux“ (wie stark die
+Log-Energie gegenüber dem Stück davor stieg, normiert auf Mittelwert 1). Tempo,
+Beats und Noten daraus zu machen, ist Sache des Spiels.
+
+| Feld | Bedeutung |
+|------|-----------|
+| `duration`, `rate`, `hop`, `frames` | Länge (s), Abtastrate (22050), Samples pro Frame, Anzahl Frames |
+| `lowFlux`, `midFlux`, `highFlux` | Arrays (`frames` lang): Energieanstieg je Band |
+| `lowRms`, `midRms`, `highRms` | Arrays: Lautstärke je Band |
+
+Frame `i` (1-basiert) liegt bei `(i - 1) * hop / rate` Sekunden.
+
+```lua
+-- Song laden, nach 2 s Vorlauf starten, bei Pause dumpf filtern
+function start(e)
+    local ok, len = music.load("track.ogg")
+    if not ok then game.log("Musik: " .. tostring(len)) return end
+    music.play(-2.0)
+end
+
+function update(e, dt, t)
+    if game.keyPressed(game.KEY_P) then
+        if music.isPaused() then music.resume(); music.setFilter(20000, 1, 0)
+        else music.pause(); music.setFilter(400, 0.7, 3) end
+    end
+    game.setHud(string.format("%.2f / %.0f s", music.time(), music.duration()))
+end
+```
+
 ### 3.6 Punktestand & HUD (gemeinsamer Zustand)
 
 | Aufruf | Rückgabe | Beschreibung |
@@ -307,6 +365,29 @@ Score/HUD liegen im **Host** (nicht in der isolierten Skript-Umgebung), sind als
 | `active` | bool | eigener Schalter |
 | `activeInHierarchy` | bool | inklusive aller Eltern |
 | `physics`, `dynamic` | bool | hat Physik-Komponente / ist dynamisch |
+
+#### 3.7.2 Animation Graph (Zustandsautomat) steuern
+
+Hat ein Objekt eine **Animation Graph**-Komponente, setzt das Skript deren
+Parameter; die Übergänge im Graphen entscheiden, was daraus wird. Objekte ohne
+Graph oder unbekannte Parameter werden stillschweigend übergangen.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.animTrigger(id, name)` | – | Trigger auslösen; bleibt gesetzt, bis ein Übergang ihn verbraucht |
+| `game.animBool(id, name [, wert])` | – | Bool-Parameter setzen (`wert` Standard `true`) |
+| `game.animNumber(id, name, wert)` | – | Zahl-Parameter setzen |
+| `game.animState(id)` | string / `nil` | Name des aktuellen Zustands |
+
+```lua
+-- Tür: mit E öffnen, sobald sie zu ist
+local door = game.find("Tuer")
+function update(e, dt, t)
+    if game.keyPressed(game.KEY_E) and game.animState(door) == "Closed" then
+        game.animTrigger(door, "open")
+    end
+end
+```
 
 ### 3.8 Assets
 

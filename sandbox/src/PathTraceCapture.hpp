@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -11,6 +12,7 @@
 namespace fitzel {
 class Camera;
 class Renderer;
+class Texture;
 }
 
 // Turning the frame the renderer just drew into a scene the path tracer can
@@ -97,6 +99,8 @@ struct Report {
     long long triangles = 0;
     int       meshes    = 0;   // distinct meshes read back
     int       instances = 0;   // submissions harvested (a mesh may appear often)
+    int       placedMeshes = 0; // meshes drawn more than once, kept once...
+    int       placements   = 0; // ...and placed this many times
     int       materials = 0;
     int       textures  = 0;
     int       texturesShrunk = 0; // maps box-filtered down to the size limit
@@ -116,6 +120,14 @@ struct Report {
 // editor pane frame the same amount of the scene top to bottom and differ only
 // in how much they show either side -- which is what "the same shot at a
 // different size" ought to mean.
+// Read a GL texture back into the scene's texture table, box-filtered down to
+// `maxSize`, once per texture (`cache`). -1 when there is nothing to read. The
+// one road every base-colour map takes into a render, the harvest's and the
+// world's alike (WorldTrace.cpp).
+int addTexture(pathtrace::Scene& scene, const fitzel::Texture* tex, int maxSize,
+               std::unordered_map<const fitzel::Texture*, int>& cache,
+               Report* report = nullptr);
+
 std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
                                           const fitzel::Camera& camera,
                                           const Options& options,

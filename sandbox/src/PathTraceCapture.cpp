@@ -94,12 +94,36 @@ pathtrace::Image downsample(fitzel::ImagePixels src, int maxDim) {
 
 } // namespace
 
+int addTexture(pathtrace::Scene& scene, const fitzel::Texture* tex, int maxSize,
+               std::unordered_map<const fitzel::Texture*, int>& cache, Report* rep) {
+    if (!tex || !tex->isValid()) return -1;
+    auto it = cache.find(tex);
+    if (it != cache.end()) return it->second;
+    fitzel::ImagePixels px = tex->readback();
+    if (!px.valid()) {
+        cache[tex] = -1;
+        if (rep) rep->notes.emplace_back("a base-colour map could not be read back");
+        return -1;
+    }
+    const bool shrunk = std::max(px.width, px.height) > maxSize;
+    pathtrace::Image img = downsample(std::move(px), maxSize);
+    if (rep) {
+        if (shrunk) ++rep->texturesShrunk;
+        rep->textureBytes += static_cast<long long>(img.pixels.size());
+    }
+    const int index = static_cast<int>(scene.textures.size());
+    scene.textures.push_back(std::move(img));
+    cache[tex] = index;
+    return index;
+}
+
 std::string Report::summary() const {
-    char buf[256];
+    char buf[320];
     std::snprintf(buf, sizeof(buf),
-                  "%lld triangles from %d meshes (%d draws), %d materials, "
-                  "%d textures (%d shrunk, %.1f MB), %lld culled, %.2fs",
-                  triangles, meshes, instances, materials, textures, texturesShrunk,
+                  "%lld triangles from %d meshes (%d draws, %d placed %d times), "
+                  "%d materials, %d textures (%d shrunk, %.1f MB), %lld culled, %.2fs",
+                  triangles, meshes, instances, placedMeshes, placements, materials,
+                  textures, texturesShrunk,
                   static_cast<double>(textureBytes) / (1024.0 * 1024.0),
                   culled, seconds);
     return buf;
@@ -201,9 +225,9 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         scene->env.intensity = 1.0f;
         char buf[256];
         std::snprintf(buf, sizeof(buf),
-                      "sky: no panorama, so the scene's flat ambient "
-                      "(%.3f, %.3f, %.3f) as a gradient -- not the sky shader's "
-                      "clouds", amb.r, amb.g, amb.b);
+                      "light: no panorama, so the scene is lit by its flat "
+                      "ambient (%.3f, %.3f, %.3f) spread over a gradient, as the "
+                      "viewport lights it", amb.r, amb.g, amb.b);
         rep.notes.emplace_back(buf);
     }
 
@@ -224,27 +248,12 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
     std::vector<glm::vec4>                                    paint;
 
     bool sawTerrainLayers = false;
+    bool sawGround        = false;
     bool sawTerrainPaint  = false;
     bool sawWetness       = false;
 
     auto textureFor = [&](const fitzel::Texture* tex) -> int {
-        if (!tex || !tex->isValid()) return -1;
-        auto it = texCache.find(tex);
-        if (it != texCache.end()) return it->second;
-        fitzel::ImagePixels px = tex->readback();
-        if (!px.valid()) {
-            texCache[tex] = -1;
-            rep.notes.emplace_back("a base-colour map could not be read back");
-            return -1;
-        }
-        const bool shrunk = std::max(px.width, px.height) > options.maxTextureSize;
-        pathtrace::Image img = downsample(std::move(px), options.maxTextureSize);
-        if (shrunk) ++rep.texturesShrunk;
-        rep.textureBytes += static_cast<long long>(img.pixels.size());
-        const int index = static_cast<int>(scene->textures.size());
-        scene->textures.push_back(std::move(img));
-        texCache[tex] = index;
-        return index;
+        return addTexture(*scene, tex, options.maxTextureSize, texCache, &rep);
     };
 
     // A material, translated into the tracer's terms. `opacity` comes from the
@@ -299,13 +308,43 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
             // editor arrives here without this code being told about it.
             const int layers = std::min(mat->get<int>(kLayerCount, 0),
                                         kMaxTerrainLayers);
+            // The forest floor is named by its index in the SHADER's layer
+            // array; a layer whose map could not be read is dropped below, so
+            // the index is carried over to where that layer lands here.
+            const int shaderForest = mat->get<int>("uEcoOn", 0) != 0
+                                   ? mat->get<int>("uForestLayer", -1) : -1;
+            int forestLayer = -1;
             for (int i = 0; i < layers; ++i) {
                 const std::string ix = "[" + std::to_string(i) + "]";
                 pathtrace::TerrainLayer L;
                 L.texture = textureFor(mat->texture("uLayerTex" + ix));
                 L.band    = mat->get<glm::vec4>("uLayerBand" + ix, glm::vec4(0.0f));
                 L.scale   = mat->get<float>("uLayerScale" + ix, 0.1f);
-                if (L.texture >= 0) m.layers.push_back(L);
+                if (L.texture < 0) continue;
+                if (i == shaderForest) forestLayer = static_cast<int>(m.layers.size());
+                m.layers.push_back(L);
+            }
+            // The ground past its bands -- the meadow and the woods -- read off
+            // the same material, once: a scene has one terrain.
+            if (!sawGround) {
+                sawGround = true;
+                pathtrace::GroundLook& g = scene->ground;
+                g.meadowNear   = mat->get<float>("uMeadowNear", 0.0f);
+                g.meadowFar    = mat->get<float>("uMeadowFar", 0.0f);
+                g.meadowAmount = mat->get<float>("uMeadowAmount", 1.0f);
+                g.meadowLush   = mat->get<float>("uMeadowLush", 0.62f);
+                g.grassTint    = mat->get<glm::vec3>("uGrassTint", glm::vec3(1.0f));
+                g.grassTop     = mat->get<float>("uGrassTop", 1e9f);
+                g.grassDry     = mat->get<float>("uGrassDry", 0.0f);
+                g.waterLevel   = mat->get<float>("uWaterLevel", -1000.0f);
+                g.forestLayer  = forestLayer;
+                g.canopy       = mat->get<glm::vec3>("uCanopy", glm::vec3(0.0f));
+                g.ecoCover     = mat->get<float>("uEcoCover", g.ecoCover);
+                g.ecoStandSize = std::max(1.0f, mat->get<float>("uEcoStandSize", g.ecoStandSize));
+                g.ecoTreeLine  = mat->get<float>("uEcoTreeLine", g.ecoTreeLine);
+                g.ecoWater     = mat->get<float>("uEcoWater", g.ecoWater);
+                g.ecoSolitary  = mat->get<float>("uEcoSolitary", g.ecoSolitary);
+                g.ecoSlopeLove = mat->get<float>("uEcoSlopeLove", g.ecoSlopeLove);
             }
             m.detailScale    = mat->get<float>(kDetailScale, 0.0f);
             m.detailStrength = mat->get<float>(kDetailStr, 0.0f);
@@ -325,6 +364,19 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         matCache[mat] = index;
         return index;
     };
+
+    // How often each mesh is drawn. One drawn more than once becomes ONE mesh
+    // in the scene and a placement per draw, instead of a copy of its
+    // triangles per draw: a fence post two hundred times, a wheel four, a prop
+    // scattered along a road. It changes nothing in the picture -- pathcheck
+    // holds a placed mesh to the same image as the same mesh baked -- and it is
+    // the difference between a street of lamp posts costing one post's memory
+    // and costing all of them. Terrain (painted per vertex) and voxels (coloured
+    // per vertex) stay flat: their colour is baked into their triangles.
+    std::unordered_map<const fitzel::Mesh*, int> drawCount;
+    for (const fitzel::Renderer::Submission& sub : queue)
+        if (sub.mesh && sub.material) ++drawCount[sub.mesh];
+    std::unordered_map<const fitzel::Mesh*, int> placedMesh;   // -> Scene::meshes
 
     for (const fitzel::Renderer::Submission& sub : queue) {
         if (!sub.mesh || !sub.material) continue;
@@ -348,6 +400,58 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
                                                 sub.textureAlphaIsTransparency);
 
         const glm::mat4 model = sub.model;
+
+        if (!perVertexColor && colorMode != 1 && drawCount[sub.mesh] > 1) {
+            // Placed, not copied. Culled whole by the distance limit, on the
+            // mesh's bounds, rather than triangle by triangle.
+            const glm::vec3 lo = sub.mesh->boundsMin(), hi = sub.mesh->boundsMax();
+            const glm::vec3 c  = glm::vec3(model * glm::vec4((lo + hi) * 0.5f, 1.0f));
+            const float     r  = glm::length(glm::vec3(model * glm::vec4(hi - lo, 0.0f))) * 0.5f;
+            const long long n  = static_cast<long long>(data.indices.empty()
+                                     ? data.vertices.size() / 3 : data.indices.size() / 3);
+            if (maxDist > 0.0f && glm::distance(c, eye) - r > maxDist) {
+                rep.culled += n;
+                continue;
+            }
+            auto pm = placedMesh.find(sub.mesh);
+            if (pm == placedMesh.end()) {
+                pathtrace::Mesh mesh;
+                mesh.triangles.reserve(static_cast<std::size_t>(n));
+                for (std::size_t t = 0; t < static_cast<std::size_t>(n); ++t) {
+                    const std::uint32_t i0 = data.indices.empty()
+                        ? static_cast<std::uint32_t>(t * 3 + 0) : data.indices[t * 3 + 0];
+                    const std::uint32_t i1 = data.indices.empty()
+                        ? static_cast<std::uint32_t>(t * 3 + 1) : data.indices[t * 3 + 1];
+                    const std::uint32_t i2 = data.indices.empty()
+                        ? static_cast<std::uint32_t>(t * 3 + 2) : data.indices[t * 3 + 2];
+                    if (i0 >= data.vertices.size() || i1 >= data.vertices.size() ||
+                        i2 >= data.vertices.size())
+                        continue;
+                    const fitzel::Vertex& v0 = data.vertices[i0];
+                    const fitzel::Vertex& v1 = data.vertices[i1];
+                    const fitzel::Vertex& v2 = data.vertices[i2];
+                    pathtrace::Triangle tri;
+                    tri.p0 = v0.position; tri.p1 = v1.position; tri.p2 = v2.position;
+                    const glm::vec3 cr = glm::cross(tri.p1 - tri.p0, tri.p2 - tri.p0);
+                    if (glm::dot(cr, cr) < 1e-20f) continue;
+                    tri.n0 = v0.normal; tri.n1 = v1.normal; tri.n2 = v2.normal;
+                    tri.uv0 = v0.uv; tri.uv1 = v1.uv; tri.uv2 = v2.uv;
+                    tri.material = 0;   // every placement overrides it
+                    mesh.triangles.push_back(tri);
+                }
+                pm = placedMesh.emplace(sub.mesh, static_cast<int>(scene->meshes.size())).first;
+                scene->meshes.push_back(std::move(mesh));
+                ++rep.placedMeshes;
+            }
+            pathtrace::Instance in;
+            in.transform = model;
+            in.mesh      = pm->second;
+            in.material  = flatMaterial;
+            scene->instances.push_back(in);
+            ++rep.placements;
+            continue;
+        }
+
         // Normals need the inverse transpose or a non-uniform scale shears them
         // off the surface -- which shows up as lighting that slides across a
         // squashed object and is very hard to recognise as a normal problem.
@@ -376,7 +480,12 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
             tri.p1 = glm::vec3(model * glm::vec4(v1.position, 1.0f));
             tri.p2 = glm::vec3(model * glm::vec4(v2.position, 1.0f));
 
-            if (maxDist > 0.0f) {
+            // Never the terrain. The limit is for the things standing on the
+            // ground; the ground itself is what the far terrain's rings leave a
+            // hole for (the streamed near area), and cutting it at the limit
+            // opened a gap between the two that the lake showed through -- a
+            // flooded plain the viewport does not have.
+            if (maxDist > 0.0f && colorMode != 1) {
                 const float d = std::min(glm::distance(tri.p0, eye),
                                 std::min(glm::distance(tri.p1, eye),
                                          glm::distance(tri.p2, eye)));
@@ -440,7 +549,7 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
     if (sawTerrainPaint && paint.size() == scene->triangles.size() * 3)
         scene->vertexPaint = std::move(paint);
 
-    rep.triangles = static_cast<long long>(scene->triangles.size());
+    rep.triangles = scene->triangleCount();
     rep.materials = static_cast<int>(scene->materials.size());
     rep.textures  = static_cast<int>(scene->textures.size());
 
@@ -454,8 +563,6 @@ std::shared_ptr<pathtrace::Scene> capture(const fitzel::Renderer& renderer,
         rep.notes.emplace_back("terrain layers are traced (height/slope bands, "
                                "triplanar, hand-painted weights); their normal "
                                "maps are not");
-    rep.notes.emplace_back("grass, trees, particles, rain and water are not "
-                               "traced: their geometry only exists in a shader");
     if (rep.culled > 0)
         rep.notes.emplace_back("geometry beyond the distance limit was left out "
                                "-- raise it if a reflection looks cut off");

@@ -78,6 +78,10 @@ struct State {
     int   gpuPerFrame = 2;
     float gpuFrameBudgetMs = 8.0f; // of the frame, given to the tracer
     pathcapture::Report report;
+    // What of the world beyond the render queue the preview shows (near only;
+    // see worldtrace::append's `preview`). The main loop copies the Render
+    // panel's switches in, so the preview and the still agree on what is in.
+    worldtrace::Options world;
     fitzel::Texture     image;
     int         texW = 0, texH = 0;
     int         shownSamples = -1;

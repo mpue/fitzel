@@ -8,6 +8,7 @@
 #include <glm/glm.hpp>
 
 class SynthSystem;
+class MusicSystem;
 
 // The host bridge exposed to Lua scripts as the global `game` table. The sandbox
 // fills these callbacks and fields in before ticking scripts each frame; the
@@ -271,6 +272,9 @@ struct ScriptHost {
     // The Synth components' players, for the `synth` table (synth.noteOn,
     // synth.playMidi, ...). Null = every synth.* call is a no-op returning false.
     SynthSystem* synths = nullptr;
+    // The game's song with its clock and filter, for the `music` table
+    // (music.play, music.time, music.analyze, ...). Null = every call a no-op.
+    MusicSystem* music = nullptr;
 
     // --- Shared game state ----------------------------------------------------
     // Lua script environments are per-entity (isolated), so shared state like the

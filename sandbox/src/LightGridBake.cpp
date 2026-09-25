@@ -1,6 +1,7 @@
 #include "LightGrid.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 
 // The bake, kept out of the runtime half on purpose.
@@ -62,6 +63,53 @@ void fillBuried(Grid& g) {
 }
 
 } // namespace
+
+// Laying a grid over a harvested scene is part of the bake: it reads the
+// tracer's Scene (instances and all), which a shipped game never links.
+Grid layout(const pathtrace::Scene& scene, const Settings& settings) {
+    Grid g;
+    // Instances included: a scene can be all placed copies and no world
+    // triangles at all, and its grid still has to cover it.
+    glm::vec3 lo, hi;
+    if (!scene.bounds(lo, hi)) return g;
+
+    const float pad = std::max(0.0f, settings.padding);
+    lo -= glm::vec3(pad);
+    hi += glm::vec3(pad);
+    // Vertically the grid is cut to what a surface can actually sample: from a
+    // little below the lowest geometry to a little above the highest. A racing
+    // world is wide and shallow, and probes far over the tarmac are probes
+    // nothing will ever look up.
+    hi.y = (hi.y - pad) + std::max(0.0f, settings.headroom);
+
+    const glm::vec3 size = glm::max(hi - lo, glm::vec3(1.0f));
+    const int res = std::clamp(settings.resolution, 2, 128);
+
+    // Cells kept roughly cubic: the longest HORIZONTAL axis gets `res`, and the
+    // others are scaled to match its cell size. Horizontal rather than longest
+    // overall, because a scene with one tall tower in it should not spend its
+    // whole budget on the tower.
+    const float horizontal = std::max(size.x, size.z);
+    const float cell = horizontal / static_cast<float>(res);
+    g.nx = std::clamp(static_cast<int>(std::lround(size.x / cell)), 2, 256);
+    g.ny = std::clamp(static_cast<int>(std::lround(size.y / cell)), 2, 64);
+    g.nz = std::clamp(static_cast<int>(std::lround(size.z / cell)), 2, 256);
+
+    // Back off uniformly rather than clipping one axis, so an over-large scene
+    // gets a coarser grid rather than a lopsided one.
+    while (g.nx * g.ny * g.nz > kMaxProbes) {
+        g.nx = std::max(2, g.nx * 3 / 4);
+        g.ny = std::max(2, g.ny * 3 / 4);
+        g.nz = std::max(2, g.nz * 3 / 4);
+        if (g.nx == 2 && g.ny == 2 && g.nz == 2) break;
+    }
+
+    g.lo = lo;
+    g.hi = hi;
+    g.probes.assign(static_cast<std::size_t>(g.count()), pathtrace::ProbeSh{});
+    return g;
+}
+
 
 bool bake(Grid& grid, const pathtrace::Scene& scene, const Settings& settings,
           const std::function<bool(float)>& progress) {

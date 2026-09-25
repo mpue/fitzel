@@ -6,11 +6,13 @@
 #include <glm/gtc/constants.hpp>
 
 #include "Primitives.hpp"   // makeCubeVerts
+#include "SplineGenDetail.hpp"
 
 using fitzel::AssetId;
 
 namespace splinegen {
-namespace {
+// The geometry helpers are shared with BridgeGen.cpp through SplineGenDetail.hpp.
+namespace detail {
 
 // --- Small shared helpers ----------------------------------------------------
 
@@ -50,13 +52,6 @@ const fitzel::MeshData& unitCube() {
     }();
     return cube;
 }
-
-// One drawable slot: geometry plus the AABB that grows with it.
-struct Slot {
-    fitzel::MeshData data;
-    glm::vec3        lo{1e30f}, hi{-1e30f};
-    bool empty() const { return data.vertices.empty(); }
-};
 
 // A box, rotated about +Y and merged in world space. `yaw` in radians, in the
 // engine's Euler-Y convention (0 = the box's local +Z points at world +Z), the
@@ -100,20 +95,6 @@ void appendBox(Slot& sl, const glm::vec3& center, const glm::vec3& half, float y
 
 // --- Path frames -------------------------------------------------------------
 
-// One sample of the path with the axes a cross-section is expressed in.
-//
-// The frame is deliberately UPRIGHT: the tangent is taken in plan only and `up`
-// is always world up. A wall on a hillside stands plumb and a ballast bed stays
-// level across the track, which is what both actually do -- rolling the section
-// with the gradient would lean every post downhill.
-struct Frame {
-    glm::vec3 p;        // world, ground + lift
-    glm::vec3 t;        // unit tangent in plan (y = 0)
-    glm::vec3 r;        // unit right = cross(up, t)
-    float     station;  // metres along the path (plan length)
-    float     yaw;      // radians about +Y, for boxes placed on this frame
-};
-
 std::vector<Frame> makeFrames(const std::vector<glm::vec3>& path, bool closed) {
     std::vector<Frame> out;
     const std::size_t n = path.size();
@@ -152,11 +133,6 @@ std::vector<Frame> makeFrames(const std::vector<glm::vec3>& path, bool closed) {
 }
 
 // --- Sweeping a cross-section along the path ---------------------------------
-
-// A closed cross-section in (lateral, up) metres relative to the frame origin,
-// wound COUNTER-CLOCKWISE in that plane so the outward normal of edge a->b is
-// (dy, -dx). Everything below builds one of these and hands it to sweep().
-using Profile = std::vector<glm::vec2>;
 
 // Triangulate a simple CCW polygon by ear clipping, as index triples into it.
 //
@@ -325,19 +301,11 @@ void sweep(Slot& sl, const std::vector<Frame>& f, std::size_t i0, std::size_t i1
 
 // --- Walking the path at a spacing -------------------------------------------
 
-// Where a repeated piece stands. Interpolated between frames, so the spacing is
-// a true metre spacing rather than "every n-th sample".
-struct Stop {
-    glm::vec3 p;
-    float     yaw;
-    int       index;  // which piece this is along the WHOLE path (jitter seed)
-};
-
 // Stations in [fromStation, toStation) at `spacing`, phased from the path's
 // start so a chunk boundary doesn't shift the pattern. `phase` moves the first
 // station that far along; nothing is placed before it.
 std::vector<Stop> stopsIn(const std::vector<Frame>& f, std::size_t i0, std::size_t i1,
-                          float spacing, int& budget, float phase = 0.0f) {
+                          float spacing, int& budget, float phase) {
     std::vector<Stop> out;
     const float step = std::max(spacing, 0.05f);
     const float from = f[i0].station, to = f[i1].station;
@@ -391,6 +359,12 @@ AssetId ensureMaterial(std::vector<MaterialDef>& mats, const std::string& name,
     mats.push_back(md);
     return md.assetId;
 }
+
+} // namespace detail
+
+using namespace detail;
+
+namespace {
 
 // Clamp a style into a range that can actually be built. Applied inside
 // generate() rather than at the panel, so a scene hand-edited to a 0 m post
@@ -450,6 +424,7 @@ const char* kindName(Kind k) {
         case Kind::Wall:  return "Wall";
         case Kind::Rail:  return "Track";
         case Kind::Path:  return "Path";
+        case Kind::Bridge: return "Bridge";
         case Kind::Count: break;
     }
     return "Spline";
@@ -481,7 +456,7 @@ bool Style::operator==(const Style& o) const {
            sleeperLength == o.sleeperLength && sleeperWidth == o.sleeperWidth &&
            sleeperHeight == o.sleeperHeight && railHeight == o.railHeight &&
            railWidth == o.railWidth && colorA == o.colorA && colorB == o.colorB &&
-           colorC == o.colorC && texTile == o.texTile;
+           colorC == o.colorC && texTile == o.texTile && bridge == o.bridge;
 }
 
 const char* presetName(Preset p) {
@@ -511,12 +486,21 @@ const char* presetName(Preset p) {
         case Preset::Tram:          return "Tram track";
         case Preset::Siding:        return "Yard siding";
         case Preset::Bare:          return "Bare path";
+        case Preset::BeamBridge:    return "Beam bridge";
+        case Preset::Footbridge:    return "Footbridge";
+        case Preset::Viaduct:       return "Stone viaduct";
+        case Preset::DeckArch:      return "Deck arch";
+        case Preset::TiedArch:      return "Tied arch";
+        case Preset::TrussBridge:   return "Truss bridge";
+        case Preset::Suspension:    return "Suspension bridge";
+        case Preset::CableStayed:   return "Cable-stayed bridge";
         case Preset::Count:         break;
     }
     return "Preset";
 }
 
 Kind presetKind(Preset p) {
+    if (p >= Preset::BeamBridge)    return Kind::Bridge;
     if (p == Preset::Bare)          return Kind::Path;
     if (p >= Preset::StandardGauge) return Kind::Rail;
     if (p >= Preset::GardenWall)    return Kind::Wall;
@@ -552,6 +536,9 @@ Style preset(Preset p) {
         case Kind::Path:   // builds nothing, so has nothing to style
             s.collide = false;
             break;
+        case Kind::Bridge:  // its numbers live with the rule, in BridgeGen.cpp
+            bridgePreset(p, s);
+            return s;
     }
 
     switch (p) {
@@ -738,6 +725,10 @@ Style preset(Preset p) {
             s.colorC = {0.40f, 0.38f, 0.34f};
             break;
         case Preset::Bare:  break;
+        case Preset::BeamBridge: case Preset::Footbridge: case Preset::Viaduct:
+        case Preset::DeckArch: case Preset::TiedArch: case Preset::TrussBridge:
+        case Preset::Suspension: case Preset::CableStayed:
+            break;   // returned above
         case Preset::Count: break;
     }
     return s;
@@ -748,6 +739,7 @@ Style preset(Kind k) {
         case Kind::Wall: return preset(Preset::GardenWall);
         case Kind::Rail: return preset(Preset::StandardGauge);
         case Kind::Path: return preset(Preset::Bare);
+        case Kind::Bridge: return preset(Preset::BeamBridge);
         case Kind::Fence:
         case Kind::Count: break;
     }
@@ -772,6 +764,11 @@ Palette ensurePalette(std::vector<MaterialDef>& materials, Kind k, const Style& 
             pal.primary   = ensureMaterial(materials, slot + "Steel",   s.colorA, 0.28f, 0.28f);
             pal.secondary = ensureMaterial(materials, slot + "Sleeper", s.colorB, 0.0f, 0.92f);
             pal.tertiary  = ensureMaterial(materials, slot + "Ballast", s.colorC, 0.0f, 0.98f);
+            break;
+        case Kind::Bridge:
+            pal.primary   = ensureMaterial(materials, slot + "Deck",  s.colorA, 0.0f, 0.90f);
+            pal.secondary = ensureMaterial(materials, slot + "Steel", s.colorB, 0.15f, 0.45f);
+            pal.tertiary  = ensureMaterial(materials, slot + "Pier",  s.colorC, 0.0f, 0.92f);
             break;
         case Kind::Path:   // never asked: a bare path has no parts to colour
         case Kind::Fence:
@@ -799,7 +796,9 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
     const std::vector<Frame> f = makeFrames(path, closed);
     if (f.size() < 2) return res;
     res.length = f.back().station;
-    if (k == Kind::Path) return res;   // the curve is the whole of it
+    // The curve is the whole of a bare path; a bridge is built by
+    // generateBridge(), which also needs the ground.
+    if (k == Kind::Path || k == Kind::Bridge) return res;
 
     int budget = std::max(maxPieces, 1);
 
@@ -954,6 +953,7 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
                 break;
             }
             case Kind::Path:   // returned above; listed so the switch is complete
+            case Kind::Bridge:
                 break;
         }
 
@@ -1000,6 +1000,7 @@ Result generate(Kind k, const Style& sIn, const std::vector<glm::vec3>& pathIn,
                 if (s.ballastWidth <= 0.0f) { halfW = s.sleeperLength * 0.5f; height = s.sleeperHeight; }
                 break;
             case Kind::Path:   // returned before any geometry, never reaches here
+            case Kind::Bridge:
                 break;
         }
         // ~4 m of path per box: short enough that a curve stays inside its own

@@ -11,39 +11,34 @@
 // renderer worth making.
 //
 // So every term below is a transliteration, not a reinterpretation. Same
-// Moeller-Trumbore, same binned-SAH BVH walked the same way, same GGX with
-// height-correlated Smith, same range-limited lamp falloff the raster path
+// Moeller-Trumbore, same two-level binned-SAH BVH walked the same way, same GGX
+// with height-correlated Smith, same range-limited lamp falloff the raster path
 // uses, same misWeight, same sRGB->linear at the same point. Where a constant
 // looks arbitrary it is because the CPU has that constant.
 //
-// WHAT IT DOES NOT DO YET, and the harness says so rather than the picture
-// quietly disagreeing:
-//   * no HDRI. The environment is the three-stop gradient fallback -- which is
-//     also why there is no environment importance sampling here: the CPU only
-//     builds that sampler for a MAP, and without one it does not aim at the sky
-//     either. On a scene with a panorama the two would part company, and
-//     gpucheck's frames deliberately have none.
-//   * no depth of field. The camera is a pinhole here whatever aperture the
-//     scene carries, so a frame with one out-of-focus foreground is the one
-//     place the two pictures differ by design.
-// Every one of those is a stage of its own, and each is measurable against the
-// CPU the day it lands.
+// WHAT IS HERE: base-colour maps, tints and the three alpha modes (one blob of
+// RGBA8 for the whole scene, sampled by Image::sample's own wrap-then-bilinear
+// arithmetic); the terrain -- its layers claimed by height and slope, projected
+// down three axes, jittered by the same noise, overridden by the same paint;
+// INSTANCES (a mesh placed many times, walked through a second level of the
+// tree, which is the only way a forest fits on the card); translucent leaves;
+// additive glows; an HDRI panorama, importance-sampled from the CPU's own
+// distribution; the captured sky backdrop the camera sees; and the lens.
 //
-// WHAT IS HERE that a reader of an older version of this file would not expect:
-// base-colour maps, tints and the three alpha modes (one blob of RGBA8 for the
-// whole scene, sampled by Image::sample's own wrap-then-bilinear arithmetic),
-// and the terrain -- its layers claimed by height and slope, projected down
-// three axes, jittered by the same noise, overridden by the same paint.
+// WHAT IT DOES NOT DO. Nothing the CPU does -- this list is empty on purpose,
+// and gpucheck is what keeps it that way.
 
-// How deep the traversal stack goes. Injected by the host, which knows the
-// actual depth of the tree it is about to hand over -- and this number is the
-// single biggest dial on how fast this kernel runs. It is per-thread scratch
-// memory, tens of thousands of threads are in flight, and how many of them the
-// card can keep in flight at once is decided by how much of it each one asks
-// for. Measured on one frame at 1280x960: 64 entries 0.48s, 32 entries 0.27s,
-// 16 entries 0.21s. So it is not rounded up "to be safe" -- being safe is the
-// host's job (Tracer::upload measures the tree), and rounding up here costs
-// half the speed.
+// How deep the traversal stacks go. Injected by the host, which knows the
+// actual depth of the trees it is about to hand over -- and these numbers are
+// the single biggest dial on how fast this kernel runs. They are per-thread
+// scratch memory, tens of thousands of threads are in flight, and how many of
+// them the card can keep in flight at once is decided by how much of it each
+// one asks for. Measured on one frame at 1280x960: 64 entries 0.48s, 32 entries
+// 0.27s, 16 entries 0.21s. So it is not rounded up "to be safe" -- being safe is
+// the host's job (Tracer::upload measures the trees), and rounding up here
+// costs half the speed.
+// One stack serves both levels of the tree (see closest()), so the host sizes
+// it for the deepest mesh tree plus the top level's depth plus the markers.
 #ifndef TRAVERSAL_STACK
 #define TRAVERSAL_STACK 64
 #endif
@@ -80,6 +75,10 @@ struct Mat {
     vec4  misc;         // x opacity, y emissionStrength, z alphaCutoff,
                         // w index of refraction (0 = not glass at all)
     vec4  tint;         // rgb multiplies the base-colour map, a = detail scale
+    vec4  extra;        // x translucency, y additive (1 = a glow),
+                        // z far ground (1 = farterrain.frag's colour)
+    vec4  absorb;       // rgb extinction per metre of the body (glass only)
+    vec4  medium;       // rgb the body's own colour, sRGB
     ivec4 modeTex;      // x = AlphaMode (0 opaque, 1 cutout, 2 blend)
                         // y = base-colour map, -1 for none
                         // z,w = first terrain layer and how many (0 = not terrain)
@@ -91,7 +90,8 @@ struct Mat {
 struct Layer {
     vec4 band;      // height start/end, slope start/end (degrees)
     vec4 scaleTex;  // x = world->texture scale, y = texture index, as a float,
-                    // z = the material's height blend (lit.frag's uHeightBlend)
+                    // z = the material's height blend (lit.frag's uHeightBlend),
+                    // w = 1 on the forest floor layer (GroundLook::forestLayer)
 };
 
 struct Lamp {
@@ -101,8 +101,24 @@ struct Lamp {
     vec4 cone;          // x cosInner, y cosOuter (y < -1 marks a point light)
 };
 
+// One placement of a mesh: world -> object as three rows of a 3x4, the normal
+// matrix (object -> world, inverse transpose) as three rows, and where the
+// mesh's tree starts plus the material that overrides its own (-1 for none).
+struct Inst {
+    vec4  toObj0, toObj1, toObj2;
+    vec4  nrm0, nrm1, nrm2;
+    ivec4 meta;          // x = root node, y = material override
+};
+
 layout(std430, binding = 1) readonly buffer Tris   { Tri  tris[];  };
+// Every tree in the scene, laid end to end: the world's at 0, each mesh's at
+// its own root, and the top level's (over the instances) at uTlasRoot.
+// A leaf of the top level carries its count NEGATED: its entries are
+// instances, not triangles, and that sign is how the single traversal loop
+// tells them apart.
 layout(std430, binding = 2) readonly buffer Nodes  { Node nodes[]; };
+// Leaf slot -> triangle. Only read once per ray, at the hit it settles on: the
+// leaves themselves walk tripos in slot order.
 layout(std430, binding = 3) readonly buffer Index  { int  index[]; };
 layout(std430, binding = 4) readonly buffer Mats   { Mat  mats[];  };
 layout(std430, binding = 5) readonly buffer Lamps  { Lamp lamps[]; };
@@ -115,14 +131,20 @@ layout(std430, binding = 5) readonly buffer Lamps  { Lamp lamps[]; };
 layout(std430, binding = 6) readonly buffer TexMeta { ivec4 texMeta[]; };
 layout(std430, binding = 7) readonly buffer TexData { uint  texels[];  };
 // The terrain's layers, and the weights somebody painted on it: three per
-// triangle, in the triangles' own order, so a hit reaches them by its triangle
-// index alone -- the same table paintAt() reads on the CPU.
+// WORLD triangle, in the triangles' own order, so a hit reaches them by its
+// triangle index alone -- the same table paintAt() reads on the CPU.
 layout(std430, binding = 8) readonly buffer Layers  { Layer layers[]; };
 layout(std430, binding = 9) readonly buffer Paints  { vec4  vpaint[]; };
-// The triangles' corners, as p0/e1/e2: three vec4 per triangle, contiguous, and
-// the only place they are held. Splitting them out of Tri costs nothing per
-// triangle and changes how many cache lines a leaf full of them touches.
+// The triangles' corners, as p0/e1/e2: three vec4 per triangle, in LEAF SLOT
+// order -- a leaf is one contiguous run of them, the same layout the CPU walks.
 layout(std430, binding = 10) readonly buffer TriPos { vec4 tripos[]; };
+// The instances, in the top level's leaf order.
+layout(std430, binding = 11) readonly buffer Insts  { Inst insts[]; };
+// The sky: the lighting panorama (RGB floats), its importance distribution
+// (func, conditional and marginal CDFs, all the CPU's own), and the backdrop
+// the camera sees. One buffer with offsets rather than five blocks, because the
+// number of storage blocks a compute shader may use is a real limit.
+layout(std430, binding = 12) readonly buffer EnvData { float envData[]; };
 
 uniform ivec2 uSize;
 uniform int   uSampleBase;   // samples already in the accumulator (seeds the RNG)
@@ -131,9 +153,14 @@ uniform int   uSeed;
 uniform int   uLampCount;
 uniform int   uTexCount;
 uniform int   uHavePaint;
+uniform int   uWorldTris;    // triangles below this id are the world's (paintable)
+uniform int   uHaveWorld;    // the world tree exists (node 0)
+uniform int   uTlasRoot;     // -1: no instances
+uniform int   uInstCount;
 
 uniform vec3  uCamPos, uCamFwd, uCamUp, uCamRight;
 uniform float uHalfU, uHalfV;
+uniform float uAperture, uFocus;
 
 uniform int   uSunOn;
 uniform vec3  uSunAxis, uSunColor, uSunRadiance, uSunDirRaw;
@@ -141,6 +168,47 @@ uniform float uSunCosMax, uSunPdf;
 
 uniform vec3  uEnvZenith, uEnvHorizon, uEnvGround;
 uniform float uEnvIntensity;
+// The panorama: width/height (0 = none, the gradient stands in) and where its
+// pixels start in EnvData. The distribution: its grid, where func/cond/marg
+// start, and its total. The backdrop: its size and offset (0 = none).
+uniform ivec2 uEnvSize;
+uniform int   uEnvPixOff;
+uniform ivec2 uDistSize;
+uniform int   uDistFuncOff, uDistCondOff, uDistMargOff;
+uniform float uDistTotal;
+uniform ivec2 uBackSize;
+uniform int   uBackOff;
+
+// The clouds' shadow on the ground (pathtrace::SunMask): where its values sit in
+// EnvData, its size in texels, its rect (origin.xy, 1/size, refY) and the sun it
+// was cast from. uMaskSize.x == 0: no clouds.
+uniform ivec2 uMaskSize;
+uniform int   uMaskOff;
+uniform vec4  uMaskRect;
+uniform vec3  uMaskSun;
+// What a lit water body glows with per unit of its colour (mediumLight()).
+uniform vec3  uMediumGlow;
+
+// The ground past its bands (pathtrace::GroundLook). The meadow: near, far,
+// amount, lushness (far <= 0: off), its tint, its top, its dry sward and the
+// water line; the moisture grid in EnvData (samples 0: none). The woods: on,
+// cover, stand size, slope love; the canopy colour and the distances it takes
+// over between.
+uniform vec4  uMeadow;
+uniform vec3  uGrassTint;
+uniform vec3  uGrassTopDryWater;
+uniform int   uMoistSamples;
+uniform int   uMoistOff;
+uniform vec3  uMoistRect;      // origin x, origin z, cell
+uniform int   uWoodsOn;
+uniform vec3  uEco;            // cover, stand size, slope love
+uniform vec3  uCanopy;
+uniform vec2  uCanopyRange;
+// The far ground's look: ecology on, far tree line, far snow level; the
+// ecology's tree line, water line and lone-tree density; the air's sun colour.
+uniform vec3  uFarLook;
+uniform vec3  uEco2;
+uniform vec3  uAirSun;
 
 uniform vec3  uFogColor, uFogSunColor;
 uniform float uFogDensity, uFogFalloff, uFogHeight;
@@ -276,7 +344,13 @@ float misWeight(float a, float b) {
 // integer %, whose sign for a negative operand GLSL does not pin down -- and the
 // indices here go negative all the time, because a mesh's UVs are metres and the
 // texel coordinate of a point half a map away is a large negative number.
-int wrapTexel(int a, int n) { return int(mod(float(a), float(n))); }
+//
+// And clamped after the wrap, which is not belt and braces: a coordinate that
+// arrives as NaN (a ray whose direction went non-finite somewhere upstream) makes
+// the wrap return whatever the hardware makes of int(NaN), and an index read with
+// that is a read far outside the buffer -- which on this driver is not a wrong
+// colour but a page fault that takes the whole editor down with it.
+int wrapTexel(int a, int n) { return clamp(int(mod(float(a), float(n))), 0, n - 1); }
 
 vec4 texelAt(ivec4 md, int x, int y) {
     uint p = texels[md.x + y * md.y + x];
@@ -373,9 +447,224 @@ vec3 triplanar(int t, vec3 wp, vec3 n, float scale) {
            sampleTex(t, vec2(wp.x, wp.y) * scale).rgb * bw.z;
 }
 
+// --- The ground past its bands (GroundLook on the CPU) -----------------------
+// meadow.glsl's colour and cover, ecology.glsl's stands, transcribed from the
+// CPU's transcriptions -- at full detail, as the CPU takes them.
+float meadowHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float meadowNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = meadowHash(i), b = meadowHash(i + vec2(1, 0));
+    float c = meadowHash(i + vec2(0, 1)), d = meadowHash(i + vec2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+vec3 meadowColour(vec2 xz, float lush) {
+    float meadow = meadowNoise(xz * 0.05);
+    float hueN   = meadowNoise(xz * 0.11 + 31.0);
+    float shade  = meadowNoise(xz * 0.035 + 5.0);
+    float green  = clamp(lush - (1.0 - meadow) * 0.55 - 0.125 - 0.04, 0.0, 1.0);
+    vec3 lushTip = mix(vec3(0.14, 0.36, 0.13), vec3(0.44, 0.54, 0.16), hueN * hueN);
+    float bright = (0.55 + 0.55 * shade) * 0.98 * mix(0.85, 1.05, lush);
+    vec3 base = mix(vec3(0.16, 0.14, 0.06), vec3(0.05, 0.13, 0.04), green) * bright;
+    vec3 tip  = mix(vec3(0.50, 0.45, 0.22), lushTip, green) * bright;
+    return mix(base, tip, 0.6);
+}
+float meadowCover(vec2 xz, float h, float ny, float waterLevel, float top) {
+    float c = smoothstep(0.80, 0.86, ny) * smoothstep(waterLevel + 0.3, waterLevel + 0.9, h) *
+              (1.0 - smoothstep(top - 3.0, top, h));
+    float bare = meadowNoise(xz * 0.13 + vec2(19.0, 7.0));
+    return c * mix(0.5, 1.0, smoothstep(0.20, 0.32, bare));
+}
+uint ecoHash(int x, int z, uint seed) {
+    uint h = uint(x) * 0x8da6b343u ^ uint(z) * 0xd8163841u ^ seed * 0xcb1ab31fu;
+    h ^= h >> 13u;
+    h *= 0x5bd1e995u;
+    h ^= h >> 15u;
+    return h;
+}
+float ecoNoise(vec2 p, uint seed) {
+    vec2 fl = floor(p);
+    int ix = int(fl.x), iz = int(fl.y);
+    vec2 t = p - fl;
+    t = t * t * (3.0 - 2.0 * t);
+    const float k = 1.0 / 16777216.0;
+    float a = float(ecoHash(ix,     iz,     seed) & 0xffffffu) * k;
+    float b = float(ecoHash(ix + 1, iz,     seed) & 0xffffffu) * k;
+    float c = float(ecoHash(ix,     iz + 1, seed) & 0xffffffu) * k;
+    float d = float(ecoHash(ix + 1, iz + 1, seed) & 0xffffffu) * k;
+    float ab = a + (b - a) * t.x, cd = c + (d - c) * t.x;
+    return ab + (cd - ab) * t.y;
+}
+float ecoFbm(vec2 p, int octaves, uint seed) {
+    float sum = 0.0, amp = 0.5, norm = 0.0;
+    for (int i = 0; i < octaves; ++i) {
+        sum  += amp * ecoNoise(p, seed + uint(i) * 101u);
+        norm += amp;
+        p     = p * 2.03 + vec2(17.3, -9.1);
+        amp  *= 0.5;
+    }
+    return sum / norm;
+}
+float woodsAt(vec2 xz, float ny) {
+    float stands = ecoFbm(xz / uEco.y, 4, 0x51edu);
+    float ragged = ecoFbm(xz / (uEco.y * 0.18), 2, 0x3a7cu);
+    float f   = stands + 0.22 * (ragged - 0.5) + uEco.z * (1.0 - ny);
+    float cut = 0.5 + (0.5 - uEco.x) * 0.45;
+    return smoothstep(cut - 0.035, cut + 0.035, f);
+}
+float lushAt(vec2 xz) {
+    int n = uMoistSamples;
+    if (n <= 0) return uMeadow.w;
+    float u = ((xz.x - uMoistRect.x) / uMoistRect.z + 0.5) / float(n);
+    float v = ((xz.y - uMoistRect.y) / uMoistRect.z + 0.5) / float(n);
+    if (!(u > 0.0 && u < 1.0 && v > 0.0 && v < 1.0)) return uMeadow.w;
+    float fx = u * float(n) - 0.5, fy = v * float(n) - 0.5;
+    int x0 = clamp(int(floor(fx)), 0, n - 1), y0 = clamp(int(floor(fy)), 0, n - 1);
+    int x1 = min(x0 + 1, n - 1), y1 = min(y0 + 1, n - 1);
+    float tx = clamp(fx - float(x0), 0.0, 1.0), ty = clamp(fy - float(y0), 0.0, 1.0);
+    float a = envData[uMoistOff + y0 * n + x0], b = envData[uMoistOff + y0 * n + x1];
+    float c = envData[uMoistOff + y1 * n + x0], d = envData[uMoistOff + y1 * n + x1];
+    return mix(mix(a, b, tx), mix(c, d, tx), ty);
+}
+
+// skyair.glsl's skyGradient (pathtrace::skyGradient): the empty sky's colour,
+// linear -- what the far ground dissolves into.
+vec3 skyGradient(vec3 dir, vec3 sunDir) {
+    sunDir = normalize(sunDir);
+    float day = smoothstep(-0.12, 0.18, sunDir.y);
+    float h = clamp(dir.y, 0.0, 1.0);
+    vec3 zenith  = mix(vec3(0.01, 0.02, 0.06), vec3(0.20, 0.42, 0.80), day);
+    vec3 horizon = mix(vec3(0.04, 0.06, 0.12), vec3(0.70, 0.82, 0.95), day);
+    float lowSun = (1.0 - smoothstep(0.0, 0.35, sunDir.y)) * day;
+    float gold   = (1.0 - smoothstep(0.0, 0.35, sunDir.y)) * smoothstep(-0.10, 0.0, sunDir.y);
+    vec3 flatDir = normalize(vec3(dir.x, 0.0, dir.z) + 1e-5);
+    vec3 flatSun = normalize(vec3(sunDir.x, 0.0, sunDir.z) + 1e-5);
+    float sunSide = pow(0.5 + 0.5 * dot(flatDir, flatSun), 5.0);
+    zenith  = mix(zenith,  mix(vec3(0.26, 0.27, 0.38), vec3(0.32, 0.29, 0.36), sunSide), gold * 0.60);
+    horizon = mix(horizon, mix(vec3(0.42, 0.42, 0.50), vec3(0.52, 0.44, 0.42), sunSide), gold * 0.60);
+    vec3 col = mix(horizon, zenith, pow(h, 0.5));
+    float toSun = max(dot(flatDir, flatSun), 0.0);
+    col += vec3(0.85, 0.35, 0.10) * mix(1.0, 0.6, gold) * lowSun * pow(toSun, 3.0) * (1.0 - h);
+    float sd   = max(dot(dir, sunDir), 0.0);
+    float core = pow(sd, 24.0);
+    float wide = pow(sd, 4.0) * (1.0 - 0.5 * h);
+    col += (vec3(1.00, 0.76, 0.38) * core * 0.55 + vec3(0.95, 0.55, 0.30) * wide * 0.06) * gold;
+    return pow(max(col, vec3(0.0)), vec3(2.2));
+}
+
+// --- The far ground (farGroundAlbedo on the CPU, farterrain.frag's colour) ---
+float farHash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+}
+float farNoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = farHash21(i), b = farHash21(i + vec2(1, 0));
+    float c = farHash21(i + vec2(0, 1)), d = farHash21(i + vec2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+float farFbm(vec2 p, float scale) {
+    float s = 0.0, a = 0.5, f = 1.0 / scale;
+    for (int i = 0; i < 5; ++i) { s += a * (farNoise(p * f) - 0.5); f *= 2.07; a *= 0.5; }
+    return s;
+}
+vec3 lin3(float r, float g, float b) { return pow(vec3(r, g, b), vec3(2.2)); }
+float ecoDensity(vec2 xz, float h, float ny) {
+    float stands = ecoFbm(xz / uEco.y, 4, 0x51edu);
+    float ragged = ecoFbm(xz / (uEco.y * 0.18), 2, 0x3a7cu);
+    float f      = stands + 0.22 * (ragged - 0.5) + uEco.z * (1.0 - ny);
+    float cut    = 0.5 + (0.5 - uEco.x) * 0.45;
+    float forest = smoothstep(cut - 0.035, cut + 0.035, f);
+    float d = max(forest, uEco2.z);
+    d *= smoothstep(0.62, 0.72, ny);
+    float tl = uEco2.x + (ragged - 0.5) * 180.0;
+    d *= 1.0 - smoothstep(tl - 140.0, tl + 30.0, h);
+    d *= smoothstep(uEco2.y + 0.6, uEco2.y + 1.6, h);
+    return d;
+}
+vec3 farGroundAlbedo(vec3 wp, vec3 n, float moist) {
+    vec2 xz = wp.xz;
+    float h = wp.y;
+    float slope = degrees(acos(clamp(n.y, -1.0, 1.0)));
+    float n1 = farFbm(xz, 190.0) + 0.5;
+    float n2 = farFbm(xz + 71.0, 45.0) + 0.5;
+    float n3 = farFbm(xz - 233.0, 900.0) + 0.5;
+    vec3 meadow = pow(meadowColour(xz, moist), vec3(2.2)) * uGrassTint;
+    vec3 alpine = mix(lin3(0.33, 0.40, 0.19), lin3(0.45, 0.43, 0.24), n2);
+    vec3 forest = mix(lin3(0.085, 0.13, 0.07), lin3(0.12, 0.15, 0.08), n2) *
+                  (0.8 + 0.4 * (farFbm(xz, 14.0) + 0.5));
+    vec3 rockCool = mix(lin3(0.36, 0.36, 0.37), lin3(0.50, 0.50, 0.50), n1);
+    vec3 rockWarm = mix(lin3(0.44, 0.39, 0.33), lin3(0.58, 0.53, 0.45), n1);
+    vec3 rock = mix(rockCool, rockWarm, smoothstep(0.35, 0.65, n3));
+    float bed = h * 0.028 + n2 * 5.0 + n1 * 3.0 + dot(xz, vec2(0.0011, -0.0007));
+    rock *= 0.9 + 0.14 * smoothstep(0.35, 0.65, farNoise(vec2(bed, n3 * 3.0)));
+    vec3 scree = mix(lin3(0.52, 0.50, 0.46), lin3(0.62, 0.59, 0.54), n2);
+    vec3 snow  = lin3(0.93, 0.95, 0.98);
+    float treeLine = uFarLook.y, snowLevel = uFarLook.z, water = uGrassTopDryWater.z;
+
+    vec3 albedo = meadow;
+    float alpineAmt = smoothstep(treeLine - 60.0, treeLine + 120.0, h + (n1 - 0.5) * 220.0);
+    albedo = mix(albedo, alpine, alpineAmt);
+    float forestAmt;
+    if (uFarLook.x > 0.5) {
+        forestAmt = clamp(ecoDensity(xz, h, n.y) * 1.3, 0.0, 1.0);
+        forest = uCanopy * 0.75 * (0.75 + 0.5 * (farFbm(xz, 14.0) + 0.5)) * mix(0.85, 1.1, n2);
+    } else {
+        float woods = smoothstep(0.28, 0.5, moist + (n2 - 0.5) * 0.35);
+        float valleyPatch = mix(smoothstep(0.42, 0.62, n1 * 0.6 + n3 * 0.6), 1.0,
+                                smoothstep(40.0, 180.0, h));
+        forestAmt = woods * valleyPatch * (1.0 - alpineAmt) * (1.0 - smoothstep(30.0, 40.0, slope));
+    }
+    albedo = mix(albedo, forest, forestAmt);
+    float screeAmt = smoothstep(24.0, 32.0, slope + (n1 - 0.5) * 10.0) * (1.0 - forestAmt) *
+                     smoothstep(treeLine - 200.0, treeLine + 100.0, h);
+    albedo = mix(albedo, scree, screeAmt * 0.8);
+    float rockSlope = mix(44.0, 32.0, alpineAmt);
+    float rockAmt = smoothstep(rockSlope, rockSlope + 12.0, slope + (n2 - 0.5) * 16.0);
+    rockAmt = max(rockAmt, alpineAmt * smoothstep(0.55, 0.8, n1) *
+                           smoothstep(treeLine + 150.0, treeLine + 500.0, h));
+    albedo = mix(albedo, rock, rockAmt);
+    float snowLine = snowLevel + (n3 - 0.5) * 320.0 + (n1 - 0.5) * 140.0;
+    float snowAmt = smoothstep(snowLine - 50.0, snowLine + 50.0, h) *
+                    (1.0 - smoothstep(36.0, 50.0, slope + (n2 - 0.5) * 12.0));
+    snowAmt = max(snowAmt, smoothstep(snowLine + 350.0, snowLine + 700.0, h) *
+                           (1.0 - smoothstep(55.0, 68.0, slope)));
+    albedo = mix(albedo, snow, snowAmt);
+    albedo *= mix(1.0, 0.55, 1.0 - smoothstep(water, water + 1.5, h));
+    return albedo;
+}
+
 // False where no layer covers the point -- the shader's "gap between bands"
 // case, which falls back to the flat base colour exactly as lit.frag does.
+bool layeredColour(Mat m, vec3 wp, vec3 n, vec4 paint, float woods, out vec3 outColor);
 bool terrainColorAt(Mat m, vec3 wp, vec3 n, vec4 paint, out vec3 outColor) {
+    if (m.modeTex.w <= 0) return false;
+    float woods = uWoodsOn == 1 ? woodsAt(wp.xz, n.y) : 0.0;
+    vec3 col;
+    if (!layeredColour(m, wp, n, paint, woods, col)) return false;
+    float dist = distance(wp, uCamPos);
+    if (woods > 0.0 && uCanopyRange.y < 1e29) {
+        float t = woods * smoothstep(uCanopyRange.x, uCanopyRange.y, dist);
+        col = mix(col, pow(uCanopy * 0.55, vec3(1.0 / 2.2)), 0.7 * t);
+    }
+    if (uMeadow.y > 0.0) {
+        float t = smoothstep(uMeadow.x, uMeadow.y, dist) * uMeadow.z;
+        if (t > 0.0) {
+            float lush = lushAt(wp.xz);
+            float thin = lush < 0.22 ? uGrassTopDryWater.y * mix(0.35, 0.75, lush / 0.22) : 1.0;
+            float cover = t * meadowCover(wp.xz, wp.y, n.y, uGrassTopDryWater.z, uGrassTopDryWater.x) *
+                          (1.0 - 0.9 * woods) * clamp(thin * 1.4, 0.0, 1.0);
+            vec3 mc = pow(pow(meadowColour(wp.xz, lush), vec3(2.2)) * uGrassTint, vec3(1.0 / 2.2));
+            col = mix(col, mc, cover);
+        }
+    }
+    outColor = col;
+    return true;
+}
+
+bool layeredColour(Mat m, vec3 wp, vec3 n, vec4 paint, float woods, out vec3 outColor) {
     int count = m.modeTex.w;
     if (count <= 0) return false;
     int first = m.modeTex.z;
@@ -405,6 +694,9 @@ bool terrainColorAt(Mat m, vec3 wp, vec3 n, vec4 paint, out vec3 outColor) {
         heightBlend = L.scaleTex.z;
         float autoW = bandOf(h, L.band.x, L.band.y, 1.5) *
                       bandOf(slopeDeg, L.band.z, L.band.w, 6.0);
+        // In the woods the forest floor layer wins over the bands.
+        if (woods > 0.0)
+            autoW = L.scaleTex.w > 0.5 ? max(autoW, woods * 1.3) : autoW * (1.0 - 0.85 * woods);
         float pw = i < 4 ? p[i] : 0.0;
         float w  = autoW * (1.0 - cover) + pw;
         if (w <= 0.0) continue;
@@ -436,15 +728,6 @@ bool terrainColorAt(Mat m, vec3 wp, vec3 n, vec4 paint, out vec3 outColor) {
     return true;
 }
 
-// The painted weights at a hit, zero where the scene carries none -- the same
-// answer an unpainted terrain gives, so nothing downstream has to know whether
-// the side table exists.
-vec4 paintAt(int tri, float u, float v) {
-    if (uHavePaint == 0) return vec4(0.0);
-    float w = 1.0 - u - v;
-    return vpaint[tri * 3] * w + vpaint[tri * 3 + 1] * u + vpaint[tri * 3 + 2] * v;
-}
-
 // --- The surface ------------------------------------------------------------
 // Surface::* on the CPU: the base colour comes from the map where there is one,
 // tinted, and from the flat albedo where there is not. The sRGB->linear step is
@@ -461,7 +744,15 @@ struct Surface {
     int   alphaMode;
     bool  glass;
     float ior;        // only meaningful where glass is true
+    float translucency;
+    bool  additive;
 };
+
+// A surface's own colour at a UV, sRGB, before any light (Tracer::baseAt).
+vec3 baseAt(Mat m, vec2 uv) {
+    if (m.modeTex.y >= 0) return sampleTex(m.modeTex.y, uv).rgb * m.tint.rgb;
+    return m.albedoRough.rgb;
+}
 
 // `n` is the GEOMETRIC normal, not the one turned to face the eye: the slope a
 // terrain band tests is the ground's.
@@ -488,30 +779,51 @@ Surface surfaceOf(int mi, vec2 uv, vec3 wp, vec3 n, vec4 paint, out float texA) 
     float r     = clamp(m.albedoRough.a, 0.03, 1.0);
     s.alpha     = r * r;
     s.emission  = pow(max(m.emissionRefl.rgb, vec3(0.0)), vec3(2.2)) * m.misc.y;
+    if (m.extra.z > 0.5) {
+        // Already linear: farterrain.frag works in linear throughout.
+        base = farGroundAlbedo(wp, n, uv.x);
+        s.baseColor = base;
+        s.diffuse   = base;
+        s.F0        = vec3(0.04);
+    }
     s.coverage  = coverageOf(m, texA);
     s.alphaMode = m.modeTex.x;
     s.glass     = m.misc.w > 0.5;
     s.ior       = max(m.misc.w, 1.0);
+    s.translucency = clamp(m.extra.x, 0.0, 1.0);
+    s.additive  = m.extra.y > 0.5;
     return s;
 }
 
+// The BRDF, without the cosine. The far side of a translucent surface is
+// diffuse only: light that went through a leaf has forgotten which way it came
+// in. The near side keeps whatever the far side did not take -- the lobe is
+// split, never duplicated.
 vec3 evalBsdf(Surface s, vec3 N, vec3 V, vec3 L, float specScale) {
     float NoL = dot(N, L), NoV = dot(N, V);
-    if (NoL <= 0.0 || NoV <= 0.0) return vec3(0.0);
+    if (NoV <= 0.0) return vec3(0.0);
+    if (NoL <= 0.0) {
+        if (s.translucency <= 0.0) return vec3(0.0);
+        return s.diffuse * (s.translucency * (1.0 / kPi));
+    }
     vec3  H   = normalize(V + L);
     float NoH = max(0.0, dot(N, H));
     float VoH = max(0.0, dot(V, H));
     vec3  spec = fresnel(s.F0, VoH) * (ggxD(NoH, s.alpha) * smithVis(NoV, NoL, s.alpha));
-    return s.diffuse * (1.0 / kPi) + spec * specScale;
+    return s.diffuse * ((1.0 - s.translucency) * (1.0 / kPi)) + spec * specScale;
 }
 
 float pdfBsdf(Surface s, vec3 N, vec3 V, vec3 L, float pSpec) {
     float NoL = dot(N, L), NoV = dot(N, V);
-    if (NoL <= 0.0 || NoV <= 0.0) return 0.0;
+    if (NoV <= 0.0) return 0.0;
+    if (NoL <= 0.0) {
+        if (s.translucency <= 0.0) return 0.0;
+        return (1.0 - pSpec) * s.translucency * (-NoL) * (1.0 / kPi);
+    }
     vec3  H   = normalize(V + L);
     float NoH = max(0.0, dot(N, H));
     float pdfSpec = ggxD(NoH, s.alpha) * smithG1(NoV, s.alpha) / max(4.0 * NoV, 1e-6);
-    float pdfDiff = NoL * (1.0 / kPi);
+    float pdfDiff = (1.0 - s.translucency) * NoL * (1.0 / kPi);
     return pSpec * pdfSpec + (1.0 - pSpec) * pdfDiff;
 }
 
@@ -520,17 +832,121 @@ float specProbability(Surface s) {
 }
 
 // --- The environment --------------------------------------------------------
-// The gradient fallback only (see the header): the flat ambient the raster path
-// would have used, spread over a horizon so a surface facing up and one facing
-// down are not lit identically.
+// samplePanorama() on the CPU: atan2(z, x) across, asin(y) down -- the loader
+// hands panoramas over bottom-up -- bilinear, wrapped across and clamped down.
+vec3 panoramaAt(int off, ivec2 size, vec3 dir) {
+    if (any(isnan(dir)) || any(isinf(dir))) return vec3(0.0);
+    float u = atan(dir.z, dir.x) / (2.0 * kPi) + 0.5;
+    float v = asin(clamp(dir.y, -1.0, 1.0)) / kPi + 0.5;
+    float fx = u * float(size.x) - 0.5;
+    float fy = v * float(size.y) - 0.5;
+    int   x0 = int(floor(fx)), y0 = int(floor(fy));
+    float tx = fx - float(x0), ty = fy - float(y0);
+    int xs0 = wrapTexel(x0, size.x), xs1 = wrapTexel(x0 + 1, size.x);
+    int ys0 = clamp(y0, 0, size.y - 1), ys1 = clamp(y0 + 1, 0, size.y - 1);
+    int o00 = off + (ys0 * size.x + xs0) * 3, o10 = off + (ys0 * size.x + xs1) * 3;
+    int o01 = off + (ys1 * size.x + xs0) * 3, o11 = off + (ys1 * size.x + xs1) * 3;
+    vec3 c00 = vec3(envData[o00], envData[o00 + 1], envData[o00 + 2]);
+    vec3 c10 = vec3(envData[o10], envData[o10 + 1], envData[o10 + 2]);
+    vec3 c01 = vec3(envData[o01], envData[o01 + 1], envData[o01 + 2]);
+    vec3 c11 = vec3(envData[o11], envData[o11 + 1], envData[o11 + 2]);
+    return mix(mix(c00, c10, tx), mix(c01, c11, tx), ty);
+}
+
+// Environment::sample: the panorama where there is one, otherwise the flat
+// ambient the raster path would have used, spread over a horizon.
 vec3 envSample(vec3 dir) {
+    if (uEnvSize.x > 0) return panoramaAt(uEnvPixOff, uEnvSize, dir);
     float t = clamp(dir.y, -1.0, 1.0);
     if (t >= 0.0) return mix(uEnvHorizon, uEnvZenith, sqrt(t));
     return mix(uEnvHorizon, uEnvGround, sqrt(-t));
 }
 
+// Environment::sampleSeen: what the camera sees there.
+vec3 envSeen(vec3 dir) {
+    if (uBackSize.x > 0) return panoramaAt(uBackOff, uBackSize, dir);
+    return envSample(dir) * uEnvIntensity;
+}
+
+// EnvSampler::pdfFor / sampleDir, over the CPU's own distribution.
+float envPdf(vec3 dir) {
+    if (uDistSize.x <= 0 || any(isnan(dir))) return 0.0;
+    int w = uDistSize.x, h = uDistSize.y;
+    float u = atan(dir.z, dir.x) / (2.0 * kPi) + 0.5;
+    float v = asin(clamp(dir.y, -1.0, 1.0)) / kPi + 0.5;
+    int x = clamp(int(u * float(w)), 0, w - 1);
+    int y = clamp(int(v * float(h)), 0, h - 1);
+    float sinT = sin(kPi * (float(y) + 0.5) / float(h));
+    if (sinT < 1e-6) return 0.0;
+    float pdfUv = envData[uDistFuncOff + y * w + x] / uDistTotal * float(w * h);
+    return pdfUv / (2.0 * kPi * kPi * sinT);
+}
+
+// std::upper_bound over n floats at `off`: the first element greater than u.
+int upperBound(int off, int n, float u) {
+    int lo = 0, hi = n;
+    while (lo < hi) {
+        int mid = (lo + hi) >> 1;
+        if (envData[off + mid] <= u) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
+vec3 envSampleDir(float u1, float u2, out float pdfSolid) {
+    pdfSolid = 0.0;
+    if (uDistSize.x <= 0) return vec3(0.0, 1.0, 0.0);
+    int w = uDistSize.x, h = uDistSize.y;
+    int y = clamp(upperBound(uDistMargOff, h + 1, u1) - 1, 0, h - 1);
+    float y0 = envData[uDistMargOff + y], y1 = envData[uDistMargOff + y + 1];
+    float dv = y1 > y0 ? (u1 - y0) / (y1 - y0) : 0.5;
+
+    int row = uDistCondOff + y * (w + 1);
+    int x = clamp(upperBound(row, w + 1, u2) - 1, 0, w - 1);
+    float x0 = envData[row + x], x1 = envData[row + x + 1];
+    float du = x1 > x0 ? (u2 - x0) / (x1 - x0) : 0.5;
+
+    float u = (float(x) + du) / float(w);
+    float v = (float(y) + dv) / float(h);
+    float elev = kPi * (v - 0.5);
+    float phi  = 2.0 * kPi * (u - 0.5);
+    float cosE = cos(elev);
+    vec3 dir = vec3(cosE * cos(phi), sin(elev), cosE * sin(phi));
+
+    float sinT = sin(kPi * v);
+    if (sinT < 1e-6) return dir;
+    float pdfUv = envData[uDistFuncOff + y * w + x] / uDistTotal * float(w * h);
+    pdfSolid = pdfUv / (2.0 * kPi * kPi * sinT);
+    return dir;
+}
+
+// SunMask::at(): the clouds' shadow at a point, carried along the sun to the
+// map's plane, bilinear and clamped, faded to full sun at the map's edge.
+float maskAt(vec3 p) {
+    if (uMaskSize.x <= 0 || uMaskSun.y < 0.03) return 1.0;
+    vec2 q  = p.xz - uMaskSun.xz * ((p.y - uMaskRect.w) / uMaskSun.y);
+    vec2 uv = (q - uMaskRect.xy) * uMaskRect.z;
+    vec2 e  = min(uv, vec2(1.0) - uv);
+    float t = clamp(min(e.x, e.y) / 0.12, 0.0, 1.0);
+    float edge = t * t * (3.0 - 2.0 * t);
+    if (edge <= 0.0) return 1.0;
+    float fx = clamp(uv.x, 0.0, 1.0) * float(uMaskSize.x) - 0.5;
+    float fy = clamp(uv.y, 0.0, 1.0) * float(uMaskSize.y) - 0.5;
+    int x0 = int(floor(fx)), y0 = int(floor(fy));
+    float tx = fx - float(x0), ty = fy - float(y0);
+    int xa = clamp(x0, 0, uMaskSize.x - 1), xb = clamp(x0 + 1, 0, uMaskSize.x - 1);
+    int ya = clamp(y0, 0, uMaskSize.y - 1), yb = clamp(y0 + 1, 0, uMaskSize.y - 1);
+    float v00 = envData[uMaskOff + ya * uMaskSize.x + xa];
+    float v10 = envData[uMaskOff + ya * uMaskSize.x + xb];
+    float v01 = envData[uMaskOff + yb * uMaskSize.x + xa];
+    float v11 = envData[uMaskOff + yb * uMaskSize.x + xb];
+    float m = (v00 * (1.0 - tx) + v10 * tx) * (1.0 - ty) + (v01 * (1.0 - tx) + v11 * tx) * ty;
+    return 1.0 + (m - 1.0) * edge;
+}
+
 // --- Traversal --------------------------------------------------------------
-struct Hit { float t; float u, v; int tri; };
+// `slot` is where the leaf that was hit keeps the triangle; `tri` is which
+// triangle that is (index[slot]); `inst` is the placement, -1 for the world.
+struct Hit { float t; float u, v; int slot; int tri; int inst; };
 
 bool slab(vec4 lo, vec4 hi, vec3 o, vec3 invD, float tMax, out float tNear) {
     vec3 t0 = (lo.xyz - o) * invD;
@@ -545,17 +961,13 @@ bool slab(vec4 lo, vec4 hi, vec3 o, vec3 invD, float tMax, out float tNear) {
 // Moeller-Trumbore, two-sided -- two-sided for the CPU's reason: a fair amount
 // of scene geometry is single-sided in the raster path only because backface
 // culling hides it, and honouring the winding would put holes where the
-// viewport shows a surface.
-// Takes the triangle's INDEX, not the triangle: the corners live in their own
-// tight buffer (tripos), and the 128-byte Tri is only opened at the one hit a
-// ray actually shades. Handing the struct over by value would ask the compiler
-// to prove the other eighty bytes are dead before it stops fetching them, and
-// the inner loop of a traversal is the last place to rely on that.
-bool intersectTri(int ti, vec3 o, vec3 d, float tMax,
-                  out float outT, out float outU, out float outV) {
-    vec3 p0 = tripos[ti * 3    ].xyz;
-    vec3 e1 = tripos[ti * 3 + 1].xyz;
-    vec3 e2 = tripos[ti * 3 + 2].xyz;
+// viewport shows a surface. Reads the corners by LEAF SLOT: a leaf's triangles
+// are one contiguous run of tripos, so the walk never chases an index.
+bool intersectSlot(int slot, vec3 o, vec3 d, float tMax,
+                   out float outT, out float outU, out float outV) {
+    vec3 p0 = tripos[slot * 3    ].xyz;
+    vec3 e1 = tripos[slot * 3 + 1].xyz;
+    vec3 e2 = tripos[slot * 3 + 2].xyz;
     vec3 p  = cross(d, e2);
     float det = dot(e1, p);
     if (abs(det) < 1e-12) return false;
@@ -570,75 +982,139 @@ bool intersectTri(int ti, vec3 o, vec3 d, float tMax,
     return outT > kRayEps && outT < tMax;
 }
 
+// A world-space ray carried into instance k's mesh space. The direction is
+// transformed and NOT normalised, so a distance along it is still a world
+// distance and hits in different meshes compare directly.
+void toObject(int k, vec3 o, vec3 d, out vec3 lo, out vec3 ld) {
+    Inst I = insts[k];
+    lo = vec3(dot(I.toObj0, vec4(o, 1.0)), dot(I.toObj1, vec4(o, 1.0)),
+              dot(I.toObj2, vec4(o, 1.0)));
+    ld = vec3(dot(I.toObj0.xyz, d), dot(I.toObj1.xyz, d), dot(I.toObj2.xyz, d));
+}
+
+// ONE walk over both levels, with one loop and one stack. The obvious version --
+// a triangle walk called once for the world and again inside a walk over the
+// instances -- is four copies of the inner loop once the compiler has inlined
+// it into the closest-hit and the shadow walks, and the registers the biggest
+// copy needs are what every thread pays for: measured, it ran the whole kernel
+// at a third of its speed even on scenes with no instances in them at all.
+//
+// So the levels are told apart by the stack instead. A top-level leaf stores
+// its count NEGATED (see Tracer::upload); meeting one pushes an ENTER marker per
+// instance in it. Popping a marker carries the ray into that instance's space
+// and pushes an EXIT marker under the mesh's nodes; popping the exit marker
+// brings the ray back out. Everything between the two was pushed in the
+// instance's space and is popped in it, so the one loop never confuses them.
+//   entry >= 0   a node, in the current space
+//   entry == -1  exit the instance: back to the world ray
+//   entry <= -2  enter instance (-entry - 2)
+const int kExit = -1;
+
 bool closest(vec3 o, vec3 d, float tMax, out Hit hit) {
-    hit.t = tMax; hit.u = 0.0; hit.v = 0.0; hit.tri = -1;
-    vec3 invD = vec3(1.0) / d;   // inf on an axis-parallel ray, which the slab
-                                 // test's min/max then handles exactly right
+    hit.t = tMax; hit.u = 0.0; hit.v = 0.0; hit.slot = -1; hit.tri = -1; hit.inst = -1;
 
-    int   stack[TRAVERSAL_STACK];
-    int   sp = 0, node = 0;
-    float nodeT;
-    if (!slab(nodes[0].lo, nodes[0].hi, o, invD, tMax, nodeT)) return false;
+    vec3 co = o, cd = d;
+    vec3 invD = vec3(1.0) / d;  // inf on an axis-parallel ray, which the slab
+                                // test's min/max then handles exactly right
+    int  inst = -1;             // whose space the ray is in (-1: the world's)
+    int  stack[TRAVERSAL_STACK];
+    int  sp = 0;
+    int  node;
+    if (uTlasRoot >= 0) stack[sp++] = uTlasRoot;
+    if (uHaveWorld == 1) node = 0;
+    else if (sp > 0)     node = stack[--sp];
+    else                 return false;
 
-    for (int guard = 0; guard < 100000; ++guard) {
-        int count = floatBitsToInt(nodes[node].hi.w);
-        if (count > 0) {
+    for (int guard = 0; guard < 200000; ++guard) {
+        float tn;
+        bool visit = node >= 0 && slab(nodes[node].lo, nodes[node].hi, co, invD, hit.t, tn);
+        while (visit) {
+            int count = floatBitsToInt(nodes[node].hi.w);
             int first = floatBitsToInt(nodes[node].lo.w);
-            for (int i = 0; i < count; ++i) {
-                int ti = index[first + i];
-                float t, u, v;
-                if (intersectTri(ti, o, d, hit.t, t, u, v)) {
-                    hit.t = t; hit.u = u; hit.v = v; hit.tri = ti;
+            if (count > 0) {
+                for (int i = 0; i < count; ++i) {
+                    float t, u, v;
+                    if (intersectSlot(first + i, co, cd, hit.t, t, u, v)) {
+                        hit.t = t; hit.u = u; hit.v = v; hit.slot = first + i;
+                        hit.inst = inst;
+                    }
                 }
+                break;
             }
-        } else {
-            int l  = floatBitsToInt(nodes[node].lo.w);
-            int rr = l + 1;
+            if (count < 0) {
+                // A top-level leaf: its instances, to be entered one by one.
+                for (int i = 0; i < -count && sp < TRAVERSAL_STACK; ++i)
+                    stack[sp++] = -(first + i) - 2;
+                break;
+            }
+            int l = first, rr = first + 1;
             float tl, tr;
-            bool hl = slab(nodes[l].lo,  nodes[l].hi,  o, invD, hit.t, tl);
-            bool hr = slab(nodes[rr].lo, nodes[rr].hi, o, invD, hit.t, tr);
+            bool hl = slab(nodes[l].lo,  nodes[l].hi,  co, invD, hit.t, tl);
+            bool hr = slab(nodes[rr].lo, nodes[rr].hi, co, invD, hit.t, tr);
             if (hl && hr) {
                 // Nearer child first: the far one is then very often already
                 // behind a confirmed hit and never opened at all.
-                int   nearI = tl <= tr ? l  : rr;
-                int   farI  = tl <= tr ? rr : l;
-                if (sp < TRAVERSAL_STACK) stack[sp++] = farI;
-                node = nearI;
-                continue;
+                if (sp < TRAVERSAL_STACK) stack[sp++] = tl <= tr ? rr : l;
+                node = tl <= tr ? l : rr;
+            } else if (hl) {
+                node = l;
+            } else if (hr) {
+                node = rr;
+            } else {
+                break;
             }
-            if (hl) { node = l;  continue; }
-            if (hr) { node = rr; continue; }
         }
-        // Pop, discarding anything the closest hit has already overtaken. The
-        // distance is re-derived from the node rather than carried beside it on
-        // the stack: a second array of the same length is another 256 bytes of
+        // Pop. The distance is re-derived from the node rather than carried
+        // beside it on the stack -- a second array of the same length is more
         // scratch memory per thread, and scratch memory is what a traversal
-        // kernel's occupancy is actually made of.
-        bool popped = false;
-        while (sp > 0) {
-            int cand = stack[--sp];
-            float candT;
-            if (!slab(nodes[cand].lo, nodes[cand].hi, o, invD, hit.t, candT))
-                continue;
-            node = cand;
-            popped = true;
-            break;
+        // kernel's occupancy is made of -- so a node the closest hit has already
+        // overtaken is simply skipped at the top of the loop.
+        if (sp == 0) break;
+        int e = stack[--sp];
+        if (e == kExit) {
+            co = o; cd = d; invD = vec3(1.0) / d; inst = -1;
+            node = -2;                      // nothing to visit; pop again
+            continue;
         }
-        if (!popped) break;
+        if (e <= -2) {
+            int k = -e - 2;
+            toObject(k, o, d, co, cd);
+            invD = vec3(1.0) / cd;
+            inst = k;
+            if (sp < TRAVERSAL_STACK) stack[sp++] = kExit;
+            node = insts[k].meta.x;
+            continue;
+        }
+        node = e;
     }
-    return hit.tri >= 0;
+    if (hit.slot < 0) return false;
+    hit.tri = index[hit.slot];
+    return true;
+}
+
+// The material a hit is drawn with: the triangle's own, or the one its
+// placement overrides it with.
+int materialOf(int tri, int inst) {
+    int mi = int(tris[tri].uv2mat.z);
+    if (inst >= 0 && insts[inst].meta.y >= 0) mi = insts[inst].meta.y;
+    return mi;
 }
 
 // What one crossing of a triangle lets through: nothing for an opaque one, a
-// tint for a pane of glass, the uncovered fraction for anything part-way. The
-// CPU's shadowFactor(), and the coverage is the TEXTURED one, so a leaf's cutout
-// casts the shadow of a leaf rather than of the quad it is painted on.
-vec3 shadowFactor(int ti, float u, float v) {
-    int mi = int(tris[ti].uv2mat.z);
-    Mat m  = mats[mi];
-    float cov = coverageOf(m, m.modeTex.y >= 0
-                                  ? sampleTex(m.modeTex.y, uvAt(tris[ti], u, v)).a
-                                  : 1.0);
+// tint for a pane of glass or a leaf, the uncovered fraction for anything
+// part-way, everything for a glow. The CPU's shadowFactor(), and the coverage is
+// the TEXTURED one, so a leaf's cutout casts the shadow of a leaf rather than of
+// the quad it is painted on.
+vec3 shadowFactor(int mi, int tri, float u, float v) {
+    Mat m = mats[mi];
+    if (m.extra.y > 0.5) return vec3(1.0);
+    vec2 uv = uvAt(tris[tri], u, v);
+    float cov = coverageOf(m, m.modeTex.y >= 0 ? sampleTex(m.modeTex.y, uv).a : 1.0);
+    if (m.extra.x > 0.0 && m.misc.w <= 0.5) {
+        vec3 tint = pow(max(baseAt(m, uv), vec3(0.0)), vec3(2.2));
+        float tl = clamp(m.extra.x, 0.0, 1.0);
+        return mix(vec3(1.0 - cov), tint * cov + vec3(1.0 - cov), tl);
+    }
     if (m.misc.w > 0.5) {
         // A pane refracts rather than blocks; the same stand-in for the caustics
         // nobody is tracing that the CPU uses.
@@ -652,132 +1128,210 @@ vec3 shadowFactor(int ti, float u, float v) {
 // How much light survives the walk to a light. A product rather than a boolean,
 // because the scene has partly transparent things in it and a shadow ray that
 // stopped at the first triangle would put a solid shadow under a windscreen.
-//
-// ONE walk of the tree -- Bvh::transmittance() on the CPU, which is what this
-// should have been transliterated from in the first place. The answer is the
-// same as the closest-hit walk it replaces (a product does not care what order
-// its terms arrive in, and one opaque triangle anywhere along the ray makes the
-// whole thing zero wherever it is found) and the cost is not: a shadow ray is
-// the commonest ray in the picture, most of them meet something solid, and this
-// one gives up the moment it does instead of first proving that the something it
-// met was the nearest.
-vec3 transmittance(vec3 o, vec3 d, float tMax) {
+// Accel::transmittance() on the CPU, walked as closest() walks: one loop over
+// both levels, told apart on the stack. No near-first ordering: nothing about
+// this walk gets cheaper by arriving somewhere sooner, because it has to visit
+// everything it crosses either way -- and it gives up the moment nothing gets
+// through.
+// `sigma` is the water body the ray starts inside (zero outside one): it is
+// attenuated over the column up to the nearest glass crossing, where it leaves.
+vec3 transmittance(vec3 o, vec3 d, float tMax, vec3 sigma) {
     vec3 tr = vec3(1.0);
+    float exitT = kInf;
+    vec3 co = o, cd = d;
     vec3 invD = vec3(1.0) / d;
-
+    int  inst = -1;
     int  stack[TRAVERSAL_STACK];
-    int  sp = 0, node = 0;
-    float ignored;
-    if (!slab(nodes[0].lo, nodes[0].hi, o, invD, tMax, ignored)) return tr;
+    int  sp = 0;
+    int  node;
+    if (uTlasRoot >= 0) stack[sp++] = uTlasRoot;
+    if (uHaveWorld == 1) node = 0;
+    else if (sp > 0)     node = stack[--sp];
+    else                 return tr;
 
-    for (int guard = 0; guard < 100000; ++guard) {
-        int count = floatBitsToInt(nodes[node].hi.w);
-        if (count > 0) {
+    for (int guard = 0; guard < 200000; ++guard) {
+        float tn;
+        bool visit = node >= 0 && slab(nodes[node].lo, nodes[node].hi, co, invD, tMax, tn);
+        while (visit) {
+            int count = floatBitsToInt(nodes[node].hi.w);
             int first = floatBitsToInt(nodes[node].lo.w);
-            for (int i = 0; i < count; ++i) {
-                int ti = index[first + i];
-                float t, u, v;
-                if (!intersectTri(ti, o, d, tMax, t, u, v)) continue;
-                tr *= shadowFactor(ti, u, v);
-                if (luminance(tr) < 1e-4) return vec3(0.0);
+            if (count > 0) {
+                for (int i = 0; i < count; ++i) {
+                    float t, u, v;
+                    if (!intersectSlot(first + i, co, cd, tMax, t, u, v)) continue;
+                    int ti = index[first + i];
+                    int mi = materialOf(ti, inst);
+                    if (mats[mi].misc.w > 0.5) exitT = min(exitT, t);
+                    tr *= shadowFactor(mi, ti, u, v);
+                    if (luminance(tr) < 1e-4) return vec3(0.0);
+                }
+                break;
             }
-        } else {
-            int l  = floatBitsToInt(nodes[node].lo.w);
-            int rr = l + 1;
+            if (count < 0) {
+                for (int i = 0; i < -count && sp < TRAVERSAL_STACK; ++i)
+                    stack[sp++] = -(first + i) - 2;
+                break;
+            }
+            int l = first, rr = first + 1;
             float tl, tr0;
-            bool hl = slab(nodes[l].lo,  nodes[l].hi,  o, invD, tMax, tl);
-            bool hr = slab(nodes[rr].lo, nodes[rr].hi, o, invD, tMax, tr0);
-            // No near-first ordering here and no distance on the stack: nothing
-            // about this walk gets cheaper by arriving somewhere sooner, because
-            // it has to visit everything it crosses either way.
+            bool hl = slab(nodes[l].lo,  nodes[l].hi,  co, invD, tMax, tl);
+            bool hr = slab(nodes[rr].lo, nodes[rr].hi, co, invD, tMax, tr0);
             if (hl && hr) {
                 if (sp < TRAVERSAL_STACK) stack[sp++] = rr;
                 node = l;
-                continue;
+            } else if (hl) {
+                node = l;
+            } else if (hr) {
+                node = rr;
+            } else {
+                break;
             }
-            if (hl) { node = l;  continue; }
-            if (hr) { node = rr; continue; }
         }
         if (sp == 0) break;
-        node = stack[--sp];
+        int e = stack[--sp];
+        if (e == kExit) {
+            co = o; cd = d; invD = vec3(1.0) / d; inst = -1;
+            node = -2;
+            continue;
+        }
+        if (e <= -2) {
+            int k = -e - 2;
+            toObject(k, o, d, co, cd);
+            invD = vec3(1.0) / cd;
+            inst = k;
+            if (sp < TRAVERSAL_STACK) stack[sp++] = kExit;
+            node = insts[k].meta.x;
+            continue;
+        }
+        node = e;
+    }
+    if (sigma.x > 0.0 || sigma.y > 0.0 || sigma.z > 0.0) {
+        float dcol = min(exitT, tMax);
+        tr *= dcol < kInf ? exp(-sigma * dcol) : vec3(0.0);
     }
     return tr;
 }
 
+// The painted weights at a hit, zero where the scene carries none -- the same
+// answer an unpainted terrain gives. Only the world is ever painted terrain.
+vec4 paintAt(Hit h) {
+    if (uHavePaint == 0 || h.inst >= 0 || h.tri >= uWorldTris) return vec4(0.0);
+    float w = 1.0 - h.u - h.v;
+    return vpaint[h.tri * 3] * w + vpaint[h.tri * 3 + 1] * h.u + vpaint[h.tri * 3 + 2] * h.v;
+}
+
 // --- Direct light -----------------------------------------------------------
-vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec) {
+// The CPU's directLight(), term for term, with one difference of SHAPE and none
+// of arithmetic: every light -- the sun (li = -2), the sky (li = -1), each lamp
+// -- first works out its unshadowed contribution and its shadow ray, and ONE
+// transmittance() call then answers for whichever it was. Written the CPU's
+// way, with a shadow walk per kind of light, the compiler inlines the whole
+// two-level traversal three times over, and the registers the largest copy
+// needs are what every thread in the kernel pays for.
+vec3 directLight(vec3 P, vec3 N, vec3 V, Surface s, float pSpec, vec3 sigma) {
     vec3 L = vec3(0.0);
 
-    if (uSunOn == 1 && luminance(uSunColor) > 1e-5) {
-        vec3 dir = uSunPdf > 0.0 ? sampleCone(uSunAxis, uSunCosMax) : uSunAxis;
-        float NoL = dot(N, dir);
-        if (NoL > 0.0) {
-            vec3 tr = transmittance(P + N * kRayEps, dir, kInf);
-            if (luminance(tr) > 1e-4) {
-                // sun.color is already radiance divided by this sampler's own
-                // pdf, which is why it appears here unscaled.
-                vec3 c = uSunColor * tr * evalBsdf(s, N, V, dir, 1.0) * NoL;
-                // A disc can also be found by bouncing into it, so this strategy
-                // only claims its share. A hard-edged sun cannot be hit at all,
-                // and keeps the lot.
-                if (uSunPdf > 0.0)
-                    c *= misWeight(uSunPdf, pdfBsdf(s, N, V, dir, pSpec));
-                L += c;
+    for (int li = -2; li < uLampCount; ++li) {
+        vec3  c = vec3(0.0);      // what arrives if nothing is in the way
+        vec3  ro, rd;
+        float tMax = kInf;
+
+        if (li == -2) {
+            if (uSunOn == 0 || luminance(uSunColor) <= 1e-5) continue;
+            vec3 dir = uSunPdf > 0.0 ? sampleCone(uSunAxis, uSunCosMax) : uSunAxis;
+            float NoL = dot(N, dir);
+            // A light behind a translucent surface reaches it through the far
+            // side -- which for a meadow is most of the light there is. The ray
+            // then has to leave from the OTHER face, or it starts inside the
+            // leaf it is trying to see past.
+            bool behind = NoL < 0.0 && s.translucency > 0.0;
+            if (!(NoL > 0.0 || behind)) continue;
+            // sun.color is already radiance divided by this sampler's own pdf,
+            // which is why it appears here unscaled. A disc can also be found
+            // by bouncing into it, so this strategy only claims its share; a
+            // hard-edged sun cannot be hit at all, and keeps the lot.
+            c = uSunColor * evalBsdf(s, N, V, dir, 1.0) * abs(NoL);
+            if (uSunPdf > 0.0) c *= misWeight(uSunPdf, pdfBsdf(s, N, V, dir, pSpec));
+            // The clouds first: a point in their shadow needs no shadow ray.
+            float clouds = maskAt(P);
+            if (clouds <= 1e-4) continue;
+            c *= clouds;
+            ro = P + (behind ? -N : N) * kRayEps;
+            rd = dir;
+        } else if (li == -1) {
+            // The sky, aimed at rather than stumbled into -- only with a
+            // panorama; the gradient has no bright spot worth aiming at, and
+            // the CPU does not aim at it either.
+            if (uDistSize.x <= 0) continue;
+            float pdfE;
+            vec3 dir = envSampleDir(rnd(), rnd(), pdfE);
+            float NoL = dot(N, dir);
+            bool envBehind = NoL < 0.0 && s.translucency > 0.0;
+            if (!(pdfE > 1e-4 && (NoL > 0.0 || envBehind))) continue;
+            float wgt = misWeight(pdfE, pdfBsdf(s, N, V, dir, pSpec));
+            c = envSample(dir) * uEnvIntensity * evalBsdf(s, N, V, dir, 1.0) *
+                (abs(NoL) * wgt / pdfE);
+            // Checked rather than trusted: this one is a quotient.
+            if (any(isnan(c))) continue;
+            c = min(c, vec3(50000.0));
+            ro = P + (envBehind ? -N : N) * kRayEps;
+            rd = dir;
+        } else {
+            Lamp lamp = lamps[li];
+            vec3  d    = lamp.posRange.xyz - P;
+            float dist = length(d);
+            if (dist < 1e-4) continue;
+            d /= dist;
+
+            // The same range-limited falloff lit.frag uses. Not inverse-square
+            // on purpose: matching the raster path's brightness matters more
+            // than being right about a light the author already tuned by eye.
+            float att = clamp(1.0 - dist / max(lamp.posRange.w, 1e-3), 0.0, 1.0);
+            att *= att;
+            if (att <= 0.0) continue;
+
+            if (lamp.cone.y >= -1.0) {                    // a cone, not a point
+                float cosA = dot(-d, normalize(lamp.dirRadius.xyz));
+                float cone = clamp((cosA - lamp.cone.y) /
+                                   max(lamp.cone.x - lamp.cone.y, 1e-3), 0.0, 1.0);
+                cone *= cone;
+                if (cone <= 0.0) continue;
+                att *= cone;
             }
+
+            float NoL = dot(N, d);
+            if (NoL <= 0.0) continue;
+
+            // The bulb's size softens the SHADOW, which needs a jittered ray,
+            // and the HIGHLIGHT, which does not -- widening the lobe gives the
+            // same picture as jittering it with none of the variance.
+            float radius = lamp.dirRadius.w;
+            float sphereAngle = min(1.0, radius / max(dist, 1e-3));
+            Surface wide = s;
+            wide.alpha = clamp(s.alpha + 0.5 * sphereAngle, s.alpha, 1.0);
+            float ratio     = s.alpha / max(wide.alpha, 1e-6);
+            float specScale = ratio * ratio;
+
+            vec3 target = lamp.posRange.xyz;
+            if (radius > 1e-4) {
+                vec3 t, b;
+                basisFrom(d, t, b);
+                vec2 disk = sampleDisk() * radius;
+                target += t * disk.x + b * disk.y;
+            }
+            vec3  sd    = target - P;
+            float sdist = length(sd);
+            if (sdist < 1e-4) continue;
+            c = lamp.color.rgb * att * evalBsdf(wide, N, V, d, specScale) * NoL;
+            ro = P + N * kRayEps;
+            rd = sd / sdist;
+            tMax = sdist - kRayEps;
         }
-    }
 
-    for (int i = 0; i < uLampCount; ++i) {
-        Lamp lamp = lamps[i];
-        vec3  d    = lamp.posRange.xyz - P;
-        float dist = length(d);
-        if (dist < 1e-4) continue;
-        d /= dist;
-
-        // The same range-limited falloff lit.frag uses. Not inverse-square on
-        // purpose: matching the raster path's brightness matters more than being
-        // right about a light the author already tuned by eye against it.
-        float att = clamp(1.0 - dist / max(lamp.posRange.w, 1e-3), 0.0, 1.0);
-        att *= att;
-        if (att <= 0.0) continue;
-
-        if (lamp.cone.y >= -1.0) {                    // a cone, not a point
-            float cosA = dot(-d, normalize(lamp.dirRadius.xyz));
-            float cone = clamp((cosA - lamp.cone.y) /
-                               max(lamp.cone.x - lamp.cone.y, 1e-3), 0.0, 1.0);
-            cone *= cone;
-            if (cone <= 0.0) continue;
-            att *= cone;
-        }
-
-        float NoL = dot(N, d);
-        if (NoL <= 0.0) continue;
-
-        // The bulb's size softens the SHADOW, which needs a jittered ray, and
-        // the HIGHLIGHT, which does not -- widening the lobe gives the same
-        // picture as jittering it with none of the variance.
-        float radius = lamp.dirRadius.w;
-        float sphereAngle = min(1.0, radius / max(dist, 1e-3));
-        Surface wide = s;
-        wide.alpha = clamp(s.alpha + 0.5 * sphereAngle, s.alpha, 1.0);
-        float ratio     = s.alpha / max(wide.alpha, 1e-6);
-        float specScale = ratio * ratio;
-
-        vec3 target = lamp.posRange.xyz;
-        if (radius > 1e-4) {
-            vec3 t, b;
-            basisFrom(d, t, b);
-            vec2 disk = sampleDisk() * radius;
-            target += t * disk.x + b * disk.y;
-        }
-        vec3  sd    = target - P;
-        float sdist = length(sd);
-        if (sdist < 1e-4) continue;
-        sd /= sdist;
-
-        vec3 tr = transmittance(P + N * kRayEps, sd, sdist - kRayEps);
+        if (luminance(c) <= 0.0) continue;
+        vec3 tr = transmittance(ro, rd, tMax, sigma);
         if (luminance(tr) < 1e-4) continue;
-        L += lamp.color.rgb * att * tr * evalBsdf(wide, N, V, d, specScale) * NoL;
+        L += c * tr;
     }
     return L;
 }
@@ -816,6 +1370,8 @@ vec3 radiance(vec3 org, vec3 dir) {
     vec3 L = vec3(0.0), beta = vec3(1.0);
     vec3 eye = org, eyeDir = dir;
     float primaryDist = -1.0;
+    bool  primaryFar = false;   // the first surface is the far ground (applyAir)
+    vec3  primaryPos = vec3(0.0);
 
     // Crossings of transparent surfaces, counted apart from real bounces: a ray
     // through five panes of glass has scattered once, and charging it five
@@ -823,16 +1379,30 @@ vec3 radiance(vec3 org, vec3 dir) {
     int passthrough = 0;
 
     // The density this ray was sampled with, and whether that sampler was a
-    // delta (the camera, a mirror, a pane of glass). Both are for the sun: an
-    // escaping ray that lands on the disc has to know how likely it was to do
-    // so, or it double-counts what the shadow ray already found.
+    // delta (the camera, a mirror, a pane of glass). Both are for the sun and
+    // the sky: an escaping ray has to know how likely it was to land where it
+    // did, or it double-counts what the light sampler already found.
     float lastPdf = 0.0;
     bool  lastDelta = true;
 
+    // The water body the path is inside, if any (Tracer::throughMedium): its
+    // extinction and the lit colour it fills in with.
+    vec3 sigma = vec3(0.0), glow = vec3(0.0);
+
     for (int bounce = 0; bounce <= uMaxBounces; ++bounce) {
         Hit hit;
-        if (!closest(org, dir, kInf, hit)) {
-            vec3 sky = envSample(dir) * uEnvIntensity;
+        bool found = closest(org, dir, kInf, hit);
+        if (sigma.x > 0.0 || sigma.y > 0.0 || sigma.z > 0.0) {
+            vec3 T = found ? exp(-sigma * hit.t) : vec3(0.0);
+            L    += clamped(beta * glow * (vec3(1.0) - T), bounce);
+            beta *= T;
+        }
+        if (!found) {
+            // Straight from the camera, or off a delta lobe, the ray sees what
+            // the viewport shows (the backdrop); everything that scattered sees
+            // the light the scene is lit by, and only claims its MIS share of it.
+            vec3 sky = lastDelta ? envSeen(dir) : envSample(dir) * uEnvIntensity;
+            if (!lastDelta && uDistSize.x > 0) sky *= misWeight(lastPdf, envPdf(dir));
             if (uSunOn == 1 && uSunPdf > 0.0 && dot(dir, uSunAxis) > uSunCosMax) {
                 // Straight from the camera, or off a mirror, the disc is simply
                 // what is there. Off a rough surface it shares the find with the
@@ -843,27 +1413,48 @@ vec3 radiance(vec3 org, vec3 dir) {
             L += clamped(beta * sky, bounce);
             break;
         }
-        if (primaryDist < 0.0) primaryDist = hit.t;
 
         Tri tri = tris[hit.tri];
-        int mi  = int(tri.uv2mat.z);
+        int mi  = materialOf(hit.tri, hit.inst);
         float w = 1.0 - hit.u - hit.v;
         vec3  P = org + dir * hit.t;
 
-        vec3 N = tri.n0.xyz * w + tri.n1.xyz * hit.u + tri.n2.xyz * hit.v;
-        if (dot(N, N) < 1e-12)
-            N = normalize(cross(tripos[hit.tri * 3 + 1].xyz,
-                                tripos[hit.tri * 3 + 2].xyz));   // e1 x e2
-        else
-            N = normalize(N);
+        vec3 N  = tri.n0.xyz * w + tri.n1.xyz * hit.u + tri.n2.xyz * hit.v;
+        vec3 fN = cross(tripos[hit.slot * 3 + 1].xyz, tripos[hit.slot * 3 + 2].xyz);
+        if (hit.inst >= 0) {
+            // Out of the instance's space through the inverse transpose, so a
+            // tree scaled to twice its height is lit as the tree and not as a
+            // sheared one.
+            Inst I = insts[hit.inst];
+            N  = vec3(dot(I.nrm0.xyz, N),  dot(I.nrm1.xyz, N),  dot(I.nrm2.xyz, N));
+            fN = vec3(dot(I.nrm0.xyz, fN), dot(I.nrm1.xyz, fN), dot(I.nrm2.xyz, fN));
+        }
+        // A triangle with no area and no usable normal (imported meshes carry
+        // them) would hand every ray after it a NaN direction; it is passed
+        // through instead, as if it were not there.
+        if (!(dot(N, N) >= 1e-12) && !(dot(fN, fN) >= 1e-24)) {
+            if (++passthrough > 64) break;
+            org = P + dir * kRayEps;
+            --bounce;
+            continue;
+        }
+        N = dot(N, N) < 1e-12 ? normalize(fN) : normalize(N);
         vec3 gN = N;
         if (dot(N, -dir) < 0.0) N = -N;    // shade the side we can see
 
         float texA;
         // gN, not N: the slope a terrain band tests is the ground's, not the one
         // turned to face the eye.
-        Surface s = surfaceOf(mi, uvAt(tri, hit.u, hit.v), P, gN,
-                              paintAt(hit.tri, hit.u, hit.v), texA);
+        Surface s = surfaceOf(mi, uvAt(tri, hit.u, hit.v), P, gN, paintAt(hit), texA);
+
+        // A glow: seen, never lit by, and the ray carries on through it.
+        if (s.additive) {
+            if (lastDelta) L += clamped(beta * s.emission * s.coverage, bounce);
+            if (++passthrough > 64) break;
+            org = P + dir * kRayEps;
+            --bounce;
+            continue;
+        }
 
         // Cutout and blended surfaces: decide whether this ray sees the surface
         // at all before doing any shading work. Only a BLEND surface is passed
@@ -873,10 +1464,16 @@ vec3 radiance(vec3 org, vec3 dir) {
         bool blendMiss  = !s.glass && s.alphaMode == 2 && s.coverage < 0.999 &&
                           rnd() > s.coverage;
         if (cutoutMiss || blendMiss) {
-            if (++passthrough > 32) break;
+            if (++passthrough > 64) break;
             org = P + dir * kRayEps;
             --bounce;                       // a pane is not a bounce
             continue;
+        }
+        // From the eye, not from wherever the ray was last restarted.
+        if (primaryDist < 0.0) {
+            primaryDist = distance(eye, P);
+            primaryFar  = mats[mi].extra.z > 0.5;
+            primaryPos  = P;
         }
 
         L += clamped(beta * s.emission, bounce);
@@ -904,8 +1501,20 @@ vec3 radiance(vec3 org, vec3 dir) {
                 dir = reflect(dir, N);
             } else {
                 vec3 refr = refract(dir, N, ior);
-                dir = dot(refr, refr) < 1e-8 ? reflect(dir, N) : refr;
-                beta *= s.baseColor;        // the tint the pane carries
+                if (dot(refr, refr) < 1e-8) {
+                    dir = reflect(dir, N);
+                } else {
+                    dir = refr;
+                    beta *= s.baseColor;    // the tint the pane carries
+                    // Through the surface: into its body, or back out.
+                    if (entering) {
+                        sigma = max(mats[mi].absorb.rgb, vec3(0.0));
+                        glow  = pow(max(mats[mi].medium.rgb, vec3(0.0)), vec3(2.2)) * uMediumGlow;
+                    } else {
+                        sigma = vec3(0.0);
+                        glow  = vec3(0.0);
+                    }
+                }
             }
             org = P + dir * kRayEps;
             lastDelta = true;
@@ -916,7 +1525,7 @@ vec3 radiance(vec3 org, vec3 dir) {
         // to weigh itself against the SAME densities the scatter below will use,
         // or the two strategies do not add up to one.
         float pSpec = specProbability(s);
-        L += clamped(beta * directLight(P, N, V, s, pSpec), bounce);
+        L += clamped(beta * directLight(P, N, V, s, pSpec, sigma), bounce);
 
         if (bounce == uMaxBounces) break;
 
@@ -932,14 +1541,18 @@ vec3 radiance(vec3 org, vec3 dir) {
             vec3 H  = normalize(t * Hl.x + b * Hl.y + N * Hl.z);
             nextDir = reflect(dir, H);
         } else {
-            nextDir = cosineHemisphere(N);
+            // The diffuse lobe covers the whole sphere on a translucent
+            // surface: `translucency` of the time the path carries on out the
+            // far side, which is how light gets through a canopy at all.
+            bool through = s.translucency > 0.0 && rnd() < s.translucency;
+            nextDir = cosineHemisphere(through ? -N : N);
         }
         float NoL = dot(N, nextDir);
-        if (NoL <= 0.0) break;
+        if (abs(NoL) <= 0.0) break;
 
         float pdf = pdfBsdf(s, N, V, nextDir, pSpec);
         if (pdf < 1e-6) break;
-        beta *= evalBsdf(s, N, V, nextDir, 1.0) * (NoL / pdf);
+        beta *= evalBsdf(s, N, V, nextDir, 1.0) * (abs(NoL) / pdf);
         if (luminance(beta) < 1e-5) break;
         lastPdf   = pdf;
         lastDelta = false;
@@ -952,7 +1565,7 @@ vec3 radiance(vec3 org, vec3 dir) {
             beta /= q;
         }
 
-        org = P + N * kRayEps;
+        org = P + (NoL < 0.0 ? -N : N) * kRayEps;
         dir = nextDir;
     }
 
@@ -962,6 +1575,22 @@ vec3 radiance(vec3 org, vec3 dir) {
     if (any(isnan(L))) return vec3(0.0);
     L = min(L, vec3(50000.0));
     if (primaryDist > 0.0) L = applyFog(L, eye, eyeDir, primaryDist);
+    if (primaryFar) {
+        // farterrain.frag's applyAir (Tracer::applyAir on the CPU).
+        vec3  to = primaryPos - eye;
+        float dist = length(to);
+        if (dist > 1e-3) {
+            vec3  rd = to / dist;
+            const float Hs = 1600.0, Lair = 17000.0;
+            float y0 = max(eye.y, 0.0), y1 = max(primaryPos.y, 0.0);
+            float avgD = abs(y1 - y0) > 1.0 ? Hs * (exp(-y0 / Hs) - exp(-y1 / Hs)) / (y1 - y0)
+                                            : exp(-y0 / Hs);
+            float a = 1.0 - exp(-dist / Lair * avgD);
+            vec3 air = skyGradient(normalize(vec3(rd.x, max(rd.y, 0.015), rd.z)), uSunDirRaw);
+            air += uAirSun * pow(max(dot(rd, uSunAxis), 0.0), 8.0) * 0.18;
+            L = mix(L, air, a);
+        }
+    }
     if (any(isnan(L))) return vec3(0.0);
     return L;
 }
@@ -977,7 +1606,17 @@ void main() {
         float sx = (float(px.x) + jx) / float(uSize.x) * 2.0 - 1.0;
         float sy = 1.0 - (float(px.y) + jy) / float(uSize.y) * 2.0;
         vec3 dir = normalize(uCamFwd + uCamRight * (sx * uHalfU) + uCamUp * (sy * uHalfV));
-        sum += radiance(uCamPos, dir);
+        vec3 org = uCamPos;
+        if (uAperture > 1e-5) {
+            // A real lens: the ray starts somewhere on the aperture and still
+            // passes through the focal point, so the focal plane stays sharp and
+            // the rest opens up.
+            vec3 focus = org + dir * (uFocus / max(1e-4, dot(dir, uCamFwd)));
+            vec2 lens  = sampleDisk() * uAperture;
+            org += uCamRight * lens.x + uCamUp * lens.y;
+            dir  = normalize(focus - org);
+        }
+        sum += radiance(org, dir);
     }
 
     vec4 prev = imageLoad(uAccum, px);

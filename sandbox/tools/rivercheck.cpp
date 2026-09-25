@@ -48,6 +48,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include <fitzel/graphics/Shader.hpp>
 #include <fitzel/world/Terrain.hpp>
 
 // Nothing in the engine writes an image file, so this TU owns the implementation.
@@ -73,11 +74,11 @@ void pass(const char* what, const std::string& detail) {
     std::printf("  ok   %s -- %s\n", what, detail.c_str());
 }
 
+// The shader text exactly as the engine hands it to the driver: through the
+// VFS, with every `#include "file"` expanded. Raw file contents would fail on
+// the first include (GLSL has none of its own).
 std::string readFile(const fs::path& p) {
-    std::ifstream in(p, std::ios::binary);
-    std::ostringstream ss;
-    ss << in.rdbuf();
-    return ss.str();
+    return fitzel::Shader::readSource(p.generic_string());
 }
 
 GLuint compile(GLenum stage, const std::string& src, const char* what) {
