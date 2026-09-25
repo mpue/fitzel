@@ -78,6 +78,10 @@ set /a RAN=0
 REM --- Die Pruefungen: Exit-Code hat eine Bedeutung -------------------------
 call :run shadercheck
 call :run citycheck
+REM  housecheck legt jede Haus-Vorlage aus und baut sie: Raeume im Grundriss und
+REM  erreichbar, Oeffnungen in Waenden, Treppe in der Diele, Wohnflaeche nach
+REM  WoFlV, gueltige Meshes, Parameter ueberleben Speichern/Laden.
+call :run housecheck
 REM  rivercheck schreibt zwar Bilder, ist aber trotzdem eine Pruefung: die
 REM  Wasserlaeufe schneiden ins Hoehenfeld, und ein kriechendes Bett oder eine
 REM  nicht zurueckgegebene Rinne sieht man an keinem Bild.

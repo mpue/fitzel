@@ -110,6 +110,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # district is derived from its biome rules on load, so the shipped player has
     # to be able to build it too -- the scene file holds the rules, not the towers.
     src/BuildingGen.cpp
+    # Registers the House component: a scene holding a generated house has to
+    # load in the player without losing it, even though only the editor builds one.
+    src/HouseGen.cpp
     src/CityGen.cpp
     src/RainRenderer.cpp
     # Weather presets: the named skies a project keeps in weather.json.
@@ -239,6 +242,7 @@ set(SANDBOX_EDITOR_SOURCES
     # ...and objects along a spline path, the same way (see SplinePlace.hpp).
     src/SplinePlace.cpp
     src/BuildingPanel.cpp
+    src/HousePanel.cpp
     src/CityPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
     # Editor-only, all three files. A shipped game has no use for a renderer that
@@ -341,6 +345,19 @@ add_executable(citycheck tools/citycheck.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(citycheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# housecheck -- every house preset laid out and built: rooms inside the
+# footprint and reachable, openings in walls, the stair in the hall, living
+# areas per WoFlV, valid centred meshes, and the parameters surviving the root
+# component's save/load. Pure geometry, no GL.
+#   build/release/bin/housecheck.exe [--obj <dir>]
+# (Component.cpp and what it drags in come along because the parameters live on
+#  a component -- the same list citycheck links for the same reason.)
+add_executable(housecheck tools/housecheck.cpp src/HouseGen.cpp
+                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                          src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                          src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # The autosave check (sandbox/tools/autosavecheck.cpp): drives the crash-snapshot
 # writer over a simulated afternoon of editing and round-trips a scene through a

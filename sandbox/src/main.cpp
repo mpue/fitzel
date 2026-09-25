@@ -158,6 +158,8 @@
 #include "ScatterTool.hpp"
 #include "BuildingGen.hpp"
 #include "BuildingPanel.hpp"
+#include "HouseGen.hpp"
+#include "HousePanel.hpp"
 #include "CityPanel.hpp"
 #include "VehicleGizmo.hpp"
 #include "VehicleTool.hpp"
@@ -1883,6 +1885,17 @@ int main(int argc, char** argv) {
         bool buildingPending  = false;   // an edit is waiting for the widget release
         char buildingNameBuf[64] = "Skyscraper";
 
+        // --- Procedural houses (HouseGen) -----------------------------------
+        // Same shape as the buildings above: the parameters being edited, the
+        // house last generated (what "Rebuild in place" and "Save as prefab" act
+        // on) and the storey tab the panel shows.
+        housegen::Params houseCfg;
+        int  houseLiveId  = -1;
+        bool houseAuto    = true;    // a plan is tuned by looking at the result
+        bool housePending = false;   // an edit is waiting for the widget release
+        int  houseLevel   = 0;
+        char houseNameBuf[64] = "House";
+
 
         // --- Trees: instanced model + billboard LOD (owned by VegetationSystem)
         if (!veg.initTrees(modelDir, texDir)) return 1;
@@ -2720,6 +2733,7 @@ int main(int argc, char** argv) {
         bool showVegetation  = false;
         bool showScatter     = false;
         bool showBuildings   = false;
+        bool showHouses      = false;
         bool showCity        = false;
         bool showCamPath     = false;
         bool showTimeline    = false;
@@ -3888,6 +3902,70 @@ int main(int argc, char** argv) {
                          document);
             sel.select(buildingLiveId);
             exportStatus = "Baked the nearest city building into the scene.";
+        };
+
+        // --- Procedural houses (see HouseGen.hpp) -------------------------------
+        // The same four actions as the buildings: generate at the spawn point,
+        // rebuild the live one in place (one undo step either way), save it as a
+        // prefab -- plus re-opening any placed house, whose root carries the
+        // parameters it was built from (HouseComponent).
+        auto generateHouse = [&]() {
+            const glm::vec3 g = spawnPoint(40.0f);
+            const housegen::Palette pal = housegen::ensurePalette(materials, houseCfg);
+            std::vector<Entity> es = housegen::generate(houseCfg, pal, entityCounter, g);
+            if (es.empty()) return;
+            if (houseNameBuf[0] != '\0') es.front().name = houseNameBuf;
+            houseLiveId = es.front().id;
+            history.push(std::make_unique<AddEntitiesCmd>(std::move(es), "House"), document);
+            sel.select(houseLiveId);
+            exportStatus = "Generated house.";
+        };
+        auto rebuildHouse = [&]() {
+            const int idx = document.indexOf(houseLiveId);
+            if (idx < 0) { houseLiveId = -1; return; }
+            const Entity old = entities[idx];
+            const std::vector<int> ids = collectSubtreeIds(old.id);
+            const housegen::Palette pal = housegen::ensurePalette(materials, houseCfg);
+            std::vector<Entity> es =
+                housegen::generate(houseCfg, pal, entityCounter, old.localCenter);
+            if (es.empty()) return;
+            es.front().name          = old.name;
+            es.front().parent        = old.parent;
+            es.front().localRotation = old.localRotation;
+            es.front().rotation      = old.rotation;
+            houseLiveId = es.front().id;
+            history.push(std::make_unique<ReplaceEntitiesCmd>(document, ids, std::move(es),
+                                                              "House"),
+                         document);
+            sel.select(houseLiveId);
+        };
+        auto saveHousePrefab = [&]() {
+            const int idx = document.indexOf(houseLiveId);
+            if (idx < 0) { exportStatus = "Generate a house first."; return; }
+            sel.selectIndex(idx);
+            createPrefabFromSelection(houseNameBuf);
+        };
+        // The generated house the selection is part of (its root's id), or -1:
+        // clicking a wall should be enough to get back to the whole house.
+        auto selectedHouseId = [&]() -> int {
+            if (!sel.valid()) return -1;
+            const Entity* e = &entities[sel.index()];
+            for (int depth = 0; e && depth < 64; ++depth) {
+                if (e->components.get<HouseComponent>()) return e->id;
+                if (e->parent < 0) break;
+                e = document.find(e->parent);
+            }
+            return -1;
+        };
+        auto loadSelectedHouse = [&]() {
+            const int id = selectedHouseId();
+            const Entity* e = id >= 0 ? document.find(id) : nullptr;
+            if (!e) return;
+            houseCfg    = e->components.get<HouseComponent>()->params;
+            houseLiveId = id;
+            std::snprintf(houseNameBuf, sizeof houseNameBuf, "%s", e->name.c_str());
+            sel.select(id);
+            exportStatus = "Editing " + e->name + ".";
         };
 #endif // !FITZEL_PLAYER
 
@@ -7470,6 +7548,7 @@ int main(int argc, char** argv) {
             {"Track",    "City",               nullptr, &showCity},
             {"Track",    "Level generator",    nullptr, &showLevelGen},
             {"Track",    "Buildings",          nullptr, &showBuildings},
+            {"Track",    "Houses",             nullptr, &showHouses},
             {"Track",    nullptr,              nullptr, nullptr},
             {"Track",    "Vehicle",            nullptr, &showVehiclePanel},
             {"Track",    "Glider",             nullptr, &showGliderPanel},
@@ -14070,6 +14149,19 @@ int main(int argc, char** argv) {
                     buildingNameBuf, sizeof(buildingNameBuf),
                     buildingAuto, buildingPending,
                     generateBuilding, rebuildBuilding, saveBuildingPrefab,
+                    exportStatus,
+                });
+            }
+
+            if (showHouses) {
+                houseui::drawPanel({
+                    showHouses, houseCfg, houseLevel,
+                    !currentProject.empty(),
+                    document.indexOf(houseLiveId) >= 0,
+                    selectedHouseId() >= 0,
+                    houseNameBuf, sizeof(houseNameBuf),
+                    houseAuto, housePending,
+                    generateHouse, rebuildHouse, loadSelectedHouse, saveHousePrefab,
                     exportStatus,
                 });
             }
