@@ -403,6 +403,11 @@ public:
     // What this road is called in the road list (see RoadSet). A label and
     // nothing else: nothing is looked up by it, so two roads may share one.
     std::string              name = "Road";
+    // The town (CitySystem, see CityPlan.hpp) that laid this road as one of its
+    // streets, 0 for a road the author drew. The only link between the two:
+    // re-planning a town's streets takes away exactly the roads carrying its id
+    // and lays new ones, and leaves every other road alone. Saved as "town".
+    int                      cityId = 0;
     std::vector<glm::vec2>   roadPts;          // control points (world x,z)
     // Per-point height offset in metres above the graded ground, one entry per
     // control point. 0 (the default, and what an older scene loads as) means

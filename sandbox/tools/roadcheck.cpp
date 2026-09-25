@@ -77,6 +77,7 @@
 
 #include "../src/LevelGen.hpp"
 #include "../src/RoadSet.hpp"
+#include "../src/CitySystem.hpp"
 #include "../src/SandboxMath.hpp"
 
 namespace fs = std::filesystem;
@@ -770,6 +771,81 @@ int main(int argc, char** argv) {
         check(got == "roads_basic_crossing.png",
               "the junction sheet follows its surface",
               got.empty() ? "nothing found for roads_basic.png" : got);
+    }
+
+    // --- 17) A town lays its streets as roads, and they meet ------------------
+    // The town generator (CitySystem / CityPlan) hands its grid to the road set
+    // as ordinary roads. Everything a hand-drawn road gets has to follow from
+    // that: every grid node a junction, a re-lay replacing exactly the town's own
+    // roads, a river crossing carried on a bridge, and buildings derived.
+    {
+        RoadSet trs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+        CitySystem towns;
+        towns.groundAt = [&streamer](float x, float z) { return streamer.heightAt(x, z); };
+        towns.roadLines = [&trs] {
+            std::vector<cityplan::RoadLine> out;
+            for (const RoadSystem* r : trs)
+                if (r->centerline().size() >= 2)
+                    out.push_back({r->centerline(), r->surfaceHalf()});
+            return out;
+        };
+        cityplan::Rule rule;
+        rule.grid.center  = {0.0f, 600.0f};
+        rule.grid.sizeX   = 300.0f; rule.grid.sizeZ = 225.0f;
+        rule.grid.blockX  = 100.0f; rule.grid.blockZ = 75.0f;   // 3 x 3 blocks
+        rule.grid.organic = 0.0f;
+        rule.grid.avenueEvery = 0;
+        const int ti = towns.add(rule);
+        const CitySystem::Laid laid = towns.layStreets(ti, trs);
+        const int townId = towns.towns[0].id;
+        check(laid.added.size() == 8 && trs.count() == 9 &&
+              towns.streetCount(townId, trs) == 8 && towns.consumeBuildRequest(),
+              "a 3x3 town lays 8 streets beside the empty road",
+              std::to_string(laid.added.size()) + " added, " +
+                  std::to_string(trs.count()) + " living");
+
+        fitzel::TerrainEditField te;
+        glm::vec2 a(0.0f), b(0.0f);
+        trs.buildAll(te, a, b);
+        check(trs.junctions().size() == 16, "every grid node is a junction",
+              std::to_string(trs.junctions().size()) + " junctions (want 16)");
+
+        const CitySystem::Laid again = towns.layStreets(ti, trs);
+        check(again.removed.size() == 8 && again.added.size() == 8 && trs.count() == 9 &&
+              towns.streetCount(townId, trs) == 8,
+              "re-laying replaces exactly the town's own roads", "");
+        // Undo of that re-lay, the way CityCmd does it.
+        for (int id : again.removed) trs.setAlive(id, true);
+        for (int id : again.added)   trs.setAlive(id, false);
+        check(trs.count() == 9 && towns.streetCount(townId, trs) == 8,
+              "a re-lay flips back without losing a road", "");
+
+        // A river across the town, clear of every grid line: every street that
+        // crosses it gets its bridge, and nothing is built in it.
+        towns.isWater = [](float x, float) { return std::abs(x) < 9.0f; };
+        const CitySystem::Laid wet = towns.layStreets(ti, trs);
+        int spans = 0;
+        for (const RoadSystem* r : trs)
+            if (r->cityId == townId) spans += static_cast<int>(r->bridges.size());
+        check(wet.bridges == 4 && spans == 4, "the four streets over the river get bridges",
+              std::to_string(wet.bridges) + " reported, " + std::to_string(spans) + " specs");
+        trs.buildAll(te, a, b);
+        std::vector<MaterialDef> mats;
+        towns.update(mats);
+        const cityplan::Town& built = towns.built()[0].town;
+        bool dry = true;
+        for (const cityplan::Placed& p : built.placed) dry &= std::abs(p.pos.x) > 9.0f;
+        check(built.stats.built > 0 && dry && !towns.built()[0].meshes.empty(),
+              "the town builds and keeps out of the river",
+              std::to_string(built.stats.built) + " buildings, " +
+                  std::to_string(built.stats.skippedWater) + " lots in the water");
+
+        std::vector<int> added;
+        const std::vector<int> gone = towns.removeStreets(townId, trs, &added);
+        check(gone.size() == 8 && added.empty() && trs.count() == 1,
+              "deleting the town's streets leaves the hand-drawn road",
+              std::to_string(gone.size()) + " removed, " + std::to_string(added.size()) +
+                  " placeholders, " + std::to_string(trs.count()) + " living");
     }
 
     glfwDestroyWindow(win);

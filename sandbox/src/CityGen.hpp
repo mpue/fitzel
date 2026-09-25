@@ -279,6 +279,35 @@ District generate(const std::vector<glm::vec2>& center,
                   const std::function<float(float, float)>& groundAt,
                   int maxBuildings);
 
+// --- Shared with the town generator (CityPlan.hpp) ---------------------------
+// The two steps every derived district goes through, whoever planned the lots:
+// lift a generated building into world-space pieces, then weld the pieces into
+// per-(chunk x material) batches.
+
+// Lift BuildingGen's entity list (front() = the Empty root) into world-space
+// pieces standing at `ground`, turned `yawDeg` about +Y. Point lights are
+// dropped. `lo`/`hi` grow to a conservative box around what was added.
+void flatten(const std::vector<Entity>& es, const glm::vec3& ground, float yawDeg,
+             std::vector<Piece>& out, glm::vec3& lo, glm::vec3& hi);
+
+// A ready-made mesh to weld in beside the pieces: triangles that are not one of
+// the unit primitives (a generated house's walls and roof). `mesh` is in the
+// object's own frame and is placed by one yaw about +Y and a translate, like a
+// piece. Borrowed -- it only has to live until merge() returns.
+struct Extra {
+    const fitzel::MeshData* mesh = nullptr;
+    glm::vec3               at{0.0f};
+    float                   yaw = 0.0f;   // degrees about +Y
+    fitzel::AssetId         material;
+    int                     chunk = 0;
+};
+
+// Merge `pcs` (and `extras`, if given) into `out.batches`, one mesh per
+// (chunk, material); `pcChunk` is parallel to `pcs`. The SOLID pieces are
+// appended to `out.colliders`. Adds to `out.parts`, recounts `out.verts`.
+void merge(const std::vector<Piece>& pcs, const std::vector<int>& pcChunk,
+           District& out, const std::vector<Extra>* extras = nullptr);
+
 // Turn one derived building back into a real, editable entity subtree -- the
 // escape hatch from "derived" to "authored". Returns a parent-before-child list
 // whose front() is an Empty root, exactly what AddEntitiesCmd and prefab::

@@ -253,12 +253,15 @@ float roofUnderside(const Plan& plan, float x);
 // --- The model ---------------------------------------------------------------
 
 // The shared surface materials a generated house references. One set per
-// project ("House Facade" ...), re-tinted from the parameters on every build.
+// project and `set` name ("House Facade" ...), re-tinted from the parameters on
+// every build. The town generator keeps its own set ("City House ..."), so
+// re-planning a town never repaints the houses placed through the House panel.
 struct Palette {
     fitzel::AssetId facade, plinth, roof, timber, interior, floor, frame, glass,
                     door, stair;
 };
-Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& p);
+Palette ensurePalette(std::vector<MaterialDef>& materials, const Params& p,
+                      const std::string& set = "House");
 
 // Build the house. Returns a parent-before-child entity list whose front() is an
 // Empty root standing at `groundPos` (the centre of the footprint, on the

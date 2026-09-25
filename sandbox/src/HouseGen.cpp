@@ -995,21 +995,23 @@ AssetId ensureMaterial(std::vector<MaterialDef>& mats, const std::string& name,
 
 } // namespace
 
-Palette ensurePalette(std::vector<MaterialDef>& mats, const Params& p) {
+Palette ensurePalette(std::vector<MaterialDef>& mats, const Params& p,
+                      const std::string& set) {
+    auto nm = [&](const char* part) { return set + " " + part; };
     Palette pal;
-    pal.facade   = ensureMaterial(mats, "House Facade", p.facadeColor, 0.0f, 0.85f);
-    pal.plinth   = ensureMaterial(mats, "House Plinth", p.plinthColor, 0.0f, 0.80f);
-    pal.roof     = ensureMaterial(mats, "House Roof", p.roofColor, 0.0f, 0.70f);
-    pal.timber   = ensureMaterial(mats, "House Timber", {0.42f, 0.29f, 0.18f}, 0.0f, 0.65f);
-    pal.interior = ensureMaterial(mats, "House Interior", {0.90f, 0.89f, 0.86f}, 0.0f, 0.90f);
-    pal.floor    = ensureMaterial(mats, "House Floor", p.floorColor, 0.0f, 0.45f);
-    pal.frame    = ensureMaterial(mats, "House Frame", p.frameColor, 0.2f, 0.40f);
+    pal.facade   = ensureMaterial(mats, nm("Facade"), p.facadeColor, 0.0f, 0.85f);
+    pal.plinth   = ensureMaterial(mats, nm("Plinth"), p.plinthColor, 0.0f, 0.80f);
+    pal.roof     = ensureMaterial(mats, nm("Roof"), p.roofColor, 0.0f, 0.70f);
+    pal.timber   = ensureMaterial(mats, nm("Timber"), {0.42f, 0.29f, 0.18f}, 0.0f, 0.65f);
+    pal.interior = ensureMaterial(mats, nm("Interior"), {0.90f, 0.89f, 0.86f}, 0.0f, 0.90f);
+    pal.floor    = ensureMaterial(mats, nm("Floor"), p.floorColor, 0.0f, 0.45f);
+    pal.frame    = ensureMaterial(mats, nm("Frame"), p.frameColor, 0.2f, 0.40f);
     // The same glass the project seeds by default: the glass flag gives the
     // Fresnel alpha, the low opacity keeps the pane clear head-on.
-    pal.glass    = ensureMaterial(mats, "House Glass", {0.85f, 0.92f, 0.95f}, 0.5f, 0.03f,
+    pal.glass    = ensureMaterial(mats, nm("Glass"), {0.85f, 0.92f, 0.95f}, 0.5f, 0.03f,
                                   true, 0.28f);
-    pal.door     = ensureMaterial(mats, "House Door", {0.93f, 0.93f, 0.91f}, 0.0f, 0.35f);
-    pal.stair    = ensureMaterial(mats, "House Stair", p.floorColor * 0.85f, 0.0f, 0.50f);
+    pal.door     = ensureMaterial(mats, nm("Door"), {0.93f, 0.93f, 0.91f}, 0.0f, 0.35f);
+    pal.stair    = ensureMaterial(mats, nm("Stair"), p.floorColor * 0.85f, 0.0f, 0.50f);
     return pal;
 }
 

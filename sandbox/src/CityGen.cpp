@@ -580,6 +580,8 @@ buildings::Style pickStyle(const Biome& b, std::uint32_t h) {
     return buildings::Style::Skyscraper;
 }
 
+} // namespace
+
 // Flatten one generated tower into world-space pieces. BuildingGen lays its parts
 // out in the building's own frame with a Y-only rotation each, so lifting them
 // into the world is one yaw and one translate -- no matrices, and nothing that
@@ -612,7 +614,92 @@ void flatten(const std::vector<Entity>& es, const glm::vec3& ground, float yawDe
     }
 }
 
-} // namespace
+
+
+// Every piece in a chunk that shares a material becomes one mesh. This is the
+// step that makes a district drawable: see the note on Batch for why the cost
+// is per draw rather than per triangle. The loose pieces are dropped here --
+// only the SOLID ones are kept, and only because Play needs colliders.
+void merge(const std::vector<Piece>& pcs, const std::vector<int>& pcChunk,
+           District& out, const std::vector<Extra>* extras) {
+    out.parts += static_cast<int>(pcs.size());
+    // An ORDERED map, so the grouping is reproducible run to run: an unordered
+    // one would leave the batch list (and therefore the draw order) at the
+    // mercy of hash iteration, which makes a rebuild needlessly hard to
+    // compare against the one before it. AssetId has operator<.
+    std::map<std::pair<int, fitzel::AssetId>, std::size_t> index;
+    std::vector<std::size_t> nVerts, nIndices;
+    auto batchFor = [&](int chunk, const fitzel::AssetId& mat) {
+        const auto key = std::make_pair(chunk, mat);
+        auto it = index.find(key);
+        if (it == index.end()) {
+            it = index.emplace(key, out.batches.size()).first;
+            Batch b;
+            b.material = mat;
+            b.lo = glm::vec3(1e9f);
+            b.hi = glm::vec3(-1e9f);
+            out.batches.push_back(std::move(b));
+            nVerts.push_back(0);
+            nIndices.push_back(0);
+        }
+        return it->second;
+    };
+    const std::size_t nExtra = extras ? extras->size() : 0;
+    std::vector<int> batchOf(pcs.size(), -1), extraOf(nExtra, -1);
+
+    // Pass one: assign everything to a batch and total up what that batch will
+    // hold, so pass two can allocate each buffer exactly once.
+    for (std::size_t i = 0; i < pcs.size(); ++i) {
+        const Piece& pc = pcs[i];
+        if (pc.collide) out.colliders.push_back(pc);
+        if (!pc.material.valid()) continue;  // no material -> nothing to draw
+        const std::size_t b = batchFor(i < pcChunk.size() ? pcChunk[i] : 0, pc.material);
+        batchOf[i] = static_cast<int>(b);
+        const fitzel::MeshData& src = unitMesh(pc.type);
+        nVerts[b]   += src.vertices.size();
+        nIndices[b] += src.indices.size();
+    }
+    for (std::size_t i = 0; i < nExtra; ++i) {
+        const Extra& x = (*extras)[i];
+        if (!x.mesh || !x.material.valid()) continue;
+        const std::size_t b = batchFor(x.chunk, x.material);
+        extraOf[i] = static_cast<int>(b);
+        nVerts[b]   += x.mesh->vertices.size();
+        nIndices[b] += x.mesh->indices.size();
+    }
+    for (std::size_t b = 0; b < out.batches.size(); ++b) {
+        out.batches[b].data.vertices.reserve(out.batches[b].data.vertices.size() + nVerts[b]);
+        out.batches[b].data.indices.reserve(out.batches[b].data.indices.size() + nIndices[b]);
+    }
+    // Pass two: fill them.
+    for (std::size_t i = 0; i < pcs.size(); ++i) {
+        if (batchOf[i] < 0) continue;
+        Batch& b = out.batches[static_cast<std::size_t>(batchOf[i])];
+        appendPiece(b.data, pcs[i], b.lo, b.hi);
+    }
+    for (std::size_t i = 0; i < nExtra; ++i) {
+        if (extraOf[i] < 0) continue;
+        const Extra& x = (*extras)[i];
+        Batch& b = out.batches[static_cast<std::size_t>(extraOf[i])];
+        const float r = glm::radians(x.yaw), c = std::cos(r), s = std::sin(r);
+        auto rot = [&](glm::vec3 v) {
+            return glm::vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c);
+        };
+        const auto base = static_cast<std::uint32_t>(b.data.vertices.size());
+        for (const fitzel::Vertex& sv : x.mesh->vertices) {
+            fitzel::Vertex v = sv;
+            v.position = rot(v.position) + x.at;
+            v.normal   = rot(v.normal);
+            b.lo = glm::min(b.lo, v.position);
+            b.hi = glm::max(b.hi, v.position);
+            b.data.vertices.push_back(v);
+        }
+        for (std::uint32_t idx : x.mesh->indices) b.data.indices.push_back(base + idx);
+    }
+    out.verts = 0;
+    for (const Batch& b : out.batches)
+        out.verts += static_cast<int>(b.data.vertices.size());
+}
 
 District generate(const std::vector<glm::vec2>& center,
                   const std::vector<float>& centerY, float halfWidth,
@@ -1027,59 +1114,8 @@ District generate(const std::vector<glm::vec2>& center,
     }
 
     // --- Merge ---------------------------------------------------------------
-    // Every piece in a chunk that shares a material becomes one mesh. This is the
-    // step that makes a district drawable: see the note on Batch for why the cost
-    // is per draw rather than per triangle. The loose pieces are dropped here --
-    // only the SOLID ones are kept, and only because Play needs colliders.
-    out.parts = static_cast<int>(pcs.size());
     pcChunk.resize(pcs.size(), 0);   // a tag() missed by an early `continue`
-    {
-        // An ORDERED map, so the grouping is reproducible run to run: an unordered
-        // one would leave the batch list (and therefore the draw order) at the
-        // mercy of hash iteration, which makes a rebuild needlessly hard to
-        // compare against the one before it. AssetId has operator<.
-        std::map<std::pair<int, fitzel::AssetId>, std::size_t> index;
-        std::vector<int> batchOf(pcs.size(), -1);
-        std::vector<std::size_t> nVerts, nIndices;
-
-        // Pass one: assign every piece to a batch and total up what that batch
-        // will hold, so pass two can allocate each buffer exactly once.
-        for (std::size_t i = 0; i < pcs.size(); ++i) {
-            const Piece& pc = pcs[i];
-            if (pc.collide) out.colliders.push_back(pc);
-            if (!pc.material.valid()) continue;  // no material -> nothing to draw
-            const auto key = std::make_pair(pcChunk[i], pc.material);
-            auto it = index.find(key);
-            if (it == index.end()) {
-                it = index.emplace(key, out.batches.size()).first;
-                Batch b;
-                b.material = pc.material;
-                b.lo = glm::vec3(1e9f);
-                b.hi = glm::vec3(-1e9f);
-                out.batches.push_back(std::move(b));
-                nVerts.push_back(0);
-                nIndices.push_back(0);
-            }
-            const std::size_t bi2 = it->second;
-            batchOf[i] = static_cast<int>(bi2);
-            const fitzel::MeshData& src = unitMesh(pc.type);
-            nVerts[bi2]   += src.vertices.size();
-            nIndices[bi2] += src.indices.size();
-        }
-        for (std::size_t b = 0; b < out.batches.size(); ++b) {
-            out.batches[b].data.vertices.reserve(nVerts[b]);
-            out.batches[b].data.indices.reserve(nIndices[b]);
-        }
-        // Pass two: fill them.
-        for (std::size_t i = 0; i < pcs.size(); ++i) {
-            if (batchOf[i] < 0) continue;
-            Batch& b = out.batches[static_cast<std::size_t>(batchOf[i])];
-            appendPiece(b.data, pcs[i], b.lo, b.hi);
-        }
-    }
-    for (const Batch& b : out.batches)
-        out.verts += static_cast<int>(b.data.vertices.size());
-
+    merge(pcs, pcChunk, out);
     return out;
 }
 

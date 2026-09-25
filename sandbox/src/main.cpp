@@ -163,6 +163,8 @@
 #include "HouseGen.hpp"
 #include "HousePanel.hpp"
 #include "CityPanel.hpp"
+#include "CityPlanPanel.hpp"
+#include "CityCommand.hpp"
 #include "VehicleGizmo.hpp"
 #include "VehicleTool.hpp"
 #include "GliderTool.hpp"
@@ -1950,6 +1952,22 @@ int main(int argc, char** argv) {
                                     : 0.0f;
         };
         rivers.edits = &sculptWork;
+        // --- Whole towns (owned by CitySystem, see CityPlan.hpp) -------------
+        // Rules only in the scene file; the streets are ordinary roads in
+        // `roads`, the buildings are re-derived here (towns.update, below).
+        CitySystem towns;
+        towns.groundAt = [&streamer](float x, float z) { return streamer.heightAt(x, z); };
+        towns.isWater  = [&](float x, float z) {
+            float surf = 0.0f;
+            return rivers.sample(glm::vec2(x, z), surf) || streamer.heightAt(x, z) < waterLevel;
+        };
+        towns.roadLines = [&roads] {
+            std::vector<cityplan::RoadLine> out;
+            for (const RoadSystem* r : roads)
+                if (r->enabled && r->centerline().size() >= 2)
+                    out.push_back({r->centerline(), r->surfaceHalf()});
+            return out;
+        };
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
         // Lock-on missiles for the flown glider. Owns its own targeting, flight,
@@ -2157,6 +2175,9 @@ int main(int argc, char** argv) {
                     r->rebuildCity();
                 }
             }
+            // The towns stand on the same ground and measure against the same
+            // roads -- including ones this Build just took away.
+            towns.markDirty();
         };
 
         // Cut every watercourse's bed into the terrain and republish it. Called
@@ -2175,6 +2196,7 @@ int main(int argc, char** argv) {
                 // Anything standing on the ground the channel just moved has to
                 // come with it -- guard rails and kerbs drape on the terrain.
                 roads.rebuildSideObjects();
+                towns.markDirty();   // ...and so do the towns' houses
                 // ...and nothing may go on growing where the water now is.
                 veg.wet = rivers.wetDiscs(0.6f);
                 veg.grassDirty = true;
@@ -2364,7 +2386,7 @@ int main(int argc, char** argv) {
             // reads as the feature being broken rather than as being deferred.
             // Bridges and loops get away with waiting because the panel button
             // that creates one re-lofts on the spot; a junction has no button.
-            if (changed) roads.rebuildMeshes();
+            if (changed) { roads.rebuildMeshes(); towns.markDirty(); }
         };
         // --- The road list, as undoable steps --------------------------------
         // Adding or deleting a whole road. Deleting does not destroy it (see
@@ -2745,6 +2767,11 @@ int main(int argc, char** argv) {
         bool showBuildings   = false;
         bool showHouses      = false;
         bool showCity        = false;
+        bool showTowns       = false; // the town generator
+        int  townSel         = -1;
+        bool townEditing     = false; // an undo step for a town edit is open
+        CitySystem::Snapshot townUndoBefore;
+        std::string          townStatus;
         bool showCamPath     = false;
         bool showTimeline    = false;
         bool showGraphEditor = false;
@@ -4551,6 +4578,7 @@ int main(int argc, char** argv) {
             veg.grassDirty = true;
             veg.treeCenter = glm::vec2(1e9f);
             roads.rebuildMeshes(); // re-drape the committed roads on the new terrain
+            towns.markDirty();
         };
         applyScene(scene); // start in the selected scene (Empty by default)
 
@@ -4565,6 +4593,9 @@ int main(int argc, char** argv) {
             roadSel = roadSel2 = -1;
             splines.clear();
             splineSel = splinePtSel = -1;
+            towns.clear();
+            townSel = -1;
+            townEditing = false;
             // Give the ground back BEFORE dropping the paths: release publishes
             // the difference against what was cut, and a system with no paths
             // left has nothing to work that out from.
@@ -4659,6 +4690,7 @@ int main(int argc, char** argv) {
                 // the ground has arrived (or gone). A load lofts the road before
                 // the terrain entity exists, which is exactly when this matters.
                 roads.rebuildMeshes();
+                towns.markDirty();
                 if (!fresh) roads.markNeedsBuild(); // ...and re-cut their corridors
                 groundMoved = true;
             }
@@ -5177,6 +5209,10 @@ int main(int argc, char** argv) {
             // subtraction there) -- it is re-cut on load.
             rivers.save(j["rivers"]);
 
+            // Towns: the rules only. Their streets are in `roads` above; their
+            // buildings are re-derived on load.
+            if (towns.count() > 0) towns.save(j["towns"]);
+
             // Scene 2D UI overlay (adds its own "uiOverlay" array to the settings).
             uiOverlay.save(j);
 
@@ -5372,6 +5408,14 @@ int main(int argc, char** argv) {
             else
                 rivers.clear();
             riverSel = riverPtSel = -1;
+            // Towns: absent in older scenes, which load as none.
+            if (j.contains("towns") && j["towns"].is_object())
+                towns.load(j["towns"]);
+            else
+                towns.clear();
+            towns.markDirty();
+            townSel = -1;
+            townEditing = false;
             {
                 glm::vec2 mn, mx;
                 if (rivers.carve(sculptWork, paintWork, mn, mx)) {
@@ -7204,6 +7248,13 @@ int main(int argc, char** argv) {
                                         0.0f);
                     }
             }
+            // The towns' buildings: one static box per solid part, like the
+            // roadside city's.
+            towns.forEachCollider([&](const city::Piece& pc) {
+                physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
+                                glm::angleAxis(glm::radians(pc.yaw), glm::vec3(0, 1, 0)),
+                                0.0f);
+            });
             // Fences, walls, track and bridges: one static box per short run of
             // path (see splinegen::Collider). Coarse on purpose -- a car needs the
             // wall to be there, not to be able to thread the gap between two
@@ -7559,6 +7610,7 @@ int main(int argc, char** argv) {
             {"Track",    "Roads",              nullptr, &showRoads},
             {"Track",    "Splines & bridges", nullptr, &showSplines},
             {"Track",    "City",               nullptr, &showCity},
+            {"Track",    "Town generator",     nullptr, &showTowns},
             {"Track",    "Level generator",    nullptr, &showLevelGen},
             {"Track",    "Buildings",          nullptr, &showBuildings},
             {"Track",    "Houses",             nullptr, &showHouses},
@@ -9293,6 +9345,9 @@ int main(int argc, char** argv) {
                             clear.push_back({e.center.x, e.center.z,
                                              std::max(e.half.x, e.half.z) * 1.2f + 2.0f});
                     }
+                    // ...and every building a town put up.
+                    const std::vector<glm::vec3> townClear = towns.clearings();
+                    clear.insert(clear.end(), townClear.begin(), townClear.end());
                     veg.treeClearings = std::move(clear);
                 }
                 veg.updateTrees(camXZ, cls, roadW, waterLevel, look.snowLevel);
@@ -14359,6 +14414,15 @@ int main(int argc, char** argv) {
                                    beginRoadEdit, commitRoadEdit,
                                    exportStatus});
 
+            // Whole towns: the rules live in CitySystem, the streets in `roads`;
+            // the panel edits both through one undo step each. See CityPlanPanel.cpp.
+            citygenui::drawPanel({showTowns, towns, roads, townSel, cursor3D,
+                                  townUndoBefore, townEditing,
+                                  [&](std::unique_ptr<Command> c) {
+                                      history.pushApplied(std::move(c));
+                                  },
+                                  townStatus});
+
             // A whole race scene from a seed (see LevelGen.hpp). Pumped whether
             // the panel is open or not: a circuit already being put into the
             // world has to finish, and closing the window is not a way to stop
@@ -15827,6 +15891,12 @@ int main(int argc, char** argv) {
             // catching up when the mouse comes back up.
             rivers.update();   // ...and before gpuMats, for the same reason
 
+            // Towns: streets laid (or brought back by an undo) want the roads
+            // built; buildings re-derive whatever an edit or a Build dirtied.
+            // Before gpuMats too -- the town's palettes are find-or-created.
+            if (towns.consumeBuildRequest()) buildRoad();
+            towns.update(materials);
+
             // Handing them over is one function, in SceneSubmit.cpp, so that the
             // editor is a CALLER of it rather than the only place it exists --
             // see the header there for why that matters the moment anything else
@@ -15903,6 +15973,18 @@ int main(int argc, char** argv) {
                                     materials[mi].alphaMode == AlphaMode::Blend);
                 }
             }
+
+            // --- Towns (see CitySystem) ------------------------------------------
+            // The same merged, world-space batches as the roadside city, culled
+            // by their own draw range.
+            towns.forEachDraw(camera.position(),
+                [&](const Mesh& mesh, const fitzel::AssetId& mat) {
+                    const int mi = document.materialIndex(mat);
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
+                    renderer.submit(mesh, gpuMats[mi], glm::mat4(1.0f), true,
+                                    isMirror(materials[mi]), materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend);
+                });
 
             // --- Road side objects (guard rails, curbs, posts) -----------------
             // Derived from the road's side lines and drawn as instanced models: one

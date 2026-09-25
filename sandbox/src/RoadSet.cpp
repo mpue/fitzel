@@ -219,6 +219,7 @@ void RoadSet::clear() {
     first.decals.clear();
     first.closed     = false;
     first.name       = "Road";
+    first.cityId     = 0;
     first.needsBuild = false;
     first.rebuildSideObjects();
     first.rebuildCity();

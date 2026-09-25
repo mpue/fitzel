@@ -116,6 +116,10 @@ set(SANDBOX_RUNTIME_SOURCES
     # load in the player without losing it, even though only the editor builds one.
     src/HouseGen.cpp
     src/CityGen.cpp
+    # Whole towns (streets, blocks, buildings). Runtime for the same reason as
+    # the roadside city: the scene holds the rule, the player derives the town.
+    src/CityPlan.cpp
+    src/CitySystem.cpp
     src/RainRenderer.cpp
     # Weather presets: the named skies a project keeps in weather.json.
     # Runtime, not editor-only -- a loaded scene names the preset it is on, and
@@ -249,6 +253,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/BuildingPanel.cpp
     src/HousePanel.cpp
     src/CityPanel.cpp
+    src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
     # Editor-only, all three files. A shipped game has no use for a renderer that
     # takes minutes a frame, and the tracer's whole point is the picture you make
@@ -374,6 +379,19 @@ add_executable(housecheck tools/housecheck.cpp src/HouseGen.cpp
                           src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# towncheck -- every town preset laid out and built on synthetic ground: one
+# street per grid line, nothing solid in a carriageway, no overlapping or
+# backwards buildings, lots kept out of a river / off a cliff / off a foreign
+# road, bridges where streets cross water, determinism and save/load, and the
+# cost (buildings, vertices, draws, ms). Pure geometry, no GL.
+#   build/release/bin/towncheck.exe
+add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CityGen.cpp
+                         src/BuildingGen.cpp src/HouseGen.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                         src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(towncheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # The autosave check (sandbox/tools/autosavecheck.cpp): drives the crash-snapshot
 # writer over a simulated afternoon of editing and round-trips a scene through a
@@ -612,6 +630,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
                          src/RoadSide.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
+                         src/HouseGen.cpp src/CityPlan.cpp src/CitySystem.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp
                          src/SandboxMath.cpp)

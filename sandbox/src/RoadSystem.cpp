@@ -723,6 +723,9 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"cityMinPixels", cityMinPixels},
         {"biomes",      city_},
     };
+    // Only written for a street the town generator laid, so every road saved
+    // before towns existed (and every hand-drawn one since) stays byte-identical.
+    if (cityId != 0) j["town"] = cityId;
 }
 
 void RoadSystem::load(const nlohmann::json& j) {
@@ -732,6 +735,7 @@ void RoadSystem::load(const nlohmann::json& j) {
     // The name is one of those: a scene from before roads were plural has none,
     // and comes back "" so RoadSet can number it by position instead.
     name = j.value("name", std::string());
+    cityId = j.value("town", 0);
     roadPts.clear();
     ptLift.clear();
     if (j.contains("points") && j["points"].is_string()) {

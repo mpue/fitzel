@@ -82,6 +82,9 @@ REM  housecheck legt jede Haus-Vorlage aus und baut sie: Raeume im Grundriss und
 REM  erreichbar, Oeffnungen in Waenden, Treppe in der Diele, Wohnflaeche nach
 REM  WoFlV, gueltige Meshes, Parameter ueberleben Speichern/Laden.
 call :run housecheck
+REM  towncheck legt jede Stadt-Vorlage aus und baut sie: nichts Festes auf der
+REM  Fahrbahn, keine Ueberlappungen, Bruecken ueber Fluesse, Hang, Speichern/Laden.
+call :run towncheck
 REM  rivercheck schreibt zwar Bilder, ist aber trotzdem eine Pruefung: die
 REM  Wasserlaeufe schneiden ins Hoehenfeld, und ein kriechendes Bett oder eine
 REM  nicht zurueckgegebene Rinne sieht man an keinem Bild.
