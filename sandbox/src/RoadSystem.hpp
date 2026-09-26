@@ -65,6 +65,17 @@ public:
     bool buildWith(const roadjunction::Plan& jp, fitzel::TerrainEditField& edit,
                    glm::vec2& outMin, glm::vec2& outMax);
 
+    // Give back the ground this road's last Build graded: every cell its
+    // corridor and its junction aprons wrote returns to the natural terrain, plus
+    // whatever `keep(cellKey)` says another system still owns there (a river's
+    // bed). For a road leaving the scene -- a town re-laying its streets -- so
+    // the old street does not stay behind as a flat trench. Any road still in
+    // the scene that shares those cells is re-cut by the Build that follows.
+    // Returns false when no cell changed; [outMin,outMax] is the swept rect.
+    bool releaseCorridor(fitzel::TerrainEditField& edit,
+                         const std::function<float(std::int64_t)>& keep,
+                         glm::vec2& outMin, glm::vec2& outMax) const;
+
     // How the road sees itself before any junction is applied: the centreline and
     // the profile layout() settled from the BASE terrain. Pass 1 of the two-pass
     // build. Deliberately unpulled -- see rule 1 in RoadJunction.hpp.
@@ -162,6 +173,11 @@ public:
     // "" for either puts that half back to the default described there.
     void setJunctionTex(const std::string& file);
     void setJunctionGlow(const std::string& file);
+    // Take over another road's whole LOOK: surface, normal map, tiling, edge
+    // fade, glow, wetness and puddles, and the junction sheets. Not its shape,
+    // width or anything the corridor depends on. The caller re-lofts (tiling
+    // and the junction sheet live in the mesh UVs) -- see RoadSet::rebuildMeshes.
+    void copyLookFrom(const RoadSystem& other);
     // Push the wetness map + its tiling onto the surface and bridge materials.
     // Called every frame for the same reason applyEmission is: the tiling is
     // derived from width/texTile/wetTile, all of which the panel edits live.

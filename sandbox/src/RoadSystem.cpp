@@ -493,6 +493,51 @@ void RoadSystem::setSurface(const std::string& file) {
     }
 }
 
+void RoadSystem::copyLookFrom(const RoadSystem& o) {
+    if (&o == this) return;
+    // Everything goes by NAME, not by index: each road scans its own picker
+    // lists, and two roads need not have listed the same files in the same order.
+    auto nameAt = [](const std::vector<std::string>& files, int sel) {
+        return (sel >= 0 && sel < static_cast<int>(files.size())) ? files[sel] : std::string();
+    };
+    auto indexOf = [](const std::vector<std::string>& files, const std::string& f) {
+        for (int i = 0; i < static_cast<int>(files.size()); ++i)
+            if (files[i] == f) return i;
+        return -1;
+    };
+
+    const std::string surf = nameAt(o.texFiles, o.texSel);
+    if (!surf.empty()) {
+        setSurface(surf);
+        const int i = indexOf(texFiles, surf);
+        if (i >= 0) texSel = i;
+    }
+    const std::string nrm = nameAt(o.normFiles, o.normSel);
+    setNormal(nrm);                      // "" clears it
+    normSel = nrm.empty() ? -1 : indexOf(normFiles, nrm);
+    texTile   = o.texTile;
+    fadeWidth = o.fadeWidth;
+
+    emission         = o.emission;
+    emissionStrength = o.emissionStrength;
+    emissionTile     = o.emissionTile;
+    const std::string glow = nameAt(o.emisFiles, o.emisSel);
+    setEmission(glow);                   // also re-applies the glow uniforms
+    emisSel = glow.empty() ? -1 : indexOf(emisFiles, glow);
+
+    rainRings  = o.rainRings;
+    wetness    = o.wetness;
+    wetTile    = o.wetTile;
+    wetVar     = o.wetVar;
+    wetShore   = o.wetShore;
+    wetStretch = o.wetStretch;
+    wetReflect = o.wetReflect;
+    setWetMap(o.wetMap);                 // also re-applies the wet uniforms
+
+    setJunctionTex(o.junctionTex);
+    setJunctionGlow(o.junctionGlow);
+}
+
 void RoadSystem::insertPoint(int at, glm::vec2 p, float lift, float bank) {
     at = std::clamp(at, 0, static_cast<int>(roadPts.size()));
     ptLift.resize(roadPts.size(), 0.0f); // heal a short array before indexing it
@@ -1820,6 +1865,59 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
     outMin = lo - glm::vec2(cell);
     outMax = hi + glm::vec2(cell);
     return true;
+}
+
+bool RoadSystem::releaseCorridor(fitzel::TerrainEditField& edit,
+                                 const std::function<float(std::int64_t)>& keep,
+                                 glm::vec2& outMin, glm::vec2& outMax) const {
+    // The centreline the last Build graded along (loft() published it), or the
+    // control points' curve for a road that was never built.
+    const std::vector<glm::vec2> center =
+        m_centerline.size() >= 2 ? m_centerline : sampleCenterlineXZ(nullptr);
+    if (center.size() < 2) return false;
+
+    // Exactly the reach buildWith() writes: carriageway, lip and shoulder --
+    // plus every junction apron the road graded, which at an oblique crossing
+    // reaches past the corridor.
+    const float reach = surfaceHalf() + shoulder;
+    glm::vec2 lo(center[0]), hi(center[0]);
+    for (const glm::vec2& c : center) { lo = glm::min(lo, c); hi = glm::max(hi, c); }
+    lo -= glm::vec2(reach); hi += glm::vec2(reach);
+    for (const roadjunction::Crossing& x : m_junctions)
+        for (const glm::vec2& p : x.plate) {
+            lo = glm::min(lo, p - glm::vec2(shoulder));
+            hi = glm::max(hi, p + glm::vec2(shoulder));
+        }
+
+    const float cell = edit.cell;
+    const int ix0 = static_cast<int>(std::floor(lo.x / cell));
+    const int ix1 = static_cast<int>(std::ceil (hi.x / cell));
+    const int iz0 = static_cast<int>(std::floor(lo.y / cell));
+    const int iz1 = static_cast<int>(std::ceil (hi.y / cell));
+    bool any = false;
+    for (int iz = iz0; iz <= iz1; ++iz) {
+        for (int ix = ix0; ix <= ix1; ++ix) {
+            const glm::vec2 w(ix * cell, iz * cell);
+            bool mine = false;
+            for (std::size_t k = 0; k + 1 < center.size() && !mine; ++k) {
+                float t;
+                mine = distToSeg(w, center[k], center[k + 1], t) <= reach * reach;
+            }
+            for (std::size_t j = 0; j < m_junctions.size() && !mine; ++j)
+                mine = roadjunction::insidePlate(m_junctions[j].plate, w);
+            if (!mine) continue;
+            const std::int64_t key = fitzel::TerrainEditField::cellKey(ix, iz);
+            // The corridor overwrote whatever was here with an absolute height,
+            // so the ground under it is gone either way; what is given back is
+            // the natural terrain plus what another system says it still owns.
+            const float k = keep ? keep(key) : 0.0f;
+            if (std::fabs(k) < 1e-4f) any |= edit.deltas.erase(key) > 0;
+            else { edit.deltas[key] = k; any = true; }
+        }
+    }
+    outMin = lo - glm::vec2(cell);
+    outMax = hi + glm::vec2(cell);
+    return any;
 }
 
 RoadSystem::Preview RoadSystem::previewGeometry() const {

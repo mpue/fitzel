@@ -76,6 +76,9 @@ public:
     // the moment it is asked to put it back.
     int  idAt(int i) const;
     int  indexOfId(int id) const;
+    // A road by id, living OR dead -- for giving back the ground a road that
+    // has just left the scene had graded (RoadSystem::releaseCorridor).
+    RoadSystem*       byId(int id);
     // Put a road back (alive = true) or take it out (false). The road's contents
     // are untouched either way -- deleting and undeleting is not a rebuild.
     void setAlive(int id, bool alive);

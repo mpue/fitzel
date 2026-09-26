@@ -210,6 +210,9 @@ struct Batch {
     // second CPU copy of a district's vertices costs tens of megabytes for
     // nothing.
     fitzel::MeshData data;
+    // Drawn into the shadow maps. Off when every Extra in it said so (a
+    // sign's lettering, flat on a plate that already casts the shadow).
+    bool castsShadow = true;
 };
 
 // The generated city.
@@ -300,6 +303,7 @@ struct Extra {
     float                   yaw = 0.0f;   // degrees about +Y
     fitzel::AssetId         material;
     int                     chunk = 0;
+    bool                    castsShadow = true;   // see Batch::castsShadow
 };
 
 // Merge `pcs` (and `extras`, if given) into `out.batches`, one mesh per

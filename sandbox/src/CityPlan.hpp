@@ -10,6 +10,8 @@
 
 #include "BuildingGen.hpp"
 #include "CityGen.hpp"
+#include "CivicGen.hpp"
+#include "StreetSign.hpp"
 #include "HouseGen.hpp"
 #include "SceneTypes.hpp"
 
@@ -52,6 +54,7 @@ enum class Zone {
     Blocks,   // apartment blocks around the block's edge (BuildingGen slabs)
     Rows,     // terraced houses, party wall to party wall (HouseGen)
     Houses,   // detached family houses in gardens (HouseGen)
+    Industry, // halls, silos, tanks and chimneys on one side of the edge (CivicGen)
     Park,     // nothing built: the vegetation keeps it
     Count
 };
@@ -87,6 +90,10 @@ struct Grid {
     float stub        = 30.0f;      // metres each street runs on past the town edge
     bool  bridges     = true;       // carry a street over water (else break it there)
     float maxBridge   = 180.0f;     // longer crossings are broken instead
+    // Where the street names come from: 0 = invented from a pool of German
+    // name parts, 1 = the real streets of Frankfurt am Main (see
+    // streetsign::nameList). Names go onto the roads when they are laid.
+    int   names       = 0;
     bool operator==(const Grid& o) const;
     bool operator!=(const Grid& o) const { return !(*this == o); }
 };
@@ -125,6 +132,20 @@ struct Rule {
     float parkChance = 0.08f;       // chance any block is left as a park
     bool  centrePark = true;        // the block at the centre is a square
 
+    // --- Industry and public buildings -------------------------------------------
+    // Industry takes a share of the OUTER blocks on one side of the town -- the
+    // side `industryAngle` points to (degrees in the town's own frame, 0 = +X)
+    // -- so the estate is a quarter at the edge, not a speckle. The public
+    // buildings (CivicGen) take a whole block each: the church as near the
+    // centre as it gets, hospital, police and fire station out in the rings,
+    // kept apart from each other.
+    float industryShare  = 0.10f;   // fraction of all blocks
+    float industryAngle  = 0.0f;
+    int   churches       = 1;
+    int   policeStations = 1;
+    int   fireStations   = 1;
+    int   hospitals      = 1;
+
     // --- Buildings -----------------------------------------------------------
     float sidewalk        = 3.0f;   // kerb to the building line (metres)
     int   towerFloorsMin  = 12;
@@ -136,6 +157,15 @@ struct Rule {
     float maxSlope        = 0.22f;  // drop per metre over a footprint's diagonal
     float fill            = 0.94f;  // chance a lot is built at all (holes = plots)
     int   budget          = 1500;   // hard cap on buildings (a typo costs a street, not the session)
+    bool  signs           = true;   // a street-name sign on a corner of every crossing
+    int   signStyle       = 0;      // how they are lettered: a streetsign::presets() index
+    // Street furniture. Pavements are the `sidewalk` band as paving on a 12 cm
+    // kerb; traffic lights stand at crossings with an avenue or in the city
+    // zones; bus stops come in pairs, one per direction, about every
+    // `busStopEvery` metres of street (0 = none).
+    bool  pavements       = true;
+    bool  trafficLights   = true;
+    float busStopEvery    = 350.0f;
 
     // --- Look ----------------------------------------------------------------
     // Towers and apartment blocks each take a BuildingGen palette slot ("Building
@@ -150,6 +180,10 @@ struct Rule {
     glm::vec3 facadeColor{0.93f, 0.91f, 0.86f};   // houses
     glm::vec3 roofColor{0.56f, 0.23f, 0.15f};
     float     windowLit = 0.45f;
+    // How many buildings wear another colour than the ones above: 0 = every
+    // house the same, 1 = every house its own from a list of plaster, roof and
+    // block colours a German street actually has.
+    float     colourVariety = 0.7f;
     float     weathering = 0.45f;
     bool      collider  = true;
 
@@ -173,6 +207,7 @@ struct Street {
     float width  = 7.0f;
     bool  avenue = false;
     bool  alongZ = false;  // runs along the town's Z (a line of constant X)
+    std::string name;      // what the town calls it (see streetNames)
     int   line   = 0;      // index among the lines of its direction
 };
 
@@ -184,6 +219,8 @@ struct Block {
     Zone      zone = Zone::Houses;
     float     ring = 0.0f;     // 0 = centre .. 1 = edge (before the noise)
     int       ix = 0, iz = 0;
+    glm::vec2 local{0.0f};     // cell centre in the town's own frame (unwarped)
+    int       civic = -1;      // civic::Kind standing on the whole block, -1 = none
 };
 
 struct Layout {
@@ -226,6 +263,11 @@ struct StreetRun {
 std::vector<StreetRun> streetRuns(const Grid& g, const Street& s,
                                   const std::function<bool(float, float)>& isWater);
 
+// A name for every street (parallel to `streets`): German, unique within the
+// town, the avenue through the middle the Hauptstrasse. Seeded by the grid, so
+// rerolling the buildings keeps the names. UTF-8.
+std::vector<std::string> streetNames(const Grid& g, const std::vector<Street>& streets);
+
 // Lots around every block's edge, per its zone -- before the ground, the water
 // and the roads have had their say (derive() asks them).
 std::vector<Lot> lots(const Rule& r, const Layout& lay);
@@ -241,6 +283,7 @@ int              houseKinds(Zone z);
 struct RoadLine {
     std::vector<glm::vec2> pts;
     float half = 3.5f;
+    std::string name;   // what the street sign on it says
 };
 
 struct Context {
@@ -254,6 +297,8 @@ struct Stats {
     int lots = 0, built = 0;
     int skippedRoad = 0, skippedWater = 0, skippedSlope = 0, skippedEmpty = 0;
     int towers = 0, blocks = 0, rows = 0, houses = 0, parks = 0;
+    int churches = 0, police = 0, fireStations = 0, hospitals = 0, industry = 0;
+    int signs = 0, lights = 0, busStops = 0;
     bool budgetHit = false;
 };
 
@@ -267,8 +312,9 @@ struct Placed {
 struct Town {
     city::District      district;   // merged batches + colliders
     std::vector<Placed> placed;
+    std::vector<Placed> furniture;  // shelters and traffic lights (clearings too)
     Stats               stats;
-    void clear() { district.clear(); placed.clear(); stats = Stats{}; }
+    void clear() { district.clear(); placed.clear(); furniture.clear(); stats = Stats{}; }
 };
 
 // The palettes a town draws with, find-or-created in the project library and
@@ -276,6 +322,10 @@ struct Town {
 struct Palettes {
     buildings::Palette towers, blocks;
     housegen::Palette  houses;
+    civic::Palette     civic;
+    streetsign::Palette signs;
+    // Colour variants: [0] is the rule's own colour, the rest copies of it.
+    std::vector<fitzel::AssetId> houseWalls, houseRoofs, blockWalls;
 };
 Palettes ensurePalettes(std::vector<MaterialDef>& materials, const Rule& r);
 

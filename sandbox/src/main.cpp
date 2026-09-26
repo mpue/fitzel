@@ -162,6 +162,7 @@
 #include "BuildingPanel.hpp"
 #include "HouseGen.hpp"
 #include "HousePanel.hpp"
+#include "StreetSignPanel.hpp"
 #include "CityPanel.hpp"
 #include "CityPlanPanel.hpp"
 #include "CityCommand.hpp"
@@ -1965,7 +1966,7 @@ int main(int argc, char** argv) {
             std::vector<cityplan::RoadLine> out;
             for (const RoadSystem* r : roads)
                 if (r->enabled && r->centerline().size() >= 2)
-                    out.push_back({r->centerline(), r->surfaceHalf()});
+                    out.push_back({r->centerline(), r->surfaceHalf(), r->name});
             return out;
         };
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
@@ -2766,6 +2767,7 @@ int main(int argc, char** argv) {
         bool showScatter     = false;
         bool showBuildings   = false;
         bool showHouses      = false;
+        bool showSigns       = false;
         bool showCity        = false;
         bool showTowns       = false; // the town generator
         int  townSel         = -1;
@@ -3940,6 +3942,10 @@ int main(int argc, char** argv) {
             sel.select(buildingLiveId);
             exportStatus = "Baked the nearest city building into the scene.";
         };
+
+        // --- Street-name signs (see StreetSignPanel.hpp: owns its actions) -----
+        signui::StreetSignTool signTool({document, history, sel, entityCounter, spawnPoint,
+                                         exportStatus});
 
         // --- Procedural houses (see HouseGen.hpp) -------------------------------
         // The same four actions as the buildings: generate at the spawn point,
@@ -7614,6 +7620,7 @@ int main(int argc, char** argv) {
             {"Track",    "Level generator",    nullptr, &showLevelGen},
             {"Track",    "Buildings",          nullptr, &showBuildings},
             {"Track",    "Houses",             nullptr, &showHouses},
+            {"Track",    "Street signs",       nullptr, &showSigns},
             {"Track",    nullptr,              nullptr, nullptr},
             {"Track",    "Vehicle",            nullptr, &showVehiclePanel},
             {"Track",    "Glider",             nullptr, &showGliderPanel},
@@ -9324,7 +9331,8 @@ int main(int argc, char** argv) {
                 // interface has room for.
                 const std::vector<glm::vec2> cls = roads.centerlines();
                 const float roadW = roads.maxWidth();
-                if (veg.updateGrass(camXZ, cls, roadW * 0.5f + 1.5f,
+                // Past the pavements too: a blade taller than a kerb shows through.
+                if (veg.updateGrass(camXZ, cls, std::max(roadW * 0.5f + 1.5f, towns.kerbReach()),
                                     waterLevel, look.snowLevel) && veg.flowerEnabled)
                     veg.regenFlowers(veg.grassCenter(), cls, roadW,
                                      waterLevel, look.snowLevel);
@@ -14230,6 +14238,8 @@ int main(int argc, char** argv) {
                 });
             }
 
+            if (showSigns) signTool.panel(showSigns);
+
             if (showHouses) {
                 houseui::drawPanel({
                     showHouses, houseCfg, houseLevel,
@@ -15894,7 +15904,18 @@ int main(int argc, char** argv) {
             // Towns: streets laid (or brought back by an undo) want the roads
             // built; buildings re-derive whatever an edit or a Build dirtied.
             // Before gpuMats too -- the town's palettes are find-or-created.
-            if (towns.consumeBuildRequest()) buildRoad();
+            if (towns.consumeBuildRequest()) {
+                // Streets that just left the scene give their corridor back
+                // first (keeping any river bed cut there), so the Build after
+                // it re-cuts only what is still standing.
+                glm::vec2 mn, mx;
+                if (towns.releaseRetired(roads, sculptWork,
+                        [&](std::int64_t k) { return rivers.mineAt(k); }, mn, mx)) {
+                    publishSculpt();
+                    streamer.editsChanged(mn, mx);
+                }
+                buildRoad();
+            }
             towns.update(materials);
 
             // Handing them over is one function, in SceneSubmit.cpp, so that the
@@ -15913,6 +15934,13 @@ int main(int argc, char** argv) {
             // the same library materials the entities do, so it draws from that
             // same table instead of building a second one that could disagree.
             const std::vector<Material>& gpuMats = submitScratch.gpuMats;
+            // The towns' traffic lights switch on this frame's copy of their
+            // lamp materials (see CitySystem::forEachSignalLamp).
+            towns.forEachSignalLamp(now, [&](const fitzel::AssetId& id, float glow) {
+                const int mi = document.materialIndex(id);
+                if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
+                    submitScratch.gpuMats[static_cast<std::size_t>(mi)].set("uEmissionStrength", glow);
+            });
 
             // --- Roadside city (see CityGen.hpp) -------------------------------
             // Drawn as a handful of MERGED meshes, not as twenty thousand loose
@@ -15978,12 +16006,12 @@ int main(int argc, char** argv) {
             // The same merged, world-space batches as the roadside city, culled
             // by their own draw range.
             towns.forEachDraw(camera.position(),
-                [&](const Mesh& mesh, const fitzel::AssetId& mat) {
+                [&](const Mesh& mesh, const fitzel::AssetId& mat, bool shadow) {
                     const int mi = document.materialIndex(mat);
                     if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
-                    renderer.submit(mesh, gpuMats[mi], glm::mat4(1.0f), true,
+                    renderer.submit(mesh, gpuMats[mi], glm::mat4(1.0f), shadow,
                                     isMirror(materials[mi]), materials[mi].opacity,
-                                    materials[mi].alphaMode == AlphaMode::Blend);
+                                    materials[mi].alphaMode == AlphaMode::Blend, shadow);
                 });
 
             // --- Road side objects (guard rails, curbs, posts) -----------------

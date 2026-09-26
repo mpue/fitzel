@@ -67,6 +67,12 @@ int RoadSet::indexOfId(int id) const {
     return -1;
 }
 
+RoadSystem* RoadSet::byId(int id) {
+    for (Slot& s : m_slots)
+        if (s.id == id) return s.road.get();
+    return nullptr;
+}
+
 void RoadSet::setAlive(int id, bool alive) {
     for (Slot& s : m_slots)
         if (s.id == id) s.alive = alive;

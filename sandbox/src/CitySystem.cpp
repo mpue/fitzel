@@ -5,6 +5,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <fitzel/world/Terrain.hpp>
+
 #include "RoadSet.hpp"
 
 int CitySystem::add(cityplan::Rule r) {
@@ -59,6 +61,8 @@ void CitySystem::update(std::vector<MaterialDef>& materials) {
         if (!towns[i].enabled) continue;
         const auto t0 = std::chrono::steady_clock::now();
         const cityplan::Palettes pal = cityplan::ensurePalettes(materials, towns[i]);
+        m_civic    = pal.civic;
+        m_hasCivic = true;
         b.town = cityplan::derive(towns[i], pal, ctx);
         // Upload and drop the CPU copy, as the roadside city does: a town's
         // vertices are tens of megabytes nothing reads again.
@@ -73,8 +77,8 @@ void CitySystem::update(std::vector<MaterialDef>& materials) {
 }
 
 void CitySystem::forEachDraw(const glm::vec3& eye,
-                             const std::function<void(const fitzel::Mesh&,
-                                                      const fitzel::AssetId&)>& draw) const {
+                             const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&,
+                                                      bool castsShadow)>& draw) const {
     const float r2 = range * range;
     for (std::size_t t = 0; t < m_built.size() && t < towns.size(); ++t) {
         if (!towns[t].enabled) continue;
@@ -86,7 +90,7 @@ void CitySystem::forEachDraw(const glm::vec3& eye,
             const glm::vec3 d = glm::max(glm::max(batches[i].lo - eye, eye - batches[i].hi),
                                          glm::vec3(0.0f));
             if (glm::dot(d, d) > r2) continue;
-            draw(b.meshes[i], batches[i].material);
+            draw(b.meshes[i], batches[i].material, batches[i].castsShadow);
         }
     }
 }
@@ -98,11 +102,35 @@ void CitySystem::forEachCollider(const std::function<void(const city::Piece&)>& 
     }
 }
 
+void CitySystem::forEachSignalLamp(
+    double t, const std::function<void(const fitzel::AssetId&, float)>& fn) const {
+    if (!m_hasCivic) return;
+    civic::SignalLamps lit[2];
+    civic::signalPhase(t, lit[0], lit[1]);
+    for (int a = 0; a < 2; ++a) {
+        fn(m_civic.signalRed[a],   lit[a].red   ? civic::kSignalGlow : 0.0f);
+        fn(m_civic.signalAmber[a], lit[a].amber ? civic::kSignalGlow : 0.0f);
+        fn(m_civic.signalGreen[a], lit[a].green ? civic::kSignalGlow : 0.0f);
+    }
+}
+
+float CitySystem::kerbReach() const {
+    float reach = 0.0f;
+    for (const cityplan::Rule& r : towns) {
+        if (!r.enabled || !r.pavements) continue;
+        const cityplan::Grid& g = r.built();
+        reach = std::max(reach, 0.5f * std::max(g.streetWidth, g.avenueWidth) + r.sidewalk + 0.5f);
+    }
+    return reach;
+}
+
 std::vector<glm::vec3> CitySystem::clearings() const {
     std::vector<glm::vec3> out;
     for (std::size_t t = 0; t < m_built.size() && t < towns.size(); ++t) {
         if (!towns[t].enabled) continue;
         for (const cityplan::Placed& p : m_built[t].town.placed)
+            out.push_back({p.pos.x, p.pos.y, p.radius});
+        for (const cityplan::Placed& p : m_built[t].town.furniture)
             out.push_back({p.pos.x, p.pos.y, p.radius});
     }
     return out;
@@ -130,7 +158,31 @@ std::vector<int> CitySystem::removeStreets(int townId, RoadSet& roads,
         if (added) added->push_back(roads.idAt(idx));
     }
     for (int id : ids) roads.setAlive(id, false);
+    retire(ids);
     return ids;
+}
+
+void CitySystem::retire(const std::vector<int>& roadIds) {
+    if (roadIds.empty()) return;
+    m_retired.insert(m_retired.end(), roadIds.begin(), roadIds.end());
+    requestBuild();
+}
+
+bool CitySystem::releaseRetired(RoadSet& roads, fitzel::TerrainEditField& edit,
+                                const std::function<float(std::int64_t)>& keep,
+                                glm::vec2& outMin, glm::vec2& outMax) {
+    bool any = false;
+    std::vector<int> ids;
+    ids.swap(m_retired);
+    for (int id : ids) {
+        if (roads.indexOfId(id) >= 0) continue;   // back in the scene: Build re-cuts it
+        RoadSystem* r = roads.byId(id);
+        glm::vec2 mn, mx;
+        if (!r || !r->releaseCorridor(edit, keep, mn, mx)) continue;
+        if (!any) { outMin = mn; outMax = mx; any = true; }
+        else      { outMin = glm::min(outMin, mn); outMax = glm::max(outMax, mx); }
+    }
+    return any;
 }
 
 CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
@@ -145,17 +197,26 @@ CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
     // New streets first, THEN the old ones out: removeStreets would otherwise
     // have to add an empty placeholder road whenever the town is all there is.
     std::vector<int> fresh;
+    // The streets being replaced set the look of the new ones -- a surface the
+    // author gave them ("Same look on all roads") survives a re-lay. Found by id
+    // before anything is added, so the index cannot shift under it.
+    int lookId = -1;
+    for (int k = 0; k < roads.count() && lookId < 0; ++k)
+        if (roads.at(k).cityId == r.id) lookId = roads.idAt(k);
     const cityplan::Layout L = cityplan::layout(r, r.laid);
     int avenueN = 0, streetN = 0;
     for (const cityplan::Street& s : L.streets) {
         const std::vector<cityplan::StreetRun> runs = cityplan::streetRuns(r.laid, s, isWater);
         if (runs.size() > 1) out.breaks += static_cast<int>(runs.size()) - 1;
-        const std::string base = r.name + (s.avenue ? " \xC2\xB7 Avenue " : " \xC2\xB7 Street ") +
-                                 std::to_string(s.avenue ? ++avenueN : ++streetN);
+        // The street's own name, the one its signs carry. A street broken by
+        // wide water keeps it on both halves -- it is still the one street.
+        const std::string base = s.name.empty()
+            ? r.name + (s.avenue ? " Avenue " : " Street ") +
+                  std::to_string(s.avenue ? ++avenueN : ++streetN)
+            : s.name;
         for (std::size_t k = 0; k < runs.size(); ++k) {
             const cityplan::StreetRun& run = runs[k];
-            const std::string name = runs.size() > 1
-                ? base + static_cast<char>('a' + static_cast<int>(k)) : base;
+            const std::string& name = base;
             const int idx = roads.add(name);
             RoadSystem& road = roads.at(idx);
             road.width     = run.width;
@@ -168,6 +229,8 @@ CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
             for (const auto& [a, b] : run.bridges) sh.bridges.push_back({a, b});
             sh.label = name;
             road.setShape(sh);
+            if (const RoadSystem* look = lookId >= 0 ? roads.byId(lookId) : nullptr)
+                road.copyLookFrom(*look);
             fresh.push_back(roads.idAt(idx));
             out.bridges += static_cast<int>(run.bridges.size());
         }

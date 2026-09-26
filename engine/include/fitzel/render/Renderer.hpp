@@ -174,9 +174,14 @@ public:
     // the lit shader multiplies its output alpha by it. `forceTransparent` puts
     // the mesh in that same blended queue even when opacity == 1 (for materials
     // whose transparency lives in a texture alpha channel, not the scalar).
+    // `castsSunShadow` false keeps a mesh out of the sun's shadow cascades --
+    // for detail that lies flat on something already casting the same shadow
+    // (a street sign's lettering on its plate), where the depth pass would
+    // only redraw the plate's shadow at the cost of every letter's triangles.
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model,
                 bool castsPointShadow = true, bool reflective = false,
-                float opacity = 1.0f, bool forceTransparent = false);
+                float opacity = 1.0f, bool forceTransparent = false,
+                bool castsSunShadow = true);
 
     // Screen-space motion, for temporal anti-aliasing: draws every opaque
     // surface that MOVED since the last frame into whatever target is bound,
@@ -383,6 +388,7 @@ private:
         // Where this surface stood last frame (see begin()), for the motion
         // vectors. Equal to `model` for anything that did not move.
         glm::mat4       prevModel;
+        bool            castsSunShadow;  // drawn into the shadow cascades
     };
     // Last frame's matrices per mesh, in submission order, and how many of
     // each mesh this frame has submitted so far -- how submit() finds a

@@ -664,6 +664,7 @@ void merge(const std::vector<Piece>& pcs, const std::vector<int>& pcChunk,
         if (!x.mesh || !x.material.valid()) continue;
         const std::size_t b = batchFor(x.chunk, x.material);
         extraOf[i] = static_cast<int>(b);
+        if (!x.castsShadow) out.batches[b].castsShadow = false;
         nVerts[b]   += x.mesh->vertices.size();
         nIndices[b] += x.mesh->indices.size();
     }

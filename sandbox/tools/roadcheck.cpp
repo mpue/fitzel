@@ -848,6 +848,114 @@ int main(int argc, char** argv) {
                   " placeholders, " + std::to_string(trs.count()) + " living");
     }
 
+    // --- 18) Re-laying a town gives the old corridors back --------------------
+    // A road writes its corridor as an absolute height, so a street that leaves
+    // the scene would otherwise stay behind as a graded trench beside the new
+    // one. Probed on a street line far from every new one: graded after the
+    // first lay, natural ground (or exactly what a river still owns there)
+    // after the town moved -- and the other way round after an undo.
+    {
+        RoadSet trs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+        CitySystem towns;
+        cityplan::Rule rule;
+        rule.grid.center  = {0.0f, 600.0f};
+        rule.grid.sizeX   = 300.0f; rule.grid.sizeZ = 225.0f;
+        rule.grid.blockX  = 100.0f; rule.grid.blockZ = 75.0f;
+        rule.grid.organic = 0.0f;
+        rule.grid.avenueEvery = 0;
+        const int ti = towns.add(rule);
+        fitzel::TerrainEditField te;
+        glm::vec2 a(0.0f), b(0.0f);
+        towns.layStreets(ti, trs);
+        towns.consumeBuildRequest();
+        trs.buildAll(te, a, b);
+        // The street along Z at x = -150, halfway between two cross streets.
+        const std::int64_t oldKey = fitzel::TerrainEditField::cellKey(
+            static_cast<int>(std::lround(-150.0f / te.cell)),
+            static_cast<int>(std::lround(600.0f / te.cell)));
+        const std::int64_t newKey = fitzel::TerrainEditField::cellKey(
+            static_cast<int>(std::lround(-110.0f / te.cell)),
+            static_cast<int>(std::lround(600.0f / te.cell)));
+        const bool gradedBefore = te.deltas.count(oldKey) > 0;
+
+        towns.towns[0].grid.center.x += 40.0f;   // every Z street moves 40 m east
+        const CitySystem::Laid moved = towns.layStreets(ti, trs);
+        auto river = [&](std::int64_t k) { return k == oldKey ? 0.25f : 0.0f; };
+        glm::vec2 mn(0.0f), mx(0.0f);
+        const bool released = towns.releaseRetired(trs, te, nullptr, mn, mx);
+        trs.buildAll(te, a, b);
+        check(gradedBefore && released && te.deltas.count(oldKey) == 0 &&
+              te.deltas.count(newKey) > 0,
+              "re-laying a town gives the old street's corridor back",
+              std::string(gradedBefore ? "" : "old street never graded; ") +
+                  (te.deltas.count(oldKey) ? "old corridor still graded" : "old ground back"));
+
+        // Undo that re-lay the way CityCmd does: the old streets return and are
+        // re-cut, the new ones retire -- and a river's own cut is kept.
+        for (int id : moved.removed) trs.setAlive(id, true);
+        for (int id : moved.added)   trs.setAlive(id, false);
+        towns.retire(moved.added);
+        towns.releaseRetired(trs, te, river, mn, mx);
+        trs.buildAll(te, a, b);
+        check(te.deltas.count(oldKey) > 0 && te.deltas.count(newKey) == 0,
+              "undoing it gives the new corridor back and re-cuts the old", "");
+        // What a river still owns in a released cell stays: retire the old
+        // streets again, this time with the river's bed under the probe.
+        std::vector<int> back;
+        for (int i = 0; i < trs.count(); ++i)
+            if (trs.at(i).cityId == towns.towns[0].id) back.push_back(trs.idAt(i));
+        for (int id : back) trs.setAlive(id, false);
+        towns.retire(back);
+        towns.releaseRetired(trs, te, river, mn, mx);
+        const auto it = te.deltas.find(oldKey);
+        check(it != te.deltas.end() && std::fabs(it->second - 0.25f) < 1e-5f,
+              "a released cell keeps what the river cut there", "");
+    }
+
+    // --- 19) One look for every road --------------------------------------------
+    // "Same look on all roads" copies surface, tiling, glow and wetness across
+    // the set by name -- and a town's re-laid streets inherit the look of the
+    // streets they replace, or the button would be undone by the next re-lay.
+    {
+        RoadSet lrs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+        RoadSystem& src = lrs.active();
+        const int other = lrs.add("Other");
+        RoadSystem& dst = lrs.at(other);
+        if (src.texFiles.size() > 1) {
+            src.setSurface(src.texFiles[1]);
+            src.texSel = 1;
+        }
+        src.texTile = 13.0f;
+        src.wetness = 0.7f;
+        src.emissionStrength = 2.0f;
+        src.emission = glm::vec3(0.1f, 0.9f, 0.4f);
+        dst.copyLookFrom(src);
+        const auto name = [](const RoadSystem& r) {
+            return (r.texSel >= 0 && r.texSel < static_cast<int>(r.texFiles.size()))
+                       ? r.texFiles[r.texSel] : std::string();
+        };
+        check(name(dst) == name(src) && dst.texTile == 13.0f && dst.wetness == 0.7f &&
+              dst.emissionStrength == 2.0f && dst.emission == src.emission,
+              "a road takes over another's whole look", name(dst));
+
+        CitySystem towns;
+        cityplan::Rule rule;
+        rule.grid.center = {0.0f, -600.0f};
+        rule.grid.sizeX = 200.0f; rule.grid.sizeZ = 150.0f;
+        rule.grid.blockX = 100.0f; rule.grid.blockZ = 75.0f;
+        rule.grid.organic = 0.0f;
+        const int ti = towns.add(rule);
+        towns.layStreets(ti, lrs);
+        for (RoadSystem* r : lrs) r->copyLookFrom(src);
+        towns.towns[0].grid.center.x += 30.0f;
+        towns.layStreets(ti, lrs);
+        bool kept = towns.streetCount(towns.towns[0].id, lrs) > 0;
+        for (const RoadSystem* r : lrs)
+            if (r->cityId == towns.towns[0].id)
+                kept &= r->texTile == 13.0f && r->wetness == 0.7f && name(*r) == name(src);
+        check(kept, "re-laid streets keep the look the old ones had", "");
+    }
+
     glfwDestroyWindow(win);
     glfwTerminate();
     std::printf(g_fails ? "\nroadcheck: %d FAILED\n" : "\nroadcheck: all good\n",

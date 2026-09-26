@@ -119,7 +119,11 @@ set(SANDBOX_RUNTIME_SOURCES
     # Whole towns (streets, blocks, buildings). Runtime for the same reason as
     # the roadside city: the scene holds the rule, the player derives the town.
     src/CityPlan.cpp
+    src/CivicGen.cpp
     src/CitySystem.cpp
+    # Street-name signs: the town letters its crossings, and a placed sign keeps
+    # its parameters on the root (StreetSignComponent), which the player must load.
+    src/StreetSign.cpp
     src/RainRenderer.cpp
     # Weather presets: the named skies a project keeps in weather.json.
     # Runtime, not editor-only -- a loaded scene names the preset it is on, and
@@ -252,6 +256,7 @@ set(SANDBOX_EDITOR_SOURCES
     src/SplinePlace.cpp
     src/BuildingPanel.cpp
     src/HousePanel.cpp
+    src/StreetSignPanel.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -386,7 +391,8 @@ target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # road, bridges where streets cross water, determinism and save/load, and the
 # cost (buildings, vertices, draws, ms). Pure geometry, no GL.
 #   build/release/bin/towncheck.exe
-add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CityGen.cpp
+add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
+                         src/StreetSign.cpp
                          src/BuildingGen.cpp src/HouseGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
                          src/EditMeshTools.cpp src/EditMeshSweep.cpp
@@ -409,6 +415,24 @@ target_link_libraries(towncheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # at. Needs no GL: it is arithmetic and a JSON file.
 #   build/release/bin/weathercheck.exe
 add_executable(weathercheck tools/weathercheck.cpp src/WeatherPreset.cpp)
+
+# signcheck (sandbox/tools/signcheck.cpp): the street-sign generator. The glyph
+# cut (every letter into convex pieces, counters kept), capitals and sharp s,
+# ink on the plate, the post model, entities and save/load -- and a PNG of every
+# preset to look at. Pure geometry, no GL.
+#   build/release/bin/signcheck.exe [out.png]
+add_executable(signcheck tools/signcheck.cpp src/StreetSign.cpp
+                         src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                         src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(signcheck PRIVATE fitzel nlohmann_json::nlohmann_json stb_headers)
+
+# signfontgen (sandbox/tools/signfontgen.cpp): bakes a TrueType font's outlines
+# into sandbox/src/SignFont.inc. Only run to change the street signs' typeface;
+# not part of the regular build.
+#   signfontgen sandbox/tools/fonts/din1451alt.ttf sandbox/src/SignFont.inc
+add_executable(signfontgen EXCLUDE_FROM_ALL tools/signfontgen.cpp)
+target_include_directories(signfontgen PRIVATE ${imgui_SOURCE_DIR})
 target_link_libraries(weathercheck PRIVATE fitzel glm::glm
                                            nlohmann_json::nlohmann_json)
 
@@ -630,7 +654,8 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
                          src/RoadSide.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
-                         src/HouseGen.cpp src/CityPlan.cpp src/CitySystem.cpp
+                         src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/CitySystem.cpp
+                         src/StreetSign.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                          src/PropertyMeta.cpp src/MultiShot.cpp
                          src/SandboxMath.cpp)

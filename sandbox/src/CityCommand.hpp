@@ -13,7 +13,8 @@
 // the same mechanism RoadListCmd uses for a single road.
 //
 // Whenever roads come or go the command asks for a Build, because the graded
-// corridors and the junction aprons are worked out across the whole set.
+// corridors and the junction aprons are worked out across the whole set -- and
+// the roads it takes out are retired, so their corridors are given back first.
 class CityCmd : public Command {
 public:
     CityCmd(CitySystem& cities, RoadSet& roads, CitySystem::Snapshot before,
@@ -29,12 +30,14 @@ public:
         // never momentarily without a living road.
         for (int id : m_born)   m_roads->setAlive(id, true);
         for (int id : m_killed) m_roads->setAlive(id, false);
+        m_cities->retire(m_killed);   // their corridors go back to the ground
         if (!m_born.empty() || !m_killed.empty()) m_cities->requestBuild();
     }
     void undo(Document&) override {
         m_cities->restore(m_before);
         for (int id : m_killed) m_roads->setAlive(id, true);
         for (int id : m_born)   m_roads->setAlive(id, false);
+        m_cities->retire(m_born);
         if (!m_born.empty() || !m_killed.empty()) m_cities->requestBuild();
     }
     const char* name() const override { return m_label; }

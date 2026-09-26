@@ -59,6 +59,7 @@ ImU32 zoneColor(Zone z) {
         case Zone::Blocks: return IM_COL32(196, 146, 92, 255);
         case Zone::Rows:   return IM_COL32(188, 92, 76, 255);
         case Zone::Houses: return IM_COL32(222, 205, 170, 255);
+        case Zone::Industry: return IM_COL32(128, 116, 150, 255);
         case Zone::Park:   return IM_COL32(96, 160, 88, 255);
         default:           return IM_COL32(128, 128, 128, 255);
     }
@@ -110,6 +111,21 @@ void drawMap(const Rule& r, const CitySystem::Built* built, glm::vec3 cursor) {
         for (const cityplan::Placed& p : built->town.placed)
             dl->AddCircleFilled(P(p.pos), std::max(1.2f, std::min(p.radius * sc * 0.5f, 4.0f)),
                                 IM_COL32(20, 20, 24, 200), 8);
+    // The public buildings, one letter on their block.
+    for (const cityplan::Block& b : draft.blocks) {
+        if (b.civic < 0) continue;
+        static const char* kLetter[] = {"C", "P", "F", "H"};
+        static const ImU32 kCol[] = {IM_COL32(245, 235, 200, 255), IM_COL32(40, 90, 210, 255),
+                                     IM_COL32(215, 40, 30, 255), IM_COL32(255, 255, 255, 255)};
+        const int k = glm::clamp(b.civic, 0, 3);
+        const ImVec2 c = P(0.25f * (b.corner[0] + b.corner[1] + b.corner[2] + b.corner[3]));
+        const float rad = std::max(7.0f, ImGui::GetFontSize() * 0.6f);
+        dl->AddCircleFilled(c, rad, kCol[k], 16);
+        dl->AddCircle(c, rad, IM_COL32(20, 20, 24, 255), 16, 1.5f);
+        const ImVec2 ts = ImGui::CalcTextSize(kLetter[k]);
+        dl->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
+                    k == 3 ? IM_COL32(210, 20, 20, 255) : IM_COL32(20, 20, 24, 255), kLetter[k]);
+    }
     // Where the 3D cursor is, if it is on the map at all.
     const glm::vec2 c(cursor.x, cursor.z);
     if (c.x >= lo.x && c.x <= hi.x && c.y >= lo.y && c.y <= hi.y) {
@@ -178,6 +194,16 @@ void drawPanel(const PanelState& s) {
         cityplan::applyPreset(r, cityplan::Preset::SmallTown);
         r.grid.center = {s.cursor.x, s.cursor.z};
         r.name = "Town " + std::to_string(cs.count() + 1);
+        // A town of its own: another seed means other street names and other
+        // houses, where the defaults would give every new town the same ones.
+        {
+            std::uint32_t h = static_cast<std::uint32_t>(s.cursor.x * 131.0f) * 2654435761U ^
+                              static_cast<std::uint32_t>(s.cursor.z * 137.0f) * 40503U ^
+                              static_cast<std::uint32_t>(cs.count() + 1) * 97U;
+            h ^= h >> 15;
+            r.seed      = h % 100000U;
+            r.grid.seed = (h >> 7) % 100000U;
+        }
         s.sel = cs.add(r);
         s.pushApplied(std::make_unique<CityCmd>(cs, s.roads, before, cs.snapshot(),
                                                 std::vector<int>{}, std::vector<int>{},
@@ -299,6 +325,11 @@ void drawPanel(const PanelState& s) {
             g.seed = static_cast<unsigned>(gs);
             changed = true;
         }
+        static const char* kNameLists[] = {"Invented", "Frankfurt am Main"};
+        if (ImGui::Combo("Street names", &g.names, kNameLists, 2)) changed = true;
+        ImGui::SetItemTooltip("Invented: German names from a pool of parts.\n"
+                              "Frankfurt am Main: drawn from the city's real street\n"
+                              "directory. The street seed picks which.");
     }
 
     // --- Zoning ------------------------------------------------------------------
@@ -317,6 +348,22 @@ void drawPanel(const PanelState& s) {
             r.seed = static_cast<unsigned>(seed);
             changed = true;
         }
+    }
+
+    // --- Public buildings and industry ---------------------------------------------
+    if (ui::header("Public buildings & industry", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ui::hint("Each public building takes a whole block.\n"
+                 "Map: C church, P police, F fire station, H hospital.");
+        changed |= rowInt("Churches", r.churches, 1, 0, 12, "%.0f");
+        changed |= rowInt("Police stations", r.policeStations, 1, 0, 12, "%.0f");
+        changed |= rowInt("Fire stations", r.fireStations, 1, 0, 12, "%.0f");
+        changed |= rowInt("Hospitals", r.hospitals, 1, 0, 12, "%.0f");
+        changed |= row("Industry", r.industryShare, 0.02f, 0.0f, 0.6f, "%.2f",
+                       "Share of all blocks that become the industrial estate,\n"
+                       "taken from the outer blocks on the side below.");
+        changed |= row("Industry side", r.industryAngle, 45.0f, -180.0f, 180.0f,
+                       "%.0f\xC2\xB0", "Which side of town the estate is on\n"
+                       "(0 = the town's +X, 90 = its +Z).");
     }
 
     // --- Buildings ---------------------------------------------------------------
@@ -353,8 +400,39 @@ void drawPanel(const PanelState& s) {
         col("Tower glass", r.glassTint);
         ImGui::SameLine();
         col("Tower base", r.towerBase);
+        changed |= row("Colour variety", r.colourVariety, 0.1f, 0.0f, 1.0f, "%.1f",
+                       "How many houses and blocks wear their own plaster and\n"
+                       "roof colour instead of the two above (0 = all alike).");
         changed |= row("Lit windows", r.windowLit, 0.05f, 0.0f, 1.0f, "%.2f");
         changed |= row("Weathering", r.weathering, 0.05f, 0.0f, 1.0f, "%.2f");
+        if (ImGui::Checkbox("Street signs", &r.signs)) changed = true;
+        ImGui::SetItemTooltip("A name sign on a corner of every crossing. The names are\n"
+                              "the roads' own -- rename a street in the Roads panel and\n"
+                              "its signs follow.");
+        if (r.signs) {
+            const auto& ps = streetsign::presets();
+            const int n = static_cast<int>(ps.size());
+            r.signStyle = std::clamp(r.signStyle, 0, n - 1);
+            if (ImGui::BeginCombo("Sign style", ps[static_cast<std::size_t>(r.signStyle)].name)) {
+                for (int i = 0; i < n; ++i)
+                    if (ImGui::Selectable(ps[static_cast<std::size_t>(i)].name, i == r.signStyle)) {
+                        r.signStyle = i;
+                        changed = true;
+                    }
+                ImGui::EndCombo();
+            }
+            ImGui::SetItemTooltip("How the signs are lettered (see View > Track > Street signs).");
+        }
+        if (ImGui::Checkbox("Pavements", &r.pavements)) changed = true;
+        ImGui::SetItemTooltip("The pavement band (Buildings > Pavement) paved, on a 12 cm\n"
+                              "kerb that follows the laid streets and stops at the crossings.");
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Traffic lights", &r.trafficLights)) changed = true;
+        ImGui::SetItemTooltip("At crossings with an avenue, and in the tower and\n"
+                              "apartment-block zones: one per approach, on the right.");
+        changed |= row("Bus stop every", r.busStopEvery, 50.0f, 0.0f, 2000.0f, "%.0f m",
+                       "A stop in each direction, named after the next cross street.\n"
+                       "With a shelter where the pavement is 2.4 m or wider. 0 = none.");
         changed |= rowInt("Tower palette", r.towerPalette, 1, 0, 7, "%.0f",
                           "Building material slot (0 = A .. 7 = H). Keep it apart\n"
                           "from the roadside city's slots to colour them separately.");
@@ -367,6 +445,10 @@ void drawPanel(const PanelState& s) {
         ImGui::Separator();
         ImGui::Text("%d buildings: %d towers, %d blocks, %d terraced, %d houses; %d parks",
                     st.built, st.towers, st.blocks, st.rows, st.houses, st.parks);
+        ImGui::Text("Public: %d churches, %d police, %d fire, %d hospitals; %d industrial blocks",
+                    st.churches, st.police, st.fireStations, st.hospitals, st.industry);
+        ImGui::Text("%d street signs, %d crossings with traffic lights, %d bus stops",
+                    st.signs, st.lights, st.busStops);
         ImGui::TextDisabled("Skipped: %d road, %d water, %d slope, %d empty plots%s",
                             st.skippedRoad, st.skippedWater, st.skippedSlope, st.skippedEmpty,
                             st.budgetHit ? "  -- BUDGET HIT" : "");

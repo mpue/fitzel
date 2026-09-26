@@ -302,7 +302,8 @@ void Renderer::begin(const Camera& camera, float aspect,
 
 void Renderer::submit(const Mesh& mesh, const Material& material,
                       const glm::mat4& model, bool castsPointShadow,
-                      bool reflective, float opacity, bool forceTransparent) {
+                      bool reflective, float opacity, bool forceTransparent,
+                      bool castsSunShadow) {
     // Read the surface for the shadow passes once, here, while the material is
     // in hand. AlphaMode as SceneTypes.hpp defines it: Opaque IGNORES the map's
     // alpha (a great many opaque atlases carry one that means nothing, and
@@ -336,7 +337,7 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
     }
     m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective,
                        opacity, forceTransparent,
-                       coverage, alphaMode, cutoff, alphaTex, prevModel});
+                       coverage, alphaMode, cutoff, alphaTex, prevModel, castsSunShadow});
 }
 
 void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
@@ -453,6 +454,7 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
             // viewport mode is drawing it solid, in which case it is not
             // invisible to the eye at all.
             if (m_shadingMode == 0 && r.castCoverage <= kMinCoverage) continue;
+            if (!r.castsSunShadow) continue;
             if (!aabbVisible(planes, m_cullBounds[k], /*count=*/4)) continue;
             // The dither offset is the golden ratio times the caster's index:
             // any two casters get patterns that share as few texels as a low

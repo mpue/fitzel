@@ -1237,6 +1237,21 @@ void drawPanel(const PanelState& s) {
             ImGui::EndCombo();
         }
 
+        // One click instead of visiting every road: a town lays dozens of streets,
+        // and each would otherwise have to be picked and dressed by hand.
+        ImGui::BeginDisabled(s.roads.count() < 2);
+        if (ImGui::Button("Same look on all roads",
+                          ImVec2(0, ImGui::GetFrameHeight() * 1.4f))) {
+            const RoadSystem& src = s.road();
+            for (RoadSystem* r : s.roads) r->copyLookFrom(src);
+            s.roads.rebuildMeshes();   // tiling and junction sheets are in the UVs
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Give every road in the scene this road's surface,\n"
+                              "normal map, tiling, glow, wetness and junction\n"
+                              "sheets. Width, shape and the terrain stay as they are.");
+
         // Normal map: the asphalt's grain. Without one the ribbon is lit by its
         // geometry normal alone and reads as painted on, especially under a low sun.
         const char* curN = (s.road().normSel >= 0 &&
