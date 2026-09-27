@@ -142,13 +142,34 @@ private:
         const fitzel::Mesh* mesh = nullptr;
         fitzel::AssetId     material;
         glm::mat4           local{1.0f};
+        int                 wheel = -1;      // FL FR RL RR: turns with that wheel
+        glm::mat4           rest{1.0f};      // in the prefab's own frame (local = frame * rest)
     };
+    // A wheel of the prefab's vehicle rig (its VehicleComponent): turned the way
+    // the race sim turns a driven car's -- spin on its own X, steer on Y.
+    struct RigWheel {
+        bool      valid = false;
+        glm::mat4 parentWorld{1.0f};
+        glm::vec3 localCenter{0.0f}, localRotation{0.0f};
+        glm::mat4 restInv{1.0f};
+    };
+    struct Rig {
+        std::array<RigWheel, 4> wheels{};
+        float radius = 0.35f, wheelbase = 2.7f, maxSteer = 0.55f, spinSign = 1.0f;
+        bool  any = false;
+    };
+    // A wheel's rest-to-now transform, for a spin (radians) and a steer.
+    static glm::mat4 wheelTurn(const Rig& rig, int i, float spin, float steer);
+    // The steer that makes a car of this wheelbase turn at the vehicle's rate.
+    static float steerOf(const Vehicle& v, float wheelbase, float maxSteer);
     struct PrefabLook {
         std::string             name;
         int                     kind = 0;
         float                   weight = 1.0f;
         float                   length = 4.3f;
         std::vector<PrefabPart> parts;
+        glm::mat4               frame{1.0f};   // prefab frame -> vehicle frame
+        Rig                     rig;
     };
     struct Driver {
         int       entity = -1;
@@ -159,6 +180,9 @@ private:
         glm::vec2 pos{0.0f}, heading{0.0f, 1.0f};   // last known, for a rebuild
         bool      placed = false;   // on a lane yet (Play can start before the towns are)
         std::string name;
+        int       wheel[4] = {-1, -1, -1, -1};   // its rig's wheel entities, if it has one
+        glm::vec3 wheelRest[4]{};                // their authored local rotations
+        float     wheelR = 0.35f, wheelbase = 2.7f, maxSteer = 0.55f, spinSign = 1.0f;
     };
     void placeDrivers();   // put every driver not yet on a lane onto one
 

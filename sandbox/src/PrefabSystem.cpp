@@ -1,5 +1,7 @@
 #include "PrefabSystem.hpp"
 
+#include "VehicleRig.hpp"
+
 #include <cctype>
 
 #include <algorithm>
@@ -53,6 +55,21 @@ std::string prefabsDirIn(const std::string& projectFolder) {
     return projectFolder + "/prefabs";
 }
 
+void remapRefs(std::vector<Entity>& entities, const std::unordered_map<int, int>& ids) {
+    for (Entity& e : entities) {
+        auto* vc = e.components.get<VehicleComponent>();
+        if (!vc) continue;
+        bool lost = false;
+        for (int& w : vc->wheelId) {
+            if (w < 0) continue;
+            const auto it = ids.find(w);
+            lost |= it == ids.end();
+            w = it != ids.end() ? it->second : -1;
+        }
+        if (lost) vehiclerig::guessWheels(entities, e.id, vc->forward, vc->wheelId);
+    }
+}
+
 std::optional<Prefab> fromSubtree(const std::vector<Entity>& scene, int rootId,
                                   const std::string& name) {
     const Entity* root = findEntity(scene, rootId);
@@ -77,6 +94,7 @@ std::optional<Prefab> fromSubtree(const std::vector<Entity>& scene, int rootId,
         stripPrefabTag(e);
         p.entities.push_back(std::move(e));
     }
+    remapRefs(p.entities, local);
     return p;
 }
 
@@ -248,6 +266,7 @@ std::vector<Entity> instantiate(const Prefab& p, int& entityCounter,
         }
         out.push_back(std::move(e));
     }
+    remapRefs(out, remap);
     return out;
 }
 

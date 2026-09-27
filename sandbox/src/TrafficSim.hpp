@@ -69,6 +69,13 @@ struct Vehicle {
     int   town   = 0;       // which town's rule it was spawned from
     int   prefab = -1;      // a vehicle prefab dressing it (TownTraffic), -1 = placeholder
     int   entity = -1;      // a scene object it drives (TrafficDriverComponent), -1 = none
+    // For the wheels: metres driven (their spin), and how fast the heading
+    // turns (their steering), radians/s, smoothed; positive turns the heading
+    // angle atan2(x, z) up.
+    float odo     = 0.0f;
+    float yawRate = 0.0f;
+    float lastH   = 0.0f;
+    bool  haveH   = false;
 };
 
 struct Walker {

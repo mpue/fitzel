@@ -39,6 +39,7 @@ std::vector<Entity> copyOf(const prefab::Prefab& t, int& entityCounter,
         }
         out.push_back(std::move(e));
     }
+    prefab::remapRefs(out, remap);
     return out;
 }
 

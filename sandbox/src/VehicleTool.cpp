@@ -15,30 +15,11 @@
 #include "PropertyMeta.hpp"
 #include "SceneTypes.hpp"
 #include "UiStyle.hpp"
+#include "VehicleRig.hpp"
 
 namespace vehicleui {
 
 namespace {
-
-// True when an entity name reads like a wheel. Substring match for the long
-// words; "rad" (German) only as a whole token so "gradient"/"radio" don't bite.
-// "steer"/"lenk" are excluded so a steering wheel never lands in a wheel slot.
-bool nameLooksLikeWheel(const std::string& name) {
-    std::string n;
-    n.reserve(name.size());
-    for (char c : name) n += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (n.find("steer") != std::string::npos || n.find("lenk") != std::string::npos)
-        return false;
-    for (const char* w : {"wheel", "tire", "tyre", "reifen", "felge"})
-        if (n.find(w) != std::string::npos) return true;
-    for (std::size_t at = n.find("rad"); at != std::string::npos; at = n.find("rad", at + 1)) {
-        const bool leftOk  = at == 0 || !std::isalpha(static_cast<unsigned char>(n[at - 1]));
-        const bool rightOk = at + 3 >= n.size() ||
-                             !std::isalpha(static_cast<unsigned char>(n[at + 3]));
-        if (leftOk && rightOk) return true;
-    }
-    return false;
-}
 
 const char* slotName(int i) {
     static const char* names[4] = {"FL", "FR", "RL", "RR"};
@@ -58,39 +39,12 @@ std::string autoSetup(Document& doc, int rootId) {
         vc = root->components.get<VehicleComponent>();
     }
 
-    // Wheel candidates among the direct children: name matches first, else
-    // disc-shaped AABBs (round in YZ -- the axle runs along X on a car).
-    struct Cand { const Entity* e; bool byName; };
-    std::vector<Cand> cands;
-    int named = 0;
-    for (const Entity& e : doc.entities()) {
-        if (e.parent != rootId) continue;
-        const bool byName = nameLooksLikeWheel(e.name);
-        const float r = std::max(e.half.y, e.half.z);
-        const bool disc = r > 1e-3f &&
-                          std::abs(e.half.y - e.half.z) <= 0.3f * r &&
-                          e.half.x <= 0.75f * r;
-        if (byName || disc) { cands.push_back({&e, byName}); named += byName ? 1 : 0; }
-    }
-    if (named >= 4) // enough named wheels -> ignore the shape guesses
-        cands.erase(std::remove_if(cands.begin(), cands.end(),
-                                   [](const Cand& c) { return !c.byName; }),
-                    cands.end());
-
-    // Assign candidates to the FL/FR/RL/RR quadrants (in the chassis frame,
-    // which flips Z when the model's nose points -Z); the outermost candidate
-    // wins each corner, so mirrors/hubcaps near the centre lose out.
+    // The four wheels among the direct children (see vehiclerig::guessWheels).
+    int ids[4];
+    vehiclerig::guessWheels(doc.entities(), rootId, vc->forward, ids);
     const float s = (vc->forward == 1) ? -1.0f : 1.0f;
-    const Entity* slot[4] = {nullptr, nullptr, nullptr, nullptr};
-    float score[4] = {0, 0, 0, 0};
-    for (const Cand& c : cands) {
-        const glm::vec3 lc = c.e->localCenter;
-        const float fz = lc.z * s;
-        if (std::abs(lc.x) < 0.05f) continue; // centred (steering wheel, spare)
-        const int   q  = (fz > 0.0f ? 0 : 2) + (lc.x > 0.0f ? 1 : 0);
-        const float sc = std::abs(lc.x) + std::abs(fz);
-        if (!slot[q] || sc > score[q]) { slot[q] = c.e; score[q] = sc; }
-    }
+    const Entity* slot[4];
+    for (int i = 0; i < 4; ++i) slot[i] = ids[i] >= 0 ? doc.find(ids[i]) : nullptr;
 
     int found = 0;
     float radius = 0.0f, width = 0.0f, track = 0.0f, wy = 0.0f;

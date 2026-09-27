@@ -13,6 +13,7 @@
 #include "PrefabSystem.hpp"
 #include "SandboxMath.hpp"
 #include "SceneGraph.hpp"
+#include "VehicleRig.hpp"
 
 #include <fitzel/physics/Physics.hpp>
 
@@ -288,6 +289,21 @@ namespace {
 constexpr float kPrefabReach = 200.0f, kPrefabDetail = 60.0f;
 } // namespace
 
+glm::mat4 TownTraffic::wheelTurn(const Rig& rig, int i, float spin, float steer) {
+    const RigWheel& w = rig.wheels[static_cast<std::size_t>(i)];
+    if (!w.valid) return glm::mat4(1.0f);
+    glm::vec3 rot = w.localRotation;
+    rot.x += glm::degrees(spin) * rig.spinSign;
+    if (i < 2) rot.y += glm::degrees(steer);   // the fronts steer
+    return w.parentWorld * scenegraph::compose(w.localCenter, rot, glm::vec3(1.0f)) * w.restInv;
+}
+
+float TownTraffic::steerOf(const Vehicle& v, float wheelbase, float maxSteer) {
+    // The race sim turns a car at v / wheelbase * tan(steer); read backwards.
+    const float st = std::atan(v.yawRate * wheelbase / std::max(v.v, 1.0f));
+    return glm::clamp(st, -maxSteer, maxSteer);
+}
+
 bool TownTraffic::asPrefab(const Vehicle& v, const glm::vec3& at) const {
     if (v.prefab < 0 || v.prefab >= static_cast<int>(m_looks.size())) return false;
     const glm::vec3 d = at - m_eye;
@@ -449,9 +465,55 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
             hi = glm::max(hi, w);
         }
     };
+    // The vehicle rig, if the prefab has one: which entities are its wheels
+    // (their ids as saved, else found again as "Make drivable" finds them).
+    Rig rig;
+    int wheelOf[4] = {-1, -1, -1, -1};
+    auto byId = [&](int id) -> const Entity* {
+        for (const Entity& x : es) if (x.id == id) return &x;
+        return nullptr;
+    };
+    for (const Entity& e : es) {
+        const auto* vc = e.components.get<VehicleComponent>();
+        if (!vc) continue;
+        bool ok = true;
+        for (int i = 0; i < 4; ++i) {
+            const Entity* w = byId(vc->wheelId[i]);
+            ok = ok && w && w->parent >= 0;
+            wheelOf[i] = w ? w->id : -1;
+        }
+        if (!ok) vehiclerig::guessWheels(es, e.id, vc->forward, wheelOf);
+        rig.radius    = std::max(vc->wheelRadius, 0.05f);
+        rig.wheelbase = std::max(vc->frontZ - vc->rearZ, 0.5f);
+        rig.maxSteer  = glm::radians(vc->maxSteerDeg);
+        rig.spinSign  = vc->forward == 1 ? -1.0f : 1.0f;
+        for (int i = 0; i < 4; ++i) {
+            const Entity* w = byId(wheelOf[i]);
+            if (!w) continue;
+            RigWheel& rw = rig.wheels[static_cast<std::size_t>(i)];
+            const Entity* par = byId(w->parent);
+            rw.parentWorld   = par ? scenegraph::compose(par->center, par->rotation, glm::vec3(1.0f))
+                                   : glm::mat4(1.0f);
+            rw.localCenter   = w->localCenter;
+            rw.localRotation = w->localRotation;
+            rw.restInv       = glm::inverse(scenegraph::compose(w->center, w->rotation, glm::vec3(1.0f)));
+            rw.valid         = true;
+            rig.any          = true;
+        }
+        break;
+    }
+    // The wheel an entity turns with: itself or its nearest ancestor that is one.
+    auto wheelIndex = [&](const Entity& e) {
+        for (const Entity* x = &e; x; x = x->parent >= 0 ? byId(x->parent) : nullptr)
+            for (int i = 0; i < 4; ++i)
+                if (wheelOf[i] >= 0 && x->id == wheelOf[i]) return i;
+        return -1;
+    };
+
     std::vector<PrefabPart> parts;
     for (const Entity& e : es) {
         if (!e.activeInHierarchy) continue;
+        const int wi = rig.any ? wheelIndex(e) : -1;
         if (const auto* mc = e.components.get<ModelComponent>(); mc && models) {
             LoadedModel* lm = models->byId(mc->modelId);
             if (!lm) continue;
@@ -460,7 +522,7 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
             const glm::mat4 m = scenegraph::compose(e.center, e.rotation, (e.half * 2.0f) / sz) *
                                 glm::translate(glm::mat4(1.0f), -lm->center());
             for (std::size_t i = 0; i < lm->meshes.size(); ++i)
-                parts.push_back({&lm->meshes[i], lm->primMaterialId[i], toNose * m});
+                parts.push_back({&lm->meshes[i], lm->primMaterialId[i], toNose * m, wi, m});
             grow(m, lm->boundsMin, lm->boundsMax);
         } else if (const auto* meshC = e.components.get<MeshComponent>(); meshC && meshCache) {
             // Modelled in the editor: uploaded by the shared cache under an id
@@ -471,7 +533,7 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
             const auto* matC = e.components.get<MaterialComponent>();
             const fitzel::AssetId own = matC ? matC->material : fitzel::AssetId{};
             for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, meshC->revision, meshC->mesh))
-                parts.push_back({&sub.mesh, sub.material.valid() ? sub.material : own, toNose * m});
+                parts.push_back({&sub.mesh, sub.material.valid() ? sub.material : own, toNose * m, wi, m});
             glm::vec3 mlo, mhi;
             meshC->mesh.bounds(mlo, mhi);
             grow(m, mlo, mhi);
@@ -482,6 +544,8 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
     const glm::mat4 centre = glm::translate(
         glm::mat4(1.0f), glm::vec3(-0.5f * (lo.x + hi.x), -lo.y, -0.5f * (lo.z + hi.z)));
     for (PrefabPart& part : parts) part.local = centre * part.local;
+    out.frame  = centre * toNose;
+    out.rig    = rig;
     out.parts  = std::move(parts);
     out.length = std::max(hi.x - lo.x, 1.0f);
     return true;
@@ -497,8 +561,20 @@ void TownTraffic::forEachPrefabDraw(
         glm::mat4 m = glm::translate(glm::mat4(1.0f), p.pos);
         m = glm::rotate(m, std::atan2(-p.heading.y, p.heading.x), glm::vec3(0, 1, 0));
         m = glm::rotate(m, p.pitch, glm::vec3(0, 0, 1));
-        for (const PrefabPart& part : m_looks[static_cast<std::size_t>(v.prefab)].parts)
-            fn(*part.mesh, part.material, m * part.local, detail);
+        const PrefabLook& look = m_looks[static_cast<std::size_t>(v.prefab)];
+        std::array<glm::mat4, 4> turned;
+        if (look.rig.any) {
+            const float spin  = v.odo / look.rig.radius;
+            const float steer = steerOf(v, look.rig.wheelbase, look.rig.maxSteer);
+            for (int i = 0; i < 4; ++i)
+                turned[static_cast<std::size_t>(i)] = look.frame * wheelTurn(look.rig, i, spin, steer);
+        }
+        for (const PrefabPart& part : look.parts)
+            fn(*part.mesh, part.material,
+               part.wheel >= 0 && look.rig.any
+                   ? m * turned[static_cast<std::size_t>(part.wheel)] * part.rest
+                   : m * part.local,
+               detail);
     }
 }
 
@@ -534,6 +610,25 @@ void TownTraffic::beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld*
         d.pos     = {e.center.x, e.center.z};
         d.heading = noseOf(e, d.forward);
         d.name    = e.name;
+        // A vehicle rig: its wheels turn and steer, and it stands on them.
+        if (const auto* vc = e.components.get<VehicleComponent>()) {
+            bool ok = true;
+            for (int i = 0; i < 4; ++i) {
+                const Entity* w = nullptr;
+                for (const Entity& x : entities) if (x.id == vc->wheelId[i]) { w = &x; break; }
+                ok = ok && w;
+                d.wheel[i] = w ? w->id : -1;
+            }
+            if (!ok) vehiclerig::guessWheels(entities, e.id, vc->forward, d.wheel);
+            for (int i = 0; i < 4; ++i)
+                for (const Entity& x : entities)
+                    if (x.id == d.wheel[i]) { d.wheelRest[i] = x.localRotation; break; }
+            d.wheelR    = std::max(vc->wheelRadius, 0.05f);
+            d.wheelbase = std::max(vc->frontZ - vc->rearZ, 0.5f);
+            d.maxSteer  = glm::radians(vc->maxSteerDeg);
+            d.spinSign  = vc->forward == 1 ? -1.0f : 1.0f;
+            if (dc->ride < 0.0f) d.ride = d.wheelR - vc->wheelY;   // as the race sim seats it
+        }
         // Placed now if the towns' streets are there already, else as soon as
         // they are (a game started straight into Play derives them after this).
         if (physics && dc->collider)
@@ -583,6 +678,19 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
         }
         const glm::vec3 pos = p.pos + glm::vec3(0.0f, d->ride, 0.0f);
         place(*e, pos, rot);
+        const float spin  = v.odo / d->wheelR;
+        const float steer = steerOf(v, d->wheelbase, d->maxSteer);
+        for (int i = 0; i < 4; ++i) {
+            if (d->wheel[i] < 0) continue;
+            for (Entity& w : entities)
+                if (w.id == d->wheel[i]) {
+                    glm::vec3 r = d->wheelRest[i];
+                    r.x += glm::degrees(spin) * d->spinSign;
+                    if (i < 2) r.y += glm::degrees(steer);
+                    w.localRotation = r;
+                    break;
+                }
+        }
         if (physics && d->body)
             physics->setKinematicTarget(d->body, pos, glm::quat(glm::radians(rot)), std::max(dt, 1e-3f));
     }

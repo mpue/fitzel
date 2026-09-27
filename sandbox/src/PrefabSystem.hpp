@@ -2,6 +2,7 @@
 
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -36,6 +37,13 @@ struct Prefab {
     std::string         path;
     std::vector<Entity> entities;
 };
+
+// Components that name other entities by id -- a vehicle's four wheels -- follow
+// a copy that renumbers its entities: `ids` maps old to new. A reference that
+// leads outside the copy is dropped; a vehicle that lost its wheels that way (a
+// prefab saved before this existed carries its scene's ids) finds them again
+// among its children, as "Make drivable" does.
+void remapRefs(std::vector<Entity>& entities, const std::unordered_map<int, int>& ids);
 
 // The prefabs folder for an open project (the folder that holds <name>.fitzel).
 std::string prefabsDirIn(const std::string& projectFolder);

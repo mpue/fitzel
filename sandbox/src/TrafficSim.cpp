@@ -444,6 +444,22 @@ void Sim::step(float dt, double clock) {
             }
         }
     }
+
+    // What the wheels need: distance for their spin, the heading's turn rate
+    // for their steering (smoothed -- a lane joint is a kink, not a swerve).
+    for (Vehicle& v : m_vehicles) {
+        v.odo += v.v * dt;
+        const Pose p = pose(v);
+        const float H = std::atan2(p.heading.x, p.heading.y);
+        if (v.haveH) {
+            float d = H - v.lastH;
+            if (d > 3.14159265f) d -= 6.2831853f;
+            if (d < -3.14159265f) d += 6.2831853f;
+            v.yawRate += (d / dt - v.yawRate) * std::min(1.0f, dt * 6.0f);
+        }
+        v.lastH = H;
+        v.haveH = true;
+    }
 }
 
 Pose Sim::pose(const Vehicle& v) const {
