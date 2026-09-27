@@ -9,6 +9,7 @@ uniform sampler2D uImage;
 uniform vec2  uTexel;   // 1 / resolution
 uniform int   uEnabled;
 uniform float uSharpen;  // 0 = off; used when FXAA is off (TAA is on instead)
+uniform int   uUpscale;  // 1: the image is smaller than the target (render scale)
 
 float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
@@ -29,9 +30,37 @@ vec3 sharpen(vec2 uv, vec3 c) {
     return clamp((c + (n + s + e + w) * wgt) / (1.0 + 4.0 * wgt), 0.0, 1.0);
 }
 
+// Catmull-Rom, in nine bilinear taps: the stretch from a reduced render scale.
+// Bilinear alone blurs the image by the scale on top of TAA's own softness;
+// this keeps the edges, and the sharpening below does the rest.
+vec3 catmullRom(vec2 uv) {
+    vec2 size = 1.0 / uTexel;
+    vec2 p  = uv * size;
+    vec2 t1 = floor(p - 0.5) + 0.5;
+    vec2 f  = p - t1;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 t0  = (t1 - 1.0) * uTexel;
+    vec2 t3  = (t1 + 2.0) * uTexel;
+    vec2 t12 = (t1 + w2 / w12) * uTexel;
+    vec3 c = texture(uImage, vec2(t0.x,  t0.y)).rgb  * w0.x  * w0.y
+           + texture(uImage, vec2(t12.x, t0.y)).rgb  * w12.x * w0.y
+           + texture(uImage, vec2(t3.x,  t0.y)).rgb  * w3.x  * w0.y
+           + texture(uImage, vec2(t0.x,  t12.y)).rgb * w0.x  * w12.y
+           + texture(uImage, vec2(t12.x, t12.y)).rgb * w12.x * w12.y
+           + texture(uImage, vec2(t3.x,  t12.y)).rgb * w3.x  * w12.y
+           + texture(uImage, vec2(t0.x,  t3.y)).rgb  * w0.x  * w3.y
+           + texture(uImage, vec2(t12.x, t3.y)).rgb  * w12.x * w3.y
+           + texture(uImage, vec2(t3.x,  t3.y)).rgb  * w3.x  * w3.y;
+    return clamp(c, 0.0, 1.0);
+}
+
 void main() {
     vec2 uv = vNdc * 0.5 + 0.5;
-    vec3 rgbM = texture(uImage, uv).rgb;
+    vec3 rgbM = uUpscale == 1 ? catmullRom(uv) : texture(uImage, uv).rgb;
     if (uEnabled == 0) {
         FragColor = vec4(uSharpen > 0.001 ? sharpen(uv, rgbM) : rgbM, 1.0);
         return;

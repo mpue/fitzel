@@ -118,7 +118,10 @@ public:
     // image, the screen, or one half of either.
     // `sharpen` (0..1) applies contrast-adaptive sharpening when FXAA is off --
     // the partner of TAA, which resolves a little soft.
-    void present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen = 0.0f);
+    // `upscale`: the target is larger than this chain's image (a render scale
+    // below 1) -- stretched with a sharper filter than bilinear.
+    void present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen = 0.0f,
+                 bool upscale = false);
 
     // --- Temporal anti-aliasing ----------------------------------------------
     // The sub-pixel offset for frame `frame`, in NDC: fold it into the
@@ -180,6 +183,7 @@ private:
     // Last frame for the reflections (see historyColor()).
     unsigned m_prevDepthFbo = 0, m_prevDepthTex = 0;
     int      m_prevDepthW = 0, m_prevDepthH = 0;
+    bool          m_prevDepthStencil = false;
     unsigned m_historyColor = 0;
     bool     m_historyValid = false;
     void keepHistory(const fitzel::RenderTarget& hdr, const fitzel::RenderTarget* scene);

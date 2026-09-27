@@ -19,6 +19,8 @@
 //
 //   build/release/bin/prefabeditcheck.exe
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -39,6 +41,8 @@
 #include "../src/ProjectIO.hpp"
 #include "../src/SceneTypes.hpp"
 #include "../src/Selection.hpp"
+#include "../src/SceneGraph.hpp"
+#include "../src/VehicleRig.hpp"
 
 namespace fs = std::filesystem;
 
@@ -290,6 +294,55 @@ int main() {
               "and the list is empty again");
         check(prefab::deleteFile(path, err),
               "deleting one that is already gone is not an error");
+    }
+
+    // --- A vehicle's wheels (VehicleRig.hpp, VehicleComponent::wheelTurn) -------
+    // Wheels spin and steer about the CAR's axes, over the wheel as modelled
+    // and the author's correction: at rest nothing moves; a left wheel modelled
+    // as the right one turned half round rolls the same way as the right one
+    // (it used to roll backwards); and the correction survives a save.
+    {
+        auto rotOf = [](const glm::vec3& deg) {
+            return glm::mat3(scenegraph::compose(glm::vec3(0.0f), deg, glm::vec3(1.0f)));
+        };
+        auto near = [](const glm::mat3& a, const glm::mat3& b) {
+            float e = 0.0f;
+            for (int c = 0; c < 3; ++c) e = std::max(e, glm::length(a[c] - b[c]));
+            return e < 1e-3f;
+        };
+        const glm::vec3 rest(10.0f, 200.0f, -5.0f);
+        check(near(rotOf(vehiclerig::wheelLocalRotation(rest, glm::vec3(0.0f), 0.0f, 0.0f)),
+                   rotOf(rest)),
+              "a wheel at rest keeps the rotation it was modelled with");
+        const float spin = 0.4f;
+        const glm::vec3 topRight = rotOf(vehiclerig::wheelLocalRotation(
+            glm::vec3(0.0f), glm::vec3(0.0f), spin, 0.0f)) * glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 topLeft = rotOf(vehiclerig::wheelLocalRotation(
+            glm::vec3(0.0f, 180.0f, 0.0f), glm::vec3(0.0f), spin, 0.0f)) * glm::vec3(0.0f, 1.0f, 0.0f);
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "the top of the right wheel goes to z %.2f, the left's to %.2f",
+                      topRight.z, topLeft.z);
+        check(topRight.z > 0.1f && std::abs(topRight.z - topLeft.z) < 1e-3f,
+              "a mirrored left wheel rolls the same way as the right", buf);
+        check(near(rotOf(vehiclerig::wheelLocalRotation(glm::vec3(0.0f), glm::vec3(0.0f, 180.0f, 0.0f),
+                                                        0.0f, 0.0f)),
+                   rotOf(glm::vec3(0.0f, 180.0f, 0.0f))),
+              "a Flip turns the wheel half round about the vertical");
+
+        VehicleComponent vc;
+        vc.wheelTurn[1] = glm::vec3(0.0f, 180.0f, 0.0f);
+        vc.wheelTurn[3] = glm::vec3(90.0f, 0.0f, -90.0f);
+        nlohmann::json j;
+        vc.save(j);
+        VehicleComponent back;
+        back.load(j);
+        bool same = true;
+        for (int i = 0; i < 4; ++i) same &= back.wheelTurn[i] == vc.wheelTurn[i];
+        check(same, "the wheel corrections come back from a save");
+        VehicleComponent plain;
+        nlohmann::json pj;
+        plain.save(pj);
+        check(!pj.contains("wheelTurn"), "and a vehicle without any writes none");
     }
 
     fs::remove_all(dir, ec);

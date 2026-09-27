@@ -10,7 +10,7 @@ namespace fitzel {
 
 Mesh::~Mesh() {
     if (m_ebo) glDeleteBuffers(1, &m_ebo);
-    if (m_vbo) glDeleteBuffers(1, &m_vbo);
+    if (m_vbo && m_ownsVbo) glDeleteBuffers(1, &m_vbo);
     if (m_vao) glDeleteVertexArrays(1, &m_vao);
 }
 
@@ -20,6 +20,7 @@ Mesh::Mesh(Mesh&& other) noexcept
       m_ebo(std::exchange(other.m_ebo, 0)),
       m_vertexCount(std::exchange(other.m_vertexCount, 0)),
       m_indexCount(std::exchange(other.m_indexCount, 0)),
+      m_ownsVbo(std::exchange(other.m_ownsVbo, true)),
       m_vboBytes(std::exchange(other.m_vboBytes, 0)),
       m_eboBytes(std::exchange(other.m_eboBytes, 0)),
       m_boundsMin(other.m_boundsMin),
@@ -28,7 +29,7 @@ Mesh::Mesh(Mesh&& other) noexcept
 Mesh& Mesh::operator=(Mesh&& other) noexcept {
     if (this != &other) {
         if (m_ebo) glDeleteBuffers(1, &m_ebo);
-        if (m_vbo) glDeleteBuffers(1, &m_vbo);
+        if (m_vbo && m_ownsVbo) glDeleteBuffers(1, &m_vbo);
         if (m_vao) glDeleteVertexArrays(1, &m_vao);
 
         m_vao         = std::exchange(other.m_vao, 0);
@@ -36,6 +37,7 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         m_ebo         = std::exchange(other.m_ebo, 0);
         m_vertexCount = std::exchange(other.m_vertexCount, 0);
         m_indexCount  = std::exchange(other.m_indexCount, 0);
+        m_ownsVbo     = std::exchange(other.m_ownsVbo, true);
         m_vboBytes    = std::exchange(other.m_vboBytes, 0);
         m_eboBytes    = std::exchange(other.m_eboBytes, 0);
         m_boundsMin   = other.m_boundsMin;
@@ -85,6 +87,13 @@ Mesh Mesh::create(const std::vector<Vertex>& vertices,
                      indices.data(), GL_STATIC_DRAW);
     }
 
+    setVertexLayout();
+    glBindVertexArray(0);
+    return mesh;
+}
+
+// The Vertex layout on the bound VAO/VBO: position, normal, uv, paint.
+void Mesh::setVertexLayout() {
     // layout(location = 0) in vec3 aPos;
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
@@ -104,9 +113,28 @@ Mesh Mesh::create(const std::vector<Vertex>& vertices,
     glEnableVertexAttribArray(3);
     glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, sizeof(Vertex),
                           reinterpret_cast<void*>(offsetof(Vertex, paint)));
+}
 
+Mesh Mesh::createView(const Mesh& base, const std::vector<std::uint32_t>& indices) {
+    Mesh view;
+    if (!base.m_vbo || indices.empty()) return view;
+    view.m_ownsVbo     = false;
+    view.m_vbo         = base.m_vbo;
+    view.m_vertexCount = base.m_vertexCount;
+    view.m_indexCount  = static_cast<std::uint32_t>(indices.size());
+    view.m_eboBytes    = indices.size() * sizeof(std::uint32_t);
+    view.m_boundsMin   = base.m_boundsMin;
+    view.m_boundsMax   = base.m_boundsMax;
+    glGenVertexArrays(1, &view.m_vao);
+    glBindVertexArray(view.m_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, view.m_vbo);
+    glGenBuffers(1, &view.m_ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, view.m_ebo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(view.m_eboBytes),
+                 indices.data(), GL_STATIC_DRAW);
+    setVertexLayout();
     glBindVertexArray(0);
-    return mesh;
+    return view;
 }
 
 Mesh Mesh::cube() {

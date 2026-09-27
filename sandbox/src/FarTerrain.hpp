@@ -178,7 +178,8 @@ private:
     glm::vec3      m_shadowSun{0.0f};
     glm::vec2      m_shadowOrigin{1e9f};
     std::uint64_t  m_shadowGen = ~0ull;
-    fitzel::Shader m_shader;
+    fitzel::Shader m_shader;         // the main view: no discard, early tests stay on
+    fitzel::Shader m_mirrorShader;   // the water's mirror: cuts the sunk hole out
     unsigned m_vao = 0, m_vbo = 0, m_ibo = 0;
     int      m_indexCount = 0;
     bool     m_ready = false;

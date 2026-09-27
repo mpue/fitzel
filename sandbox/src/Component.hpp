@@ -608,6 +608,11 @@ public:
     // camera entity parented to the vehicle, not five numbers on the vehicle.
 
     int wheelId[4] = {-1, -1, -1, -1};        // wheel child entity ids: FL FR RL RR
+    // A correction per wheel (degrees, about the CAR's axes: x across, y up, z
+    // along), applied to the wheel as modelled before it spins and steers. For
+    // a model whose wheels were built facing some other way than their spin
+    // expects -- set in the inspector, best while driving (see vehicleui).
+    glm::vec3 wheelTurn[4] = {};
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<VehicleComponent>(*this);

@@ -345,8 +345,10 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
                             const glm::mat4& prevVP) {
     if (!m_motionShader.isValid()) return;
     const std::array<glm::vec4, 6> planes = frustumPlanes(viewProj);
-    GLint prevFunc = GL_LESS;
-    glGetIntegerv(GL_DEPTH_FUNC, &prevFunc);
+    // Restored to the frame's convention (GL_LESS) rather than read back: a glGet
+    // waits for everything queued so far under the driver's threaded
+    // optimisation, and one in the middle of a frame kept the CPU from ever
+    // getting ahead of the GPU.
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_FALSE);
@@ -367,7 +369,7 @@ void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
         r.mesh->draw();
     }
     glDepthMask(GL_TRUE);
-    glDepthFunc(static_cast<GLenum>(prevFunc));
+    glDepthFunc(GL_LESS);
 }
 
 void Renderer::uploadCoverage(const Shader& shader, const Renderable& r,
@@ -428,6 +430,14 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
     // preparePointShadows() has always set this for itself.
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
+    // The cull state the cascades are drawn with, set here rather than
+    // inherited: back faces, unless the point-shadow pass ran and left its
+    // front-face culling behind -- which is what the terrain's self-shadowing
+    // has always been tuned under. Casters drawn from outside (the trees)
+    // restore to cascadeCullFace() instead of asking GL for it.
+    m_cascadeCull = m_shadowedCount > 0 ? GL_FRONT : GL_BACK;
+    glEnable(GL_CULL_FACE);
+    glCullFace(m_cascadeCull);
 
     m_shadowDraws = 0;
     m_shadowTris  = 0;
@@ -484,12 +494,21 @@ void Renderer::captureSceneCopy() {
     if (w <= 0 || h <= 0) { m_sceneCopyW = 0; return; }
 
     glActiveTexture(GL_TEXTURE0 + kSceneCopyUnit);
-    // The texture of this size, else the least recently used one, re-sized.
-    SceneCopy* slot = &m_sceneCopies[0];
+    // The least recently used texture of this size once there are enough of
+    // them to rotate through; until then, the least recently used of all,
+    // re-sized (an empty slot is the least recent of all).
+    SceneCopy* same = nullptr;
+    SceneCopy* any  = &m_sceneCopies[0];
+    int count = 0;
     for (SceneCopy& c : m_sceneCopies) {
-        if (c.w == w && c.h == h && c.tex) { slot = &c; break; }
-        if (c.used < slot->used) slot = &c;
+        if (c.tex && c.w == w && c.h == h) {
+            ++count;
+            if (!same || c.used < same->used) same = &c;
+        } else if (c.used < any->used || (any->tex && any->w == w && any->h == h)) {
+            any = &c;
+        }
     }
+    SceneCopy* slot = (same && count >= kCopiesPerSize) ? same : any;
     slot->used  = ++m_sceneCopyUses;
     m_sceneCopy = slot->tex;
     m_sceneCopyW = slot->w;
@@ -668,13 +687,22 @@ void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
     // gives it.
     const int  want  = 1 + static_cast<int>(moved / 0.45f);
     const int  rate  = glm::clamp(want, 1, glm::clamp(m_envMaxFaces, 1, 6));
-    const int  faces = m_envPrimed ? rate : 6;
+    int        faces = m_envPrimed ? rate : 6;
+    // ...and the other end: an eye that is standing still (or strolling) needs
+    // no face every frame. A face is a whole render of the scene -- every
+    // object's draw -- and at a frame each it was the single most expensive
+    // pass after the main view. Standing, a face every third frame: the cube is
+    // then at most eighteen frames old, a third of a second, for reflections of
+    // a world that is not moving relative to them.
+    ++m_envCalls;
+    if (m_envPrimed && moved < 0.02f && m_envCalls % 3 != 0) faces = 0;
 
     const glm::mat4 proj = CubeRenderTarget::faceProjection(0.2f, 4000.0f);
 
     glDisable(GL_CLIP_DISTANCE0);
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
+    bool completed = false;   // the sweep closed in THIS call (faces can be 0)
     for (int i = 0; i < faces; ++i) {
         const int f = m_envFace;
         m_envWrite->beginFace(f);
@@ -686,9 +714,10 @@ void Renderer::prepareEnvProbe(const glm::vec3& pos, const SkyDrawer& drawSky) {
         renderScene(view, proj, m_envSweepPos, kNoClip, /*tonemap=*/false,
                     /*skipReflective=*/true);
         m_envFace = (m_envFace + 1) % 6;
+        if (m_envFace == 0) completed = true;
     }
 
-    if (m_envFace == 0) { // sweep complete
+    if (completed) { // sweep complete
         m_envWrite->generateMipmaps();
         // The freshly captured cube becomes the one the lit passes sample.
         std::swap(m_envRead, m_envWrite);
@@ -923,10 +952,15 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         // has been drawn over it yet. Copied only when the frame has a
         // refracting surface -- every other frame, and every probe face and
         // water pass without one, pays a scan of a short list.
+        // Only glass this pass can see: one glazed window anywhere in the scene
+        // used to have every pass copy its picture, visible or not.
         bool refracts = false;
-        for (const Renderable* r : transparent)
-            refracts = refracts || (r->material &&
-                                    r->material->get<int>("uGlass", 0) == 1);
+        for (const Renderable* r : transparent) {
+            if (refracts) break;
+            if (!r->material || r->material->get<int>("uGlass", 0) != 1) continue;
+            const WorldAabb box = worldAabb(r->model, r->mesh->boundsMin(), r->mesh->boundsMax());
+            refracts = aabbVisible(planes, box) && aabbVisible(clipOnly, box, 1);
+        }
         if (refracts) captureSceneCopy();
         else          m_sceneCopyW = 0;   // the shader falls back on its own
         // Sort by where the GEOMETRY is, not by where its model matrix says it

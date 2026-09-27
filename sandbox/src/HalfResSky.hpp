@@ -30,9 +30,23 @@ public:
     void render(const fitzel::RenderTarget& dst, const fitzel::Mesh& quad,
                 const std::function<void()>& draw);
 
+    // The same, drawn LAST, behind a finished scene: only where `dst` still
+    // holds the cleared depth (1.0) and a zero stencil -- what the caller's
+    // scene left of the sky. At the reduced size the sky is marched only for
+    // texels with sky within one texel of them (the stretch filters across
+    // one), so a street view pays for its strip of sky, not for the houses
+    // in front of it. `dst` needs a stencil (RenderTarget's `stencil`). Leaves
+    // `dst` bound, the stencil test on, stencil writes off.
+    void renderBehind(const fitzel::RenderTarget& dst, const fitzel::Mesh& quad,
+                      const std::function<void()>& draw);
+
     int minRows = 480;
 
 private:
+    int divisorFor(const fitzel::RenderTarget& dst) const;
+
     fitzel::RenderTarget m_rt{1, 1, fitzel::RenderTarget::Format::RGBA16F};
-    fitzel::Shader       m_blit;
+    fitzel::RenderTarget m_masked{1, 1, fitzel::RenderTarget::Format::RGBA16F, true, true};
+    fitzel::RenderTarget m_cover{1, 1, fitzel::RenderTarget::Format::RGBA8};
+    fitzel::Shader       m_blit, m_coverShader, m_maskShader;
 };

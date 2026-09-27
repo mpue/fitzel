@@ -292,9 +292,9 @@ constexpr float kPrefabReach = 200.0f, kPrefabDetail = 60.0f;
 glm::mat4 TownTraffic::wheelTurn(const Rig& rig, int i, float spin, float steer) {
     const RigWheel& w = rig.wheels[static_cast<std::size_t>(i)];
     if (!w.valid) return glm::mat4(1.0f);
-    glm::vec3 rot = w.localRotation;
-    rot.x += glm::degrees(spin) * rig.spinSign;
-    if (i < 2) rot.y += glm::degrees(steer);   // the fronts steer
+    const glm::vec3 rot = vehiclerig::wheelLocalRotation(w.localRotation, w.turn,
+                                                         spin * rig.spinSign,
+                                                         i < 2 ? steer : 0.0f);   // fronts steer
     return w.parentWorld * scenegraph::compose(w.localCenter, rot, glm::vec3(1.0f)) * w.restInv;
 }
 
@@ -431,8 +431,10 @@ void TownTraffic::drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
                              const glm::mat4& prevVP) {
     if (!m_motionLive || m_instances.empty() || !m_motion.isValid()) return;
     // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
-    GLint prevFunc = GL_LESS;
-    glGetIntegerv(GL_DEPTH_FUNC, &prevFunc);
+    // Restored to the frame's convention (GL_LESS) rather than read back: a glGet
+    // waits for everything queued so far under the driver's threaded
+    // optimisation, and one in the middle of a frame kept the CPU from ever
+    // getting ahead of the GPU.
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_FALSE);
@@ -443,7 +445,7 @@ void TownTraffic::drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
     m_motion.setMat4("uPrevVP", prevVP);
     m_motionMesh.draw();
     glDepthMask(GL_TRUE);
-    glDepthFunc(static_cast<GLenum>(prevFunc));
+    glDepthFunc(GL_LESS);
 }
 
 
@@ -496,6 +498,7 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
                                    : glm::mat4(1.0f);
             rw.localCenter   = w->localCenter;
             rw.localRotation = w->localRotation;
+            rw.turn          = vc->wheelTurn[i];
             rw.restInv       = glm::inverse(scenegraph::compose(w->center, w->rotation, glm::vec3(1.0f)));
             rw.valid         = true;
             rig.any          = true;
@@ -680,14 +683,16 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
         place(*e, pos, rot);
         const float spin  = v.odo / d->wheelR;
         const float steer = steerOf(v, d->wheelbase, d->maxSteer);
+        // The correction is read live, so turning a wheel in the inspector
+        // while the car drives shows at once.
+        const auto* vc = e->components.get<VehicleComponent>();
         for (int i = 0; i < 4; ++i) {
             if (d->wheel[i] < 0) continue;
             for (Entity& w : entities)
                 if (w.id == d->wheel[i]) {
-                    glm::vec3 r = d->wheelRest[i];
-                    r.x += glm::degrees(spin) * d->spinSign;
-                    if (i < 2) r.y += glm::degrees(steer);
-                    w.localRotation = r;
+                    w.localRotation = vehiclerig::wheelLocalRotation(
+                        d->wheelRest[i], vc ? vc->wheelTurn[i] : glm::vec3(0.0f),
+                        spin * d->spinSign, i < 2 ? steer : 0.0f);
                     break;
                 }
         }

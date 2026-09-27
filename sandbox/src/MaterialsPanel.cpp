@@ -1,7 +1,13 @@
 #include "MaterialsPanel.hpp"
 
+#include <cctype>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <string>
+
+#include <nlohmann/json.hpp>
+#include <stb_image_write.h>
 
 #include <glm/glm.hpp>
 #include <imgui.h>
@@ -21,6 +27,91 @@ using fitzel::AssetId;
 using fitzel::AssetType;
 using fitzel::Texture;
 
+namespace {
+
+// An embedded map as a project texture: written as a PNG into the project's
+// textures folder, with a sidecar that loads it the way the model importer
+// uploaded it -- unflipped, glTF's UVs start at the top -- and registered, so a
+// material can reference it by GUID. Invalid when there is no project to write
+// into or nothing to read back.
+AssetId exportMap(const PanelState& s, const std::shared_ptr<Texture>& tex,
+                  const std::string& base, const char* slot, bool srgb) {
+    namespace fs = std::filesystem;
+    if (!tex || !tex->isValid()) return {};
+    fs::path root;
+    for (const auto& src : s.assetDb.sources())
+        if (src.kind == fitzel::AssetSourceKind::Project) root = src.root;
+    if (root.empty()) return {};
+    const fitzel::ImagePixels img = tex->readback();
+    if (!img.valid()) return {};
+    std::string name;
+    for (char c : base) name.push_back(std::isalnum(static_cast<unsigned char>(c)) ? c : '_');
+    std::error_code ec;
+    fs::create_directories(root / "textures", ec);
+    const AssetId id = AssetId::generate();
+    const fs::path file = root / "textures" /
+        (name + "-" + slot + "-" + id.toString().substr(0, 8) + ".png");
+    if (!stbi_write_png(file.string().c_str(), img.width, img.height, 4, img.pixels.data(),
+                        img.width * 4))
+        return {};
+    nlohmann::json meta;
+    meta["guid"]     = id.toString();
+    meta["type"]     = fitzel::assetTypeName(AssetType::Texture);
+    meta["importer"] = {{"flipVertically", false}, {"sRGB", srgb}};
+    std::ofstream(file.string() + ".meta") << meta.dump(2) << '\n';
+    return s.assetDb.idForPath(file);
+}
+
+// "<name> copy", "<name> copy 2", ... -- the first that is free.
+std::string copyName(const std::vector<MaterialDef>& mats, const std::string& name) {
+    auto taken = [&](const std::string& n) {
+        for (const MaterialDef& m : mats) if (m.name == n) return true;
+        return false;
+    };
+    std::string n = name + " copy";
+    for (int k = 2; taken(n); ++k) n = name + " copy " + std::to_string(k);
+    return n;
+}
+
+// A copy of material `i` as a library material of its own, selected. A copy
+// of a MODEL material is a library material too -- that is usually the point,
+// a variant of the car's paint -- so the maps the model embedded are written
+// out as project textures: a library material is saved to a .fmat, which can
+// only point at files. Returns what happened, for the panel's status line.
+std::string duplicate(const PanelState& s, int i) {
+    MaterialDef md = s.materials[static_cast<std::size_t>(i)];
+    md.assetId = AssetId::generate();
+    md.name    = copyName(s.materials, md.name);
+    int exported = 0, lost = 0;
+    if (md.fromModel) {
+        auto keep = [&](std::shared_ptr<Texture>& tex, AssetId& id, const char* slot, bool srgb) {
+            if (!tex || id.valid()) return;
+            id = exportMap(s, tex, md.name, slot, srgb);
+            if (id.valid()) { tex = s.assetDb.loadTexture(id); ++exported; }
+            else ++lost;
+        };
+        if (!md.videoId.valid()) keep(md.tex, md.texId, "color", true);
+        keep(md.normalTex, md.normalTexId, "normal", false);
+        keep(md.emissionTex, md.emissionTexId, "emission", true);
+        keep(md.ormTex, md.ormTexId, "orm", false);
+        md.fromModel = false;
+        md.modelTex.reset();
+        md.modelNormalTex.reset();
+        md.modelEmissionTex.reset();
+    }
+    s.materials.push_back(std::move(md));
+    s.sel = static_cast<int>(s.materials.size()) - 1;
+    std::string msg = "Duplicated as \"" + s.materials.back().name + "\"";
+    if (exported > 0)
+        msg += " -- " + std::to_string(exported) + " map(s) from the model saved to textures/";
+    if (lost > 0)
+        msg += " -- " + std::to_string(lost) + " map(s) could not be saved (no project open?)"
+               " and will be missing after a reload";
+    return msg + ".";
+}
+
+} // namespace
+
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
     if (ImGui::Begin("Materials", &s.show)) {
@@ -29,6 +120,15 @@ void drawPanel(const PanelState& s) {
             s.document.addMaterial("Material " + std::to_string(s.materials.size()),
                                  glm::vec3(0.7f), 0.0f, 0.2f);
         }
+        static std::string dupStatus;   // what the last Duplicate did
+        const bool validSel = s.sel >= 0 && s.sel < static_cast<int>(s.materials.size());
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!validSel);
+        if (ImGui::Button("Duplicate") && validSel) dupStatus = duplicate(s, s.sel);
+        ImGui::SetItemTooltip("A copy of the selected material, to change without touching\n"
+                              "the original. A model's material becomes a library material\n"
+                              "of its own; its maps are saved into the project's textures.");
+        ImGui::EndDisabled();
         ImGui::SameLine();
         const bool selFromModel = s.sel >= 0 &&
             s.sel < static_cast<int>(s.materials.size()) &&
@@ -47,6 +147,7 @@ void drawPanel(const PanelState& s) {
                                 static_cast<int>(s.materials.size()) - 1);
         }
         ImGui::EndDisabled();
+        if (!dupStatus.empty()) ImGui::TextWrapped("%s", dupStatus.c_str());
 
         ImGui::Separator();
         const bool matFiltering =
@@ -57,6 +158,10 @@ void drawPanel(const PanelState& s) {
             ++matShown;
             const std::string lbl = s.materials[i].name + "##m" + std::to_string(i);
             if (ImGui::Selectable(lbl.c_str(), i == s.sel)) s.sel = i;
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Duplicate")) dupStatus = duplicate(s, i);
+                ImGui::EndPopup();
+            }
             // Draggable, with the same GUID payload the Assets browser sends: the
             // viewport drops it onto whatever is under the cursor -- one face of a
             // modelled mesh, or the whole object. A material is a thing you point

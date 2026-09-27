@@ -868,12 +868,26 @@ const std::vector<Property>& VehicleComponent::properties() {
 void VehicleComponent::save(nlohmann::json& j) const {
     writeProps(j, props(), this);
     j["wheels"] = {wheelId[0], wheelId[1], wheelId[2], wheelId[3]};
+    bool turned = false;
+    for (const glm::vec3& t : wheelTurn) turned |= t != glm::vec3(0.0f);
+    if (turned) {
+        nlohmann::json a = nlohmann::json::array();
+        for (const glm::vec3& t : wheelTurn) a.push_back({t.x, t.y, t.z});
+        j["wheelTurn"] = a;
+    }
 }
 void VehicleComponent::load(const nlohmann::json& j) {
     readProps(j, props(), this);
     if (j.contains("wheels") && j["wheels"].is_array())
         for (std::size_t i = 0; i < 4 && i < j["wheels"].size(); ++i)
             wheelId[i] = j["wheels"][i].is_number_integer() ? j["wheels"][i].get<int>() : -1;
+    for (glm::vec3& t : wheelTurn) t = glm::vec3(0.0f);
+    if (j.contains("wheelTurn") && j["wheelTurn"].is_array())
+        for (std::size_t i = 0; i < 4 && i < j["wheelTurn"].size(); ++i) {
+            const nlohmann::json& t = j["wheelTurn"][i];
+            if (t.is_array() && t.size() == 3)
+                wheelTurn[i] = {t[0].get<float>(), t[1].get<float>(), t[2].get<float>()};
+        }
 }
 
 const std::vector<Property>& GliderComponent::properties() {

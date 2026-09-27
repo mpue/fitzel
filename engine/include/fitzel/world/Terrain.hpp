@@ -271,12 +271,25 @@ public:
     static TerrainChunk generate(const TerrainSettings& settings, glm::ivec2 coord);
 
     const Mesh& mesh()  const { return m_mesh; }
+    // The same ground drawn coarser: 0 is every vertex, 1 every second, 2
+    // every fourth (the grid's own vertices -- a view, see chunkLodIndices).
+    // For distance: a chunk three hundred metres off at full resolution is
+    // triangles smaller than a pixel, in every pass that draws it.
+    const Mesh& mesh(int lod) const;
     glm::ivec2  coord() const { return m_coord; }
 
+    static constexpr int kCoarseLods = 2;
+
 private:
-    Mesh       m_mesh;
+    Mesh       m_mesh;                   // declared first: the views borrow its vertices
+    Mesh       m_lod[kCoarseLods];
     glm::ivec2 m_coord{0};
 };
+
+// A chunk's triangles over its (n+1)^2 grid taking every `stride`-th vertex,
+// plus the skirts hanging from its edges (buildMeshData appends their
+// vertices after the grid: z=0, z=n, x=0, x=n edges, n+1 each).
+std::vector<std::uint32_t> chunkLodIndices(int n, int stride);
 
 // Streams an NxN grid of TerrainChunks around the viewer. Chunk geometry is
 // built on a pool of worker threads and uploaded to the GPU on the render

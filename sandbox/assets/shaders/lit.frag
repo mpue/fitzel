@@ -689,14 +689,27 @@ vec3 windowEmission(vec3 wp, vec3 n) {
 // a fract() seam would otherwise wreck the implicit LOD along one pixel row.
 vec2 wrapUv(vec2 uv) { return fract(uv); }
 
-vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
-    vec3 bw = abs(n);
-    bw = pow(bw, vec3(4.0));
+// The three projections' weights, with the ones that would add next to nothing
+// dropped and the rest renormalised. A meadow is all top projection: sampling
+// the two side ones anyway, for every layer and its normal map, was two thirds
+// of the terrain's texture fetches for a percent or two of its colour.
+vec3 triplanarWeights(vec3 n) {
+    vec3 bw = pow(abs(n), vec3(4.0));
     bw /= (bw.x + bw.y + bw.z);
-    vec3 cx = textureGrad(tex, wrapUv(wp.zy * scale), dpdx.zy * scale, dpdy.zy * scale).rgb;
-    vec3 cy = textureGrad(tex, wrapUv(wp.xz * scale), dpdx.xz * scale, dpdy.xz * scale).rgb;
-    vec3 cz = textureGrad(tex, wrapUv(wp.xy * scale), dpdx.xy * scale, dpdy.xy * scale).rgb;
-    return cx * bw.x + cy * bw.y + cz * bw.z;
+    bw = max(bw - 0.02, 0.0);
+    return bw / (bw.x + bw.y + bw.z);
+}
+
+vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy) {
+    vec3 bw = triplanarWeights(n);
+    vec3 c  = vec3(0.0);
+    if (bw.x > 0.0)
+        c += textureGrad(tex, wrapUv(wp.zy * scale), dpdx.zy * scale, dpdy.zy * scale).rgb * bw.x;
+    if (bw.y > 0.0)
+        c += textureGrad(tex, wrapUv(wp.xz * scale), dpdx.xz * scale, dpdy.xz * scale).rgb * bw.y;
+    if (bw.z > 0.0)
+        c += textureGrad(tex, wrapUv(wp.xy * scale), dpdx.xy * scale, dpdy.xy * scale).rgb * bw.z;
+    return c;
 }
 
 // Triplanar normal mapping (Whiteout blend): reorient each plane's tangent-space
@@ -704,15 +717,24 @@ vec3 triplanar(sampler2D tex, vec3 wp, vec3 n, float scale, vec3 dpdx, vec3 dpdy
 // explicit-derivative treatment as the colour path above.
 vec3 triplanarNormal(sampler2D nmap, vec3 wp, vec3 n, float scale,
                      vec3 dpdx, vec3 dpdy) {
-    vec3 bw = pow(abs(n), vec3(4.0));
-    bw /= (bw.x + bw.y + bw.z);
-    vec3 tx = textureGrad(nmap, wrapUv(wp.zy * scale), dpdx.zy * scale, dpdy.zy * scale).xyz * 2.0 - 1.0;
-    vec3 ty = textureGrad(nmap, wrapUv(wp.xz * scale), dpdx.xz * scale, dpdy.xz * scale).xyz * 2.0 - 1.0;
-    vec3 tz = textureGrad(nmap, wrapUv(wp.xy * scale), dpdx.xy * scale, dpdy.xy * scale).xyz * 2.0 - 1.0;
-    tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
-    ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
-    tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
-    return normalize(tx.zyx * bw.x + ty.xzy * bw.y + tz.xyz * bw.z);
+    vec3 bw = triplanarWeights(n);
+    vec3 sum = vec3(0.0);
+    if (bw.x > 0.0) {
+        vec3 tx = textureGrad(nmap, wrapUv(wp.zy * scale), dpdx.zy * scale, dpdy.zy * scale).xyz * 2.0 - 1.0;
+        tx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
+        sum += tx.zyx * bw.x;
+    }
+    if (bw.y > 0.0) {
+        vec3 ty = textureGrad(nmap, wrapUv(wp.xz * scale), dpdx.xz * scale, dpdy.xz * scale).xyz * 2.0 - 1.0;
+        ty = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
+        sum += ty.xzy * bw.y;
+    }
+    if (bw.z > 0.0) {
+        vec3 tz = textureGrad(nmap, wrapUv(wp.xy * scale), dpdx.xy * scale, dpdy.xy * scale).xyz * 2.0 - 1.0;
+        tz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
+        sum += tz.xyz * bw.z;
+    }
+    return normalize(sum);
 }
 
 // One layer's coverage: 1 inside its [start,end] band, smoothly 0 outside. A

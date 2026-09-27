@@ -7,8 +7,10 @@
 
 namespace fitzel {
 
-RenderTarget::RenderTarget(int width, int height, Format format, bool depthAsTexture)
+RenderTarget::RenderTarget(int width, int height, Format format, bool depthAsTexture,
+                           bool stencil)
     : m_width(width), m_height(height) {
+    m_stencil = depthAsTexture && stencil;
     const bool hdr = (format == Format::RGBA16F);
     const GLint  internalFormat = hdr ? GL_RGBA16F : GL_RGBA8;
     const GLenum pixelType      = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
@@ -33,13 +35,18 @@ RenderTarget::RenderTarget(int width, int height, Format format, bool depthAsTex
         // 32-bit float depth: 24-bit fixed-point quantises badly at distance under
         // a far plane that grows with the view distance, which terraces SSAO into
         // horizontal stripes on grazing terrain. 32F keeps the reconstruction clean.
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
-                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        if (m_stencil)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH32F_STENCIL8, width, height, 0,
+                         GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, nullptr);
+        else
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, width, height, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+        glFramebufferTexture2D(GL_FRAMEBUFFER,
+                               m_stencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
                                GL_TEXTURE_2D, m_depthTex, 0);
     } else {
         glGenRenderbuffers(1, &m_depthRbo);
@@ -67,6 +74,7 @@ RenderTarget::RenderTarget(RenderTarget&& o) noexcept
       m_colorTex(std::exchange(o.m_colorTex, 0)),
       m_depthRbo(std::exchange(o.m_depthRbo, 0)),
       m_depthTex(std::exchange(o.m_depthTex, 0)),
+      m_stencil(std::exchange(o.m_stencil, false)),
       m_width(std::exchange(o.m_width, 0)),
       m_height(std::exchange(o.m_height, 0)) {}
 
@@ -80,6 +88,7 @@ RenderTarget& RenderTarget::operator=(RenderTarget&& o) noexcept {
         m_colorTex = std::exchange(o.m_colorTex, 0);
         m_depthRbo = std::exchange(o.m_depthRbo, 0);
         m_depthTex = std::exchange(o.m_depthTex, 0);
+        m_stencil  = std::exchange(o.m_stencil, false);
         m_width    = std::exchange(o.m_width, 0);
         m_height   = std::exchange(o.m_height, 0);
     }

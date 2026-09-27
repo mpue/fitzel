@@ -372,21 +372,29 @@ void PostChain::run(const fitzel::RenderTarget& hdr, const Params& p,
 void PostChain::keepHistory(const fitzel::RenderTarget& hdr,
                             const fitzel::RenderTarget* scene) {
     if (!m_prevDepthFbo) glGenFramebuffers(1, &m_prevDepthFbo);
-    if (!m_prevDepthTex || m_prevDepthW != m_w || m_prevDepthH != m_h) {
+    if (!m_prevDepthTex || m_prevDepthW != m_w || m_prevDepthH != m_h ||
+        m_prevDepthStencil != hdr.hasStencil()) {
         if (!m_prevDepthTex) glGenTextures(1, &m_prevDepthTex);
         glBindTexture(GL_TEXTURE_2D, m_prevDepthTex);
         // The same format as the HDR target's depth: a depth blit converts
         // nothing, and refuses to try.
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, m_w, m_h, 0,
-                     GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+        m_prevDepthStencil = hdr.hasStencil();
+        if (m_prevDepthStencil)
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH32F_STENCIL8, m_w, m_h, 0,
+                         GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, nullptr);
+        else
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, m_w, m_h, 0,
+                         GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glBindTexture(GL_TEXTURE_2D, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, m_prevDepthFbo);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D,
-                               m_prevDepthTex, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, 0, 0);
+        glFramebufferTexture2D(GL_FRAMEBUFFER,
+                               m_prevDepthStencil ? GL_DEPTH_STENCIL_ATTACHMENT : GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D, m_prevDepthTex, 0);
         glDrawBuffer(GL_NONE);
         glReadBuffer(GL_NONE);
         m_prevDepthW = m_w;
@@ -464,7 +472,8 @@ void PostChain::readBackMeter(const Params& p) {
     glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
 }
 
-void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen) {
+void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen,
+                        bool upscale) {
     if (!m_result) return;   // run() has not produced anything yet
     m_fxaa.bind();
     m_result->bindColorTexture(0);
@@ -473,6 +482,7 @@ void PostChain::present(fitzel::Mesh& fsQuad, bool fxaaEnabled, float sharpen) {
     // The source is one pane, not the window.
     m_fxaa.setVec2("uTexel", {1.0f / m_w, 1.0f / m_h});
     m_fxaa.setInt("uEnabled", fxaaEnabled ? 1 : 0);
+    m_fxaa.setInt("uUpscale", upscale ? 1 : 0);
     fsQuad.draw();
     glDepthMask(GL_TRUE);
     glEnable(GL_DEPTH_TEST);

@@ -166,7 +166,13 @@ vec3 applyAir(vec3 color, vec3 p, vec3 eye, vec3 L) {
 vec3 lin(vec3 srgb) { return pow(srgb, vec3(2.2)); }
 
 void main() {
+    // Only the mirror pass (FarTerrain::draw, mirror) is built with this: a
+    // discard anywhere in a shader turns the GPU's early depth and stencil
+    // rejection off, and the main pass relies on it to shade only the sky the
+    // near scene left over.
+#ifdef CUT_HOLE
     if (uCutHole == 1 && vSunk > 0.01) discard;
+#endif
     vec3  P    = vWorldPos;
     vec2  xz   = P.xz;
     vec3  L    = normalize(uLightDir);

@@ -48,6 +48,7 @@ struct Settings {
     int motionBlur   = 2;  // off, half, full
     int aa           = 2;  // off, FXAA, TAA
     int vsync        = 1;  // off, on
+    int renderScale  = 0;  // 100 %, 90 %, 80 %, 70 % of the screen's pixels, each way
 
     bool operator==(const Settings& o) const;
     bool operator!=(const Settings& o) const { return !(*this == o); }
@@ -89,6 +90,9 @@ struct Targets {
     std::function<void()> regrowVegetation;
     // VSync is the window's, not the renderer's.
     std::function<void(bool)> setVSync;
+    // The share of the screen's width and height the 3D scene is drawn at
+    // (1 = full), stretched back up for the finished image. Play only.
+    float* renderScale = nullptr;
 };
 
 // Push the settings onto the world. Safe to call every frame (it is a handful of

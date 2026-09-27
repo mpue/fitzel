@@ -30,6 +30,7 @@ const char* kCityOpts[]    = {"Near", "Balanced", "Far", nullptr};
 const char* kOffOn[]       = {"Off", "On", nullptr};
 const char* kBlurOpts[]    = {"Off", "Subtle", "Full", nullptr};
 const char* kAaOpts[]      = {"Off", "FXAA", "TAA", nullptr};
+const char* kScaleOpts[]   = {"100 %", "90 %", "80 %", "70 %", nullptr};
 
 struct Row {
     const char* label;
@@ -103,6 +104,13 @@ const Row kRows[] = {
      "FXAA: one cheap pass. TAA: two, plus a pass for whatever moved --\n"
      "still cheap, and not offered in split screen."},
 
+    {"Render scale", &Settings::renderScale, kScaleOpts,
+     "Draws the 3D world at a share of the screen's resolution and stretches\n"
+     "it back up, sharpened, for the finished image. 90 % is hard to tell\n"
+     "apart on a large screen; the editor's viewport always draws in full.",
+     "Nearly every pass is paid per pixel: at 80 % a frame draws 64 % of\n"
+     "them. The row to reach for when a big screen is the problem."},
+
     {"V-Sync", &Settings::vsync, kOffOn,
      "Hands each finished frame to the screen on its own refresh. On removes\n"
      "tearing; off lets the frame rate run past the refresh rate.",
@@ -124,11 +132,11 @@ int optionCount(const char* const* opts) {
 // and throws away shadows (four passes over the scene) even though "quality"
 // would rank them the other way round.
 const Settings kPresets[4] = {
-    // preset, view, shadow, refl, rate, veg, city, ao, bloom, dof, mb, aa, vsync
-    {0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1},   // Low
-    {1, 2, 1, 1, 1, 2, 1, 1, 1, 0, 1, 2, 1},   // Medium
-    {2, 3, 2, 2, 2, 3, 1, 1, 1, 1, 2, 2, 1},   // High
-    {3, 5, 3, 3, 3, 3, 2, 1, 1, 1, 2, 2, 1},   // Ultra
+    // preset, view, shadow, refl, rate, veg, city, ao, bloom, dof, mb, aa, vsync, scale
+    {0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1, 2},   // Low
+    {1, 2, 1, 1, 1, 2, 1, 1, 1, 0, 1, 2, 1, 0},   // Medium
+    {2, 3, 2, 2, 2, 3, 1, 1, 1, 1, 2, 2, 1, 0},   // High
+    {3, 5, 3, 3, 3, 3, 2, 1, 1, 1, 2, 2, 1, 0},   // Ultra
 };
 const char* kPresetNames[] = {"Low", "Medium", "High", "Ultra"};
 constexpr int kCustom = 4;
@@ -138,6 +146,7 @@ const int   kViewRadius[]   = {2, 3, 4, 5, 6, 7, 8, 9};
 const int   kShadowRes[]    = {1024, 1024, 2048, 4096};  // [0] unused: shadows off
 const int   kProbeRes[]     = {128, 128, 256, 512, 1024}; // [0] unused: probe off
 const int   kProbeFaces[]   = {1, 2, 3, 6};
+const float kRenderScale[]  = {1.0f, 0.9f, 0.8f, 0.7f};
 const float kGrassDensity[] = {0.0f, 0.55f, 1.0f, 1.6f};
 const float kGrassRadius[]  = {20.0f, 30.0f, 46.0f, 68.0f};
 const float kCityMinPx[]    = {16.0f, 7.0f, 2.5f};
@@ -294,7 +303,8 @@ bool Settings::operator==(const Settings& o) const {
            reflections == o.reflections && reflectRate == o.reflectRate &&
            vegetation == o.vegetation && cityDetail == o.cityDetail &&
            ao == o.ao && bloom == o.bloom && dof == o.dof &&
-           motionBlur == o.motionBlur && aa == o.aa && vsync == o.vsync;
+           motionBlur == o.motionBlur && aa == o.aa && vsync == o.vsync &&
+           renderScale == o.renderScale;
 }
 
 void applyPreset(Settings& s, int preset) {
@@ -336,6 +346,7 @@ Settings load(const std::string& file) {
     else if (j.contains("aa"))
         s.aa = (j.value("aa", 1) == 0) ? 0 : 2;
     s.vsync        = get("vsync",        s.vsync,        kOffOn);
+    s.renderScale  = get("renderScale",  s.renderScale,  kScaleOpts);
     refreshPresetLabel(s);
     return s;
 }
@@ -348,6 +359,7 @@ void save(const std::string& file, const Settings& s) {
         {"ao", s.ao},                     {"bloom", s.bloom},
         {"dof", s.dof},                   {"motionBlur", s.motionBlur},
         {"antiAliasing", s.aa},           {"vsync", s.vsync},
+        {"renderScale", s.renderScale},
     };
     std::ofstream f(file);
     if (f) f << j.dump(2) << '\n';
@@ -397,6 +409,7 @@ void apply(const Settings& s, const Settings& prev, fitzel::Renderer& renderer,
     if (t.cityMinPixels) *t.cityMinPixels = kCityMinPx[std::clamp(s.cityDetail, 0, 2)];
 
     if (t.setVSync && (force || prev.vsync != s.vsync)) t.setVSync(s.vsync > 0);
+    if (t.renderScale) *t.renderScale = kRenderScale[std::clamp(s.renderScale, 0, 3)];
 }
 
 PostGate gatePost(const Settings& s, float ssaoStrength, float bloomIntensity,

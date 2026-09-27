@@ -320,6 +320,10 @@ public:
     // Frustum-culling stats from the most recent renderScene() call.
     int lastDrawn()  const { return m_lastDrawn; }
     int lastCulled() const { return m_lastCulled; }
+    std::size_t queueSize() const { return m_queue.size(); }
+    // The face culling the sun's cascades are drawn with (a GL enum): what a
+    // caster drawn from outside the renderer restores after changing it.
+    unsigned cascadeCullFace() const { return m_cascadeCull; }
 
     // What the cascade pass replayed, summed over every cascade of the most
     // recent prepareShadows(). The number that matters is the TRIANGLES: a
@@ -410,14 +414,16 @@ private:
 
     // The opaque scene, copied out of whatever target is bound just before the
     // transparent pass; 0 until some frame has a refracting surface in it.
-    // One texture per target size, kept: the main view, an env-probe face and
-    // the water pass each copy at their own size, and a single texture
-    // re-allocated between them (40 MB of RGBA16F at 3440x1440, while frames
-    // still queued on the GPU sample it) stalled the CPU for a whole
-    // GPU-queue's worth of frames -- every sixth frame, whenever the probe
-    // face with a bus shelter in it came round.
+    // Textures kept per target size, and several of each, used in turn: the
+    // main view, an env-probe face and the water passes each copy at their own
+    // size, and a copy INTO a texture that draws still queued on the GPU sample
+    // makes the driver wait for them. One texture re-allocated between sizes
+    // stalled every sixth frame (the probe face with a bus shelter in it); one
+    // per size still cost 12 ms of CPU a frame, the water's reflection and
+    // refraction copying into the same one back to back.
+    static constexpr int kCopiesPerSize = 3;
     struct SceneCopy { std::uint32_t tex = 0; int w = 0, h = 0; std::uint64_t used = 0; };
-    std::array<SceneCopy, 3> m_sceneCopies{};
+    std::array<SceneCopy, 9> m_sceneCopies{};
     std::uint64_t     m_sceneCopyUses  = 0;
     std::uint32_t     m_sceneCopy      = 0;   // the one this pass copied into
     int               m_sceneCopyW     = 0, m_sceneCopyH = 0;
@@ -461,6 +467,7 @@ private:
     // the viewpoint's speed without the renderer having to be told a delta time.
     glm::vec3         m_envLastPos{0.0f};
     bool              m_envHasLast = false;
+    std::uint64_t     m_envCalls   = 0;   // prepareEnvProbe calls, for the standing-still cadence
     bool              m_envPrimed = false;
     CubeRenderTarget* m_envRead  = &m_envA;
     CubeRenderTarget* m_envWrite = &m_envB;
@@ -488,6 +495,7 @@ private:
     float            m_exposure = 1.0f;
     int              m_vpWidth   = 1;
     int              m_vpHeight  = 1;
+    unsigned         m_cascadeCull = 0x0405;   // GL_BACK
     int              m_lastDrawn  = 0;
     int              m_lastCulled = 0;
 };

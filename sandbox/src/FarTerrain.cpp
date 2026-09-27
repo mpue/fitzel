@@ -1,5 +1,7 @@
 #include "FarTerrain.hpp"
 
+#include <string>
+
 #include <cmath>
 #include <cstdio>
 
@@ -48,7 +50,14 @@ FarTerrain::~FarTerrain() {
 bool FarTerrain::init() {
     m_shader = fitzel::Shader::fromFiles("assets/shaders/farterrain.vert",
                                          "assets/shaders/farterrain.frag");
-    if (!m_shader.isValid()) {
+    {
+        std::string frag = fitzel::Shader::readSource("assets/shaders/farterrain.frag");
+        const std::size_t eol = frag.find('\n');
+        frag.insert(eol == std::string::npos ? frag.size() : eol + 1, "#define CUT_HOLE\n");
+        m_mirrorShader = fitzel::Shader::fromSource(
+            fitzel::Shader::readSource("assets/shaders/farterrain.vert"), frag);
+    }
+    if (!m_shader.isValid() || !m_mirrorShader.isValid()) {
         std::fprintf(stderr, "Failed to load farterrain shader\n");
         return false;
     }
@@ -207,37 +216,40 @@ void FarTerrain::update(const glm::vec3& eye, const fitzel::TerrainSettings& set
 void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
                       const glm::mat4& proj, bool mirror) {
     if (!ready()) return;
-    const GLboolean cull = glIsEnabled(GL_CULL_FACE);
+    // The caller's cull state comes back as GL_CULL_FACE on: every pass that
+    // draws this culls. (No glIsEnabled: a state query stalls on everything
+    // queued under the driver's threaded optimisation.)
     glDisable(GL_CULL_FACE);        // a mirrored view flips winding; a grid has no back
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
     glDepthFunc(GL_LESS);
 
-    m_shader.bind();
-    m_shader.setMat4("uViewProj", proj * view);
-    m_shader.setVec3("uCamPos", ctx.camPos);
-    m_shader.setVec3("uLightDir", ctx.lightDir);
-    m_shader.setVec3("uLightColor", ctx.lightColor);
-    m_shader.setVec3("uAmbient", ctx.ambient);
-    m_shader.setVec3("uFogColor", ctx.fogColor);
-    m_shader.setVec3("uFogSunColor", ctx.fogSunColor);
-    m_shader.setFloat("uFogDensity", ctx.fogDensity);
-    m_shader.setFloat("uFogHeightFalloff", ctx.fogHeightFalloff);
-    m_shader.setFloat("uFogHeight", ctx.fogHeight);
-    m_shader.setFloat("uTime", static_cast<float>(ctx.time));
-    m_shader.setFloat("uSnowLevel", snowLevel);
-    m_shader.setFloat("uTreeLine", treeLine);
-    m_shader.setFloat("uWaterLevel", waterLevel);
-    m_shader.setVec3("uGrassTint", grassTint);
-    m_shader.setVec3("uCanopy", canopy);
-    applyCloudShadow(m_shader);
+    const fitzel::Shader& sh = mirror ? m_mirrorShader : m_shader;
+    sh.bind();
+    sh.setMat4("uViewProj", proj * view);
+    sh.setVec3("uCamPos", ctx.camPos);
+    sh.setVec3("uLightDir", ctx.lightDir);
+    sh.setVec3("uLightColor", ctx.lightColor);
+    sh.setVec3("uAmbient", ctx.ambient);
+    sh.setVec3("uFogColor", ctx.fogColor);
+    sh.setVec3("uFogSunColor", ctx.fogSunColor);
+    sh.setFloat("uFogDensity", ctx.fogDensity);
+    sh.setFloat("uFogHeightFalloff", ctx.fogHeightFalloff);
+    sh.setFloat("uFogHeight", ctx.fogHeight);
+    sh.setFloat("uTime", static_cast<float>(ctx.time));
+    sh.setFloat("uSnowLevel", snowLevel);
+    sh.setFloat("uTreeLine", treeLine);
+    sh.setFloat("uWaterLevel", waterLevel);
+    sh.setVec3("uGrassTint", grassTint);
+    sh.setVec3("uCanopy", canopy);
+    applyCloudShadow(sh);
     ecology::forEachUniform(
-        eco, [&](const char* n, int v) { m_shader.setInt(n, v); },
-        [&](const char* n, float v) { m_shader.setFloat(n, v); });
-    m_shader.setInt("uCutHole", mirror ? 1 : 0);
-    m_shader.setFloat("uGrid", static_cast<float>(kGrid));
-    m_shader.setInt("uHeight", 0);
-    m_shader.setInt("uCoarse", 1);
+        eco, [&](const char* n, int v) { sh.setInt(n, v); },
+        [&](const char* n, float v) { sh.setFloat(n, v); });
+    sh.setInt("uCutHole", mirror ? 1 : 0);
+    sh.setFloat("uGrid", static_cast<float>(kGrid));
+    sh.setInt("uHeight", 0);
+    sh.setInt("uCoarse", 1);
 
     glBindVertexArray(m_vao);
     // Finest first: where two rings overlap at their seam the finer one is
@@ -264,13 +276,13 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
         glBindTexture(GL_TEXTURE_2D, l.tex);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, c.valid ? c.tex : l.tex);
-        m_shader.setVec2("uOrigin", l.origin);
-        m_shader.setFloat("uSize", l.size());
-        m_shader.setVec2("uCoarseOrigin", c.valid ? c.origin : l.origin);
-        m_shader.setFloat("uCoarseSize", c.valid ? c.size() : l.size());
-        m_shader.setVec4("uHole", (hmax.x > hmin.x) ? hole : glm::vec4(1e9f, 1e9f, -1e9f, -1e9f));
-        m_shader.setFloat("uSink", 40.0f + l.cell * 4.0f);
-        m_shader.setFloat("uCell", l.cell);
+        sh.setVec2("uOrigin", l.origin);
+        sh.setFloat("uSize", l.size());
+        sh.setVec2("uCoarseOrigin", c.valid ? c.origin : l.origin);
+        sh.setFloat("uCoarseSize", c.valid ? c.size() : l.size());
+        sh.setVec4("uHole", (hmax.x > hmin.x) ? hole : glm::vec4(1e9f, 1e9f, -1e9f, -1e9f));
+        sh.setFloat("uSink", 40.0f + l.cell * 4.0f);
+        sh.setFloat("uCell", l.cell);
         glPolygonOffset(1.0f, static_cast<float>(i) * 8.0f);
         glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, nullptr);
     }
@@ -280,7 +292,7 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     glBindTexture(GL_TEXTURE_2D, 0);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, 0);
-    if (cull) glEnable(GL_CULL_FACE);
+    glEnable(GL_CULL_FACE);
 }
 
 void FarTerrain::renderSunShadow(const glm::vec3& sunDir, const glm::vec3& eye,

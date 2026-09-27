@@ -42,12 +42,12 @@ void CloudShadow::render(const Params& p, const std::function<void()>& drawQuad)
     const glm::vec2 origin(std::floor((p.eye.x - kSize * 0.5f) / texel) * texel,
                            std::floor((p.eye.z - kSize * 0.5f) / texel) * texel);
 
-    GLint prevFbo = 0, vp[4];
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
-    glGetIntegerv(GL_VIEWPORT, vp);
-    const GLboolean depth = glIsEnabled(GL_DEPTH_TEST);
-    const GLboolean blend = glIsEnabled(GL_BLEND);
-    const GLboolean cull  = glIsEnabled(GL_CULL_FACE);
+    // Nothing read back from GL: a glGet waits for everything queued so far
+    // under the driver's threaded optimisation, and this runs at the top of
+    // every frame. It leaves the frame's convention behind instead -- the
+    // default framebuffer, depth test on, blending off, back faces culled --
+    // and whatever draws next binds its own target and viewport (the shadow
+    // cascades, here).
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
     glViewport(0, 0, kRes, kRes);
     glDisable(GL_DEPTH_TEST);
@@ -70,11 +70,9 @@ void CloudShadow::render(const Params& p, const std::function<void()>& drawQuad)
     drawQuad();
 
     glDepthMask(GL_TRUE);
-    if (depth) glEnable(GL_DEPTH_TEST);
-    if (blend) glEnable(GL_BLEND);
-    if (cull)  glEnable(GL_CULL_FACE);
-    glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prevFbo));
-    glViewport(vp[0], vp[1], vp[2], vp[3]);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_CULL_FACE);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Left on its own unit for the whole frame: nothing else binds 31.
     glActiveTexture(GL_TEXTURE0 + kUnit);

@@ -1,4 +1,5 @@
 #include "RaceSim.hpp"
+#include "VehicleRig.hpp"
 
 #include "SoundList.hpp"
 
@@ -376,10 +377,9 @@ void updateArcadeCar(RaceState& st, const RaceEnv& env) {
             Entity*       w    = env.document.find(dvc->wheelId[i]);
             const Entity* rest = restOf(dvc->wheelId[i]);
             if (!w || !rest) continue;
-            glm::vec3 rot = rest->localRotation;
-            rot.x += glm::degrees(rSpin) * spinSign;
-            if (i < 2) rot.y += glm::degrees(rSteer); // fronts steer
-            w->localRotation = rot;
+            w->localRotation = vehiclerig::wheelLocalRotation(
+                rest->localRotation, dvc->wheelTurn[i], rSpin * spinSign,
+                i < 2 ? rSteer : 0.0f);   // fronts steer
         }
     }
 

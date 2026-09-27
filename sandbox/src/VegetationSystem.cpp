@@ -1347,7 +1347,8 @@ int VegetationSystem::cullInstances(const TreeSpecies& sp, float boundR,
 
 void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
                                       float weather, glm::vec2 camXZ,
-                                      float maxDist, float minDist, bool coarse) {
+                                      float maxDist, float minDist, bool coarse,
+                                      unsigned cascadeCull) {
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     const float shadowDistance = maxDist > 0.0f ? maxDist : 1e9f;
     // Backfaces are dropped here even though the lit pass keeps them. A leaf
@@ -1361,9 +1362,9 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     // whoever ran last (the point-shadow pass leaves GL_FRONT behind). Leaving
     // ours set would change how the terrain self-shadows -- an acne bug two
     // files away from anything about trees.
-    const GLboolean prevCull = glIsEnabled(GL_CULL_FACE);
-    GLint prevFace = GL_BACK;
-    glGetIntegerv(GL_CULL_FACE_MODE, &prevFace);
+    // (The pass's own state comes in as `cascadeCull` -- see
+    // Renderer::cascadeCullFace -- rather than read back with glGet, which waits
+    // for everything queued so far under the driver's threaded optimisation.)
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     m_treeDepth.bind();
@@ -1428,8 +1429,7 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
         drawImpostorShadows(lightSpace, camXZ,
                             std::min(shadowDistance, impostorStart + 20.0f));
     glBindVertexArray(0);
-    glCullFace(prevFace);
-    if (!prevCull) glDisable(GL_CULL_FACE);
+    glCullFace(static_cast<GLenum>(cascadeCull));
 }
 
 void VegetationSystem::drawTrees(const FrameContext& c) {
@@ -1539,8 +1539,10 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
     m_prevWindTime = wind.time;
     if (!terrainPresent || !treeEnabled || treeCount == 0 || !m_treeMotion.isValid()) return;
     // Depth-tested against the finished opaque scene, like Renderer::renderMotion.
-    GLint prevFunc = GL_LESS;
-    glGetIntegerv(GL_DEPTH_FUNC, &prevFunc);
+    // Restored to the frame's convention (GL_LESS) rather than read back: a glGet
+    // waits for everything queued so far under the driver's threaded
+    // optimisation, and one in the middle of a frame kept the CPU from ever
+    // getting ahead of the GPU.
     glEnable(GL_DEPTH_TEST);
     glDepthFunc(GL_LEQUAL);
     glDepthMask(GL_FALSE);
@@ -1577,7 +1579,13 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
         const int nl = static_cast<int>(sp.lods.size());
         const bool useMid = (nl == 1) && sp.mid.valid();
         const bool imp = eco.enabled && m_impostor.isValid() && sp.impAlbedo != 0;
-        const float farEnd = imp ? impostorStart : (sp.bbEnabled ? sp.bbStart : 1e9f);
+        // Only the near crowns: past a few dozen metres a leaf's sway is a pixel
+        // or two, which the camera's own motion (reprojected from depth) and
+        // TAA's clamp cover -- and redrawing every tree out to the impostors a
+        // second time, for vectors nobody could see, was a tenth of the frame.
+        constexpr float kMotionReach = 60.0f;
+        const float farEnd = std::min(imp ? impostorStart : (sp.bbEnabled ? sp.bbStart : 1e9f),
+                                      kMotionReach);
         for (int k = 0; k < nl; ++k) {
             const TreeLOD& lod = sp.lods[k];
             const float lo = (k == 0) ? 0.0f : sp.lods[k - 1].dist;
@@ -1612,7 +1620,7 @@ void VegetationSystem::drawTreeMotion(const glm::mat4& viewProj, const glm::mat4
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
     glDepthMask(GL_TRUE);
-    glDepthFunc(static_cast<GLenum>(prevFunc));
+    glDepthFunc(GL_LESS);
 }
 
 void VegetationSystem::drawTreeBillboards(const FrameContext& c,

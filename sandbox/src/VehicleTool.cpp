@@ -135,6 +135,51 @@ void inspector(VehicleComponent& vc, Entity& root, Document& doc) {
         }
     }
 
+    // Wheel orientation: a wheel modelled facing some other way than its spin
+    // expects (rim inward, axle along the car) is put right here, in quarter
+    // turns about the car's axes -- buttons, not a drag, and best while
+    // driving: the change shows at once and is kept when Play stops.
+    ui::sectionText("Wheel orientation");
+    ImGui::TextDisabled("Turn a wheel that looks wrong while driving.\n"
+                        "Works in Play; kept when you stop.");
+    static const char* shortLabels[4] = {"FL", "FR", "RL", "RR"};
+    const float bw = ImGui::GetFontSize() * 4.2f;
+    for (int i = 0; i < 4; ++i) {
+        ImGui::PushID(1000 + i);
+        glm::vec3& t = vc.wheelTurn[i];
+        auto quarter = [](float& a, float by) {
+            a = std::fmod(a + by + 360.0f, 360.0f);
+            if (a > 180.0f) a -= 360.0f;
+        };
+        ImGui::AlignTextToFramePadding();
+        ImGui::Text("%s", shortLabels[i]);
+        ImGui::SameLine(ImGui::GetFontSize() * 2.2f);
+        if (ImGui::Button("Flip", ImVec2(bw, 0.0f))) quarter(t.y, 180.0f);
+        ImGui::SetItemTooltip("Half a turn about the vertical: the rim to the other side.");
+        ImGui::SameLine();
+        if (ImGui::Button("Up 90", ImVec2(bw, 0.0f))) quarter(t.y, 90.0f);
+        ImGui::SetItemTooltip("A quarter turn about the vertical.");
+        ImGui::SameLine();
+        if (ImGui::Button("Along 90", ImVec2(bw, 0.0f))) quarter(t.z, 90.0f);
+        ImGui::SetItemTooltip("A quarter turn about the car's length (the wheel lies down).");
+        ImGui::SameLine();
+        if (ImGui::Button("Axle 90", ImVec2(bw, 0.0f))) quarter(t.x, 90.0f);
+        ImGui::SetItemTooltip("A quarter turn about the axle (the tread pattern, the valve).");
+        ImGui::SameLine();
+        ImGui::BeginDisabled(t == glm::vec3(0.0f));
+        if (ImGui::Button("Reset", ImVec2(bw, 0.0f))) t = glm::vec3(0.0f);
+        ImGui::EndDisabled();
+        if (t != glm::vec3(0.0f)) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("%.0f / %.0f / %.0f", t.x, t.y, t.z);
+        }
+        ImGui::PopID();
+    }
+    if (ImGui::Button("Copy front left to all")) {
+        const glm::vec3 fl = vc.wheelTurn[0];
+        for (int i = 1; i < 4; ++i) vc.wheelTurn[i] = fl;
+    }
+
     static std::string lastDetect; // report of the last re-detect run
     if (ImGui::Button("Detect wheels & geometry"))
         lastDetect = autoSetup(doc, root.id);

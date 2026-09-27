@@ -12,9 +12,11 @@ public:
     enum class Format { RGBA8, RGBA16F };
 
     // `depthAsTexture` attaches a sampleable depth texture (for SSAO etc.)
-    // instead of a write-only depth renderbuffer.
+    // instead of a write-only depth renderbuffer; `stencil` gives that texture
+    // an 8-bit stencil too (DEPTH32F_STENCIL8, still sampled as depth).
     RenderTarget(int width, int height, Format format = Format::RGBA8,
-                 bool depthAsTexture = false);
+                 bool depthAsTexture = false, bool stencil = false);
+    bool hasStencil() const { return m_stencil; }
     ~RenderTarget();
 
     RenderTarget(const RenderTarget&)            = delete;
@@ -47,6 +49,7 @@ private:
     std::uint32_t m_colorTex  = 0;
     std::uint32_t m_depthRbo  = 0;
     std::uint32_t m_depthTex  = 0;
+    bool          m_stencil = false;
     int           m_width     = 0;
     int           m_height    = 0;
 };

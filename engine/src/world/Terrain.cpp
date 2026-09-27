@@ -798,26 +798,78 @@ MeshData TerrainChunk::buildMeshData(const TerrainSettings& s, glm::ivec2 coord)
         }
     }
 
-    data.indices.reserve(static_cast<std::size_t>(s.resolution) * s.resolution * 6);
-    for (int z = 0; z < verts - 1; ++z) {
-        for (int x = 0; x < verts - 1; ++x) {
-            const std::uint32_t i0 = static_cast<std::uint32_t>(z * verts + x);
-            const std::uint32_t i1 = i0 + 1;
-            const std::uint32_t i2 = i0 + verts;
-            const std::uint32_t i3 = i2 + 1;
-            data.indices.insert(data.indices.end(),
-                                {i0, i2, i1, i1, i2, i3});
-        }
-    }
+    // Skirts: every edge vertex again, a few metres lower, after the grid. A
+    // chunk drawn coarser than its neighbour (see chunkLodIndices) does not
+    // share the finer one's edge vertices, and the two edges part by up to a
+    // cell's worth of slope; each chunk's skirt hangs from its own edge, so the
+    // slit between them always shows ground, never the sky under the world.
+    constexpr float kSkirt = 8.0f;
+    const int grid = static_cast<int>(data.vertices.size());
+    auto skirtOf = [&](int x, int z) {
+        Vertex v = data.vertices[static_cast<std::size_t>(z * verts + x)];
+        v.position.y -= kSkirt;
+        data.vertices.push_back(v);
+    };
+    for (int x = 0; x < verts; ++x) skirtOf(x, 0);           // z = 0 edge
+    for (int x = 0; x < verts; ++x) skirtOf(x, verts - 1);   // z = n edge
+    for (int z = 0; z < verts; ++z) skirtOf(0, z);           // x = 0 edge
+    for (int z = 0; z < verts; ++z) skirtOf(verts - 1, z);   // x = n edge
+    (void)grid;
 
+    data.indices = chunkLodIndices(s.resolution, 1);
     return data;
+}
+
+std::vector<std::uint32_t> chunkLodIndices(int n, int stride) {
+    std::vector<std::uint32_t> ix;
+    const int verts = n + 1;
+    const int s = std::max(1, stride);
+    ix.reserve(static_cast<std::size_t>(n / s) * (n / s) * 6 + static_cast<std::size_t>(n / s) * 48);
+    auto at = [&](int x, int z) { return static_cast<std::uint32_t>(z * verts + x); };
+    for (int z = 0; z + s <= n; z += s)
+        for (int x = 0; x + s <= n; x += s) {
+            const std::uint32_t i0 = at(x, z), i1 = at(x + s, z);
+            const std::uint32_t i2 = at(x, z + s), i3 = at(x + s, z + s);
+            ix.insert(ix.end(), {i0, i2, i1, i1, i2, i3});
+        }
+    // The skirts, both windings (they are seen from whichever side the slit
+    // opens to, and are never large enough for the doubled cost to matter).
+    const std::uint32_t base = static_cast<std::uint32_t>(verts * verts);
+    auto skirt = [&](std::uint32_t side, int i) { return base + side * static_cast<std::uint32_t>(verts) + static_cast<std::uint32_t>(i); };
+    auto wall = [&](std::uint32_t a, std::uint32_t b, std::uint32_t la, std::uint32_t lb) {
+        ix.insert(ix.end(), {a, la, b, b, la, lb, a, b, la, b, lb, la});
+    };
+    for (int i = 0; i + s <= n; i += s) {
+        wall(at(i, 0), at(i + s, 0), skirt(0, i), skirt(0, i + s));
+        wall(at(i, n), at(i + s, n), skirt(1, i), skirt(1, i + s));
+        wall(at(0, i), at(0, i + s), skirt(2, i), skirt(2, i + s));
+        wall(at(n, i), at(n, i + s), skirt(3, i), skirt(3, i + s));
+    }
+    return ix;
 }
 
 TerrainChunk TerrainChunk::fromData(glm::ivec2 coord, const MeshData& data) {
     TerrainChunk chunk;
     chunk.m_coord = coord;
     chunk.m_mesh  = Mesh::create(data);
+    // The grid's side, back out of the vertex count: (n+1)^2 grid vertices and
+    // four skirts of n+1 each, (n+1)(n+5) in all.
+    const double v = static_cast<double>(data.vertices.size());
+    const int n = static_cast<int>(std::lround((-6.0 + std::sqrt(36.0 - 4.0 * (5.0 - v))) / 2.0));
+    if (n >= 4 && static_cast<std::size_t>(n + 1) * (n + 5) == data.vertices.size()) {
+        for (int k = 0; k < kCoarseLods; ++k) {
+            const int stride = 2 << k;   // 2, 4
+            if (n % stride == 0)
+                chunk.m_lod[k] = Mesh::createView(chunk.m_mesh, chunkLodIndices(n, stride));
+        }
+    }
     return chunk;
+}
+
+const Mesh& TerrainChunk::mesh(int lod) const {
+    for (int k = std::min(lod, kCoarseLods) - 1; k >= 0; --k)
+        if (m_lod[k].indexCount() > 0) return m_lod[k];
+    return m_mesh;
 }
 
 TerrainChunk TerrainChunk::generate(const TerrainSettings& s, glm::ivec2 coord) {

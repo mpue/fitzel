@@ -60,6 +60,7 @@
 #include "VideoLibrary.hpp"
 #include "GpuTimer.hpp"
 #include "Profiler.hpp"
+#include "OcclusionGate.hpp"
 #include "DebugOverlay.hpp"
 #include "SandboxMath.hpp"
 #include "AnimGraph.hpp"
@@ -1476,6 +1477,9 @@ int main(int argc, char** argv) {
         // Half-resolution reflection/refraction: the water distortion hides it
         // and it roughly quarters the cost of those two textured passes.
         RenderTarget reflectRT(640, 360);
+        // Whether the lake drew a pixel lately: its reflection and refraction
+        // are rendered only then (see OcclusionGate.hpp).
+        OcclusionGate waterGate;
         RenderTarget refractRT(640, 360, RenderTarget::Format::RGBA8, /*depthTex=*/true);
 
         float     waterLevel   = -2.0f;
@@ -1490,6 +1494,14 @@ int main(int argc, char** argv) {
         float     waterIor          = 1.33f; // index of refraction (drives Fresnel + bend)
 
         Mesh fsQuad = makeFullscreenQuad();
+        // Puts the depth back to "nothing here" (1.0) wherever the stencil test
+        // lets it through -- the far terrain's own depth, once it is drawn.
+        Shader depthToFar = Shader::fromSource(
+            "#version 330 core\n"
+            "layout(location = 0) in vec3 aPos;\n"
+            "void main() { gl_Position = vec4(aPos.xy, 1.0, 1.0); }\n",
+            "#version 330 core\n"
+            "void main() {}\n");
         HalfResSky halfSky;   // the main view's sky at reduced resolution (see HalfResSky.hpp)
         halfSky.init();
 
@@ -1512,7 +1524,10 @@ int main(int argc, char** argv) {
         std::vector<VolumetricFog::Volume> volFogVolumes;
         int hdrW = 0, hdrH = 0;
         window.framebufferSize(hdrW, hdrH);
-        RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F, /*depthTex=*/true);
+        // With a stencil: the near scene marks what it covered, so the far
+        // terrain drawn after it shades only what is left (see the main pass).
+        RenderTarget hdrRT(hdrW, hdrH, RenderTarget::Format::RGBA16F, /*depthTex=*/true,
+                           /*stencil=*/true);
         // The post chain's knobs stay HERE, not on the chain: they are edited by
         // the Sky & atmosphere and Colour grade panels, saved with the project,
         // and driven by the weather -- all of which is main's business. The chain
@@ -2024,6 +2039,7 @@ int main(int argc, char** argv) {
         // which of the expensive follow-ups (re-seeding the grass, the swap
         // interval) actually have to run -- and passing the settings that are
         // already in force means "force the lot", which is what startup wants.
+        float renderScale = 1.0f;   // the Graphics menu's render scale (Play only)
         auto applyGfx = [&](const gfxmenu::Settings& prev) {
             gfxmenu::Targets t;
             t.viewRadius    = &viewRadius;
@@ -2038,7 +2054,19 @@ int main(int argc, char** argv) {
             t.flowerDensity = &veg.flowerDensity;
             t.cityMinPixels = &cityDetailCull;
             t.regrowVegetation = [&] { veg.grassDirty = true; };
-            t.setVSync = [&](bool on) { glfwSwapInterval(on ? 1 : 0); };
+            t.renderScale = &renderScale;
+            t.setVSync = [&](bool on) {
+                // Off for a benchmark run: a frame that waits for the display
+                // measures the display (see profilePath).
+                if (!on || !boot.profilePath.empty()) { glfwSwapInterval(0); return; }
+                // Adaptive where the driver offers it: a frame that misses the
+                // refresh is shown at once (a tear line, briefly) instead of
+                // being held for the next one -- plain vsync turns a GPU that
+                // needs 18 ms into 30 fps, not 55.
+                static const bool tear = glfwExtensionSupported("WGL_EXT_swap_control_tear") ||
+                                         glfwExtensionSupported("GLX_EXT_swap_control_tear");
+                glfwSwapInterval(tear ? -1 : 1);
+            };
             gfxmenu::apply(gfxSet, prev, renderer, t);
             for (RoadSystem* r : roads) r->cityMinPixels = cityDetailCull;
         };
@@ -2271,6 +2299,12 @@ int main(int argc, char** argv) {
         int                 driveVehicleId    = -1;
         bool                editorDriveActive = false;
         std::vector<Entity> driveBackup;
+        // The Jolt car's wheels (Play): each wheel's modelled rotation relative
+        // to the car's model, and Jolt's own wheel frame at the start, so only
+        // what Jolt CHANGES -- steer, spin -- is put on the model's wheel.
+        glm::quat           joltWheelRest[4];
+        glm::quat           joltWheelStart[4];
+        bool                joltWheelStartSet[4] = {false, false, false, false};
         // Arcade car pose (state lives in `race`; aliased so the loop keeps the
         // old names). physSteer stays a plain local -- it's the Jolt car's input.
         glm::vec3& carPos     = race.carPos;
@@ -5921,6 +5955,18 @@ int main(int argc, char** argv) {
                 vc->wheelRadius, vc->wheelWidth, vc->halfTrack,
                 vc->frontZ, vc->rearZ, vc->maxSteerDeg, vc->engineTorque, tuning);
             driveVehicleId = (physCarId != 0) ? id : -1;
+            // The wheels as modelled, relative to the model: what they keep
+            // wearing while Jolt steers and spins them (see the wheel sync).
+            const glm::quat rootQ = glm::quat_cast(
+                scenegraph::compose(glm::vec3(0.0f), e->rotation, glm::vec3(1.0f)));
+            for (int i = 0; i < 4; ++i) {
+                joltWheelStartSet[i] = false;
+                joltWheelRest[i]     = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+                if (const Entity* w = document.find(vc->wheelId[i]))
+                    joltWheelRest[i] = glm::inverse(rootQ) *
+                        glm::quat_cast(scenegraph::compose(glm::vec3(0.0f), w->rotation,
+                                                           glm::vec3(1.0f)));
+            }
             return physCarId != 0;
         };
         // Editor test-drive: snapshot the root + wheels, then glue the arcade
@@ -7529,6 +7575,30 @@ int main(int argc, char** argv) {
             audioVoices.clear(); // stop + free any AudioSource voices
             synths.clear();      // and the Synth players
             musicSys.clear();    // and a script's song
+            // The wheel corrections are set while driving (the inspector's
+            // Wheel orientation) -- throwing them away with the rest of the
+            // run would make them impossible to set at all. They go back into
+            // the scene as it was before Play.
+            for (const Entity& e : entities) {
+                const auto* vc = e.components.get<VehicleComponent>();
+                if (!vc) continue;
+                for (Entity& b : playEntities) {
+                    if (b.id != e.id) continue;
+                    if (auto* bv = b.components.get<VehicleComponent>()) {
+                        bool moved = false;
+                        for (int i = 0; i < 4; ++i) {
+                            moved |= bv->wheelTurn[i] != vc->wheelTurn[i];
+                            bv->wheelTurn[i] = vc->wheelTurn[i];
+                        }
+#ifndef FITZEL_PLAYER
+                        if (moved) editorDirty = true;
+#else
+                        (void)moved;
+#endif
+                    }
+                    break;
+                }
+            }
             entities  = std::move(playEntities);
             materials = std::move(playMaterials);
             fpsMode   = false;
@@ -9843,12 +9913,32 @@ int main(int argc, char** argv) {
                         setWorld(*ve, glm::vec3(t[0], t[1], t[2]),
                                  glm::vec3(r[0], r[1], r[2]),
                                  ve->parent >= 0 ? &pw : nullptr);
+                        // Jolt's wheel frame is one and the same for all four;
+                        // put on the modelled wheels as it was, a left wheel
+                        // built as the right one turned half round came out
+                        // with its rim facing in. So only the CHANGE since the
+                        // start (steer and spin, in the chassis frame) goes on,
+                        // over the wheel as modelled and the author's
+                        // correction (VehicleComponent::wheelTurn).
+                        const glm::quat yawFix = (vc->forward == 1)
+                            ? glm::angleAxis(glm::pi<float>(), glm::vec3(0.0f, 1.0f, 0.0f))
+                            : glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
                         for (int i = 0; i < 4; ++i) {
                             Entity* we = document.find(vc->wheelId[i]);
                             glm::vec3 wp; glm::quat wq;
                             if (!we || !physics->getWheelTransform(i, wp, wq)) continue;
+                            const glm::quat rel = glm::inverse(cq) * wq;
+                            if (!joltWheelStartSet[i]) {
+                                joltWheelStart[i]    = rel;
+                                joltWheelStartSet[i] = true;
+                            }
+                            const glm::quat turned = rel * glm::inverse(joltWheelStart[i]);
+                            const glm::quat fix = glm::quat_cast(scenegraph::compose(
+                                glm::vec3(0.0f), vc->wheelTurn[i], glm::vec3(1.0f)));
+                            const glm::quat wheelQ =
+                                cq * turned * yawFix * fix * joltWheelRest[i];
                             const glm::mat4 wm =
-                                glm::translate(glm::mat4(1.0f), wp) * glm::mat4_cast(wq);
+                                glm::translate(glm::mat4(1.0f), wp) * glm::mat4_cast(wheelQ);
                             ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(wm), t, r, s);
                             const glm::mat4 pww = parentWorldMat(*we);
                             setWorld(*we, glm::vec3(t[0], t[1], t[2]),
@@ -15661,8 +15751,17 @@ int main(int argc, char** argv) {
             const int   paneW = std::max(1, fbW / views);
             const float aspect = static_cast<float>(paneW) / static_cast<float>(fbH);
             const glm::mat4 proj = camera.projectionMatrix(aspect);
+            // The size the 3D scene is drawn at: the pane, times the player's
+            // render scale (Graphics menu) -- in Play only. The editor's viewport
+            // stays full size: its grid and its picking read the scene's depth
+            // pixel for pixel. The finished image is stretched back up in
+            // PostChain::present, so everything between here and there -- the
+            // HDR target, the post chain, TAA's jitter -- is at this size.
+            const float rScale = playMode ? std::clamp(renderScale, 0.5f, 1.0f) : 1.0f;
+            const int   rw = std::max(1, static_cast<int>(std::lround(paneW * rScale)));
+            const int   rh = std::max(1, static_cast<int>(std::lround(fbH * rScale)));
 
-            renderer.setViewport(paneW, fbH);
+            renderer.setViewport(rw, rh);
             // Shadow cascades are fitted to player one's frustum and shared by
             // both panes: they are built once per frame, before either pane is
             // drawn. Good enough while the two are racing the same stretch of
@@ -15670,8 +15769,20 @@ int main(int argc, char** argv) {
             // sized for someone else's view.
             renderer.begin(camera, aspect, light);
 
-            for (const TerrainChunk* chunk : streamer.visibleChunks()) {
-                renderer.submit(chunk->mesh(), terrainMat, glm::mat4(1.0f), false);
+            // Coarser far off (see TerrainChunk::mesh(int)): every vertex out to
+            // 160 m, every second to 320 m, every fourth beyond -- the full grid
+            // everywhere was three million triangles a pass, in the main view,
+            // every shadow cascade, the probe and the water's mirror alike.
+            {
+                const float cs = streamer.settings().chunkSize;
+                const glm::vec2 eye(camera.position().x, camera.position().z);
+                for (const TerrainChunk* chunk : streamer.visibleChunks()) {
+                    const glm::vec2 lo = glm::vec2(chunk->coord()) * cs;
+                    const glm::vec2 d  = glm::max(glm::max(lo - eye, eye - (lo + cs)), glm::vec2(0.0f));
+                    const float dist = glm::length(d);
+                    const int lod = dist < 160.0f ? 0 : dist < 320.0f ? 1 : 2;
+                    renderer.submit(chunk->mesh(lod), terrainMat, glm::mat4(1.0f), false);
+                }
             }
             herd.submit(renderer);   // the grazing herd, lit and shadowed like any object
 
@@ -16228,6 +16339,8 @@ int main(int argc, char** argv) {
             weapons.collectLights(pointLights);
             weapons2.collectLights(pointLights);
 
+            std::optional<gputime::Scope> fzGpuFrame;   // the frame's whole GPU bill
+            fzGpuFrame.emplace("GPU frame");
             const long long fzShadowMark = prof::mark();
             // Play mode is the game, and the game is always Textured -- a
             // viewport mode is a way of looking at the scene while building it.
@@ -16292,7 +16405,7 @@ int main(int argc, char** argv) {
                                         ? std::min(veg.treeShadowDistance, reach)
                                         : reach;
                 veg.drawTreeShadow(lightSpace, now, storm, shadowEyeXZ, limit, from,
-                                   cascade >= 2);
+                                   cascade >= 2, renderer.cascadeCullFace());
             };
             // Cascades for player one. With two panes up the second pane fits
             // its own set inside the loop below -- shadows are cut to a view
@@ -16526,14 +16639,20 @@ int main(int argc, char** argv) {
                 // Only a shown one: a game's pool of hidden objects parks them
                 // anywhere, under the ground included, and a probe captured
                 // down there mirrors the underside of the world into every river.
+                // The NEAREST mirror within reach of the eye, not the first in the
+                // list: a mirror-painted car the traffic drives round the town was
+                // "the first", and the probe followed it -- three faces a frame
+                // while it drove, captured somewhere the camera could not even see.
                 glm::vec3 probePos = camera.position();
+                float bestD2 = 60.0f * 60.0f;
                 for (const Entity& b : entities) {
                     const auto* mc = b.components.get<MaterialComponent>();
                     if (b.activeInHierarchy &&
                         b.type != EntityType::Light && b.type != EntityType::Sun && mc &&
                         isMirror(materials[document.materialIndex(mc->material)])) {
-                        probePos = b.center;
-                        break;
+                        const glm::vec3 d = b.center - camera.position();
+                        const float d2 = glm::dot(d, d);
+                        if (d2 < bestD2) { bestD2 = d2; probePos = b.center; }
                     }
                 }
                 renderer.prepareEnvProbe(probePos,
@@ -16568,7 +16687,7 @@ int main(int argc, char** argv) {
             glm::vec2 taaJitter(0.0f);
             glm::mat4 projJ = projUnjittered;
             if (useTaa) {
-                taaJitter = PostChain::jitter(taaFrame, paneW, fbH);
+                taaJitter = PostChain::jitter(taaFrame, rw, rh);
                 if (projJ[2][3] != 0.0f) {
                     // Perspective: subtracting from the z column moves NDC by
                     // +jitter, since w = -z.
@@ -16651,7 +16770,8 @@ int main(int argc, char** argv) {
                 return false;
             }();
 
-            if (waterVisible) {
+            waterGate.poll();
+            if (waterVisible && waterGate.seen()) {
                 // 1) Reflection: sky + scene mirrored across the water plane,
                 //    clipping everything below the surface.
                 const glm::mat4 mirror =
@@ -16697,9 +16817,9 @@ int main(int argc, char** argv) {
             // Sized to ONE pane: both players are drawn through the same set of
             // targets, one after the other, so a second view costs no extra
             // video memory -- only the time to fill them twice.
-            if (hdrRT.width() != paneW || hdrRT.height() != fbH)
-                hdrRT = RenderTarget(paneW, fbH, RenderTarget::Format::RGBA16F, true);
-            post.resize(paneW, fbH);   // no-op unless the pane actually changed
+            if (hdrRT.width() != rw || hdrRT.height() != rh)
+                hdrRT = RenderTarget(rw, rh, RenderTarget::Format::RGBA16F, true, true);
+            post.resize(rw, rh);   // no-op unless the pane actually changed
             // The one target that stays FULL width: it is the finished image
             // both panes are blitted into (and what the editor shows in its
             // viewport panel).
@@ -16713,18 +16833,21 @@ int main(int argc, char** argv) {
             // exactly the reading these modes exist to avoid. Linear, because
             // the composite tonemaps afterwards.
             if (!shadeFull) glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            if (shadeFull)
-                halfSky.render(hdrRT, fsQuad,
-                               [&] { drawBackground(glm::inverse(mainVP), camPos, false); });
-            // The horizon, in its own depth range, then out of the depth buffer
-            // (see FarTerrain.hpp). Jittered like the scene, or TAA would smear
-            // every ridgeline it resolves.
-            if (shadeFull && farTerrain.ready()) {
-                FZ_GPU_ZONE("GPU far terrain");
-                farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
-                                view, farProjection(vcam, aspect, taaJitter));
-                glClear(GL_DEPTH_BUFFER_BIT);
+            glClearStencil(0);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
+            // The horizon and the sky come AFTER the near scene and its
+            // vegetation (below), each shaded only where what was drawn before
+            // it left the view open. Both used to be drawn first, and every
+            // pixel paid -- the far terrain's ridge shadows marched across the
+            // ranges, the sky's marched cumulus -- even where a house, a tree or
+            // the near ground was about to cover it, which from a street is most
+            // of the screen. Everything drawn until then marks stencil bit 0.
+            const bool farLate = shadeFull;
+            if (farLate) {
+                glEnable(GL_STENCIL_TEST);
+                glStencilMask(0xFF);
+                glStencilFunc(GL_ALWAYS, 1, 0xFF);
+                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
             }
             if (shade == kShadeWireframe) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
             // Screen-space reflections out of last frame's picture -- for the
@@ -16789,6 +16912,49 @@ int main(int argc, char** argv) {
                 if (wildlifeOn && veg.birdsEnabled) wildlife.draw(gctx);
                 else veg.drawBirds(mainVP, now, camPos);
             }
+            // The horizon, in its own depth range (see FarTerrain.hpp), where
+            // nothing near was drawn (stencil bit 0 clear), marking bit 7 where it
+            // lands; then the sky into what is left (a zero stencil); then the
+            // far terrain's depth goes back out of the buffer, so what follows
+            // (water, glass, fog, the post chain) sees sky there as before.
+            // Jittered like the scene, or TAA would smear every ridgeline it
+            // resolves.
+            const bool farDrawn = farLate && farTerrain.ready();
+            if (farDrawn) {
+                FZ_GPU_ZONE("GPU far terrain");
+                glStencilMask(0x80);
+                glStencilFunc(GL_EQUAL, 0x80, 0x01);   // (0x80 & 0x01) == (stencil & 0x01)
+                glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE);
+                farTerrain.draw(makeFrameContext(mainVP, camPos, now, storm, light, fog),
+                                view, farProjection(vcam, aspect, taaJitter));
+            }
+            if (farLate) {
+                FZ_GPU_ZONE("GPU sky");
+                halfSky.renderBehind(hdrRT, fsQuad,
+                                     [&] { drawBackground(glm::inverse(mainVP), camPos, false); });
+            }
+            if (farDrawn) {
+                glEnable(GL_STENCIL_TEST);
+                glStencilMask(0x00);
+                glStencilFunc(GL_EQUAL, 0x80, 0x80);   // the far terrain's pixels
+                glStencilOp(GL_KEEP, GL_KEEP, GL_KEEP);
+                // No glGet here, on purpose: under the driver's threaded
+                // optimisation a state query waits for everything queued so far.
+                // FarTerrain::draw leaves GL_LESS behind; the quad faces the eye,
+                // so culling (back faces, in this pass) never touches it.
+                glEnable(GL_DEPTH_TEST);
+                glDepthFunc(GL_ALWAYS);
+                glDepthMask(GL_TRUE);
+                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+                depthToFar.bind();
+                fsQuad.draw();
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                glDepthFunc(GL_LESS);
+            }
+            if (farLate) {
+                glStencilMask(0xFF);
+                glDisable(GL_STENCIL_TEST);
+            }
 
             // 4) The water surface: a large quad following the camera, sampling
             //    the reflection/refraction targets with Fresnel + ripples. Drawn
@@ -16796,6 +16962,7 @@ int main(int argc, char** argv) {
             //    would mirror whatever the camera was looking at last time it
             //    saw water.
             if (waterVisible) {
+                FZ_GPU_ZONE("GPU water surface");
                 glm::mat4 waterModel =
                     glm::translate(glm::mat4(1.0f), {camPos.x, waterLevel, camPos.z});
                 waterModel = glm::scale(waterModel, glm::vec3(1400.0f, 1.0f, 1400.0f));
@@ -16844,7 +17011,9 @@ int main(int argc, char** argv) {
                 reflectRT.bindColorTexture(0);
                 refractRT.bindColorTexture(1);
                 refractRT.bindDepthTexture(2);
+                waterGate.begin();
                 waterMesh.draw();
+                waterGate.end();
             }
 
             // 5) Brooks, rivers and canals, into the same HDR buffer.
@@ -16860,6 +17029,7 @@ int main(int argc, char** argv) {
             // channel's numbers in it, and there are as many sets of those as
             // there are watercourses.
             if (!rivers.runs().empty()) {
+                FZ_GPU_ZONE("GPU rivers");
                 glEnable(GL_BLEND);
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 glDepthMask(GL_FALSE);
@@ -16976,7 +17146,7 @@ int main(int argc, char** argv) {
 
             // --- Pollen and dust in the light, additive into HDR ---------------
             if (shadeFull && motesOn)
-                motes.draw(gctx, static_cast<float>(fbH) * 0.5f * proj[1][1]);
+                motes.draw(gctx, static_cast<float>(rh) * 0.5f * proj[1][1]);
 
             // --- Fireflies: night-only glowing wanderers, additive into HDR ---
             // Out once the sun is down, not at half daylight: dayF is still only
@@ -17152,8 +17322,15 @@ int main(int argc, char** argv) {
             }
             { FZ_GPU_ZONE("GPU composite");
               // TAA replaces FXAA and brings its sharpening along instead.
-              post.present(fsQuad, fxaaEnabled && !useTaa, useTaa ? taaSharpen : 0.0f); }
+              // Upscaled from a reduced render scale, a touch more sharpening
+              // puts back what the stretch takes (CAS: it lifts texture, not
+              // the edges' aliasing).
+              const bool upscaled = rw < paneW;
+              const float sharp = useTaa ? taaSharpen : (upscaled ? 0.35f : 0.0f);
+              post.present(fsQuad, fxaaEnabled && !useTaa,
+                           upscaled ? std::min(1.0f, sharp + 0.25f) : sharp, upscaled); }
             } // per-pane loop
+            fzGpuFrame.reset();
             ++taaFrame;   // the next jitter offset, once per frame whatever the panes
 
             // Back to the whole image. Everything after this -- the editor grid,

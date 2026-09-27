@@ -7,7 +7,9 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
+#include "SceneGraph.hpp"
 #include "SceneTypes.hpp"
 
 // Which children of a vehicle are its wheels -- shared by the Vehicle panel's
@@ -72,6 +74,27 @@ inline void guessWheels(const std::vector<Entity>& entities, int rootId, int for
         if (!slot[q] || sc > score[q]) { slot[q] = c.e; score[q] = sc; }
     }
     for (int i = 0; i < 4; ++i) out[i] = slot[i] ? slot[i]->id : -1;
+}
+
+// A wheel's local rotation (degrees, the scene's Euler order) while the car
+// drives: its modelled rest rotation `restDeg`, corrected by the author's
+// `turnDeg`, then spun by `spin` about the axle and steered by `steer` about the
+// vertical (radians) -- both in the CAR's frame, its parent's.
+//
+// The car's frame, not the wheel's own: a left wheel is usually the right one
+// turned half round so its rim faces out, and spinning it about its OWN x ran
+// it backwards; a wheel modelled with its axle along z wobbled instead of
+// rolling. Spun and steered about the car's axes, every wheel rolls the way
+// the car goes, whatever way it was modelled.
+inline glm::vec3 wheelLocalRotation(const glm::vec3& restDeg, const glm::vec3& turnDeg,
+                                    float spin, float steer) {
+    const glm::mat4 m = glm::rotate(glm::mat4(1.0f), steer, glm::vec3(0.0f, 1.0f, 0.0f)) *
+                        glm::rotate(glm::mat4(1.0f), spin, glm::vec3(1.0f, 0.0f, 0.0f)) *
+                        scenegraph::compose(glm::vec3(0.0f), turnDeg, glm::vec3(1.0f)) *
+                        scenegraph::compose(glm::vec3(0.0f), restDeg, glm::vec3(1.0f));
+    glm::vec3 t, r, sc;
+    scenegraph::decompose(m, t, r, sc);
+    return r;
 }
 
 } // namespace vehiclerig

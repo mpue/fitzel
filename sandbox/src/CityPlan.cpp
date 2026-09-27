@@ -221,13 +221,16 @@ struct SegGrid {
 };
 
 // Which chunk a point belongs to, for the batch merge: frustum and distance
-// culling need something to bite on, so a town is welded in squares. 250 m, not
+// culling need something to bite on, so a town is welded in squares. 500 m, not
 // the roadside city's 160: a town's batches are per chunk AND per material, and
 // the colour variants multiplied the materials -- at 160 m the City preset went
-// from 320 to 650 draws, and the cost of a draw is paid a dozen times a frame.
+// from 320 to 650 draws, and the cost of a draw is paid a dozen times a frame
+// (every cascade, the probe, the water). Measured on a 1.6 x 1.1 km town: 250 m
+// made 874 draws, 500 m 368 and a frame a millisecond faster; 1000 m's 205 were
+// no faster again, the coarser culling giving back what the draws saved.
 int chunkOf(glm::vec2 p) {
-    const int cx = static_cast<int>(std::floor(p.x / 250.0f));
-    const int cz = static_cast<int>(std::floor(p.y / 250.0f));
+    const int cx = static_cast<int>(std::floor(p.x / 500.0f));
+    const int cz = static_cast<int>(std::floor(p.y / 500.0f));
     return cx * 8192 + cz;
 }
 

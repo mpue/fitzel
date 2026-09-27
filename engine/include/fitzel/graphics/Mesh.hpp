@@ -40,6 +40,13 @@ public:
                        const std::vector<std::uint32_t>& indices = {});
     static Mesh create(const MeshData& data);
 
+    // Another index list over `base`'s vertices: its own VAO and element
+    // buffer, the vertex buffer borrowed (never freed by the view, so `base`
+    // must outlive it). For levels of detail that pick fewer of the same
+    // vertices -- a terrain chunk's coarser triangulations cost no second copy
+    // of its grid.
+    static Mesh createView(const Mesh& base, const std::vector<std::uint32_t>& indices);
+
     // Built-in primitive: a unit cube centered at the origin, with normals
     // and UVs. Handy for testing lighting and texturing.
     static Mesh cube();
@@ -81,11 +88,14 @@ public:
     const glm::vec3& boundsMax() const { return m_boundsMax; }
 
 private:
+    static void setVertexLayout();   // on the bound VAO/VBO (create, createView)
+
     std::uint32_t m_vao         = 0;
     std::uint32_t m_vbo         = 0;
     std::uint32_t m_ebo         = 0;
     std::uint32_t m_vertexCount = 0;
     std::uint32_t m_indexCount  = 0;
+    bool          m_ownsVbo     = true;   // false for a view (createView)
     std::size_t   m_vboBytes    = 0;   // allocated sizes, for the streaming update
     std::size_t   m_eboBytes    = 0;
     glm::vec3     m_boundsMin{0.0f};

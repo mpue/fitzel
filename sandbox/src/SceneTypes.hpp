@@ -183,6 +183,10 @@ struct MaterialDef {
     // same material on average.
     std::shared_ptr<fitzel::Texture> ormTex;
     glm::vec2 ormMean{1.0f};   // mean G (roughness) and B (metalness), 0..1
+    // The ORM map as a project texture: set when a model material is duplicated
+    // (its map is written out, see the Materials panel's Duplicate), so the copy
+    // -- a library material, saved to its own .fmat -- keeps it across a reload.
+    fitzel::AssetId ormTexId;
 };
 
 // Reflectivity at and above which a material counts as a MIRROR rather than

@@ -151,6 +151,7 @@ private:
         bool      valid = false;
         glm::mat4 parentWorld{1.0f};
         glm::vec3 localCenter{0.0f}, localRotation{0.0f};
+        glm::vec3 turn{0.0f};            // the rig's correction (VehicleComponent::wheelTurn)
         glm::mat4 restInv{1.0f};
     };
     struct Rig {

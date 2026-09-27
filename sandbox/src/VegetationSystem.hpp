@@ -98,7 +98,7 @@ public:
     // too big for the leaf detail of the ordinary shadow level.
     void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather,
                         glm::vec2 camXZ, float maxDist, float minDist = 0.0f,
-                        bool coarse = false);
+                        bool coarse = false, unsigned cascadeCull = 0x0405 /* GL_BACK */);
     void drawTrees(const FrameContext& ctx);
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Motion vectors for the swaying meshes, into the target PostChain::
