@@ -465,10 +465,26 @@ void VegetationSystem::drawGrass(const FrameContext& c) {
         m_grass.setFloat("uFadeStart", glm::max(0.0f, ringEnd - m_grassTiles.tileSize() * 1.5f));
         m_grass.setFloat("uHeightScale", 1.0f);
         glBindVertexArray(m_grassBaseVAO);
-        m_grassTiles.draw([](std::uint32_t vbo, int count, glm::vec2, float) {
-            bindGrassInstanceAttribs(vbo);
-            glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 7, count);
-        });
+        // Only the tiles this view can see. The ring is a disc round the camera,
+        // so without this every blade behind it -- half the field and more --
+        // went through the vertex shader for nothing. The box is the tile's
+        // blade roots, grown by the tallest a blade stands and leans.
+        const std::array<glm::vec4, 6> planes = frustumPlanesOf(c.viewProj);
+        const float reach = 2.5f * std::max(grassHeight, 0.5f) + 1.0f;
+        m_grassTiles.draw(
+            [](std::uint32_t vbo, int count, glm::vec2, float) {
+                bindGrassInstanceAttribs(vbo);
+                glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, 7, count);
+            },
+            [&](const glm::vec3& lo, const glm::vec3& hi) {
+                const glm::vec3 a = lo - glm::vec3(reach), b = hi + glm::vec3(reach);
+                const glm::vec3 cen = 0.5f * (a + b), ext = 0.5f * (b - a);
+                for (const glm::vec4& p : planes) {
+                    const float r = ext.x * std::abs(p.x) + ext.y * std::abs(p.y) + ext.z * std::abs(p.z);
+                    if (glm::dot(glm::vec3(p), cen) + p.w < -r) return false;
+                }
+                return true;
+            });
         glBindVertexArray(0);
     }
     if (drawPainted) {
@@ -500,6 +516,7 @@ VegetationSystem::~VegetationSystem() {
         if (sp.impNormal) glDeleteTextures(1, &sp.impNormal);
         freeAutoLod(sp.mid);
         freeAutoLod(sp.shadow);
+        freeAutoLod(sp.shadowFar);
     }
 }
 
@@ -793,6 +810,7 @@ void VegetationSystem::buildAutoLods(TreeSpecies& sp) {
     sp.autoDirty = false;
     freeAutoLod(sp.mid);
     freeAutoLod(sp.shadow);
+    freeAutoLod(sp.shadowFar);
     if (sp.lods.empty()) return;
     const TreeLOD& src = sp.lods.back();
     if (src.cpuVerts.empty() || src.cpuIdx.empty()) return;
@@ -851,6 +869,10 @@ void VegetationSystem::buildAutoLods(TreeSpecies& sp) {
     const auto t0 = std::chrono::steady_clock::now();
     make(sp.mid,    0.16f, 0.5f,  0x5eedu);
     make(sp.shadow, 0.05f, 0.25f, 0xbeefu);
+    // The far cascades' texels are decimetres wide: a tenth of the cards,
+    // grown to cast the same shade, is the same grey there at a third of the
+    // cost -- and those two cascades drew two thirds of every tree shadow.
+    make(sp.shadowFar, 0.03f, 0.10f, 0xfa11u);
     const double ms = std::chrono::duration<double, std::milli>(
                           std::chrono::steady_clock::now() - t0).count();
     long long srcTris = static_cast<long long>(src.cpuIdx.size() / 3);
@@ -915,6 +937,7 @@ void VegetationSystem::removeSpecies(int s) {
     if (sp.impNormal) glDeleteTextures(1, &sp.impNormal);
     freeAutoLod(sp.mid);
     freeAutoLod(sp.shadow);
+    freeAutoLod(sp.shadowFar);
     m_species.erase(m_species.begin() + s);
     // Fix up painted trees: drop those on the removed species, shift higher ids.
     std::vector<float> kept;
@@ -1324,7 +1347,7 @@ int VegetationSystem::cullInstances(const TreeSpecies& sp, float boundR,
 
 void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
                                       float weather, glm::vec2 camXZ,
-                                      float maxDist) {
+                                      float maxDist, float minDist, bool coarse) {
     if (!terrainPresent || !treeEnabled || treeCount == 0) return;
     const float shadowDistance = maxDist > 0.0f ? maxDist : 1e9f;
     // Backfaces are dropped here even though the lit pass keeps them. A leaf
@@ -1364,14 +1387,15 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
         // Four planes, not six: a tree standing between the sun and the slice is
         // outside the box and still casts into it (see sphereVisible).
         const int vis = cullInstances(sp, lod.boundR, lightSpace, 4,
-                                      glm::vec3(camXZ.x, 0.0f, camXZ.y), true, 0.0f,
+                                      glm::vec3(camXZ.x, 0.0f, camXZ.y), true, minDist,
                                       shadowDistance);
         if (vis == 0) continue;
         m_shadowInst += vis;
-        if (sp.shadow.valid()) {
-            glBindVertexArray(sp.shadow.vao);
+        const AutoLod& level = (coarse && sp.shadowFar.valid()) ? sp.shadowFar : sp.shadow;
+        if (level.valid()) {
+            glBindVertexArray(level.vao);
             bindTreeInstanceAttribs(m_cullVBO);
-            for (const AutoLod::Range& r : sp.shadow.ranges) {
+            for (const AutoLod::Range& r : level.ranges) {
                 const TreeLOD::Prim& tp = lod.prims[r.prim];
                 tp.bindTex();
                 m_treeDepth.setInt("uAlphaCutout", r.cutout ? 1 : 0);

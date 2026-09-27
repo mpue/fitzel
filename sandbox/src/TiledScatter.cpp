@@ -157,6 +157,16 @@ void TiledScatter::update(glm::vec2 camXZ) {
         t.count = static_cast<int>(res.data.size()) /
                   std::max(1, m_cfg.floatsPerInstance);
         if (t.count > 0) {
+            const int stride = std::max(1, m_cfg.floatsPerInstance);
+            t.yLo = 1e30f;
+            t.yHi = -1e30f;
+            if (stride >= 3)
+                for (int i = 0; i < t.count; ++i) {
+                    const float y = res.data[static_cast<std::size_t>(i * stride + 1)];
+                    t.yLo = std::min(t.yLo, y);
+                    t.yHi = std::max(t.yHi, y);
+                }
+            else { t.yLo = -1e6f; t.yHi = 1e6f; }
             glGenBuffers(1, &t.vbo);
             glBindBuffer(GL_ARRAY_BUFFER, t.vbo);
             glBufferData(GL_ARRAY_BUFFER,
@@ -176,10 +186,15 @@ void TiledScatter::update(glm::vec2 camXZ) {
     }
 }
 
-void TiledScatter::draw(const DrawTile& cb) const {
+void TiledScatter::draw(const DrawTile& cb, const Visible& visible) const {
     if (!cb) return;
     for (const auto& [k, t] : m_tiles) {
         if (t.count <= 0) continue;
+        if (visible) {
+            const float x0 = keyX(k) * m_cfg.tileSize, z0 = keyZ(k) * m_cfg.tileSize;
+            if (!visible({x0, t.yLo, z0}, {x0 + m_cfg.tileSize, t.yHi, z0 + m_cfg.tileSize}))
+                continue;
+        }
         cb(t.vbo, t.count, glm::vec2{keyX(k) * m_cfg.tileSize, keyZ(k) * m_cfg.tileSize},
            m_cfg.tileSize);
     }

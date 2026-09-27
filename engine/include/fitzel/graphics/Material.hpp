@@ -28,6 +28,10 @@ public:
     Material& set(const std::string& name, Value value);
     Material& setTexture(const std::string& name, const Texture& texture,
                          std::uint32_t unit);
+    // Forget a texture binding. The material keeps only a pointer to the
+    // texture, so an owner that lets the texture go must clear it here too --
+    // apply() would otherwise bind a destroyed texture on every draw.
+    Material& clearTexture(const std::string& name);
 
     // Read a stored parameter back, or nullptr if this material never set one
     // by that name. For consumers that have to interpret a surface rather than

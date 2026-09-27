@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -33,6 +35,11 @@ public:
     std::function<bool(float, float)>                 isWater;
     // Every road in the scene as the derive step measures against.
     std::function<std::vector<cityplan::RoadLine>()>  roadLines;
+    // An imported model's bounds, for standing it on a block (see CivicSlot).
+    std::function<bool(const std::string&, glm::vec3&, glm::vec3&)> modelBounds;
+    // A texture by GUID: a palette that names one (the pavement's slabs) gets
+    // its pixels loaded here.
+    std::function<std::shared_ptr<fitzel::Texture>(const fitzel::AssetId&)> loadTexture;
 
     // Metres from the eye at which a chunk of town stops being drawn.
     float range = 1600.0f;
@@ -58,7 +65,13 @@ public:
         double                    ms = 0.0; // last derive, for the panel
     };
     const std::vector<Built>& built() const { return m_built; }
+    // Changes whenever any town was derived anew (for what follows the towns,
+    // like the traffic on their streets).
+    int revision() const { return m_revision; }
 
+    // Every imported model standing on a block within `range` of `eye`.
+    void forEachModel(const glm::vec3& eye,
+                      const std::function<void(const std::string&, const glm::mat4&)>& fn) const;
     // Draw every chunk within `range` of `eye`: the mesh (world space, identity
     // model matrix), the material it wears, and whether it casts shadows.
     void forEachDraw(const glm::vec3& eye,
@@ -135,5 +148,6 @@ private:
     bool               m_buildRequest = false;
     std::vector<int>   m_retired;   // road ids whose corridor is to be given back
     civic::Palette     m_civic;     // the last civic palette a derive used (signal lamps)
+    int                m_revision = 0;  // bumped whenever a town re-derives
     bool               m_hasCivic = false;
 };

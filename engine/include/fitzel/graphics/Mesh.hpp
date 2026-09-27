@@ -48,6 +48,12 @@ public:
     // attribute layout/VAO. For CPU animation: skin on the CPU each frame and
     // update the mesh in place. Refreshes the local AABB.
     void update(const std::vector<Vertex>& vertices);
+    // Same, with a new index list too: for CPU-built geometry whose triangle
+    // count changes from frame to frame (only what is in view, say). The
+    // buffers only ever grow (with headroom) and are otherwise refilled at
+    // their size -- a buffer re-allocated at a new size every frame makes the
+    // driver stall now and then for a whole frame or more.
+    void update(const std::vector<Vertex>& vertices, const std::vector<std::uint32_t>& indices);
 
     // Issue the draw call. Assumes a shader is already bound.
     void draw() const;
@@ -80,6 +86,8 @@ private:
     std::uint32_t m_ebo         = 0;
     std::uint32_t m_vertexCount = 0;
     std::uint32_t m_indexCount  = 0;
+    std::size_t   m_vboBytes    = 0;   // allocated sizes, for the streaming update
+    std::size_t   m_eboBytes    = 0;
     glm::vec3     m_boundsMin{0.0f};
     glm::vec3     m_boundsMax{0.0f};
 };

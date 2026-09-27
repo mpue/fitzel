@@ -35,6 +35,8 @@ struct PanelState {
     bool&                 editing;
     std::function<void(std::unique_ptr<Command>)> pushApplied;
     std::string&          status;   // last action's outcome
+    // The project's prefabs by name, for the traffic's vehicle prefabs.
+    std::function<std::vector<std::string>()> prefabNames = {};
 };
 
 void drawPanel(const PanelState& s);

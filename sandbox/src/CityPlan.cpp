@@ -9,6 +9,7 @@
 #include <memory>
 #include <unordered_map>
 
+#include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json.hpp>
 
 #include "Component.hpp"
@@ -96,7 +97,7 @@ bool overlaps(const Obb& A, const Obb& B, float shrink) {
 // A uniform grid over every road segment, so a thousand lots times nine samples
 // do not each walk every segment of every street.
 struct SegGrid {
-    struct Seg { glm::vec2 a, b; float half; int road; };
+    struct Seg { glm::vec2 a, b; float half; int road; float ya = 0.0f, yb = 0.0f; bool hasY = false; };
     std::vector<Seg> segs;
     float cell = 40.0f;
     std::unordered_map<std::int64_t, std::vector<int>> cells;
@@ -109,6 +110,8 @@ struct SegGrid {
             const RoadLine& r = roads[ri];
             for (std::size_t i = 0; i + 1 < r.pts.size(); ++i) {
                 const glm::vec2 a0 = r.pts[i], b0 = r.pts[i + 1];
+                const bool  hasY = r.y.size() == r.pts.size();
+                const float y0 = hasY ? r.y[i] : 0.0f, y1 = hasY ? r.y[i + 1] : 0.0f;
                 // Long segments go in as cell-sized pieces, so the box each one
                 // is filed under stays a few cells rather than a whole diagonal.
                 const float len = glm::length(b0 - a0);
@@ -118,7 +121,9 @@ struct SegGrid {
                     const glm::vec2 a = glm::mix(a0, b0, static_cast<float>(k) / n);
                     const glm::vec2 b = glm::mix(a0, b0, static_cast<float>(k + 1) / n);
                     const int id = static_cast<int>(segs.size());
-                    segs.push_back({a, b, r.half, static_cast<int>(ri)});
+                    segs.push_back({a, b, r.half, static_cast<int>(ri),
+                                    glm::mix(y0, y1, static_cast<float>(k) / n),
+                                    glm::mix(y0, y1, static_cast<float>(k + 1) / n), hasY});
                     const glm::vec2 lo = glm::min(a, b) - r.half - 1.0f;
                     const glm::vec2 hi = glm::max(a, b) + r.half + 1.0f;
                     for (int x = static_cast<int>(std::floor(lo.x / cell));
@@ -154,7 +159,8 @@ struct SegGrid {
     // on its centreline, its heading there and its half-width. The grid's
     // streets are straight between nodes, the roads laid from them are splines
     // through the same nodes -- this is how a kerb finds the real edge.
-    bool snap(glm::vec2 p, glm::vec2 d, glm::vec2& at, glm::vec2& dir, float& half) const {
+    bool snap(glm::vec2 p, glm::vec2 d, glm::vec2& at, glm::vec2& dir, float& half,
+              float* y = nullptr, bool* hasY = nullptr) const {
         float bestD = 12.0f;
         bool  found = false;
         const auto it = cells.find(key(static_cast<int>(std::floor(p.x / cell)),
@@ -170,7 +176,30 @@ struct SegGrid {
             const float t = glm::clamp(glm::dot(p - s.a, ab) / l2, 0.0f, 1.0f);
             const glm::vec2 q = s.a + ab * t;
             const float dist = glm::length(p - q);
-            if (dist < bestD) { bestD = dist; at = q; dir = u; half = s.half; found = true; }
+            if (dist < bestD) {
+                bestD = dist; at = q; dir = u; half = s.half; found = true;
+                if (y) *y = glm::mix(s.ya, s.yb, t);
+                if (hasY) *hasY = s.hasY;
+            }
+        }
+        return found;
+    }
+    // The road surface's height at the nearest road to `p` (within its cell),
+    // if that road carries heights.
+    bool surfaceNear(glm::vec2 p, float& y) const {
+        float bestD = 1e9f;
+        bool  found = false;
+        const auto it = cells.find(key(static_cast<int>(std::floor(p.x / cell)),
+                                       static_cast<int>(std::floor(p.y / cell))));
+        if (it == cells.end()) return false;
+        for (int id : it->second) {
+            const Seg& s = segs[static_cast<std::size_t>(id)];
+            if (!s.hasY) continue;
+            const glm::vec2 ab = s.b - s.a;
+            const float l2 = glm::dot(ab, ab);
+            const float t  = l2 > 1e-8f ? glm::clamp(glm::dot(p - s.a, ab) / l2, 0.0f, 1.0f) : 0.0f;
+            const float dist = glm::length(p - (s.a + ab * t));
+            if (dist < bestD) { bestD = dist; y = glm::mix(s.ya, s.yb, t); found = true; }
         }
         return found;
     }
@@ -236,6 +265,54 @@ const char* presetName(Preset p) {
     }
 }
 
+std::array<CivicSlot, civic::kKinds> defaultCivic() {
+    std::array<CivicSlot, civic::kKinds> a{};
+    for (civic::Kind k : {civic::Kind::Church, civic::Kind::Police, civic::Kind::FireStation,
+                          civic::Kind::Hospital, civic::Kind::TownHall, civic::Kind::School,
+                          civic::Kind::Kindergarten, civic::Kind::Library})
+        a[static_cast<std::size_t>(k)].count = 1;
+    return a;
+}
+
+const char* civicKey(civic::Kind k) {
+    switch (k) {
+        case civic::Kind::Church:       return "church";
+        case civic::Kind::Police:       return "police";
+        case civic::Kind::FireStation:  return "fireStation";
+        case civic::Kind::Hospital:     return "hospital";
+        case civic::Kind::Industry:     return "industry";
+        case civic::Kind::TownHall:     return "townHall";
+        case civic::Kind::School:       return "school";
+        case civic::Kind::Kindergarten: return "kindergarten";
+        case civic::Kind::Library:      return "library";
+        case civic::Kind::Museum:       return "museum";
+        case civic::Kind::Theatre:      return "theatre";
+        case civic::Kind::Pool:         return "pool";
+        case civic::Kind::PetrolStation: return "petrolStation";
+        case civic::Kind::PowerPlant:   return "powerPlant";
+        case civic::Kind::Landfill:     return "landfill";
+        case civic::Kind::Station:      return "station";
+        default:                        return "?";
+    }
+}
+
+namespace {
+// A preset's public buildings, then its cultural ones.
+void civicCounts(Rule& r, int church, int police, int fire, int hospital,
+                 std::initializer_list<int> culture) {
+    using K = civic::Kind;
+    r.civic[static_cast<std::size_t>(K::Church)].count      = church;
+    r.civic[static_cast<std::size_t>(K::Police)].count      = police;
+    r.civic[static_cast<std::size_t>(K::FireStation)].count = fire;
+    r.civic[static_cast<std::size_t>(K::Hospital)].count    = hospital;
+    const K order[] = {K::TownHall, K::School, K::Kindergarten, K::Library, K::Museum,
+                       K::Theatre, K::Pool, K::PetrolStation, K::PowerPlant, K::Landfill,
+                       K::Station};
+    std::size_t i = 0;
+    for (int n : culture) r.civic[static_cast<std::size_t>(order[i++])].count = n;
+}
+} // namespace
+
 void applyPreset(Rule& r, Preset p) {
     // Only what makes the character; place, size and seed stay the author's.
     switch (p) {
@@ -246,7 +323,7 @@ void applyPreset(Rule& r, Preset p) {
             r.towerRing = 0.0f; r.blockRing = 0.0f; r.rowRing = 0.25f;
             r.parkChance = 0.10f; r.centrePark = true;
             r.houseLot = 24.0f; r.houseSetback = 6.0f; r.fill = 0.85f;
-            r.churches = 1; r.policeStations = 0; r.fireStations = 1; r.hospitals = 0;
+            civicCounts(r, 1, 0, 1, 0, {1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0});
             r.industryShare = 0.0f;
             break;
         case Preset::Count:
@@ -258,7 +335,7 @@ void applyPreset(Rule& r, Preset p) {
             r.blockFloorsMin = 3; r.blockFloorsMax = 5;
             r.parkChance = 0.08f; r.centrePark = true;
             r.houseLot = 20.0f; r.houseSetback = 5.0f; r.fill = 0.94f;
-            r.churches = 2; r.policeStations = 1; r.fireStations = 1; r.hospitals = 1;
+            civicCounts(r, 2, 1, 1, 1, {1, 1, 1, 1, 0, 0, 1, 1, 0, 1, 1});
             r.industryShare = 0.08f;
             break;
         case Preset::City:
@@ -270,7 +347,7 @@ void applyPreset(Rule& r, Preset p) {
             r.blockFloorsMin = 4; r.blockFloorsMax = 7;
             r.parkChance = 0.07f; r.centrePark = false;
             r.houseLot = 18.0f; r.houseSetback = 4.0f; r.fill = 0.96f;
-            r.churches = 3; r.policeStations = 2; r.fireStations = 2; r.hospitals = 1;
+            civicCounts(r, 3, 2, 2, 1, {1, 2, 2, 1, 1, 1, 1, 2, 1, 1, 1});
             r.industryShare = 0.12f;
             break;
         case Preset::Metropolis:
@@ -285,7 +362,7 @@ void applyPreset(Rule& r, Preset p) {
             r.blockFloorsMin = 5; r.blockFloorsMax = 9;
             r.parkChance = 0.05f; r.centrePark = false;
             r.houseLot = 18.0f; r.houseSetback = 4.0f; r.fill = 0.97f;
-            r.churches = 4; r.policeStations = 3; r.fireStations = 3; r.hospitals = 2;
+            civicCounts(r, 4, 3, 3, 2, {1, 3, 3, 2, 2, 1, 2, 3, 1, 1, 1});
             r.industryShare = 0.15f;
             r.budget = 3000;
             break;
@@ -296,7 +373,7 @@ void applyPreset(Rule& r, Preset p) {
             r.towerRing = 0.0f; r.blockRing = 0.0f; r.rowRing = 0.0f;
             r.parkChance = 0.06f; r.centrePark = true;
             r.houseLot = 20.0f; r.houseSetback = 6.0f; r.fill = 0.92f;
-            r.churches = 1; r.policeStations = 0; r.fireStations = 1; r.hospitals = 0;
+            civicCounts(r, 1, 0, 1, 0, {0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0});
             r.industryShare = 0.0f;
             break;
     }
@@ -352,6 +429,37 @@ Grid jsonGrid(const nlohmann::json& j) {
 
 bool Grid::operator==(const Grid& o) const { return gridJson(*this) == gridJson(o); }
 
+namespace {
+nlohmann::json civicJson(const std::array<CivicSlot, civic::kKinds>& a) {
+    nlohmann::json j = nlohmann::json::object();
+    for (int k = 0; k < civic::kKinds; ++k) {
+        const CivicSlot& c = a[static_cast<std::size_t>(k)];
+        nlohmann::json e = {{"count", c.count}};
+        if (c.useModel || !c.model.empty())
+            e.update({{"useModel", c.useModel}, {"model", c.model}, {"fitPlot", c.fitPlot},
+                      {"turn", c.turn}});
+        j[civicKey(static_cast<civic::Kind>(k))] = e;
+    }
+    return j;
+}
+std::array<CivicSlot, civic::kKinds> jsonCivic(const nlohmann::json& j,
+                                               const std::array<CivicSlot, civic::kKinds>& d) {
+    std::array<CivicSlot, civic::kKinds> a{};   // a kind the file does not name: none
+    for (int k = 0; k < civic::kKinds; ++k) {
+        const char* key = civicKey(static_cast<civic::Kind>(k));
+        if (!j.is_object() || !j.contains(key)) continue;
+        const nlohmann::json& e = j[key];
+        CivicSlot& c = a[static_cast<std::size_t>(k)];
+        c.count    = e.value("count", d[static_cast<std::size_t>(k)].count);
+        c.useModel = e.value("useModel", false);
+        c.model    = e.value("model", std::string());
+        c.fitPlot  = e.value("fitPlot", true);
+        c.turn     = e.value("turn", 0);
+    }
+    return a;
+}
+} // namespace
+
 void save(nlohmann::json& j, const Rule& r) {
     j = {
         {"id", r.id}, {"name", r.name}, {"enabled", r.enabled}, {"seed", r.seed},
@@ -360,8 +468,7 @@ void save(nlohmann::json& j, const Rule& r) {
         {"zoneNoise", r.zoneNoise}, {"parkChance", r.parkChance},
         {"centrePark", r.centrePark},
         {"industryShare", r.industryShare}, {"industryAngle", r.industryAngle},
-        {"churches", r.churches}, {"policeStations", r.policeStations},
-        {"fireStations", r.fireStations}, {"hospitals", r.hospitals},
+        {"civic", civicJson(r.civic)},
         {"sidewalk", r.sidewalk},
         {"towerFloorsMin", r.towerFloorsMin}, {"towerFloorsMax", r.towerFloorsMax},
         {"blockFloorsMin", r.blockFloorsMin}, {"blockFloorsMax", r.blockFloorsMax},
@@ -375,6 +482,17 @@ void save(nlohmann::json& j, const Rule& r) {
         {"colourVariety", r.colourVariety}, {"signs", r.signs},
         {"signStyle", r.signStyle}, {"pavements", r.pavements},
         {"trafficLights", r.trafficLights}, {"busStopEvery", r.busStopEvery},
+        {"traffic", r.traffic}, {"busShare", r.busShare}, {"truckShare", r.truckShare},
+        {"powerLines", r.powerLines}, {"powerLineLength", r.powerLineLength},
+        {"vehiclePrefabs", [&] {
+            nlohmann::json a = nlohmann::json::array();
+            for (const VehiclePrefab& v : r.vehiclePrefabs)
+                a.push_back({{"prefab", v.prefab}, {"kind", v.kind}, {"weight", v.weight},
+                             {"forward", v.forward}});
+            return a;
+        }()},
+        {"placeholderWeight", r.placeholderWeight},
+        {"people", r.people},
         {"collider", r.collider},
     };
     // Only once streets exist: a town that was never laid has no "laid".
@@ -398,10 +516,18 @@ void load(const nlohmann::json& j, Rule& r) {
     r.centrePark = j.value("centrePark", d.centrePark);
     r.industryShare  = j.value("industryShare", d.industryShare);
     r.industryAngle  = j.value("industryAngle", d.industryAngle);
-    r.churches       = j.value("churches", d.churches);
-    r.policeStations = j.value("policeStations", d.policeStations);
-    r.fireStations   = j.value("fireStations", d.fireStations);
-    r.hospitals      = j.value("hospitals", d.hospitals);
+    if (j.contains("civic")) {
+        r.civic = jsonCivic(j["civic"], d.civic);
+    } else {
+        // A town saved before the cultural buildings: its four counts, and none
+        // of the new kinds -- loading it must not rebuild half its blocks.
+        for (CivicSlot& c : r.civic) c = CivicSlot{};
+        using K = civic::Kind;
+        r.civic[static_cast<std::size_t>(K::Church)].count      = j.value("churches", 1);
+        r.civic[static_cast<std::size_t>(K::Police)].count      = j.value("policeStations", 1);
+        r.civic[static_cast<std::size_t>(K::FireStation)].count = j.value("fireStations", 1);
+        r.civic[static_cast<std::size_t>(K::Hospital)].count    = j.value("hospitals", 1);
+    }
     r.sidewalk   = j.value("sidewalk", d.sidewalk);
     r.towerFloorsMin = j.value("towerFloorsMin", d.towerFloorsMin);
     r.towerFloorsMax = j.value("towerFloorsMax", d.towerFloorsMax);
@@ -427,6 +553,23 @@ void load(const nlohmann::json& j, Rule& r) {
     r.pavements     = j.value("pavements", d.pavements);
     r.trafficLights = j.value("trafficLights", d.trafficLights);
     r.busStopEvery  = j.value("busStopEvery", d.busStopEvery);
+    r.traffic       = j.value("traffic", d.traffic);
+    r.powerLines    = j.value("powerLines", d.powerLines);
+    r.vehiclePrefabs.clear();
+    if (j.contains("vehiclePrefabs") && j["vehiclePrefabs"].is_array())
+        for (const nlohmann::json& v : j["vehiclePrefabs"]) {
+            VehiclePrefab p;
+            p.prefab  = v.value("prefab", std::string());
+            p.kind    = std::clamp(v.value("kind", 0), 0, 2);
+            p.weight  = v.value("weight", 1.0f);
+            p.forward = std::clamp(v.value("forward", 0), 0, 3);
+            r.vehiclePrefabs.push_back(p);
+        }
+    r.placeholderWeight = j.value("placeholderWeight", d.placeholderWeight);
+    r.powerLineLength = j.value("powerLineLength", d.powerLineLength);
+    r.busShare      = j.value("busShare", d.busShare);
+    r.truckShare    = j.value("truckShare", d.truckShare);
+    r.people        = j.value("people", d.people);
     r.weathering  = j.value("weathering", d.weathering);
     r.collider    = j.value("collider", d.collider);
 }
@@ -626,10 +769,26 @@ Layout layout(const Rule& r, const Grid& g) {
                 taken.push_back(i);
             }
         };
-        place(civic::Kind::Church,      std::max(r.churches, 0),       0.0f,  0.45f);
-        place(civic::Kind::Hospital,    std::max(r.hospitals, 0),      0.45f, 0.25f);
-        place(civic::Kind::Police,      std::max(r.policeStations, 0), 0.25f, 0.35f);
-        place(civic::Kind::FireStation, std::max(r.fireStations, 0),   0.55f, 0.25f);
+        // In this order (earlier kinds get the better blocks), each from its
+        // ring outwards. The four public ones keep the order they always had,
+        // so a town saved before the cultural kinds plans the same blocks.
+        auto n = [&](civic::Kind k) { return std::max(r.civic[static_cast<std::size_t>(k)].count, 0); };
+        place(civic::Kind::TownHall,    n(civic::Kind::TownHall),    0.0f,  0.35f);
+        place(civic::Kind::Church,      n(civic::Kind::Church),      0.0f,  0.45f);
+        place(civic::Kind::Museum,      n(civic::Kind::Museum),      0.1f,  0.30f);
+        place(civic::Kind::Theatre,     n(civic::Kind::Theatre),     0.15f, 0.30f);
+        place(civic::Kind::Hospital,    n(civic::Kind::Hospital),    0.45f, 0.25f);
+        place(civic::Kind::Police,      n(civic::Kind::Police),      0.25f, 0.35f);
+        place(civic::Kind::FireStation, n(civic::Kind::FireStation), 0.55f, 0.25f);
+        place(civic::Kind::Library,     n(civic::Kind::Library),     0.3f,  0.30f);
+        place(civic::Kind::School,      n(civic::Kind::School),      0.45f, 0.25f);
+        place(civic::Kind::Kindergarten, n(civic::Kind::Kindergarten), 0.6f, 0.20f);
+        place(civic::Kind::Pool,        n(civic::Kind::Pool),        0.6f,  0.20f);
+        place(civic::Kind::Station,     n(civic::Kind::Station),     0.3f,  0.30f);
+        place(civic::Kind::PetrolStation, n(civic::Kind::PetrolStation), 0.55f, 0.20f);
+        // The dirty and the big ones at the very edge.
+        place(civic::Kind::PowerPlant,  n(civic::Kind::PowerPlant),  1.0f,  0.10f);
+        place(civic::Kind::Landfill,    n(civic::Kind::Landfill),    1.0f,  0.10f);
     }
     return L;
 }
@@ -1232,6 +1391,7 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
     // until all four corners are inside. The street the building addresses is
     // the one along that longest side.
     std::deque<civic::Model> models;   // stable addresses: the extras point into them
+    std::vector<glm::vec2>   plants;   // power stations, where the power lines start
     for (std::size_t bi = 0; bi < lay.blocks.size(); ++bi) {
         const Block& B = lay.blocks[bi];
         const bool estate = B.zone == Zone::Industry;
@@ -1298,6 +1458,43 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
         const civic::Kind kind = estate ? civic::Kind::Industry
                                         : static_cast<civic::Kind>(B.civic);
         const std::uint32_t h = hash3(r.seed ^ 0xc1c1cU, static_cast<std::uint32_t>(bi), 7U);
+        const CivicSlot& slot = r.civic[static_cast<std::size_t>(kind)];
+        if (kind == civic::Kind::PowerPlant) plants.push_back(icen);
+        if (slot.useModel && !slot.model.empty()) {
+            // An imported model instead: centred on the block, standing on its
+            // high side, turned to the street -- and, unless told otherwise,
+            // scaled to fill the block (a model's units are anyone's guess).
+            glm::vec3 lo(-0.5f), hi(0.5f);
+            const bool known = ctx.modelBounds && ctx.modelBounds(slot.model, lo, hi);
+            const glm::vec3 size = glm::max(hi - lo, glm::vec3(0.01f));
+            const int   turn = ((slot.turn % 4) + 4) % 4;
+            const float sx = (turn & 1) ? size.z : size.x, sz = (turn & 1) ? size.x : size.z;
+            const float scale = known && slot.fitPlot ? 0.92f * std::min(W / sx, D / sz) : 1.0f;
+            const float yaw   = yawFacing(front);
+            const float baseY = gHi;
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), glm::vec3(icen.x, baseY, icen.y));
+            m = glm::rotate(m, glm::radians(yaw + 90.0f * static_cast<float>(turn)), glm::vec3(0, 1, 0));
+            m = glm::scale(m, glm::vec3(scale));
+            m = glm::translate(m, glm::vec3(-0.5f * (lo.x + hi.x), -lo.y, -0.5f * (lo.z + hi.z)));
+            out.models.push_back({slot.model, m});
+            if (known && r.collider) {
+                city::Piece c;
+                c.center  = glm::vec3(icen.x, baseY + 0.5f * size.y * scale, icen.y);
+                c.half    = 0.5f * scale * glm::vec3(sx, size.y, sz);
+                c.yaw     = yaw;
+                c.collide = true;
+                pcs.push_back(c);
+                pcChunk.resize(pcs.size(), chunkOf(icen));
+            }
+            ++out.stats.civic[static_cast<std::size_t>(kind)];
+            Placed pl;
+            pl.pos    = icen;
+            pl.radius = 0.5f * diag + 1.5f;
+            pl.zone   = B.zone;
+            out.placed.push_back(pl);
+            ++out.stats.built;
+            continue;
+        }
         models.push_back(civic::build(kind, W, D, h, pal.civic));
         const civic::Model& M = models.back();
         if (M.empty()) { ++out.stats.skippedEmpty; continue; }
@@ -1339,13 +1536,7 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
         }
         pcChunk.resize(pcs.size(), chunk);
 
-        switch (kind) {
-            case civic::Kind::Church:      ++out.stats.churches; break;
-            case civic::Kind::Police:      ++out.stats.police; break;
-            case civic::Kind::FireStation: ++out.stats.fireStations; break;
-            case civic::Kind::Hospital:    ++out.stats.hospitals; break;
-            default:                       ++out.stats.industry; break;
-        }
+        ++out.stats.civic[static_cast<std::size_t>(kind)];
         Placed pl;
         pl.pos    = icen;
         pl.radius = 0.5f * diag + 1.5f;
@@ -1530,12 +1721,17 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
     // cut on the same line the asphalt ends -- and the corner is closed by a fan
     // to where the two building lines meet. Dropped over water and where some
     // other road runs through the block.
+    //
+    // The HEIGHT is the road's, not the ground's: a pavement is laid level with
+    // the carriageway beside it (a kerb higher), across its whole width, and
+    // eased along it -- not draped over every bump in the terrain. The town's
+    // streets grade a level bed that wide beside themselves (RoadSystem::bed),
+    // so the ground under the slabs is the road's height too. Only where no
+    // road height is known (a preview before the streets are laid) does the
+    // ground stand in, riding its highest point within a stride so no hump
+    // shows through.
     constexpr float kKerb = 0.12f;
     const bool paved = r.pavements && r.sidewalk > 0.3f;
-    // The slabs ride on the highest ground within a stride: the band reaches past
-    // the road's graded corridor onto natural ground, and a hump between two
-    // samples would otherwise show through the paving. In a hollow the kerb and
-    // the inner edge reach down to the real ground and close the gap.
     auto ride = [&](glm::vec2 p) {
         float g = -1e9f;
         for (int a = -1; a <= 1; ++a)
@@ -1543,7 +1739,12 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 g = std::max(g, ground(p + glm::vec2(a * 0.75f, c * 0.75f)));
         return g;
     };
-    auto standY = [&](glm::vec2 p) { return paved ? ride(p) + kKerb : ground(p); };
+    // The pavement's top at `p`: the nearest road's surface plus the kerb.
+    auto paveY = [&](glm::vec2 p) {
+        float y = 0.0f;
+        return (roads.surfaceNear(p, y) ? y : ride(p)) + kKerb;
+    };
+    auto standY = [&](glm::vec2 p) { return paved ? paveY(p) : ground(p); };
     std::deque<fitzel::MeshData> paveMeshes;   // stable addresses for the extras
     if (paved) {
         const float w      = r.sidewalk;
@@ -1577,8 +1778,12 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 md.indices.push_back(base + i + 1);
             }
         };
-        auto top = [&](glm::vec2 p) { return glm::vec3(p.x, ride(p) + kKerb, p.y); };
-        auto low = [&](glm::vec2 p) { return glm::vec3(p.x, ground(p) - 0.15f, p.y); };
+        // Top at the side's own height `y` (the road's, see above); the kerb and
+        // the inner edge reach down past whichever is lower, road or ground.
+        auto top = [&](glm::vec2 p, float y) { return glm::vec3(p.x, y + kKerb, p.y); };
+        auto low = [&](glm::vec2 p, float y) {
+            return glm::vec3(p.x, std::min(ground(p), y) - 0.15f, p.y);
+        };
         auto usable = [&](std::initializer_list<glm::vec2> pts) {
             glm::vec2 c(0.0f);
             for (const glm::vec2& p : pts) {
@@ -1597,6 +1802,7 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
             cen *= 0.25f;
             struct Side {
                 std::vector<glm::vec2> O, I;   // kerb and building-line points
+                std::vector<float>     Y;      // the road's height beside each (no kerb)
                 glm::vec2 d{0.0f}, n{0.0f};
             } sd[4];
             glm::vec2 dir[4];
@@ -1625,14 +1831,22 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 sd[k].d = d;
                 sd[k].n = n;
                 // The kerb at `t` along the side: on the real road's edge.
-                auto kerbAt = [&](float t) {
+                // (and, into `y`, the road surface's height there)
+                auto kerbAt = [&](float t, float* y = nullptr) {
                     const glm::vec2 c = a0 + d * t;
                     glm::vec2 at, rd;
-                    float half = 0.0f;
-                    if (!roads.snap(c, d, at, rd, half)) return c + n * B.streetHalf[k];
+                    float half = 0.0f, ry = 0.0f;
+                    bool  hasY = false;
+                    if (!roads.snap(c, d, at, rd, half, &ry, &hasY)) {
+                        const glm::vec2 o = c + n * B.streetHalf[k];
+                        if (y) *y = ride(o);
+                        return o;
+                    }
                     glm::vec2 rn(-rd.y, rd.x);
                     if (glm::dot(rn, n) < 0.0f) rn = -rn;
-                    return at + rn * half;
+                    const glm::vec2 o = at + rn * half;
+                    if (y) *y = hasY ? ry : ride(o);
+                    return o;
                 };
                 // Then measured, like a lot: the ends move in until the kerb is
                 // clear of every carriageway but its own. What the corner rule
@@ -1645,26 +1859,42 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 for (int g = 0; g < 40 && s1 - s0 > 1.0f && blocked(s1); ++g) s1 -= 0.25f;
                 if (s1 - s0 < 1.0f) continue;
                 const int m = std::max(1, static_cast<int>(std::ceil((s1 - s0) / 2.0f)));
+                std::vector<float> raw;
                 for (int i = 0; i <= m; ++i) {
-                    const glm::vec2 o = kerbAt(s0 + (s1 - s0) * static_cast<float>(i) / m);
+                    float y = 0.0f;
+                    const glm::vec2 o = kerbAt(s0 + (s1 - s0) * static_cast<float>(i) / m, &y);
                     sd[k].O.push_back(o);
                     sd[k].I.push_back(o + n * w);
+                    raw.push_back(y);
                 }
-                // Sampled every 2 m to follow the ground and the road's bow; on
-                // flat, straight stretches most of those samples say nothing.
-                // Keep a sample only where leaving it out would move the kerb or
-                // either edge's height by more than 2 cm (and every 15 m, so a
-                // long slab still meets the terrain's own undulation).
+                // Eased along the side, so what is left of a bump in the road's
+                // own profile (or in the ground, without one) is a slope, not a dent.
+                for (std::size_t i = 0; i < raw.size(); ++i) {
+                    float sum = 0.0f, wsum = 0.0f;
+                    for (int j = -3; j <= 3; ++j) {
+                        const long q = static_cast<long>(i) + j;
+                        if (q < 0 || q >= static_cast<long>(raw.size())) continue;
+                        const float wt = 4.0f - static_cast<float>(std::abs(j));
+                        sum += wt * raw[static_cast<std::size_t>(q)];
+                        wsum += wt;
+                    }
+                    sd[k].Y.push_back(sum / wsum);
+                }
+                // Sampled every 2 m to follow the road's bow; on flat, straight
+                // stretches most of those samples say nothing. Keep a sample only
+                // where leaving it out would move the kerb or the height by more
+                // than 2 cm (and every 15 m).
                 std::vector<glm::vec2>& O = sd[k].O;
                 std::vector<glm::vec2>& I = sd[k].I;
+                std::vector<float>&     Y = sd[k].Y;
                 auto off = [&](const std::vector<glm::vec2>& L, std::size_t a, std::size_t b,
                                std::size_t i) {
                     const glm::vec2 ab = L[b] - L[a];
                     const float l2 = glm::dot(ab, ab);
                     const float t  = l2 > 1e-8f ? glm::dot(L[i] - L[a], ab) / l2 : 0.0f;
                     const glm::vec2 q = L[a] + ab * t;
-                    const float gy = glm::mix(ride(L[a]), ride(L[b]), t);
-                    return std::max(glm::length(L[i] - q), std::abs(ride(L[i]) - gy));
+                    const float gy = glm::mix(Y[a], Y[b], t);
+                    return std::max(glm::length(L[i] - q), std::abs(Y[i] - gy));
                 };
                 std::vector<std::size_t> keep{0};
                 for (std::size_t j = 2; j < O.size(); ++j) {
@@ -1676,9 +1906,11 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 }
                 if (O.size() > 1) keep.push_back(O.size() - 1);
                 std::vector<glm::vec2> O2, I2;
-                for (std::size_t i : keep) { O2.push_back(O[i]); I2.push_back(I[i]); }
+                std::vector<float> Y2;
+                for (std::size_t i : keep) { O2.push_back(O[i]); I2.push_back(I[i]); Y2.push_back(Y[i]); }
                 O = std::move(O2);
                 I = std::move(I2);
+                Y = std::move(Y2);
             }
             // Slabs and kerb stones in one material: a second one would be a
             // second draw in every chunk of the town.
@@ -1688,15 +1920,20 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 const Side& S = sd[k];
                 for (std::size_t i = 0; i + 1 < S.O.size(); ++i) {
                     const glm::vec2 o0 = S.O[i], o1 = S.O[i + 1], i0 = S.I[i], i1 = S.I[i + 1];
+                    const float y0 = S.Y[i], y1 = S.Y[i + 1];
                     if (!usable({o0, o1, i1, i0})) continue;
-                    addFace(slab, {top(o0), top(o1), top(i1), top(i0)}, {0, 1, 0});
-                    addFace(slab, {low(o0), low(o1), top(o1), top(o0)}, glm::vec3(-S.n.x, 0, -S.n.y));
-                    addFace(slab, {low(i0), low(i1), top(i1), top(i0)}, glm::vec3(S.n.x, 0, S.n.y));
+                    addFace(slab, {top(o0, y0), top(o1, y1), top(i1, y1), top(i0, y0)}, {0, 1, 0});
+                    addFace(slab, {low(o0, y0), low(o1, y1), top(o1, y1), top(o0, y0)},
+                            glm::vec3(-S.n.x, 0, -S.n.y));
+                    addFace(slab, {low(i0, y0), low(i1, y1), top(i1, y1), top(i0, y0)},
+                            glm::vec3(S.n.x, 0, S.n.y));
                     // Open ends where the strip breaks off (water, a foreign road).
                     if (i == 0 || !usable({S.O[i - 1], o0, i0, S.I[i - 1]}))
-                        addFace(slab, {low(o0), low(i0), top(i0), top(o0)}, glm::vec3(-S.d.x, 0, -S.d.y));
+                        addFace(slab, {low(o0, y0), low(i0, y0), top(i0, y0), top(o0, y0)},
+                                glm::vec3(-S.d.x, 0, -S.d.y));
                     if (i + 2 == S.O.size() || !usable({o1, S.O[i + 2], S.I[i + 2], i1}))
-                        addFace(slab, {low(o1), low(i1), top(i1), top(o1)}, glm::vec3(S.d.x, 0, S.d.y));
+                        addFace(slab, {low(o1, y1), low(i1, y1), top(i1, y1), top(o1, y1)},
+                                glm::vec3(S.d.x, 0, S.d.y));
                 }
                 // The corner at the start of side k, between side k-1's last
                 // points and side k's first.
@@ -1711,16 +1948,38 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 glm::vec2 c;
                 if (!intersect(pi, P.d, si, S.d, c)) continue;
                 if (!usable({po, so, si, c, pi})) continue;
-                addFace(slab, {top(c), top(pi), top(po)}, {0, 1, 0});
-                addFace(slab, {top(c), top(po), top(so)}, {0, 1, 0});
-                addFace(slab, {top(c), top(so), top(si)}, {0, 1, 0});
+                const float yp = P.Y.back(), ys = S.Y.front(), yc = 0.5f * (yp + ys);
+                addFace(slab, {top(c, yc), top(pi, yp), top(po, yp)}, {0, 1, 0});
+                addFace(slab, {top(c, yc), top(po, yp), top(so, ys)}, {0, 1, 0});
+                addFace(slab, {top(c, yc), top(so, ys), top(si, ys)}, {0, 1, 0});
                 const glm::vec2 ch = so - po;
                 glm::vec2 cn(-ch.y, ch.x);
                 if (glm::dot(cn, c - po) > 0.0f) cn = -cn;
-                addFace(slab, {low(po), low(so), top(so), top(po)}, glm::vec3(cn.x, 0, cn.y));
+                addFace(slab, {low(po, yp), low(so, ys), top(so, ys), top(po, yp)}, glm::vec3(cn.x, 0, cn.y));
                 // The corner's inner edge, where the fan meets the plots.
-                addFace(slab, {low(pi), low(c), top(c), top(pi)}, glm::vec3(P.n.x, 0, P.n.y));
-                addFace(slab, {low(c), low(si), top(si), top(c)}, glm::vec3(S.n.x, 0, S.n.y));
+                addFace(slab, {low(pi, yp), low(c, yc), top(c, yc), top(pi, yp)}, glm::vec3(P.n.x, 0, P.n.y));
+                addFace(slab, {low(c, yc), low(si, ys), top(si, ys), top(c, yc)}, glm::vec3(S.n.x, 0, S.n.y));
+            }
+            // The block's walk: the middle of its pavement, side after side, if
+            // the pavement goes all the way round (a gap over water or a road
+            // through the block would walk people across it).
+            {
+                bool whole = true;
+                for (int k = 0; k < 4 && whole; ++k) {
+                    const Side& S = sd[k];
+                    whole = S.O.size() >= 2;
+                    for (std::size_t i = 0; i + 1 < S.O.size() && whole; ++i)
+                        whole = usable({S.O[i], S.O[i + 1], S.I[i + 1], S.I[i]});
+                }
+                if (whole) {
+                    std::vector<glm::vec3> walk;
+                    for (int k = 0; k < 4; ++k)
+                        for (std::size_t i = 0; i < sd[k].O.size(); ++i) {
+                            const glm::vec2 m = 0.5f * (sd[k].O[i] + sd[k].I[i]);
+                            walk.push_back({m.x, sd[k].Y[i] + kKerb, m.y});
+                        }
+                    out.walks.push_back(std::move(walk));
+                }
             }
             const int chunk = chunkOf(cen);
             if (!slab.vertices.empty()) {
@@ -1874,7 +2133,10 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                         place(models.back(), at, -d, 1.0f);
                         ++lit;
                     }
-                    if (lit) ++out.stats.lights;
+                    if (lit) {
+                        ++out.stats.lights;
+                        out.signals.push_back(p);
+                    }
                 }
             }
         }
@@ -1915,6 +2177,7 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                     const glm::vec2 crossAt = dirSign > 0 ? b : a;
                     const std::string name =
                         cross >= 0 ? nameOf(cross, crossAt, perp) : nameOf(s, mid, d);
+                    out.stops.push_back({signAt, hd});
                     models.push_back(civic::busStopSign(name, pal.civic));
                     // The sign's faces point along the road, so both directions read it.
                     place(models.back(), signAt, hd, 0.8f);
@@ -1927,6 +2190,101 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 }
                 if (any) acc = 0.0f;
             }
+        }
+    }
+
+    // --- Power lines: from every power station out of town --------------------
+    // Straight away from the town's centre, a pylon every 220 m or so -- each
+    // one nudged along or across the line until it stands clear of roads, water
+    // and anything built -- and the wires sagging between them.
+    std::deque<fitzel::MeshData> wireMeshes;
+    if (r.powerLines && r.powerLineLength > 50.0f && !plants.empty()) {
+        std::vector<glm::vec3> attach;
+        models.push_back(civic::pylon(pal.civic, &attach));
+        const civic::Model& PY = models.back();
+        const glm::vec2 townC = r.built().center;
+        auto clearOf = [&](glm::vec2 q) {
+            if (wet(q) || roads.clearance(q) < 7.0f) return false;
+            for (const Placed& p : out.placed)
+                if (glm::length(p.pos - q) < p.radius + 6.0f) return false;
+            for (const Placed& p : out.furniture)
+                if (glm::length(p.pos - q) < p.radius + 6.0f) return false;
+            return true;
+        };
+        for (const glm::vec2& plant : plants) {
+            glm::vec2 d = plant - townC;
+            d = glm::length(d) > 1.0f ? glm::normalize(d) : lay.axisX;
+            const glm::vec2 side(-d.y, d.x);
+            std::vector<glm::vec2> towers;
+            for (float s = 70.0f; s <= r.powerLineLength; s += 220.0f) {
+                const glm::vec2 p = plant + d * s;
+                bool ok = false;
+                glm::vec2 q = p;
+                for (float along : {0.0f, 25.0f, -25.0f, 50.0f})
+                    for (float off : {0.0f, 15.0f, -15.0f, 30.0f, -30.0f})
+                        if (!ok) {
+                            q = p + d * along + side * off;
+                            ok = clearOf(q);
+                        }
+                if (ok) towers.push_back(q);
+            }
+            if (towers.size() < 2) continue;
+            // Each pylon turned to bisect the line's bend at it.
+            std::vector<glm::mat4> frames;
+            for (std::size_t i = 0; i < towers.size(); ++i) {
+                const glm::vec2 in  = i > 0 ? glm::normalize(towers[i] - towers[i - 1]) : d;
+                const glm::vec2 out2 = i + 1 < towers.size() ? glm::normalize(towers[i + 1] - towers[i]) : d;
+                glm::vec2 h = in + out2;
+                h = glm::length(h) > 1e-3f ? glm::normalize(h) : d;
+                const float yaw = glm::degrees(std::atan2(h.x, h.y));   // local +z along h
+                const glm::vec2 q = towers[i];
+                const float y = ground(q);
+                const int chunk = chunkOf(q);
+                for (const auto& [mat, md] : PY.parts) {
+                    city::Extra x;
+                    x.mesh     = &md;
+                    x.at       = glm::vec3(q.x, y, q.y);
+                    x.yaw      = yaw;
+                    x.material = mat;
+                    x.chunk    = chunk;
+                    extras.push_back(x);
+                }
+                const float rr = glm::radians(yaw), cs = std::cos(rr), sn = std::sin(rr);
+                glm::mat4 f(1.0f);
+                f[0] = glm::vec4(cs, 0.0f, -sn, 0.0f);
+                f[2] = glm::vec4(sn, 0.0f, cs, 0.0f);
+                f[3] = glm::vec4(q.x, y, q.y, 1.0f);
+                frames.push_back(f);
+                if (r.collider)
+                    for (const city::Piece& sp : PY.solids) {
+                        city::Piece c = sp;
+                        c.center = glm::vec3(f * glm::vec4(sp.center, 1.0f));
+                        c.yaw    = yaw;
+                        pcs.push_back(c);
+                        pcChunk.push_back(chunk);
+                    }
+                Placed pl;
+                pl.pos    = q;
+                pl.radius = 7.0f;
+                out.furniture.push_back(pl);
+                ++out.stats.pylons;
+            }
+            // The wires, span by span, in one mesh per line.
+            wireMeshes.emplace_back();
+            fitzel::MeshData& wires = wireMeshes.back();
+            for (std::size_t i = 0; i + 1 < frames.size(); ++i)
+                for (const glm::vec3& a : attach) {
+                    const glm::vec3 A = glm::vec3(frames[i] * glm::vec4(a, 1.0f));
+                    const glm::vec3 B = glm::vec3(frames[i + 1] * glm::vec4(a, 1.0f));
+                    civic::cable(wires, A, B, 0.03f * glm::length(B - A));
+                }
+            city::Extra x;
+            x.mesh     = &wires;
+            x.material = pal.civic.darkGrey;
+            x.chunk    = (1 << 28) + static_cast<int>(std::floor(plant.x / 1000.0f)) * 8192 +
+                         static_cast<int>(std::floor(plant.y / 1000.0f));
+            x.castsShadow = false;   // a hand's breadth wide at forty metres
+            extras.push_back(x);
         }
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -98,6 +99,37 @@ struct Grid {
     bool operator!=(const Grid& o) const { return !(*this == o); }
 };
 
+// A vehicle prefab the town's traffic drives (see TownTraffic): which prefab,
+// what it counts as (0 car, 1 bus, 2 lorry -- a bus calls at the stops), how
+// often it turns up against the others of its kind, and which way its nose
+// points in the prefab (0 +Z, 1 -Z, 2 +X, 3 -X).
+struct VehiclePrefab {
+    std::string prefab;
+    int         kind    = 0;
+    float       weight  = 1.0f;
+    int         forward = 0;
+    bool operator==(const VehiclePrefab& o) const {
+        return prefab == o.prefab && kind == o.kind && weight == o.weight && forward == o.forward;
+    }
+};
+
+// How a town fills the blocks of one public building kind.
+struct CivicSlot {
+    int         count    = 0;
+    bool        useModel = false;   // an imported model instead of the generated building
+    std::string model;              // its asset reference (as the Models list names it)
+    bool        fitPlot  = true;    // scaled to fill the block (else as imported)
+    int         turn     = 0;       // quarter turns about +Y, to face it to the street
+    bool operator==(const CivicSlot& o) const {
+        return count == o.count && useModel == o.useModel && model == o.model &&
+               fitPlot == o.fitPlot && turn == o.turn;
+    }
+};
+// The counts a new town starts with.
+std::array<CivicSlot, civic::kKinds> defaultCivic();
+// The key a kind is saved under ("church", "townHall", ...).
+const char* civicKey(civic::Kind k);
+
 // One town: where it stands, how its streets run and what it builds.
 struct Rule {
     // Stable identity. The streets carry it (RoadSystem::cityId), which is how
@@ -135,16 +167,19 @@ struct Rule {
     // --- Industry and public buildings -------------------------------------------
     // Industry takes a share of the OUTER blocks on one side of the town -- the
     // side `industryAngle` points to (degrees in the town's own frame, 0 = +X)
-    // -- so the estate is a quarter at the edge, not a speckle. The public
-    // buildings (CivicGen) take a whole block each: the church as near the
-    // centre as it gets, hospital, police and fire station out in the rings,
-    // kept apart from each other.
+    // -- so the estate is a quarter at the edge, not a speckle.
     float industryShare  = 0.10f;   // fraction of all blocks
     float industryAngle  = 0.0f;
-    int   churches       = 1;
-    int   policeStations = 1;
-    int   fireStations   = 1;
-    int   hospitals      = 1;
+    // The public and cultural buildings (CivicGen) take a whole block each, in
+    // the ring each kind belongs in (town hall and church at the heart, schools
+    // and the pool further out), kept apart from each other. Per kind: how many,
+    // and whether the town GENERATES the building or stands an imported MODEL
+    // on the block instead (Industry's entry only lends its model settings).
+    std::array<CivicSlot, civic::kKinds> civic = defaultCivic();
+    // A high-voltage line from every power station out of town, pylon by pylon,
+    // for this many metres (see derive()).
+    bool  powerLines      = true;
+    float powerLineLength = 1500.0f;
 
     // --- Buildings -----------------------------------------------------------
     float sidewalk        = 3.0f;   // kerb to the building line (metres)
@@ -166,6 +201,18 @@ struct Rule {
     bool  pavements       = true;
     bool  trafficLights   = true;
     float busStopEvery    = 350.0f;
+    // Life on the streets (see TrafficSim): vehicles per kilometre of street,
+    // the share of them that are buses and lorries, and people per 100 m of
+    // pavement. 0 = none of that kind.
+    float traffic         = 8.0f;
+    float busShare        = 0.10f;
+    float truckShare      = 0.15f;
+    float people          = 2.0f;
+    // Prefabs to drive instead of the built-in placeholders, and how much the
+    // placeholders still weigh against them (0 = prefabs only, where a kind
+    // has one).
+    std::vector<VehiclePrefab> vehiclePrefabs;
+    float placeholderWeight = 1.0f;
 
     // --- Look ----------------------------------------------------------------
     // Towers and apartment blocks each take a BuildingGen palette slot ("Building
@@ -284,12 +331,19 @@ struct RoadLine {
     std::vector<glm::vec2> pts;
     float half = 3.5f;
     std::string name;   // what the street sign on it says
+    // The road surface's height at each point (parallel to pts) where the road
+    // is built -- what the pavement is laid level with. Empty: use the ground.
+    std::vector<float> y;
 };
 
 struct Context {
     std::function<float(float, float)> groundAt;   // terrain height
     std::function<bool(float, float)>   isWater;   // river, lake or sea at (x,z)
     std::vector<RoadLine>               roads;     // EVERY road in the scene
+    // The bounds of an imported model (its own frame), for standing it on a
+    // block; false when it cannot be had (then it is placed as imported, with
+    // no collider).
+    std::function<bool(const std::string&, glm::vec3&, glm::vec3&)> modelBounds;
 };
 
 // What derive() produced, for the panel's "why is my block empty" line.
@@ -297,8 +351,8 @@ struct Stats {
     int lots = 0, built = 0;
     int skippedRoad = 0, skippedWater = 0, skippedSlope = 0, skippedEmpty = 0;
     int towers = 0, blocks = 0, rows = 0, houses = 0, parks = 0;
-    int churches = 0, police = 0, fireStations = 0, hospitals = 0, industry = 0;
-    int signs = 0, lights = 0, busStops = 0;
+    std::array<int, civic::kKinds> civic{};   // blocks built per kind (Industry = estates)
+    int signs = 0, lights = 0, busStops = 0, pylons = 0;
     bool budgetHit = false;
 };
 
@@ -309,12 +363,36 @@ struct Placed {
     Zone      zone = Zone::Houses;
 };
 
+// An imported model standing on a block in place of a generated building.
+struct ModelPlacement {
+    std::string model;
+    glm::mat4   transform{1.0f};
+};
+
+// A bus stop as the traffic sees it: where the sign stands and which way the
+// buses that call there are heading.
+struct Stop {
+    glm::vec2 pos{0.0f};
+    glm::vec2 heading{1.0f, 0.0f};
+};
+
 struct Town {
     city::District      district;   // merged batches + colliders
     std::vector<Placed> placed;
     std::vector<Placed> furniture;  // shelters and traffic lights (clearings too)
+    // For the traffic: the stops, the crossings that have lights (their grid
+    // node), and a walk round every block along the middle of its pavement,
+    // closed, with the pavement's height (y) at each point.
+    std::vector<Stop>                   stops;
+    std::vector<glm::vec2>              signals;
+    std::vector<std::vector<glm::vec3>> walks;
+    std::vector<ModelPlacement>         models;   // see CivicSlot::useModel
     Stats               stats;
-    void clear() { district.clear(); placed.clear(); furniture.clear(); stats = Stats{}; }
+    void clear() {
+        district.clear(); placed.clear(); furniture.clear();
+        stops.clear(); signals.clear(); walks.clear(); models.clear();
+        stats = Stats{};
+    }
 };
 
 // The palettes a town draws with, find-or-created in the project library and

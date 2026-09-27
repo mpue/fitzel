@@ -33,7 +33,17 @@
 // the result through city::merge.
 namespace civic {
 
-enum class Kind { Church, Police, FireStation, Hospital, Industry, Count };
+// The kinds a town can put on a whole block. Append only: the order is the
+// index a rule's per-kind settings are kept under while the town is planned.
+enum class Kind {
+    Church, Police, FireStation, Hospital, Industry,
+    // The cultural ones.
+    TownHall, School, Kindergarten, Library, Museum, Theatre, Pool,
+    // Supply and transport.
+    PetrolStation, PowerPlant, Landfill, Station,
+    Count
+};
+constexpr int kKinds = static_cast<int>(Kind::Count);
 const char* kindName(Kind k);
 
 // The shared materials ("City Civic ..."), one set per project, re-applied on
@@ -47,6 +57,12 @@ struct Palette {
     // purpose -- every material is a draw per chunk; the rest reuse the above
     // (poles and frames `metal`, signal heads and dark lamps `darkGrey`).
     fitzel::AssetId pavement, shelterGlass, busYellow, busGreen;
+    // The cultural buildings: a cream facade with windows, lawn and sand for
+    // the grounds, pool water, a kindergarten's yellow.
+    fitzel::AssetId hall, lawn, sand, poolWater, kinder;
+    // Supply and transport: asphalt, a fuel brand's colour, landfill earth and
+    // rubbish, track gravel and rails, a train's red, the steel of a pylon.
+    fitzel::AssetId asphalt, fuel, earth, rubbish, gravel, rail, trainRed, steel;
     // The signal lamps, per approach axis (0 = along the town's X streets, 1 =
     // along Z): each colour its own material, dark in the library, lit per
     // frame by what signalPhase() says -- see CitySystem::forEachSignalLamp.
@@ -81,6 +97,16 @@ struct Model {
 // storeys, which halls an estate gets). Returns an empty model when the plot is
 // too small for the kind to be recognisable at all.
 Model build(Kind kind, float width, float depth, std::uint32_t seed, const Palette& pal);
+
+// --- Power lines ---------------------------------------------------------------
+// A lattice pylon of the two-circuit kind ("Donaumast"), standing at the origin,
+// its arms along x -- the line runs along z. `attach` gets the seven points the
+// wires hang from (six conductors, then the earth wire at the top), in the
+// pylon's frame.
+Model pylon(const Palette& pal, std::vector<glm::vec3>* attach = nullptr);
+// A wire from `a` to `b` (world space) sagging `sag` metres at mid-span, as a
+// thin three-sided tube.
+void cable(fitzel::MeshData& md, glm::vec3 a, glm::vec3 b, float sag, float radius = 0.035f);
 
 // --- Street furniture ----------------------------------------------------------
 // Each stands at the origin of its own frame on the ground, its FRONT -- what it

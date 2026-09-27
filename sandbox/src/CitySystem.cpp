@@ -51,6 +51,7 @@ void CitySystem::update(std::vector<MaterialDef>& materials) {
     ctx.groundAt = groundAt;
     ctx.isWater  = isWater;
     if (roadLines) ctx.roads = roadLines();
+    ctx.modelBounds = modelBounds;
 
     for (std::size_t i = 0; i < towns.size(); ++i) {
         Built& b = m_built[i];
@@ -63,6 +64,13 @@ void CitySystem::update(std::vector<MaterialDef>& materials) {
         const cityplan::Palettes pal = cityplan::ensurePalettes(materials, towns[i]);
         m_civic    = pal.civic;
         m_hasCivic = true;
+        // Palettes may name textures by GUID (see civic::ensurePalette); load
+        // the pixels the first time a material asks for them.
+        if (loadTexture)
+            for (MaterialDef& m : materials) {
+                if (m.texId.valid() && !m.tex) m.tex = loadTexture(m.texId);
+                if (m.normalTexId.valid() && !m.normalTex) m.normalTex = loadTexture(m.normalTexId);
+            }
         b.town = cityplan::derive(towns[i], pal, ctx);
         // Upload and drop the CPU copy, as the roadside city does: a town's
         // vertices are tens of megabytes nothing reads again.
@@ -74,6 +82,7 @@ void CitySystem::update(std::vector<MaterialDef>& materials) {
         b.ms = std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - t0).count();
     }
+    ++m_revision;
 }
 
 void CitySystem::forEachDraw(const glm::vec3& eye,
@@ -99,6 +108,19 @@ void CitySystem::forEachCollider(const std::function<void(const city::Piece&)>& 
     for (std::size_t t = 0; t < m_built.size() && t < towns.size(); ++t) {
         if (!towns[t].enabled) continue;
         for (const city::Piece& pc : m_built[t].town.district.colliders) fn(pc);
+    }
+}
+
+void CitySystem::forEachModel(
+    const glm::vec3& eye, const std::function<void(const std::string&, const glm::mat4&)>& fn) const {
+    const float r2 = range * range;
+    for (std::size_t t = 0; t < m_built.size() && t < towns.size(); ++t) {
+        if (!towns[t].enabled) continue;
+        for (const cityplan::ModelPlacement& m : m_built[t].town.models) {
+            const glm::vec3 d = glm::vec3(m.transform[3]) - eye;
+            if (glm::dot(d, d) > r2) continue;
+            fn(m.model, m.transform);
+        }
     }
 }
 
@@ -222,6 +244,11 @@ CitySystem::Laid CitySystem::layStreets(int i, RoadSet& roads) {
             road.width     = run.width;
             road.edgeWidth = 0.0f;
             road.shoulder  = 2.5f;
+            // The pavement lies on level ground at the road's own height; the
+            // shoulder eases back to the terrain only behind it.
+            road.bed       = towns[static_cast<std::size_t>(i)].pavements
+                                 ? std::max(towns[static_cast<std::size_t>(i)].sidewalk, 0.0f) + 0.5f
+                                 : 0.0f;
             RoadSystem::Shape sh;
             sh.points = run.pts;
             sh.lifts.assign(run.pts.size(), 0.0f);

@@ -131,6 +131,10 @@ public:
     // craft was standing on and so was never above its own ceiling.
     bool surfaceHeightAt(const glm::vec2& xz, float& outY, float maxY) const;
 
+    // The asset database the roads resolve their models and textures through
+    // (panels that pick a model list its entries).
+    fitzel::AssetDatabase& assetDb() const { return m_assetDb; }
+
     // --- Junctions -----------------------------------------------------------
     // Where the roads meet on the level, found by the last buildAll or
     // rebuildMeshes (see RoadJunction.hpp). This is the ONE place a crossing can

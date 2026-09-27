@@ -303,7 +303,7 @@ void Renderer::begin(const Camera& camera, float aspect,
 void Renderer::submit(const Mesh& mesh, const Material& material,
                       const glm::mat4& model, bool castsPointShadow,
                       bool reflective, float opacity, bool forceTransparent,
-                      bool castsSunShadow) {
+                      bool castsSunShadow, bool inReflections) {
     // Read the surface for the shadow passes once, here, while the material is
     // in hand. AlphaMode as SceneTypes.hpp defines it: Opaque IGNORES the map's
     // alpha (a great many opaque atlases carry one that means nothing, and
@@ -337,7 +337,8 @@ void Renderer::submit(const Mesh& mesh, const Material& material,
     }
     m_queue.push_back({&mesh, &material, model, castsPointShadow, reflective,
                        opacity, forceTransparent,
-                       coverage, alphaMode, cutoff, alphaTex, prevModel, castsSunShadow});
+                       coverage, alphaMode, cutoff, alphaTex, prevModel, castsSunShadow,
+                       inReflections});
 }
 
 void Renderer::renderMotion(const glm::mat4& viewProj, const glm::mat4& curVP,
@@ -483,8 +484,19 @@ void Renderer::captureSceneCopy() {
     if (w <= 0 || h <= 0) { m_sceneCopyW = 0; return; }
 
     glActiveTexture(GL_TEXTURE0 + kSceneCopyUnit);
+    // The texture of this size, else the least recently used one, re-sized.
+    SceneCopy* slot = &m_sceneCopies[0];
+    for (SceneCopy& c : m_sceneCopies) {
+        if (c.w == w && c.h == h && c.tex) { slot = &c; break; }
+        if (c.used < slot->used) slot = &c;
+    }
+    slot->used  = ++m_sceneCopyUses;
+    m_sceneCopy = slot->tex;
+    m_sceneCopyW = slot->w;
+    m_sceneCopyH = slot->h;
     if (!m_sceneCopy) {
         glGenTextures(1, &m_sceneCopy);
+        slot->tex = m_sceneCopy;
         glBindTexture(GL_TEXTURE_2D, m_sceneCopy);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -503,8 +515,8 @@ void Renderer::captureSceneCopy() {
     if (w != m_sceneCopyW || h != m_sceneCopyH) {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA,
                      GL_HALF_FLOAT, nullptr);
-        m_sceneCopyW = w;
-        m_sceneCopyH = h;
+        m_sceneCopyW = slot->w = w;
+        m_sceneCopyH = slot->h = h;
     }
     glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vp[0], vp[1], w, h);
     m_sceneCopyX = vp[0];
@@ -888,8 +900,10 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
     // blending and depth writes off (so they blend over the opaque scene and
     // each other without occluding). Reflective probe pass still excludes them.
     std::vector<const Renderable*> opaque, transparent;
+    const bool elsewhere = skipReflective || clipPlane != kNoClip;   // probe or water
     for (const auto& r : m_queue) {
         if (skipReflective && r.reflective) continue;
+        if (elsewhere && !r.inReflections) continue;
         // A plain viewport mode has nothing to blend: those modes are there to
         // show where the geometry IS, and a pane you can see through is a pane
         // you cannot point at. It is also what stops a blended surface from

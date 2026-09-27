@@ -25,7 +25,9 @@ compile_commands.json
 /screenshots/
 
 # Large binary texture assets (provided locally, not tracked)
-/content/textures/
+/content/textures/*
+# ...except the small ones the generators bake (sandbox/tools/pavingtex.py).
+!/content/textures/paving_slabs_01_*
 
 # Model assets: only the default tree is tracked; other imported models
 # (often carrying embedded 4k textures) stay local.
@@ -45,6 +47,9 @@ content/models/*/
 # Asset metadata sidecars are generated locally for now (Phase 1); the ignored
 # content dirs above already exclude most of them.
 *.meta
+# ...but a baked texture the code refers to by GUID keeps its sidecar, or a
+# fresh clone would mint another GUID and the reference would miss.
+!/content/textures/paving_slabs_01_*.meta
 
 # Blender source/backup files (only the exported glTF is tracked)
 *.blend

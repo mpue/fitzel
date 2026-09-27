@@ -180,11 +180,17 @@ void RoadSystem::syncJunctionSurface() {
     // The grain, but only while the apron is tiled like the road. A fitted image
     // spans the whole plate in one repeat of its UVs, and the road's normal map
     // stretched across ten metres of that is not grain, it is a smear.
+    // The material only points at its textures: one let go is cleared here,
+    // or every draw binds a destroyed texture.
     if (!fitted && m_normTex) m_junctionMat.setTexture("uNormalMap", *m_normTex, 1);
+    else                      m_junctionMat.clearTexture("uNormalMap");
     m_junctionMat.set("uHasNormalMap", (!fitted && m_normTex) ? 1 : 0);
-    if (m_wetTex)  m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
+    if (m_wetTex) m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
+    else          m_junctionMat.clearTexture("uWetMap");
     if (m_junctionGlowTex)
         m_junctionMat.setTexture("uEmissionMap", *m_junctionGlowTex, 3);
+    else
+        m_junctionMat.clearTexture("uEmissionMap");
     applyEmission();
 }
 
@@ -349,7 +355,7 @@ std::string RoadSystem::crossingFor(const std::string& file) const {
 void RoadSystem::setNormal(const std::string& file) {
     if (file.empty()) {
         m_normTex.reset();
-        m_mat.set("uHasNormalMap", 0);
+        m_mat.clearTexture("uNormalMap").set("uHasNormalMap", 0);
         syncJunctionSurface();
         normSel = -1;
         return;
@@ -369,6 +375,7 @@ void RoadSystem::setNormal(const std::string& file) {
 void RoadSystem::setEmission(const std::string& file) {
     if (file.empty()) {
         m_emisTex.reset();
+        m_mat.clearTexture("uEmissionMap");
         emisSel = -1;
         applyEmission();
         return;
@@ -399,6 +406,8 @@ void RoadSystem::setWetMap(const std::string& file) {
     wetMap = file;
     if (file.empty()) {
         m_wetTex.reset();
+        m_mat.clearTexture("uWetMap");
+        syncJunctionSurface();
         applyWetness();
         return;
     }
@@ -718,7 +727,7 @@ void RoadSystem::save(nlohmann::json& j) const {
         {"wetStretch", wetStretch},
         {"wetReflect", wetReflect},
         {"grade",     grade},
-        {"shoulder",  shoulder},
+        {"shoulder",  shoulder}, {"bed", bed},
         // The surface goes by name, not index: the texture list is rebuilt from
         // disk each run, so an index would point somewhere else next time.
         {"surface",   (texSel >= 0 && texSel < static_cast<int>(texFiles.size()))
@@ -826,6 +835,7 @@ void RoadSystem::load(const nlohmann::json& j) {
     setWetMap(j.value("wetMap", std::string())); // loads it + applies the uniforms
     grade     = j.value("grade",     0.55f);
     shoulder  = j.value("shoulder",  3.0f);
+    bed       = j.value("bed",       0.0f);
 
     const std::string surf = j.value("surface", std::string());
     if (!surf.empty()) {
@@ -1739,7 +1749,7 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
     // stands ABOVE the road, but its footprint is still road, and ground left
     // ungraded under it would poke through the outer half of the wall.
     const float half   = surfaceHalf();
-    const float reach  = half + shoulder;
+    const float reach  = half + bed + shoulder;
     glm::vec2 lo(L.center[0]), hi(L.center[0]);
     for (const glm::vec2& c : L.center) {
         lo = glm::min(lo, c); hi = glm::max(hi, c);
@@ -1750,8 +1760,8 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
     // terrain would rise straight through the plate's far corners.
     for (const roadjunction::Crossing& x : jp.grade)
         for (const glm::vec2& p : x.plate) {
-            lo = glm::min(lo, p - glm::vec2(shoulder));
-            hi = glm::max(hi, p + glm::vec2(shoulder));
+            lo = glm::min(lo, p - glm::vec2(bed + shoulder));
+            hi = glm::max(hi, p + glm::vec2(bed + shoulder));
         }
 
     const float cell = edit.cell;
@@ -1835,8 +1845,8 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
             const float surfH = roadH - lateral * std::tan(glm::radians(bankDeg));
             float target = surfH;
             float flat   = 1.0f; // 1 = flattened onto the road, 0 = natural ground
-            if (d > half) {
-                const float e = glm::clamp((d - half) / shoulder, 0.0f, 1.0f);
+            if (d > half + bed) {
+                const float e = glm::clamp((d - half - bed) / std::max(shoulder, 1e-3f), 0.0f, 1.0f);
                 const float k = e * e * (3.0f - 2.0f * e);
                 target = glm::mix(surfH, base, k);
                 flat   = 1.0f - k;
@@ -1879,14 +1889,14 @@ bool RoadSystem::releaseCorridor(fitzel::TerrainEditField& edit,
     // Exactly the reach buildWith() writes: carriageway, lip and shoulder --
     // plus every junction apron the road graded, which at an oblique crossing
     // reaches past the corridor.
-    const float reach = surfaceHalf() + shoulder;
+    const float reach = surfaceHalf() + bed + shoulder;
     glm::vec2 lo(center[0]), hi(center[0]);
     for (const glm::vec2& c : center) { lo = glm::min(lo, c); hi = glm::max(hi, c); }
     lo -= glm::vec2(reach); hi += glm::vec2(reach);
     for (const roadjunction::Crossing& x : m_junctions)
         for (const glm::vec2& p : x.plate) {
-            lo = glm::min(lo, p - glm::vec2(shoulder));
-            hi = glm::max(hi, p + glm::vec2(shoulder));
+            lo = glm::min(lo, p - glm::vec2(bed + shoulder));
+            hi = glm::max(hi, p + glm::vec2(bed + shoulder));
         }
 
     const float cell = edit.cell;

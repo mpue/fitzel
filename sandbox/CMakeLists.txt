@@ -124,6 +124,11 @@ set(SANDBOX_RUNTIME_SOURCES
     # Street-name signs: the town letters its crossings, and a placed sign keeps
     # its parameters on the root (StreetSignComponent), which the player must load.
     src/StreetSign.cpp
+    # The towns' traffic: the simulation (runtime, the player drives it too) and
+    # its drawing.
+    src/TrafficSim.cpp
+    src/TownTraffic.cpp
+    src/HalfResSky.cpp
     src/RainRenderer.cpp
     # Weather presets: the named skies a project keeps in weather.json.
     # Runtime, not editor-only -- a loaded scene names the preset it is on, and
@@ -431,6 +436,19 @@ target_link_libraries(signcheck PRIVATE fitzel nlohmann_json::nlohmann_json stb_
 # into sandbox/src/SignFont.inc. Only run to change the street signs' typeface;
 # not part of the regular build.
 #   signfontgen sandbox/tools/fonts/din1451alt.ttf sandbox/src/SignFont.inc
+# trafficcheck (sandbox/tools/trafficcheck.cpp): the towns' traffic without a
+# window. Vehicles move, never run into the one ahead, stop at red, buses call
+# at their stops, people stay on their pavement -- over a few simulated minutes
+# in real towns. Pure simulation, no GL.
+#   build/release/bin/trafficcheck.exe
+add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp
+                            src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
+                            src/StreetSign.cpp src/BuildingGen.cpp src/HouseGen.cpp
+                            src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
+                            src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                            src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(trafficcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
 add_executable(signfontgen EXCLUDE_FROM_ALL tools/signfontgen.cpp)
 target_include_directories(signfontgen PRIVATE ${imgui_SOURCE_DIR})
 target_link_libraries(weathercheck PRIVATE fitzel glm::glm

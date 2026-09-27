@@ -176,16 +176,32 @@ void checkPreset(cityplan::Preset preset) {
         check((st.lights > 0) == (city || avenue), "traffic lights where the town is a city, none in a village",
               std::to_string(st.lights) + " crossings");
         check(st.busStops > 0, "bus stops along the streets", std::to_string(st.busStops));
+        // Power lines: pylons where a power station stands, none on a road.
+        const int plants = st.civic[static_cast<std::size_t>(civic::Kind::PowerPlant)];
+        float nearestPylon = 1e9f;
+        for (const Placed& p : T.furniture)
+            if (std::abs(p.radius - 7.0f) < 0.01f) nearestPylon = std::min(nearestPylon, -intrusion(p.pos));
+        check((plants > 0) == (st.pylons > 0) && (st.pylons == 0 || nearestPylon > 5.0f),
+              "a power line from every power station, its pylons off the roads",
+              std::to_string(plants) + " stations, " + std::to_string(st.pylons) + " pylons" +
+                  (st.pylons ? ", nearest " + std::to_string(nearestPylon).substr(0, 4) + " m from a carriageway" : ""));
     }
     {
-        char pub[160];
-        std::snprintf(pub, sizeof pub, "%d/%d churches, %d/%d police, %d/%d fire, %d/%d hospitals, %d industrial blocks",
-                      st.churches, r.churches, st.police, r.policeStations, st.fireStations,
-                      r.fireStations, st.hospitals, r.hospitals, st.industry);
-        check(st.churches == r.churches && st.police == r.policeStations &&
-              st.fireStations == r.fireStations && st.hospitals == r.hospitals &&
-              (r.industryShare <= 0.0f || st.industry > 0),
-              "every public building asked for stands, and the estate", pub);
+        std::string pub;
+        bool all = true;
+        for (int k = 0; k < civic::kKinds; ++k) {
+            const civic::Kind kind = static_cast<civic::Kind>(k);
+            const int want = r.civic[static_cast<std::size_t>(k)].count;
+            const int got  = st.civic[static_cast<std::size_t>(k)];
+            if (kind == civic::Kind::Industry) {
+                all &= r.industryShare <= 0.0f || got > 0;
+                continue;
+            }
+            all &= got == want;
+            if (want) pub += std::to_string(got) + "/" + std::to_string(want) + " " +
+                             civic::kindName(kind) + ", ";
+        }
+        check(all, "every public and cultural building asked for stands, and the estate", pub);
     }
 
     {
@@ -506,6 +522,138 @@ int sceneFragment(const char* out, int preset, float x, float z, float organic) 
     return 0;
 }
 
+// A public building as an imported model instead of the generated one: it
+// replaces the building on its block, fitted into it and given a collider; the
+// choice survives a save; and a town saved before the cultural kinds loads
+// without them.
+void checkCivicModels() {
+    using namespace cityplan;
+    std::printf("\n== Public buildings as models ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    CivicSlot& school = r.civic[static_cast<std::size_t>(civic::Kind::School)];
+    school.useModel = true;
+    school.model    = "models/test_school.glb";
+    school.turn     = 1;
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float, float) { return 0.0f; };
+    for (const Street& s : L.streets) ctx.roads.push_back({s.pts, s.width * 0.5f, s.name});
+    // A model 10 m x 8 m tall x 6 m in its own units, off-centre on purpose.
+    ctx.modelBounds = [](const std::string& ref, glm::vec3& lo, glm::vec3& hi) {
+        if (ref != "models/test_school.glb") return false;
+        lo = {2.0f, 1.0f, -1.0f};
+        hi = {12.0f, 9.0f, 5.0f};
+        return true;
+    };
+    const Town T = derive(r, pal, ctx);
+    check(T.models.size() == static_cast<std::size_t>(school.count) &&
+              T.stats.civic[static_cast<std::size_t>(civic::Kind::School)] == school.count,
+          "a model stands in for every school", std::to_string(T.models.size()) + " placed");
+    // Fitted into its block: its footprint's corners inside the block's own.
+    bool inside = true, grounded = true;
+    for (const ModelPlacement& m : T.models) {
+        const glm::vec3 corners[4] = {{2, 1, -1}, {12, 1, -1}, {12, 1, 5}, {2, 1, 5}};
+        glm::vec2 cen(0.0f);
+        float best = 1e9f;
+        const Block* home = nullptr;
+        const glm::vec2 at(m.transform[3].x, m.transform[3].z);
+        for (const Block& b : L.blocks) {
+            const glm::vec2 c = 0.25f * (b.corner[0] + b.corner[1] + b.corner[2] + b.corner[3]);
+            if (glm::length(c - at) < best) { best = glm::length(c - at); home = &b; cen = c; }
+        }
+        for (const glm::vec3& c : corners) {
+            const glm::vec4 w = m.transform * glm::vec4(c, 1.0f);
+            grounded &= std::abs(w.y - 0.0f) < 1e-3f;
+            // Inside the block's corner quad (convex): same side of every edge.
+            bool in = true;
+            float sign = 0.0f;
+            for (int k = 0; k < 4 && home; ++k) {
+                const glm::vec2 a = home->corner[k], e = home->corner[(k + 1) % 4] - a;
+                const float cr = e.x * (w.z - a.y) - e.y * (w.x - a.x);
+                if (sign == 0.0f) sign = cr;
+                in &= cr * sign > 0.0f;
+            }
+            inside &= in;
+        }
+    }
+    check(inside && grounded, "fitted into its block and standing on the ground");
+    // Save and load keep the choice; the old four-count format adds no new kinds.
+    nlohmann::json j;
+    save(j, r);
+    Rule back;
+    load(j, back);
+    check(back.civic == r.civic, "the per-kind choices survive a save and load");
+    nlohmann::json old = j;
+    old.erase("civic");
+    old["churches"] = 2;
+    old["hospitals"] = 0;
+    Rule legacy;
+    load(old, legacy);
+    int culture = 0;
+    for (int k = static_cast<int>(civic::Kind::TownHall); k < civic::kKinds; ++k)
+        culture += legacy.civic[static_cast<std::size_t>(k)].count;
+    check(culture == 0 && legacy.civic[0].count == 2 &&
+              legacy.civic[static_cast<std::size_t>(civic::Kind::Hospital)].count == 0,
+          "a town saved before the cultural kinds keeps its four and gets none of them");
+}
+
+// Pavements lie level with their road, not on the ground: over a lumpy terrain
+// with smooth streets, every slab's top is the road's height plus the kerb.
+void checkPavementLevel() {
+    using namespace cityplan;
+    std::printf("\n== Pavements on lumpy ground ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.grid.organic = 0.2f;
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    // Level streets at 2 m, the ground humped round them: whatever the slabs
+    // do beyond 2.12 m is the ground showing through.
+    auto smooth = [](float, float) { return 2.0f; };
+    Context ctx;
+    // Bumps of +-0.35 m every few metres: what the pavement used to follow.
+    ctx.groundAt = [&](float x, float z) {
+        return smooth(x, z) + 0.35f * std::sin(x * 0.9f) * std::cos(z * 1.1f);
+    };
+    for (const Street& s : L.streets) {
+        RoadLine rl{s.pts, s.width * 0.5f, s.name, {}};
+        for (const glm::vec2& p : s.pts) rl.y.push_back(smooth(p.x, p.y));
+        ctx.roads.push_back(rl);
+    }
+    const Town T = derive(r, pal, ctx);
+    float worst = 0.0f;
+    std::size_t tops = 0;
+    for (const city::Batch& b : T.district.batches) {
+        if (b.material != pal.civic.pavement) continue;
+        for (const fitzel::Vertex& v : b.data.vertices) {
+            if (v.normal.y < 0.9f) continue;   // the slabs' tops, not the kerb faces
+            // Only the pavement band beside a street: the squares in front of
+            // the public buildings are paved too, but stand at their building's.
+            // (measured against the road's height at the nearest point of its
+            // centreline: a town street is level across, and so is its pavement)
+            float near = 1e9f;
+            glm::vec2 foot(0.0f);
+            const glm::vec2 q(v.position.x, v.position.z);
+            for (const Street& st : L.streets)
+                for (std::size_t i = 0; i + 1 < st.pts.size(); ++i) {
+                    const glm::vec2 a = st.pts[i], ab = st.pts[i + 1] - a;
+                    const float t = glm::clamp(glm::dot(q - a, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
+                    const float d = glm::length(q - (a + ab * t)) - 0.5f * st.width;
+                    if (d < near) { near = d; foot = a + ab * t; }
+                }
+            if (near > r.sidewalk + 0.2f) continue;
+            worst = std::max(worst, std::abs(v.position.y - (smooth(foot.x, foot.y) + 0.12f)));
+            ++tops;
+        }
+    }
+    check(tops > 0 && worst < 0.05f, "the slabs lie level with the road, not on the bumps",
+          std::to_string(tops) + " top vertices, worst " + std::to_string(worst).substr(0, 5) + " m off");
+}
+
 // The traffic signals' clock: the German sequence on each axis, never both axes
 // open at once, and a full cycle in kSignalCycle.
 void checkSignals() {
@@ -552,6 +700,8 @@ int main(int argc, char** argv) {
     checkWaterAndSlope();
     checkCivic();
     checkSignals();
+    checkCivicModels();
+    checkPavementLevel();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "all good", g_fail,
                 g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;

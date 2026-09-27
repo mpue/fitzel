@@ -504,6 +504,11 @@ public:
     float                    wetReflect = 0.45f; // 0 = sun sheen only .. 1 = mirror
     float                    grade     = 0.55f; // 0..1 longitudinal smoothing (flatter road)
     float                    shoulder  = 3.0f; // metres of terrain blend beyond the edge
+    // Metres of LEVEL bed beyond the edge before the shoulder starts: the ground
+    // graded to the road's own height, for what stands beside it -- a town
+    // street's pavement, which would otherwise lie on the shoulder's blend back
+    // to the natural ground and follow every bump in it.
+    float                    bed       = 0.0f;
     bool                     needsBuild = false; // roadPts/width/grade changed since Build
     bool                     vegDirty  = false; // road changed -> re-clear plants
     std::vector<std::string> texFiles;         // selectable diffuse textures (display names)

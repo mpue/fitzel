@@ -20,6 +20,8 @@ Mesh::Mesh(Mesh&& other) noexcept
       m_ebo(std::exchange(other.m_ebo, 0)),
       m_vertexCount(std::exchange(other.m_vertexCount, 0)),
       m_indexCount(std::exchange(other.m_indexCount, 0)),
+      m_vboBytes(std::exchange(other.m_vboBytes, 0)),
+      m_eboBytes(std::exchange(other.m_eboBytes, 0)),
       m_boundsMin(other.m_boundsMin),
       m_boundsMax(other.m_boundsMax) {}
 
@@ -34,6 +36,8 @@ Mesh& Mesh::operator=(Mesh&& other) noexcept {
         m_ebo         = std::exchange(other.m_ebo, 0);
         m_vertexCount = std::exchange(other.m_vertexCount, 0);
         m_indexCount  = std::exchange(other.m_indexCount, 0);
+        m_vboBytes    = std::exchange(other.m_vboBytes, 0);
+        m_eboBytes    = std::exchange(other.m_eboBytes, 0);
         m_boundsMin   = other.m_boundsMin;
         m_boundsMax   = other.m_boundsMax;
     }
@@ -49,6 +53,8 @@ Mesh Mesh::create(const std::vector<Vertex>& vertices,
     Mesh mesh;
     mesh.m_vertexCount = static_cast<std::uint32_t>(vertices.size());
     mesh.m_indexCount  = static_cast<std::uint32_t>(indices.size());
+    mesh.m_vboBytes    = vertices.size() * sizeof(Vertex);
+    mesh.m_eboBytes    = indices.size() * sizeof(std::uint32_t);
 
     // Local-space AABB for frustum culling.
     constexpr float inf = std::numeric_limits<float>::max();
@@ -153,10 +159,43 @@ Mesh Mesh::cube() {
 void Mesh::update(const std::vector<Vertex>& vertices) {
     if (m_vbo == 0) { *this = create(vertices); return; }
     m_vertexCount = static_cast<std::uint32_t>(vertices.size());
+    m_vboBytes    = vertices.size() * sizeof(Vertex);
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(vertices.size() * sizeof(Vertex)),
-                 vertices.data(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(m_vboBytes), vertices.data(),
+                 GL_DYNAMIC_DRAW);
+    constexpr float inf = std::numeric_limits<float>::max();
+    glm::vec3 lo{inf}, hi{-inf};
+    for (const Vertex& v : vertices) {
+        lo = glm::min(lo, v.position);
+        hi = glm::max(hi, v.position);
+    }
+    if (!vertices.empty()) { m_boundsMin = lo; m_boundsMax = hi; }
+}
+
+namespace {
+// Refill a streamed buffer: orphan it at its allocated size (the driver hands
+// back fresh memory while the GPU may still read the old) and write the data
+// in; grow it, with half again as headroom, only when the data outgrows it.
+void stream(GLenum target, const void* data, std::size_t bytes, std::size_t& allocated) {
+    if (bytes > allocated) allocated = std::max<std::size_t>(bytes + bytes / 2, 64 * 1024);
+    glBufferData(target, static_cast<GLsizeiptr>(allocated), nullptr, GL_STREAM_DRAW);
+    if (bytes > 0) glBufferSubData(target, 0, static_cast<GLsizeiptr>(bytes), data);
+}
+} // namespace
+
+void Mesh::update(const std::vector<Vertex>& vertices, const std::vector<std::uint32_t>& indices) {
+    if (m_vao == 0) { *this = create(vertices, indices); return; }
+    m_vertexCount = static_cast<std::uint32_t>(vertices.size());
+    m_indexCount  = static_cast<std::uint32_t>(indices.size());
+    // The element buffer binding lives in the VAO.
+    glBindVertexArray(m_vao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    stream(GL_ARRAY_BUFFER, vertices.data(), vertices.size() * sizeof(Vertex), m_vboBytes);
+    if (m_ebo == 0) glGenBuffers(1, &m_ebo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_ebo);
+    stream(GL_ELEMENT_ARRAY_BUFFER, indices.data(), indices.size() * sizeof(std::uint32_t),
+           m_eboBytes);
+    glBindVertexArray(0);
     constexpr float inf = std::numeric_limits<float>::max();
     glm::vec3 lo{inf}, hi{-inf};
     for (const Vertex& v : vertices) {

@@ -16,6 +16,11 @@ Material& Material::setTexture(const std::string& name, const Texture& texture,
     return *this;
 }
 
+Material& Material::clearTexture(const std::string& name) {
+    m_textures.erase(name);
+    return *this;
+}
+
 const Material::Value* Material::uniform(const std::string& name) const {
     auto it = m_uniforms.find(name);
     return it == m_uniforms.end() ? nullptr : &it->second;

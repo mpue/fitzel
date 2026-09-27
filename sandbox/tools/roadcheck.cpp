@@ -956,6 +956,48 @@ int main(int argc, char** argv) {
         check(kept, "re-laid streets keep the look the old ones had", "");
     }
 
+    // --- A level bed beside the road (RoadSystem::bed) -------------------------
+    // What a town's pavement stands on: the ground graded to the road's height
+    // for `bed` metres beyond the edge, and only then eased back. Graded like the
+    // carriageway, it sits a hair BELOW the road (kRoadClear plus the base's
+    // bulge between nodes), which is what a slab a kerb above the road wants:
+    // nothing of the ground may rise through it. Without a bed, the same
+    // offsets are the shoulder's blend back to the hills, and they do.
+    {
+        auto across = [&](float bed, float& highest, float& lowest) {
+            RoadSet rs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+            RoadSystem& r = rs.active();
+            setRoad(r, "Bedded", straightRun(300.0f, -120.0f, 120.0f, 5), 7.0f);
+            r.edgeWidth = 0.0f;
+            r.shoulder  = 2.5f;
+            r.bed       = bed;
+            fitzel::TerrainEditField e;
+            glm::vec2 a, b;
+            rs.buildAll(e, a, b);
+            const float half = r.surfaceHalf();
+            highest = -1e9f;
+            lowest  = 1e9f;
+            for (float z = -80.0f; z <= 80.0f; z += 4.0f) {
+                float roadY = 0.0f;
+                if (!rs.surfaceHeightAt({300.0f, z}, roadY, 1e9f)) continue;
+                for (float off : {half + 0.5f, half + 1.5f, half + 2.5f})
+                    for (int s = -1; s <= 1; s += 2) {
+                        const float g = groundAfterCut(ts, e, {300.0f + s * off, z});
+                        highest = std::max(highest, g - roadY);
+                        lowest  = std::min(lowest, g - roadY);
+                    }
+            }
+        };
+        float bedHi = 0.0f, bedLo = 0.0f, bareHi = 0.0f, bareLo = 0.0f;
+        across(3.5f, bedHi, bedLo);
+        across(0.0f, bareHi, bareLo);
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "within 3 m of the edge the ground is %.2f..%.2f m from the "
+                      "road with a bed, %.2f..%.2f m without", bedLo, bedHi, bareLo, bareHi);
+        check(bedHi < 0.1f && bedLo > -1.5f && bareHi > 0.12f,
+              "a bed keeps the ground under a pavement's slabs", buf);
+    }
+
     glfwDestroyWindow(win);
     glfwTerminate();
     std::printf(g_fails ? "\nroadcheck: %d FAILED\n" : "\nroadcheck: all good\n",

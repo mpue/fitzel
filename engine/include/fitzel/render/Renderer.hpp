@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <unordered_map>
@@ -181,7 +182,7 @@ public:
     void submit(const Mesh& mesh, const Material& material, const glm::mat4& model,
                 bool castsPointShadow = true, bool reflective = false,
                 float opacity = 1.0f, bool forceTransparent = false,
-                bool castsSunShadow = true);
+                bool castsSunShadow = true, bool inReflections = true);
 
     // Screen-space motion, for temporal anti-aliasing: draws every opaque
     // surface that MOVED since the last frame into whatever target is bound,
@@ -389,6 +390,11 @@ private:
         // vectors. Equal to `model` for anything that did not move.
         glm::mat4       prevModel;
         bool            castsSunShadow;  // drawn into the shadow cascades
+        // Drawn in the passes that look at the world from somewhere else -- the
+        // env probe and the water's mirror/refraction. Off for detail that only
+        // matters in front of the camera: a crowd of detailed cars far off costs
+        // those passes as much as the main one and adds nothing a reflection shows.
+        bool            inReflections;
     };
     // Last frame's matrices per mesh, in submission order, and how many of
     // each mesh this frame has submitted so far -- how submit() finds a
@@ -403,9 +409,17 @@ private:
     bool              m_ssrReflect = true, m_ssrContact = true;
 
     // The opaque scene, copied out of whatever target is bound just before the
-    // transparent pass. Grown to the viewport on demand and reused; 0 until some
-    // frame has a refracting surface in it.
-    std::uint32_t     m_sceneCopy      = 0;
+    // transparent pass; 0 until some frame has a refracting surface in it.
+    // One texture per target size, kept: the main view, an env-probe face and
+    // the water pass each copy at their own size, and a single texture
+    // re-allocated between them (40 MB of RGBA16F at 3440x1440, while frames
+    // still queued on the GPU sample it) stalled the CPU for a whole
+    // GPU-queue's worth of frames -- every sixth frame, whenever the probe
+    // face with a bus shelter in it came round.
+    struct SceneCopy { std::uint32_t tex = 0; int w = 0, h = 0; std::uint64_t used = 0; };
+    std::array<SceneCopy, 3> m_sceneCopies{};
+    std::uint64_t     m_sceneCopyUses  = 0;
+    std::uint32_t     m_sceneCopy      = 0;   // the one this pass copied into
     int               m_sceneCopyW     = 0, m_sceneCopyH = 0;
     int               m_sceneCopyX     = 0, m_sceneCopyY = 0;
     void captureSceneCopy();

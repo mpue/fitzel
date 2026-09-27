@@ -93,8 +93,12 @@ public:
     // `maxDist` is how far from camXZ a tree may stand and still be drawn into
     // THIS cascade (0 = no limit). The caller resolves it, because only it knows
     // which cascade this is -- see Renderer::ShadowCaster.
+    // minDist: nearer trees cannot reach this cascade's slice (it starts farther
+    // off than their shadows run). coarse: the far cascades, whose texels are
+    // too big for the leaf detail of the ordinary shadow level.
     void drawTreeShadow(const glm::mat4& lightSpace, double time, float weather,
-                        glm::vec2 camXZ, float maxDist);
+                        glm::vec2 camXZ, float maxDist, float minDist = 0.0f,
+                        bool coarse = false);
     void drawTrees(const FrameContext& ctx);
     void drawTreeBillboards(const FrameContext& ctx, const glm::vec3& camRight);
     // Motion vectors for the swaying meshes, into the target PostChain::
@@ -221,8 +225,9 @@ public:
         int                count = 0;
         // Generated from lods.back(): `mid` stands in for everything past
         // LOD0 when the author gave only one level; `shadow` is what the
-        // cascades draw. Rebuilt lazily whenever a level's mesh changes.
-        AutoLod mid, shadow;
+        // cascades draw, `shadowFar` what the far ones draw. Rebuilt lazily
+        // whenever a level's mesh changes.
+        AutoLod mid, shadow, shadowFar;
         bool    autoDirty = true;
         // The impostor (TreeImpostor.cpp): LOD0 baked from four sides into an
         // atlas row -- colour, and the normal the card is lit with.

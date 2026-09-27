@@ -163,6 +163,8 @@
 #include "HouseGen.hpp"
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
+#include "TownTraffic.hpp"
+#include "HalfResSky.hpp"
 #include "CityPanel.hpp"
 #include "CityPlanPanel.hpp"
 #include "CityCommand.hpp"
@@ -1488,6 +1490,8 @@ int main(int argc, char** argv) {
         float     waterIor          = 1.33f; // index of refraction (drives Fresnel + bend)
 
         Mesh fsQuad = makeFullscreenQuad();
+        HalfResSky halfSky;   // the main view's sky at reduced resolution (see HalfResSky.hpp)
+        halfSky.init();
 
         // HDR scene buffer + the post chain (SSAO, bloom, tonemap, speed blur,
         // FXAA). The chain owns its shaders and its intermediate targets -- see
@@ -1962,13 +1966,21 @@ int main(int argc, char** argv) {
             float surf = 0.0f;
             return rivers.sample(glm::vec2(x, z), surf) || streamer.heightAt(x, z) < waterLevel;
         };
+        towns.loadTexture = [&assetDb](const fitzel::AssetId& id) { return assetDb.loadTexture(id); };
         towns.roadLines = [&roads] {
             std::vector<cityplan::RoadLine> out;
             for (const RoadSystem* r : roads)
                 if (r->enabled && r->centerline().size() >= 2)
-                    out.push_back({r->centerline(), r->surfaceHalf(), r->name});
+                    out.push_back({r->centerline(), r->surfaceHalf(), r->name, r->centerlineY()});
             return out;
         };
+        // The towns' traffic and people (TrafficSim + TownTraffic), on the laid
+        // roads' own surface so a bus crosses a bridge on its deck.
+        traffic::TownTraffic townTraffic;
+        townTraffic.surfaceAt = [&roads](glm::vec2 p, float& y) {
+            return roads.surfaceHeightAt(p, y, 1e9f);
+        };
+        townTraffic.init();
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
         // Lock-on missiles for the flown glider. Owns its own targeting, flight,
@@ -6169,6 +6181,10 @@ int main(int argc, char** argv) {
             return &prefabCache.emplace(std::move(key), std::move(*loaded))
                         .first->second;
         };
+        // The towns' traffic dresses vehicles in prefabs by name, too.
+        townTraffic.findPrefab = findPrefab;
+        townTraffic.models     = &models;
+        townTraffic.meshCache  = &meshCache;
 
         // --- The level generator -------------------------------------------
         // The generator itself is pure (see LevelGen.hpp): it lays a circuit on a
@@ -6926,6 +6942,14 @@ int main(int argc, char** argv) {
             sideModelCache[ref] = mid;
             return models.byId(mid);
         };
+        // A town standing an imported model on a block asks for its bounds here.
+        towns.modelBounds = [&](const std::string& ref, glm::vec3& lo, glm::vec3& hi) {
+            const LoadedModel* lm = resolveSideModel(ref);
+            if (!lm) return false;
+            lo = lm->boundsMin;
+            hi = lm->boundsMax;
+            return true;
+        };
 
         // Terrain physics collider: a static heightfield around the action. It is
         // finite, so it follows the player/vehicle -- when the focus drifts more
@@ -7289,6 +7313,9 @@ int main(int argc, char** argv) {
                 // they must never get a dynamic body -- one would be flung by the
                 // solver (e.g. spawning inside the terrain) and fight the tick.
                 if (e.components.get<OpponentComponent>()) continue;
+                // ...and so are the ones the town traffic drives (their box is
+                // kinematic, see TownTraffic::beginPlay).
+                if (traffic::TownTraffic::drives(e)) continue;
                 // A soft body IS this entity's physics; a rigid collider beside it
                 // would be a second, differently shaped copy fighting the first.
                 if (e.components.get<SoftBodyComponent>()) continue;
@@ -7303,6 +7330,8 @@ int main(int argc, char** argv) {
             // squeezed out of it on its first step.
             softBodies.spawn(entities, *physics);
             softWindTime = 0.0f;
+            // Scene objects with a Traffic driver join the towns' traffic.
+            townTraffic.beginPlay(entities, physics.get());
             // The player is a physics capsule (~1.8 m tall), standing on the
             // ground that was built around startPos above.
             //
@@ -7474,6 +7503,7 @@ int main(int argc, char** argv) {
         };
         auto stopPlay = [&] {
             if (!playMode) return;
+            townTraffic.endPlay();
             // Hand the craft and the camera back before the snapshot restore.
             showroomUi.end(entities, camera);
             playMode  = false;
@@ -14431,7 +14461,16 @@ int main(int argc, char** argv) {
                                   [&](std::unique_ptr<Command> c) {
                                       history.pushApplied(std::move(c));
                                   },
-                                  townStatus});
+                                  townStatus,
+                                  [&] {
+                                      std::vector<std::string> out;
+                                      if (currentProject.empty()) return out;
+                                      for (const auto& np : prefab::list(prefab::prefabsDirIn(
+                                               std::filesystem::path(currentProject)
+                                                   .parent_path().generic_string())))
+                                          out.push_back(np.first);
+                                      return out;
+                                  }});
 
             // A whole race scene from a seed (see LevelGen.hpp). Pumped whether
             // the panel is open or not: a circuit already being put into the
@@ -15823,6 +15862,14 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // The traffic's CPU drivers move their scene objects -- before the
+            // resolve, so wheels and anything else parented follow this frame.
+            if (playMode)
+                townTraffic.playTick(entities, physics.get(), dt,
+                    [&](Entity& e, const glm::vec3& p, const glm::vec3& r) {
+                        const glm::mat4 pw = parentWorldMat(e);
+                        setWorld(e, p, r, e.parent >= 0 ? &pw : nullptr);
+                    });
             // Resolve the scene-graph so every entity's world center/rotation
             // reflects this frame's edits/scripts/physics and its parent chain.
             resolveHierarchy();
@@ -15917,6 +15964,12 @@ int main(int argc, char** argv) {
                 buildRoad();
             }
             towns.update(materials);
+            {
+                const long long fzTraffic = prof::mark();
+                townTraffic.setView(camera.position(), proj * camera.viewMatrix(), views == 1);
+                townTraffic.update(towns, dt, now, materials);
+                prof::addSince("traffic update", fzTraffic);
+            }
 
             // Handing them over is one function, in SceneSubmit.cpp, so that the
             // editor is a CALLER of it rather than the only place it exists --
@@ -16013,6 +16066,19 @@ int main(int argc, char** argv) {
                                     isMirror(materials[mi]), materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend, shadow);
                 });
+            townTraffic.forEachDraw([&](const Mesh& mesh, const fitzel::AssetId& mat) {
+                const int mi = document.materialIndex(mat);
+                if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
+                renderer.submit(mesh, gpuMats[mi], glm::mat4(1.0f), false);
+            });
+            townTraffic.forEachPrefabDraw(
+                [&](const Mesh& mesh, const fitzel::AssetId& mat, const glm::mat4& m, bool detail) {
+                    const int mi = document.materialIndex(mat);
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
+                    renderer.submit(mesh, gpuMats[mi], m, false, isMirror(materials[mi]),
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend, detail, detail);
+                });
 
             // --- Road side objects (guard rails, curbs, posts) -----------------
             // Derived from the road's side lines and drawn as instanced models: one
@@ -16054,6 +16120,11 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Imported models the towns stand on blocks in place of a generated
+            // building (CivicSlot::useModel), drawn like the side objects.
+            towns.forEachModel(camera.position(), [&](const std::string& ref, const glm::mat4& mm) {
+                if (LoadedModel* lm = resolveSideModel(ref)) drawSideModel(lm, mm);
+            });
             // Knockable posts follow their rigid body: read the box's world
             // transform (its centre == the model's AABB centre, as placed) and draw
             // the model there, so a clipped post tumbles and flies off.
@@ -16185,8 +16256,10 @@ int main(int argc, char** argv) {
             // distance from the eye -- fed player one's position both times, the
             // second pane loses the shadows around itself.
             glm::vec2 shadowEyeXZ(camera.position().x, camera.position().z);
-            auto treeShadowCaster = [&](const glm::mat4& lightSpace, int,
+            float cascadeNear = 0.0f;   // where the slice being cast starts
+            auto treeShadowCaster = [&](const glm::mat4& lightSpace, int cascade,
                                         float cascadeFar) {
+                if (cascade == 0) cascadeNear = 0.0f;
                 // Timed apart from the rest of the cascade pass: "GPU shadows"
                 // is the sum of two very different costs -- the queue (terrain
                 // and objects, plain depth) and the forest (alpha-cutout leaves,
@@ -16203,14 +16276,21 @@ int main(int argc, char** argv) {
                 // grey smear no one can point at.
                 const float sunY  = std::max(0.05f, light.direction.y);
                 const float sunXZ = std::sqrt(std::max(0.0f, 1.0f - sunY * sunY));
-                const float reach =
-                    cascadeFar + std::min(25.0f * sunXZ / sunY, 60.0f);
+                const float runs  = std::min(25.0f * sunXZ / sunY, 60.0f);
+                const float reach = cascadeFar + runs;
+                // ...and the other end: a tree nearer than the slice's start by
+                // more than its shadow runs shades nothing in it. The far cascade
+                // starts past the tree-shadow limit's worth of forest, and drew
+                // the whole disc of it again.
+                const float from = std::max(0.0f, cascadeNear - runs - 5.0f);
+                cascadeNear = cascadeFar;
                 // The author's own limit still wins: it is the one that decides
                 // whether the far cascades get a forest at all.
                 const float limit = veg.treeShadowDistance > 0.0f
                                         ? std::min(veg.treeShadowDistance, reach)
                                         : reach;
-                veg.drawTreeShadow(lightSpace, now, storm, shadowEyeXZ, limit);
+                veg.drawTreeShadow(lightSpace, now, storm, shadowEyeXZ, limit, from,
+                                   cascade >= 2);
             };
             // Cascades for player one. With two panes up the second pane fits
             // its own set inside the loop below -- shadows are cut to a view
@@ -16632,7 +16712,9 @@ int main(int argc, char** argv) {
             // the composite tonemaps afterwards.
             if (!shadeFull) glClearColor(0.055f, 0.060f, 0.070f, 1.0f);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            if (shadeFull) drawBackground(glm::inverse(mainVP), camPos, false);
+            if (shadeFull)
+                halfSky.render(hdrRT, fsQuad,
+                               [&] { drawBackground(glm::inverse(mainVP), camPos, false); });
             // The horizon, in its own depth range, then out of the depth buffer
             // (see FarTerrain.hpp). Jittered like the scene, or TAA would smear
             // every ridgeline it resolves.
@@ -17030,6 +17112,8 @@ int main(int argc, char** argv) {
                     FZ_GPU_ZONE("GPU motion vectors");
                     post.beginMotion(hdrRT);
                     renderer.renderMotion(mainVP, pp.curVP, pp.prevVP);
+                    // ...and the towns' traffic, re-skinned on the CPU every frame.
+                    townTraffic.drawMotion(mainVP, pp.curVP, pp.prevVP);
                     // ...and the crowns in the wind (treemotion.vert).
                     if (shadeFull)
                         veg.drawTreeMotion(mainVP, pp.curVP, pp.prevVP, camPos);

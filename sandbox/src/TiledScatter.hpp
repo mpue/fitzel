@@ -66,7 +66,11 @@ public:
     void update(glm::vec2 camXZ);
 
     // Issue the owner's draw for every ready tile. Bind shader/VAO first.
-    void draw(const DrawTile& cb) const;
+    // `visible`, when given, is asked about each tile's box (world space, its
+    // height the instances' own, see Tile::yLo) and a tile it rejects is not
+    // drawn -- the owner's frustum test.
+    using Visible = std::function<bool(const glm::vec3& lo, const glm::vec3& hi)>;
+    void draw(const DrawTile& cb, const Visible& visible = {}) const;
 
     // Drop every tile and force a rebuild (call when the generator's inputs
     // change). In-flight generations are tagged stale and discarded on arrival,
@@ -84,7 +88,9 @@ private:
     static std::int32_t keyX(Key k) { return static_cast<std::int32_t>(k >> 32); }
     static std::int32_t keyZ(Key k) { return static_cast<std::int32_t>(k & 0xffffffffLL); }
 
-    struct Tile   { std::uint32_t vbo = 0; int count = 0; };
+    // yLo/yHi: the instances' height range (float 1 of each is its y), taken
+    // at upload -- what a frustum test needs and a tile's origin cannot say.
+    struct Tile   { std::uint32_t vbo = 0; int count = 0; float yLo = 0.0f, yHi = 0.0f; };
     struct Job    { Key key; std::uint32_t gen; std::int32_t tx, tz;
                     glm::vec2 origin; float size; };
     struct Result { Key key; std::uint32_t gen; std::vector<float> data; };
