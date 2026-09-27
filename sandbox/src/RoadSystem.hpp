@@ -62,8 +62,15 @@ public:
     // and RoadSet::planJunctions, which is the only thing that knows them --
     // a crossing is a fact about two roads and no road can see the other).
     // With an empty plan this is build(), down to the byte.
+    //
+    // `floor`, when given, collects every cell this road grades flat onto
+    // itself (carriageway, lip, bed, apron): the height it wants there and the
+    // base under it. RoadSet caps the ground at the lowest of them once every
+    // road has written its corridor -- see RoadSet::buildAll.
+    struct GradeFloor { float y; float base; };
+    using GradeFloors = std::unordered_map<std::int64_t, GradeFloor>;
     bool buildWith(const roadjunction::Plan& jp, fitzel::TerrainEditField& edit,
-                   glm::vec2& outMin, glm::vec2& outMax);
+                   glm::vec2& outMin, glm::vec2& outMax, GradeFloors* floor = nullptr);
 
     // Give back the ground this road's last Build graded: every cell its
     // corridor and its junction aprons wrote returns to the natural terrain, plus

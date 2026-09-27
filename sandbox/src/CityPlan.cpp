@@ -1781,6 +1781,16 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
         // Top at the side's own height `y` (the road's, see above); the kerb and
         // the inner edge reach down past whichever is lower, road or ground.
         auto top = [&](glm::vec2 p, float y) { return glm::vec3(p.x, y + kKerb, p.y); };
+        // The kerb stones: a strip along the road-side edge, flush with the
+        // slabs, its top edge bevelled toward the carriageway. Their own
+        // material, lighter than the paving, so the edge reads as a kerb and not
+        // as the side of a slab.
+        constexpr float kKerbW = 0.18f, kBevel = 0.03f;
+        auto inward = [&](glm::vec2 o, glm::vec2 i, float d) {
+            const float len = glm::length(i - o);
+            return len > 1e-4f ? o + (i - o) * std::min(d / len, 0.45f) : o;
+        };
+        auto bevel = [&](glm::vec2 p, float y) { return glm::vec3(p.x, y + kKerb - kBevel, p.y); };
         auto low = [&](glm::vec2 p, float y) {
             return glm::vec3(p.x, std::min(ground(p), y) - 0.15f, p.y);
         };
@@ -1912,19 +1922,32 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 I = std::move(I2);
                 Y = std::move(Y2);
             }
-            // Slabs and kerb stones in one material: a second one would be a
-            // second draw in every chunk of the town.
+            // Slabs and kerb stones in two meshes, one material each: a draw
+            // more per chunk, and the edge stops being the side of a slab.
             paveMeshes.emplace_back();
             fitzel::MeshData& slab = paveMeshes.back();
+            paveMeshes.emplace_back();
+            fitzel::MeshData& kerb = paveMeshes.back();
+            // One kerb run from the road edge o0-o1 to its inner line k0-k1:
+            // bevel, top, and the face down to the carriageway.
+            auto kerbRun = [&](glm::vec2 o0, glm::vec2 o1, glm::vec2 b0, glm::vec2 b1,
+                               glm::vec2 k0, glm::vec2 k1, float y0, float y1, glm::vec2 out) {
+                addFace(kerb, {top(b0, y0), top(b1, y1), top(k1, y1), top(k0, y0)}, {0, 1, 0});
+                addFace(kerb, {bevel(o0, y0), bevel(o1, y1), top(b1, y1), top(b0, y0)},
+                        glm::vec3(out.x, 1.0f, out.y));
+                addFace(kerb, {low(o0, y0), low(o1, y1), bevel(o1, y1), bevel(o0, y0)},
+                        glm::vec3(out.x, 0.0f, out.y));
+            };
             for (int k = 0; k < 4; ++k) {
                 const Side& S = sd[k];
                 for (std::size_t i = 0; i + 1 < S.O.size(); ++i) {
                     const glm::vec2 o0 = S.O[i], o1 = S.O[i + 1], i0 = S.I[i], i1 = S.I[i + 1];
                     const float y0 = S.Y[i], y1 = S.Y[i + 1];
                     if (!usable({o0, o1, i1, i0})) continue;
-                    addFace(slab, {top(o0, y0), top(o1, y1), top(i1, y1), top(i0, y0)}, {0, 1, 0});
-                    addFace(slab, {low(o0, y0), low(o1, y1), top(o1, y1), top(o0, y0)},
-                            glm::vec3(-S.n.x, 0, -S.n.y));
+                    const glm::vec2 k0 = inward(o0, i0, kKerbW), k1 = inward(o1, i1, kKerbW);
+                    addFace(slab, {top(k0, y0), top(k1, y1), top(i1, y1), top(i0, y0)}, {0, 1, 0});
+                    kerbRun(o0, o1, inward(o0, i0, kBevel), inward(o1, i1, kBevel), k0, k1, y0, y1,
+                            -S.n);
                     addFace(slab, {low(i0, y0), low(i1, y1), top(i1, y1), top(i0, y0)},
                             glm::vec3(S.n.x, 0, S.n.y));
                     // Open ends where the strip breaks off (water, a foreign road).
@@ -1949,13 +1972,17 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 if (!intersect(pi, P.d, si, S.d, c)) continue;
                 if (!usable({po, so, si, c, pi})) continue;
                 const float yp = P.Y.back(), ys = S.Y.front(), yc = 0.5f * (yp + ys);
-                addFace(slab, {top(c, yc), top(pi, yp), top(po, yp)}, {0, 1, 0});
-                addFace(slab, {top(c, yc), top(po, yp), top(so, ys)}, {0, 1, 0});
-                addFace(slab, {top(c, yc), top(so, ys), top(si, ys)}, {0, 1, 0});
+                // The kerb goes round the corner on the chord between the two
+                // sides' ends, starting where each side's own kerb stops.
+                const glm::vec2 kp = inward(po, pi, kKerbW), ks = inward(so, si, kKerbW);
+                addFace(slab, {top(c, yc), top(pi, yp), top(kp, yp)}, {0, 1, 0});
+                addFace(slab, {top(c, yc), top(kp, yp), top(ks, ys)}, {0, 1, 0});
+                addFace(slab, {top(c, yc), top(ks, ys), top(si, ys)}, {0, 1, 0});
                 const glm::vec2 ch = so - po;
                 glm::vec2 cn(-ch.y, ch.x);
                 if (glm::dot(cn, c - po) > 0.0f) cn = -cn;
-                addFace(slab, {low(po, yp), low(so, ys), top(so, ys), top(po, yp)}, glm::vec3(cn.x, 0, cn.y));
+                kerbRun(po, so, inward(po, pi, kBevel), inward(so, si, kBevel), kp, ks, yp, ys,
+                        glm::normalize(cn));
                 // The corner's inner edge, where the fan meets the plots.
                 addFace(slab, {low(pi, yp), low(c, yc), top(c, yc), top(pi, yp)}, glm::vec3(P.n.x, 0, P.n.y));
                 addFace(slab, {low(c, yc), low(si, ys), top(si, ys), top(c, yc)}, glm::vec3(S.n.x, 0, S.n.y));
@@ -1986,6 +2013,13 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 city::Extra x;
                 x.mesh     = &slab;
                 x.material = pal.civic.pavement;
+                x.chunk    = chunk;
+                extras.push_back(x);
+            }
+            if (!kerb.vertices.empty()) {
+                city::Extra x;
+                x.mesh     = &kerb;
+                x.material = pal.civic.kerb;
                 x.chunk    = chunk;
                 extras.push_back(x);
             }

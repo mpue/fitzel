@@ -998,6 +998,44 @@ int main(int argc, char** argv) {
               "a bed keeps the ground under a pavement's slabs", buf);
     }
 
+    // --- A neighbour's shoulder never covers a road -----------------------------
+    // Every road grades its whole corridor, the shoulder's blend back to the hills
+    // included, and a later road's corridor overwrote an earlier one's. A road
+    // drawn by hand a few metres beside a town street eased the ground back up to
+    // the natural terrain right across the street's carriageway, and the hill came
+    // up through the asphalt. The street is built first here, as a town's are.
+    {
+        RoadSet rs(lit, assetDb, streamer, FITZEL_TEXTURE_DIR);
+        RoadSystem& street = rs.active();
+        setRoad(street, "Street", straightRun(-300.0f, -120.0f, 120.0f, 5), 6.0f);
+        street.edgeWidth = 0.0f;
+        street.shoulder  = 2.5f;
+        street.bed       = 3.5f;
+        const int iLane = rs.add("Lane");
+        RoadSystem& lane = rs.at(iLane);
+        setRoad(lane, "Lane", straightRun(-300.0f + 9.0f, -120.0f, 120.0f, 5), 2.0f);
+        lane.edgeWidth = 0.0f;
+        lane.shoulder  = 12.0f;
+        fitzel::TerrainEditField e;
+        glm::vec2 a, b;
+        rs.buildAll(e, a, b);
+        const float half = street.surfaceHalf();
+        float highest = -1e9f;
+        int   n = 0;
+        for (float z = -80.0f; z <= 80.0f; z += 2.0f)
+            for (float off = -(half + 3.0f); off <= half + 3.0f; off += 0.5f) {
+                const glm::vec2 p(-300.0f + off, z);
+                float roadY = 0.0f;
+                if (!street.surfaceHeightAt({-300.0f, z}, half, roadY)) continue;
+                highest = std::max(highest, groundAfterCut(ts, e, p) - roadY);
+                ++n;
+            }
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "%d samples across the street and its bed, the ground at "
+                      "most %.2f m above the road", n, highest);
+        check(n > 500 && highest < 0.05f, "a neighbour's shoulder stays off a road", buf);
+    }
+
     glfwDestroyWindow(win);
     glfwTerminate();
     std::printf(g_fails ? "\nroadcheck: %d FAILED\n" : "\nroadcheck: all good\n",

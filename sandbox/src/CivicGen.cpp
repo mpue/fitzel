@@ -1133,6 +1133,8 @@ Palette ensurePalette(std::vector<MaterialDef>& mats, float windowLit) {
     // frame and blooms into a halo.
     p.tank       = ensure(mats, "Tank",        {0.66f, 0.67f, 0.66f}, 0.04f, 0.65f);
     p.pavement   = ensure(mats, "Pavement",    {0.34f, 0.33f, 0.32f}, 0.00f, 0.90f);
+    // Granite kerb stones: lighter than the slabs, so the edge reads as one.
+    p.kerb       = ensure(mats, "Kerb Stone",  {0.52f, 0.51f, 0.49f}, 0.00f, 0.75f);
     // The lamps: a dark lens in the library (emission strength 0), lit per frame.
     for (int a = 0; a < 2; ++a) {
         const std::string ax = a == 0 ? "Signal X " : "Signal Z ";

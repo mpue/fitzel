@@ -1713,7 +1713,7 @@ void RoadSystem::rebuildMeshWith(const roadjunction::Plan& jp) {
 
 bool RoadSystem::buildWith(const roadjunction::Plan& jp,
                            fitzel::TerrainEditField& edit, glm::vec2& outMin,
-                           glm::vec2& outMax) {
+                           glm::vec2& outMax, GradeFloors* floor) {
     needsBuild = false;
     vegDirty   = true; // vegetation must re-evaluate against the new road
 
@@ -1864,6 +1864,10 @@ bool RoadSystem::buildWith(const roadjunction::Plan& jp,
             // their average always covers it.
             if (flat > 0.0f) target -= flat * (kRoadClear + baseBulge(s, w, cell));
             const std::int64_t key = fitzel::TerrainEditField::cellKey(ix, iz);
+            if (floor && flat >= 0.999f) {
+                const auto [it, fresh] = floor->try_emplace(key, GradeFloor{target, base});
+                if (!fresh) it->second.y = std::min(it->second.y, target);
+            }
             // Drop the cell rather than storing a zero, so a stretch that used to be
             // an embankment and is now bridged gives its ground back (and the map
             // doesn't fill up with no-ops under every span).

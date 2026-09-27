@@ -4991,6 +4991,8 @@ int main(int argc, char** argv) {
         addF("value", valueGain);              addF("warmth", warmth);
         addF("gradeSplit", gradeSplit);        addF("gradeVibrance", gradeVibrance);
         addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
+        addF("dofBlur", dofMax);               addF("dofNear", dofNear);
+        addF("dofFar", dofFar);
         addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
         addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
         addF("adaptSpeed", adaptSpeed);        addB("ssr", ssrEnabled);

@@ -56,7 +56,7 @@ struct Palette {
     // The street furniture: pavements, traffic lights, bus stops. Few on
     // purpose -- every material is a draw per chunk; the rest reuse the above
     // (poles and frames `metal`, signal heads and dark lamps `darkGrey`).
-    fitzel::AssetId pavement, shelterGlass, busYellow, busGreen;
+    fitzel::AssetId pavement, kerb, shelterGlass, busYellow, busGreen;
     // The cultural buildings: a cream facade with windows, lawn and sand for
     // the grounds, pool water, a kindergarten's yellow.
     fitzel::AssetId hall, lawn, sand, poolWater, kinder;
