@@ -267,6 +267,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/UnityImportPanel.cpp
     # The Stats and Camera windows.
     src/ViewPanels.cpp
+    # The toolbar strip under the menu bar.
+    src/Toolbar.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
