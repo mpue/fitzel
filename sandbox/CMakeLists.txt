@@ -236,6 +236,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/RoadEdit.cpp
     # The Sky & atmosphere and Colour grade panels (their settings: PostLook.hpp).
     src/LookPanels.cpp
+    # The editor's core as the tools outside main() see it, and the first of
+    # them: an asset dropped on the scene.
+    src/EditorContext.cpp
+    src/SceneDrop.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -717,6 +721,20 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # already placed, and neither fault says anything at the time. Runs the real
 # save/load path; no GL, no window.
 #   build/release/bin/prefabeditcheck.exe
+# editorcheck (sandbox/tools/editorcheck.cpp): the editor's core as the tools
+# outside main() see it (EditorContext), and those tools, without a window --
+# for now an asset dropped on the scene: a material dresses the object or the
+# face under the cursor, as one undo step, and a drop on empty sky does nothing.
+#   build/release/bin/editorcheck.exe
+add_executable(editorcheck tools/editorcheck.cpp
+                           src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
+                           src/SceneGraph.cpp src/Selection.cpp
+                           src/ModelLibrary.cpp src/Component.cpp
+                           src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                           src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(editorcheck PRIVATE fitzel imgui stb_headers
+                                          nlohmann_json::nlohmann_json)
+
 add_executable(prefabeditcheck tools/prefabeditcheck.cpp
                                src/PrefabEdit.cpp src/PrefabSystem.cpp
                                src/ProjectIO.cpp src/GameSettings.cpp

@@ -113,6 +113,8 @@
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
 #include "LookPanels.hpp"
+#include "EditorContext.hpp"
+#include "SceneDrop.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -2084,6 +2086,17 @@ int main(int argc, char** argv) {
         // the existing call sites (menus, wizard, player boot) unchanged.
         std::string exportStatus; // shown under the File menu after an export
 #ifndef FITZEL_PLAYER
+        // The editor's core, for the tools that live outside main() (see
+        // EditorContext.hpp). Built once: everything in it lives as long as main.
+        EditorContext editorCtx{document, entities, sel, history, materials, matSel, assetDb,
+                                models, camera, exportStatus, meshFaceOwner, meshFaceSel,
+                                addModelEntity,
+                                [&](glm::vec3 p, const std::string& path) {
+                                    addModelHierarchy(p, path);
+                                },
+                                isStructuredModel};
+#endif
+#ifndef FITZEL_PLAYER
         // Editing a prefab on its own (see PrefabEdit.hpp). Declared HERE, above
         // every lambda that saves or replaces the document, because while a
         // session is up the document is not the scene and all of those have to
@@ -2381,11 +2394,6 @@ int main(int argc, char** argv) {
             }
             mc.touch();
         };
-        // Mesh space -> world for an entity's editable mesh: the mesh is drawn
-        // stretched to the entity's half-extents, so the scale is half/bounds.
-        auto meshModelOf = [&](const Entity& e, const MeshComponent& mc) {
-            return composeModel(e.center, e.rotation, editmesh::fitScale(mc.mesh, e.half));
-        };
         // Run one face operation as one undoable step.
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
                                  const char* label) {
@@ -2433,17 +2441,6 @@ int main(int argc, char** argv) {
                 auto cmd = std::make_unique<ModifyEntityCmd>(meshLiveBefore, e);
                 if (!cmd->trivial()) history.pushApplied(std::move(cmd));
             }
-        };
-        // World-space corners of one face of the selected mesh, for picking and
-        // for drawing the highlight. Empty when there is no such face.
-        auto meshFaceWorld = [&](const Entity& e, const MeshComponent& mc, int face) {
-            std::vector<glm::vec3> out;
-            if (!mc.mesh.validFace(face)) return out;
-            const glm::mat4 m = meshModelOf(e, mc);
-            out.reserve(mc.mesh.faces[face].size());
-            for (int i : mc.mesh.faces[face])
-                out.push_back(glm::vec3(m * glm::vec4(mc.mesh.verts[i], 1.0f)));
-            return out;
         };
 #endif // !FITZEL_PLAYER
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
@@ -10420,6 +10417,22 @@ int main(int argc, char** argv) {
                 viewportMouseNdc = glm::vec2(
                     (rsz.x > 0.0f ? (mp.x - rmin.x) / rsz.x : 0.5f) * 2.0f - 1.0f,
                     1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
+                // ...and all of it, as the tools outside main() take it.
+                ViewportFrame sceneView;
+                {
+                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                    sceneView.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    sceneView.origin      = rmin;
+                    sceneView.w           = static_cast<float>(viewW);
+                    sceneView.h           = static_cast<float>(viewH);
+                    sceneView.hovered     = viewportHovered;
+                    sceneView.mouseNdc    = viewportMouseNdc;
+                    sceneView.mousePos    = mp;
+                    sceneView.pickTerrain = roadPickTerrain;
+                    sceneView.groundAt    = [&streamer](float x, float z) {
+                        return streamer.heightAt(x, z);
+                    };
+                }
                 // Keep the multi-selection consistent with the active object before
                 // any panel/viewport consumes it this frame.
                 sel.normalize();
@@ -10488,154 +10501,11 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginDragDropTargetCustom(ImRect(sceneMin, sceneMax),
                                                      ImGui::GetID("##sceneDrop"))) {
                     if (const ImGuiPayload* pl =
-                            ImGui::AcceptDragDropPayload("ASSET_GUID")) {
-                        const AssetId gid = AssetId::fromString(std::string(
-                            static_cast<const char*>(pl->Data), pl->DataSize));
-                        const AssetType at = assetDb.typeForId(gid);
-                        // Is it one of the scene's materials? Asked of the library
-                        // rather than of the asset database, because a material
-                        // dragged out of the Materials panel has a GUID and may
-                        // have no .fmat on disk yet -- and it is still the thing
-                        // the drop is about.
-                        int dropMat = -1;
-                        for (int k = 0; k < static_cast<int>(materials.size()); ++k)
-                            if (materials[k].assetId == gid) { dropMat = k; break; }
-                        const float asp = static_cast<float>(viewW) /
-                                          static_cast<float>(viewH);
-                        const glm::mat4 vp =
-                            camera.projectionMatrix(asp) * camera.viewMatrix();
-                        if (at == AssetType::Model) {
-                            glm::vec3 hit;
-                            if (roadPickTerrain(viewportMouseNdc, vp, hit)) {
-                                const std::string mp = assetDb.pathForId(gid).string();
-                                if (isStructuredModel(mp)) addModelHierarchy(hit, mp);
-                                else {
-                                    const int id = models.import(mp, assetDb, materials);
-                                    if (id >= 0) addModelEntity(hit, id);
-                                }
-                            }
-                        } else if (at == AssetType::Material || dropMat >= 0) {
-                            // A material dropped ON A FACE dresses that face
-                            // alone; dropped anywhere else on an object it
-                            // becomes the object's. This is the drag half of the
-                            // Modeling panel's picker, and it exists BESIDE it
-                            // rather than instead of it: aiming at a face is a
-                            // gesture some days do not have, and the panel's
-                            // combo is the same operation without one.
-                            const int mi = dropMat;
-                            const glm::mat4 inv = glm::inverse(vp);
-                            glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                            glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                            const glm::vec3 ro = glm::vec3(pn);
-                            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                            if (mi < 0) {
-                                exportStatus = "That material isn't in this scene's "
-                                               "library -- open the project it "
-                                               "belongs to first.";
-                            } else {
-                            // The face under the cursor, over every modelled mesh
-                            // in the scene: dressing a face should not first
-                            // require selecting the object it belongs to.
-                            int   faceEnt = -1, faceHit = -1;
-                            float faceT   = 1e30f;
-                            for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                const MeshComponent* emc =
-                                    entities[i].components.get<MeshComponent>();
-                                if (!emc) continue;
-                                for (int f = 0;
-                                     f < static_cast<int>(emc->mesh.faces.size()); ++f) {
-                                    const std::vector<glm::vec3> w =
-                                        meshFaceWorld(entities[i], *emc, f);
-                                    // The same fan the GPU mesh is built from, so
-                                    // what is dropped on is exactly what is drawn.
-                                    for (std::size_t k = 1; k + 1 < w.size(); ++k) {
-                                        const float t =
-                                            rayTriangle(ro, rd, w[0], w[k], w[k + 1]);
-                                        if (t >= 0.0f && t < faceT) {
-                                            faceT = t; faceHit = f; faceEnt = i;
-                                        }
-                                    }
-                                }
-                            }
-                            int hit = faceEnt;
-                            if (hit < 0) {
-                                // No face: the nearest solid takes it whole.
-                                float bestT = 1e30f;
-                                for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                    if (!isSolidPrimitive(entities[i].type)) continue;
-                                    const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
-                                                                    entities[i].center + entities[i].half);
-                                    if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
-                                }
-                            }
-                            if (hit >= 0) {
-                                const std::vector<int> ids{entities[hit].id};
-                                auto before = snapshotEntities(ids);
-                                Entity& e = entities[hit];
-                                if (faceEnt == hit && faceHit >= 0) {
-                                    MeshComponent* emc = e.components.get<MeshComponent>();
-                                    emc->mesh.setFaceMaterial(faceHit, gid);
-                                    emc->touch();   // the GPU copy is split by material
-                                    meshFaceOwner = e.id;
-                                    meshFaceSel   = faceHit;
-                                    exportStatus  = "Material on one face.";
-                                } else if (auto* emc = e.components.get<MaterialComponent>()) {
-                                    emc->material = gid;
-                                } else {
-                                    auto nc = std::make_unique<MaterialComponent>();
-                                    nc->material = gid;
-                                    e.components.items.push_back(std::move(nc));
-                                }
-                                sel.selectIndex(hit);
-                                matSel    = mi;
-                                auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                    before, snapshotEntities(ids));
-                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                            }
-                            }
-                        } else if (at == AssetType::Texture) {
-                            // Pick the solid under the drop point.
-                            const glm::mat4 inv = glm::inverse(vp);
-                            glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                            glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                            const glm::vec3 ro = glm::vec3(pn);
-                            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                            int hit = -1; float bestT = 1e30f;
-                            for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                if (!isSolidPrimitive(entities[i].type)) continue;
-                                const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
-                                                                entities[i].center + entities[i].half);
-                                if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
-                            }
-                            if (hit >= 0) {
-                                // A new material that samples the dropped texture.
-                                MaterialDef nm;
-                                nm.assetId = AssetId::generate();
-                                const AssetDatabase::Entry* te = assetDb.entry(gid);
-                                nm.name  = te ? std::filesystem::path(te->relPath).stem().string()
-                                              : "Textured";
-                                nm.texId = gid;
-                                nm.tex   = assetDb.loadTexture(gid);
-                                materials.push_back(nm);
-                                matSel = static_cast<int>(materials.size()) - 1;
-                                // Assign it to the object's MaterialComponent (undoable).
-                                const std::vector<int> ids{entities[hit].id};
-                                auto before = snapshotEntities(ids);
-                                Entity& e = entities[hit];
-                                if (auto* mc = e.components.get<MaterialComponent>())
-                                    mc->material = nm.assetId;
-                                else {
-                                    auto c = std::make_unique<MaterialComponent>();
-                                    c->material = nm.assetId;
-                                    e.components.items.push_back(std::move(c));
-                                }
-                                sel.selectIndex(hit);
-                                auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                    before, snapshotEntities(ids));
-                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                            }
-                        }
-                    }
+                            ImGui::AcceptDragDropPayload("ASSET_GUID"))
+                        scenedrop::dropOnScene(editorCtx, sceneView,
+                                               AssetId::fromString(std::string(
+                                                   static_cast<const char*>(pl->Data),
+                                                   pl->DataSize)));
                     ImGui::EndDragDropTarget();
                 }
 
