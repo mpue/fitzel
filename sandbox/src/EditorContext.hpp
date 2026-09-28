@@ -42,6 +42,8 @@ struct EditorContext {
     // that was picked).
     int& meshFaceOwner;
     int& meshFaceSel;
+    // The next free entity id: whatever makes an object takes one and moves it on.
+    int& entityCounter;
 
     // What main still does itself.
     std::function<void(glm::vec3, int)>                addModelEntity;     // a loaded model, on the ground

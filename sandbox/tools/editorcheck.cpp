@@ -14,6 +14,11 @@
 //     going to another tool mid-stroke banks the stroke it left open, and a
 //     selection off the mesh makes it let go of the button. It runs inside a
 //     real ImGui frame, just one nobody draws.
+//   - the operations on objects (SceneOps): delete takes the subtree and
+//     never the sun; a copy keeps its parent; the selection's copies hang off
+//     each other's copies; one main camera; an Empty slid in above an object
+//     leaves it where it was; a cockpit camera faces the nose; a vehicle gets
+//     its four lights; a prefab instance unpacks -- each one undo step.
 //   - which tool has the left button (ViewTool): switching one on takes it
 //     from the one that had it; switching off one that did not have it
 //     changes nothing.
@@ -86,6 +91,7 @@
 #include "../src/VehicleGizmo.hpp"
 #include "../src/ViewportHud.hpp"
 #include "../src/ViewTool.hpp"
+#include "../src/SceneOps.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -134,10 +140,10 @@ int main() {
     ModelLibrary              models;
     fitzel::AssetDatabase     assetDb{dir.generic_string()};
     fitzel::Camera            camera({0.0f, 0.0f, 10.0f});   // looking down -Z at the origin
-    int         matSel = -1, faceOwner = -1, faceSel = -1;
+    int         matSel = -1, faceOwner = -1, faceSel = -1, nextId = 1000;
     std::string status;
     EditorContext ed{document, entities, sel, history, materials, matSel, assetDb, models,
-                     camera, status, faceOwner, faceSel,
+                     camera, status, faceOwner, faceSel, nextId,
                      [](glm::vec3, int) {}, [](glm::vec3, const std::string&) {},
                      [](const std::string&) { return false; }};
 
@@ -158,6 +164,160 @@ int main() {
     blue.assetId = fitzel::AssetId::generate();
     blue.name    = "Blue";
     materials.push_back(blue);
+
+    // --- Operations on objects ----------------------------------------------------------------
+    {
+        auto near3 = [](const glm::vec3& a, const glm::vec3& b) { return glm::length(a - b) < 1e-4f; };
+        auto child = [&](int id, int parent, const glm::vec3& local) {
+            Entity e = makeBox(id, local);
+            e.parent = parent;
+            e.localCenter = local;
+            return e;
+        };
+        auto find = [&](int id) { return document.find(id); };
+        auto revertAll = [&](unsigned rev) {
+            while (history.revision() > rev && history.canUndo()) history.undo(document);
+        };
+
+        // A root at (10,0,0) with a child 2 m up; a sun beside them.
+        entities.clear();
+        sel.clear();
+        entities.push_back(makeBox(1, glm::vec3(10.0f, 0.0f, 0.0f)));
+        entities.push_back(child(2, 1, glm::vec3(0.0f, 2.0f, 0.0f)));
+        {
+            Entity sun = makeBox(3, glm::vec3(0.0f, 50.0f, 0.0f));
+            sun.type = EntityType::Sun;
+            entities.push_back(sun);
+        }
+        scenegraph::resolve(entities);
+        const unsigned rev0 = history.revision();
+
+        check(sceneops::isUnder(entities, 2, 1) && !sceneops::isUnder(entities, 1, 2),
+              "isUnder: a child is under its parent, not the other way round");
+
+        sceneops::deleteEntity(ed, 0);
+        check(!find(1) && !find(2) && find(3) && history.revision() == rev0 + 1,
+              "deleting an object takes its children with it, as one undo step");
+        history.undo(document);
+        check(find(1) && find(2), "...which one undo brings back");
+        const unsigned rev1 = history.revision();
+        sceneops::deleteEntity(ed, document.indexOf(3));
+        check(find(3) && history.revision() == rev1, "the sun cannot be deleted");
+
+        sceneops::duplicateEntity(ed, document.indexOf(2));
+        const Entity* copy = find(nextId - 1);
+        check(copy && copy->parent == 1 && near3(copy->localCenter, glm::vec3(2.2f, 2.0f, 0.0f)) &&
+                  copy->name == "Box 2 copy" && sel.activeId() == copy->id,
+              "a duplicate keeps its parent, sits beside the original in the parent's frame, and is selected");
+        revertAll(rev1);
+
+        // Two roots with a child each, both roots selected: all four go at once.
+        entities.push_back(makeBox(4, glm::vec3(-10.0f, 0.0f, 0.0f)));
+        entities.push_back(child(5, 4, glm::vec3(0.0f, 1.0f, 0.0f)));
+        sel.select(1);
+        sel.toggle(4);
+        const unsigned rev2 = history.revision();
+        sceneops::deleteSelection(ed);
+        check(!find(1) && !find(2) && !find(4) && !find(5) && history.revision() == rev2 + 1,
+              "deleting the selection takes every selected subtree, as one undo step");
+        history.undo(document);
+
+        // A parent and its child selected together: the child's copy hangs off
+        // the parent's copy, not off the original.
+        sel.select(1);
+        sel.toggle(2);
+        const int firstNew = nextId;
+        sceneops::duplicateSelection(ed);
+        const Entity* pc = find(firstNew);
+        const Entity* cc = find(firstNew + 1);
+        check(pc && cc && pc->parent == -1 && cc->parent == pc->id && sel.count() == 2 &&
+                  sel.contains(pc->id) && sel.contains(cc->id),
+              "duplicating a parent with its child: the child's copy hangs off the parent's copy");
+        revertAll(rev2);
+
+        // One main camera.
+        auto withCam = [&](int id) {
+            Entity e = makeBox(id, glm::vec3(0.0f));
+            e.type = EntityType::Empty;
+            e.components.items.push_back(std::make_unique<CameraComponent>());
+            return e;
+        };
+        entities.push_back(withCam(6));
+        entities.push_back(withCam(7));
+        auto mainCams = [&] {
+            std::vector<int> on;
+            for (const Entity& e : entities)
+                if (const auto* c = e.components.get<CameraComponent>(); c && c->activeOnStart)
+                    on.push_back(e.id);
+            return on;
+        };
+        sceneops::setMainCamera(ed, 6);
+        const bool firstOn = mainCams() == std::vector<int>{6};
+        sceneops::setMainCamera(ed, 7);
+        const bool switched = mainCams() == std::vector<int>{7};
+        const unsigned rev3 = history.revision();
+        sceneops::setMainCamera(ed, 1);   // no camera on it
+        const bool ignored = history.revision() == rev3 && mainCams() == std::vector<int>{7};
+        sceneops::setMainCamera(ed, -1);
+        check(firstOn && switched && ignored && mainCams().empty(),
+              "exactly one main camera; an object without a camera is ignored; -1 clears them all");
+
+        // An Empty slid in above the child: the child stays where it was.
+        const glm::vec3 was = find(2)->center;
+        sceneops::addEmptyParent(ed, document.indexOf(2));
+        scenegraph::resolve(entities);
+        const Entity* e2 = find(2);
+        const Entity* emp = e2 ? find(e2->parent) : nullptr;
+        check(emp && emp->type == EntityType::Empty && emp->parent == 1 && near3(e2->center, was) &&
+                  sel.activeId() == emp->id,
+              "an Empty slid in above an object keeps it where it was, and is selected");
+
+        // A car, nose along +Z: the cockpit camera faces it; lights: four, under the car.
+        {
+            Entity car = makeBox(8, glm::vec3(0.0f, 0.0f, 20.0f));
+            car.components.items.push_back(std::make_unique<VehicleComponent>());
+            entities.push_back(std::move(car));
+        }
+        scenegraph::resolve(entities);
+        sceneops::addCockpitCamera(ed, document.indexOf(8));
+        const Entity* cock = find(sel.activeId());
+        const bool facesNose = cock && cock->parent == 8 &&
+                               std::abs(cock->localRotation.y - 180.0f) < 1e-4f &&
+                               cock->localCenter.z > 0.0f;
+        find(8)->components.get<VehicleComponent>()->forward = 1;   // built the other way round
+        sceneops::addCockpitCamera(ed, document.indexOf(8));
+        const Entity* cock2 = find(sel.activeId());
+        check(facesNose && cock2 && std::abs(cock2->localRotation.y) < 1e-4f && cock2->localCenter.z < 0.0f,
+              "a cockpit camera sits in the front of the craft and faces its nose, whichever way it was built");
+        const unsigned rev4 = history.revision();
+        sceneops::addVehicleLights(ed, document.indexOf(8));
+        int lights = 0;
+        for (const Entity& e : entities)
+            if (e.parent == 8 && e.components.get<LightComponent>()) ++lights;
+        const unsigned rev5 = history.revision();
+        sceneops::addVehicleLights(ed, document.indexOf(1));   // no vehicle there
+        check(lights == 4 && rev5 == rev4 + 1 && history.revision() == rev5,
+              "a vehicle gets its four lights as one undo step; an object that is no vehicle gets none");
+
+        // A prefab instance unpacked.
+        {
+            Entity inst = makeBox(9, glm::vec3(0.0f, 0.0f, -20.0f));
+            auto pc2 = std::make_unique<PrefabComponent>();
+            pc2->source = fitzel::AssetId::generate();
+            inst.components.items.push_back(std::move(pc2));
+            entities.push_back(std::move(inst));
+        }
+        const unsigned rev6 = history.revision();
+        sceneops::unpackPrefab(ed, 9);
+        const bool unpacked = !find(9)->components.get<PrefabComponent>() &&
+                              history.revision() == rev6 + 1;
+        history.undo(document);
+        check(unpacked && find(9)->components.get<PrefabComponent>(),
+              "a prefab instance unpacks to an ordinary object, as one undo step");
+        revertAll(rev0);
+        entities.clear();   // what was put in by hand rather than by a command
+        sel.clear();
+    }
 
     // --- Which tool has the left button --------------------------------------------------------
     {

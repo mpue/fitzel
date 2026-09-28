@@ -88,6 +88,7 @@
 #include "MaterialsPanel.hpp"
 #include "MixerPanel.hpp"
 #include "Cursor3D.hpp"
+#include "SceneOps.hpp"
 #include "MeshPaintPanel.hpp"
 #include "ViewTool.hpp"
 #include "ViewportPick.hpp"
@@ -1431,9 +1432,8 @@ int main(int argc, char** argv) {
         // scene with boxes. Esc always steps back out to Select.
         bool      placeMode      = false;
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
-        // Half-thickness a new Plane gets. Not zero: the pick box would be a
-        // sheet nobody can click and the box collider would be degenerate.
-        constexpr float kPlaneHalfY = 0.05f;
+        // Half-thickness a new Plane gets (see SceneOps.hpp).
+        using sceneops::kPlaneHalfY;
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
 
@@ -2053,7 +2053,7 @@ int main(int argc, char** argv) {
         // EditorContext.hpp). Built once: everything in it lives as long as main.
         EditorContext editorCtx{document, entities, sel, history, materials, matSel, assetDb,
                                 models, camera, exportStatus, meshFaceOwner, meshFaceSel,
-                                addModelEntity,
+                                entityCounter, addModelEntity,
                                 [&](glm::vec3 p, const std::string& path) {
                                     addModelHierarchy(p, path);
                                 },
@@ -2278,56 +2278,28 @@ int main(int argc, char** argv) {
             modelmode::applyEdit(editorCtx, op, label);
         };
 #endif // !FITZEL_PLAYER
-        // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
-        // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
-        auto isUnderId = [&](int a, int ancestorId) {
-            for (int p = a; p >= 0; ) {
-                if (p == ancestorId) return true;
-                int nextIdx = -1;
-                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
-                    if (entities[i].id == p) { nextIdx = i; break; }
-                p = (nextIdx >= 0) ? entities[nextIdx].parent : -1;
-            }
-            return false;
+#ifndef FITZEL_PLAYER
+        // --- Operations on objects (SceneOps.cpp) -----------------------------
+        // Delete / duplicate one object or the selection, unpack a prefab, set
+        // the main camera, and the hierarchy menu's "add ..." family -- each one
+        // undoable step. Named here for the panels and menus that take them.
+        auto isUnderId          = [&](int a, int anc) { return sceneops::isUnder(entities, a, anc); };
+        auto deleteEntity       = [&](int i) { sceneops::deleteEntity(editorCtx, i); };
+        auto duplicateEntity    = [&](int i) { sceneops::duplicateEntity(editorCtx, i); };
+        auto deleteSelection    = [&] { sceneops::deleteSelection(editorCtx); };
+        auto duplicateSelection = [&] { sceneops::duplicateSelection(editorCtx); };
+        auto unpackPrefab       = [&](int id) { sceneops::unpackPrefab(editorCtx, id); };
+        auto setMainCamera      = [&](int id) { sceneops::setMainCamera(editorCtx, id); };
+        auto addEmptyChild      = [&](int i) { sceneops::addEmptyChild(editorCtx, i); };
+        auto addPrimitiveChild  = [&](int i, EntityType t) {
+            sceneops::addPrimitiveChild(editorCtx, i, t, entityNewHalf);
         };
-        // Delete an entity by index, reparenting its children to its own parent.
-        auto deleteEntity = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            if (entities[idx].type == EntityType::Sun) return; // the sun is permanent
-            // Delete the whole subtree: the entity plus every descendant, as one
-            // undoable step (deleting a parent shouldn't orphan its child parts).
-            std::vector<int> ids{entities[idx].id};
-            for (std::size_t k = 0; k < ids.size(); ++k)
-                for (const Entity& e : entities)
-                    if (e.parent == ids[k]) ids.push_back(e.id);
-            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            sel.clear();
-        };
-        // Duplicate an entity as one undoable step: an offset copy that KEEPS its
-        // parent.
-        //
-        // It used to unparent the copy, and that moved it. localCenter is relative
-        // to the parent and is the source of truth; resolveHierarchy gives a ROOT
-        // the world position `center = localCenter`. So a child sitting at local
-        // (0, 0, -3) on a craft half a map away had its copy teleported to world
-        // (1.1, 0, -3) -- next to the origin. On a visible object you would watch
-        // it fly off; on an Empty there is nothing to see, so the copy was simply
-        // somewhere else, unclickable where you were looking. Duplicating a
-        // thruster mount is exactly that case.
-        //
-        // The offset is in the parent's frame, which is what "beside the original"
-        // means for a child. `center` is left alone: it is derived, and
-        // resolveHierarchy fills it from the parent this frame.
-        auto duplicateEntity = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            if (entities[idx].type == EntityType::Sun) return;
-            Entity nb = entities[idx];
-            nb.localCenter.x += nb.half.x * 2.2f;
-            nb.id     = entityCounter++;
-            nb.name  += " copy";
-            history.push(std::make_unique<AddEntityCmd>(nb), document);
-            sel.select(nb.id);
-        };
+        auto addClothChild      = [&](int i, int which) { sceneops::addClothChild(editorCtx, i, which); };
+        auto addShotCamera      = [&](int i) { sceneops::addShotCamera(editorCtx, i); };
+        auto addCockpitCamera   = [&](int i) { sceneops::addCockpitCamera(editorCtx, i); };
+        auto addEmptyParent     = [&](int i) { sceneops::addEmptyParent(editorCtx, i); };
+        auto addVehicleLights   = [&](int i) { sceneops::addVehicleLights(editorCtx, i); };
+#endif // !FITZEL_PLAYER
 #ifndef FITZEL_PLAYER
         // --- Prefabs (reusable object templates; see PrefabSystem.hpp) ----------
         // The open project's prefabs/ folder ("" when no project is open -- prefabs
@@ -2551,25 +2523,6 @@ int main(int argc, char** argv) {
             for (int id : ids) if (const Entity* e = document.find(id)) out.push_back(*e);
             return out;
         };
-        // "Unpack Prefab": the instance `id` belongs to -- and every other
-        // selected instance when `id` is part of the selection -- becomes
-        // ordinary objects, its prefab tags dropped. One undoable step.
-        auto unpackPrefab = [&](int id) {
-            std::vector<int> ids;
-            auto addInstance = [&](int eid) {
-                for (int m : prefab::instanceMembers(entities, eid))
-                    if (std::find(ids.begin(), ids.end(), m) == ids.end()) ids.push_back(m);
-            };
-            addInstance(id);
-            if (sel.contains(id))
-                for (int sid : sel.ids()) addInstance(sid);
-            if (ids.empty()) return;
-            std::vector<Entity> before = snapshotEntities(ids);
-            for (int m : ids)
-                if (Entity* e = document.find(m)) prefab::unpack(*e);
-            history.pushApplied(std::make_unique<ModifyEntitiesCmd>(
-                std::move(before), snapshotEntities(ids), "Unpack Prefab"));
-        };
 
 #ifndef FITZEL_PLAYER
         // --- Procedural buildings (see BuildingGen.hpp) -------------------------
@@ -2717,356 +2670,6 @@ int main(int argc, char** argv) {
         };
 #endif // !FITZEL_PLAYER
 
-#ifndef FITZEL_PLAYER
-        // --- Selection-wide operations (see Selection.hpp for the set itself) ---
-        // The two that stay here: both are one UNDOABLE STEP over the document,
-        // and the history and the id counter are main's, not the selection's.
-        // Delete every selected object's subtree as one undoable step (falls back
-        // to the single-object delete when only one is selected).
-        auto deleteSelection = [&]() {
-            const std::vector<int> chosen = sel.ids();
-            if (chosen.size() <= 1) { deleteEntity(sel.index()); return; }
-            std::vector<int> ids;
-            for (int rootId : chosen) {
-                const Entity* e = document.find(rootId);
-                if (!e || e->type == EntityType::Sun) continue;
-                for (int id : collectSubtreeIds(rootId))
-                    if (std::find(ids.begin(), ids.end(), id) == ids.end())
-                        ids.push_back(id);
-            }
-            if (ids.empty()) return;
-            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            sel.clear();
-        };
-        // Duplicate every selected object as one undoable step; the copies become
-        // the selection. Parents are kept, exactly as the single Duplicate does
-        // and for the same reason (see there).
-        //
-        // With one wrinkle a single copy cannot have: when a selected object's
-        // PARENT was copied too, the copy must hang off the copied parent rather
-        // than the original. Otherwise duplicating a craft and its thrusters
-        // together gives you a second craft whose thrusters are still bolted to
-        // the first one.
-        auto duplicateSelection = [&]() {
-            const std::vector<int> chosen = sel.ids();
-            if (chosen.size() <= 1) { duplicateEntity(sel.index()); return; }
-            std::vector<Entity> copies;
-            std::vector<int>    newIds;
-            std::unordered_map<int, int> remap;   // original id -> copy id
-            for (int id : chosen) {
-                const Entity* src = document.find(id);
-                if (!src || src->type == EntityType::Sun) continue;
-                Entity nb = *src;
-                nb.localCenter.x += nb.half.x * 2.2f;
-                nb.id     = entityCounter++;
-                nb.name  += " copy";
-                remap[id] = nb.id;
-                newIds.push_back(nb.id);
-                copies.push_back(std::move(nb));
-            }
-            for (Entity& c : copies) {
-                const auto it = remap.find(c.parent);
-                if (it != remap.end()) c.parent = it->second;
-            }
-            if (copies.empty()) return;
-            history.push(std::make_unique<AddEntitiesCmd>(std::move(copies), "Duplicate"),
-                         document);
-            sel.clear();
-            sel.addMany(newIds);
-        };
-#endif // !FITZEL_PLAYER
-
-        // Spawn a new entity of `type` as a child of `parentId` (-1 = root),
-        // placed at world position/rotation (wPos/wRot). Mirrors addEntity's
-        // material/light setup but lets the hierarchy context menu build parented
-        // nodes. Returns the new entity's id. One undoable step.
-        auto spawnChild = [&](int parentId, EntityType type,
-                              const glm::vec3& wPos, const glm::vec3& wRot) -> int {
-            Entity nb;
-            nb.type = type;
-            nb.half = (type == EntityType::Light) ? glm::vec3(0.3f)
-                    : (type == EntityType::Empty) ? glm::vec3(0.5f)
-                    : (type == EntityType::Plane)
-                          ? glm::vec3(entityNewHalf.x, kPlaneHalfY, entityNewHalf.z)
-                    : entityNewHalf;
-            if (type == EntityType::Light)
-                nb.components.items.push_back(std::make_unique<LightComponent>());
-            const bool solid = isSolidPrimitive(type);
-            if (solid && !materials.empty()) {
-                auto mc = std::make_unique<MaterialComponent>();
-                mc->material = materials[glm::clamp(matSel, 0,
-                                   static_cast<int>(materials.size()) - 1)].assetId;
-                nb.components.items.push_back(std::move(mc));
-            }
-            nb.id     = entityCounter++;
-            nb.parent = parentId;
-            nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
-            Entity* p = (parentId >= 0) ? document.find(parentId) : nullptr;
-            const glm::mat4 pw = p ? worldOf(*p) : glm::mat4(1.0f);
-            setWorld(nb, wPos, wRot, p ? &pw : nullptr);
-            history.push(std::make_unique<AddEntityCmd>(nb), document);
-            return nb.id;
-        };
-        // Make the Camera on entity `entId` the single Main Camera: the view that
-        // Play (and the exported game) starts from. Sets its CameraComponent's
-        // activeOnStart and clears it on every other camera, so exactly one is the
-        // main camera. Pass -1 to clear all cameras (Play starts from the player
-        // view). One undoable step over all camera entities; a no-op if `entId`
-        // has no CameraComponent.
-        auto setMainCamera = [&](int entId) {
-            if (entId >= 0) {
-                const Entity* e = document.find(entId);
-                if (!e || !e->components.get<CameraComponent>()) return;
-            }
-            std::vector<int> camIds;
-            for (const Entity& e : entities)
-                if (e.components.get<CameraComponent>()) camIds.push_back(e.id);
-            if (camIds.empty()) return;
-            std::vector<Entity> before = snapshotEntities(camIds);
-            for (Entity& e : entities)
-                if (auto* cc = e.components.get<CameraComponent>())
-                    cc->activeOnStart = (e.id == entId);
-            auto cmd = std::make_unique<ModifyEntitiesCmd>(before, snapshotEntities(camIds));
-            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-        };
-        // Context-menu helpers (index-based; capture the id first so the entities
-        // vector may safely grow underneath).
-        auto addEmptyChild = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const int id = spawnChild(n.id, EntityType::Empty, n.center, n.rotation);
-            sel.select(id);
-        };
-        auto addPrimitiveChild = [&](int idx, EntityType type) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const int id = spawnChild(n.id, type, n.center, glm::vec3(0.0f));
-            sel.select(id);
-        };
-        // A cloth already hung from the picked object: a thin box carrying a Soft
-        // Body whose pinning, size and weight say what it is. The picked object is
-        // what it hangs FROM -- a curtain rail, a flagpole -- so the cloth is put
-        // where it would hang off it, as a child, turned the way it is turned.
-        //
-        // Everything here is a starting point for the Inspector, not a mode: the
-        // sizes are a room's curtain and a flagpole's flag, and the weights are
-        // what those weigh -- a flag at the component's default 20 kg would hang
-        // off its pole like a wet towel however hard it blew.
-        auto addClothChild = [&](int idx, int which) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            Entity cl;
-            cl.type   = EntityType::Box;
-            cl.id     = entityCounter++;
-            cl.parent = n.id;
-            auto sb = std::make_unique<SoftBodyComponent>();
-            sb->kind = SoftBodyComponent::Cloth;
-            if (which == 1) {                       // flag: flies from the pole's +X side
-                cl.name = "Flag " + std::to_string(cl.id);
-                cl.half = glm::vec3(0.75f, 0.5f, 0.01f);
-                cl.localCenter = glm::vec3(n.half.x + cl.half.x + 0.03f,
-                                           n.half.y - cl.half.y - 0.1f, 0.0f);
-                sb->pinning    = SoftBodyComponent::PinPole;
-                sb->resolution = 5;
-                sb->mass       = 0.5f;
-                sb->softness   = 0.3f;
-                sb->damping    = 0.05f;
-                // A breeze out along the way the flag points, flat: so it flies
-                // as placed, and turning the pole turns where it flies.
-                glm::vec3 out = glm::quat(glm::radians(n.rotation)) * glm::vec3(1.0f, 0.0f, 0.0f);
-                out.y = 0.0f;
-                sb->wind = glm::length(out) > 1.0e-3f ? glm::normalize(out) * 6.0f
-                                                      : glm::vec3(6.0f, 0.0f, 0.0f);
-            } else if (which == 2) {                // banner: two top corners, below
-                cl.name = "Banner " + std::to_string(cl.id);
-                cl.half = glm::vec3(0.5f, 1.0f, 0.01f);
-                cl.localCenter = glm::vec3(0.0f, -(n.half.y + cl.half.y + 0.02f), 0.0f);
-                sb->pinning    = SoftBodyComponent::PinTopCorners;
-                sb->resolution = 5;
-                sb->mass       = 1.0f;
-                sb->softness   = 0.3f;
-            } else {                                // curtain: on rings, pleated, below
-                cl.name = "Curtain " + std::to_string(cl.id);
-                cl.half = glm::vec3(1.0f, 1.25f, 0.02f);
-                cl.localCenter = glm::vec3(0.0f, -(n.half.y + cl.half.y + 0.02f), 0.0f);
-                sb->pinning    = SoftBodyComponent::PinRings;
-                sb->rings      = 10;
-                sb->folds      = 0.6f;
-                sb->resolution = 6;
-                sb->mass       = 3.0f;
-                sb->softness   = 0.35f;
-                sb->damping    = 0.15f;
-            }
-            cl.components.items.push_back(std::move(sb));
-            if (!materials.empty()) {
-                auto mc = std::make_unique<MaterialComponent>();
-                mc->material = materials[glm::clamp(matSel, 0,
-                                   static_cast<int>(materials.size()) - 1)].assetId;
-                cl.components.items.push_back(std::move(mc));
-            }
-            // World transform for the rest of this frame; the scene-graph resolve
-            // takes it over from here (local is the source of truth).
-            glm::vec3 sc;
-            scenegraph::decompose(worldOf(n) * composeModel(cl.localCenter,
-                                                            cl.localRotation,
-                                                            glm::vec3(1.0f)),
-                                  cl.center, cl.rotation, sc);
-            history.push(std::make_unique<AddEntityCmd>(cl), document);
-            sel.select(cl.id);
-        };
-        // A camera that SHOOTS the picked object: an Empty carrying a Camera in
-        // Multishot mode, aimed at that object by id (see MultiShot.hpp).
-        //
-        // It is deliberately NOT a child of its subject, which is the opposite of
-        // how a follow camera is made here. A multishot camera stands off the
-        // thing it films -- ahead of it, above it, planted in the road waiting for
-        // it -- and a camera parented to a moving car would be fighting that
-        // transform in every shot. So the subject is named instead, and this menu
-        // item is what saves the author from having to know that.
-        //
-        // Where it is placed hardly matters (the shots decide where the eye goes),
-        // but it is put a sensible framing distance off the subject anyway, so the
-        // gizmo's tether is short and readable rather than crossing the map.
-        auto addShotCamera = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const float r = glm::max(glm::length(glm::vec2(n.half.x, n.half.z)), 0.4f);
-            Entity cam;
-            cam.type        = EntityType::Empty;
-            cam.half        = glm::vec3(0.5f);
-            cam.id          = entityCounter++;
-            cam.name        = n.name + " Cam";
-            cam.localCenter = cam.center =
-                n.center + glm::vec3(r * 2.6f + 1.5f, n.half.y + 1.0f, 0.0f);
-            auto cc = std::make_unique<CameraComponent>();
-            cc->mode       = CameraComponent::Multishot;
-            cc->shotTarget = n.id;
-            cam.components.items.push_back(std::move(cc));
-            history.push(std::make_unique<AddEntityCmd>(cam), document);
-            sel.select(cam.id);
-        };
-        // A camera that SITS IN the picked object: a Camera child in Cockpit mode,
-        // seated at the front of its bounding box and TURNED TO FACE THE NOSE.
-        //
-        // That half turn is the whole reason this menu item exists. A camera looks
-        // down its own -Z; a craft's nose is its +Z. So a camera child left at
-        // zero rotation -- which is what dropping one in gives you -- looks out of
-        // the BACK of the craft, and the obvious conclusion is that the mode is
-        // broken rather than that it is facing the wrong way. The turn is not done
-        // inside the camera system, where it would make the frustum the gizmo
-        // draws a lie; it is done once, here, on a camera the author can then
-        // freely turn any way they like.
-        //
-        // Which end the nose is at, the craft already says: Vehicle and Glider both
-        // carry `forward` for models built the other way round.
-        auto addCockpitCamera = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const auto* gc = n.components.get<GliderComponent>();
-            const auto* vc = n.components.get<VehicleComponent>();
-            const bool noseBack = (gc && gc->forward == 1) || (vc && vc->forward == 1);
-            const float nose = noseBack ? -1.0f : 1.0f;
-
-            Entity cam;
-            cam.type   = EntityType::Empty;
-            cam.half   = glm::vec3(0.5f);
-            cam.id     = entityCounter++;
-            cam.parent = n.id;
-            cam.name   = n.name + " Cockpit";
-            // A seat, not a pose: forward of centre and above it, in fractions of
-            // the craft's own size so it lands sensibly on a glider and on a lorry.
-            // The author drags it to the actual canopy from there -- which is the
-            // one thing only they can know.
-            cam.localCenter   = glm::vec3(0.0f, n.half.y * 0.35f,
-                                          nose * n.half.z * 0.35f);
-            cam.localRotation = glm::vec3(0.0f, noseBack ? 0.0f : 180.0f, 0.0f);
-            auto cc = std::make_unique<CameraComponent>();
-            cc->mode = CameraComponent::Cockpit;
-            cam.components.items.push_back(std::move(cc));
-            // World transform for the rest of this frame; the scene-graph resolve
-            // takes it over from here (local is the source of truth).
-            glm::vec3 sc;
-            scenegraph::decompose(worldOf(n) * composeModel(cam.localCenter,
-                                                            cam.localRotation,
-                                                            glm::vec3(1.0f)),
-                                  cam.center, cam.rotation, sc);
-            history.push(std::make_unique<AddEntityCmd>(cam), document);
-            sel.select(cam.id);
-        };
-        // Insert a new Empty between `idx` and its current parent, then reparent
-        // `idx` under it -- keeping the node put. Groups the node under a fresh
-        // pivot, like Unity's "Create Empty Parent".
-        auto addEmptyParent = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            if (entities[idx].type == EntityType::Sun) return; // the sun stays root
-            const int       nodeId      = entities[idx].id;
-            const int       grandparent = entities[idx].parent;
-            const glm::vec3 wPos        = entities[idx].center;
-            const glm::vec3 wRot        = entities[idx].rotation;
-            const int emptyId = spawnChild(grandparent, EntityType::Empty, wPos, wRot);
-            Entity* node = document.find(nodeId);
-            Entity* emp  = document.find(emptyId);
-            if (node && emp) {
-                node->parent = emptyId;
-                const glm::mat4 pw = worldOf(*emp);
-                rebaseLocal(*node, &pw); // keep the child where it was
-            }
-            sel.select(emptyId);
-        };
-        // Attach car lights to a vehicle entity: two forward spot headlights at the
-        // nose and two red point taillights (no shadows) at the tail, all parented so
-        // they move/steer with the car. One undoable step. No-op without a Vehicle.
-        auto addVehicleLights = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            Entity& veh = entities[idx];
-            const auto* vc = veh.components.get<VehicleComponent>();
-            if (!vc) return;
-            const int vehId = veh.id;
-            // Body extents: the larger of the model AABB and the chassis box.
-            // frontSign maps the model's nose (native -Z when forward==1) to local Z.
-            const glm::vec3 h = glm::max(veh.half, vc->chassisHalf);
-            const float frontSign = (vc->forward == 1) ? -1.0f : 1.0f;
-            const float zx  = h.z * 0.96f * frontSign; // nose Z (tail is -zx)
-            const float xo  = h.x * 0.6f;              // left/right inset
-            const float yo  = h.y * 0.1f;              // just above centre
-            const float yaw = (vc->forward == 1) ? 180.0f : 0.0f; // spot faces the nose
-            const glm::mat4 pw = worldOf(veh);
-            std::vector<Entity> batch;
-            auto makeLight = [&](const char* name, glm::vec3 lpos, glm::vec3 lrot,
-                                 bool spot, glm::vec3 col, float inten, float rng) {
-                Entity nb;
-                nb.type   = EntityType::Light;
-                nb.half   = glm::vec3(0.12f);
-                nb.id     = entityCounter++;
-                nb.parent = vehId;
-                nb.name   = name;
-                nb.localCenter   = lpos;
-                nb.localRotation = lrot;
-                auto lc = std::make_unique<LightComponent>();
-                lc->type = spot ? 1 : 0;
-                lc->color = col; lc->intensity = inten; lc->range = rng;
-                lc->castShadows = false;
-                if (spot) { lc->spotAngle = 30.0f; lc->spotBlend = 0.25f; }
-                nb.components.items.push_back(std::move(lc));
-                // Seed the world transform (resolveHierarchy refreshes it each frame).
-                const glm::mat4 w =
-                    pw * composeModel(nb.localCenter, nb.localRotation, glm::vec3(1.0f));
-                float t[3], r[3], s[3];
-                ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(w), t, r, s);
-                nb.center   = {t[0], t[1], t[2]};
-                nb.rotation = {r[0], r[1], r[2]};
-                batch.push_back(std::move(nb));
-            };
-            const glm::vec3 warm(1.0f, 0.96f, 0.85f);
-            const glm::vec3 red (1.0f, 0.05f, 0.02f);
-            makeLight("Headlight L", { xo, yo,  zx}, {0.0f, yaw, 0.0f}, true,  warm, 12.0f, 28.0f);
-            makeLight("Headlight R", {-xo, yo,  zx}, {0.0f, yaw, 0.0f}, true,  warm, 12.0f, 28.0f);
-            makeLight("Taillight L", { xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
-            makeLight("Taillight R", {-xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
-            history.push(std::make_unique<AddEntitiesCmd>(std::move(batch), "Add headlights"),
-                         document);
-            sel.select(vehId);
-        };
 
 
         // --- Flowers (owned by VegetationSystem) -----------------------------

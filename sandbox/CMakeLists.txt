@@ -260,6 +260,8 @@ set(SANDBOX_EDITOR_SOURCES
     # The Scene window's corner read-outs: the camera preview, what Play starts
     # as, the tracer's status, the way out of a camera view, the view's name.
     src/ViewportHud.cpp
+    # Delete, duplicate, unpack, main camera and the hierarchy menu's "add ...".
+    src/SceneOps.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -761,7 +763,8 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
-                           src/ViewportHud.cpp src/GameSettings.cpp
+                           src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp
+                           src/IconEmbed.cpp src/InstallerBuild.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
