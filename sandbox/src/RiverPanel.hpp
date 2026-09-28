@@ -24,10 +24,6 @@ struct PanelState {
     int&         sel;       // selected watercourse, -1 = none
     int&         ptSel;     // selected control point of it, -1 = none
 
-    // Turning edit mode on has to switch the sibling brushes off, or two tools
-    // fight over the left button. main owns those flags; it hands us the one call.
-    std::function<void()> grabLMB;
-
     // Undo bracket for the edits the panel makes itself. beginEdit() before
     // touching a path, endEdit("label") when the interaction is over -- for a
     // slider that is on release, not every frame it changes, or one drag would

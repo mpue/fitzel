@@ -7,10 +7,12 @@
 
 #include <imgui_internal.h>   // DockBuilder
 
+#include <fitzel/Version.hpp>
 #include <fitzel/core/Window.hpp>
 #include <fitzel/ui/Gui.hpp>
 
 #include "FolderDialog.hpp"
+#include "ProjectIO.hpp"
 #include "UiStyle.hpp"
 #include "ViewportNav.hpp"
 
@@ -300,6 +302,168 @@ void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
                           "own arrangement is remembered in imgui.ini\n"
                           "and wins until you ask for this.");
     ImGui::EndMenu();
+}
+
+void drawAbout(bool& show) {
+    if (!show) return;
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::Begin("About Fitzel", &show,
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::Text("Fitzel %d.%d.%d", fitzel::kVersionMajor, fitzel::kVersionMinor,
+                    fitzel::kVersionPatch);
+        ImGui::TextDisabled("3D vegetation & road engine");
+        ImGui::Separator();
+        // The four-part version alone can't tell two builds of one commit
+        // apart, so show what identifies this binary exactly.
+        ImGui::Text("Build %d", fitzel::kVersionBuild);
+        if (fitzel::kGitHash[0])
+            ImGui::Text("Commit %s%s", fitzel::kGitHash,
+                        fitzel::kGitDirty ? " (uncommitted changes)" : "");
+        ImGui::Spacing();
+        if (ImGui::Button("Copy version")) ImGui::SetClipboardText(fitzel::kVersionFull);
+    }
+    ImGui::End();
+}
+
+void drawProjectWizard(const FileMenuCtx& c, const std::function<void()>& newProject,
+                       const std::function<void(const std::string&)>& saveProjectTo) {
+    if (c.wizardOpen) { ImGui::OpenPopup("Project Wizard"); c.wizardOpen = false; }
+    ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
+    if (!ImGui::BeginPopupModal("Project Wizard", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+        return;
+    ImGui::TextUnformatted(c.wizardIsNew ? "Create a new project" : "Save project as");
+    ImGui::Separator();
+    const float fieldW = 340.0f;
+    ImGui::SetNextItemWidth(fieldW);
+    ImGui::InputText("Name", c.wizName, c.wizNameCap);
+    ImGui::SetNextItemWidth(fieldW);
+    ImGui::InputText("Location", c.wizLocation, c.wizLocationCap);
+    ImGui::SameLine();
+    if (ImGui::Button("Browse...")) {
+        std::string picked;
+        if (ed::pickFolder(picked, c.wizLocation[0] ? std::string(c.wizLocation) : c.prefLocation))
+            std::snprintf(c.wizLocation, c.wizLocationCap, "%s", picked.c_str());
+    }
+
+    const std::string safe   = projectio::safeName(c.wizName);
+    const std::string loc(c.wizLocation);
+    const std::string target = loc.empty() ? std::string() : (loc + "/" + safe);
+    std::error_code vec;
+    const bool nameOk = c.wizName[0] != '\0';
+    const bool locOk  = !loc.empty() && std::filesystem::is_directory(loc, vec);
+    const bool exists = nameOk && locOk && std::filesystem::exists(target, vec);
+
+    ImGui::Spacing();
+    if (!target.empty()) {
+        // Bound the wrap so a long path can't stretch the modal wide.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 460.0f);
+        ImGui::TextDisabled("Folder: %s", target.c_str());
+        ImGui::PopTextWrapPos();
+    }
+    const ImVec4 warn(1.0f, 0.55f, 0.3f, 1.0f);
+    if (!nameOk)     ImGui::TextColored(warn, "Enter a project name.");
+    else if (!locOk) ImGui::TextColored(warn, "Location does not exist.");
+    else if (exists) ImGui::TextColored(warn, "A folder with that name already exists here.");
+    ImGui::Spacing();
+
+    const bool canGo = nameOk && locOk && !exists;
+    ImGui::BeginDisabled(!canGo);
+    if (ImGui::Button(c.wizardIsNew ? "Create" : "Save", ImVec2(120.0f, 0.0f))) {
+        if (c.wizardIsNew && newProject) newProject();
+        if (saveProjectTo) saveProjectTo(target);
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+}
+
+void drawSceneDialogs(const SceneMenuCtx& c, const SceneDialogActions& a) {
+    if (c.sceneNewOpen)    { ImGui::OpenPopup("New Scene");    c.sceneNewOpen = false; }
+    if (c.sceneRenameOpen) { ImGui::OpenPopup("Rename Scene"); c.sceneRenameOpen = false; }
+    if (c.sceneDeleteOpen) { ImGui::OpenPopup("Delete Scene"); c.sceneDeleteOpen = false; }
+    const std::string sceneFolder =
+        c.currentProject.empty()
+            ? std::string()
+            : std::filesystem::path(c.currentProject).parent_path().generic_string();
+    // 0 = ok, 1 = empty, 2 = a scene with that name already exists. `allowSelf`
+    // lets the current scene's own file match (used by Rename).
+    auto sceneNameState = [&](bool allowSelf) -> int {
+        if (c.sceneNameBuf[0] == '\0') return 1;
+        const std::string target =
+            sceneFolder + "/" + projectio::safeName(c.sceneNameBuf) + ".fitzel";
+        std::error_code ec;
+        if (std::filesystem::exists(target, ec) && !(allowSelf && target == c.currentProject))
+            return 2;
+        return 0;
+    };
+    const ImVec4 sceneWarn(1.0f, 0.55f, 0.3f, 1.0f);
+
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("New Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("New scene in this project");
+        ImGui::TextDisabled("Shares the project's materials; starts from the "
+                            "current world with no objects.");
+        ImGui::Separator();
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(300.0f);
+        ImGui::InputText("Name##newscene", c.sceneNameBuf, c.sceneNameCap);
+        const int st = sceneNameState(false);
+        if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
+        else if (st == 2) ImGui::TextColored(sceneWarn, "A scene with that name already exists.");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(st != 0);
+        if (ImGui::Button("Create", ImVec2(120.0f, 0.0f))) {
+            if (a.create) a.create(sceneFolder, c.sceneNameBuf);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::BeginPopupModal("Rename Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextUnformatted("Rename the current scene");
+        ImGui::Separator();
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::SetNextItemWidth(300.0f);
+        ImGui::InputText("Name##renscene", c.sceneNameBuf, c.sceneNameCap);
+        const int st = sceneNameState(true); // its own file may match
+        if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
+        else if (st == 2) ImGui::TextColored(sceneWarn, "A scene with that name already exists.");
+        ImGui::Spacing();
+        ImGui::BeginDisabled(st != 0);
+        if (ImGui::Button("Rename", ImVec2(120.0f, 0.0f))) {
+            if (a.rename) a.rename(c.sceneNameBuf);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
+
+    if (ImGui::BeginPopupModal("Delete Scene", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Delete scene \"%s\"?",
+                    std::filesystem::path(c.currentProject).stem().string().c_str());
+        ImGui::TextDisabled("This permanently removes the .fitzel file from disk.");
+        ImGui::Spacing();
+        if (ImGui::Button("Delete", ImVec2(120.0f, 0.0f))) {
+            const std::string gone = c.currentProject;
+            std::string next; // switch to another scene before removing this one
+            if (c.listScenesIn)
+                for (const auto& [n, p] : c.listScenesIn(sceneFolder))
+                    if (p != gone) { next = p; break; }
+            if (!next.empty() && a.removeCurrent) a.removeCurrent(next, gone);
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f))) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+    }
 }
 
 } // namespace editormenu

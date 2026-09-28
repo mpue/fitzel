@@ -95,7 +95,6 @@ void drawPanel(const PanelState& s) {
                                      : "Draw water in viewport",
                           ImVec2(-1.0f, 0.0f))) {
             s.editMode = !s.editMode;
-            if (s.editMode && s.grabLMB) s.grabLMB();
         }
         if (s.editMode) ImGui::PopStyleColor();
         if (s.editMode) {
@@ -125,7 +124,7 @@ void drawPanel(const PanelState& s) {
                     s.sel   = rv.addPath(static_cast<Preset>(picked));
                     s.ptSel = -1;
                     s.endEdit("Add watercourse");
-                    if (!s.editMode) { s.editMode = true; if (s.grabLMB) s.grabLMB(); }
+                    s.editMode = true;
                 }
                 ImGui::EndPopup();
             }

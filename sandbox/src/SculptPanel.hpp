@@ -8,6 +8,8 @@
 
 #include <fitzel/world/Terrain.hpp>
 
+struct ViewportFrame; // EditorContext.hpp
+
 // The editor's "Terrain Sculpt" tool: the panel with the brush controls, and the
 // brush itself in the viewport (picking, the per-frame dabs, the anchored Pull
 // and Rain gestures, the cursor ring) for the manual deformation layer
@@ -72,16 +74,9 @@ struct Brush {
 
 struct PanelState {
     bool& show;
+    // Only this tool's own switch: which tool has the left button is main's
+    // (ViewTool.hpp), so turning this on switches the others off there.
     bool& sculptMode;
-
-    // The other viewport brushes -- switched off when sculpt grabs the left button
-    // so only one tool owns the LMB at a time.
-    bool& grassPaintMode;
-    bool& roadEditMode;
-    bool& treePaintMode;
-    bool& flowerPaintMode;
-    bool& paintMode;
-    bool& scatterMode;
 
     Brush& brush;
 
@@ -94,24 +89,12 @@ struct PanelState {
 // Draws nothing when `show` is false.
 void drawPanel(const PanelState& s);
 
-// The viewport, as the editor already has it (see roadedit::Context): the
-// camera's view-projection, the image's top-left in screen space, its size,
-// whether the cursor is over it, the cursor in NDC, and main's terrain pick.
-struct Viewport {
-    glm::mat4 viewProj{1.0f};
-    ImVec2    origin{0.0f, 0.0f};
-    float     viewW = 1.0f, viewH = 1.0f;
-    bool      hovered = false;
-    glm::vec2 mouseNdc{0.0f};
-    std::function<bool(glm::vec2, const glm::mat4&, glm::vec3&)> pickTerrain;
-};
-
 // One frame of the brush while sculpt mode owns the left mouse button: raise,
 // lower, smooth or flatten the ground under a 3D disc that hugs the surface
 // (hold LMB to apply; Alt inverts raise/lower), the anchored Pull and Rain
 // gestures, and the cursor ring. Every change is published and the touched
 // terrain chunks rebuilt.
-void brushViewport(Brush& brush, const Viewport& view, fitzel::TerrainEditField& work,
+void brushViewport(Brush& brush, const ViewportFrame& view, fitzel::TerrainEditField& work,
                    fitzel::TerrainStreamer& streamer, const std::function<void()>& publish,
                    bool& grassDirty, float dt);
 

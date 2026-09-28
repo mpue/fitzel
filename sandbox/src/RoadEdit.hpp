@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include "ViewportFrame.hpp"
+
 class RoadSet;
 class RoadSystem;
 
@@ -44,22 +46,9 @@ struct Context {
     bool& dragging;      // a handle is being dragged (state persists across frames)
     bool& dragHeight;    // ...vertically (Ctrl held on grab) rather than across the ground
 
-    // The viewport, as the editor already has it (see splineedit::Context).
-    glm::mat4 viewProj{1.0f};
-    ImVec2    origin{0.0f, 0.0f};
-    float     viewW = 1.0f, viewH = 1.0f;
-    bool      hovered = false;
-    glm::vec2 mouseNdc{0.0f};
-    ImVec2    mousePos{0.0f, 0.0f};
-    glm::vec3 cameraPos{0.0f};
-    glm::vec3 cameraFront{0.0f, 0.0f, -1.0f};  // for the camera-relative nudge
-    float     cameraFov = 60.0f;
-    float     orthoHalfH = 0.0f; // > 0: the view is orthographic, this tall (half)
-
-    // Raycast the terrain under a viewport NDC point (main's roadPickTerrain),
-    // and sample its height.
-    std::function<bool(glm::vec2, const glm::mat4&, glm::vec3&)> pickTerrain;
-    std::function<float(float, float)>                           groundAt;
+    // The viewport this frame (ViewportFrame.hpp): the camera, the image on
+    // screen, the cursor over it, and the ground under a point of it.
+    ViewportFrame view;
 
     // Undo bracket: open on grab, commit on release; editOpen says one is open,
     // so a key-repeat burst closes once the last key comes up.

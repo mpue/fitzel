@@ -3,8 +3,11 @@
 #include <functional>
 #include <string>
 
+#include <glm/glm.hpp>
+
 class Document;
 class GliderComponent;
+struct EditorContext;
 struct Entity;
 
 // UI + one-click setup for the Glider (Wipeout-style hover racer), mirroring
@@ -35,5 +38,16 @@ void inspector(GliderComponent& gc, Entity& root, Document& doc,
 // entity id the user clicked to select, or -1.
 int panelSection(Document& doc, int selectedId,
                  const std::function<std::string(int)>& makeGlider);
+
+// The Glider window: fly mode, the Play-start pointer, the scene gliders (with a
+// one-click undoable setup) and the speed while flying.
+struct Window {
+    bool& show;
+    bool& flyMode;                          // G: flying the selected glider
+    std::function<void(bool)> setFlying;    // ...entered or left from the checkbox
+    const int&       craftId;               // the glider being flown, -1 for none
+    const glm::vec3& velocity;              // ...and its velocity, m/s
+};
+void window(EditorContext& ed, const Window& w);
 
 } // namespace gliderui

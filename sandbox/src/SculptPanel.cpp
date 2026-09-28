@@ -6,14 +6,14 @@
 
 #include <imgui.h>
 
+#include "EditorContext.hpp"
+
 namespace sculptui {
 
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
     if (ImGui::Begin("Terrain Sculpt", &s.show)) {
-        if (ImGui::Checkbox("Sculpt mode", &s.sculptMode) && s.sculptMode)
-            s.grassPaintMode = s.roadEditMode = s.treePaintMode =
-                s.flowerPaintMode = s.paintMode = s.scatterMode = false; // brush owns the LMB
+        ImGui::Checkbox("Sculpt mode", &s.sculptMode);
         if (s.sculptMode)
             ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
                 s.brush.tool == 8 ? "Press and drag to pull the ground out"
@@ -105,7 +105,7 @@ void drawPanel(const PanelState& s) {
     ImGui::End();
 }
 
-void brushViewport(Brush& brush, const Viewport& view, fitzel::TerrainEditField& work,
+void brushViewport(Brush& brush, const ViewportFrame& view, fitzel::TerrainEditField& work,
                    fitzel::TerrainStreamer& streamer, const std::function<void()>& publish,
                    bool& grassDirty, float dt) {
     const glm::mat4& vp = view.viewProj;
@@ -142,7 +142,7 @@ void brushViewport(Brush& brush, const Viewport& view, fitzel::TerrainEditField&
             const glm::vec4 a = vp * glm::vec4(center, 1.0f);
             const glm::vec4 b = vp * glm::vec4(center + glm::vec3(0.0f, 1.0f, 0.0f), 1.0f);
             const float pxPerM = (a.w > 1e-4f && b.w > 1e-4f)
-                ? std::fabs((b.y / b.w - a.y / a.w)) * 0.5f * view.viewH
+                ? std::fabs((b.y / b.w - a.y / a.w)) * 0.5f * view.h
                 : 0.0f;
             // Clamped, because the measurement degenerates: from
             // straight overhead a metre of height is worth almost
@@ -298,8 +298,8 @@ void brushViewport(Brush& brush, const Viewport& view, fitzel::TerrainEditField&
             const glm::vec4 cc = vp * glm::vec4(wx, wy, wz, 1.0f);
             if (cc.w <= 1e-4f) return false;
             const glm::vec3 n = glm::vec3(cc) / cc.w;
-            out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * view.viewW,
-                         org.y + (1.0f - (n.y * 0.5f + 0.5f)) * view.viewH);
+            out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * view.w,
+                         org.y + (1.0f - (n.y * 0.5f + 0.5f)) * view.h);
             return true;
         };
         for (int i = 0; i <= SEG; ++i) {

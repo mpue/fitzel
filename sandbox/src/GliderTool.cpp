@@ -8,8 +8,10 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include "Command.hpp"
 #include "Component.hpp"
 #include "Document.hpp"
+#include "EditorContext.hpp"
 #include "PropertyMeta.hpp"
 #include "SceneTypes.hpp"
 #include "UiStyle.hpp"
@@ -139,6 +141,46 @@ int panelSection(Document& doc, int selectedId,
     if (!sel) ImGui::TextDisabled("Select a model in the scene first.");
     if (!lastMsg.empty()) ImGui::TextWrapped("%s", lastMsg.c_str());
     return pick;
+}
+
+
+void window(EditorContext& ed, const Window& w) {
+    if (!w.show) return;
+    if (ImGui::Begin("Glider", &w.show)) {
+        if (ImGui::Checkbox("Fly mode (G)", &w.flyMode) && w.setFlying)
+            w.setFlying(w.flyMode);
+        if (w.flyMode && w.craftId >= 0)
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                               "W/S thrust, A/D steer, Space air-brake, Esc exit");
+        else
+            ImGui::TextDisabled("Add a Glider component, then press G to fly");
+
+        // Starting Play already flying is File > Game Settings ("Start as") --
+        // see the note in the Vehicle panel.
+        ui::sectionText("Play start");
+        ImGui::TextDisabled("Start mode: File > Game Settings");
+
+        // Turn a selected model into a glider with one click (undoable).
+        auto makeGlider = [&](int rootId) -> std::string {
+            Entity* e = ed.document.find(rootId);
+            if (!e) return std::string();
+            const Entity before = *e;
+            std::string rep = autoSetup(ed.document, rootId);
+            if (Entity* after = ed.document.find(rootId)) {
+                auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
+                if (!cmd->trivial()) ed.history.pushApplied(std::move(cmd));
+            }
+            return rep;
+        };
+        const int selId = ed.sel.valid() ? ed.entities[ed.sel.index()].id : -1;
+        const int pick = panelSection(ed.document, selId, makeGlider);
+        if (pick >= 0) ed.sel.select(pick);
+
+        if (w.flyMode && w.craftId >= 0)
+            ImGui::Text("Speed: %.0f km/h",
+                        glm::length(glm::vec3(w.velocity.x, 0.0f, w.velocity.z)) * 3.6f);
+    }
+    ImGui::End();
 }
 
 } // namespace gliderui

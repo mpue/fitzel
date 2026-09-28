@@ -4,7 +4,10 @@
 #include <string>
 
 class Document;
+class SkidSystem;
+class TrailSystem;
 class VehicleComponent;
+struct EditorContext;
 struct Entity;
 
 // The "connect a model to the vehicle system" tool: one-click wheel/chassis
@@ -33,5 +36,24 @@ void inspector(VehicleComponent& vc, Entity& root, Document& doc);
 // (-1 none). Returns an entity id the user clicked to select, or -1.
 int panelSection(Document& doc, int selectedId,
                  const std::function<std::string(int)>& makeDrivable);
+
+// The Vehicle window: drive mode, the Play-start pointer, skid marks,
+// contrails, missiles, the scene vehicles (with a one-click undoable setup),
+// the setup gizmo's switch and the test car. What only main has comes in here.
+struct Window {
+    bool& show;
+    bool& driveMode;                        // V: driving the selected vehicle
+    std::function<void(bool)> setDriving;   // ...entered or left from the checkbox
+    bool& showCrosshair;                    // in Play
+    SkidSystem&  skids;
+    TrailSystem& trails;
+    std::function<void()> weaponSettings;   // the Missiles section
+    bool& gizmoEdit;                        // the setup gizmo has the left button
+    bool& showTestCar;
+    std::function<void()> placeTestCar;     // at the camera
+    const bool&  testCarPlaced;
+    const float& testCarSpeed;              // m/s
+};
+void window(EditorContext& ed, const Window& w);
 
 } // namespace vehicleui

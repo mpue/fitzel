@@ -956,7 +956,7 @@ void drawPanel(const PanelState& s) {
             }
         }
 
-        if (ImGui::Checkbox("Edit mode", &s.editMode) && s.editMode) s.grabLMB();
+        ImGui::Checkbox("Edit mode", &s.editMode);
         if (s.editMode) {
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                                "Click ground = add | drag handle = move | Del = delete");

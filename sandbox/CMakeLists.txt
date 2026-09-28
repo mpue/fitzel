@@ -9,6 +9,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # What booting means (console, working dir, game archive, boot config,
     # content roots, core shaders), out of main(): the player boots the same way.
     src/Startup.cpp
+    # Play's physics world: the scene's static colliders and the entities' bodies.
+    src/PlayWorld.cpp
     src/Primitives.cpp
     # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
     # the shipped player has to be able to build and draw it too. Only the panel
@@ -47,6 +49,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Soundscape.cpp
     # A herd grazing in a meadow: a skinned model, each animal on its own clock.
     src/Herd.cpp
+    # How a walk clip walks (its pace, its stride pairs): the herd and the
+    # towns' people.
+    src/WalkPace.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
@@ -232,6 +237,43 @@ set(SANDBOX_EDITOR_SOURCES
     src/ScriptEditor.cpp
     # The road tool's viewport handles and the point list's bookkeeping.
     src/RoadEdit.cpp
+    # The Sky & atmosphere and Colour grade panels (their settings: PostLook.hpp).
+    src/LookPanels.cpp
+    # The editor's core as the tools outside main() see it, the viewport as
+    # they take it, and the first of them: an asset dropped on the scene.
+    src/EditorContext.cpp
+    src/ViewportFrame.cpp
+    src/SceneDrop.cpp
+    # What the grass/tree/flower/scatter brushes and texture paint share: the
+    # aim at the ground, the throttled drag, the ring.
+    src/GroundBrush.cpp
+    # The marks drawn over the scene image: the 3D cursor, the selection's
+    # boxes and component gizmos, the Empties' icons.
+    src/ViewportOverlay.cpp
+    # Selecting in the viewport: click, Ctrl+click, Ctrl+drag box, click-to-place.
+    src/ViewportPick.cpp
+    # The transform gizmo, on the selected object or on the face being modelled.
+    src/TransformGizmo.cpp
+    # The 3D cursor: Shift+Right-click, the Shift+S snap menu, its panel.
+    src/Cursor3D.cpp
+    # The modelling mode's host side: edits as undo steps, the modal edits of
+    # its keys, the viewport while it is on, and its Modeling and UV panels.
+    src/ModelMode.cpp
+    src/ModelModePanels.cpp
+    # The Scene window's corner read-outs: the camera preview, what Play starts
+    # as, the tracer's status, the way out of a camera view, the view's name.
+    src/ViewportHud.cpp
+    # Delete, duplicate, unpack, main camera and the hierarchy menu's "add ...".
+    src/SceneOps.cpp
+    # The Assets browser and the Unity asset importer's panel.
+    src/AssetsPanel.cpp
+    src/UnityImportPanel.cpp
+    # The Stats and Camera windows.
+    src/ViewPanels.cpp
+    # The toolbar strip under the menu bar.
+    src/Toolbar.cpp
+    # The UI overlay panel: its undo bracket and "Copy to scene".
+    src/UiOverlayPanel.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -455,7 +497,7 @@ target_link_libraries(signcheck PRIVATE fitzel nlohmann_json::nlohmann_json stb_
 # at their stops, people stay on their pavement -- over a few simulated minutes
 # in real towns. Pure simulation, no GL.
 #   build/release/bin/trafficcheck.exe
-add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp
+add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp src/WalkPace.cpp
                             src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
                             src/StreetSign.cpp src/BuildingGen.cpp src/HouseGen.cpp
                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
@@ -684,7 +726,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/LevelGen.cpp
                          src/RoadSet.cpp src/RoadSystem.cpp src/RoadBridge.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
-                         src/RoadSide.cpp src/RoadEdit.cpp
+                         src/RoadSide.cpp src/RoadEdit.cpp src/ViewportFrame.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/CitySystem.cpp
                          src/StreetSign.cpp
@@ -713,6 +755,41 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # already placed, and neither fault says anything at the time. Runs the real
 # save/load path; no GL, no window.
 #   build/release/bin/prefabeditcheck.exe
+# editorcheck (sandbox/tools/editorcheck.cpp): the editor's core as the tools
+# outside main() see it (EditorContext), and those tools, without a window: an
+# asset dropped on the scene (a material dresses the object or the face under
+# the cursor, as one undo step; a drop on empty sky does nothing), the mesh
+# paint brush (a held stroke paints and splits, and undoes as one step) and the
+# ground brushes' drag (a stamp every so many metres, erase every frame), and
+# the viewport's marks (drawn in front of the camera, never from behind it) and
+# selecting in it (click, cycle, Ctrl toggle and box, click-to-place), and the
+# transform gizmo dragged with real mouse events (move, Ctrl grid, multi-select,
+# a face moved and scaled, one undo step per drag), and the 3D cursor (placed
+# with Shift+Right-click, the Shift+S menu, the snap operations), and the
+# modelling mode (a solid made a mesh, an edit and a modal edit as one undo step,
+# a face picked by a click, G driven by real keys).
+#   build/release/bin/editorcheck.exe
+add_executable(editorcheck tools/editorcheck.cpp
+                           src/EditorContext.cpp src/ViewportFrame.cpp src/SceneDrop.cpp src/SandboxMath.cpp
+                           src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
+                           src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
+                           src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
+                           src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
+                           src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp
+                           src/IconEmbed.cpp src/InstallerBuild.cpp
+                           src/AssetsPanel.cpp src/AssetDrop.cpp src/VideoImport.cpp
+                           src/UnityImportPanel.cpp src/FolderDialog.cpp
+                           src/UiOverlayPanel.cpp src/UiOverlay.cpp
+                           src/SceneGraph.cpp src/Selection.cpp
+                           src/ModelLibrary.cpp src/Component.cpp
+                           src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                           src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(editorcheck PRIVATE fitzel imgui stb_headers
+                                          nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(editorcheck PRIVATE ole32 shell32)   # the folder picker
+endif()
+
 add_executable(prefabeditcheck tools/prefabeditcheck.cpp
                                src/PrefabEdit.cpp src/PrefabSystem.cpp
                                src/ProjectIO.cpp src/GameSettings.cpp

@@ -352,7 +352,6 @@ void drawPanel(const PanelState& s) {
         if (ImGui::Button(s.editMode ? "Editing paths (click to stop)"
                                      : "Edit paths in viewport", ImVec2(-1.0f, 0.0f))) {
             s.editMode = !s.editMode;
-            if (s.editMode && s.grabLMB) s.grabLMB();
         }
         if (s.editMode) ImGui::PopStyleColor();
         if (s.editMode) {
@@ -374,7 +373,7 @@ void drawPanel(const PanelState& s) {
             s.sel   = sp.addPath(Preset::Bare, "Path");
             s.ptSel = -1;
             s.endEdit("Add path");
-            if (!s.editMode) { s.editMode = true; if (s.grabLMB) s.grabLMB(); }
+            s.editMode = true;
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A bare path: just the curve, no geometry.\n"
@@ -396,7 +395,7 @@ void drawPanel(const PanelState& s) {
                     s.endEdit("Add path");
                     // A brand new path has no points yet, so put the author
                     // straight into the mode that gives it some.
-                    if (!s.editMode) { s.editMode = true; if (s.grabLMB) s.grabLMB(); }
+                    s.editMode = true;
                 }
                 ImGui::EndPopup();
             }

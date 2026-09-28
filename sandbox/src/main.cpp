@@ -81,12 +81,25 @@
 #include "SceneGraph.hpp"
 #include "SceneSubmit.hpp"
 #include "PhysicsShapes.hpp"
+#include "PlayWorld.hpp"
 #include "MeshQuery.hpp"
 #include "HierarchyPanel.hpp"
 #include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
 #include "MixerPanel.hpp"
+#include "Cursor3D.hpp"
+#include "SceneOps.hpp"
+#ifndef FITZEL_PLAYER
+#include "AssetsPanel.hpp"
+#include "UnityImportPanel.hpp"
+#include "ViewPanels.hpp"
+#include "Toolbar.hpp"
+#include "UiOverlayPanel.hpp"
+#endif
 #include "MeshPaintPanel.hpp"
+#include "ViewTool.hpp"
+#include "ViewShade.hpp"
+#include "ViewportPick.hpp"
 #include "ModelsPanel.hpp"
 #include "PrefabsPanel.hpp"
 #ifndef FITZEL_PLAYER
@@ -111,6 +124,14 @@
 #include "LuaCompletion.hpp"
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
+#include "LookPanels.hpp"
+#include "EditorContext.hpp"
+#include "SceneDrop.hpp"
+#include "GroundBrush.hpp"
+#include "ViewportOverlay.hpp"
+#include "TransformGizmo.hpp"
+#include "ModelMode.hpp"
+#include "ViewportHud.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -184,6 +205,7 @@
 #include "UiOverlayCommand.hpp"
 #include "UiStyle.hpp"
 #include "Startup.hpp"
+#include "PostLook.hpp"
 
 using namespace fitzel;
 
@@ -518,11 +540,8 @@ int main(int argc, char** argv) {
         // The post chain's knobs stay HERE, not on the chain: they are edited by
         // the Sky & atmosphere and Colour grade panels, saved with the project,
         // and driven by the weather -- all of which is main's business. The chain
-        // is handed them per frame.
-        float bloomIntensity = 0.35f;
-        float rayIntensity   = 0.5f;
-        float bloomThreshold = 1.0f;  // luminance where the glow starts
-        float bloomKnee      = 0.5f;  // soft-knee width below it
+        // is handed them per frame. All of them are one PostLook (PostLook.hpp).
+        PostLook postLook;
 
         // The final composited image lives in this target and is shown as the
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
@@ -618,40 +637,16 @@ int main(int argc, char** argv) {
         glm::vec3& blurAnchorWorld = race.blurAnchorWorld;
         bool&      blurAnchorValid = race.blurAnchorValid;
         float&     blurSpeed01     = race.blurSpeed01; // craft speed 0..~1.4 -> streak len
-        bool fxaaEnabled = true;
-        // Temporal AA (see PostChain / taa.frag). Wins over FXAA when on; not
-        // used in split screen, where one history would serve two cameras.
-        bool  taaEnabled = true;
-        float taaSharpen = 0.35f;
         unsigned  taaFrame = 0;            // jitter sequence position
         glm::mat4 taaPrevVP[2]{glm::mat4(1.0f), glm::mat4(1.0f)}; // per pane, unjittered
         glm::vec3 taaPrevEye[2]{glm::vec3(0.0f), glm::vec3(0.0f)};
         bool      taaHavePrev[2]{false, false};
-        // Screen-space reflections (lit.frag ssrTrace), traced through the last
-        // frame the post chain kept. Needs taaPrevVP, which is kept either way.
-        bool      ssrEnabled = true;
-        // Contact shadows (lit.frag contactShadow): short rays to the sun
-        // through the same history, for what the cascades are too coarse for.
-        bool      contactShadows = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
         bool viewportClicked = false;     // left-click landed on the viewport image
         glm::vec2 viewportRectMin(0.0f);  // viewport image top-left in screen px
         glm::vec2 viewportRectSize(0.0f); // viewport image size in screen px
-        // The horizon-based AO samples along screen-space directions it derives
-        // itself, so there is no sample kernel to upload any more.
-        float ssaoStrength = 0.7f;
-        // Cube-face size of the reflection probe, mirrored here so it can be a
-        // scene setting; the renderer owns the actual cubes (see
-        // setEnvProbeResolution, which reallocates them).
-        int   envProbeRes  = fitzel::Renderer::kDefaultEnvProbeRes;
-        // Cap on the probe's cube faces per frame. The default buys back most of
-        // the reflection lag at speed; 1 is the old amortized behaviour.
-        int   envProbeFaces = 3;
-        float ssaoRadius   = 1.5f;
-        float ssaoBias     = 0.15f; // radians: horizons below this don't occlude
-        float ssaoPower    = 1.6f;
 
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
@@ -776,7 +771,8 @@ int main(int argc, char** argv) {
         motes.init();
         bool motesOn = false;
 
-        bool      grassPaintMode = false;      // grass brush active
+        // Which tool has the left mouse button in the viewport (ViewTool.hpp).
+        ViewTool  viewTool       = ViewTool::None;
         bool      brushErase     = false;      // stamp vs erase (shared)
         float     brushRadius    = 4.0f;       // world units (shared)
         float     brushDensity   = 1.0f;       // scatter-count multiplier (shared)
@@ -793,7 +789,6 @@ int main(int argc, char** argv) {
             setTerrainEditSnapshot(std::make_shared<const TerrainEditField>(sculptWork));
         };
         publishSculpt();                     // install the (empty) snapshot
-        bool  sculptMode     = false;
         // The brush's settings and the gesture in flight (see SculptPanel.hpp).
         sculptui::Brush sculpt;
 
@@ -807,40 +802,21 @@ int main(int argc, char** argv) {
             setTerrainPaintSnapshot(std::make_shared<const TerrainPaintField>(paintWork));
         };
         publishPaint();                      // install the (empty) snapshot
-        bool  paintMode     = false;
         int   paintLayer    = 0;             // which of the first 4 texture layers to paint
         float paintRadius   = 8.0f;          // world units
         float paintStrength = 0.5f;          // 0..1 brush intensity
         bool  paintErase    = false;         // paint vs revert-to-auto
 
         // --- Mesh texture painting ------------------------------------------
-        // A brush that puts textures on a modelled object. The weights live on
-        // the mesh's own corners (EditMesh::paint) and what they MEAN lives there
-        // too (MeshComponent::paintSlots), so a painted object is self-contained:
-        // it travels, it copies, it becomes a prefab, and none of that depends on
-        // what the terrain happens to be textured with. The brush splits the faces
-        // it crosses, because paint on four corners is not a stroke. The tool
-        // itself is in MeshPaint.cpp -- main only hands it the viewport and
-        // brackets the stroke for undo.
-        bool  meshPaintMode     = false;
-        int   meshPaintSlot     = 0;         // which of the mesh's own four slots
-        float meshPaintRadius   = 0.6f;      // world units -- an object-sized brush
-        float meshPaintStrength = 0.5f;
-        float meshPaintDetail   = 0.25f;     // split faces down to this edge length
-        bool  meshPaintErase    = false;
-        // One held button = one undo step: the entity as it was when the stroke
-        // started, banked when it ends.
-        bool   meshPaintStroking = false;
-        Entity meshPaintBefore;
-        // Where a stroke stops splitting. A brush held down over a wall would
-        // otherwise quarter its faces until the editor stops.
-        constexpr int kMeshPaintMaxFaces = 4000;
+        // A brush that puts textures on a modelled object: the painting itself
+        // is in MeshPaint.cpp, the panel and the gesture in the viewport in
+        // MeshPaintPanel.cpp, the brush's settings and stroke in meshBrush.
+        meshpaintui::Brush meshBrush;
 
         // --- Object scatter -------------------------------------------------
         // A 3D brush that sprinkles imported models over the terrain as regular
         // Model entities, grouped under a root "Scattered" Empty; one stamp =
         // one undo step. Settings/placement/panel live in ScatterTool.
-        bool               scatterMode = false;
         scatterui::Settings scatterCfg;
 
         // --- Procedural buildings -------------------------------------------
@@ -982,10 +958,10 @@ int main(int argc, char** argv) {
         auto applyGfx = [&](const gfxmenu::Settings& prev) {
             gfxmenu::Targets t;
             t.viewRadius    = &viewRadius;
-            t.envProbeRes   = &envProbeRes;
-            t.envProbeFaces = &envProbeFaces;
-            t.fxaa          = &fxaaEnabled;
-            t.taa           = &taaEnabled;
+            t.envProbeRes   = &postLook.envProbeRes;
+            t.envProbeFaces = &postLook.envProbeFaces;
+            t.fxaa          = &postLook.fxaaEnabled;
+            t.taa           = &postLook.taaEnabled;
             t.grassEnabled  = &veg.grassEnabled;
             t.flowerEnabled = &veg.flowerEnabled;
             t.grassDensity  = &veg.grassDensity;
@@ -1011,7 +987,6 @@ int main(int argc, char** argv) {
         };
         applyGfx(gfxSet);   // the saved choices, before the first frame is drawn
 
-        bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
         bool roadDragging = false;    // dragging the selected handle
@@ -1335,7 +1310,6 @@ int main(int argc, char** argv) {
         // is being edited, which of its points is selected, and whether a drag is
         // in flight. The undo bracket is the road's, with a Snapshot in place of
         // a Shape.
-        bool splineEditMode   = false;  // owns the LMB (mutually exclusive brushes)
         bool showSplines      = false;  // the panel's open flag
         int  splineSel        = -1;     // selected path
         int  splinePtSel      = -1;     // selected control point of that path
@@ -1367,10 +1341,9 @@ int main(int argc, char** argv) {
         };
 
         // --- Water editor state + undo ---------------------------------------
-        // The spline editor's five flags again. The one difference is what a
+        // The spline editor's flags again. The one difference is what a
         // commit means: pushing the undo step is also what re-cuts the bed, so
         // every gesture ends in exactly one carve however many frames it took.
-        bool riverEditMode   = false;  // owns the LMB (mutually exclusive brushes)
         bool showRivers      = false;  // the panel's open flag
         int  riverSel        = -1;     // selected watercourse
         int  riverPtSel      = -1;     // selected control point of it
@@ -1442,27 +1415,21 @@ int main(int argc, char** argv) {
 
         // --- Scene UI overlay (2D screen-space HUD authored per scene) --------
         // Text/button/image elements drawn over the view while playing. Not in the
-        // Document (like the road), so it carries its own selection + undo state:
-        // an interaction opens with the list it found and commits the difference,
-        // so a slider dragged across many frames is one undo step.
+        // Document (like the road), so it carries its own selection -- and, in the
+        // editor, its own undo bracket (see UiOverlayPanel.hpp).
         UiOverlay              uiOverlay;
         int                    uiSel = -1;
-        std::vector<UiElement> uiEditBefore;
-        bool                   uiEditOpen = false;
+#ifndef FITZEL_PLAYER
+        uioverlayui::Bracket   uiEditBracket;
+#endif
 
         std::vector<Entity>& entities = document.entities();
         // What is selected: the active object plus, when more than one is picked,
         // the whole set -- and the invariant tying them together. See Selection.hpp.
         Selection sel(entities);
-        // Box-select (Ctrl + left-drag in the viewport): in-progress rectangle.
-        bool      boxSelecting  = false;
-        ImVec2    boxStart{0.0f, 0.0f};
-        // Round-robin picking: the entity ids the last click's ray passed through
-        // (nearest first) and which one is currently selected, so repeated clicks
-        // at the same spot cycle to the next overlapping entity (a parent group's
-        // bounding box no longer permanently swallows clicks meant for a child).
-        std::vector<int> pickStack;
-        int       pickIdx        = -1;
+        // Selecting in the viewport: the box being dragged, the stack a repeated
+        // click cycles through (see ViewportPick.hpp).
+        viewpick::Picker scenePick;
         int       renameId       = -1;   // hierarchy node being inline-renamed (entity id)
         bool      renameFocus    = false; // request keyboard focus on the rename field
         char      renameBuf[128] = "";
@@ -1473,24 +1440,15 @@ int main(int argc, char** argv) {
         // scene with boxes. Esc always steps back out to Select.
         bool      placeMode      = false;
         glm::vec3 entityNewHalf(1.0f, 1.0f, 1.0f); // default size (half-extents)
-        // Half-thickness a new Plane gets. Not zero: the pick box would be a
-        // sheet nobody can click and the box collider would be degenerate.
-        constexpr float kPlaneHalfY = 0.05f;
+        // Half-thickness a new Plane gets (see SceneOps.hpp).
+        using sceneops::kPlaneHalfY;
         EntityType entityNewType = EntityType::Box; // type placed on click
         int       entityCounter = 0; // for unique default names
 
         // Blender-style 3D cursor: a world-space reference point placed with
-        // Shift+Right-click, used as a snap/placement anchor (see the "3D Cursor"
-        // panel). cursorGrid is the step for the grid-snap operations.
-        glm::vec3 cursor3D{0.0f};
-        bool      cursorVisible = true;
-        float     cursorGrid    = 1.0f;
-        // Holding Ctrl while dragging the gizmo rasters it: a move lands on
-        // cursorGrid, a turn goes in snapAngle steps, a scale in snapScale steps
-        // of the size it started at. A hand that shakes then cannot nudge a value
-        // it has already found -- the next step is a whole step away.
-        float     snapAngle     = 15.0f;
-        float     snapScale     = 0.1f;
+        // Shift+Right-click, used as a snap/placement anchor, and the snap steps
+        // Ctrl rasters a gizmo drag to (see Cursor3D.hpp).
+        cursor3d::Cursor cursor;
         // The construction grid draws that snap step on the cursor's plane, so
         // the lattice you aim at and the one "snap to grid" rounds to are the
         // same thing seen twice. Held here rather than on the renderer (which is
@@ -1543,10 +1501,7 @@ int main(int argc, char** argv) {
 #ifndef FITZEL_PLAYER
         std::unordered_map<fitzel::AssetId, std::shared_ptr<Texture>> assetThumbs;
         std::unordered_set<fitzel::AssetId>                           thumbRequested;
-        float assetThumbSize = 76.0f;
-        char  assetFilter[64] = "";
-        bool  assetTexturesOnly = false;
-        std::string assetDropStatus; // outcome of the last drop from Explorer
+        assetsui::State assetsBrowser;   // the Assets panel's size, filter, last drop
 
         struct ThumbWork {
             std::mutex              mutex;
@@ -1680,22 +1635,13 @@ int main(int argc, char** argv) {
         // nothing on a different mesh.
         int  meshFaceSel     = -1;
         int  meshFaceOwner   = -1;   // entity id that index belongs to
-        // A face-gizmo drag in flight: the entity as it was when the drag began
-        // (one undo step for the whole drag) and the scale it applies to its mesh.
-        bool      faceGizmoActive = false;
-        Entity    faceGizmoBefore;
-        glm::vec3 faceGizmoScale{1.0f};
-        // The scale the gizmo has reported so far in this drag (see the SCALE
-        // branch: ImGuizmo measures that one from the start of the drag, not from
-        // the last frame).
-        glm::vec3 faceGizmoAccScale{1.0f};
 #ifndef FITZEL_PLAYER
-        // Corners and edges picked while modelling, and which of vertex / edge /
-        // face the viewport is picking (the face itself stays in meshFaceSel).
-        modeltools::Selection modelSel;
-        // Where the gizmo's pivot was in the world when the drag began, for the
-        // distance read-out next to the pointer.
-        glm::vec3 faceGizmoStartPivot{0.0f};
+        // The modelling mode's picked corners and edges and a modal edit in
+        // flight (see ModelMode.hpp); the face itself stays in meshFaceSel.
+        modelmode::Session modelSess;
+        // A transform-gizmo drag in flight, of the object or of the picked face
+        // (see TransformGizmo.hpp).
+        gizmo::Drag gizmoDrag;
 #endif
         bool showVehiclePanel = false;
         bool showGliderPanel  = false;
@@ -1712,17 +1658,11 @@ int main(int argc, char** argv) {
         bool showMixer       = false;
         bool showUnityImport = false;
         std::string modelFile;       // selected file in the Models panel
-        // "Import Unity Asset" panel: a browsed asset folder, the chosen FBX, and
-        // a cached texture-match preview (recomputed when the selection changes).
-        std::string unityDir;        // asset folder being browsed (default: models/)
-        std::string unityFbx;        // selected .fbx (absolute path), "" = none
-        std::vector<std::pair<std::string, std::string>> unityFbxList; // (rel, abs)
-        std::string unityFbxScanDir; // folder unityFbxList was scanned for ("" = stale)
-        std::vector<fitzel::UnityTexMatch> unityPreview;
-        std::vector<std::string> unityNearby; // image files near the selected FBX
-        std::string unityPreviewFor; // path unityPreview was computed for
-        bool        unityFlipV = true;   // mirror V on import (FBX UV convention)
-        std::string unityStatus;         // last import result, shown in the panel
+#ifndef FITZEL_PLAYER
+        // "Import Unity Asset" panel: the browsed folder, the chosen FBX and its
+        // texture-match preview (see UnityImportPanel.hpp).
+        unityimportui::State unityImport;
+#endif
 
         // The audio mixer. The desk itself lives in MixerPanel.hpp: Master
         // scales everything via the device, Ambient the looping weather/zone
@@ -1827,23 +1767,7 @@ int main(int argc, char** argv) {
             sun.components.items.push_back(std::make_unique<SunComponent>());
             entities.push_back(std::move(sun));
         }
-        // How the viewport draws the scene. The ladder is Blender's, and so is
-        // the reason for it: the finished picture is the worst view for most of
-        // the work that goes into making one. Wireframe shows what is behind
-        // what, Solid shows shape under a fixed studio light that a broken scene
-        // cannot take away, Solid lit shows the scene's own light without the
-        // paintwork arguing with it, and Textured is the game. Editor only --
-        // play mode always draws the game (see viewShade's use below).
-        //
-        // Not saved: it is a way of LOOKING at the scene for a minute, not a
-        // property of it, and a project that reopened in wireframe because
-        // somebody once checked a normal would be a puzzle, not a convenience.
-        // Pathtraced is the odd one out: the other four are the raster
-        // renderer told to show less, this one is a different renderer
-        // altogether, running in the background and handing the viewport a
-        // picture (see ViewportTrace.hpp).
-        enum ViewShade { kShadeTextured = 0, kShadeSolid = 1, kShadeSolidLit = 2,
-                         kShadeWireframe = 3, kShadePathTraced = 4 };
+        // How the viewport draws the scene (see ViewShade.hpp).
         int viewShade = kShadeTextured;
 #ifndef FITZEL_PLAYER
         viewtrace::State viewTrace;
@@ -1870,7 +1794,7 @@ int main(int argc, char** argv) {
         //  3. `dist` ahead in the air -- floating, but in front of you.
 #ifndef FITZEL_PLAYER
         auto spawnPoint = [&](float dist) -> glm::vec3 {
-            if (cursorVisible) return cursor3D;
+            if (cursor.visible) return cursor.pos;
             const glm::vec3 eye = camera.position();
             const glm::mat4 vp  = camera.projectionMatrix(
                                       static_cast<float>(viewW) / static_cast<float>(viewH)) *
@@ -2108,6 +2032,17 @@ int main(int argc, char** argv) {
         // the existing call sites (menus, wizard, player boot) unchanged.
         std::string exportStatus; // shown under the File menu after an export
 #ifndef FITZEL_PLAYER
+        // The editor's core, for the tools that live outside main() (see
+        // EditorContext.hpp). Built once: everything in it lives as long as main.
+        EditorContext editorCtx{document, entities, sel, history, materials, matSel, assetDb,
+                                models, camera, exportStatus, meshFaceOwner, meshFaceSel,
+                                entityCounter, addModelEntity,
+                                [&](glm::vec3 p, const std::string& path) {
+                                    addModelHierarchy(p, path);
+                                },
+                                isStructuredModel};
+#endif
+#ifndef FITZEL_PLAYER
         // Editing a prefab on its own (see PrefabEdit.hpp). Declared HERE, above
         // every lambda that saves or replaces the document, because while a
         // session is up the document is not the scene and all of those have to
@@ -2267,22 +2202,13 @@ int main(int argc, char** argv) {
         // World transform (translate*rotate, ImGuizmo Euler convention) of an
         // entity's cached world center/rotation. Scale is not part of the
         // hierarchy -- each entity keeps its own size (half).
-        auto worldOf = [&](const Entity& e) {
-            return composeModel(e.center, e.rotation, glm::vec3(1.0f));
-        };
+        auto worldOf = [&](const Entity& e) { return scenegraph::worldOf(e); };
         // Convert a world-space edit (gizmo, physics) into the entity's LOCAL
         // transform (the source of truth), given its parent's world matrix (null
         // for a root). Also mirrors into center/rotation for this frame.
         auto setWorld = [&](Entity& e, const glm::vec3& wPos, const glm::vec3& wRot,
                             const glm::mat4* parentWorld) {
-            e.center = wPos; e.rotation = wRot;
-            if (!parentWorld) { e.localCenter = wPos; e.localRotation = wRot; return; }
-            const glm::mat4 lm =
-                glm::inverse(*parentWorld) * composeModel(wPos, wRot, glm::vec3(1.0f));
-            float t[3], r[3], s[3];
-            ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(lm), t, r, s);
-            e.localCenter   = glm::vec3(t[0], t[1], t[2]);
-            e.localRotation = glm::vec3(r[0], r[1], r[2]);
+            scenegraph::setWorld(e, wPos, wRot, parentWorld);
         };
         // Rebase local onto a (changed) parent so the entity's current world stays
         // put -- used on reparent/unparent.
@@ -2316,210 +2242,47 @@ int main(int argc, char** argv) {
         };
         // World matrix of an entity's PARENT (identity for a root) -- for setWorld.
         auto parentWorldMat = [&](const Entity& e) -> glm::mat4 {
-            if (e.parent < 0) return glm::mat4(1.0f);
-            const Entity* p = document.find(e.parent);
-            return p ? worldOf(*p) : glm::mat4(1.0f);
+            return scenegraph::parentWorld(entities, e);
         };
 
-        // --- 3D-cursor snap operations (shared by the panel + the Shift+S popup) --
+        // Is anything selected (the 3D cursor's snap operations are in Cursor3D.cpp).
         auto cursorHaveSel = [&] {
             return sel.valid();
         };
-        auto snapToGrid = [&](glm::vec3 p) {
-            const float g = cursorGrid;
-            if (g <= 0.0f) return p;
-            return glm::vec3(std::round(p.x / g) * g, std::round(p.y / g) * g,
-                             std::round(p.z / g) * g);
-        };
-        // Move the selected entity to a world position (via the local source of
-        // truth, so it respects any parent -- same path the gizmo/inspector use).
-        auto moveSelectionTo = [&](const glm::vec3& wPos) {
-            if (!cursorHaveSel()) return;
-            Entity& b = entities[sel.index()];
-            const glm::mat4 pw = parentWorldMat(b);
-            setWorld(b, wPos, b.rotation, b.parent >= 0 ? &pw : nullptr);
-        };
-        auto snapCursorToOrigin    = [&] { cursor3D = glm::vec3(0.0f); };
-        auto snapCursorToGrid      = [&] { cursor3D = snapToGrid(cursor3D); };
-        auto snapCursorToTerrain   = [&] { cursor3D.y = streamer.heightAt(cursor3D.x, cursor3D.z); };
-        auto snapCursorToSelection = [&] { if (cursorHaveSel()) cursor3D = entities[sel.index()].center; };
-        auto snapSelectionToCursor = [&] { moveSelectionTo(cursor3D); };
-        auto snapSelectionToGrid   = [&] { if (cursorHaveSel()) moveSelectionTo(snapToGrid(entities[sel.index()].center)); };
 
 #ifndef FITZEL_PLAYER
-        // --- Face modelling ---------------------------------------------------
-        // The editable mesh on the selected object, if it has one.
-        auto selectedMesh = [&]() -> MeshComponent* {
-            if (!cursorHaveSel()) return nullptr;
-            return entities[sel.index()].components.get<MeshComponent>();
-        };
-        // Turn the selected solid into an editable mesh of exactly the same size --
-        // built at the object's real dimensions, so a metre in the modelling
-        // panel is a metre in the world rather than a fraction of a unit cube.
-        // Nothing else about the object changes: same transform, same material,
-        // and the same type, so it keeps the collider of the shape it started
-        // as (a ramp stays a slope to walk and hover up), fitted to its bounds.
-        auto convertToMesh = [&] {
-            if (!cursorHaveSel()) return;
-            Entity& e = entities[sel.index()];
-            if (!isSolidPrimitive(e.type) || e.components.get<MeshComponent>()) return;
-            const Entity before = e;
-            auto mc = std::make_unique<MeshComponent>();
-            switch (e.type) {
-                case EntityType::Ramp:     mc->mesh = EditMesh::ramp(e.half);     break;
-                case EntityType::Cylinder: mc->mesh = EditMesh::cylinder(e.half); break;
-                case EntityType::Sphere:   mc->mesh = EditMesh::sphere(e.half);   break;
-                case EntityType::Plane:    mc->mesh = EditMesh::plane(e.half);    break;
-                default:                   mc->mesh = EditMesh::box(e.half);      break;
-            }
-            mc->touch();
-            e.components.items.push_back(std::move(mc));
-            meshFaceSel = -1;
-            history.pushApplied(std::make_unique<ModifyEntityCmd>(before, e));
-        };
-        // The scale an entity currently applies to its mesh (1 unless someone has
-        // dragged the Scale gizmo). Read before an edit and re-applied after, or
-        // re-deriving the half-extents from raw bounds would quietly undo it.
-        auto meshScaleOf = [](const Entity& e, const MeshComponent& mc) {
-            return editmesh::fitScale(mc.mesh, e.half);
-        };
-        // What every mesh edit ends with, whichever way it was made -- a panel
-        // button or a gizmo drag: re-centre the geometry on the object's origin,
-        // move the object by that same shift so nothing appears to jump, and take
-        // the new bounds as its half-extents. That invariant is what keeps the
-        // pick box, the gizmo and the collider describing the shape that is
-        // actually there -- an extruded tower whose AABB still claimed to be the
-        // original cube would be unpickable at the top and would collide with air
-        // at the bottom.
-        auto normalizeMeshEntity = [&](Entity& e, MeshComponent& mc,
-                                       const glm::vec3& scale) {
-            const glm::vec3 shift = editmesh::recenter(mc.mesh);
-            glm::vec3 mn, mx;
-            mc.mesh.bounds(mn, mx);
-            e.half = glm::max((mx - mn) * 0.5f * scale, glm::vec3(1e-3f));
-            if (glm::dot(shift, shift) > 0.0f) {
-                const glm::quat q  = glm::quat(glm::radians(e.rotation));
-                const glm::mat4 pw = parentWorldMat(e);
-                setWorld(e, e.center + q * (shift * scale), e.rotation,
-                         e.parent >= 0 ? &pw : nullptr);
-            }
-            mc.touch();
-        };
-        // Mesh space -> world for an entity's editable mesh: the mesh is drawn
-        // stretched to the entity's half-extents, so the scale is half/bounds.
-        auto meshModelOf = [&](const Entity& e, const MeshComponent& mc) {
-            return composeModel(e.center, e.rotation, editmesh::fitScale(mc.mesh, e.half));
-        };
-        // Run one face operation as one undoable step.
+        // --- Face modelling (ModelMode.cpp) ---------------------------------------
+        // The editable mesh on the selected object, if it has one; a solid made
+        // one; a face operation run as one undo step.
+        auto selectedMesh  = [&]() -> MeshComponent* { return modelmode::selectedMesh(editorCtx); };
+        auto convertToMesh = [&] { modelmode::convertToMesh(editorCtx); };
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
                                  const char* label) {
-            if (!cursorHaveSel()) return;
-            Entity& e = entities[sel.index()];
-            MeshComponent* mc = e.components.get<MeshComponent>();
-            if (!mc || !op) return;
-            const Entity    before = e;
-            const glm::vec3 scale  = meshScaleOf(e, *mc);
-            const glm::mat4 model  = meshModelOf(e, *mc);
-            const EditMesh  beforeMesh = mc->mesh;
-            meshFaceSel = op(*mc);
-            // Before the re-centre: the world positions it computes with `model`
-            // are the ones the re-centred mesh keeps, and the edges that changed
-            // glow for a moment where they now are.
-            modeltools::flash(beforeMesh, mc->mesh, model, label);
-            normalizeMeshEntity(e, *mc, scale);
-            auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
-            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-        };
-        // A modal edit of the modelling mode (G, E, Ctrl+B ...; ModelingKeys.hpp):
-        // every frame starts again from the entity as it was, so the operation
-        // is always "base + what the pointer says now", never a pile-up.
-        Entity    meshLiveBefore;
-        glm::vec3 meshLiveScale{1.0f};
-        auto meshLive = [&](modelkeys::Live ph, const std::function<void(EditMesh&)>& op,
-                            const char* label) {
-            if (!cursorHaveSel()) return;
-            Entity& e = entities[sel.index()];
-            if (ph == modelkeys::Live::Begin) {
-                meshLiveBefore = e;
-                if (const MeshComponent* mc = e.components.get<MeshComponent>())
-                    meshLiveScale = meshScaleOf(e, *mc);
-            } else if (ph == modelkeys::Live::Set || ph == modelkeys::Live::Cancel) {
-                e = meshLiveBefore;
-                MeshComponent* mc = e.components.get<MeshComponent>();
-                if (ph == modelkeys::Live::Set && mc && op) {
-                    op(mc->mesh);
-                    normalizeMeshEntity(e, *mc, meshLiveScale);
-                }
-            } else {
-                if (const MeshComponent* mc = e.components.get<MeshComponent>())
-                    if (const MeshComponent* b0 = meshLiveBefore.components.get<MeshComponent>())
-                        modeltools::flash(b0->mesh, mc->mesh, meshModelOf(meshLiveBefore, *b0), label);
-                auto cmd = std::make_unique<ModifyEntityCmd>(meshLiveBefore, e);
-                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-            }
-        };
-        // World-space corners of one face of the selected mesh, for picking and
-        // for drawing the highlight. Empty when there is no such face.
-        auto meshFaceWorld = [&](const Entity& e, const MeshComponent& mc, int face) {
-            std::vector<glm::vec3> out;
-            if (!mc.mesh.validFace(face)) return out;
-            const glm::mat4 m = meshModelOf(e, mc);
-            out.reserve(mc.mesh.faces[face].size());
-            for (int i : mc.mesh.faces[face])
-                out.push_back(glm::vec3(m * glm::vec4(mc.mesh.verts[i], 1.0f)));
-            return out;
+            modelmode::applyEdit(editorCtx, op, label);
         };
 #endif // !FITZEL_PLAYER
-        // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
-        // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
-        auto isUnderId = [&](int a, int ancestorId) {
-            for (int p = a; p >= 0; ) {
-                if (p == ancestorId) return true;
-                int nextIdx = -1;
-                for (int i = 0; i < static_cast<int>(entities.size()); ++i)
-                    if (entities[i].id == p) { nextIdx = i; break; }
-                p = (nextIdx >= 0) ? entities[nextIdx].parent : -1;
-            }
-            return false;
+#ifndef FITZEL_PLAYER
+        // --- Operations on objects (SceneOps.cpp) -----------------------------
+        // Delete / duplicate one object or the selection, unpack a prefab, set
+        // the main camera, and the hierarchy menu's "add ..." family -- each one
+        // undoable step. Named here for the panels and menus that take them.
+        auto isUnderId          = [&](int a, int anc) { return sceneops::isUnder(entities, a, anc); };
+        auto deleteEntity       = [&](int i) { sceneops::deleteEntity(editorCtx, i); };
+        auto duplicateEntity    = [&](int i) { sceneops::duplicateEntity(editorCtx, i); };
+        auto deleteSelection    = [&] { sceneops::deleteSelection(editorCtx); };
+        auto duplicateSelection = [&] { sceneops::duplicateSelection(editorCtx); };
+        auto unpackPrefab       = [&](int id) { sceneops::unpackPrefab(editorCtx, id); };
+        auto setMainCamera      = [&](int id) { sceneops::setMainCamera(editorCtx, id); };
+        auto addEmptyChild      = [&](int i) { sceneops::addEmptyChild(editorCtx, i); };
+        auto addPrimitiveChild  = [&](int i, EntityType t) {
+            sceneops::addPrimitiveChild(editorCtx, i, t, entityNewHalf);
         };
-        // Delete an entity by index, reparenting its children to its own parent.
-        auto deleteEntity = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            if (entities[idx].type == EntityType::Sun) return; // the sun is permanent
-            // Delete the whole subtree: the entity plus every descendant, as one
-            // undoable step (deleting a parent shouldn't orphan its child parts).
-            std::vector<int> ids{entities[idx].id};
-            for (std::size_t k = 0; k < ids.size(); ++k)
-                for (const Entity& e : entities)
-                    if (e.parent == ids[k]) ids.push_back(e.id);
-            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            sel.clear();
-        };
-        // Duplicate an entity as one undoable step: an offset copy that KEEPS its
-        // parent.
-        //
-        // It used to unparent the copy, and that moved it. localCenter is relative
-        // to the parent and is the source of truth; resolveHierarchy gives a ROOT
-        // the world position `center = localCenter`. So a child sitting at local
-        // (0, 0, -3) on a craft half a map away had its copy teleported to world
-        // (1.1, 0, -3) -- next to the origin. On a visible object you would watch
-        // it fly off; on an Empty there is nothing to see, so the copy was simply
-        // somewhere else, unclickable where you were looking. Duplicating a
-        // thruster mount is exactly that case.
-        //
-        // The offset is in the parent's frame, which is what "beside the original"
-        // means for a child. `center` is left alone: it is derived, and
-        // resolveHierarchy fills it from the parent this frame.
-        auto duplicateEntity = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            if (entities[idx].type == EntityType::Sun) return;
-            Entity nb = entities[idx];
-            nb.localCenter.x += nb.half.x * 2.2f;
-            nb.id     = entityCounter++;
-            nb.name  += " copy";
-            history.push(std::make_unique<AddEntityCmd>(nb), document);
-            sel.select(nb.id);
-        };
+        auto addClothChild      = [&](int i, int which) { sceneops::addClothChild(editorCtx, i, which); };
+        auto addShotCamera      = [&](int i) { sceneops::addShotCamera(editorCtx, i); };
+        auto addCockpitCamera   = [&](int i) { sceneops::addCockpitCamera(editorCtx, i); };
+        auto addEmptyParent     = [&](int i) { sceneops::addEmptyParent(editorCtx, i); };
+        auto addVehicleLights   = [&](int i) { sceneops::addVehicleLights(editorCtx, i); };
+#endif // !FITZEL_PLAYER
 #ifndef FITZEL_PLAYER
         // --- Prefabs (reusable object templates; see PrefabSystem.hpp) ----------
         // The open project's prefabs/ folder ("" when no project is open -- prefabs
@@ -2736,43 +2499,12 @@ int main(int argc, char** argv) {
         };
 #endif // !FITZEL_PLAYER
         // Ids of an entity and all its descendants (for a parented gizmo drag).
-        auto collectSubtreeIds = [&](int rootId) {
-            std::vector<int> ids{rootId};
-            for (bool grew = true; grew; ) {
-                grew = false;
-                for (const Entity& e : entities) {
-                    const bool have = std::find(ids.begin(), ids.end(), e.id) != ids.end();
-                    const bool parentIn =
-                        std::find(ids.begin(), ids.end(), e.parent) != ids.end();
-                    if (!have && parentIn) { ids.push_back(e.id); grew = true; }
-                }
-            }
-            return ids;
-        };
+        auto collectSubtreeIds = [&](int rootId) { return scenegraph::subtree(entities, rootId); };
         auto snapshotEntities = [&](const std::vector<int>& ids) {
             std::vector<Entity> out;
             out.reserve(ids.size());
             for (int id : ids) if (const Entity* e = document.find(id)) out.push_back(*e);
             return out;
-        };
-        // "Unpack Prefab": the instance `id` belongs to -- and every other
-        // selected instance when `id` is part of the selection -- becomes
-        // ordinary objects, its prefab tags dropped. One undoable step.
-        auto unpackPrefab = [&](int id) {
-            std::vector<int> ids;
-            auto addInstance = [&](int eid) {
-                for (int m : prefab::instanceMembers(entities, eid))
-                    if (std::find(ids.begin(), ids.end(), m) == ids.end()) ids.push_back(m);
-            };
-            addInstance(id);
-            if (sel.contains(id))
-                for (int sid : sel.ids()) addInstance(sid);
-            if (ids.empty()) return;
-            std::vector<Entity> before = snapshotEntities(ids);
-            for (int m : ids)
-                if (Entity* e = document.find(m)) prefab::unpack(*e);
-            history.pushApplied(std::make_unique<ModifyEntitiesCmd>(
-                std::move(before), snapshotEntities(ids), "Unpack Prefab"));
         };
 
 #ifndef FITZEL_PLAYER
@@ -2921,369 +2653,16 @@ int main(int argc, char** argv) {
         };
 #endif // !FITZEL_PLAYER
 
-#ifndef FITZEL_PLAYER
-        // --- Selection-wide operations (see Selection.hpp for the set itself) ---
-        // The two that stay here: both are one UNDOABLE STEP over the document,
-        // and the history and the id counter are main's, not the selection's.
-        // Delete every selected object's subtree as one undoable step (falls back
-        // to the single-object delete when only one is selected).
-        auto deleteSelection = [&]() {
-            const std::vector<int> chosen = sel.ids();
-            if (chosen.size() <= 1) { deleteEntity(sel.index()); return; }
-            std::vector<int> ids;
-            for (int rootId : chosen) {
-                const Entity* e = document.find(rootId);
-                if (!e || e->type == EntityType::Sun) continue;
-                for (int id : collectSubtreeIds(rootId))
-                    if (std::find(ids.begin(), ids.end(), id) == ids.end())
-                        ids.push_back(id);
-            }
-            if (ids.empty()) return;
-            history.push(std::make_unique<DeleteEntitiesCmd>(document, ids), document);
-            sel.clear();
-        };
-        // Duplicate every selected object as one undoable step; the copies become
-        // the selection. Parents are kept, exactly as the single Duplicate does
-        // and for the same reason (see there).
-        //
-        // With one wrinkle a single copy cannot have: when a selected object's
-        // PARENT was copied too, the copy must hang off the copied parent rather
-        // than the original. Otherwise duplicating a craft and its thrusters
-        // together gives you a second craft whose thrusters are still bolted to
-        // the first one.
-        auto duplicateSelection = [&]() {
-            const std::vector<int> chosen = sel.ids();
-            if (chosen.size() <= 1) { duplicateEntity(sel.index()); return; }
-            std::vector<Entity> copies;
-            std::vector<int>    newIds;
-            std::unordered_map<int, int> remap;   // original id -> copy id
-            for (int id : chosen) {
-                const Entity* src = document.find(id);
-                if (!src || src->type == EntityType::Sun) continue;
-                Entity nb = *src;
-                nb.localCenter.x += nb.half.x * 2.2f;
-                nb.id     = entityCounter++;
-                nb.name  += " copy";
-                remap[id] = nb.id;
-                newIds.push_back(nb.id);
-                copies.push_back(std::move(nb));
-            }
-            for (Entity& c : copies) {
-                const auto it = remap.find(c.parent);
-                if (it != remap.end()) c.parent = it->second;
-            }
-            if (copies.empty()) return;
-            history.push(std::make_unique<AddEntitiesCmd>(std::move(copies), "Duplicate"),
-                         document);
-            sel.clear();
-            sel.addMany(newIds);
-        };
-#endif // !FITZEL_PLAYER
-
-        // Spawn a new entity of `type` as a child of `parentId` (-1 = root),
-        // placed at world position/rotation (wPos/wRot). Mirrors addEntity's
-        // material/light setup but lets the hierarchy context menu build parented
-        // nodes. Returns the new entity's id. One undoable step.
-        auto spawnChild = [&](int parentId, EntityType type,
-                              const glm::vec3& wPos, const glm::vec3& wRot) -> int {
-            Entity nb;
-            nb.type = type;
-            nb.half = (type == EntityType::Light) ? glm::vec3(0.3f)
-                    : (type == EntityType::Empty) ? glm::vec3(0.5f)
-                    : (type == EntityType::Plane)
-                          ? glm::vec3(entityNewHalf.x, kPlaneHalfY, entityNewHalf.z)
-                    : entityNewHalf;
-            if (type == EntityType::Light)
-                nb.components.items.push_back(std::make_unique<LightComponent>());
-            const bool solid = isSolidPrimitive(type);
-            if (solid && !materials.empty()) {
-                auto mc = std::make_unique<MaterialComponent>();
-                mc->material = materials[glm::clamp(matSel, 0,
-                                   static_cast<int>(materials.size()) - 1)].assetId;
-                nb.components.items.push_back(std::move(mc));
-            }
-            nb.id     = entityCounter++;
-            nb.parent = parentId;
-            nb.name   = std::string(entityTypeName(type)) + " " + std::to_string(nb.id);
-            Entity* p = (parentId >= 0) ? document.find(parentId) : nullptr;
-            const glm::mat4 pw = p ? worldOf(*p) : glm::mat4(1.0f);
-            setWorld(nb, wPos, wRot, p ? &pw : nullptr);
-            history.push(std::make_unique<AddEntityCmd>(nb), document);
-            return nb.id;
-        };
-        // Make the Camera on entity `entId` the single Main Camera: the view that
-        // Play (and the exported game) starts from. Sets its CameraComponent's
-        // activeOnStart and clears it on every other camera, so exactly one is the
-        // main camera. Pass -1 to clear all cameras (Play starts from the player
-        // view). One undoable step over all camera entities; a no-op if `entId`
-        // has no CameraComponent.
-        auto setMainCamera = [&](int entId) {
-            if (entId >= 0) {
-                const Entity* e = document.find(entId);
-                if (!e || !e->components.get<CameraComponent>()) return;
-            }
-            std::vector<int> camIds;
-            for (const Entity& e : entities)
-                if (e.components.get<CameraComponent>()) camIds.push_back(e.id);
-            if (camIds.empty()) return;
-            std::vector<Entity> before = snapshotEntities(camIds);
-            for (Entity& e : entities)
-                if (auto* cc = e.components.get<CameraComponent>())
-                    cc->activeOnStart = (e.id == entId);
-            auto cmd = std::make_unique<ModifyEntitiesCmd>(before, snapshotEntities(camIds));
-            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-        };
-        // Context-menu helpers (index-based; capture the id first so the entities
-        // vector may safely grow underneath).
-        auto addEmptyChild = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const int id = spawnChild(n.id, EntityType::Empty, n.center, n.rotation);
-            sel.select(id);
-        };
-        auto addPrimitiveChild = [&](int idx, EntityType type) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const int id = spawnChild(n.id, type, n.center, glm::vec3(0.0f));
-            sel.select(id);
-        };
-        // A cloth already hung from the picked object: a thin box carrying a Soft
-        // Body whose pinning, size and weight say what it is. The picked object is
-        // what it hangs FROM -- a curtain rail, a flagpole -- so the cloth is put
-        // where it would hang off it, as a child, turned the way it is turned.
-        //
-        // Everything here is a starting point for the Inspector, not a mode: the
-        // sizes are a room's curtain and a flagpole's flag, and the weights are
-        // what those weigh -- a flag at the component's default 20 kg would hang
-        // off its pole like a wet towel however hard it blew.
-        auto addClothChild = [&](int idx, int which) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            Entity cl;
-            cl.type   = EntityType::Box;
-            cl.id     = entityCounter++;
-            cl.parent = n.id;
-            auto sb = std::make_unique<SoftBodyComponent>();
-            sb->kind = SoftBodyComponent::Cloth;
-            if (which == 1) {                       // flag: flies from the pole's +X side
-                cl.name = "Flag " + std::to_string(cl.id);
-                cl.half = glm::vec3(0.75f, 0.5f, 0.01f);
-                cl.localCenter = glm::vec3(n.half.x + cl.half.x + 0.03f,
-                                           n.half.y - cl.half.y - 0.1f, 0.0f);
-                sb->pinning    = SoftBodyComponent::PinPole;
-                sb->resolution = 5;
-                sb->mass       = 0.5f;
-                sb->softness   = 0.3f;
-                sb->damping    = 0.05f;
-                // A breeze out along the way the flag points, flat: so it flies
-                // as placed, and turning the pole turns where it flies.
-                glm::vec3 out = glm::quat(glm::radians(n.rotation)) * glm::vec3(1.0f, 0.0f, 0.0f);
-                out.y = 0.0f;
-                sb->wind = glm::length(out) > 1.0e-3f ? glm::normalize(out) * 6.0f
-                                                      : glm::vec3(6.0f, 0.0f, 0.0f);
-            } else if (which == 2) {                // banner: two top corners, below
-                cl.name = "Banner " + std::to_string(cl.id);
-                cl.half = glm::vec3(0.5f, 1.0f, 0.01f);
-                cl.localCenter = glm::vec3(0.0f, -(n.half.y + cl.half.y + 0.02f), 0.0f);
-                sb->pinning    = SoftBodyComponent::PinTopCorners;
-                sb->resolution = 5;
-                sb->mass       = 1.0f;
-                sb->softness   = 0.3f;
-            } else {                                // curtain: on rings, pleated, below
-                cl.name = "Curtain " + std::to_string(cl.id);
-                cl.half = glm::vec3(1.0f, 1.25f, 0.02f);
-                cl.localCenter = glm::vec3(0.0f, -(n.half.y + cl.half.y + 0.02f), 0.0f);
-                sb->pinning    = SoftBodyComponent::PinRings;
-                sb->rings      = 10;
-                sb->folds      = 0.6f;
-                sb->resolution = 6;
-                sb->mass       = 3.0f;
-                sb->softness   = 0.35f;
-                sb->damping    = 0.15f;
-            }
-            cl.components.items.push_back(std::move(sb));
-            if (!materials.empty()) {
-                auto mc = std::make_unique<MaterialComponent>();
-                mc->material = materials[glm::clamp(matSel, 0,
-                                   static_cast<int>(materials.size()) - 1)].assetId;
-                cl.components.items.push_back(std::move(mc));
-            }
-            // World transform for the rest of this frame; the scene-graph resolve
-            // takes it over from here (local is the source of truth).
-            glm::vec3 sc;
-            scenegraph::decompose(worldOf(n) * composeModel(cl.localCenter,
-                                                            cl.localRotation,
-                                                            glm::vec3(1.0f)),
-                                  cl.center, cl.rotation, sc);
-            history.push(std::make_unique<AddEntityCmd>(cl), document);
-            sel.select(cl.id);
-        };
-        // A camera that SHOOTS the picked object: an Empty carrying a Camera in
-        // Multishot mode, aimed at that object by id (see MultiShot.hpp).
-        //
-        // It is deliberately NOT a child of its subject, which is the opposite of
-        // how a follow camera is made here. A multishot camera stands off the
-        // thing it films -- ahead of it, above it, planted in the road waiting for
-        // it -- and a camera parented to a moving car would be fighting that
-        // transform in every shot. So the subject is named instead, and this menu
-        // item is what saves the author from having to know that.
-        //
-        // Where it is placed hardly matters (the shots decide where the eye goes),
-        // but it is put a sensible framing distance off the subject anyway, so the
-        // gizmo's tether is short and readable rather than crossing the map.
-        auto addShotCamera = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const float r = glm::max(glm::length(glm::vec2(n.half.x, n.half.z)), 0.4f);
-            Entity cam;
-            cam.type        = EntityType::Empty;
-            cam.half        = glm::vec3(0.5f);
-            cam.id          = entityCounter++;
-            cam.name        = n.name + " Cam";
-            cam.localCenter = cam.center =
-                n.center + glm::vec3(r * 2.6f + 1.5f, n.half.y + 1.0f, 0.0f);
-            auto cc = std::make_unique<CameraComponent>();
-            cc->mode       = CameraComponent::Multishot;
-            cc->shotTarget = n.id;
-            cam.components.items.push_back(std::move(cc));
-            history.push(std::make_unique<AddEntityCmd>(cam), document);
-            sel.select(cam.id);
-        };
-        // A camera that SITS IN the picked object: a Camera child in Cockpit mode,
-        // seated at the front of its bounding box and TURNED TO FACE THE NOSE.
-        //
-        // That half turn is the whole reason this menu item exists. A camera looks
-        // down its own -Z; a craft's nose is its +Z. So a camera child left at
-        // zero rotation -- which is what dropping one in gives you -- looks out of
-        // the BACK of the craft, and the obvious conclusion is that the mode is
-        // broken rather than that it is facing the wrong way. The turn is not done
-        // inside the camera system, where it would make the frustum the gizmo
-        // draws a lie; it is done once, here, on a camera the author can then
-        // freely turn any way they like.
-        //
-        // Which end the nose is at, the craft already says: Vehicle and Glider both
-        // carry `forward` for models built the other way round.
-        auto addCockpitCamera = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            const Entity& n = entities[idx];
-            const auto* gc = n.components.get<GliderComponent>();
-            const auto* vc = n.components.get<VehicleComponent>();
-            const bool noseBack = (gc && gc->forward == 1) || (vc && vc->forward == 1);
-            const float nose = noseBack ? -1.0f : 1.0f;
-
-            Entity cam;
-            cam.type   = EntityType::Empty;
-            cam.half   = glm::vec3(0.5f);
-            cam.id     = entityCounter++;
-            cam.parent = n.id;
-            cam.name   = n.name + " Cockpit";
-            // A seat, not a pose: forward of centre and above it, in fractions of
-            // the craft's own size so it lands sensibly on a glider and on a lorry.
-            // The author drags it to the actual canopy from there -- which is the
-            // one thing only they can know.
-            cam.localCenter   = glm::vec3(0.0f, n.half.y * 0.35f,
-                                          nose * n.half.z * 0.35f);
-            cam.localRotation = glm::vec3(0.0f, noseBack ? 0.0f : 180.0f, 0.0f);
-            auto cc = std::make_unique<CameraComponent>();
-            cc->mode = CameraComponent::Cockpit;
-            cam.components.items.push_back(std::move(cc));
-            // World transform for the rest of this frame; the scene-graph resolve
-            // takes it over from here (local is the source of truth).
-            glm::vec3 sc;
-            scenegraph::decompose(worldOf(n) * composeModel(cam.localCenter,
-                                                            cam.localRotation,
-                                                            glm::vec3(1.0f)),
-                                  cam.center, cam.rotation, sc);
-            history.push(std::make_unique<AddEntityCmd>(cam), document);
-            sel.select(cam.id);
-        };
-        // Insert a new Empty between `idx` and its current parent, then reparent
-        // `idx` under it -- keeping the node put. Groups the node under a fresh
-        // pivot, like Unity's "Create Empty Parent".
-        auto addEmptyParent = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            if (entities[idx].type == EntityType::Sun) return; // the sun stays root
-            const int       nodeId      = entities[idx].id;
-            const int       grandparent = entities[idx].parent;
-            const glm::vec3 wPos        = entities[idx].center;
-            const glm::vec3 wRot        = entities[idx].rotation;
-            const int emptyId = spawnChild(grandparent, EntityType::Empty, wPos, wRot);
-            Entity* node = document.find(nodeId);
-            Entity* emp  = document.find(emptyId);
-            if (node && emp) {
-                node->parent = emptyId;
-                const glm::mat4 pw = worldOf(*emp);
-                rebaseLocal(*node, &pw); // keep the child where it was
-            }
-            sel.select(emptyId);
-        };
-        // Attach car lights to a vehicle entity: two forward spot headlights at the
-        // nose and two red point taillights (no shadows) at the tail, all parented so
-        // they move/steer with the car. One undoable step. No-op without a Vehicle.
-        auto addVehicleLights = [&](int idx) {
-            if (idx < 0 || idx >= static_cast<int>(entities.size())) return;
-            Entity& veh = entities[idx];
-            const auto* vc = veh.components.get<VehicleComponent>();
-            if (!vc) return;
-            const int vehId = veh.id;
-            // Body extents: the larger of the model AABB and the chassis box.
-            // frontSign maps the model's nose (native -Z when forward==1) to local Z.
-            const glm::vec3 h = glm::max(veh.half, vc->chassisHalf);
-            const float frontSign = (vc->forward == 1) ? -1.0f : 1.0f;
-            const float zx  = h.z * 0.96f * frontSign; // nose Z (tail is -zx)
-            const float xo  = h.x * 0.6f;              // left/right inset
-            const float yo  = h.y * 0.1f;              // just above centre
-            const float yaw = (vc->forward == 1) ? 180.0f : 0.0f; // spot faces the nose
-            const glm::mat4 pw = worldOf(veh);
-            std::vector<Entity> batch;
-            auto makeLight = [&](const char* name, glm::vec3 lpos, glm::vec3 lrot,
-                                 bool spot, glm::vec3 col, float inten, float rng) {
-                Entity nb;
-                nb.type   = EntityType::Light;
-                nb.half   = glm::vec3(0.12f);
-                nb.id     = entityCounter++;
-                nb.parent = vehId;
-                nb.name   = name;
-                nb.localCenter   = lpos;
-                nb.localRotation = lrot;
-                auto lc = std::make_unique<LightComponent>();
-                lc->type = spot ? 1 : 0;
-                lc->color = col; lc->intensity = inten; lc->range = rng;
-                lc->castShadows = false;
-                if (spot) { lc->spotAngle = 30.0f; lc->spotBlend = 0.25f; }
-                nb.components.items.push_back(std::move(lc));
-                // Seed the world transform (resolveHierarchy refreshes it each frame).
-                const glm::mat4 w =
-                    pw * composeModel(nb.localCenter, nb.localRotation, glm::vec3(1.0f));
-                float t[3], r[3], s[3];
-                ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(w), t, r, s);
-                nb.center   = {t[0], t[1], t[2]};
-                nb.rotation = {r[0], r[1], r[2]};
-                batch.push_back(std::move(nb));
-            };
-            const glm::vec3 warm(1.0f, 0.96f, 0.85f);
-            const glm::vec3 red (1.0f, 0.05f, 0.02f);
-            makeLight("Headlight L", { xo, yo,  zx}, {0.0f, yaw, 0.0f}, true,  warm, 12.0f, 28.0f);
-            makeLight("Headlight R", {-xo, yo,  zx}, {0.0f, yaw, 0.0f}, true,  warm, 12.0f, 28.0f);
-            makeLight("Taillight L", { xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
-            makeLight("Taillight R", {-xo, yo, -zx}, {0.0f, 0.0f, 0.0f}, false, red,   3.0f,  4.0f);
-            history.push(std::make_unique<AddEntitiesCmd>(std::move(batch), "Add headlights"),
-                         document);
-            sel.select(vehId);
-        };
 
 
         // --- Flowers (owned by VegetationSystem) -----------------------------
         if (!veg.initFlowers()) return 1;
-        bool flowerPaintMode = false; // brush mode flag; rest of flower state in veg
 
         // Gameplay RNG for spawner launch-direction randomization (persists across
         // spawns so successive emits vary within a Play session).
         std::mt19937 spawnRng(1234u);
         std::uniform_real_distribution<float> spawnU(0.0f, 1.0f);
 
-        // Tree brush mode flag; the rest of the tree state/logic lives in veg.
-        bool treePaintMode = false;
 
         // --- Audio: weather-driven sound layers --------------------------
         showProgress(0.82f, "Loading audio...");
@@ -3330,45 +2709,7 @@ int main(int argc, char** argv) {
         bool      listenerHasPrev = false;
         bool  prevFlashOn  = false;
 
-        // Depth of field (distance blur). dofMax = 0 disables it.
-        float dofMax   = 5.0f;      // max blur radius (pixels)
-        float dofNear  = 25.0f;     // sharp up to here (metres)
-        float dofFar   = 140.0f;    // fully blurred beyond here
-
-        // Camera motion blur: streaks the scene along per-pixel screen velocity
-        // (this frame's camera transform vs last frame's, by depth reprojection).
-        // Purely camera motion -- fast turns/flight smear, a static view stays
-        // sharp. 0 disables it (like dofMax).
-        float motionBlurStrength = 0.6f; // 0 off .. ~2 heavy (exposure fraction)
-
-        // Tonemapping exposure + HSV colour grade.
-        float exposure   = 1.0f;
-        float hueShift   = 0.0f;
-        float saturation = 1.35f; // richer, less milky greens
-        float valueGain  = 1.0f;
-        float warmth     = 0.18f; // golden-hour white balance
-        float contrast   = 0.16f; // lift the flat look
-        // Split toning and vibrance (composite.frag): cool shadows, warm
-        // highlights, and more colour where there is little -- the graded look
-        // of a landscape photograph. 0 = off, the default.
-        float gradeSplit    = 0.0f;
-        float gradeVibrance = 0.0f;
-        // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
-        // and auto exposure relative to `exposure` (see PostChain::Params).
-        int   tonemapCurve  = 1;
-        float vignette      = 0.2f;   // lens fall-off to the corners (composite.frag)
-        float filmGrain     = 0.0f;
-        bool  autoExposure  = true;
-        float autoMinEv     = -1.5f;
-        float autoMaxEv     = 2.5f;
-        float adaptSpeed    = 1.5f;
-
         bool requestDockRebuild = false; // set by "Reset layout" to re-apply the default
-
-        // Camera angle controls.
-        float camFov   = camera.fov();
-        float camYaw   = camera.yaw();
-        float camPitch = camera.pitch();
 
         // Presentation mode: borderless fullscreen with the editor UI hidden.
         bool presentMode = false;
@@ -3384,6 +2725,17 @@ int main(int argc, char** argv) {
         bool        prevXkey = false; // X: toggle gizmo local/world space
         bool        camFocusing = false;      // F: smoothly gliding to a focus point
         glm::vec3   camFocusTarget{0.0f};
+        // Frame a sphere: keep the view direction, back off until it fits with a
+        // margin, and glide there (applied each frame below). Through an ortho
+        // lens the distance frames nothing -- the zoom does: the radius and its
+        // margin fill the height the perspective cone would have at that
+        // distance. F on the selection, and F while modelling.
+        auto frameSphere = [&](const glm::vec3& c, float r) {
+            const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
+            camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
+            camFocusing     = true;
+            if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
+        };
 #ifndef FITZEL_PLAYER
         // The viewport's other two ways of moving: the axis-aligned standard
         // views (numpad, Blender's layout) and middle-mouse panning. See
@@ -3392,17 +2744,8 @@ int main(int argc, char** argv) {
         viewnav::Nav viewNav;
 #endif
 
-        // Undo/redo edge state + gizmo-drag snapshot (a drag is one undoable step).
+        // Undo/redo edge state.
         bool                prevUndo = false, prevRedo = false;
-        bool                gizmoActive = false;
-        std::vector<int>    gizmoIds;
-        std::vector<Entity> gizmoBefore;
-        // Multi-select gizmo drag: the selected roots being moved together and the
-        // active object's world transform last frame, so each other root gets the
-        // same incremental delta applied (individual-origins style).
-        std::vector<int>    gizmoRoots;
-        glm::vec3           gizmoPrevT{0.0f}, gizmoPrevR{0.0f}, gizmoPrevS{1.0f};
-        glm::vec3           gizmoStartT{0.0f}; // where the drag began (Ctrl grid snap)
         // Inspector edit transaction: snapshot the selected entity's subtree while
         // a field is being touched, commit one ModifyEntities step when released.
         int                 inspEditId = -1;
@@ -3878,23 +3221,23 @@ int main(int argc, char** argv) {
         addB("volFogSelfShadow", volFogSet.medium.selfShadow);
         addI("volFogSteps", volFogSet.medium.steps);
         addI("volFogRes", volFogSet.resScale);
-        addF("exposure", exposure);            addF("bloom", bloomIntensity);
-        addF("rays", rayIntensity);            addF("ssao", ssaoStrength);
-        addF("ssaoRadius", ssaoRadius);        addF("ssaoBias", ssaoBias);
-        addF("bloomThreshold", bloomThreshold); addF("bloomKnee", bloomKnee);
+        addF("exposure", postLook.exposure);            addF("bloom", postLook.bloomIntensity);
+        addF("rays", postLook.rayIntensity);            addF("ssao", postLook.ssaoStrength);
+        addF("ssaoRadius", postLook.ssaoRadius);        addF("ssaoBias", postLook.ssaoBias);
+        addF("bloomThreshold", postLook.bloomThreshold); addF("bloomKnee", postLook.bloomKnee);
         addF("cascadeSplit", renderer.shadows().splitLambda);
-        addI("envProbeRes", envProbeRes);      addI("envProbeFaces", envProbeFaces);
-        addF("hue", hueShift);                 addF("saturation", saturation);
-        addF("value", valueGain);              addF("warmth", warmth);
-        addF("gradeSplit", gradeSplit);        addF("gradeVibrance", gradeVibrance);
-        addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
-        addF("dofBlur", dofMax);               addF("dofNear", dofNear);
-        addF("dofFar", dofFar);
-        addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
-        addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
-        addF("adaptSpeed", adaptSpeed);        addB("ssr", ssrEnabled);
-        addB("contactShadows", contactShadows);
-        addF("vignette", vignette);            addF("filmGrain", filmGrain);
+        addI("envProbeRes", postLook.envProbeRes);      addI("envProbeFaces", postLook.envProbeFaces);
+        addF("hue", postLook.hueShift);                 addF("saturation", postLook.saturation);
+        addF("value", postLook.valueGain);              addF("warmth", postLook.warmth);
+        addF("gradeSplit", postLook.gradeSplit);        addF("gradeVibrance", postLook.gradeVibrance);
+        addF("contrast", postLook.contrast);            addF("motionBlur", postLook.motionBlurStrength);
+        addF("dofBlur", postLook.dofMax);               addF("dofNear", postLook.dofNear);
+        addF("dofFar", postLook.dofFar);
+        addI("tonemapCurve", postLook.tonemapCurve);    addB("autoExposure", postLook.autoExposure);
+        addF("autoMinEv", postLook.autoMinEv);          addF("autoMaxEv", postLook.autoMaxEv);
+        addF("adaptSpeed", postLook.adaptSpeed);        addB("ssr", postLook.ssrEnabled);
+        addB("contactShadows", postLook.contactShadows);
+        addF("vignette", postLook.vignette);            addF("filmGrain", postLook.filmGrain);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -3902,9 +3245,9 @@ int main(int argc, char** argv) {
         addF("waterColorB", waterColor.z);
         addF("waterReflectivity", waterReflectivity); addF("waterClarity", waterClarity);
         addF("waterIor", waterIor);
-        addF("cursorX", cursor3D.x); addF("cursorY", cursor3D.y); addF("cursorZ", cursor3D.z);
-        addF("cursorGrid", cursorGrid);
-        addF("snapAngle", snapAngle);          addF("snapScale", snapScale);
+        addF("cursorX", cursor.pos.x); addF("cursorY", cursor.pos.y); addF("cursorZ", cursor.pos.z);
+        addF("cursorGrid", cursor.grid);
+        addF("snapAngle", cursor.snapAngle);          addF("snapScale", cursor.snapScale);
 #ifndef FITZEL_PLAYER
         addB("camPreview", showCamPreview);    // editor-only: the player has no viewport corner
 #endif
@@ -4169,8 +3512,8 @@ int main(int argc, char** argv) {
             cloudShadowsOn = false;
             wildlifeOn     = false;
             sunLatitude    = 0.0f;
-            gradeSplit     = 0.0f;
-            gradeVibrance  = 0.0f;
+            postLook.gradeSplit     = 0.0f;
+            postLook.gradeVibrance  = 0.0f;
             sunDeclination = -10.4f;
             motesOn        = false;
             soundscapeOn   = false;
@@ -4182,10 +3525,10 @@ int main(int argc, char** argv) {
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
             // renderer keeps the cubes it already had.
-            renderer.setEnvProbeResolution(envProbeRes);
-            envProbeRes = renderer.envProbeResolution(); // as clamped/rounded
-            renderer.setEnvProbeMaxFaces(envProbeFaces);
-            envProbeFaces = renderer.envProbeMaxFaces();
+            renderer.setEnvProbeResolution(postLook.envProbeRes);
+            postLook.envProbeRes = renderer.envProbeResolution(); // as clamped/rounded
+            renderer.setEnvProbeMaxFaces(postLook.envProbeFaces);
+            postLook.envProbeFaces = renderer.envProbeMaxFaces();
             // Does this file keep its terrain in an entity? (Consumed and reset by
             // afterSceneLoadFn, which migrates the ones that don't.)
             sceneStoredTerrainEntity = j.value("terrainEntity", false);
@@ -4730,12 +4073,8 @@ int main(int argc, char** argv) {
         // physics world at Play start and thrown away with it (see SoftBodySystem).
         SoftBodySystem                softBodies;
         float                         softWindTime = 0.0f; // seconds of Play, keys the gusts
-        // Knockable road side objects (posts/bollards): each a dynamic body created
-        // at Play start, rendered from its live physics transform so a car bowls it
-        // over. Rebuilt every Play; the derived static instances take over in the
-        // editor. Holds what rendering needs: the body + which model at what scale.
-        struct SidePost { PhysicsBodyId body; int modelId; float scale; };
-        std::vector<SidePost> sidePosts;
+        // Knockable road side objects (posts/bollards), see playworld::SidePost.
+        std::vector<playworld::SidePost> sidePosts;
 
         // --- Scene-vehicle drive helpers (see VehicleTool for the setup UI) ---
         // The nearest entity carrying a VehicleComponent, or -1.
@@ -6102,79 +5441,10 @@ int main(int argc, char** argv) {
                     ? glm::vec2(startPos.x, startPos.z)
                     : glm::vec2(camera.position().x, camera.position().z);
             refitTerrainCollision(groundCenter);
-            // Roads: every one in the scene, each with its own collider, its own
-            // rails and posts and its own city. A hidden road is not there to be
-            // driven on either, which is what makes the checkbox in the road list
-            // a way to try a layout without deleting the other one.
-            sidePosts.clear();
-            for (const RoadSystem* rp : roads) {
-                const RoadSystem& road = *rp;
-                if (!road.enabled) continue;
-                // A static triangle-mesh collider (from the last Build, graded
-                // into the terrain), so the player and objects can walk/drive on it.
-                if (road.collIndices().size() >= 3)
-                    physics->addMesh(road.collVerts().data(),
-                                     static_cast<int>(road.collVerts().size()),
-                                     road.collIndices().data(),
-                                     static_cast<int>(road.collIndices().size()));
-                // Side objects collide as a box each, sized to the model's AABB. Rails
-                // and curbs are static (mass 0) -- they stop a car driving off the edge.
-                // Knockable lines (posts, bollards) are DYNAMIC, so the car bowls them
-                // over; those are tracked in sidePosts and rendered from their live
-                // transform below. The fresh physics world discards all of them when
-                // Play stops, like the road mesh.
-                for (const RoadSystem::SideBatch& batch : road.sideBatches()) {
-                    LoadedModel* lm = resolveSideModel(batch.model);
-                    if (!lm) continue;
-                    for (const roadside::Instance& in : batch.instances) {
-                        const glm::vec3 half =
-                            glm::max(lm->size() * 0.5f * in.scale, glm::vec3(0.02f));
-                        glm::vec3 c =
-                            in.pos + glm::vec3(0.0f, half.y, 0.0f); // base on the ground
-                        const glm::quat q = glm::angleAxis(in.yaw, glm::vec3(0, 1, 0));
-                        if (batch.knockable) {
-                            // Start a hair clear of the ground so the body settles
-                            // onto it instead of being ejected out of a penetration
-                            // (the physics heightfield is coarser than the terrain).
-                            c.y += 0.03f;
-                            const PhysicsBodyId id = physics->addBox(
-                                half, c, q, glm::max(batch.mass, 0.1f));
-                            if (id) sidePosts.push_back({id, lm->id, in.scale});
-                        } else {
-                            physics->addBox(half, c, q, 0.0f); // static
-                        }
-                    }
-                }
-                // The city's facades: a static box per piece the generator flagged as
-                // solid (its masses and podium, not the bands, fins or signs), so a
-                // vehicle crashes into a building instead of driving through it. That
-                // is a handful per tower rather than one per part -- BuildingGen only
-                // marks the load-bearing shapes -- which is what keeps a whole
-                // district's collision affordable. Discarded with the physics world
-                // when Play stops, like the road mesh.
-                if (road.cityEnabled)
-                    for (const city::Piece& pc : road.district().colliders) {
-                        physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
-                                        glm::angleAxis(glm::radians(pc.yaw),
-                                                       glm::vec3(0, 1, 0)),
-                                        0.0f);
-                    }
-            }
-            // The towns' buildings: one static box per solid part, like the
-            // roadside city's.
-            towns.forEachCollider([&](const city::Piece& pc) {
-                physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
-                                glm::angleAxis(glm::radians(pc.yaw), glm::vec3(0, 1, 0)),
-                                0.0f);
-            });
-            // Fences, walls, track and bridges: one static box per short run of
-            // path (see splinegen::Collider). Coarse on purpose -- a car needs the
-            // wall to be there, not to be able to thread the gap between two
-            // rails -- and discarded with the physics world when Play stops.
-            for (const SplineSystem::Run& run : splines.runs())
-                for (const splinegen::Collider& col : run.geo.colliders)
-                    physics->addBox(glm::max(col.half, glm::vec3(0.02f)), col.center,
-                                    col.rotation(), 0.0f);
+            // The static world: roads with their side objects and cities, the
+            // towns' buildings, and the splines' walls (see PlayWorld.hpp).
+            playworld::addStaticWorld(*physics, roads, towns, splines, resolveSideModel,
+                                      sidePosts);
 
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
@@ -6185,28 +5455,7 @@ int main(int argc, char** argv) {
             // it flew belongs to the scene that is being restarted.
             race2 = racesim::RaceState{};
             driveGliderId2 = -1;
-            physicsBody.clear();
-            for (Entity& e : entities) {
-                const auto* pc = e.components.get<PhysicsComponent>();
-                if (!pc || !e.activeInHierarchy ||
-                    e.type == EntityType::Light || e.type == EntityType::Sun)
-                    continue;
-                // Opponents are kinematic (driven along the road each frame), so
-                // they must never get a dynamic body -- one would be flung by the
-                // solver (e.g. spawning inside the terrain) and fight the tick.
-                if (e.components.get<OpponentComponent>()) continue;
-                // ...and so are the ones the town traffic drives (their box is
-                // kinematic, see TownTraffic::beginPlay).
-                if (traffic::TownTraffic::drives(e)) continue;
-                // A soft body IS this entity's physics; a rigid collider beside it
-                // would be a second, differently shaped copy fighting the first.
-                if (e.components.get<SoftBodyComponent>()) continue;
-                const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
-                const auto* mdl = e.components.get<ModelComponent>();
-                const PhysicsBodyId id = addEntityBody(
-                    *physics, e, m, mdl ? models.byId(mdl->modelId) : nullptr);
-                if (id) physicsBody[e.id] = id;
-            }
+            playworld::addEntityBodies(*physics, entities, models, physicsBody);
             // Jelly, balloons and cloth. After the loop above and after the world's
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
@@ -7051,19 +6300,9 @@ int main(int argc, char** argv) {
                         camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
                     }
                 } else if (!fpsMode && sel.valid()) {
-                    // Focus: keep the view direction, back off to fit the object,
-                    // and glide there smoothly (applied each frame below).
+                    // Focus: frame the selected object's bounding sphere.
                     const Entity& e = entities[sel.index()];
-                    const float radius = glm::max(glm::length(e.half), 0.25f);
-                    const float fov    = glm::radians(glm::max(camera.fov(), 1.0f));
-                    const float dist   = radius / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f;
-                    camFocusTarget = e.center - camera.front() * dist;
-                    camFocusing    = true;
-                    // Through an ortho lens the distance frames nothing -- the
-                    // zoom does. Same fit: the radius and its margin fill the
-                    // height the perspective cone would have at that distance.
-                    if (camera.orthographic())
-                        camera.setOrthoHalfHeight(radius * 1.3f);
+                    frameSphere(e.center, glm::max(glm::length(e.half), 0.25f));
                 }
             }
             prevF = fDown;
@@ -7349,9 +6588,9 @@ int main(int argc, char** argv) {
                 // tool), then a second Esc clears the selection. Never quits.
                 // A road point selection is the innermost thing to let go of, so
                 // it clears first -- the bridge pair with it.
-                else if (roadEditMode && roadSel >= 0) { roadSel = roadSel2 = -1; }
-                else if (splineEditMode && splinePtSel >= 0) { splinePtSel = -1; }
-                else if (riverEditMode && riverPtSel >= 0) { riverPtSel = -1; }
+                else if (viewTool == ViewTool::Road && roadSel >= 0) { roadSel = roadSel2 = -1; }
+                else if (viewTool == ViewTool::Spline && splinePtSel >= 0) { splinePtSel = -1; }
+                else if (viewTool == ViewTool::River && riverPtSel >= 0) { riverPtSel = -1; }
                 else if (placeMode) { placeMode = false; }
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (sel.valid()) { sel.clear(); }
@@ -8536,7 +7775,7 @@ int main(int argc, char** argv) {
             // Times what auto exposure applied a couple of frames ago: the
             // renderer's exposure is what the path tracer's capture reads, and a
             // render has to come out as bright as the viewport it was taken from.
-            renderer.setExposure(exposure * post.autoExposureScale());
+            renderer.setExposure(postLook.exposure * post.autoExposureScale());
 
             // Atmospheric fog, tinted by time of day to match the sky horizon.
             // Colours are authored in sRGB and linearised for the linear-space
@@ -10000,264 +9239,17 @@ int main(int argc, char** argv) {
                 case prefabedit::Action::None:      break;
             }
 
-            // --- Toolbar strip under the menu bar: primitive-creation icons.
-            //     A viewport side bar reserves space at the top of the work area,
-            //     so the dockspace below shifts down automatically. It starts
-            //     with the Select/Create pair (what a viewport click does), then
-            //     the shapes: clicking one makes that type the active one. The
-            //     pictures themselves are painted by icon:: -- see there.
-            {
-                ImGuiViewport* tvp = ImGui::GetMainViewport();
-                // Sized from the font, so the strip scales with the display and
-                // with the user's text size like every other control -- a fixed
-                // 26 px shrank to a row of specks at 150 %, the opposite of the
-                // large targets this editor promises.
-                const float  bh   = std::round(ImGui::GetFontSize() * 1.3f);
-                const ImVec2 pad(ImGui::GetStyle().WindowPadding.x,
-                                 ImGui::GetStyle().WindowPadding.y * 0.5f);
-                const float  barH = bh + pad.y * 2.0f + 2.0f;
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
-                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, pad);
-                // At rest the buttons are just their pictures on the strip; the
-                // button body shows up on hover, and as an accent wash on the
-                // ones that are on (icon::button's `active`).
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-                const bool barOpen = ImGui::BeginViewportSideBar(
-                    "##PrimToolbar", tvp, ImGuiDir_Up, barH,
-                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
-                    ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoDecoration);
-                if (barOpen) {
-                    ImDrawList*  dl = ImGui::GetWindowDrawList();
-                    const ImVec2 bs(bh, bh);
-                    const float  r  = bh * 0.31f;
-                    ImVec2       c;
-                    // Between groups: a hairline divider in a gap, so the groups
-                    // read as groups without a label each.
-                    auto gap = [&]{
-                        const ImVec2 p = ImGui::GetCursorScreenPos();
-                        const float  w = bh * 0.5f;
-                        ImGui::Dummy(ImVec2(w, bh));
-                        dl->AddLine({std::round(p.x + w * 0.5f), p.y + bh * 0.2f},
-                                    {std::round(p.x + w * 0.5f), p.y + bh * 0.8f},
-                                    ImGui::GetColorU32(ImGuiCol_Separator), 1.0f);
-                        ImGui::SameLine();
-                    };
+            // --- Toolbar strip under the menu bar (Toolbar.cpp) ---------------
+            toolbar::draw({placeMode, entityNewType,
+                           [&](EntityType t) { addEntity(spawnPoint(6.0f), t); },
+                           terrainOn, [&] { addTerrainEntity(); },
+                           gizmoOp, gizmoMode, playMode, viewShade,
+                           [&] { viewtrace::refresh(viewTrace); },
+                           viewTool, showRoads});
 
-                    // --- Select / Create ---------------------------------
-                    // The pair that decides what a left-click on empty ground
-                    // does. Select is the default and the harmless one: it can
-                    // only pick and deselect. Create is the one that drops
-                    // objects, and you have to ask for it -- otherwise every
-                    // stray click while looking around litters the scene with
-                    // boxes. Esc steps back out of Create.
-                    auto modeToggle = [&](bool create, const char* tip) {
-                        const bool on  = (placeMode == create);
-                        const bool hit = icon::button(create ? "modeCreate" : "modeSelect",
-                                                    bs, tip, false, c, on);
-                        icon::pointer(dl, create, c, r, on ? icon::on() : icon::kOff);
-                        if (hit) placeMode = create;
-                    };
-                    modeToggle(false, "Select -- a click picks objects and never creates one (Esc)");
-                    modeToggle(true,  "Create -- a click on empty ground drops the chosen shape");
-                    gap();
-
-                    auto shapeBtn = [&](EntityType t, const char* id, const char* tip) {
-                        const bool on  = (entityNewType == t);
-                        const bool hit = icon::button(id, bs, tip, false, c, on);
-                        icon::shape(dl, t, c, r, on ? icon::on() : icon::kOff);
-                        if (hit) {
-                            entityNewType = t;
-                            // In Select mode the button itself is the create
-                            // action, so it drops one at the spawn point (the
-                            // 3D cursor, or in view). In Create mode it only
-                            // arms the shape -- there the click in the viewport
-                            // is what places it, and getting two objects out of
-                            // one click surprises.
-                            if (!placeMode) addEntity(spawnPoint(6.0f), t);
-                        }
-                    };
-                    shapeBtn(EntityType::Box,      "shapeBox",      "Box");
-                    shapeBtn(EntityType::Ramp,     "shapeRamp",     "Ramp");
-                    shapeBtn(EntityType::Cylinder, "shapeCylinder", "Cylinder");
-                    shapeBtn(EntityType::Sphere,   "shapeSphere",   "Sphere");
-                    shapeBtn(EntityType::Plane,    "shapePlane",
-                             "Plane -- a flat quad, for floors, walls and backdrops");
-                    shapeBtn(EntityType::Light,    "shapeLight",    "Light");
-                    shapeBtn(EntityType::Empty,    "shapeEmpty",
-                             "Empty (transform-only grouping node)");
-
-                    // Terrain: an object like any other, so it is added like any
-                    // other. Not a shapeBtn -- it is a component on an Empty, not
-                    // an entity type -- and disabled once the scene has ground,
-                    // since a scene has one terrain.
-                    if (icon::button("terrainAdd", bs,
-                                   terrainOn ? "Terrain (the scene already has one)"
-                                             : "Terrain (adds ground to the scene)",
-                                   terrainOn, c))
-                        addTerrainEntity();
-                    icon::terrain(dl, c, r, terrainOn ? icon::kDim : icon::kOff);
-
-                    // Gap, then the transform-gizmo modes (Q/W/E).
-                    gap();
-                    auto modeBtn = [&](ImGuizmo::OPERATION op, const char* id,
-                                       const char* tip) {
-                        const bool on  = (gizmoOp == op);
-                        const bool hit = icon::button(id, bs, tip, false, c, on);
-                        icon::gizmo(dl, op, c, r, on ? icon::on() : icon::kOff);
-                        if (hit) gizmoOp = op;
-                    };
-                    modeBtn(ImGuizmo::TRANSLATE, "gizmoMove",
-                            "Move (Q) -- hold Ctrl to snap to the grid");
-                    modeBtn(ImGuizmo::ROTATE,    "gizmoRotate",
-                            "Rotate (W) -- hold Ctrl to turn in steps");
-                    modeBtn(ImGuizmo::SCALE,     "gizmoScale",
-                            "Scale (E) -- hold Ctrl to scale in steps");
-
-                    // Gap, then the gizmo reference-frame toggle (local vs world).
-                    gap();
-                    {
-                        const bool isLocal = (gizmoMode == ImGuizmo::LOCAL);
-                        char tip[64];
-                        std::snprintf(tip, sizeof tip, "Gizmo space: %s  (X to toggle)",
-                                      isLocal ? "Local" : "World");
-                        // A two-way switch whose picture IS the state, so no
-                        // accent: there is no "off" for it to stand out from.
-                        const bool hit = icon::button("gizmoSpace", bs, tip, false, c);
-                        icon::gizmoSpace(dl, isLocal, c, r, icon::kOff);
-                        if (hit) gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
-                    }
-
-                    // Gap, then how the viewport DRAWS the scene. Not a tool:
-                    // nothing here changes the scene, only what is shown of it,
-                    // which is why the group sits apart from the ones that edit.
-                    gap();
-                    {
-                        struct ShadeBtn { int mode; const char* id; const char* tip; };
-                        static const ShadeBtn kShades[] = {
-                            {kShadeWireframe, "shadeWire",
-                             "Wireframe -- edges only, and you can see through it"},
-                            {kShadeSolid, "shadeSolid",
-                             "Solid -- one clay surface under a fixed studio light.\n"
-                             "Shape stays readable whatever the scene's lighting does."},
-                            {kShadeSolidLit, "shadeSolidLit",
-                             "Solid lit -- the scene's own light and shadows,\n"
-                             "without the textures arguing with them."},
-                            {kShadeTextured, "shadeTextured",
-                             "Textured -- the game: materials, sky, water, plants."},
-                            {kShadePathTraced, "shadePath",
-                             "Pathtraced -- the offline renderer, live in the\n"
-                             "viewport. Starts when the camera comes to rest\n"
-                             "and refines until it is done.\n"
-                             "Click again to pick up an edit."},
-                        };
-                        for (const ShadeBtn& b : kShades) {
-                            const bool on  = !playMode && viewShade == b.mode;
-                            const bool hit = icon::button(b.id, bs, b.tip, playMode, c, on);
-                            icon::shade(dl, b.mode, c, r,
-                                        playMode ? icon::kDim
-                                        : on ? icon::on() : icon::kOff);
-                            if (!hit) continue;
-                            // Pressing the mode you are already in means "look
-                            // again": the trace follows the camera by itself,
-                            // and this is the one thing it cannot see coming.
-                            if (b.mode == kShadePathTraced && viewShade == b.mode)
-                                viewtrace::refresh(viewTrace);
-                            viewShade = b.mode;
-                        }
-                    }
-
-                    // Gap, then the road editor: a toggle, not a one-shot action
-                    // like the buttons before it, so it stays lit while it owns
-                    // the left mouse button in the viewport.
-                    gap();
-                    {
-                        char tip[160];
-                        std::snprintf(tip, sizeof tip,
-                                      "Road editor%s\n"
-                                      "Click ground = add point, drag = move,\n"
-                                      "Ctrl+drag = raise/lower, Del = delete.",
-                                      roadEditMode ? " (on)" : "");
-                        const bool hit = icon::button("roadTool", bs, tip, false, c,
-                                                    roadEditMode);
-                        icon::road(dl, c, r, roadEditMode ? icon::on() : icon::kOff);
-                        if (hit) {
-                            roadEditMode = !roadEditMode;
-                            if (roadEditMode) {
-                                // Same hand-off the panel's Edit mode checkbox
-                                // does: one tool owns the left button at a time.
-                                grassPaintMode = sculptMode = treePaintMode =
-                                    flowerPaintMode = paintMode = scatterMode = false;
-                                showRoads = true; // the tunables belong with the tool
-                            }
-                        }
-                    }
-                }
-                ImGui::End();
-                ImGui::PopStyleColor();
-                ImGui::PopStyleVar(2);
-            }
-
-            // --- New Project / Save As wizard --------------------------------
-            if (wizardOpen) { ImGui::OpenPopup("Project Wizard"); wizardOpen = false; }
-            ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("Project Wizard", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::TextUnformatted(wizardIsNew
-                    ? "Create a new project" : "Save project as");
-                ImGui::Separator();
-                const float fieldW = 340.0f;
-                ImGui::SetNextItemWidth(fieldW);
-                ImGui::InputText("Name", wizName, sizeof(wizName));
-                ImGui::SetNextItemWidth(fieldW);
-                ImGui::InputText("Location", wizLocation, sizeof(wizLocation));
-                ImGui::SameLine();
-                if (ImGui::Button("Browse...")) {
-                    std::string picked;
-                    if (ed::pickFolder(picked,
-                            wizLocation[0] ? std::string(wizLocation) : prefLocation))
-                        std::snprintf(wizLocation, sizeof(wizLocation), "%s",
-                                      picked.c_str());
-                }
-
-                const std::string safe = safeName(wizName);
-                const std::string loc(wizLocation);
-                const std::string target = loc.empty() ? std::string()
-                                                       : (loc + "/" + safe);
-                std::error_code vec;
-                const bool nameOk = wizName[0] != '\0';
-                const bool locOk  = !loc.empty() &&
-                                    std::filesystem::is_directory(loc, vec);
-                const bool exists = nameOk && locOk &&
-                                    std::filesystem::exists(target, vec);
-
-                ImGui::Spacing();
-                if (!target.empty()) {
-                    // Bound the wrap so a long path can't stretch the modal wide.
-                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 460.0f);
-                    ImGui::TextDisabled("Folder: %s", target.c_str());
-                    ImGui::PopTextWrapPos();
-                }
-                const ImVec4 warn(1.0f, 0.55f, 0.3f, 1.0f);
-                if (!nameOk)      ImGui::TextColored(warn, "Enter a project name.");
-                else if (!locOk)  ImGui::TextColored(warn, "Location does not exist.");
-                else if (exists)  ImGui::TextColored(warn,
-                                      "A folder with that name already exists here.");
-                ImGui::Spacing();
-
-                const bool canGo = nameOk && locOk && !exists;
-                ImGui::BeginDisabled(!canGo);
-                if (ImGui::Button(wizardIsNew ? "Create" : "Save",
-                                  ImVec2(120.0f, 0.0f))) {
-                    if (wizardIsNew) newProject();
-                    saveProjectTo(target);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
+            // --- New Project / Save As wizard (EditorMenus.cpp) ---------------
+            editormenu::drawProjectWizard(fileMenu, [&] { newProject(); },
+                                          [&](const std::string& t) { saveProjectTo(t); });
 
             // --- Crash recovery ----------------------------------------------
             // A snapshot outlived its session, so the editor comes up asking about
@@ -10300,101 +9292,19 @@ int main(int argc, char** argv) {
                     game::save(gsFolder, gameSettings);
             }
 
-            // --- Scene manager dialogs (New / Rename / Delete) ---------------
-            if (sceneNewOpen)    { ImGui::OpenPopup("New Scene");    sceneNewOpen = false; }
-            if (sceneRenameOpen) { ImGui::OpenPopup("Rename Scene"); sceneRenameOpen = false; }
-            if (sceneDeleteOpen) { ImGui::OpenPopup("Delete Scene"); sceneDeleteOpen = false; }
-            const std::string sceneFolder = currentProject.empty() ? std::string()
-                : std::filesystem::path(currentProject).parent_path().generic_string();
-            // 0 = ok, 1 = empty, 2 = a scene with that name already exists. `self`
-            // allows the current scene's own file to match (used by Rename).
-            auto sceneNameState = [&](bool allowSelf) -> int {
-                if (sceneNameBuf[0] == '\0') return 1;
-                const std::string target =
-                    sceneFolder + "/" + safeName(sceneNameBuf) + ".fitzel";
-                std::error_code ec;
-                if (std::filesystem::exists(target, ec) &&
-                    !(allowSelf && target == currentProject)) return 2;
-                return 0;
-            };
-            const ImVec4 sceneWarn(1.0f, 0.55f, 0.3f, 1.0f);
-
-            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("New Scene", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::TextUnformatted("New scene in this project");
-                ImGui::TextDisabled("Shares the project's materials; starts from the "
-                                    "current world with no objects.");
-                ImGui::Separator();
-                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-                ImGui::SetNextItemWidth(300.0f);
-                ImGui::InputText("Name##newscene", sceneNameBuf, sizeof(sceneNameBuf));
-                const int st = sceneNameState(false);
-                if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
-                else if (st == 2) ImGui::TextColored(sceneWarn,
-                                      "A scene with that name already exists.");
-                ImGui::Spacing();
-                ImGui::BeginDisabled(st != 0);
-                if (ImGui::Button("Create", ImVec2(120.0f, 0.0f))) {
-                    saveSceneFile(currentProject);          // keep the scene we leave
-                    resetWorldForNewScene();                // blank terrain/road/vegetation
-                    newSceneInProject(sceneFolder, sceneNameBuf);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
-
-            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("Rename Scene", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::TextUnformatted("Rename the current scene");
-                ImGui::Separator();
-                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-                ImGui::SetNextItemWidth(300.0f);
-                ImGui::InputText("Name##renscene", sceneNameBuf, sizeof(sceneNameBuf));
-                const int st = sceneNameState(true); // its own file may match
-                if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
-                else if (st == 2) ImGui::TextColored(sceneWarn,
-                                      "A scene with that name already exists.");
-                ImGui::Spacing();
-                ImGui::BeginDisabled(st != 0);
-                if (ImGui::Button("Rename", ImVec2(120.0f, 0.0f))) {
-                    renameScene(currentProject, sceneNameBuf);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
-
-            if (ImGui::BeginPopupModal("Delete Scene", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::Text("Delete scene \"%s\"?",
-                    std::filesystem::path(currentProject).stem().string().c_str());
-                ImGui::TextDisabled("This permanently removes the .fitzel file from disk.");
-                ImGui::Spacing();
-                if (ImGui::Button("Delete", ImVec2(120.0f, 0.0f))) {
-                    const std::string gone = currentProject;
-                    std::string next; // switch to another scene before removing this one
-                    for (const auto& [n, p] : listScenesIn(sceneFolder))
-                        if (p != gone) { next = p; break; }
-                    if (!next.empty()) {
-                        loadSceneFile(next);
-                        deleteSceneFile(gone);
-                    }
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
+            // --- Scene manager dialogs: New / Rename / Delete (EditorMenus.cpp)
+            editormenu::drawSceneDialogs(sceneMenu, {
+                [&](const std::string& folder, const std::string& name) {
+                    saveSceneFile(currentProject);   // keep the scene we leave
+                    resetWorldForNewScene();         // blank terrain/road/vegetation
+                    newSceneInProject(folder, name);
+                },
+                [&](const std::string& name) { renameScene(currentProject, name); },
+                [&](const std::string& next, const std::string& gone) {
+                    loadSceneFile(next);
+                    deleteSceneFile(gone);
+                },
+            });
 
             // Non-blocking project/scene load: a modal over the (still-rendering)
             // editor shows progress while stepLoad streams the scene in over the
@@ -10463,101 +9373,22 @@ int main(int argc, char** argv) {
                 const ImVec2 sceneMax = ImGui::GetItemRectMax();
                 bool sceneHovered = ImGui::IsItemHovered();
                 // The selected camera's own view, bottom right, over the scene.
-                // Drawn into this window's draw list rather than as a floating
-                // window: it belongs to the viewport, has to move with it, and
-                // must never be something you can drag away and lose.
-                if (camPreviewId >= 0 && showCamPreview && !traced) {
-                    const ImVec2 vmin = sceneMin, vmax = sceneMax;
-                    // A sixth of the viewport's width, kept in the preview's own
-                    // aspect and clamped so it stays a corner rather than a
-                    // second view: on a wide screen it must not grow into one.
-                    const float pw = glm::clamp((vmax.x - vmin.x) / 6.0f, 160.0f, 420.0f);
-                    const float ph = pw * static_cast<float>(camPreviewRT.height()) /
-                                          static_cast<float>(camPreviewRT.width());
-                    const float pad = 12.0f;
-                    const ImVec2 p1(vmax.x - pad, vmax.y - pad);
-                    const ImVec2 p0(p1.x - pw, p1.y - ph);
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    dl->AddRectFilled(ImVec2(p0.x - 3.0f, p0.y - 3.0f),
-                                      ImVec2(p1.x + 3.0f, p1.y + 3.0f),
-                                      IM_COL32(0, 0, 0, 170), 3.0f);
-                    // GL textures are bottom-up: flip V, like the viewport image.
-                    dl->AddImage((ImTextureID)(intptr_t)camPreviewRT.colorTexture(),
-                                 p0, p1, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
-                    dl->AddRect(p0, p1, IM_COL32(255, 225, 140, 200), 0.0f, 0, 1.5f);
-                    const std::string cap =
-                        camPreviewName.empty() ? std::string("Camera") : camPreviewName;
-                    dl->AddText(ImVec2(p0.x + 6.0f, p0.y - ImGui::GetTextLineHeight() - 4.0f),
-                                IM_COL32(255, 225, 140, 230), cap.c_str());
-                }
+                if (camPreviewId >= 0 && showCamPreview && !traced)
+                    viewhud::cameraPreview(sceneMin, sceneMax,
+                                           (ImTextureID)(intptr_t)camPreviewRT.colorTexture(),
+                                           camPreviewRT.width(), camPreviewRT.height(),
+                                           camPreviewName);
 
-                // Top right: what Play will start as. In the viewport rather than
-                // in the Game Settings dialog because it is not a setting about
-                // the game -- it is about this next Play, in this scene, now --
-                // and because a shortcut you have to go and find is one you stop
-                // taking. It reads back what it is doing at all times: an
-                // override left on for a week must not be a mystery.
-                if (!playMode) {
-                    const ImVec2 vmin = sceneMin, vmax = sceneMax;
-                    const float  cw   = 230.0f;
-                    ImGui::SetCursorScreenPos(ImVec2(vmax.x - cw - 12.0f, vmin.y + 10.0f));
-                    ImGui::SetNextItemWidth(cw);
-                    const std::string label =
-                        sceneStartMode < 0
-                            ? std::string("This scene: the game's own start")
-                            : std::string("This scene: ") +
-                              game::startModeName(
-                                  static_cast<game::StartMode>(sceneStartMode));
-                    // Amber while it is forcing something, so the corner reads as
-                    // "this is not how the game opens" at a glance.
-                    const bool forcing = sceneStartMode >= 0;
-                    if (forcing)
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg,
-                                              ImVec4(0.32f, 0.24f, 0.05f, 0.95f));
-                    const int wasMode = sceneStartMode;
-                    if (ImGui::BeginCombo("##playas", label.c_str())) {
-                        if (ImGui::Selectable("The game's own start", sceneStartMode < 0))
-                            sceneStartMode = -1;
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("What game.json says -- and a showroom\n"
-                                              "scene opens its start screen.");
-                        ImGui::Separator();
-                        for (int m = 0; m <= static_cast<int>(game::StartMode::Multishot); ++m)
-                            if (ImGui::Selectable(
-                                    game::startModeName(static_cast<game::StartMode>(m)),
-                                    sceneStartMode == m))
-                                sceneStartMode = m;
-                        ImGui::EndCombo();
-                    }
-                    // It is scene data, so changing it is an edit: say so, or the
-                    // autosave sits on its hands and the scene closes without it.
-                    // touch() rather than a command -- there is no object to undo
-                    // (see CommandStack::touch).
-                    if (sceneStartMode != wasMode) history.touch();
-                    if (forcing) ImGui::PopStyleColor();
-                    // While the pointer is on the picker it is NOT on the scene:
-                    // without this a click would open the combo and pick an object
-                    // behind it in the same breath.
-                    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-                        sceneHovered = false;
-                    if (ImGui::IsItemHovered() && forcing)
-                        ImGui::SetTooltip("Saved with the scene: it opens this way\n"
-                                          "wherever it is reached from, in the\n"
-                                          "editor and in the shipped game, and no\n"
-                                          "start screen comes first.");
-                }
+                // Top right: what Play will start as (see ViewportHud.hpp). While
+                // the pointer is on it, it is not on the scene.
+                if (!playMode && viewhud::playAsPicker(sceneMin, sceneMax, sceneStartMode, history))
+                    sceneHovered = false;
 
-                // What the tracer is doing, over its own picture. A progressive
-                // render that says nothing is indistinguishable from a stuck
-                // one, and this one restarts whenever the camera moves -- so
-                // "waiting for the view to settle" is a thing it has to be able
-                // to say.
-                if (viewShade == kShadePathTraced && !playMode &&
-                    !viewTrace.status.empty()) {
-                    ImGui::GetWindowDrawList()->AddText(
-                        ImVec2(sceneMin.x + 10.0f, sceneMin.y + 8.0f),
-                        IM_COL32(255, 225, 140, 230), viewTrace.status.c_str());
-                }
+                // What the tracer is doing, over its own picture: it restarts
+                // whenever the camera moves, so "waiting for the view to settle"
+                // is a thing it has to be able to say.
+                if (viewShade == kShadePathTraced && !playMode)
+                    viewhud::traceStatus(sceneMin, viewTrace.status);
                 viewportHovered = sceneHovered;
                 // Cursor position inside the image, mapped to NDC (for picking).
                 // The IMAGE's rect again, not the last item's -- see above: this
@@ -10567,10 +9398,15 @@ int main(int argc, char** argv) {
                 const ImVec2 rsz(sceneMax.x - sceneMin.x, sceneMax.y - sceneMin.y);
                 viewportRectMin  = glm::vec2(rmin.x, rmin.y); // for the play crosshair
                 viewportRectSize = glm::vec2(rsz.x, rsz.y);
-                const ImVec2 mp   = ImGui::GetIO().MousePos;
-                viewportMouseNdc = glm::vec2(
-                    (rsz.x > 0.0f ? (mp.x - rmin.x) / rsz.x : 0.5f) * 2.0f - 1.0f,
-                    1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
+                // ...and all of it, as the tools outside main() take it.
+                ViewportFrame sceneView = ViewportFrame::looking(
+                    camera, rmin, static_cast<float>(viewW), static_cast<float>(viewH),
+                    ImGui::GetIO().MousePos, viewportHovered);
+                sceneView.pickTerrain = roadPickTerrain;
+                sceneView.groundAt    = [&streamer](float x, float z) {
+                    return streamer.heightAt(x, z);
+                };
+                viewportMouseNdc = sceneView.mouseNdc;
                 // Keep the multi-selection consistent with the active object before
                 // any panel/viewport consumes it this frame.
                 sel.normalize();
@@ -10578,45 +9414,20 @@ int main(int argc, char** argv) {
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
                 // A camera preview owns the viewport: say which one, and give it
-                // a way out that is right where it took the view from. Without
-                // this the free camera has simply gone, and getting it back means
-                // knowing that some camera in the hierarchy has it -- a trap, and
-                // exactly the kind this editor is meant not to set.
+                // a way out right where it took the view from. The pick test
+                // above already latched a click -- one on the button must not
+                // also select whatever is behind it.
                 if (!playMode && activeCam >= 0) {
                     const Entity* pcam = document.find(activeCam);
-                    char lbl[160];
-                    std::snprintf(lbl, sizeof lbl, "Exit camera: %s",
-                                  pcam ? pcam->name.c_str() : "(gone)");
-                    ImGui::SetCursorScreenPos(ImVec2(rmin.x + 12.0f, rmin.y + 30.0f));
-                    if (ImGui::Button(lbl)) activeCam = -1;
-                    // The pick test above already latched this click. Clicking a
-                    // button that sits over the scene must not also select
-                    // whatever happens to be behind it.
-                    if (ImGui::IsItemHovered()) viewportClicked = false;
+                    if (viewhud::exitCamera(rmin, pcam ? pcam->name : std::string("(gone)"),
+                                            activeCam))
+                        viewportClicked = false;
                 }
 
-                // Which way we are looking, when it is a standard view. Blender
-                // puts this in the same corner, and for the same reason: front
-                // and back look identical until something moves, so a view you
-                // cannot name is one you have to test by nudging the camera --
-                // which is exactly what the standard views are for avoiding.
-                // The lens goes in the same place: an orthographic picture of a
-                // landscape is easy to mistake for a flat one.
-                if (!playMode) {
-                    const char* sv = viewnav::label(viewNav.current());
-                    const bool  ortho = camera.orthographic();
-                    char vl[48] = "";
-                    if (sv && ortho) std::snprintf(vl, sizeof vl, "%s (Ortho)", sv);
-                    else if (sv)     std::snprintf(vl, sizeof vl, "%s", sv);
-                    else if (ortho)   std::snprintf(vl, sizeof vl, "Orthographic");
-                    if (vl[0]) {
-                        ImDrawList* vdl = ImGui::GetWindowDrawList();
-                        const ImVec2 at(rmin.x + 12.0f, rmin.y + 10.0f);
-                        vdl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
-                                     IM_COL32(0, 0, 0, 160), vl);
-                        vdl->AddText(at, IM_COL32(235, 240, 250, 225), vl);
-                    }
-                }
+                // Which way we are looking, when it is a standard view, and the
+                // lens when it is orthographic (ViewportHud.hpp).
+                if (!playMode)
+                    viewhud::viewLabel(rmin, viewnav::label(viewNav.current()), camera.orthographic());
 
                 // UI overlay authoring preview: while the overlay editor is open and
                 // we're not playing, draw the 2D elements over the viewport (clipped
@@ -10639,178 +9450,20 @@ int main(int argc, char** argv) {
                 if (ImGui::BeginDragDropTargetCustom(ImRect(sceneMin, sceneMax),
                                                      ImGui::GetID("##sceneDrop"))) {
                     if (const ImGuiPayload* pl =
-                            ImGui::AcceptDragDropPayload("ASSET_GUID")) {
-                        const AssetId gid = AssetId::fromString(std::string(
-                            static_cast<const char*>(pl->Data), pl->DataSize));
-                        const AssetType at = assetDb.typeForId(gid);
-                        // Is it one of the scene's materials? Asked of the library
-                        // rather than of the asset database, because a material
-                        // dragged out of the Materials panel has a GUID and may
-                        // have no .fmat on disk yet -- and it is still the thing
-                        // the drop is about.
-                        int dropMat = -1;
-                        for (int k = 0; k < static_cast<int>(materials.size()); ++k)
-                            if (materials[k].assetId == gid) { dropMat = k; break; }
-                        const float asp = static_cast<float>(viewW) /
-                                          static_cast<float>(viewH);
-                        const glm::mat4 vp =
-                            camera.projectionMatrix(asp) * camera.viewMatrix();
-                        if (at == AssetType::Model) {
-                            glm::vec3 hit;
-                            if (roadPickTerrain(viewportMouseNdc, vp, hit)) {
-                                const std::string mp = assetDb.pathForId(gid).string();
-                                if (isStructuredModel(mp)) addModelHierarchy(hit, mp);
-                                else {
-                                    const int id = models.import(mp, assetDb, materials);
-                                    if (id >= 0) addModelEntity(hit, id);
-                                }
-                            }
-                        } else if (at == AssetType::Material || dropMat >= 0) {
-                            // A material dropped ON A FACE dresses that face
-                            // alone; dropped anywhere else on an object it
-                            // becomes the object's. This is the drag half of the
-                            // Modeling panel's picker, and it exists BESIDE it
-                            // rather than instead of it: aiming at a face is a
-                            // gesture some days do not have, and the panel's
-                            // combo is the same operation without one.
-                            const int mi = dropMat;
-                            const glm::mat4 inv = glm::inverse(vp);
-                            glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                            glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                            const glm::vec3 ro = glm::vec3(pn);
-                            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                            if (mi < 0) {
-                                exportStatus = "That material isn't in this scene's "
-                                               "library -- open the project it "
-                                               "belongs to first.";
-                            } else {
-                            // The face under the cursor, over every modelled mesh
-                            // in the scene: dressing a face should not first
-                            // require selecting the object it belongs to.
-                            int   faceEnt = -1, faceHit = -1;
-                            float faceT   = 1e30f;
-                            for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                const MeshComponent* emc =
-                                    entities[i].components.get<MeshComponent>();
-                                if (!emc) continue;
-                                for (int f = 0;
-                                     f < static_cast<int>(emc->mesh.faces.size()); ++f) {
-                                    const std::vector<glm::vec3> w =
-                                        meshFaceWorld(entities[i], *emc, f);
-                                    // The same fan the GPU mesh is built from, so
-                                    // what is dropped on is exactly what is drawn.
-                                    for (std::size_t k = 1; k + 1 < w.size(); ++k) {
-                                        const float t =
-                                            rayTriangle(ro, rd, w[0], w[k], w[k + 1]);
-                                        if (t >= 0.0f && t < faceT) {
-                                            faceT = t; faceHit = f; faceEnt = i;
-                                        }
-                                    }
-                                }
-                            }
-                            int hit = faceEnt;
-                            if (hit < 0) {
-                                // No face: the nearest solid takes it whole.
-                                float bestT = 1e30f;
-                                for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                    if (!isSolidPrimitive(entities[i].type)) continue;
-                                    const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
-                                                                    entities[i].center + entities[i].half);
-                                    if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
-                                }
-                            }
-                            if (hit >= 0) {
-                                const std::vector<int> ids{entities[hit].id};
-                                auto before = snapshotEntities(ids);
-                                Entity& e = entities[hit];
-                                if (faceEnt == hit && faceHit >= 0) {
-                                    MeshComponent* emc = e.components.get<MeshComponent>();
-                                    emc->mesh.setFaceMaterial(faceHit, gid);
-                                    emc->touch();   // the GPU copy is split by material
-                                    meshFaceOwner = e.id;
-                                    meshFaceSel   = faceHit;
-                                    exportStatus  = "Material on one face.";
-                                } else if (auto* emc = e.components.get<MaterialComponent>()) {
-                                    emc->material = gid;
-                                } else {
-                                    auto nc = std::make_unique<MaterialComponent>();
-                                    nc->material = gid;
-                                    e.components.items.push_back(std::move(nc));
-                                }
-                                sel.selectIndex(hit);
-                                matSel    = mi;
-                                auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                    before, snapshotEntities(ids));
-                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                            }
-                            }
-                        } else if (at == AssetType::Texture) {
-                            // Pick the solid under the drop point.
-                            const glm::mat4 inv = glm::inverse(vp);
-                            glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                            glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                            const glm::vec3 ro = glm::vec3(pn);
-                            const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                            int hit = -1; float bestT = 1e30f;
-                            for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                                if (!isSolidPrimitive(entities[i].type)) continue;
-                                const float d = rayAABB(ro, rd, entities[i].center - entities[i].half,
-                                                                entities[i].center + entities[i].half);
-                                if (d >= 0.0f && d < bestT) { bestT = d; hit = i; }
-                            }
-                            if (hit >= 0) {
-                                // A new material that samples the dropped texture.
-                                MaterialDef nm;
-                                nm.assetId = AssetId::generate();
-                                const AssetDatabase::Entry* te = assetDb.entry(gid);
-                                nm.name  = te ? std::filesystem::path(te->relPath).stem().string()
-                                              : "Textured";
-                                nm.texId = gid;
-                                nm.tex   = assetDb.loadTexture(gid);
-                                materials.push_back(nm);
-                                matSel = static_cast<int>(materials.size()) - 1;
-                                // Assign it to the object's MaterialComponent (undoable).
-                                const std::vector<int> ids{entities[hit].id};
-                                auto before = snapshotEntities(ids);
-                                Entity& e = entities[hit];
-                                if (auto* mc = e.components.get<MaterialComponent>())
-                                    mc->material = nm.assetId;
-                                else {
-                                    auto c = std::make_unique<MaterialComponent>();
-                                    c->material = nm.assetId;
-                                    e.components.items.push_back(std::move(c));
-                                }
-                                sel.selectIndex(hit);
-                                auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                    before, snapshotEntities(ids));
-                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                            }
-                        }
-                    }
+                            ImGui::AcceptDragDropPayload("ASSET_GUID"))
+                        scenedrop::dropOnScene(editorCtx, sceneView,
+                                               AssetId::fromString(std::string(
+                                                   static_cast<const char*>(pl->Data),
+                                                   pl->DataSize)));
                     ImGui::EndDragDropTarget();
                 }
 
                 // --- Road edit handles: the tool is in RoadEdit.cpp; main only
                 //     hands it the viewport and the undo bracket, like the
                 //     spline handles below.
-                if (roadEditMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
+                if (viewTool == ViewTool::Road) {
                     roadedit::Context rc{roads, roadSel, roadSel2, roadDragging, roadDragHeight};
-                    rc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    rc.origin      = rmin;
-                    rc.viewW       = static_cast<float>(viewW);
-                    rc.viewH       = static_cast<float>(viewH);
-                    rc.hovered     = viewportHovered;
-                    rc.mouseNdc    = viewportMouseNdc;
-                    rc.mousePos    = mp;
-                    rc.cameraPos   = camera.position();
-                    rc.cameraFront = camera.front();
-                    rc.cameraFov   = camera.fov();
-                    rc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                    rc.pickTerrain = roadPickTerrain;
-                    rc.groundAt    = [&streamer](float x, float z) {
-                        return streamer.heightAt(x, z);
-                    };
+                    rc.view        = sceneView;
                     rc.beginEdit   = beginRoadEdit;
                     rc.endEdit     = commitRoadEdit;
                     rc.editOpen    = [&roadUndoOpen] { return roadUndoOpen; };
@@ -10828,42 +9481,17 @@ int main(int argc, char** argv) {
                 if (showSplines && splinePlaceCfg.preview)
                     splinePreview = splineplace::spots(splines, splineSel, splinePlaceCfg);
                 auto splineContext = [&]() {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     splineedit::Context sc{splines, splineSel, splinePtSel,
                                            splineDragging, splineDragHeight};
-                    sc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    sc.origin      = rmin;
-                    sc.viewW       = static_cast<float>(viewW);
-                    sc.viewH       = static_cast<float>(viewH);
-                    sc.hovered     = viewportHovered;
-                    sc.mouseNdc    = viewportMouseNdc;
-                    sc.mousePos    = mp;
-                    sc.cameraPos   = camera.position();
-                    sc.cameraFront = camera.front();
-                    sc.cameraFov   = camera.fov();
-                    sc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                    sc.pickTerrain = roadPickTerrain;
-                    sc.groundAt    = [&streamer](float x, float z) {
-                        return streamer.heightAt(x, z);
-                    };
+                    sc.view      = sceneView;
                     sc.beginEdit = beginSplineEdit;
                     sc.endEdit   = commitSplineEdit;
                     sc.editOpen  = [&splineUndoOpen] { return splineUndoOpen; };
                     sc.preview   = splinePreview.empty() ? nullptr : &splinePreview;
                     return sc;
                 };
-                if (splineEditMode) {
-                    // Only one tool may own the left button. The sibling panels
-                    // each switch their rivals off from their own list; rather
-                    // than thread this flag through three more PanelStates, the
-                    // newcomer yields whenever one of them is on.
-                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
-                        sculptMode || paintMode || scatterMode || roadEditMode ||
-                        meshPaintMode || riverEditMode) {
-                        splineEditMode = false;
-                    } else {
-                        splineedit::handle(splineContext());
-                    }
+                if (viewTool == ViewTool::Spline) {
+                    splineedit::handle(splineContext());
                 } else if (showSplines) {
                     // Panel open, edit mode off: still show the paths -- a bare
                     // one has nothing else to be seen by -- and the preview.
@@ -10874,35 +9502,14 @@ int main(int argc, char** argv) {
                 //     and canals. The tool is in RiverEdit.cpp -- main only hands
                 //     it the viewport and the undo bracket, and the bracket is
                 //     what cuts the bed when the gesture ends.
-                if (riverEditMode) {
-                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
-                        sculptMode || paintMode || scatterMode || roadEditMode ||
-                        meshPaintMode || splineEditMode) {
-                        riverEditMode = false;
-                    } else {
-                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                        riveredit::Context rc{rivers, riverSel, riverPtSel,
-                                              riverDragging, riverDragHeight};
-                        rc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                        rc.origin      = rmin;
-                        rc.viewW       = static_cast<float>(viewW);
-                        rc.viewH       = static_cast<float>(viewH);
-                        rc.hovered     = viewportHovered;
-                        rc.mouseNdc    = viewportMouseNdc;
-                        rc.mousePos    = mp;
-                        rc.cameraPos   = camera.position();
-                        rc.cameraFront = camera.front();
-                        rc.cameraFov   = camera.fov();
-                        rc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                        rc.pickTerrain = roadPickTerrain;
-                        rc.groundAt    = [&streamer](float x, float z) {
-                            return streamer.heightAt(x, z);
-                        };
-                        rc.beginEdit = beginRiverEdit;
-                        rc.endEdit   = commitRiverEdit;
-                        rc.editOpen  = [&riverUndoOpen] { return riverUndoOpen; };
-                        riveredit::handle(rc);
-                    }
+                if (viewTool == ViewTool::River) {
+                    riveredit::Context rc{rivers, riverSel, riverPtSel,
+                                          riverDragging, riverDragHeight};
+                    rc.view      = sceneView;
+                    rc.beginEdit = beginRiverEdit;
+                    rc.endEdit   = commitRiverEdit;
+                    rc.editOpen  = [&riverUndoOpen] { return riverUndoOpen; };
+                    riveredit::handle(rc);
                 }
 
                 // --- Vehicle setup handles: the tuning geometry drawn where it
@@ -10915,18 +9522,10 @@ int main(int argc, char** argv) {
                 if (!playMode && sel.valid()) {
                     Entity& ve = entities[sel.index()];
                     if (auto* gvc = ve.components.get<VehicleComponent>()) {
-                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                         vehiclegizmo::Context gc{*gvc, worldOf(ve),
                                                  vehGizmoSel, vehGizmoDrag};
                         gc.editable  = vehGizmoEdit;
-                        gc.origin    = rmin;
-                        gc.viewW     = static_cast<float>(viewW);
-                        gc.viewH     = static_cast<float>(viewH);
-                        gc.viewProj  = camera.projectionMatrix(asp) * camera.viewMatrix();
-                        gc.hovered   = viewportHovered;
-                        gc.mouseNdc  = viewportMouseNdc;
-                        gc.mousePos  = mp;
-                        gc.cameraPos = camera.position();
+                        gc.view      = sceneView;
                         // Where the collision box sits is main's relation (it is
                         // what places the Jolt body at Play), so the gizmo asks
                         // rather than repeating it -- a box drawn a hand's width
@@ -10945,231 +9544,79 @@ int main(int argc, char** argv) {
                 // --- Grass brush: stamp/erase instanced blades under a circular
                 //     3D brush that hugs the terrain. Hold LMB and drag to paint;
                 //     hold Alt (or toggle Erase) to rub grass out. -------------
-                if (grassPaintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    // A fresh press starts a stroke; forget the last stamp point.
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            veg.eraseGrass(cxz, brushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > brushRadius * 0.4f) {
-                            // Throttle so a slow drag doesn't pile blades up: step
-                            // ~0.4 radius between stamps for an even trail.
-                            veg.stampGrass(cxz, brushRadius, brushRng, brushDensity,
-                                           waterLevel, look.snowLevel);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    // Brush cursor: a ground-hugging ring drawn in the overlay.
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(120, 235, 120, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * brushRadius;
-                            const float wz = center.z + std::sin(a) * brushRadius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                if (viewTool == ViewTool::Grass) {
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    // Throttled so a slow drag doesn't pile blades up: a stamp
+                    // every ~0.4 radius makes an even trail.
+                    groundbrush::drag(
+                        at, lastStampPos, brushRadius * 0.4f,
+                        [&](glm::vec2 p) {
+                            veg.stampGrass(p, brushRadius, brushRng, brushDensity, waterLevel,
+                                           look.snowLevel);
+                        },
+                        [&](glm::vec2 p) { veg.eraseGrass(p, brushRadius); });
+                    groundbrush::ring(sceneView, at, brushRadius, IM_COL32(120, 235, 120, 220));
                 }
 
                 // --- Tree brush: scatter/erase hand-placed trees under a circular
                 //     3D brush. Drag LMB to plant; hold Alt (or Erase) to remove.
-                if (treePaintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            veg.eraseTree(cxz, veg.treeBrushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > veg.treeBrushRadius * 0.5f) {
-                            veg.stampTree(cxz, veg.treeBrushRadius, brushRng, waterLevel,
+                if (viewTool == ViewTool::Trees) {
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    groundbrush::drag(
+                        at, lastStampPos, veg.treeBrushRadius * 0.5f,
+                        [&](glm::vec2 p) {
+                            veg.stampTree(p, veg.treeBrushRadius, brushRng, waterLevel,
                                           look.snowLevel);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(90, 200, 120, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * veg.treeBrushRadius;
-                            const float wz = center.z + std::sin(a) * veg.treeBrushRadius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                        },
+                        [&](glm::vec2 p) { veg.eraseTree(p, veg.treeBrushRadius); });
+                    groundbrush::ring(sceneView, at, veg.treeBrushRadius,
+                                      IM_COL32(90, 200, 120, 220));
                 }
 
                 // --- Flower brush: scatter/erase hand-placed blooms under a
                 //     circular 3D brush. Drag LMB to plant; Alt (or Erase) removes.
-                if (flowerPaintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            veg.eraseFlower(cxz, veg.flowerBrushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > veg.flowerBrushRadius * 0.4f) {
-                            veg.stampFlower(cxz, veg.flowerBrushRadius, brushRng, waterLevel,
+                if (viewTool == ViewTool::Flowers) {
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    groundbrush::drag(
+                        at, lastStampPos, veg.flowerBrushRadius * 0.4f,
+                        [&](glm::vec2 p) {
+                            veg.stampFlower(p, veg.flowerBrushRadius, brushRng, waterLevel,
                                             look.snowLevel);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(240, 150, 210, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * veg.flowerBrushRadius;
-                            const float wz = center.z + std::sin(a) * veg.flowerBrushRadius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                        },
+                        [&](glm::vec2 p) { veg.eraseFlower(p, veg.flowerBrushRadius); });
+                    groundbrush::ring(sceneView, at, veg.flowerBrushRadius,
+                                      IM_COL32(240, 150, 210, 220));
                 }
 
                 // --- Object scatter brush: sprinkle weighted random models under
                 //     a circular 3D brush (one stamp = one undo step). Drag LMB
                 //     to scatter; hold Alt (or Erase) to remove scattered objects.
-                if (scatterMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            scatterErase(cxz);
-                        } else if (glm::length(cxz - lastStampPos) > scatterCfg.radius * 0.6f) {
-                            // Throttle so a slow drag doesn't pile objects up: step
-                            // ~0.6 radius between stamps for an even trail.
-                            scatterStamp(cxz);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    // Brush cursor: a ground-hugging ring drawn in the overlay.
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(255, 190, 90, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * scatterCfg.radius;
-                            const float wz = center.z + std::sin(a) * scatterCfg.radius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                if (viewTool == ViewTool::Scatter) {
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    // Throttled so a slow drag doesn't pile objects up: a stamp
+                    // every ~0.6 radius makes an even trail.
+                    groundbrush::drag(at, lastStampPos, scatterCfg.radius * 0.6f,
+                                      [&](glm::vec2 p) { scatterStamp(p); },
+                                      [&](glm::vec2 p) { scatterErase(p); });
+                    groundbrush::ring(sceneView, at, scatterCfg.radius, IM_COL32(255, 190, 90, 220));
                 }
 
                 // --- Terrain sculpt brush (SculptPanel.cpp): raise/lower/smooth/
                 //     flatten the ground under a 3D disc that hugs the surface. --
-                if (sculptMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    sculptui::Viewport sv;
-                    sv.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    sv.origin      = rmin;
-                    sv.viewW       = static_cast<float>(viewW);
-                    sv.viewH       = static_cast<float>(viewH);
-                    sv.hovered     = viewportHovered;
-                    sv.mouseNdc    = viewportMouseNdc;
-                    sv.pickTerrain = roadPickTerrain;
-                    sculptui::brushViewport(sculpt, sv, sculptWork, streamer, publishSculpt,
+                if (viewTool == ViewTool::Sculpt)
+                    sculptui::brushViewport(sculpt, sceneView, sculptWork, streamer, publishSculpt,
                                             veg.grassDirty, dt);
-                }
 
                 // --- Terrain texture paint brush: paint the chosen layer onto the
                 //     ground under a 3D disc. Hold LMB to paint; Alt (or Erase)
                 //     reverts toward the automatic height/slope blend. ----------
-                if (paintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 c(center.x, center.z);
-                        const bool  erasing = paintErase || ImGui::GetIO().KeyAlt;
+                if (viewTool == ViewTool::Paint) {
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, paintErase);
+                    if (at.onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 c(at.center.x, at.center.z);
                         const float rate = glm::clamp(paintStrength * 4.0f * dt, 0.0f, 1.0f);
-                        if (erasing) paintWork.erase(c, paintRadius, rate);
-                        else         paintWork.paint(c, paintRadius, paintLayer, rate);
+                        if (at.erasing) paintWork.erase(c, paintRadius, rate);
+                        else            paintWork.paint(c, paintRadius, paintLayer, rate);
                         // Republish + rebuild the touched chunks (paint is baked into
                         // the mesh, so it rides the same edit-rebuild path as sculpt).
                         publishPaint();
@@ -11177,173 +9624,20 @@ int main(int argc, char** argv) {
                         streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
                                               glm::vec2(c.x + m, c.y + m));
                     }
-                    // Brush cursor: a ground-hugging ring (teal paint / grey erase).
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const bool erasing = paintErase || ImGui::GetIO().KeyAlt;
-                        const ImU32 col = erasing ? IM_COL32(205, 205, 215, 225)
-                                                  : IM_COL32(90, 230, 210, 225);
-                        const int SEG = 56;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * paintRadius;
-                            const float wz = center.z + std::sin(a) * paintRadius;
-                            const glm::vec4 cc = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (cc.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                    // Brush cursor: teal paint / grey erase.
+                    groundbrush::ring(sceneView, at, paintRadius, IM_COL32(90, 230, 210, 225),
+                                      IM_COL32(205, 205, 215, 225), 56);
                 }
 
                 // --- Mesh texture paint brush: the terrain's layers, brushed
                 //     onto the selected modelled object. Hold LMB over the mesh;
                 //     Alt (or Erase) takes the paint back off. --------------
-                if (meshPaintMode) {
-                    MeshComponent* mc = selectedMesh();
-                    // Bank a stroke that is in progress, whichever way this block
-                    // is left. Without it, dropping the brush mid-stroke keeps the
-                    // snapshot around and the NEXT stroke undoes back past it --
-                    // one Ctrl+Z throwing away work the user never joined up.
-                    // Looks the entity up by id: the push replaces components, so
-                    // no pointer taken before it survives, `mc` included.
-                    auto bankStroke = [&]{
-                        if (!meshPaintStroking) return;
-                        meshPaintStroking = false;
-                        Entity* e = document.find(meshPaintBefore.id);
-                        if (!e) return;
-                        auto cmd = std::make_unique<ModifyEntityCmd>(meshPaintBefore, *e);
-                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                    };
-                    // Only one tool may own the left button. The older panels each
-                    // switch their rivals off from their own list; rather than add
-                    // this one to six of them, the newcomer yields -- the same deal
-                    // the spline editor takes above.
-                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
-                        sculptMode || paintMode || scatterMode || roadEditMode ||
-                        splineEditMode || riverEditMode) {
-                        bankStroke();
-                        meshPaintMode = false;
-                    } else if (!mc) {
-                        bankStroke();
-                        // The selection moved off the mesh -- there is nothing to
-                        // paint on, so let go of the left button rather than sit
-                        // on it invisibly.
-                        meshPaintMode = false;
-                    } else {
-                        Entity& me = entities[sel.index()];
-                        // The matrix the mesh is DRAWN through, so the brush
-                        // measures metres where the user sees them even on an
-                        // object somebody scaled.
-                        const glm::mat4 mm = composeModel(
-                            me.center, me.rotation, editmesh::fitScale(mc->mesh, me.half));
-
-                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                        const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                        const glm::mat4 inv = glm::inverse(vp);
-                        glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                        glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                        const glm::vec3 ro = glm::vec3(pn);
-                        const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-
-                        meshpaint::Hit hit;
-                        const bool onMesh = viewportHovered &&
-                                            meshpaint::pick(mc->mesh, mm, ro, rd, hit);
-                        const bool erasing = meshPaintErase || ImGui::GetIO().KeyAlt;
-
-                        // An empty slot has nothing to lay down, so the brush does
-                        // not lay it down: weights in a slot the shader will skip
-                        // are invisible work, and the panel says so where the slot
-                        // is chosen. Erasing stays available -- taking paint off
-                        // needs no slot at all.
-                        const bool slotReady =
-                            meshPaintSlot >= 0 &&
-                            meshPaintSlot < static_cast<int>(mc->paintSlots.size()) &&
-                            mc->paintSlots[meshPaintSlot].material.valid();
-                        if (onMesh && (slotReady || erasing) &&
-                            ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                            if (!meshPaintStroking) {
-                                meshPaintStroking = true;
-                                meshPaintBefore   = me; // the whole stroke undoes as one
-                            }
-                            const float rate =
-                                glm::clamp(meshPaintStrength * 4.0f * dt, 0.0f, 1.0f);
-                            // Split first, then paint: the dab lands on the corners
-                            // the split just made rather than on the four the face
-                            // started with. Erasing never splits -- taking paint off
-                            // needs no more corners than putting it on did.
-                            const int split =
-                                erasing ? 0
-                                        : meshpaint::refine(mc->mesh, mm, hit.world,
-                                                            meshPaintRadius, meshPaintDetail,
-                                                            kMeshPaintMaxFaces);
-                            const bool dabbed =
-                                meshpaint::dab(mc->mesh, mm, hit.world, meshPaintRadius,
-                                               meshPaintSlot, rate, erasing);
-                            if (split > 0 || dabbed) mc->touch();
-                            // A split leaves the selected index pointing at a
-                            // QUARTER of the face it was picked on. Rather than
-                            // hand the modelling panel a face nobody chose, drop
-                            // the selection.
-                            if (split > 0) meshFaceSel = -1;
-                        }
-                        // The stroke ended -- but the undo push is deferred to the
-                        // BOTTOM of this block on purpose. Pushing runs the
-                        // command's redo, which assigns the "after" snapshot over
-                        // the entity and so replaces its components with fresh
-                        // clones: every MeshComponent* taken above is dead the
-                        // instant it happens, `mc` included, and the brush cursor
-                        // below still wants it. Bank the stroke once nothing needs
-                        // the pointer any more.
-                        const bool endStroke =
-                            meshPaintStroking && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
-
-                        // Brush cursor: a ring lying in the surface it would paint,
-                        // lifted a hair off it so it is not swallowed by the face.
-                        if (onMesh && mc->mesh.validFace(hit.face)) {
-                            std::vector<glm::vec3> w;
-                            for (int i : mc->mesh.faces[hit.face])
-                                w.push_back(glm::vec3(mm * glm::vec4(mc->mesh.verts[i], 1.0f)));
-                            glm::vec3 fn(0.0f, 1.0f, 0.0f);
-                            if (w.size() >= 3) {
-                                const glm::vec3 c = glm::cross(w[1] - w[0], w[2] - w[0]);
-                                if (glm::dot(c, c) > 1e-12f) fn = glm::normalize(c);
-                            }
-                            // Any two axes in the face's plane will do for a circle.
-                            const glm::vec3 ref = (std::abs(fn.y) > 0.9f)
-                                                ? glm::vec3(1.0f, 0.0f, 0.0f)
-                                                : glm::vec3(0.0f, 1.0f, 0.0f);
-                            const glm::vec3 t1 = glm::normalize(glm::cross(ref, fn));
-                            const glm::vec3 t2 = glm::cross(fn, t1);
-                            ImDrawList* dl = ImGui::GetWindowDrawList();
-                            const ImU32 col = erasing ? IM_COL32(205, 205, 215, 225)
-                                                      : IM_COL32(90, 230, 210, 225);
-                            const int SEG = 48;
-                            ImVec2 prev; bool have = false;
-                            for (int i = 0; i <= SEG; ++i) {
-                                const float a = static_cast<float>(i) / SEG * 6.2831853f;
-                                const glm::vec3 p = hit.world + fn * 0.01f +
-                                                    (t1 * std::cos(a) + t2 * std::sin(a)) *
-                                                        meshPaintRadius;
-                                const glm::vec4 cc = vp * glm::vec4(p, 1.0f);
-                                if (cc.w <= 1e-4f) { have = false; continue; }
-                                const glm::vec3 n = glm::vec3(cc) / cc.w;
-                                const ImVec2 sp(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                                rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                                if (have) dl->AddLine(prev, sp, col, 2.0f);
-                                prev = sp; have = true;
-                            }
-                        }
-
-                        // Last thing in the block: see the comment at `endStroke`.
-                        // `mc` must be treated as dangling from here on.
-                        if (endStroke) bankStroke();
-                    }
+                //     Also while a stroke is still open after the button went
+                //     to another tool: that call only closes it.
+                if (viewTool == ViewTool::MeshPaint || meshBrush.stroking) {
+                    bool on = viewTool == ViewTool::MeshPaint;
+                    meshpaintui::brushViewport(editorCtx, sceneView, meshBrush, on, dt);
+                    takeTool(viewTool, ViewTool::MeshPaint, on);
                 }
 
                 // --- Volumetric fog volume: a wireframe box while it is being
@@ -11355,513 +9649,59 @@ int main(int argc, char** argv) {
                 // box is drawn, from the same helper the march is fed by -- what
                 // is outlined here IS what is marched, follow-camera included.
                 if (volFogSet.showVolume && !playMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
                     glm::vec3 lo, hi;
                     VolumetricFog::worldBox(volFogSet, camera.position(), lo, hi);
-
-                    ImVec2 sp[8];
-                    bool   ok[8];
-                    for (int c = 0; c < 8; ++c) {
-                        const glm::vec3 w((c & 1) ? hi.x : lo.x, (c & 2) ? hi.y : lo.y,
-                                          (c & 4) ? hi.z : lo.z);
-                        const glm::vec4 cc = vp * glm::vec4(w, 1.0f);
-                        ok[c] = cc.w > 1e-4f;
-                        if (ok[c]) {
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            ok[c] = n.z <= 1.0f;
-                            sp[c] = ImVec2(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                           org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                        }
-                    }
-                    static const int kEdges[12][2] = {
-                        {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
-                        {0,4},{1,5},{2,6},{3,7}};
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const ImU32 col = volFogSet.enabled ? IM_COL32(150, 200, 255, 190)
-                                                        : IM_COL32(150, 200, 255, 80);
-                    for (const auto& e : kEdges)
-                        if (ok[e[0]] && ok[e[1]]) dl->AddLine(sp[e[0]], sp[e[1]], col, 1.5f);
+                    sceneView.wireBox(glm::mat4(1.0f), lo, hi,
+                                      volFogSet.enabled ? IM_COL32(150, 200, 255, 190)
+                                                        : IM_COL32(150, 200, 255, 80),
+                                      1.5f);
                 }
 
                 // --- Solid blocks: click to select an existing box or place a
                 //     new one on the terrain; Del removes the selected block. ----
                 {   // Viewport interaction: selecting works in both modes; the
                     // transform gizmo and click-to-place are Edit-mode only.
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 view = camera.viewMatrix();
-                    const glm::mat4 proj = camera.projectionMatrix(asp);
-                    const glm::mat4 vp = proj * view;
+                    const glm::mat4& vp = sceneView.viewProj;
 
                     // --- Blender-style 3D cursor -----------------------------
-                    // Shift+Right-click drops the cursor onto the terrain (the look
-                    // control ignores right-drag while Shift is held, see above).
-                    if (!playMode && viewportHovered && ImGui::GetIO().KeyShift &&
-                        ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                        glm::vec3 h;
-                        if (roadPickTerrain(viewportMouseNdc, vp, h)) cursor3D = h;
-                    }
-                    // Draw it: a red/white split ring with crosshair ticks, always
-                    // on top (2D overlay), so it reads like Blender's cursor.
-                    if (cursorVisible && !playMode) {
-                        const glm::vec4 cc = vp * glm::vec4(cursor3D, 1.0f);
-                        if (cc.w > 1e-4f) {
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            if (n.z <= 1.0f) {
-                                const ImVec2 c(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                               rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                                ImDrawList* cdl = ImGui::GetWindowDrawList();
-                                const float R = 10.0f;
-                                const ImU32 red = IM_COL32(232, 66, 66, 255);
-                                const ImU32 wht = IM_COL32(245, 245, 245, 255);
-                                for (int s = 0; s < 8; ++s) {
-                                    const float a0 = s * 0.7853982f, a1 = (s + 1) * 0.7853982f;
-                                    cdl->PathArcTo(c, R, a0, a1, 8);
-                                    cdl->PathStroke((s & 1) ? wht : red, 0, 2.2f);
-                                }
-                                const ImU32 k = IM_COL32(20, 20, 20, 220);
-                                cdl->AddLine({c.x - R - 5, c.y}, {c.x - R + 1, c.y}, k, 1.4f);
-                                cdl->AddLine({c.x + R - 1, c.y}, {c.x + R + 5, c.y}, k, 1.4f);
-                                cdl->AddLine({c.x, c.y - R - 5}, {c.x, c.y - R + 1}, k, 1.4f);
-                                cdl->AddLine({c.x, c.y + R - 1}, {c.x, c.y + R + 5}, k, 1.4f);
-                                cdl->AddCircleFilled(c, 1.6f, k);
-                            }
-                        }
-                    }
-                    // The mesh being modelled: wireframe, corners, the element under
-                    // the pointer, the selection, the preview of a hovered button
-                    // and the flash of the last edit. Drawn as a 2D overlay like
-                    // the cursor: authoring marks, not things in the scene.
-                    if (showModeling && !playMode && selectedMesh()) {
-                        modeltools::View mv;
-                        mv.vp   = vp;
-                        mv.min  = rmin;
-                        mv.size = ImVec2(static_cast<float>(viewW), static_cast<float>(viewH));
-                        modelkeys::Host kh;
-                        auto keyHost = [&] {   // fresh each call: a modal edit replaces the mesh
-                            kh.mesh      = selectedMesh();
-                            mv.model     = meshModelOf(entities[sel.index()], *kh.mesh);
-                            kh.sel       = &modelSel;
-                            kh.faceSel   = &meshFaceSel;
-                            kh.view      = mv;
-                            kh.hovered   = viewportHovered;
-                            kh.keysFree  = !ImGui::GetIO().WantTextInput;
-                            kh.gizmoOver = entityEditMode && (ImGuizmo::IsOver() || ImGuizmo::IsUsing());
-                            kh.edit      = applyMeshEdit;
-                            kh.live      = meshLive;
-                            kh.frame     = [&](const glm::vec3& c, float r) {
-                                const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
-                                camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
-                                camFocusing     = true;
-                                if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
-                            };
-                            return kh;
-                        };
-                        modelkeys::update(keyHost());
-                        if (const MeshComponent* mc = keyHost().mesh) {
-                            modeltools::Hit hov;
-                            const bool hovering =
-                                viewportHovered && !ImGuizmo::IsUsing() && !faceGizmoActive &&
-                                !modelkeys::busy() && !ImGui::IsMouseDown(ImGuiMouseButton_Right);
-                            if (hovering)
-                                hov = modeltools::pick(mc->mesh, mv, ImGui::GetIO().MousePos,
-                                                       modelSel.mode);
-                            modeltools::drawOverlay(ImGui::GetWindowDrawList(), mc->mesh, mv,
-                                                    modelSel, meshFaceSel,
-                                                    hovering ? &hov : nullptr);
-                            modelkeys::drawHud(ImGui::GetWindowDrawList(), kh);
-                        }
+                    // Shift+Right-click places it (the look control ignores
+                    // right-drag while Shift is held, see above); its mark.
+                    cursor3d::viewport(sceneView, cursor, !playMode);
+                    // The mesh being modelled: its keys, and its wireframe,
+                    // corners, the element under the pointer, the selection and
+                    // the flash of the last edit as a 2D overlay (ModelMode.cpp).
+                    if (showModeling && !playMode) {
+                        modelmode::ViewportHost mh;
+                        mh.gizmoOut    = entityEditMode;
+                        mh.faceDragged = gizmoDrag.faceActive;
+                        mh.frame       = frameSphere;
+                        modelmode::viewport(editorCtx, sceneView, modelSess, mh);
                     }
 
                     // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
-                    if (!playMode && viewportHovered && !ImGui::GetIO().WantTextInput &&
-                        ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl &&
-                        ImGui::IsKeyPressed(ImGuiKey_S))
-                        ImGui::OpenPopup("##snapMenu");
-                    // Moderate outer padding; the menu labels get an explicit left
-                    // (and matching right) inset via Indent, since MenuItem renders
-                    // its label flush to the window's inner edge otherwise.
-                    const ImVec2 basePad = ImGui::GetStyle().WindowPadding;
-                    const float  inset   = basePad.x * 0.9f;
-                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                                        ImVec2(basePad.x, basePad.y * 1.7f));
-                    if (ImGui::BeginPopup("##snapMenu")) {
-                        const bool haveSel = cursorHaveSel();
-                        ImGui::Indent(inset);
-                        ImGui::TextDisabled("Snap");
-                        ImGui::Unindent(inset);
-                        ImGui::Separator();
-                        ImGui::Indent(inset);
-                        // Trailing spaces reserve right-edge room so the label isn't
-                        // flush against the popup's right border either.
-                        if (ImGui::MenuItem("Cursor to World Origin      ")) snapCursorToOrigin();
-                        if (ImGui::MenuItem("Cursor to Grid      "))         snapCursorToGrid();
-                        if (ImGui::MenuItem("Cursor to Terrain      "))      snapCursorToTerrain();
-                        if (ImGui::MenuItem("Cursor to Selection      ", nullptr, false, haveSel))
-                            snapCursorToSelection();
-                        ImGui::Unindent(inset);
-                        ImGui::Separator();
-                        ImGui::Indent(inset);
-                        if (ImGui::MenuItem("Selection to Cursor      ", nullptr, false, haveSel))
-                            snapSelectionToCursor();
-                        if (ImGui::MenuItem("Selection to Grid      ", nullptr, false, haveSel))
-                            snapSelectionToGrid();
-                        ImGui::Unindent(inset);
-                        ImGui::EndPopup();
+                    cursor3d::snapMenu(editorCtx, sceneView, cursor, !playMode);
+
+                    // The transform gizmo: on the selected object, or while
+                    // modelling on the picked face (TransformGizmo.hpp).
+                    {
+                        gizmo::Settings gs;
+                        gs.op         = gizmoOp;
+                        gs.mode       = gizmoMode;
+                        gs.editMode   = entityEditMode;
+                        gs.objectFree = !vehGizmoOwnsMouse && !meshBusy;
+                        gs.faceMode   = showModeling && !meshBusy;
+                        gs.modelSel   = &modelSess.sel;
+                        gs.grid       = cursor.grid;
+                        gs.snapAngle  = cursor.snapAngle;
+                        gs.snapScale  = cursor.snapScale;
+                        gizmo::frame(editorCtx, sceneView, gizmoDrag, gs);
                     }
-                    ImGui::PopStyleVar(); // WindowPadding
+                    // The selection's wire boxes and its component gizmos -- after
+                    // the gizmo, so they show where it put things this frame.
+                    overlay::selection(editorCtx, sceneView);
 
-                    // Transform gizmo for the selected block (move / scale).
-                    if (entityEditMode) {
-                        ImGuizmo::SetOrthographic(camera.orthographic());
-                        ImGuizmo::SetDrawlist();
-                        ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
-                                                          static_cast<float>(viewH));
-                        // A finished gizmo drag becomes one undoable Transform step.
-                        if (gizmoActive && !ImGuizmo::IsUsing()) {
-                            gizmoActive = false;
-                            auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                gizmoBefore, snapshotEntities(gizmoIds));
-                            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                        }
-                    }
-                    if (sel.valid() &&
-                        entities[sel.index()].type != EntityType::Sun) {
-                        Entity& b = entities[sel.index()];
-                        const int selId = b.id;
-                        float t[3] = {b.center.x, b.center.y, b.center.z};
-                        float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
-                        float s[3] = {b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f};
-
-                        // Ctrl rasters the drag (see snapAngle). ImGuizmo's own
-                        // snap counts steps from where the drag began: right for
-                        // a turn and a scale, and for a move along the object's
-                        // own axes, which have no grid to meet. A move along the
-                        // WORLD axes lands on the grid itself instead (rounded
-                        // below), so what you place lines up with the lattice
-                        // drawn under it rather than keeping its old offset.
-                        const bool snapHeld   = ImGui::GetIO().KeyCtrl;
-                        const bool snapToLattice =
-                            snapHeld && gizmoOp == ImGuizmo::TRANSLATE &&
-                            gizmoMode == ImGuizmo::WORLD;
-                        float snapStep[3] = {cursorGrid, cursorGrid, cursorGrid};
-                        if (gizmoOp == ImGuizmo::ROTATE) snapStep[0] = snapAngle;
-                        if (gizmoOp == ImGuizmo::SCALE)  snapStep[0] = snapScale;
-
-                        // --- Face gizmo -------------------------------------
-                        // With a face selected in Modeling, the gizmo drives THAT
-                        // face rather than the object: the same Move/Rotate/Scale
-                        // handles (Q/W/E), the same drag, applied to four corners
-                        // instead of a transform. The panel's numbered buttons
-                        // stay -- typing 0.4 m and dragging to about 0.4 m are
-                        // different tools, and which one is right depends on the
-                        // day and on the hand.
-                        MeshComponent* faceMc =
-                            (showModeling && entityEditMode && !meshBusy)
-                                ? b.components.get<MeshComponent>() : nullptr;
-                        // What it drives: the selected face's corners, or in vertex
-                        // and edge mode the picked corners (both ends of each edge).
-                        const std::vector<int> gizmoVerts =
-                            faceMc ? modeltools::activeVerts(modelSel, faceMc->mesh, meshFaceSel)
-                                   : std::vector<int>{};
-                        if (gizmoVerts.empty()) faceMc = nullptr;
-                        if (faceMc) {
-                            const glm::mat4 M = meshModelOf(b, *faceMc);
-                            // The gizmo sits at the face's centre, oriented like
-                            // the object. Handed over fresh each frame; what comes
-                            // back is a DELTA, which is the only form that can be
-                            // baked into geometry -- an absolute matrix would be
-                            // re-applied on top of itself every frame and a scale
-                            // drag would run away exponentially.
-                            glm::vec3 pivot(0.0f);   // the centre of what it drives
-                            for (int vi : gizmoVerts) pivot += faceMc->mesh.verts[vi];
-                            pivot /= static_cast<float>(gizmoVerts.size());
-                            const glm::mat4 F = glm::translate(glm::mat4(1.0f), pivot);
-                            glm::mat4 world = M * F;
-                            // A face snaps in steps from where it started: its
-                            // corners, not its centre, are what would have to
-                            // meet the grid.
-                            float delta[16];
-                            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                                 gizmoOp, gizmoMode,
-                                                 glm::value_ptr(world), delta,
-                                                 snapHeld ? snapStep : nullptr);
-                            const bool using3d = ImGuizmo::IsUsing();
-                            if (using3d && !faceGizmoActive) {
-                                faceGizmoActive   = true;
-                                faceGizmoBefore   = b;   // one undo step per drag
-                                faceGizmoScale    = meshScaleOf(b, *faceMc);
-                                faceGizmoAccScale = glm::vec3(1.0f);
-                                faceGizmoStartPivot = glm::vec3(M * glm::vec4(pivot, 1.0f));
-                            }
-                            if (using3d) {
-                                const glm::mat4 D = glm::make_mat4(delta);
-                                glm::mat4 L(1.0f);
-                                if (gizmoOp == ImGuizmo::SCALE) {
-                                    // ImGuizmo reports the scale delta on different
-                                    // terms from the other two: measured from the
-                                    // START of the drag, and in the gizmo's own
-                                    // frame -- while move and rotate report the step
-                                    // since the last frame, in world space. Applying
-                                    // it as if it were a step multiplies the face by
-                                    // the whole drag again every frame, which runs
-                                    // away exponentially. Divide out what has
-                                    // already been applied to get the actual step.
-                                    const glm::vec3 acc(D[0][0], D[1][1], D[2][2]);
-                                    const glm::vec3 step =
-                                        acc / glm::max(faceGizmoAccScale, glm::vec3(1e-6f));
-                                    faceGizmoAccScale = acc;
-                                    L = F * glm::scale(glm::mat4(1.0f), step) *
-                                        glm::inverse(F);
-                                } else {
-                                    // World-space step, conjugated into the mesh's
-                                    // own space: p' = M^-1 * D * M * p.
-                                    L = glm::inverse(M) * D * M;
-                                }
-                                editmesh::transformVerts(faceMc->mesh, gizmoVerts, L);
-                                // Square the object's bounds with the new shape NOW,
-                                // not when the drag ends. The mesh is drawn at
-                                // half/bounds, so leaving `half` behind while the
-                                // geometry grows shrinks that factor by exactly as
-                                // much as the mesh grew: the shape would sit there
-                                // apparently unmoved while its local size ran off,
-                                // and let go of it at the end to reveal a body
-                                // stretched to the horizon.
-                                normalizeMeshEntity(b, *faceMc, faceGizmoScale);
-
-                                // How far, next to the pointer: the drag says in
-                                // numbers what it is doing while it does it.
-                                char rd[96];
-                                if (gizmoOp == ImGuizmo::TRANSLATE) {
-                                    const glm::mat4 M2 = meshModelOf(b, *faceMc);
-                                    glm::vec3 p2(0.0f);
-                                    for (int vi : gizmoVerts) p2 += faceMc->mesh.verts[vi];
-                                    p2 /= static_cast<float>(gizmoVerts.size());
-                                    const glm::vec3 d =
-                                        glm::vec3(M2 * glm::vec4(p2, 1.0f)) - faceGizmoStartPivot;
-                                    std::snprintf(rd, sizeof rd, "%.2f m   (%+.2f, %+.2f, %+.2f)",
-                                                  glm::length(d), d.x, d.y, d.z);
-                                } else if (gizmoOp == ImGuizmo::SCALE) {
-                                    std::snprintf(rd, sizeof rd, "x %.2f  %.2f  %.2f",
-                                                  faceGizmoAccScale.x, faceGizmoAccScale.y,
-                                                  faceGizmoAccScale.z);
-                                } else {
-                                    std::snprintf(rd, sizeof rd, "rotating %d corner%s",
-                                                  static_cast<int>(gizmoVerts.size()),
-                                                  gizmoVerts.size() == 1 ? "" : "s");
-                                }
-                                const ImVec2 mp = ImGui::GetIO().MousePos;
-                                modeltools::readout(ImGui::GetWindowDrawList(),
-                                                    ImVec2(mp.x + 18.0f, mp.y + 18.0f), rd);
-                            } else if (faceGizmoActive) {
-                                // Drag finished: bank the whole of it as one
-                                // undoable step. The bounds are already square with
-                                // the shape -- that happens on every frame above.
-                                faceGizmoActive = false;
-                                auto cmd = std::make_unique<ModifyEntityCmd>(faceGizmoBefore, b);
-                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                            }
-                        }
-                        else if (entityEditMode && !vehGizmoOwnsMouse && !meshBusy) {
-                            float model[16];
-                            ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
-                            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                                 gizmoOp, gizmoMode, model, nullptr,
-                                                 (snapHeld && !snapToLattice) ? snapStep
-                                                                              : nullptr);
-                            const bool gizmoUsing = ImGuizmo::IsUsing();
-                            if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtrees
-                                gizmoActive = true;
-                                gizmoRoots  = sel.ids();
-                                gizmoIds.clear();
-                                for (int rid : gizmoRoots)
-                                    for (int id : collectSubtreeIds(rid))
-                                        if (std::find(gizmoIds.begin(), gizmoIds.end(), id)
-                                                == gizmoIds.end())
-                                            gizmoIds.push_back(id);
-                                gizmoBefore = snapshotEntities(gizmoIds);
-                                gizmoPrevT = glm::vec3(t[0], t[1], t[2]);
-                                gizmoPrevR = glm::vec3(r[0], r[1], r[2]);
-                                gizmoPrevS = glm::vec3(s[0], s[1], s[2]);
-                                gizmoStartT = gizmoPrevT;
-                            }
-                            if (gizmoUsing) {
-                                ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
-                                // Onto the grid -- but only the axes the drag
-                                // actually moves. Pulling the X arrow must not
-                                // also drop the object's height onto a grid line.
-                                // ImGuizmo hands back the unsnapped target every
-                                // frame (it measures from the ray, not from what
-                                // it got last time), so rounding it here holds.
-                                if (snapToLattice && cursorGrid > 0.0f)
-                                    for (int k = 0; k < 3; ++k)
-                                        if (std::abs(t[k] - gizmoStartT[k]) > 1e-4f)
-                                            t[k] = std::round(t[k] / cursorGrid) * cursorGrid;
-                                const glm::vec3 newT(t[0], t[1], t[2]);
-                                const glm::vec3 newR(r[0], r[1], r[2]);
-                                const glm::vec3 newS(s[0], s[1], s[2]);
-                                b.half = glm::max(newS * 0.5f, glm::vec3(0.05f));
-                                // World-space edit -> local (children then follow via
-                                // resolveHierarchy).
-                                const glm::mat4 pw = parentWorldMat(b);
-                                setWorld(b, newT, newR, b.parent >= 0 ? &pw : nullptr);
-                                // Multi-select: apply the active object's incremental
-                                // delta to every other selected root (each scales /
-                                // rotates about its own centre; children follow via
-                                // resolveHierarchy).
-                                if (gizmoRoots.size() > 1) {
-                                    const glm::vec3 dT = newT - gizmoPrevT;
-                                    const glm::vec3 dR = newR - gizmoPrevR;
-                                    const glm::vec3 ratio =
-                                        newS / glm::max(gizmoPrevS, glm::vec3(1e-4f));
-                                    for (int rid : gizmoRoots) {
-                                        if (rid == selId) continue;
-                                        Entity* re = document.find(rid);
-                                        if (!re || re->type == EntityType::Sun) continue;
-                                        re->half = glm::max(re->half * ratio, glm::vec3(0.05f));
-                                        const glm::mat4 rpw = parentWorldMat(*re);
-                                        setWorld(*re, re->center + dT, re->rotation + dR,
-                                                 re->parent >= 0 ? &rpw : nullptr);
-                                    }
-                                }
-                                gizmoPrevT = newT; gizmoPrevR = newR; gizmoPrevS = newS;
-                            }
-                        }
-
-                        // Oriented wireframe highlight. One projector, reused for the
-                        // active object (bright) and any other selected objects (dim),
-                        // so a multi-selection shows every picked box.
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        auto wireBox = [&](const Entity& e, ImU32 col, float thick) {
-                            const glm::mat4 boxX =
-                                composeModel(e.center, e.rotation, glm::vec3(1.0f));
-                            ImVec2 sp[8]; bool ok[8];
-                            for (int c = 0; c < 8; ++c) {
-                                const glm::vec3 lh((c & 1) ? e.half.x : -e.half.x,
-                                                   (c & 2) ? e.half.y : -e.half.y,
-                                                   (c & 4) ? e.half.z : -e.half.z);
-                                const glm::vec4 cc = vp * (boxX * glm::vec4(lh, 1.0f));
-                                ok[c] = cc.w > 1e-4f;
-                                if (ok[c]) {
-                                    const glm::vec3 n = glm::vec3(cc) / cc.w;
-                                    ok[c] = n.z <= 1.0f;
-                                    sp[c] = ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                                   rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                                }
-                            }
-                            static const int kBoxEdges[12][2] = {
-                                {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
-                                {0,4},{1,5},{2,6},{3,7}};
-                            for (const auto& ed : kBoxEdges)
-                                if (ok[ed[0]] && ok[ed[1]])
-                                    dl->AddLine(sp[ed[0]], sp[ed[1]], col, thick);
-                        };
-                        // Other selected objects first (dim) so the active box (bright)
-                        // draws on top.
-                        for (int sid : sel.multi()) {
-                            if (sid == selId) continue;
-                            if (const Entity* se = document.find(sid))
-                                wireBox(*se, IM_COL32(255, 170, 40, 150), 1.4f);
-                        }
-                        wireBox(b, IM_COL32(255, 140, 0, 230), 1.8f);
-
-                        // Component gizmos: each component of the selected entity
-                        // draws its own world-space overlay (a radius, a path).
-                        // Generic -- the viewport only supplies the projection, so
-                        // a new component brings its gizmo with no change here.
-                        struct VpGizmo : GizmoDraw {
-                            ImDrawList* dl; glm::mat4 vp; ImVec2 org; float vw, vh;
-                            bool project(const glm::vec3& w, ImVec2& out) const {
-                                const glm::vec4 c = vp * glm::vec4(w, 1.0f);
-                                if (c.w <= 1e-4f) return false;
-                                const glm::vec3 n = glm::vec3(c) / c.w;
-                                if (n.z > 1.0f) return false;
-                                out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * vw,
-                                             org.y + (1.0f - (n.y * 0.5f + 0.5f)) * vh);
-                                return true;
-                            }
-                            static ImU32 toCol(const glm::vec4& c) {
-                                return IM_COL32(int(c.r * 255.0f), int(c.g * 255.0f),
-                                                int(c.b * 255.0f), int(c.a * 255.0f));
-                            }
-                            void line(const glm::vec3& a, const glm::vec3& b,
-                                      const glm::vec4& c) override {
-                                ImVec2 pa, pb;
-                                if (project(a, pa) && project(b, pb))
-                                    dl->AddLine(pa, pb, toCol(c), 2.0f);
-                            }
-                            void circle(const glm::vec3& ctr, float rad,
-                                        const glm::vec3& axis, const glm::vec4& c) override {
-                                const glm::vec3 n = glm::normalize(axis);
-                                const glm::vec3 up = (std::abs(n.y) < 0.99f)
-                                    ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-                                const glm::vec3 u = glm::normalize(glm::cross(n, up));
-                                const glm::vec3 v = glm::cross(n, u);
-                                const int SEG = 40;
-                                ImVec2 prev; bool have = false;
-                                for (int i = 0; i <= SEG; ++i) {
-                                    const float a = 6.2831853f * i / SEG;
-                                    ImVec2 s2;
-                                    if (!project(ctr + (u * std::cos(a) + v * std::sin(a)) * rad, s2)) {
-                                        have = false; continue;
-                                    }
-                                    if (have) dl->AddLine(prev, s2, toCol(c), 1.5f);
-                                    prev = s2; have = true;
-                                }
-                            }
-                        };
-                        VpGizmo gz;
-                        gz.dl = dl; gz.vp = vp; gz.org = rmin;
-                        gz.vw = static_cast<float>(viewW); gz.vh = static_cast<float>(viewH);
-                        if (b.parent >= 0)
-                            if (const Entity* pe = document.find(b.parent)) {
-                                gz.parentCenter = pe->center;
-                                gz.parentHalf   = pe->half;
-                                gz.hasParent    = true;
-                            }
-                        // A multishot camera's "parent" for gizmo purposes is
-                        // what it SHOOTS, which is deliberately not what it hangs
-                        // from (see CameraComponent::shotTarget). Same question --
-                        // which object is this camera about -- so it goes down the
-                        // same channel rather than growing a second one.
-                        if (const auto* mcam = b.components.get<CameraComponent>();
-                            mcam && mcam->mode == CameraComponent::Multishot &&
-                            mcam->shotTarget >= 0)
-                            if (const Entity* se = document.find(mcam->shotTarget)) {
-                                gz.parentCenter = se->center;
-                                gz.parentHalf   = se->half;
-                                gz.hasParent    = true;
-                            }
-                        for (const auto& comp : b.components.items)
-                            comp->onGizmo(gz, b.center, glm::quat(glm::radians(b.rotation)));
-                    }
-
-                    // Empties have no mesh, so draw a constant-size screen icon at
-                    // each one (editor only) -- otherwise they'd be invisible and
-                    // only reachable from the hierarchy. Their AABB pick box still
-                    // makes them clickable in the viewport.
-                    if (!playMode) {
-                        ImDrawList* odl = ImGui::GetWindowDrawList();
-                        for (const Entity& e : entities) {
-                            if (e.type != EntityType::Empty) continue;
-                            if (!e.activeInHierarchy) continue;   // hidden group node
-                            const glm::vec4 cc = vp * glm::vec4(e.center, 1.0f);
-                            if (cc.w <= 1e-4f) continue;
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            if (n.z > 1.0f) continue;
-                            const ImVec2 sc(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            const float r = 7.0f;
-                            const ImU32 col = IM_COL32(170, 175, 185, 220);
-                            odl->AddLine({sc.x - r, sc.y}, {sc.x + r, sc.y}, col, 1.5f);
-                            odl->AddLine({sc.x, sc.y - r}, {sc.x, sc.y + r}, col, 1.5f);
-                            odl->AddCircle(sc, r * 0.45f, col, 0, 1.5f);
-                            if (!e.name.empty())
-                                odl->AddText({sc.x + r + 3.0f, sc.y - 7.0f}, col,
-                                             e.name.c_str());
-                        }
-                    }
+                    // Empties have no mesh: an icon at each (see ViewportOverlay.hpp).
+                    if (!playMode) overlay::empties(entities, sceneView);
 
                     // Click to select/place, but not while grabbing the gizmo or
                     // running a viewport tool -- the active tool owns the left
@@ -11870,120 +9710,18 @@ int main(int argc, char** argv) {
                     // actions on one click (road points used to drop a primitive
                     // under every waypoint placed in Create mode).
                     const bool toolOwnsClick =
-                        grassPaintMode || treePaintMode || flowerPaintMode ||
-                        roadEditMode || sculptMode || paintMode || scatterMode ||
-                        splineEditMode || meshPaintMode || riverEditMode ||
-                        vehGizmoOwnsMouse || modelling;
-                    const ImGuiIO& io = ImGui::GetIO();
-                    const bool selMod  = io.KeyCtrl; // Ctrl = modify-selection gesture
-                    const bool canPick = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
+                        viewTool != ViewTool::None || vehGizmoOwnsMouse || modelling;
+                    viewpick::Host pickHost;
+                    pickHost.canPick   = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
                                          !toolOwnsClick && viewportHovered;
-                    // The entity ids the mouse ray passes through, nearest first
-                    // (shared by plain click and Ctrl+click).
-                    auto rayPickIds = [&]() -> std::vector<int> {
-                        const glm::mat4 inv = glm::inverse(vp);
-                        glm::vec4 pn = inv * glm::vec4(viewportMouseNdc, -1.0f, 1.0f); pn /= pn.w;
-                        glm::vec4 pf = inv * glm::vec4(viewportMouseNdc,  1.0f, 1.0f); pf /= pf.w;
-                        const glm::vec3 ro = glm::vec3(pn);
-                        const glm::vec3 rd = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
-                        std::vector<std::pair<float, int>> hits;
-                        for (int i = 0; i < static_cast<int>(entities.size()); ++i) {
-                            if (!entities[i].activeInHierarchy) continue; // not shown, not pickable
-                            const float t = rayAABB(ro, rd, entities[i].center - entities[i].half,
-                                                            entities[i].center + entities[i].half);
-                            if (t >= 0.0f) hits.emplace_back(t, entities[i].id);
-                        }
-                        std::sort(hits.begin(), hits.end());
-                        std::vector<int> ids; ids.reserve(hits.size());
-                        for (const auto& h : hits) ids.push_back(h.second);
-                        return ids;
+                    pickHost.placeMode = placeMode;
+                    pickHost.place     = [&](const glm::vec3& at) { addEntity(at, entityNewType); };
+                    // While modelling, a click that lands on the selected mesh
+                    // picks one of its faces (or corners, or edges).
+                    pickHost.meshClick = [&] {
+                        return showModeling && modelmode::click(editorCtx, sceneView, modelSess);
                     };
-
-                    // Ctrl+left: start a selection gesture (a click toggles one; a
-                    // drag draws an additive box).
-                    if (canPick && selMod && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        boxSelecting = true;
-                        boxStart = io.MousePos;
-                    }
-                    if (boxSelecting) {
-                        const ImVec2 cur = io.MousePos;
-                        const ImVec2 a(std::min(boxStart.x, cur.x), std::min(boxStart.y, cur.y));
-                        const ImVec2 b2(std::max(boxStart.x, cur.x), std::max(boxStart.y, cur.y));
-                        ImDrawList* bdl = ImGui::GetWindowDrawList();
-                        bdl->AddRectFilled(a, b2, IM_COL32(255, 160, 0, 40));
-                        bdl->AddRect(a, b2, IM_COL32(255, 160, 0, 180));
-                        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-                            boxSelecting = false;
-                            const float dragPx = std::max(std::abs(cur.x - boxStart.x),
-                                                          std::abs(cur.y - boxStart.y));
-                            if (dragPx < 4.0f) { // no drag -> toggle the object clicked
-                                const std::vector<int> ids = rayPickIds();
-                                if (!ids.empty()) sel.toggle(ids[0]);
-                            } else {             // box -> add every centre inside the rect
-                                std::vector<int> inBox;
-                                for (const Entity& e : entities) {
-                                    if (!e.activeInHierarchy || e.type == EntityType::Sun) continue;
-                                    const glm::vec4 cc = vp * glm::vec4(e.center, 1.0f);
-                                    if (cc.w <= 1e-4f) continue;
-                                    const glm::vec3 n = glm::vec3(cc) / cc.w;
-                                    if (n.z > 1.0f) continue;
-                                    const ImVec2 sc(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                                    rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                                    if (sc.x >= a.x && sc.x <= b2.x &&
-                                        sc.y >= a.y && sc.y <= b2.y)
-                                        inBox.push_back(e.id);
-                                }
-                                sel.addMany(inBox);
-                            }
-                        }
-                    }
-                    // Plain left-click (no Ctrl): select/place exactly as before.
-                    else if (canPick && !selMod &&
-                             ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                        // ...except while modelling, where a click that lands on
-                        // the selected mesh picks one of its FACES. It only takes
-                        // the click when it actually hits that mesh, so clicking
-                        // anything else still selects objects as usual -- and
-                        // clicking the object you already have selected was a
-                        // no-op anyway, which is the click this borrows.
-                        bool meshTook = false;
-                        if (showModeling) {
-                            if (const MeshComponent* mc = selectedMesh()) {
-                                modeltools::View mv;
-                                mv.model = meshModelOf(entities[sel.index()], *mc);
-                                mv.vp    = vp;
-                                mv.min   = ImVec2(viewportRectMin.x, viewportRectMin.y);
-                                mv.size  = ImVec2(viewportRectSize.x, viewportRectSize.y);
-                                const modeltools::Hit h = modeltools::pick(
-                                    mc->mesh, mv, io.MousePos, modelSel.mode);
-                                meshTook = modeltools::click(modelSel, meshFaceSel, h,
-                                                             modelSel.additive || io.KeyShift);
-                            }
-                        }
-                        if (meshTook) {
-                            // the click went to the mesh
-                        } else {
-                        // A click that missed every face lets go of the one that
-                        // was selected -- which is also how the gizmo is handed
-                        // back to the whole object.
-                        meshFaceSel = -1;
-                        const std::vector<int> ids = rayPickIds();
-                        if (!ids.empty()) {
-                            // Same overlapping stack as last click -> advance to the
-                            // next candidate; a new stack -> start at the nearest.
-                            if (ids == pickStack)
-                                pickIdx = (pickIdx + 1) % static_cast<int>(ids.size());
-                            else { pickStack = ids; pickIdx = 0; }
-                            sel.select(ids[pickIdx]);
-                        } else if (placeMode) {
-                            glm::vec3 h; // Create mode: empty ground -> drop a new block
-                            if (roadPickTerrain(viewportMouseNdc, vp, h)) addEntity(h, entityNewType);
-                        } else {
-                            sel.clear(); // empty click clears it
-                            pickStack.clear(); pickIdx = -1;
-                        }
-                        }
-                    }
+                    viewpick::click(editorCtx, sceneView, scenePick, pickHost);
                     // While modelling, Del is the mesh's (the modelling mode's
                     // delete menu) -- never the whole object.
                     if (sel.valid() && !modelling && ImGui::IsKeyPressed(ImGuiKey_Delete))
@@ -11998,106 +9736,20 @@ int main(int argc, char** argv) {
 
             luaapi::draw(luaApi, gui.monoFont());
 
-            if (showAbout) {
-                ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
-                if (ImGui::Begin("About Fitzel", &showAbout,
-                                 ImGuiWindowFlags_NoDocking |
-                                 ImGuiWindowFlags_NoSavedSettings)) {
-                    ImGui::Text("Fitzel %d.%d.%d",
-                                fitzel::kVersionMajor, fitzel::kVersionMinor,
-                                fitzel::kVersionPatch);
-                    ImGui::TextDisabled("3D vegetation & road engine");
-                    ImGui::Separator();
-                    // The four-part version alone can't tell two builds of one
-                    // commit apart, so show what identifies this binary exactly.
-                    ImGui::Text("Build %d", fitzel::kVersionBuild);
-                    if (fitzel::kGitHash[0])
-                        ImGui::Text("Commit %s%s", fitzel::kGitHash,
-                                    fitzel::kGitDirty ? " (uncommitted changes)" : "");
-                    ImGui::Spacing();
-                    if (ImGui::Button("Copy version"))
-                        ImGui::SetClipboardText(fitzel::kVersionFull);
-                }
-                ImGui::End();
-            }
+            editormenu::drawAbout(showAbout);
 
-            if (showStats) { if (ImGui::Begin("Stats", &showStats)) {
-                const char* sceneNames[] = {"Nature", "Empty (build)"};
-                if (ImGui::Combo("Scene", &scene, sceneNames, 2)) applyScene(scene);
-                ImGui::Separator();
-                ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate,
-                            1000.0f / ImGui::GetIO().Framerate);
-                ImGui::Text("Camera: %.0f, %.0f, %.0f",
-                            camera.position().x, camera.position().y, camera.position().z);
-                ImGui::Text("Chunks: %d loaded, %d pending",
-                            streamer.loadedChunkCount(), streamer.pendingChunkCount());
-                ImGui::Text("Entities: %d (%d selected)",
-                            static_cast<int>(entities.size()),
-                            static_cast<int>(sel.count()));
-                ImGui::Text("Draws: %d visible, %d culled",
-                            renderer.lastDrawn(), renderer.lastCulled());
-                ImGui::Separator();
-                ImGui::SliderFloat("Move speed", &camera.moveSpeed, 2.0f, 80.0f);
-                ImGui::SliderInt("View distance", &viewRadius, 2, 9, "%d chunks");
-                ImGui::SameLine();
-                ImGui::Text("(%.0f m)", viewRadius * streamer.settings().chunkSize);
-                // The culling limit. Deliberately next to View distance and the
-                // draw counters above: those three are one dial each on the same
-                // trade, and the counters are the readout you tune against.
-                ImGui::Checkbox("Auto far plane", &farPlaneAuto);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Tie the culling limit to the streamed terrain\n"
-                                      "(1.7 chunks past the ring, so its corners\n"
-                                      "stay inside the frustum) -- and to the\n"
-                                      "roadside city's range, whichever reaches\n"
-                                      "further, so a skyline is never sliced off\n"
-                                      "before its own range runs out. Turn off to\n"
-                                      "set it by hand.");
-                ImGui::BeginDisabled(farPlaneAuto);
-                ImGui::SliderFloat("Far plane", &farPlaneManual, 100.0f, 5000.0f,
-                                   "%.0f m");
-                ImGui::EndDisabled();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Where the camera stops drawing. Past the\n"
-                                      "streamed terrain you see the ring end;\n"
-                                      "past ~2000 m the depth buffer starts\n"
-                                      "fighting itself in the distance (the near\n"
-                                      "plane is 0.1 m). Set by hand this does NOT\n"
-                                      "follow the city's range, so a city set to\n"
-                                      "reach further than this gets cut off here.\n"
-                                      "Shadows stop at the streamed terrain either\n"
-                                      "way -- pushing this out costs draws, not\n"
-                                      "shadow resolution.");
-                ImGui::SameLine();
-                ImGui::TextDisabled("now %.0f m", camera.farPlane());
-                ImGui::Separator();
-                if (ImGui::Button("Reset layout")) requestDockRebuild = true;
-            }
-            ImGui::End(); }
+            viewui::drawStats({showStats, scene, applyScene, camera, streamer, renderer,
+                               static_cast<int>(entities.size()), static_cast<int>(sel.count()),
+                               viewRadius, farPlaneAuto, farPlaneManual, requestDockRebuild});
 
-            if (showCamera) { if (ImGui::Begin("Camera", &showCamera)) {
-                if (ImGui::Checkbox("First-person (Shift+F)", &fpsMode)) {
-                    input.setCursorLocked(fpsMode);
-                    fpsVelY = 0.0f;
-                    if (fpsMode) {
-                        const glm::vec3 p = camera.position();
-                        camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
-                    }
+            viewui::drawCamera({showCamera, camera, fpsMode, [&](bool on) {
+                input.setCursorLocked(on);
+                fpsVelY = 0.0f;
+                if (on) {
+                    const glm::vec3 p = camera.position();
+                    camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled(fpsMode ? "(walk + jump, Esc to exit)"
-                                            : "(hold right mouse: look + WASD/QE fly)");
-                // Sync from the camera (mouse-look may have changed it), then
-                // apply only when a slider is actually edited.
-                camFov = camera.fov(); camYaw = camera.yaw(); camPitch = camera.pitch();
-                if (ImGui::SliderFloat("FOV",   &camFov, 25.0f, 100.0f, "%.0f deg"))
-                    camera.setFov(camFov);
-                if (ImGui::SliderFloat("Yaw",   &camYaw, -180.0f, 180.0f, "%.0f"))
-                    camera.setYaw(camYaw);
-                if (ImGui::SliderFloat("Pitch", &camPitch, -89.0f, 89.0f, "%.0f"))
-                    camera.setPitch(camPitch);
-            }
-            ImGui::End(); }
+            }});
 
             // The audio mixer. The desk is drawn in MixerPanel.cpp; what it
             // needs from here is the state, the frame time (the meters have
@@ -12142,324 +9794,18 @@ int main(int argc, char** argv) {
                                       audio.ok()});
             }
 
-            if (showSky) { if (ImGui::Begin("Sky & atmosphere", &showSky)) {
-                ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
-                ImGui::SameLine();
-                ImGui::Checkbox("Pause", &timePaused);
-                ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
-                ImGui::SliderFloat("Coverage",    &skySet.coverage, 0.0f, 1.0f);
-                ImGui::SliderFloat("Density",     &skySet.density, 0.0f, 3.0f);
-                ImGui::SliderFloat("Cloud scale", &skySet.scale, 0.0003f, 0.005f, "%.4f");
-                ImGui::SliderFloat("Wind",        &skySet.wind, 0.0f, 20.0f);
-                ImGui::SliderFloat("Cloud base",  &skySet.base, 100.0f, 3000.0f, "%.0f m");
-                ImGui::SliderFloat("Cloud top",   &skySet.top, 300.0f, 7000.0f, "%.0f m");
-                ui::hint("Base, top and scale decide whether the sky reads as\n"
-                         "weather or as a ceiling. A cumulus is at least as\n"
-                         "TALL as it is wide, so a thin slab under wide\n"
-                         "features can only ever be a textured lid -- scale\n"
-                         "sets that width, and LOWER means bigger clouds.\n"
-                         "Coverage does two jobs: how much sky is taken, and\n"
-                         "how far the tops build into it.");
+            lookui::drawSkyPanel({showSky, timeOfDay, timePaused, dayLength, skySet, volFogSet,
+                                  postLook, splitScreen, renderer, post.autoExposureScale(),
+                                  camera.position(),
+                                  [&streamer](float x, float z) {
+                                      return streamer.heightAt(x, z);
+                                  }});
 
-                // --- The other layers ---------------------------------------
-                // One section per cloud type, each with its own height, wind
-                // and direction, drawn in SkyLayers.cpp. The sliders above are
-                // the cumulus, which is the one layer that is raymarched and so
-                // the one that needs a base, a top and a density rather than a
-                // height; everything below is a sheet.
-                ui::sectionText("Layers");
-                ui::hint("Each type is its own deck at its own height, and they\n"
-                         "stack in that order -- a stratus under the cumulus\n"
-                         "hides it, one above it does not. The cumulus above is\n"
-                         "the only layer with real depth; the rest are sheets,\n"
-                         "which is what they are in the air as well.");
-                skylayers::drawPanel(skySet);
-                ImGui::SliderFloat("Fog density", &skySet.fogDensity, 0.0f, 0.02f, "%.4f");
-                ImGui::SliderFloat("Fog falloff", &skySet.fogFalloff, 0.005f, 0.1f, "%.3f");
-                ui::hint("Everything in this panel down to the volumetric fog is\n"
-                         "part of a weather preset. Weather & audio is where a\n"
-                         "sky gets a name and is kept.");
+            lookui::drawGradePanel(showColorGrade, postLook);
 
-                // --- Volumetric fog: the world-wide volume ----------------
-                // Folded away by default, and deliberately sitting right under
-                // the two sliders it is not: those are the height haze, which is
-                // everywhere and has no shape.
-                //
-                // This one box is the WORLD's air. Mist that belongs somewhere in
-                // particular is not authored here at all -- it is a Volumetric Fog
-                // component on an entity, so it can be placed, scaled and rotated
-                // like anything else in the scene, and there can be many. Both end
-                // up in the same march; the hint says so, because a panel that
-                // does not mention the other way is a panel that hides it.
-                if (ui::header("Volumetric fog (world)")) {
-                    ImGui::Checkbox("Enabled##volfog", &volFogSet.enabled);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Show volume", &volFogSet.showVolume);
-                    ui::hint("The haze above does distance. This does shape:\n"
-                             "banks that drift, holes that pass, sun shafts.\n"
-                             "For mist in ONE place, add a Volumetric Fog\n"
-                             "component to an Empty and scale it instead.");
-
-                    ui::sectionText("Volume");
-                    ImGui::DragFloat3("Centre", &volFogSet.center.x, 0.5f,
-                                      -20000.0f, 20000.0f, "%.0f m");
-                    ImGui::DragFloat3("Size", &volFogSet.size.x, 0.5f,
-                                      1.0f, 20000.0f, "%.0f m");
-                    // Placing a volume you cannot grab is the awkward part, so
-                    // the two placements anyone actually wants are buttons: put
-                    // it where I am standing, and sit it on the ground under it.
-                    if (ImGui::Button("Centre on camera"))
-                        volFogSet.center = camera.position();
-                    ImGui::SameLine();
-                    if (ImGui::Button("Sit on ground"))
-                        volFogSet.center.y =
-                            streamer.heightAt(volFogSet.center.x, volFogSet.center.z) +
-                            volFogSet.size.y * 0.5f;
-                    ImGui::Checkbox("Follow camera (X/Z)", &volFogSet.followCamera);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Ground mist over a whole track without a\n"
-                                          "box big enough to cover it: the same steps\n"
-                                          "spread over kilometres lose all structure.");
-                    ImGui::SliderFloat("Edge fade", &volFogSet.medium.edge, 0.02f, 1.0f);
-                    ImGui::SliderFloat("Height falloff##volfog",
-                                       &volFogSet.medium.heightFalloff, 0.0f, 3.0f);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much harder it is for fog to exist near\n"
-                                          "the top of the box. Carves the lid out of the\n"
-                                          "noise, so the layer has a ragged top rather\n"
-                                          "than a smooth fade.");
-
-                    ui::sectionText("Medium");
-                    ImGui::SliderFloat("Thickness", &volFogSet.medium.density, 0.0f, 0.5f,
-                                       "%.3f /m");
-                    ImGui::ColorEdit3("Tint##volfog", &volFogSet.medium.color.x);
-                    ImGui::SliderFloat("Coverage##volfog", &volFogSet.medium.coverage,
-                                       0.0f, 0.95f);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much of the volume has fog in it at all.\n"
-                                          "Low = a solid body, high = separate banks\n"
-                                          "with clear air between them.");
-
-                    ui::sectionText("Noise");
-                    ImGui::SliderFloat("Scale##volfog", &volFogSet.medium.noiseScale,
-                                       0.001f, 0.06f, "%.4f");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Smaller = bigger banks.");
-                    ImGui::SliderFloat("Vertical detail",
-                                       &volFogSet.medium.verticalDetail, 0.25f, 8.0f,
-                                       "%.2fx");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much finer the field is going up than\n"
-                                          "sideways. At 1 a shallow layer sits inside a\n"
-                                          "single feature and the fog looks like a flat\n"
-                                          "pattern pulled upward.");
-                    ImGui::SliderFloat("Detail", &volFogSet.medium.detail, 0.0f, 0.95f);
-                    ImGui::SliderFloat("Swirl", &volFogSet.medium.warp, 0.0f, 1.5f);
-                    ImGui::DragFloat3("Wind##volfog", &volFogSet.medium.wind.x, 0.05f,
-                                      -30.0f, 30.0f, "%.2f m/s");
-
-                    ui::sectionText("Light");
-                    ImGui::SliderFloat("Forward scatter", &volFogSet.medium.anisotropy,
-                                       -0.9f, 0.9f);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much light keeps going the way it came.\n"
-                                          "High values put the glow around the sun.");
-                    ImGui::SliderFloat("Sun##volfog", &volFogSet.medium.sunIntensity, 0.0f, 4.0f);
-                    ImGui::SliderFloat("Ambient##volfog", &volFogSet.medium.ambientIntensity,
-                                       0.0f, 4.0f);
-                    ImGui::Checkbox("Sun shafts", &volFogSet.medium.shafts);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Self-shadow", &volFogSet.medium.selfShadow);
-
-                    ui::sectionText("Cost");
-                    ImGui::SliderInt("Steps", &volFogSet.medium.steps, 8, 128);
-                    ImGui::SliderInt("Resolution", &volFogSet.resScale, 1, 4,
-                                     "1/%d of the pane");
-                    ui::hint("Steps buy structure along the ray, resolution buys it\n"
-                             "across the screen. Fog is soft, so 1/2 is free money.\n"
-                             "Resolution is the whole PASS -- every placed volume\n"
-                             "is marched into the same buffer.");
-                }
-                ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
-                {
-                    const char* curves[] = {"ACES (classic)", "AgX", "Neutral"};
-                    ImGui::Combo("Tonemap", &tonemapCurve, curves, IM_ARRAYSIZE(curves));
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("ACES: punchy, but bright colours slide in hue\n"
-                                          "(blue sky to cyan) and clip early.\n"
-                                          "AgX: highlights fade to white along their own\n"
-                                          "hue, three more stops before a cloud clips.\n"
-                                          "Neutral: base colours exactly as authored.");
-                    ImGui::Checkbox("Auto exposure", &autoExposure);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Corrects the exposure above for how bright the\n"
-                                          "frame is -- up in a tunnel or at dusk, down when\n"
-                                          "it is all sky -- within the range below. A\n"
-                                          "sunlit daytime frame stays as you set it.");
-                    if (autoExposure) {
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("%+.1f EV", std::log2(post.autoExposureScale()));
-                        ImGui::SliderFloat("Darken at most", &autoMinEv, -4.0f, 0.0f, "%.1f EV");
-                        ImGui::SliderFloat("Brighten at most", &autoMaxEv, 0.0f, 6.0f, "%.1f EV");
-                        ImGui::SliderFloat("Adaptation", &adaptSpeed, 0.2f, 8.0f, "%.1f /s");
-                    }
-                }
-                ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
-                ImGui::SliderFloat("Bloom threshold", &bloomThreshold, 0.2f, 4.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Luminance where the glow starts. Lower it to make\n"
-                                      "emissive materials bloom sooner; the knee below\n"
-                                      "keeps the onset soft instead of popping.");
-                ImGui::SliderFloat("Bloom knee", &bloomKnee, 0.0f, 1.5f, "%.2f");
-                ImGui::SliderFloat("Sun rays",   &rayIntensity, 0.0f, 1.5f);
-                ImGui::SliderFloat("SSAO",       &ssaoStrength, 0.0f, 1.0f);
-                ImGui::SliderFloat("SSAO radius",&ssaoRadius, 0.2f, 4.0f);
-                ImGui::SliderFloat("SSAO angle bias", &ssaoBias, 0.0f, 0.6f, "%.2f rad");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Horizons below this elevation don't occlude.\n"
-                                      "Raise it if flat surfaces look dirty, lower it\n"
-                                      "for more contact shading in creases.");
-                ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
-                ImGui::Checkbox("Contact shadows", &contactShadows);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Short rays towards the sun for the small shadows\n"
-                                      "the cascades are too coarse to cast -- a wheel\n"
-                                      "on the road, a stone on the ground. Near the\n"
-                                      "camera only.");
-                // Reflection probe: the cubemap a wet road (and any reflective
-                // material) mirrors. Applied on pick rather than per frame --
-                // changing it reallocates both cubes.
-                {
-                    ui::sectionText("Reflections");
-                    ImGui::Checkbox("Screen-space reflections", &ssrEnabled);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Smooth surfaces -- wet roads, puddles, paint,\n"
-                                          "glass -- reflect what is actually beside them,\n"
-                                          "traced through the last frame. The probe fills\n"
-                                          "in whatever is off screen.");
-                    const int sizes[] = {128, 256, 512, 1024};
-                    char cur[16];
-                    std::snprintf(cur, sizeof(cur), "%d", envProbeRes);
-                    if (ImGui::BeginCombo("Probe resolution", cur)) {
-                        for (int s : sizes) {
-                            char lbl[16];
-                            std::snprintf(lbl, sizeof(lbl), "%d", s);
-                            if (ImGui::Selectable(lbl, s == envProbeRes)) {
-                                envProbeRes = s;
-                                renderer.setEnvProbeResolution(s);
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Cube-face size of the environment probe: how\n"
-                                          "sharp reflections are on a wet road or a\n"
-                                          "reflective material. Six scene passes either\n"
-                                          "way -- raising it costs fill, not draw calls --\n"
-                                          "but 1024 is 64x the pixels of 128.");
-                    // How fresh that cube is kept. This is a LATENCY control,
-                    // not a quality one: the probe is filled one face at a
-                    // time, so a cube filled at one face per frame is six to
-                    // twelve frames old when it is sampled -- twenty metres of
-                    // it at racing speed, which reads as the reflection
-                    // dragging behind the car. The rate is only spent when the
-                    // viewpoint actually moves, so raising this costs nothing
-                    // in a parked editor.
-                    const char* faceLbl[] = {"1 face (cheapest)", "2 faces",
-                                             "3 faces", "4 faces", "5 faces",
-                                             "6 faces (no lag)"};
-                    const int fi = glm::clamp(envProbeFaces, 1, 6) - 1;
-                    if (ImGui::BeginCombo("Probe refresh", faceLbl[fi])) {
-                        for (int k = 0; k < 6; ++k)
-                            if (ImGui::Selectable(faceLbl[k], k == fi)) {
-                                envProbeFaces = k + 1;
-                                renderer.setEnvProbeMaxFaces(envProbeFaces);
-                            }
-                        ImGui::EndCombo();
-                    }
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Cube faces the probe may refresh per frame,\n"
-                                          "at most. The actual rate follows how fast the\n"
-                                          "camera moves, so a still scene pays one face\n"
-                                          "whatever this says. Raise it if reflections\n"
-                                          "lag behind at speed; lower it if the probe\n"
-                                          "costs too much (it is six scene passes).");
-                }
-                ui::sectionText("Depth of field");
-                ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
-                ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
-                ImGui::SliderFloat("Focus far",  &dofFar, 20.0f, 400.0f, "%.0f m");
-                ui::sectionText("Motion blur");
-                ImGui::SliderFloat("Speed blur", &motionBlurStrength, 0.0f, 2.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Radial speed streak while driving/flying: the\n"
-                                      "world smears outward past the craft, growing\n"
-                                      "with speed. 0 = off. (No effect on the free camera.)");
-                ui::sectionText("Anti-aliasing");
-                ImGui::Checkbox("TAA", &taaEnabled);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Temporal anti-aliasing: every pixel gathered over\n"
-                                      "several frames. Grass, fences and far edges stop\n"
-                                      "crawling. Replaces FXAA while on; split screen\n"
-                                      "falls back to FXAA.");
-                if (taaEnabled)
-                    ImGui::SliderFloat("Sharpen", &taaSharpen, 0.0f, 1.0f, "%.2f");
-                ImGui::BeginDisabled(taaEnabled);
-                ImGui::Checkbox("FXAA", &fxaaEnabled);
-                ImGui::EndDisabled();
-                ui::sectionText("Split screen");
-                ImGui::Checkbox("Two panes", &splitScreen);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Draw the world twice, side by side, one pane\n"
-                                      "per player. The whole frame costs roughly\n"
-                                      "double -- watch the profiler before counting\n"
-                                      "on it.");
-            }
-            ImGui::End(); }
-
-            if (showColorGrade) { if (ImGui::Begin("Colour grade", &showColorGrade)) {
-                ImGui::SliderFloat("Hue",        &hueShift, -180.0f, 180.0f, "%.0f");
-                ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f);
-                ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
-                ImGui::SliderFloat("Warmth",     &warmth, -0.5f, 0.5f);
-                ImGui::SliderFloat("Split tone", &gradeSplit, 0.0f, 1.5f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Cool shadows, warm highlights.");
-                ImGui::SliderFloat("Vibrance",   &gradeVibrance, -0.5f, 1.0f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("More colour where there is little;\n"
-                                      "already vivid colours stay as they are.");
-                ImGui::SliderFloat("Contrast",   &contrast, 0.0f, 0.6f);
-                ImGui::SliderFloat("Vignette",   &vignette, 0.0f, 1.0f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Light falling off towards the corners, as through\n"
-                                      "a real lens. Frames the picture; 0 = off.");
-                ImGui::SliderFloat("Film grain", &filmGrain, 0.0f, 0.1f, "%.3f");
-            }
-            ImGui::End(); }
-
-            if (showWater) { if (ImGui::Begin("Water", &showWater)) {
-                ImGui::SliderFloat("Level",       &waterLevel, -15.0f, 15.0f);
-                ImGui::SliderFloat("Swell height",&waveHeight, 0.0f, 2.5f);
-                ImGui::SliderFloat("Choppiness",  &waveChoppy, 0.0f, 1.0f);
-                ImGui::SliderFloat("Ripples",     &waveStrength, 0.0f, 0.05f, "%.3f");
-                ImGui::SliderFloat("Ripple size", &waveScale, 0.01f, 0.2f, "%.3f");
-                ImGui::SliderFloat("Shore foam",  &foamWidth, 0.0f, 8.0f);
-                ImGui::SliderFloat("Reflectivity",&waterReflectivity, 0.0f, 1.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Max mirror strength. Lower = less glassy,\n"
-                                      "more of the water body shows through.");
-                ImGui::SliderFloat("Clarity",     &waterClarity, 0.2f, 3.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How clear the water is. Higher = see the bed\n"
-                                      "deeper; lower = murkier, tints sooner.");
-                ImGui::SliderFloat("IOR",         &waterIor, 1.0f, 2.0f, "%.3f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Index of refraction. Water = 1.33 (~2%% edge-on\n"
-                                      "reflection); higher = more reflective + more bend.");
-                ImGui::ColorEdit3("Tint",         &waterColor.x);
-            }
-            ImGui::End(); }
+            lookui::drawWaterPanel({showWater, waterLevel, waveHeight, waveChoppy, waveStrength,
+                                    waveScale, foamWidth, waterReflectivity, waterClarity,
+                                    waterIor, waterColor});
 
             // Serve finished texture thumbnails to every panel drawn this frame
             // (materials, terrain, assets) from the shared cache.
@@ -12477,21 +9823,26 @@ int main(int argc, char** argv) {
             // road, since regenerating the ground moved all of them.
             if (roadsDirty) { roads.markNeedsBuild(); roadsDirty = false; }
 
-            sculptui::drawPanel({
-                showSculpt, sculptMode,
-                grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, paintMode,
-                scatterMode,
-                sculpt,
-                sculptWork, streamer, veg.grassDirty, publishSculpt,
-            });
-
-            paintui::drawPanel({
-                showPaint, paintMode,
-                grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, sculptMode,
-                scatterMode,
-                look, paintLayer, paintRadius, paintStrength, paintErase,
-                paintWork, streamer, publishPaint,
-            });
+            // Each tool panel shows its own on/off; switching one on takes the
+            // viewport's left button from whichever tool had it (ViewTool.hpp).
+            {
+                bool on = viewTool == ViewTool::Sculpt;
+                sculptui::drawPanel({
+                    showSculpt, on,
+                    sculpt,
+                    sculptWork, streamer, veg.grassDirty, publishSculpt,
+                });
+                takeTool(viewTool, ViewTool::Sculpt, on);
+            }
+            {
+                bool on = viewTool == ViewTool::Paint;
+                paintui::drawPanel({
+                    showPaint, on,
+                    look, paintLayer, paintRadius, paintStrength, paintErase,
+                    paintWork, streamer, publishPaint,
+                });
+                takeTool(viewTool, ViewTool::Paint, on);
+            }
 
             {
                 // Children of the "Scattered" group, for the panel's counter.
@@ -12500,14 +9851,14 @@ int main(int argc, char** argv) {
                 if (sg >= 0)
                     for (const Entity& e : entities)
                         if (e.parent == sg) ++scatteredCount;
+                bool on = viewTool == ViewTool::Scatter;
                 scatterui::drawPanel({
-                    showScatter, scatterMode,
-                    grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode,
-                    sculptMode, paintMode,
+                    showScatter, on,
                     brushErase, scatterCfg, models, scatteredCount,
                     roads.active().roadPts.size() >= 2,
                     scatterRoadside, scatterClearAll,
                 });
+                takeTool(viewTool, ViewTool::Scatter, on);
             }
 
             if (showBuildings) {
@@ -12538,94 +9889,21 @@ int main(int argc, char** argv) {
                 });
             }
 
-            if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
-                ui::sectionText("Grass");
-                ImGui::Checkbox("Grass", &veg.grassEnabled);
-                bool regrow = false;
-                regrow |= ImGui::SliderFloat("Density", &veg.grassDensity, 0.1f, 3.0f);
-                regrow |= ImGui::SliderFloat("Grass range", &veg.grassRadius, 20.0f, 90.0f);
-                regrow |= ImGui::SliderFloat("Blade height", &veg.grassHeight, 0.2f, 1.2f);
-                regrow |= ImGui::SliderFloat("Chaos", &veg.grassChaos, 0.0f, 2.0f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Irregularity of height, density and gaps\n"
-                                      "0 = even lawn, 1 = wild meadow");
-                if (regrow) veg.grassDirty = true; // baked per blade -> regrow
-                ImGui::ColorEdit3("Tint", &veg.grassTint.x);
-                ImGui::Text("Blades: %d", veg.grassCount);
-
-                ui::sectionText("Paint grass (3D brush)");
-                if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
-                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = scatterMode = false; // brush owns the left button
-                if (grassPaintMode) {
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                        "Drag = paint | hold Alt = erase");
-                } else {
-                    ImGui::TextDisabled("Enable to paint blades onto the terrain");
-                }
-                ImGui::Checkbox("Erase", &brushErase);
-                ImGui::SliderFloat("Brush size", &brushRadius, 0.5f, 40.0f, "%.1f m");
-                ImGui::SliderFloat("Brush density", &brushDensity, 0.1f, 4.0f);
-                ImGui::Text("Painted blades: %d",
-                            static_cast<int>(veg.paintedBlades.size() / 7));
-                if (ImGui::Button("Clear painted")) {
-                    veg.paintedBlades.clear();
-                    veg.paintedDirty = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Save##grass")) {
-                    std::ofstream f("grass.txt");
-                    for (std::size_t i = 0; i < veg.paintedBlades.size(); ++i)
-                        f << veg.paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Load##grass")) {
-                    std::ifstream f("grass.txt");
-                    if (f) {
-                        veg.paintedBlades.clear();
-                        float v;
-                        while (f >> v) veg.paintedBlades.push_back(v);
-                        veg.paintedBlades.resize(veg.paintedBlades.size() / 7 * 7); // whole blades
-                        veg.paintedDirty = true;
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(grass.txt)");
-
-                veg.panelTrees(treePaintMode, brushErase, [&]{
-                    grassPaintMode = roadEditMode = sculptMode =
-                        flowerPaintMode = paintMode = scatterMode = false; // own the LMB
-                });
-
-                ui::sectionText("Flowers");
-                ImGui::Checkbox("Flowers", &veg.flowerEnabled);
-                if (ImGui::SliderFloat("Flower density", &veg.flowerDensity, 0.0f, 2.0f))
-                    veg.grassDirty = true; // flowers regenerate with the grass pass
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Regrow")) veg.grassDirty = true;
-                ImGui::Text("Flowers: %d", veg.flowerCount);
-
-                ui::sectionText("Paint flowers (3D brush)");
-                if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = paintMode = scatterMode = false;
-                if (flowerPaintMode)
-                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f),
-                        "Drag = plant | hold Alt = erase");
-                else
-                    ImGui::TextDisabled("Enable to plant flowers onto the terrain");
-                ImGui::Checkbox("Erase##flower", &brushErase);
-                ImGui::SliderFloat("Brush size##flower", &veg.flowerBrushRadius, 1.0f, 30.0f, "%.1f m");
-                ImGui::SliderFloat("Density##flower", &veg.flowerBrushDensity, 0.1f, 4.0f);
-                ImGui::Text("Painted flowers: %d",
-                            static_cast<int>(veg.paintedFlowers.size() / 8));
-                ImGui::BeginDisabled(veg.paintedFlowers.empty());
-                if (ImGui::Button("Clear painted##flower")) {
-                    veg.clearPaintedFlowers();
-                }
-                ImGui::EndDisabled();
-
-                veg.panelBirdsFireflies();
+            // The Vegetation window (VegetationSystem.cpp). Its three brushes'
+            // switches come back here; only the one clicked is written back, so a
+            // brush still showing "on" this frame cannot take the button back
+            // from the one just switched on.
+            if (showVegetation) {
+                const bool grass0 = viewTool == ViewTool::Grass;
+                const bool trees0 = viewTool == ViewTool::Trees;
+                const bool flow0  = viewTool == ViewTool::Flowers;
+                bool grass = grass0, trees = trees0, flowers = flow0;
+                veg.panel(showVegetation,
+                          {grass, trees, flowers, brushErase, brushRadius, brushDensity});
+                if (grass != grass0)   takeTool(viewTool, ViewTool::Grass, grass);
+                if (trees != trees0)   takeTool(viewTool, ViewTool::Trees, trees);
+                if (flowers != flow0)  takeTool(viewTool, ViewTool::Flowers, flowers);
             }
-            ImGui::End(); }
 
             if (showCamPath) { if (ImGui::Begin("Camera path", &showCamPath)) {
                 camPathRec.panel(camera);
@@ -12652,10 +9930,8 @@ int main(int argc, char** argv) {
 
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
-            roadui::drawPanel({showRoads, roads, roadEditMode, roadSel, roadSel2, assetDb,
-                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = splineEditMode =
-                         riverEditMode = false; }, // don't fight over LMB
+            bool roadOn = viewTool == ViewTool::Road;
+            roadui::drawPanel({showRoads, roads, roadOn, roadSel, roadSel2, assetDb,
                 buildRoad, deleteRoadPoint,
                 addRoad, deleteRoad, selectRoad,
                 roadPrefabCfg,
@@ -12665,15 +9941,14 @@ int main(int argc, char** argv) {
                          : prefab::list(d); },
                 placeRoadPrefabs,
                 beginRoadEdit, commitRoadEdit});
+            takeTool(viewTool, ViewTool::Road, roadOn);
 
             // Fences, walls and railway track: the paths live in SplineSystem
             // (saved + undoable on their own timeline), the panel only edits them.
             // See SplinePanel.cpp.
-            splineui::drawPanel({showSplines, splines, splineEditMode, splineSel,
+            bool splineOn = viewTool == ViewTool::Spline;
+            splineui::drawPanel({showSplines, splines, splineOn, splineSel,
                 splinePtSel, materials,
-                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = roadEditMode =
-                         riverEditMode = false; },
                 [&](fitzel::AssetId id) {
                     // Jump to the material the author just pointed an element at,
                     // so giving it a texture is one click from the picker.
@@ -12689,16 +9964,16 @@ int main(int argc, char** argv) {
                          ? std::vector<std::pair<std::string, std::string>>()
                          : prefab::list(d); },
                 placeAlongSpline});
+            takeTool(viewTool, ViewTool::Spline, splineOn);
 
             // Brooks, rivers and canals: the courses live in RiverSystem (saved +
             // undoable on their own timeline), the panel only edits them. See
             // RiverPanel.cpp.
-            riverui::drawPanel({showRivers, rivers, riverEditMode, riverSel,
+            bool riverOn = viewTool == ViewTool::River;
+            riverui::drawPanel({showRivers, rivers, riverOn, riverSel,
                 riverPtSel,
-                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = roadEditMode =
-                         splineEditMode = false; },
                 beginRiverEdit, commitRiverEdit});
+            takeTool(viewTool, ViewTool::River, riverOn);
 
             // Roadside city: the biome rules live on the road (saved + undoable
             // with it), the panel only edits them. See CityPanel.cpp.
@@ -12711,7 +9986,7 @@ int main(int argc, char** argv) {
 
             // Whole towns: the rules live in CitySystem, the streets in `roads`;
             // the panel edits both through one undo step each. See CityPlanPanel.cpp.
-            citygenui::drawPanel({showTowns, towns, roads, townSel, cursor3D,
+            citygenui::drawPanel({showTowns, towns, roads, townSel, cursor.pos,
                                   townUndoBefore, townEditing,
                                   [&](std::unique_ptr<Command> c) {
                                       history.pushApplied(std::move(c));
@@ -12757,66 +10032,17 @@ int main(int argc, char** argv) {
             // material in it. The viewport half of it -- what the pointer is
             // over, the wireframe, the preview and the flash -- is drawn up in
             // the Scene window (modeltools::drawOverlay).
-            if (showModeling) {
-                MeshComponent* mc = selectedMesh();
-                const bool haveSel = cursorHaveSel();
-                // A face index belongs to one object's mesh and to one version of
-                // it: drop it when the selection moves, or when an undo left the
-                // mesh with fewer faces than the index. validate() does the same
-                // for the picked corners and edges.
-                const int selId = haveSel ? entities[sel.index()].id : -1;
-                if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
-                if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
-                    meshFaceSel = -1;
-                modeltools::validate(modelSel, selId, mc ? &mc->mesh : nullptr, &meshFaceSel);
-                ImGui::BeginDisabled(modelkeys::busy());
-                modelui::drawPanel({
-                    showModeling, mc, meshFaceSel, modelSel, materials, haveSel,
-                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
-                    mc ? meshModelOf(entities[sel.index()], *mc) : glm::mat4(1.0f),
-                    ImVec2(viewportRectMin.x, viewportRectMin.y),
-                    ImVec2(viewportRectMin.x + viewportRectSize.x,
-                           viewportRectMin.y + viewportRectSize.y),
-                    [&]{ convertToMesh(); }, applyMeshEdit,
-                    // "Edit" on a face's material: the surface itself is a
-                    // material, and the place to change one is the Materials
-                    // panel. Reads only, so it is safe from inside the panel.
-                    [&](AssetId id) {
-                        if (!id.valid()) return;
-                        matSel        = document.materialIndex(id);
-                        showMaterials = true;
-                    },
-                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
-                    mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
-                    cursor3D, &splines,
-                });
-                ImGui::EndDisabled();
-            }
+            modelmode::modelingPanel(
+                editorCtx, modelSess,
+                {showModeling, showMaterials, ImVec2(viewportRectMin.x, viewportRectMin.y),
+                 ImVec2(viewportRectMin.x + viewportRectSize.x,
+                        viewportRectMin.y + viewportRectSize.y),
+                 cursor.pos, &splines});
 
             // Where the selected face's texture sits. Shares the Modeling
             // panel's face selection and its one-undo-step edit callback: this
             // is the same mesh being shaped, looked at from the texture's side.
-            if (showUv) {
-                MeshComponent* mc = selectedMesh();
-                const bool haveSel = cursorHaveSel();
-                const int  selId   = haveSel ? entities[sel.index()].id : -1;
-                if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
-                if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
-                    meshFaceSel = -1;
-                // The material the OBJECT wears: the panel draws the texture the
-                // face is actually seen through, and a face wearing none of its
-                // own is seen through this one.
-                AssetId objMat;
-                if (haveSel)
-                    if (const auto* mcp = entities[sel.index()].components.get<MaterialComponent>())
-                        objMat = mcp->material;
-                uvui::drawPanel({
-                    showUv, mc, meshFaceSel, materials, objMat, haveSel,
-                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
-                    [&]{ convertToMesh(); }, applyMeshEdit,
-                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
-                });
-            }
+            modelmode::uvPanel(editorCtx, showUv);
 
             // The modular synth: building a patch and hearing it. Everything it
             // needs is its own (see SynthPanel.hpp); it takes the engine to play
@@ -12824,124 +10050,16 @@ int main(int argc, char** argv) {
             if (showSynth) synthPanel.draw(showSynth, audio, currentProject);
 
             if (showMeshPaint) {
-                MeshComponent* mc  = selectedMesh();
-                const bool haveSel = cursorHaveSel();
-                int painted = 0;
-                if (mc)
-                    for (const glm::vec4& w : mc->mesh.paint)
-                        if (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f || w.w > 0.0f) ++painted;
-                meshPaintSlot = glm::clamp(meshPaintSlot, 0, 3);
-                // The panel does not touch the document: it says what it wants
-                // and the host does it below, once the panel has stopped reading
-                // from the component. An undo push assigns the entity's snapshot
-                // over it and replaces its components, so a panel that edited in
-                // place would spend the rest of its frame drawing from freed
-                // memory -- which is exactly what it used to do.
-                meshpaintui::SlotEdit slotEdit;
-                bool                  wantClearPaint = false;
-                meshpaintui::drawPanel({
-                    showMeshPaint, meshPaintMode,
-                    paintMode, grassPaintMode, roadEditMode, treePaintMode,
-                    flowerPaintMode, sculptMode, scatterMode,
-                    materials, meshPaintSlot, meshPaintRadius, meshPaintStrength,
-                    meshPaintDetail, meshPaintErase,
-                    mc, haveSel,
-                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
-                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0, painted,
-                    slotEdit,
-                    [&]{ convertToMesh(); },
-                    [&]{ wantClearPaint = true; },
-                    // "Edit" on a slot: the texture itself is a material, and the
-                    // place to change a material is the Materials panel. Reads
-                    // only, so it is safe from inside the panel.
-                    [&](int k) {
-                        MeshComponent* m = selectedMesh();
-                        if (!m || k < 0 || k >= static_cast<int>(m->paintSlots.size()))
-                            return;
-                        const AssetId id = m->paintSlots[k].material;
-                        if (!id.valid()) return;
-                        matSel        = document.materialIndex(id);
-                        showMaterials = true;
-                    },
-                });
-
-                // What the panel asked for, applied as one undo step each. Filling
-                // a slot needs no touch(): the geometry did not move, only what its
-                // weights are drawn with.
-                if (MeshComponent* m = selectedMesh()) {
-                    Entity&      e      = entities[sel.index()];
-                    const Entity before = e;
-                    bool         did    = false;
-                    if (slotEdit.slot >= 0 &&
-                        slotEdit.slot < static_cast<int>(m->paintSlots.size())) {
-                        MeshPaintSlot& sl = m->paintSlots[slotEdit.slot];
-                        if (slotEdit.setMaterial) { sl.material = slotEdit.material; did = true; }
-                        if (slotEdit.setScale)    { sl.scale    = slotEdit.scale;    did = true; }
-                    }
-                    if (wantClearPaint && meshpaint::clear(m->mesh)) { m->touch(); did = true; }
-                    if (did) {
-                        auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
-                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                    }
-                }
+                bool on = viewTool == ViewTool::MeshPaint;
+                meshpaintui::panel(editorCtx, meshBrush,
+                                   {showMeshPaint, on, showMaterials, [&] { convertToMesh(); }});
+                takeTool(viewTool, ViewTool::MeshPaint, on);
             }
 
-            if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
-                ImGui::Checkbox("Show cursor", &cursorVisible);
-                ui::hint(cursorVisible
-                             ? "New objects are placed on the cursor."
-                             : "Hidden: new objects are placed in view.");
-                ImGui::TextDisabled("Shift+Right-click in the viewport to place it.");
-                ImGui::DragFloat3("Position", &cursor3D.x, 0.05f, 0.0f, 0.0f, "%.2f");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Grid step", &cursorGrid, 0.05f, 0.01f, 100.0f, "%.2f m");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Rotate step", &snapAngle, 0.5f, 1.0f, 90.0f, "%.0f deg");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Scale step", &snapScale, 0.01f, 0.01f, 1.0f, "%.2f x");
-                ui::hint("Hold Ctrl while dragging the gizmo: a move lands on the\n"
-                         "grid, a turn and a scale go in these steps.");
-                ImGui::TextDisabled("Shift+S in the viewport opens the snap menu.");
-
-                // The drawn grid IS this step, on this cursor's plane -- so these
-                // controls belong next to it rather than in a panel of their own.
-                ui::sectionText("Grid");
-                ImGui::Checkbox("Show grid", &showGrid);
-                ImGui::BeginDisabled(!showGrid);
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Fade out", &gridFade, 2.0f, 20.0f, 1000.0f, "%.0f m");
-                ImGui::EndDisabled();
-                ui::hint("One cell = the grid step above, a heavier line every ten.\n"
-                         "It lies on the cursor's height, so moving the cursor up\n"
-                         "moves the plane you are building on with it. The fade is\n"
-                         "capped by the view distance -- it cannot reach past it.");
-
-                const bool haveSel = cursorHaveSel();
-
-                ui::sectionText("Snap cursor");
-                if (ImGui::Button("To world origin")) snapCursorToOrigin();
-                ImGui::SameLine();
-                if (ImGui::Button("To grid"))         snapCursorToGrid();
-                if (ImGui::Button("To terrain"))      snapCursorToTerrain();
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!haveSel);
-                if (ImGui::Button("To selection"))    snapCursorToSelection();
-                ImGui::EndDisabled();
-
-                ui::sectionText("Snap selection");
-                ImGui::BeginDisabled(!haveSel);
-                if (ImGui::Button("Selection to cursor")) snapSelectionToCursor();
-                ImGui::SameLine();
-                if (ImGui::Button("Selection to grid"))   snapSelectionToGrid();
-                ImGui::EndDisabled();
-
-                ui::sectionText("Create");
-                if (ImGui::Button("Add object at cursor"))
-                    addEntity(cursor3D, entityNewType);
-                ImGui::SameLine();
-                ImGui::TextDisabled("(base rests on the cursor)");
-            }
-            ImGui::End(); }
+            cursor3d::panel(editorCtx, cursor,
+                            {showCursor, showGrid, gridFade,
+                             [&](float x, float z) { return streamer.heightAt(x, z); },
+                             [&](const glm::vec3& at) { addEntity(at, entityNewType); }});
 
             // The scene tree: selection, inline rename, drag-to-reparent and the
             // create/duplicate/delete menu (see HierarchyPanel.cpp).
@@ -13008,361 +10126,33 @@ int main(int argc, char** argv) {
             // Import Unity asset: browse an asset folder, preview which textures
             // map by Unity naming convention, then import the FBX as a hierarchy
             // with those maps auto-assigned (the matching also runs on reload).
-            if (showUnityImport) {
-                ImGui::SetNextWindowSize(ImVec2(560.0f, 470.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Import Unity asset", &showUnityImport)) {
-                    if (unityDir.empty()) unityDir = modelDir;
-                    ImGui::TextWrapped(
-                        "Unity FBX files don't reference their textures directly, so a plain "
-                        "import leaves them unmapped. Point this at an asset's folder: maps "
-                        "kept in a Textures/ folder and named like the material or model "
-                        "(e.g. Rock_Albedo, Rock_Normal) are matched automatically.");
-                    ImGui::Separator();
-
-                    ImGui::TextWrapped("Folder: %s",
-                                       unityDir.empty() ? "(none)" : unityDir.c_str());
-                    if (ImGui::Button("Browse...")) {
-                        std::string picked;
-                        if (ed::pickFolder(picked, unityDir)) {
-                            unityDir = picked; unityFbx.clear(); unityFbxScanDir.clear();
-                        }
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Use models/ folder")) {
-                        unityDir = modelDir; unityFbx.clear(); unityFbxScanDir.clear();
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Rescan")) unityFbxScanDir.clear();
-
-                    // (Re)scan only when the folder changes -- a manual directory
-                    // stack so one unreadable or over-long subfolder can't abort the
-                    // whole listing (recursive_directory_iterator aborts on the first
-                    // error), and so we don't hit the disk every frame.
-                    if (unityDir != unityFbxScanDir) {
-                        unityFbxList.clear();
-                        unityFbxScanDir = unityDir;
-                        std::vector<std::filesystem::path> stack;
-                        if (!unityDir.empty()) stack.push_back(std::filesystem::path(unityDir));
-                        int scanned = 0;
-                        while (!stack.empty() && unityFbxList.size() < 2000 && scanned < 40000) {
-                            const std::filesystem::path dir = stack.back();
-                            stack.pop_back();
-                            std::error_code lec;
-                            std::filesystem::directory_iterator
-                                dit(dir, std::filesystem::directory_options::skip_permission_denied, lec),
-                                dend;
-                            for (; !lec && dit != dend; dit.increment(lec)) {
-                                ++scanned;
-                                std::error_code tec;
-                                if (dit->is_directory(tec)) { stack.push_back(dit->path()); continue; }
-                                std::string ext = dit->path().extension().string();
-                                for (char& c : ext) c = static_cast<char>(std::tolower(
-                                    static_cast<unsigned char>(c)));
-                                if (ext != ".fbx") continue;
-                                std::error_code rec;
-                                std::string rel = std::filesystem::relative(
-                                    dit->path(), unityDir, rec).generic_string();
-                                if (rel.empty()) rel = dit->path().filename().string();
-                                unityFbxList.push_back({ rel, dit->path().generic_string() });
-                            }
-                        }
-                        std::sort(unityFbxList.begin(), unityFbxList.end());
-                    }
-
-                    ImGui::Spacing();
-                    ImGui::Text("FBX files (%d):", static_cast<int>(unityFbxList.size()));
-                    ImGui::BeginChild("##fbxlist", ImVec2(0.0f, 130.0f), true);
-                    for (const auto& h : unityFbxList)
-                        if (ImGui::Selectable(h.first.c_str(), unityFbx == h.second))
-                            unityFbx = h.second;
-                    if (unityFbxList.empty())
-                        ImGui::TextDisabled("(no .fbx found under this folder)");
-                    ImGui::EndChild();
-
-                    // Recompute the texture-match preview when the selection changes.
-                    if (unityFbx != unityPreviewFor) {
-                        unityPreview = unityFbx.empty()
-                            ? std::vector<fitzel::UnityTexMatch>{}
-                            : fitzel::previewUnityTextures(unityFbx);
-                        unityNearby = unityFbx.empty()
-                            ? std::vector<std::string>{}
-                            : fitzel::nearbyTextureFiles(unityFbx);
-                        unityPreviewFor = unityFbx;
-                    }
-
-                    if (!unityFbx.empty()) {
-                        ImGui::Text("Materials & matched maps:");
-                        if (ImGui::BeginTable("##unitytex", 4,
-                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                ImGuiTableFlags_SizingStretchProp |
-                                ImGuiTableFlags_ScrollY,
-                                ImVec2(0.0f, 150.0f))) {
-                            ImGui::TableSetupColumn("Material");
-                            ImGui::TableSetupColumn("Albedo");
-                            ImGui::TableSetupColumn("Normal");
-                            ImGui::TableSetupColumn("Emission");
-                            ImGui::TableHeadersRow();
-                            const ImVec4 ok(0.55f, 0.85f, 0.55f, 1.0f);
-                            const ImVec4 no(0.6f, 0.6f, 0.6f, 1.0f);
-                            auto cell = [&](const std::string& p){
-                                if (p.empty()) ImGui::TextColored(no, "- none");
-                                else ImGui::TextColored(ok, "%s",
-                                    std::filesystem::path(p).filename().string().c_str());
-                            };
-                            for (const auto& m : unityPreview) {
-                                ImGui::TableNextRow();
-                                ImGui::TableSetColumnIndex(0);
-                                ImGui::TextUnformatted(m.material.c_str());
-                                ImGui::TableSetColumnIndex(1); cell(m.albedo);
-                                ImGui::TableSetColumnIndex(2); cell(m.normal);
-                                ImGui::TableSetColumnIndex(3); cell(m.emission);
-                            }
-                            ImGui::EndTable();
-                        }
-                        if (unityPreview.empty())
-                            ImGui::TextDisabled("(no materials found in this FBX)");
-
-                        // Diagnostic: the actual image files the matcher looked at.
-                        // If maps show "- none" above but files are listed here, the
-                        // naming is unusual -- tell me these names and I'll tune it.
-                        if (ImGui::TreeNode("Texture files found nearby "
-                                            "(diagnostic)")) {
-                            if (unityNearby.empty())
-                                ImGui::TextDisabled("(no image files found in the "
-                                                    "usual Textures/ folders)");
-                            for (const std::string& n : unityNearby)
-                                ImGui::BulletText("%s", n.c_str());
-                            ImGui::TreePop();
-                        }
-                    }
-
-                    ImGui::Separator();
-                    ImGui::BeginDisabled(unityFbx.empty());
-                    if (ImGui::Button("Import to scene", ImVec2(160.0f, 0.0f))) {
-                        std::error_code cec;
-                        std::string src = unityFbx;
-                        // A model imported from OUTSIDE the project's asset tree has
-                        // no persistent GUID, so it would vanish on reload and never
-                        // show in Assets. Copy it (plus the maps the matcher resolved)
-                        // into the project's models/ folder, register it, and import
-                        // the copy -- now it round-trips through save/load by GUID.
-                        if (!assetDb.idForPath(unityFbx).valid()) {
-                            const std::filesystem::path fp(unityFbx);
-                            std::string parent = fp.parent_path().filename().string();
-                            for (char& c : parent) c = static_cast<char>(std::tolower(
-                                static_cast<unsigned char>(c)));
-                            const bool inMeshDir = parent == "meshes" || parent == "models" ||
-                                                   parent == "mesh"   || parent == "fbx";
-                            const std::string pack = (inMeshDir
-                                ? fp.parent_path().parent_path().filename()
-                                : fp.parent_path().filename()).string();
-                            const std::string destPack = modelDir + "/" +
-                                (pack.empty() ? fp.stem().string() : pack);
-                            const std::string destMesh = destPack + "/Meshes";
-                            const std::string destTex  = destPack + "/Textures";
-                            std::filesystem::create_directories(destMesh, cec);
-                            std::filesystem::create_directories(destTex, cec);
-                            const std::string destFbx = destMesh + "/" + fp.filename().string();
-                            std::filesystem::copy_file(unityFbx, destFbx,
-                                std::filesystem::copy_options::overwrite_existing, cec);
-                            int nTex = 0;
-                            std::unordered_set<std::string> done;
-                            for (const auto& m : fitzel::previewUnityTextures(unityFbx))
-                                for (const std::string& t : {m.albedo, m.normal, m.emission})
-                                    if (!t.empty() && done.insert(t).second) {
-                                        std::error_code fc;
-                                        std::filesystem::copy_file(t, destTex + "/" +
-                                            std::filesystem::path(t).filename().string(),
-                                            std::filesystem::copy_options::skip_existing, fc);
-                                        if (!fc) ++nTex;
-                                    }
-                            assetDb.refresh(); // register the copied FBX + maps (GUIDs)
-                            src = destFbx;
-                            char buf[256];
-                            std::snprintf(buf, sizeof(buf),
-                                "Copied into project (%d map(s)); it now persists and "
-                                "appears in Assets.", nTex);
-                            unityStatus = buf;
-                        } else {
-                            unityStatus = "Imported (already in the project).";
-                        }
-                        addModelHierarchy(spawnPoint(8.0f), src, unityFlipV);
-                    }
-                    ImGui::EndDisabled();
-                    if (!unityStatus.empty()) ImGui::TextDisabled("%s", unityStatus.c_str());
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("One entity per part.");
-                    ImGui::Checkbox("Flip texture V", &unityFlipV);
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(?)");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("If the texture looks misplaced on an atlas, toggle "
-                                          "this and re-import.\nFBX/DAE usually need it on; some "
-                                          "packs need it off.");
-                    ImGui::TextDisabled("Tip: keep the asset inside your project so it "
-                                        "reloads with the scene.");
-                }
-                ImGui::End();
-            }
+            unityimportui::panel(unityImport,
+                                 {showUnityImport, modelDir, assetDb,
+                                  [&] { return spawnPoint(8.0f); },
+                                  [&](glm::vec3 at, const std::string& path, bool flipV) {
+                                      addModelHierarchy(at, path, flipV);
+                                  }});
 
             // Asset browser: every asset in the database, grouped by source
             // (Engine vs Project) and labelled by type. Drag a Model onto the
             // viewport to place it, or a Texture onto a material's Base texture
             // slot. Double-click a Model to drop it ahead of the camera.
             if (showAssets) {
-                if (ImGui::Begin("Assets", &showAssets)) {
-                    // Toolbar: preview size, name filter, texture-only toggle.
-                    ImGui::SetNextItemWidth(120.0f);
-                    ImGui::SliderFloat("Size", &assetThumbSize, 48.0f, 160.0f, "%.0f");
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(150.0f);
-                    ImGui::InputTextWithHint("##assetFilter", "filter...",
-                                             assetFilter, sizeof(assetFilter));
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Textures only", &assetTexturesOnly);
-                    ImGui::TextDisabled("Drag a tile onto a material slot / the "
-                                        "viewport; double-click a model to place it.");
-                    ImGui::TextDisabled("Drop files here from Explorer to copy them "
-                                        "into the project.");
-
-                    // Take an OS file drop that landed on this window. The hit test
-                    // uses the cursor position captured in the drop callback, not
-                    // the live one: the pointer may have moved on since, and a file
-                    // dropped on Assets belongs in Assets either way.
-                    if (!g_fileDrop.paths.empty()) {
-                        const ImVec2 wp = ImGui::GetWindowPos();
-                        const ImVec2 ws = ImGui::GetWindowSize();
-                        if (g_fileDrop.x >= wp.x && g_fileDrop.x < wp.x + ws.x &&
-                            g_fileDrop.y >= wp.y && g_fileDrop.y < wp.y + ws.y) {
-                            const std::string proj =
-                                currentProject.empty()
-                                    ? std::string()
-                                    : std::filesystem::path(currentProject)
-                                          .parent_path().generic_string();
-                            assetDropStatus =
-                                assetdrop::importInto(proj, g_fileDrop.paths, assetDb)
-                                    .message;
-                            g_fileDrop.paths.clear();
-                        }
-                    }
-                    if (!assetDropStatus.empty())
-                        ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "%s",
-                                           assetDropStatus.c_str());
-                    ImGui::Separator();
-
-                    // (Thumbnails finished off-thread are uploaded once per frame by
-                    // pumpThumbnails(), before the panels are drawn.)
-
-                    // Case-insensitive substring match for the filter box.
-                    std::string flt = assetFilter;
-                    std::transform(flt.begin(), flt.end(), flt.begin(),
-                        [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                    auto matches = [&](const std::string& s){
-                        if (flt.empty()) return true;
-                        std::string l = s;
-                        std::transform(l.begin(), l.end(), l.begin(),
-                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                        return l.find(flt) != std::string::npos;
-                    };
-
-                    const float pad  = ImGui::GetStyle().ItemSpacing.x;
-                    const auto& srcs = assetDb.sources();
-                    for (int si = 0; si < static_cast<int>(srcs.size()); ++si) {
-                        const char* kind = srcs[si].kind == AssetSourceKind::Engine
-                                               ? "Engine" : "Project";
-                        const std::string hdr =
-                            srcs[si].name + " (" + kind + ")###src" + std::to_string(si);
-                        if (!ui::header(hdr.c_str(),
-                                                     ImGuiTreeNodeFlags_DefaultOpen))
-                            continue;
-                        ImGui::PushID(si);
-                        const float avail = ImGui::GetContentRegionAvail().x;
-                        const int   cols  = std::max(1,
-                            static_cast<int>(avail / (assetThumbSize + pad)));
-                        int shown = 0, col = 0;
-                        for (AssetId id : assetDb.allAssets()) {
-                            const AssetDatabase::Entry* e = assetDb.entry(id);
-                            if (!e || e->sourceIndex != si) continue;
-                            const bool isTex = (e->type == AssetType::Texture);
-                            if (assetTexturesOnly && !isTex) continue;
-                            if (!matches(e->relPath)) continue;
-                            ++shown;
-                            if (col != 0) ImGui::SameLine();
-
-                            ImGui::PushID(id.toString().c_str());
-                            ImGui::BeginGroup();
-
-                            // Resolve a small preview thumbnail via the shared cache.
-                            // Only request a decode when the tile is actually on
-                            // screen, so scrolling a big browser doesn't queue every
-                            // texture at once.
-                            unsigned tid = 0;
-                            if (isTex) {
-                                auto it = assetThumbs.find(id);
-                                if (it != assetThumbs.end())
-                                    tid = it->second ? it->second->id() : 0;
-                                else if (ImGui::IsRectVisible(
-                                             ImVec2(assetThumbSize, assetThumbSize)))
-                                    tid = thumbFor(id);
-                            }
-
-                            const ImVec2 sz(assetThumbSize, assetThumbSize);
-                            if (tid) {
-                                ImGui::ImageButton("##thumb",
-                                    (ImTextureID)(intptr_t)tid, sz);
-                            } else {
-                                const char* tag = isTex ? "TEX"
-                                    : e->type == AssetType::Model ? "MDL"
-                                    : e->type == AssetType::Sound ? "SND"
-                                    : e->type == AssetType::Video ? "VID" : "?";
-                                ImGui::Button(tag, sz);
-                            }
-
-                            // Drag source (same GUID payload the drop targets expect).
-                            if (ImGui::BeginDragDropSource(
-                                    ImGuiDragDropFlags_SourceAllowNullID)) {
-                                const std::string g = id.toString();
-                                ImGui::SetDragDropPayload("ASSET_GUID", g.data(), 32);
-                                ImGui::Text("%s  %s", assetTypeName(e->type),
-                                            e->relPath.c_str());
-                                ImGui::EndDragDropSource();
-                            }
-                            if (ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s\n%s", assetTypeName(e->type),
-                                                  e->relPath.c_str());
-                            if (e->type == AssetType::Model &&
-                                ImGui::IsItemHovered() &&
-                                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                                const std::string mp = e->absPath.string();
-                                const glm::vec3 g = spawnPoint(8.0f);
-                                if (isStructuredModel(mp)) addModelHierarchy(g, mp);
-                                else {
-                                    const int id2 = models.import(mp, assetDb, materials);
-                                    if (id2 >= 0) addModelEntity(g, id2);
-                                }
-                            }
-
-                            // Caption: file name, clipped to the tile width.
-                            std::string stem =
-                                std::filesystem::path(e->relPath).filename().string();
-                            const int maxCh = std::max(4,
-                                static_cast<int>(assetThumbSize / 7.0f));
-                            if (static_cast<int>(stem.size()) > maxCh)
-                                stem = stem.substr(0, maxCh - 1) + "\xE2\x80\xA6"; // ellipsis
-                            ImGui::PushTextWrapPos(
-                                ImGui::GetCursorPosX() + assetThumbSize);
-                            ImGui::TextUnformatted(stem.c_str());
-                            ImGui::PopTextWrapPos();
-
-                            ImGui::EndGroup();
-                            ImGui::PopID();
-                            col = (col + 1) % cols;
-                        }
-                        if (shown == 0) ImGui::TextDisabled("  (empty)");
-                        ImGui::PopID();
-                    }
-                }
-                ImGui::End();
+                const std::string projDir =
+                    currentProject.empty()
+                        ? std::string()
+                        : std::filesystem::path(currentProject).parent_path().generic_string();
+                assetsui::panel(editorCtx, assetsBrowser,
+                                {showAssets, projDir,
+                                 // A cached preview, or a decode started for a tile on screen.
+                                 [&](AssetId id, bool onScreen) -> unsigned {
+                                     const auto it = assetThumbs.find(id);
+                                     if (it != assetThumbs.end())
+                                         return it->second ? it->second->id() : 0u;
+                                     return onScreen ? thumbFor(id) : 0u;
+                                 },
+                                 g_fileDrop.paths, g_fileDrop.x, g_fileDrop.y,
+                                 [&] { return spawnPoint(8.0f); }});
             }
 
 
@@ -13384,264 +10174,40 @@ int main(int argc, char** argv) {
                             now);
 
             // HDRI environment lighting (image-based lighting).
-            if (showEnv) {
-                if (ImGui::Begin("Environment", &showEnv)) {
-                    ImGui::TextDisabled("Equirectangular .hdr / .exr panorama.");
-                    // Gather HDRI panoramas from the asset library: .hdr/.exr
-                    // textures, excluding PBR material maps (normal/rough/etc).
-                    auto isMaterialMap = [](const std::string& n){
-                        std::string s = n;
-                        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){
-                            return static_cast<char>(std::tolower(c)); });
-                        for (const char* t : {"_nor", "_normal", "_rough", "_disp",
-                                "_diff", "_albedo", "_ao", "_spec", "_metal",
-                                "_height", "_bump", "_opacity", "_mask", "_gloss",
-                                "_translucent", "_color"})
-                            if (s.find(t) != std::string::npos) return true;
-                        return false;
-                    };
-                    std::vector<std::pair<std::string, std::string>> hdris; // (label, path)
-                    for (const AssetId id : assetDb.allAssets()) {
-                        const AssetDatabase::Entry* e = assetDb.entry(id);
-                        if (!e || e->type != AssetType::Texture) continue;
-                        std::string ext = e->absPath.extension().string();
-                        std::transform(ext.begin(), ext.end(), ext.begin(),
-                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                        if ((ext != ".exr" && ext != ".hdr") || isMaterialMap(e->relPath))
-                            continue;
-                        hdris.push_back({e->relPath, e->absPath.string()});
-                    }
-                    std::sort(hdris.begin(), hdris.end());
+            lookui::drawEnvironmentPanel({showEnv, environment, assetDb, hdriLoaded, hdriAbsPath,
+                                          iblEnabled, iblSkybox, iblIntensity});
 
-                    ImGui::SetNextItemWidth(260.0f);
-                    const char* curLabel = hdriLoaded.empty() ? "(select HDRI)"
-                                                              : hdriLoaded.c_str();
-                    if (ImGui::BeginCombo("HDRI", curLabel)) {
-                        if (hdris.empty())
-                            ImGui::TextDisabled("(no .hdr/.exr panoramas found)");
-                        for (const auto& [label, path] : hdris)
-                            if (ImGui::Selectable(label.c_str(), label == hdriLoaded)) {
-                                if (environment.load(path)) {
-                                    hdriLoaded  = label;
-                                    hdriAbsPath = path;
-                                    iblEnabled  = true;
-                                }
-                            }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled(environment.valid() ? "loaded" : "not loaded");
+            // The Vehicle and Glider windows live with their tools (VehicleTool.cpp,
+            // GliderTool.cpp); the drive and flight themselves are main's.
+            vehicleui::window(editorCtx, {
+                showVehiclePanel, vehicleMode,
+                [&](bool on) { if (on) enterVehicleMode(); else endEditorDrive(); },
+                showCrosshair, skids, trails,
+                [&] { weapons.settingsPanel(soundPickerCombo); },
+                vehGizmoEdit, showVehicle, [&] { placeCar(); }, carPlaced, carSpeed,
+            });
 
-                    ImGui::BeginDisabled(!environment.valid());
-                    ImGui::Checkbox("Enable IBL lighting", &iblEnabled);
-                    ImGui::Checkbox("Show HDRI as background", &iblSkybox);
-                    ImGui::SliderFloat("Intensity", &iblIntensity, 0.0f, 4.0f);
-                    if (environment.valid())
-                        ImGui::TextDisabled("auto-normalised x%.3g (panoramas differ\n"
-                                            "in absolute brightness by decades)",
-                                            environment.exposureScale());
-                    ImGui::EndDisabled();
-                    ImGui::TextDisabled("Lights surfaces from the panorama\n"
-                                        "(diffuse irradiance + specular).");
-                }
-                ImGui::End();
-            }
-
-            if (showVehiclePanel) { if (ImGui::Begin("Vehicle", &showVehiclePanel)) {
-                if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
-                    if (vehicleMode) enterVehicleMode();
-                    else             endEditorDrive();
-                }
-                if (vehicleMode)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "W/S drive, A/D steer, Space brake, Esc exit");
-                else
-                    ImGui::TextDisabled("Press V or tick above to drive");
-
-                // Per-scene Play options (saved with the scene / exported game).
-                ui::sectionText("Play start");
-                // WHAT Play starts as lives in File > Game Settings now ("Start
-                // as"). It is a statement about the game rather than about this
-                // panel, there are five answers rather than one checkbox here and
-                // another in the Glider panel, and two checkboxes could disagree.
-                // The pointer stays because this is where people look for it.
-                ImGui::TextDisabled("Start mode: File > Game Settings");
-                ImGui::Checkbox("Show crosshair", &showCrosshair);
-
-                ui::sectionText("Skid marks");
-                ImGui::Checkbox("Enable skid marks", &skids.enabled);
-                ImGui::BeginDisabled(!skids.enabled);
-                ImGui::SliderFloat("Slip threshold", &skids.slipThresh, 0.1f, 1.5f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How much a wheel must slip (lock/spin/drift)\n"
-                                      "before it leaves a mark (lower = more marks).");
-                ImGui::SliderFloat("Mark width", &skids.markHalfW, 0.05f, 0.6f, "%.2f m");
-                ImGui::SliderFloat("Darkness", &skids.opacity, 0.1f, 1.0f, "%.2f");
-                ImGui::EndDisabled();
-
-                ui::sectionText("Contrails");
-                ImGui::Checkbox("Enable contrails", &trails.enabled);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Vapour trails streaming behind the racers\n"
-                                      "(the driven craft and every opponent) in Play.");
-                ImGui::BeginDisabled(!trails.enabled);
-                ImGui::SliderFloat("Trail length", &trails.life, 0.3f, 5.0f, "%.1f s");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How long each puff lingers before it fades\n"
-                                      "out -- longer = a longer streak.");
-                ImGui::SliderFloat("Trail width", &trails.width, 0.05f, 1.5f, "%.2f m");
-                ImGui::SliderFloat("Trail opacity", &trails.opacity, 0.05f, 1.0f, "%.2f");
-                ImGui::SliderFloat("Trail glow", &trails.glow, 0.0f, 6.0f, "%.1f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Self-illumination: the streak glows on its\n"
-                                      "own instead of being lit (and dimmed) by the sun.");
-                ImGui::SliderFloat("Trail spacing", &trails.minStep, 0.2f, 3.0f, "%.1f m");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Distance between recorded points. Smaller = a\n"
-                                      "smoother ribbon (more geometry).");
-                ImGui::ColorEdit3("Trail colour", &trails.color.x);
-                ImGui::EndDisabled();
-
-                ui::sectionText("Missiles");
-                weapons.settingsPanel(soundPickerCombo);
-
-                // Scene vehicles: hook a model into the vehicle system with one
-                // click. The auto-setup edit goes through the undo history.
-                auto makeDrivable = [&](int rootId) -> std::string {
-                    Entity* e = document.find(rootId);
-                    if (!e) return std::string();
-                    const Entity before = *e;
-                    std::string rep = vehicleui::autoSetup(document, rootId);
-                    if (Entity* after = document.find(rootId)) {
-                        auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
-                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                    }
-                    return rep;
-                };
-                const int selId =
-                    (sel.valid())
-                        ? entities[sel.index()].id : -1;
-                const int pick = vehicleui::panelSection(document, selId, makeDrivable);
-                if (pick >= 0) sel.select(pick);
-
-                ui::sectionText("Setup gizmo");
-                ImGui::Checkbox("Edit setup in viewport", &vehGizmoEdit);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(
-                        "Drag the axles, track, wheels, collision box and centre\n"
-                        "of mass directly in the viewport.\n\n"
-                        "The shape is ALWAYS drawn for the selected vehicle -- this\n"
-                        "hands the handles the left mouse button, so the transform\n"
-                        "gizmo pauses while it is on.\n\n"
-                        "Arrow keys nudge the selected handle (Shift = bigger steps).");
-                ImGui::TextDisabled("Select a vehicle to see its setup drawn.");
-
-                ui::sectionText("Test car");
-                ImGui::Checkbox("Show vehicle", &showVehicle);
-                if (ImGui::Button("Place at camera")) placeCar();
-                if (carPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(carSpeed) * 3.6f);
-                else           ImGui::TextDisabled("Vehicle not placed yet");
-            }
-            ImGui::End(); }
-
-            if (showGliderPanel) { if (ImGui::Begin("Glider", &showGliderPanel)) {
-                if (ImGui::Checkbox("Fly mode (G)", &gliderMode)) {
-                    if (gliderMode) {
+            gliderui::window(editorCtx, {
+                showGliderPanel, gliderMode,
+                [&](bool on) {
+                    if (on) {
                         if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
                         enterGliderMode();
                     } else {
                         endGliderDrive();
                     }
-                }
-                if (gliderMode && driveGliderId >= 0)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "W/S thrust, A/D steer, Space air-brake, Esc exit");
-                else
-                    ImGui::TextDisabled("Add a Glider component, then press G to fly");
-
-                // Starting Play already flying is File > Game Settings ("Start
-                // as") now -- see the note in the Vehicle panel.
-                ui::sectionText("Play start");
-                ImGui::TextDisabled("Start mode: File > Game Settings");
-
-                // Turn a selected model into a glider with one click (undoable).
-                auto makeGlider = [&](int rootId) -> std::string {
-                    Entity* e = document.find(rootId);
-                    if (!e) return std::string();
-                    const Entity before = *e;
-                    std::string rep = gliderui::autoSetup(document, rootId);
-                    if (Entity* after = document.find(rootId)) {
-                        auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
-                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                    }
-                    return rep;
-                };
-                const int selId =
-                    (sel.valid())
-                        ? entities[sel.index()].id : -1;
-                const int pick = gliderui::panelSection(document, selId, makeGlider);
-                if (pick >= 0) sel.select(pick);
-
-                if (gliderMode && driveGliderId >= 0)
-                    ImGui::Text("Speed: %.0f km/h",
-                                glm::length(glm::vec3(gliderVel.x, 0.0f, gliderVel.z)) * 3.6f);
-            }
-            ImGui::End(); }
+                },
+                driveGliderId, gliderVel,
+            });
 
             // Scene UI overlay editor: author the per-scene 2D HUD (text, buttons,
             // images). The list edit is bracketed into one undo step -- opened when
             // a field is first touched, committed when nothing is active -- exactly
             // like the Inspector and the road edits.
-            if (showUiOverlay) {
-                const std::vector<UiElement> uiFrameStart = uiOverlay.elements();
-
-                // Scene names for the LoadScene action picker (stems of the sibling
-                // .fitzel files), and the sound list for PlaySound.
-                std::vector<std::string> sceneNames;
-                if (!currentProject.empty()) {
-                    const std::string projFolder =
-                        std::filesystem::path(currentProject).parent_path().generic_string();
-                    for (const auto& sc : listScenesIn(projFolder))
-                        sceneNames.push_back(sc.first);
-                }
-                const std::vector<std::string> soundNames = listSounds();
-
-                // "Copy to scene": write this overlay into a sibling scene file
-                // without opening it. Only the overlay keys of the target's
-                // settings are touched -- its entities and everything else stay.
-                auto copyOverlayToScene = [&](const std::string& stem) -> std::string {
-                    if (currentProject.empty()) return "No project open.";
-                    const std::filesystem::path cur(currentProject);
-                    if (cur.stem().string() == stem)
-                        return "That's the scene you're editing.";
-                    const std::filesystem::path target =
-                        cur.parent_path() / (stem + ".fitzel");
-                    std::error_code cec;
-                    if (!std::filesystem::exists(target, cec))
-                        return "Scene not found: " + stem;
-                    nlohmann::json keys = nlohmann::json::object();
-                    uiOverlay.save(keys); // "uiOverlay" + "uiOverlayMenu"
-                    if (keys.empty()) return "Nothing to copy.";
-                    if (!projectio::mergeSceneSettings(target.generic_string(), keys))
-                        return "Could not write " + stem + ".fitzel";
-                    return "Copied " + std::to_string(uiOverlay.elements().size()) +
-                           " element(s) into " + stem +
-                           " (its previous overlay was replaced).";
-                };
-
-                uiOverlay.drawEditorPanel(&showUiOverlay, uiSel, assetDb,
-                                          sceneNames, soundNames, copyOverlayToScene);
-
-                const bool uiActive  = ImGui::IsAnyItemActive();
-                const bool uiChanged = uiOverlay.elements() != uiFrameStart;
-                if (uiChanged && !uiEditOpen) { uiEditOpen = true; uiEditBefore = uiFrameStart; }
-                if (uiEditOpen && !uiActive) {
-                    uiEditOpen = false;
-                    auto cmd = std::make_unique<UiOverlayCmd>(
-                        uiOverlay, uiEditBefore, uiOverlay.elements());
-                    if (!cmd->trivial()) history.push(std::move(cmd), document);
-                }
-            }
+            if (showUiOverlay)   // the sound list walks the asset library: only when open
+                uioverlayui::panel(uiOverlay, uiEditBracket,
+                                   {showUiOverlay, uiSel, assetDb, currentProject, listSounds(),
+                                    history, document});
 
             } // end editor UI (skipped in presentation mode)
 #endif // !FITZEL_PLAYER
@@ -14228,7 +10794,7 @@ int main(int argc, char** argv) {
             // transform (its centre == the model's AABB centre, as placed) and draw
             // the model there, so a clipped post tumbles and flies off.
             if (playMode && physics)
-                for (const SidePost& p : sidePosts) {
+                for (const playworld::SidePost& p : sidePosts) {
                     LoadedModel* lm = models.byId(p.modelId);
                     glm::vec3 pos; glm::quat rot;
                     if (!lm || !physics->getTransform(p.body, pos, rot)) continue;
@@ -14473,7 +11039,7 @@ int main(int argc, char** argv) {
                     std::snprintf(nm, sizeof(nm), "uLayerDir[%zu]", li);
                     sky.setVec2(nm, glm::vec2(L.dirX, L.dirZ));
                 }
-                sky.setFloat("uExposure", exposure);
+                sky.setFloat("uExposure", postLook.exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
                 glDepthMask(GL_TRUE);
@@ -14498,7 +11064,7 @@ int main(int argc, char** argv) {
                 skybox.setMat4("uInvViewProj", invViewProj);
                 skybox.setVec3("uCameraPos", eye);
                 skybox.setFloat("uIntensity", iblIntensity);
-                skybox.setFloat("uExposure", exposure);
+                skybox.setFloat("uExposure", postLook.exposure);
                 skybox.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
                 glDepthMask(GL_TRUE);
@@ -14519,13 +11085,13 @@ int main(int argc, char** argv) {
             // render comes out flat and cool beside the viewport, because the
             // viewport never shows an ungraded image -- not even in a project
             // nobody has touched the Colour grade panel in.
-            ptLook.grade.hueShift   = hueShift;
-            ptLook.grade.saturation = saturation;
-            ptLook.grade.value      = valueGain;
-            ptLook.grade.warmth     = warmth;
-            ptLook.grade.contrast   = contrast;
-            ptLook.grade.curve      = tonemapCurve;
-            ptLook.grade.vignette   = vignette;
+            ptLook.grade.hueShift   = postLook.hueShift;
+            ptLook.grade.saturation = postLook.saturation;
+            ptLook.grade.value      = postLook.valueGain;
+            ptLook.grade.warmth     = postLook.warmth;
+            ptLook.grade.contrast   = postLook.contrast;
+            ptLook.grade.curve      = postLook.tonemapCurve;
+            ptLook.grade.vignette   = postLook.vignette;
             // The grass, which the harvest cannot see: the tracer regenerates it
             // from the same parameters the streamed field was built from.
             if (veg.grassEnabled) {
@@ -14668,7 +11234,7 @@ int main(int argc, char** argv) {
             // offset every frame, and the resolve gathers them. Only in a single
             // full-shading pane -- one history cannot serve two cameras, and a
             // wireframe gathered over frames is a smear.
-            const bool useTaa = taaEnabled && views == 1 && shadeFull;
+            const bool useTaa = postLook.taaEnabled && views == 1 && shadeFull;
             const glm::mat4  projUnjittered = vcam.projectionMatrix(aspect);
             glm::vec2 taaJitter(0.0f);
             glm::mat4 projJ = projUnjittered;
@@ -14847,8 +11413,8 @@ int main(int argc, char** argv) {
             const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
                                  !vcam.orthographic() &&
                                  glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
-            const bool ssr     = history && ssrEnabled && gfxSet.reflections > 0;
-            const bool contact = history && contactShadows && gfxSet.shadows > 0 &&
+            const bool ssr     = history && postLook.ssrEnabled && gfxSet.reflections > 0;
+            const bool contact = history && postLook.contactShadows && gfxSet.shadows > 0 &&
                                  renderer.shadowsEnabled();
             // The scene in two halves: the solid objects now, the see-through
             // ones after the vegetation and the water (below).
@@ -14974,7 +11540,7 @@ int main(int argc, char** argv) {
                 water.setFloat("uFogDensity", fog.density);
                 water.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 water.setFloat("uFogHeight", fog.height);
-                water.setFloat("uExposure", exposure);
+                water.setFloat("uExposure", postLook.exposure);
                 water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
                 water.setInt("uReflection", 0);
                 water.setInt("uRefraction", 1);
@@ -15036,7 +11602,7 @@ int main(int argc, char** argv) {
                 river.setFloat("uFogDensity", fog.density);
                 river.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 river.setFloat("uFogHeight", fog.height);
-                river.setFloat("uExposure", exposure);
+                river.setFloat("uExposure", postLook.exposure);
                 river.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
                 // The scene probe, for the reflection. Unit 2 is the renderer's
                 // own probe unit and it rebinds it every lit pass, so borrowing
@@ -15210,10 +11776,10 @@ int main(int argc, char** argv) {
                 // those belong to the scene's author, and switching an effect back
                 // on has to return the look that was authored, not a default.
                 const gfxmenu::PostGate gate = gfxmenu::gatePost(
-                    gfxSet, ssaoStrength, bloomIntensity, rayIntensity, dofMax,
-                    motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
-                pp.ssaoRadius = ssaoRadius; pp.ssaoBias = ssaoBias;
-                pp.ssaoPower  = ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
+                    gfxSet, postLook.ssaoStrength, postLook.bloomIntensity, postLook.rayIntensity, postLook.dofMax,
+                    postLook.motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
+                pp.ssaoRadius = postLook.ssaoRadius; pp.ssaoBias = postLook.ssaoBias;
+                pp.ssaoPower  = postLook.ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
                 // What share of a sunlit, level surface's light is the sky's:
                 // that is all the AO may take away where the sun reaches
                 // (composite.frag). Floored at 0.3, because the AO also stands
@@ -15230,26 +11796,26 @@ int main(int argc, char** argv) {
                 }
                 pp.shadows     = renderer.shadowsEnabled() ? &renderer.shadows() : nullptr;
                 pp.viewForward = vcam.front();
-                pp.bloomThreshold = bloomThreshold; pp.bloomKnee = bloomKnee;
+                pp.bloomThreshold = postLook.bloomThreshold; pp.bloomKnee = postLook.bloomKnee;
                 pp.bloomIntensity = gate.bloomIntensity;
                 pp.rayIntensity   = gate.rayIntensity;
-                pp.dofNear = dofNear; pp.dofFar = dofFar; pp.dofMax = gate.dofMax;
+                pp.dofNear = postLook.dofNear; pp.dofFar = postLook.dofFar; pp.dofMax = gate.dofMax;
                 if (playMode && scriptFocusFar > 0.0f) {
                     pp.dofNear = scriptFocusNear;
                     pp.dofFar  = scriptFocusFar;
                 }
-                pp.exposure = exposure;
-                pp.hueShift = hueShift; pp.saturation = saturation;
-                pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
-                pp.split = gradeSplit; pp.vibrance = gradeVibrance;
-                pp.curve        = tonemapCurve;
-                pp.vignette     = vignette;
-                pp.grain        = filmGrain;
+                pp.exposure = postLook.exposure;
+                pp.hueShift = postLook.hueShift; pp.saturation = postLook.saturation;
+                pp.valueGain = postLook.valueGain; pp.warmth = postLook.warmth; pp.contrast = postLook.contrast;
+                pp.split = postLook.gradeSplit; pp.vibrance = postLook.gradeVibrance;
+                pp.curve        = postLook.tonemapCurve;
+                pp.vignette     = postLook.vignette;
+                pp.grain        = postLook.filmGrain;
                 pp.frame        = taaFrame;
-                pp.autoExposure = autoExposure;
-                pp.autoMinEv    = autoMinEv;
-                pp.autoMaxEv    = autoMaxEv;
-                pp.adaptSpeed   = adaptSpeed;
+                pp.autoExposure = postLook.autoExposure;
+                pp.autoMinEv    = postLook.autoMinEv;
+                pp.autoMaxEv    = postLook.autoMaxEv;
+                pp.adaptSpeed   = postLook.adaptSpeed;
                 pp.dt           = dt;
                 pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
@@ -15312,8 +11878,8 @@ int main(int argc, char** argv) {
               // puts back what the stretch takes (CAS: it lifts texture, not
               // the edges' aliasing).
               const bool upscaled = rw < paneW;
-              const float sharp = useTaa ? taaSharpen : (upscaled ? 0.35f : 0.0f);
-              post.present(fsQuad, fxaaEnabled && !useTaa,
+              const float sharp = useTaa ? postLook.taaSharpen : (upscaled ? 0.35f : 0.0f);
+              post.present(fsQuad, postLook.fxaaEnabled && !useTaa,
                            upscaled ? std::min(1.0f, sharp + 0.25f) : sharp, upscaled); }
             } // per-pane loop
             fzGpuFrame.reset();
@@ -15418,15 +11984,15 @@ int main(int argc, char** argv) {
             // in Play, and skipped in presentation mode -- which draws the game
             // straight to the screen and has no viewport image to draw onto.
             if (showGrid && !playMode && !presentMode) {
-                grid.cell   = cursorGrid;   // what you see is what you snap to
-                grid.plane  = cursor3D.y;   // ...on the plane the cursor is on
-                grid.cursor = cursor3D;
+                grid.cell   = cursor.grid;   // what you see is what you snap to
+                grid.plane  = cursor.pos.y;   // ...on the plane the cursor is on
+                grid.cursor = cursor.pos;
                 // Never fade beyond what the camera can see: the grid's quad ends
                 // at its fade distance, so a fade further out than the far plane
                 // would be sliced off mid-strength by the clip instead of easing
                 // away. View distance is the knob for seeing further.
                 grid.fade   = std::min(gridFade, camera.farPlane() * 0.7f);
-                grid.highlightCursorCell = cursorVisible;
+                grid.highlightCursorCell = cursor.visible;
                 grid.viewportPx    = glm::vec2(fbW, fbH);
                 grid.sceneDepthUnit = 0;
                 hdrRT.bindDepthTexture(0);

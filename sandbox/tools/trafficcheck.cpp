@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -29,6 +30,7 @@
 #include <fitzel/physics/Physics.hpp>
 
 #include "../src/CivicGen.hpp"
+#include "../src/WalkPace.hpp"
 
 namespace {
 
@@ -209,6 +211,40 @@ void drivers() {
     for (const traffic::Vehicle& v : sim.vehicles()) longOnes += v.prefab == 0 && v.length == 7.5f;
     check(dressed > 0 && longOnes > 0, "vehicles dressed as a prefab carry its length",
           std::to_string(longOnes) + " of " + std::to_string(sim.vehicles().size()));
+
+    // People dressed as prefabs (TownTraffic's person prefabs): each is seen
+    // once, knowing their town, keeps what they wear, and walks exactly where
+    // they would have undressed.
+    {
+        traffic::Sim plain, worn;
+        plain.surfaceAt = worn.surfaceAt = sim.surfaceAt;
+        plain.build({r, r}, {&T, &T}, 1);   // two towns, to tell them apart
+        std::size_t seen = 0;
+        int inTown[3] = {0, 0, 0};
+        worn.build({r, r}, {&T, &T}, 1, {}, [&](traffic::Walker& w) {
+            ++seen;
+            ++inTown[w.town == 0 ? 0 : w.town == 1 ? 1 : 2];
+            if (w.rng & 2U) w.prefab = 3;
+        });
+        bool same = plain.walkers().size() == worn.walkers().size();
+        for (int k = 0; k < 20 * 30 && same; ++k) {
+            plain.step(1.0f / 30.0f, k / 30.0);
+            worn.step(1.0f / 30.0f, k / 30.0);
+        }
+        int wearing = 0;
+        for (std::size_t k = 0; same && k < worn.walkers().size(); ++k) {
+            wearing += worn.walkers()[k].prefab == 3;
+            same = glm::distance(plain.pose(plain.walkers()[k]).pos, worn.pose(worn.walkers()[k]).pos) < 1e-4f;
+        }
+        check(!worn.walkers().empty() && seen == worn.walkers().size() && inTown[0] > 0 &&
+                  inTown[1] > 0 && inTown[2] == 0,
+              "every person is dressed once, knowing their town",
+              std::to_string(seen) + " dressed of " + std::to_string(worn.walkers().size()) + ", " +
+                  std::to_string(inTown[0]) + " + " + std::to_string(inTown[1]) + " per town");
+        check(same && wearing > 0 && wearing < static_cast<int>(seen),
+              "people dressed as a prefab keep it and walk where they would have",
+              std::to_string(wearing) + " wearing it after 20 s");
+    }
 
     // Who is who (TownTraffic keys the bodies it lends by it): every vehicle
     // its own uid, and a crashed one leaves the traffic alone.
@@ -495,7 +531,90 @@ void crashes() {
           "a jump to a far lane arrives at once and at rest");
 }
 
-int main() {
+// The people's walk (TownTraffic's person prefabs): a clip that holds several
+// stride pairs is skinned over ONE of them -- spread over all, a person got a
+// handful of poses per stride and walked as if frames were dropped -- and the
+// poses are uploaded welded, the same surface from a fifth of the vertices.
+fitzel::ModelData swinging(int strides) {
+    // A hip and a leg, the leg swinging `strides` times in a 3 s clip.
+    fitzel::ModelData m;
+    m.skeleton.resize(2);
+    m.skeleton[1].parent = 0;
+    m.skeleton[1].restT  = {0.0f, -1.0f, 0.0f};
+    fitzel::AnimationClip c;
+    c.duration = 3.0f;
+    c.tracks.resize(2);
+    for (int k = 0; k <= 180; ++k) {
+        const float s = 3.0f * static_cast<float>(k) / 180.0f;
+        c.tracks[1].rTimes.push_back(s);
+        c.tracks[1].rVals.push_back(glm::angleAxis(0.5f * std::sin(6.2831853f * strides * s / 3.0f),
+                                                   glm::vec3(1.0f, 0.0f, 0.0f)));
+    }
+    m.animations.push_back(c);
+    return m;
+}
+
+void walks() {
+    std::printf("\n== The people's walk ==\n");
+    const int one = walkpace::cycles(swinging(1), 0, 0.0f, 3.0f);
+    const int three = walkpace::cycles(swinging(3), 0, 0.0f, 3.0f);
+    const int four = walkpace::cycles(swinging(4), 0, 0.0f, 3.0f);
+    check(one == 1 && three == 3 && four == 4, "a clip holding several stride pairs is cut to one",
+          "1, 3, 4 strides -> " + std::to_string(one) + ", " + std::to_string(three) + ", " +
+              std::to_string(four));
+
+    // A quad as two triangles, de-indexed (six vertices, four distinct), the
+    // lower edge hanging on the leg.
+    fitzel::ModelPrimitive quad;
+    const float corner[4][2] = {{0, 0}, {1, 0}, {1, -1}, {0, -1}};
+    for (int v : {0, 1, 2, 0, 2, 3}) {
+        quad.vertices.insert(quad.vertices.end(), {corner[v][0], corner[v][1], 0.0f, 0.0f, 0.0f, 1.0f,
+                                                   corner[v][0], -corner[v][1]});
+        fitzel::VertexSkin sk;
+        sk.joints[0]  = v >= 2 ? 1 : 0;
+        sk.weights[0] = 1.0f;
+        quad.skin.push_back(sk);
+    }
+    std::vector<std::uint32_t> idx;
+    const fitzel::ModelPrimitive welded = walkpace::weld(quad, idx);
+    const fitzel::ModelData leg = swinging(3);
+    const std::vector<glm::mat4> palette = fitzel::sampleSkeleton(leg, 0, 0.4f);
+    std::vector<fitzel::Vertex> flat, few;
+    fitzel::skinPrimitive(quad, palette, flat);
+    fitzel::skinPrimitive(welded, palette, few);
+    bool same = idx.size() == flat.size();
+    for (std::size_t i = 0; same && i < idx.size(); ++i)
+        same = idx[i] < few.size() && glm::distance(few[idx[i]].position, flat[i].position) < 1e-5f &&
+               glm::distance(few[idx[i]].normal, flat[i].normal) < 1e-5f;
+    const bool swung = glm::distance(flat[2].position, glm::vec3(1.0f, -1.0f, 0.0f)) > 0.01f;
+    check(welded.vertexCount() == 4 && same && swung, "welded, a walk pose is the same surface",
+          std::to_string(quad.vertexCount()) + " vertices -> " + std::to_string(welded.vertexCount()));
+}
+
+// `trafficcheck walk.glb [clip]`: how a real walk would be cut and welded for
+// the towns' people -- its stride pairs, poses, vertices and pace.
+int inspect(const char* path, int clip) {
+    const fitzel::ModelData m = fitzel::loadGltf(path);
+    if (!m.animated() || clip < 0 || clip >= static_cast<int>(m.animations.size())) {
+        std::printf("%s: no clip %d\n", path, clip);
+        return 1;
+    }
+    const float dur = m.animations[static_cast<std::size_t>(clip)].duration;
+    const int   n   = walkpace::cycles(m, clip, 0.0f, dur);
+    std::printf("%s clip %d: %.3f s, %d stride pair%s of %.3f s\n", path, clip, dur, n, n == 1 ? "" : "s",
+                dur / n);
+    for (const fitzel::ModelPrimitive& p : m.primitives) {
+        std::vector<std::uint32_t> idx;
+        std::printf("  %d vertices -> %d welded\n", p.vertexCount(), walkpace::weld(p, idx).vertexCount());
+    }
+    std::printf("  pace %.3f units/s along +Z (model height %.3f)\n",
+                walkpace::stanceSpeed(m, clip, glm::vec3(0.0f, 0.0f, 1.0f)), m.height());
+    return 0;
+}
+
+int main(int argc, char** argv) {
+    if (argc > 1) return inspect(argv[1], argc > 2 ? std::atoi(argv[2]) : 0);
+    walks();
     crashes();
     obstacles();
     drivers();

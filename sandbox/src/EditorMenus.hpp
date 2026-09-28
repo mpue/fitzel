@@ -105,4 +105,24 @@ void drawEditMenu(const EditMenuCtx& c);
 void drawViewMenu(fitzel::Gui& gui, const std::vector<PanelEntry>& panels,
                   viewnav::Nav& viewNav, bool& prefsDirty, bool& requestDockRebuild);
 
+// Help > About: the version, the build, and the commit it was built from.
+void drawAbout(bool& show);
+
+// The New Project / Save As wizard the File menu opens (c.wizardOpen), as a
+// modal: name and location, checked before anything is written.
+void drawProjectWizard(const FileMenuCtx& c, const std::function<void()>& newProject,
+                       const std::function<void(const std::string&)>& saveProjectTo);
+
+// The New / Rename / Delete Scene dialogs the Scene menu opens. The name is
+// checked against the scenes already in the project; what each button does to
+// the project is main's.
+struct SceneDialogActions {
+    // Leave the current scene for a new, empty one called `name` in `folder`.
+    std::function<void(const std::string& folder, const std::string& name)> create;
+    std::function<void(const std::string& name)> rename;   // the current scene
+    // Switch to `next`, then delete `gone` (the scene being left).
+    std::function<void(const std::string& next, const std::string& gone)> removeCurrent;
+};
+void drawSceneDialogs(const SceneMenuCtx& c, const SceneDialogActions& a);
+
 } // namespace editormenu

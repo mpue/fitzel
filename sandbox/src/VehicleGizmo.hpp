@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include "ViewportFrame.hpp"
+
 class VehicleComponent;
 
 // The vehicle setup's viewport half: the car's tuning geometry drawn where it
@@ -63,14 +65,8 @@ struct Context {
     // the transform gizmo has to be asked for.
     bool editable = false;
 
-    // The viewport, as the editor already has it.
-    ImVec2    origin{0.0f, 0.0f};
-    float     viewW = 1.0f, viewH = 1.0f;
-    glm::mat4 viewProj{1.0f};
-    bool      hovered = false;
-    glm::vec2 mouseNdc{0.0f};
-    ImVec2    mousePos{0.0f, 0.0f};
-    glm::vec3 cameraPos{0.0f};
+    // The viewport this frame (ViewportFrame.hpp).
+    ViewportFrame view;
 
     // Where the collision box centre sits in the model's local frame. Injected
     // rather than recomputed here because main owns that relation (it is what

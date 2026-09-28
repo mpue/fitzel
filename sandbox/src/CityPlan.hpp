@@ -113,6 +113,19 @@ struct VehiclePrefab {
     }
 };
 
+// A person prefab the town's pavements walk (see TownTraffic): which prefab, how
+// often it turns up against the others, and which way it faces in the prefab
+// (0 +Z, 1 -Z, 2 +X, 3 -X). An animated model walks with its prefab's
+// Animation clip, in step with the pavement.
+struct PersonPrefab {
+    std::string prefab;
+    float       weight  = 1.0f;
+    int         forward = 0;
+    bool operator==(const PersonPrefab& o) const {
+        return prefab == o.prefab && weight == o.weight && forward == o.forward;
+    }
+};
+
 // How a town fills the blocks of one public building kind.
 struct CivicSlot {
     int         count    = 0;
@@ -213,6 +226,10 @@ struct Rule {
     // has one).
     std::vector<VehiclePrefab> vehiclePrefabs;
     float placeholderWeight = 1.0f;
+    // The same for the people: prefabs to walk instead of the built-in figures,
+    // and how much the figures still weigh against them (0 = prefabs only).
+    std::vector<PersonPrefab> personPrefabs;
+    float personPlaceholderWeight = 1.0f;
 
     // --- Look ----------------------------------------------------------------
     // Towers and apartment blocks each take a BuildingGen palette slot ("Building

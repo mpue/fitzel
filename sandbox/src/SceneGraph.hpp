@@ -37,4 +37,18 @@ void      decompose(const glm::mat4& m, glm::vec3& translation,
 // their children whatever order the list is in.
 void resolve(std::vector<Entity>& entities);
 
+// An entity's world matrix from its (resolved) world center and rotation.
+// Scale is not part of the hierarchy -- each entity keeps its own size (half).
+glm::mat4 worldOf(const Entity& e);
+// Its parent's world matrix: identity for a root, and for a parent that is not
+// in `entities`.
+glm::mat4 parentWorld(const std::vector<Entity>& entities, const Entity& e);
+// A world-space edit (the gizmo, physics) written where it belongs: into the
+// entity's LOCAL transform, the source of truth, under its parent's world matrix
+// (null for a root). Mirrored into center/rotation for this frame.
+void setWorld(Entity& e, const glm::vec3& worldPos, const glm::vec3& worldRotDeg,
+              const glm::mat4* parentWorld);
+// An entity's id and all its descendants', the root first.
+std::vector<int> subtree(const std::vector<Entity>& entities, int rootId);
+
 } // namespace scenegraph

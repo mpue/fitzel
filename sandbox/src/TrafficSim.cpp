@@ -80,13 +80,14 @@ void Sim::clear() {
 
 void Sim::build(const std::vector<cityplan::Rule>& rules,
                 const std::vector<const cityplan::Town*>& towns, std::uint32_t seed,
-                const std::function<void(Vehicle&)>& dress) {
+                const std::function<void(Vehicle&)>& dress,
+                const std::function<void(Walker&)>& dressWalker) {
     clear();
     for (std::size_t i = 0; i < rules.size() && i < towns.size(); ++i) {
         if (!towns[i] || !rules[i].enabled) continue;
         cityplan::Rule r = rules[i];
         r.seed ^= seed * 0x9e3779b9U;
-        addTown(r, *towns[i], static_cast<int>(i), dress);
+        addTown(r, *towns[i], static_cast<int>(i), dress, dressWalker);
     }
 }
 
@@ -171,7 +172,8 @@ void Sim::setObstacles(const std::vector<Obstacle>& obstacles) {
 }
 
 void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
-                  const std::function<void(Vehicle&)>& dress) {
+                  const std::function<void(Vehicle&)>& dress,
+                  const std::function<void(Walker&)>& dressWalker) {
     const cityplan::Layout lay = cityplan::layout(r);
     if (lay.nx <= 0 || lay.nz <= 0) return;
     std::uint32_t rng = (r.seed ^ 0x7a11c0deU) | 1U;
@@ -319,6 +321,9 @@ void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
             p.speed = 1.1f + 0.5f * unitRand(rng);
             p.phase = 6.2831853f * unitRand(rng);
             p.look  = static_cast<int>(nextRand(rng) % 4);
+            p.town  = town;
+            p.rng   = nextRand(rng) | 1U;
+            if (dressWalker) dressWalker(p);
             m_walkers.push_back(p);
         }
     }
