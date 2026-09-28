@@ -48,6 +48,11 @@
 //   - the vehicle setup gizmo (VehicleGizmo), through the frame's ViewportFrame:
 //     the front-axle handle is grabbed where it is drawn and follows the pointer
 //     along its own axis, one undo bracket for the drag.
+//   - the Scene window's corner read-outs (ViewportHud): the Play-as picker
+//     keeps the pointer off the scene while it is on it, and picking an entry
+//     sets the scene's start and marks the scene changed; Exit camera gives the
+//     free camera back; the view's name shows only for a standard view or an
+//     ortho lens. And ViewportFrame::looking puts the image's centre at NDC 0.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -75,6 +80,7 @@
 #include "../src/Cursor3D.hpp"
 #include "../src/ModelMode.hpp"
 #include "../src/VehicleGizmo.hpp"
+#include "../src/ViewportHud.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -147,6 +153,19 @@ int main() {
     blue.assetId = fitzel::AssetId::generate();
     blue.name    = "Blue";
     materials.push_back(blue);
+
+    // --- The frame a camera sees through an image -------------------------------------------
+    {
+        fitzel::Camera cam({0.0f, 0.0f, 10.0f});
+        const ViewportFrame f = ViewportFrame::looking(cam, ImVec2(100.0f, 50.0f), 800.0f, 400.0f,
+                                                       ImVec2(500.0f, 250.0f), true);
+        const ViewportFrame corner = ViewportFrame::looking(cam, ImVec2(100.0f, 50.0f), 800.0f,
+                                                            400.0f, ImVec2(100.0f, 50.0f), true);
+        const glm::mat4 vp = cam.projectionMatrix(2.0f) * cam.viewMatrix();
+        check(glm::length(f.mouseNdc) < 1e-6f && glm::length(corner.mouseNdc - glm::vec2(-1.0f, 1.0f)) < 1e-6f &&
+                  f.viewProj == vp && f.cameraPos == cam.position() && f.orthoHalfH == 0.0f,
+              "a frame from the camera: the image's centre is NDC 0, its top-left corner (-1, 1)");
+    }
 
     // --- The viewport's metres per pixel ------------------------------------------------
     {
@@ -962,6 +981,78 @@ int main() {
               "...follows the pointer along its axis, and the drag is one undo bracket",
               "front axle " + std::to_string(z0).substr(0, 5) + " -> " +
                   std::to_string(vc.frontZ).substr(0, 5));
+    }
+
+    // --- The Scene window's corner read-outs ---------------------------------------------
+    {
+        // The Scene window pinned over the display, so the pointer is over it.
+        const ImVec2 vmin(0.0f, 0.0f), vmax(1600.0f, 900.0f);
+        auto hudFrame = [&](glm::vec2 at, bool lmb, const std::function<void()>& body) {
+            io.AddMousePosEvent(at.x, at.y);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(vmin);
+            ImGui::SetNextWindowSize(ImVec2(vmax.x - vmin.x, vmax.y - vmin.y));
+            ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                               ImGuiWindowFlags_NoSavedSettings);
+            body();
+            ImGui::End();
+            ImGui::Render();
+        };
+        int  startMode = 2;
+        bool onPicker  = false;
+        auto picker = [&] { onPicker = viewhud::playAsPicker(vmin, vmax, startMode, history); };
+        // The picker is 230 px wide, 12 px in from the right, 10 down.
+        const glm::vec2 onIt(vmax.x - 12.0f - 115.0f, vmin.y + 18.0f);
+        const glm::vec2 middle(800.0f, 450.0f);
+        hudFrame(middle, false, picker);
+        hudFrame(middle, false, picker);
+        const bool offIt = !onPicker;
+        hudFrame(onIt, false, picker);
+        hudFrame(onIt, false, picker);
+        check(offIt && onPicker, "the Play-as picker has the pointer while it is on it, and only then");
+        // Open it and take the first entry, "The game's own start".
+        const unsigned rev = history.revision();
+        hudFrame(onIt, true, picker);
+        hudFrame(onIt, false, picker);
+        const float rowY = vmin.y + 10.0f + ImGui::GetFrameHeight() + ImGui::GetStyle().WindowPadding.y +
+                           ImGui::GetFontSize() * 0.5f;
+        const glm::vec2 first(onIt.x - 60.0f, rowY);
+        hudFrame(first, false, picker);
+        hudFrame(first, true, picker);
+        hudFrame(first, false, picker);
+        check(startMode == -1 && history.revision() == rev + 1,
+              "...picking an entry sets the scene's start and marks the scene changed",
+              "start " + std::to_string(startMode));
+
+        int  activeCam = 7;
+        bool onExit    = false;
+        auto exitBtn = [&] { onExit = viewhud::exitCamera(vmin, "Chase cam", activeCam); };
+        const glm::vec2 btn(vmin.x + 24.0f, vmin.y + 38.0f);
+        hudFrame(btn, false, exitBtn);
+        hudFrame(btn, false, exitBtn);
+        const bool hoverSeen = onExit;
+        hudFrame(btn, true, exitBtn);
+        hudFrame(btn, false, exitBtn);
+        check(hoverSeen && activeCam == -1, "Exit camera says the pointer is on it, and gives the free camera back");
+
+        auto drawnBy = [&](const std::function<void()>& draw) {
+            int added = 0;
+            hudFrame(middle, false, [&] {
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const int before = dl->VtxBuffer.Size;
+                draw();
+                added = dl->VtxBuffer.Size - before;
+            });
+            return added;
+        };
+        check(drawnBy([&] { viewhud::viewLabel(vmin, "Front", false); }) > 0 &&
+                  drawnBy([&] { viewhud::viewLabel(vmin, nullptr, true); }) > 0 &&
+                  drawnBy([&] { viewhud::viewLabel(vmin, nullptr, false); }) == 0,
+              "the view's name shows for a standard view or an ortho lens, and not for a free view");
+        check(drawnBy([&] { viewhud::traceStatus(vmin, ""); }) == 0 &&
+                  drawnBy([&] { viewhud::traceStatus(vmin, "Waiting for the view to settle"); }) > 0,
+              "the tracer's status shows only when there is one");
     }
 
     ImGui::DestroyContext();

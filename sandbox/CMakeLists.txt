@@ -257,6 +257,9 @@ set(SANDBOX_EDITOR_SOURCES
     # its keys, the viewport while it is on, and its Modeling and UV panels.
     src/ModelMode.cpp
     src/ModelModePanels.cpp
+    # The Scene window's corner read-outs: the camera preview, what Play starts
+    # as, the tracer's status, the way out of a camera view, the view's name.
+    src/ViewportHud.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -758,6 +761,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
+                           src/ViewportHud.cpp src/GameSettings.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp

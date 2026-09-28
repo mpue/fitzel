@@ -121,6 +121,7 @@
 #include "ViewportOverlay.hpp"
 #include "TransformGizmo.hpp"
 #include "ModelMode.hpp"
+#include "ViewportHud.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -3151,6 +3152,17 @@ int main(int argc, char** argv) {
         bool        prevXkey = false; // X: toggle gizmo local/world space
         bool        camFocusing = false;      // F: smoothly gliding to a focus point
         glm::vec3   camFocusTarget{0.0f};
+        // Frame a sphere: keep the view direction, back off until it fits with a
+        // margin, and glide there (applied each frame below). Through an ortho
+        // lens the distance frames nothing -- the zoom does: the radius and its
+        // margin fill the height the perspective cone would have at that
+        // distance. F on the selection, and F while modelling.
+        auto frameSphere = [&](const glm::vec3& c, float r) {
+            const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
+            camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
+            camFocusing     = true;
+            if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
+        };
 #ifndef FITZEL_PLAYER
         // The viewport's other two ways of moving: the axis-aligned standard
         // views (numpad, Blender's layout) and middle-mouse panning. See
@@ -6715,19 +6727,9 @@ int main(int argc, char** argv) {
                         camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
                     }
                 } else if (!fpsMode && sel.valid()) {
-                    // Focus: keep the view direction, back off to fit the object,
-                    // and glide there smoothly (applied each frame below).
+                    // Focus: frame the selected object's bounding sphere.
                     const Entity& e = entities[sel.index()];
-                    const float radius = glm::max(glm::length(e.half), 0.25f);
-                    const float fov    = glm::radians(glm::max(camera.fov(), 1.0f));
-                    const float dist   = radius / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f;
-                    camFocusTarget = e.center - camera.front() * dist;
-                    camFocusing    = true;
-                    // Through an ortho lens the distance frames nothing -- the
-                    // zoom does. Same fit: the radius and its margin fill the
-                    // height the perspective cone would have at that distance.
-                    if (camera.orthographic())
-                        camera.setOrthoHalfHeight(radius * 1.3f);
+                    frameSphere(e.center, glm::max(glm::length(e.half), 0.25f));
                 }
             }
             prevF = fDown;
@@ -10127,101 +10129,22 @@ int main(int argc, char** argv) {
                 const ImVec2 sceneMax = ImGui::GetItemRectMax();
                 bool sceneHovered = ImGui::IsItemHovered();
                 // The selected camera's own view, bottom right, over the scene.
-                // Drawn into this window's draw list rather than as a floating
-                // window: it belongs to the viewport, has to move with it, and
-                // must never be something you can drag away and lose.
-                if (camPreviewId >= 0 && showCamPreview && !traced) {
-                    const ImVec2 vmin = sceneMin, vmax = sceneMax;
-                    // A sixth of the viewport's width, kept in the preview's own
-                    // aspect and clamped so it stays a corner rather than a
-                    // second view: on a wide screen it must not grow into one.
-                    const float pw = glm::clamp((vmax.x - vmin.x) / 6.0f, 160.0f, 420.0f);
-                    const float ph = pw * static_cast<float>(camPreviewRT.height()) /
-                                          static_cast<float>(camPreviewRT.width());
-                    const float pad = 12.0f;
-                    const ImVec2 p1(vmax.x - pad, vmax.y - pad);
-                    const ImVec2 p0(p1.x - pw, p1.y - ph);
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    dl->AddRectFilled(ImVec2(p0.x - 3.0f, p0.y - 3.0f),
-                                      ImVec2(p1.x + 3.0f, p1.y + 3.0f),
-                                      IM_COL32(0, 0, 0, 170), 3.0f);
-                    // GL textures are bottom-up: flip V, like the viewport image.
-                    dl->AddImage((ImTextureID)(intptr_t)camPreviewRT.colorTexture(),
-                                 p0, p1, ImVec2(0.0f, 1.0f), ImVec2(1.0f, 0.0f));
-                    dl->AddRect(p0, p1, IM_COL32(255, 225, 140, 200), 0.0f, 0, 1.5f);
-                    const std::string cap =
-                        camPreviewName.empty() ? std::string("Camera") : camPreviewName;
-                    dl->AddText(ImVec2(p0.x + 6.0f, p0.y - ImGui::GetTextLineHeight() - 4.0f),
-                                IM_COL32(255, 225, 140, 230), cap.c_str());
-                }
+                if (camPreviewId >= 0 && showCamPreview && !traced)
+                    viewhud::cameraPreview(sceneMin, sceneMax,
+                                           (ImTextureID)(intptr_t)camPreviewRT.colorTexture(),
+                                           camPreviewRT.width(), camPreviewRT.height(),
+                                           camPreviewName);
 
-                // Top right: what Play will start as. In the viewport rather than
-                // in the Game Settings dialog because it is not a setting about
-                // the game -- it is about this next Play, in this scene, now --
-                // and because a shortcut you have to go and find is one you stop
-                // taking. It reads back what it is doing at all times: an
-                // override left on for a week must not be a mystery.
-                if (!playMode) {
-                    const ImVec2 vmin = sceneMin, vmax = sceneMax;
-                    const float  cw   = 230.0f;
-                    ImGui::SetCursorScreenPos(ImVec2(vmax.x - cw - 12.0f, vmin.y + 10.0f));
-                    ImGui::SetNextItemWidth(cw);
-                    const std::string label =
-                        sceneStartMode < 0
-                            ? std::string("This scene: the game's own start")
-                            : std::string("This scene: ") +
-                              game::startModeName(
-                                  static_cast<game::StartMode>(sceneStartMode));
-                    // Amber while it is forcing something, so the corner reads as
-                    // "this is not how the game opens" at a glance.
-                    const bool forcing = sceneStartMode >= 0;
-                    if (forcing)
-                        ImGui::PushStyleColor(ImGuiCol_FrameBg,
-                                              ImVec4(0.32f, 0.24f, 0.05f, 0.95f));
-                    const int wasMode = sceneStartMode;
-                    if (ImGui::BeginCombo("##playas", label.c_str())) {
-                        if (ImGui::Selectable("The game's own start", sceneStartMode < 0))
-                            sceneStartMode = -1;
-                        if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("What game.json says -- and a showroom\n"
-                                              "scene opens its start screen.");
-                        ImGui::Separator();
-                        for (int m = 0; m <= static_cast<int>(game::StartMode::Multishot); ++m)
-                            if (ImGui::Selectable(
-                                    game::startModeName(static_cast<game::StartMode>(m)),
-                                    sceneStartMode == m))
-                                sceneStartMode = m;
-                        ImGui::EndCombo();
-                    }
-                    // It is scene data, so changing it is an edit: say so, or the
-                    // autosave sits on its hands and the scene closes without it.
-                    // touch() rather than a command -- there is no object to undo
-                    // (see CommandStack::touch).
-                    if (sceneStartMode != wasMode) history.touch();
-                    if (forcing) ImGui::PopStyleColor();
-                    // While the pointer is on the picker it is NOT on the scene:
-                    // without this a click would open the combo and pick an object
-                    // behind it in the same breath.
-                    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-                        sceneHovered = false;
-                    if (ImGui::IsItemHovered() && forcing)
-                        ImGui::SetTooltip("Saved with the scene: it opens this way\n"
-                                          "wherever it is reached from, in the\n"
-                                          "editor and in the shipped game, and no\n"
-                                          "start screen comes first.");
-                }
+                // Top right: what Play will start as (see ViewportHud.hpp). While
+                // the pointer is on it, it is not on the scene.
+                if (!playMode && viewhud::playAsPicker(sceneMin, sceneMax, sceneStartMode, history))
+                    sceneHovered = false;
 
-                // What the tracer is doing, over its own picture. A progressive
-                // render that says nothing is indistinguishable from a stuck
-                // one, and this one restarts whenever the camera moves -- so
-                // "waiting for the view to settle" is a thing it has to be able
-                // to say.
-                if (viewShade == kShadePathTraced && !playMode &&
-                    !viewTrace.status.empty()) {
-                    ImGui::GetWindowDrawList()->AddText(
-                        ImVec2(sceneMin.x + 10.0f, sceneMin.y + 8.0f),
-                        IM_COL32(255, 225, 140, 230), viewTrace.status.c_str());
-                }
+                // What the tracer is doing, over its own picture: it restarts
+                // whenever the camera moves, so "waiting for the view to settle"
+                // is a thing it has to be able to say.
+                if (viewShade == kShadePathTraced && !playMode)
+                    viewhud::traceStatus(sceneMin, viewTrace.status);
                 viewportHovered = sceneHovered;
                 // Cursor position inside the image, mapped to NDC (for picking).
                 // The IMAGE's rect again, not the last item's -- see above: this
@@ -10231,30 +10154,15 @@ int main(int argc, char** argv) {
                 const ImVec2 rsz(sceneMax.x - sceneMin.x, sceneMax.y - sceneMin.y);
                 viewportRectMin  = glm::vec2(rmin.x, rmin.y); // for the play crosshair
                 viewportRectSize = glm::vec2(rsz.x, rsz.y);
-                const ImVec2 mp   = ImGui::GetIO().MousePos;
-                viewportMouseNdc = glm::vec2(
-                    (rsz.x > 0.0f ? (mp.x - rmin.x) / rsz.x : 0.5f) * 2.0f - 1.0f,
-                    1.0f - (rsz.y > 0.0f ? (mp.y - rmin.y) / rsz.y : 0.5f) * 2.0f);
                 // ...and all of it, as the tools outside main() take it.
-                ViewportFrame sceneView;
-                {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    sceneView.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    sceneView.origin      = rmin;
-                    sceneView.w           = static_cast<float>(viewW);
-                    sceneView.h           = static_cast<float>(viewH);
-                    sceneView.hovered     = viewportHovered;
-                    sceneView.mouseNdc    = viewportMouseNdc;
-                    sceneView.mousePos    = mp;
-                    sceneView.cameraPos   = camera.position();
-                    sceneView.cameraFront = camera.front();
-                    sceneView.cameraFov   = camera.fov();
-                    sceneView.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                    sceneView.pickTerrain = roadPickTerrain;
-                    sceneView.groundAt    = [&streamer](float x, float z) {
-                        return streamer.heightAt(x, z);
-                    };
-                }
+                ViewportFrame sceneView = ViewportFrame::looking(
+                    camera, rmin, static_cast<float>(viewW), static_cast<float>(viewH),
+                    ImGui::GetIO().MousePos, viewportHovered);
+                sceneView.pickTerrain = roadPickTerrain;
+                sceneView.groundAt    = [&streamer](float x, float z) {
+                    return streamer.heightAt(x, z);
+                };
+                viewportMouseNdc = sceneView.mouseNdc;
                 // Keep the multi-selection consistent with the active object before
                 // any panel/viewport consumes it this frame.
                 sel.normalize();
@@ -10262,45 +10170,20 @@ int main(int argc, char** argv) {
                                   ImGui::IsMouseClicked(ImGuiMouseButton_Left);
 
                 // A camera preview owns the viewport: say which one, and give it
-                // a way out that is right where it took the view from. Without
-                // this the free camera has simply gone, and getting it back means
-                // knowing that some camera in the hierarchy has it -- a trap, and
-                // exactly the kind this editor is meant not to set.
+                // a way out right where it took the view from. The pick test
+                // above already latched a click -- one on the button must not
+                // also select whatever is behind it.
                 if (!playMode && activeCam >= 0) {
                     const Entity* pcam = document.find(activeCam);
-                    char lbl[160];
-                    std::snprintf(lbl, sizeof lbl, "Exit camera: %s",
-                                  pcam ? pcam->name.c_str() : "(gone)");
-                    ImGui::SetCursorScreenPos(ImVec2(rmin.x + 12.0f, rmin.y + 30.0f));
-                    if (ImGui::Button(lbl)) activeCam = -1;
-                    // The pick test above already latched this click. Clicking a
-                    // button that sits over the scene must not also select
-                    // whatever happens to be behind it.
-                    if (ImGui::IsItemHovered()) viewportClicked = false;
+                    if (viewhud::exitCamera(rmin, pcam ? pcam->name : std::string("(gone)"),
+                                            activeCam))
+                        viewportClicked = false;
                 }
 
-                // Which way we are looking, when it is a standard view. Blender
-                // puts this in the same corner, and for the same reason: front
-                // and back look identical until something moves, so a view you
-                // cannot name is one you have to test by nudging the camera --
-                // which is exactly what the standard views are for avoiding.
-                // The lens goes in the same place: an orthographic picture of a
-                // landscape is easy to mistake for a flat one.
-                if (!playMode) {
-                    const char* sv = viewnav::label(viewNav.current());
-                    const bool  ortho = camera.orthographic();
-                    char vl[48] = "";
-                    if (sv && ortho) std::snprintf(vl, sizeof vl, "%s (Ortho)", sv);
-                    else if (sv)     std::snprintf(vl, sizeof vl, "%s", sv);
-                    else if (ortho)   std::snprintf(vl, sizeof vl, "Orthographic");
-                    if (vl[0]) {
-                        ImDrawList* vdl = ImGui::GetWindowDrawList();
-                        const ImVec2 at(rmin.x + 12.0f, rmin.y + 10.0f);
-                        vdl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f),
-                                     IM_COL32(0, 0, 0, 160), vl);
-                        vdl->AddText(at, IM_COL32(235, 240, 250, 225), vl);
-                    }
-                }
+                // Which way we are looking, when it is a standard view, and the
+                // lens when it is orthographic (ViewportHud.hpp).
+                if (!playMode)
+                    viewhud::viewLabel(rmin, viewnav::label(viewNav.current()), camera.orthographic());
 
                 // UI overlay authoring preview: while the overlay editor is open and
                 // we're not playing, draw the 2D elements over the viewport (clipped
@@ -10563,12 +10446,7 @@ int main(int argc, char** argv) {
                         modelmode::ViewportHost mh;
                         mh.gizmoOut    = entityEditMode;
                         mh.faceDragged = gizmoDrag.faceActive;
-                        mh.frame       = [&](const glm::vec3& c, float r) {
-                            const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
-                            camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
-                            camFocusing     = true;
-                            if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
-                        };
+                        mh.frame       = frameSphere;
                         modelmode::viewport(editorCtx, sceneView, modelSess, mh);
                     }
 

@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+namespace fitzel { class Camera; }
+
 // The scene viewport this frame, as a tool needs it: the camera's
 // view-projection and where it looks from, the image's place and size on
 // screen, the cursor over it, and the ground under a point of it.
@@ -28,6 +30,12 @@ struct ViewportFrame {
     // The terrain under a viewport NDC point (main's roadPickTerrain), and its height.
     std::function<bool(glm::vec2, const glm::mat4&, glm::vec3&)> pickTerrain;
     std::function<float(float, float)>                           groundAt;
+
+    // What `cam` shows through an image at `origin`, `w` x `h` pixels, with the
+    // cursor at `mouse` (screen pixels): the view-projection, the cursor in NDC
+    // and the camera's own fields. The terrain callbacks are the caller's.
+    static ViewportFrame looking(const fitzel::Camera& cam, ImVec2 origin, float w, float h,
+                                 ImVec2 mouse, bool hovered);
 
     // The world ray under the cursor.
     void mouseRay(glm::vec3& origin, glm::vec3& dir) const;

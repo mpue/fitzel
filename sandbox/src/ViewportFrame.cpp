@@ -3,6 +3,26 @@
 #include <algorithm>
 #include <cmath>
 
+#include <fitzel/scene/Camera.hpp>
+
+ViewportFrame ViewportFrame::looking(const fitzel::Camera& cam, ImVec2 origin, float w, float h,
+                                     ImVec2 mouse, bool hovered) {
+    ViewportFrame f;
+    f.viewProj    = cam.projectionMatrix(w / h) * cam.viewMatrix();
+    f.origin      = origin;
+    f.w           = w;
+    f.h           = h;
+    f.hovered     = hovered;
+    f.mousePos    = mouse;
+    f.mouseNdc    = glm::vec2((w > 0.0f ? (mouse.x - origin.x) / w : 0.5f) * 2.0f - 1.0f,
+                              1.0f - (h > 0.0f ? (mouse.y - origin.y) / h : 0.5f) * 2.0f);
+    f.cameraPos   = cam.position();
+    f.cameraFront = cam.front();
+    f.cameraFov   = cam.fov();
+    f.orthoHalfH  = cam.orthographic() ? cam.orthoHalfHeight() : 0.0f;
+    return f;
+}
+
 void ViewportFrame::mouseRay(glm::vec3& origin, glm::vec3& dir) const {
     const glm::mat4 inv = glm::inverse(viewProj);
     glm::vec4 pn = inv * glm::vec4(mouseNdc, -1.0f, 1.0f); pn /= pn.w;
