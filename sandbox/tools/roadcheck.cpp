@@ -77,6 +77,7 @@
 
 #include "../src/LevelGen.hpp"
 #include "../src/RoadSet.hpp"
+#include "../src/RoadEdit.hpp"
 #include "../src/CitySystem.hpp"
 #include "../src/SandboxMath.hpp"
 
@@ -1034,6 +1035,52 @@ int main(int argc, char** argv) {
         std::snprintf(buf, sizeof buf, "%d samples across the street and its bed, the ground at "
                       "most %.2f m above the road", n, highest);
         check(n > 500 && highest < 0.05f, "a neighbour's shoulder stays off a road", buf);
+    }
+
+    // --- The point list's bookkeeping (roadedit: the editor's Add/Delete point) ----
+    // A bridge, a tunnel and a loop name their ends by control-point index: a point
+    // inserted before an end shifts it up, one erased shifts it down, and a
+    // structure ending ON the erased point goes with it. A new point takes the
+    // height and cross-fall of its neighbours.
+    {
+        const int iP = roads.add("Points");
+        RoadSystem& r = roads.at(iP);
+        // z = -80, -48, -16, 16, 48, 80 at indices 0..5.
+        setRoad(r, "Points", straightRun(200.0f, -80.0f, 80.0f, 6), 6.0f);
+        r.setLift(3, 2.0f);
+        r.setLift(4, 4.0f);
+        r.setBank(3, 4.0f);
+        r.setBank(4, 8.0f);
+        r.bridges = {{1, 3}};
+        r.tunnels = {{4, 5}};
+        roadloop::Spec lp;
+        lp.a = 2;
+        lp.b = 4;
+        r.loops = {lp};
+        const int at = roadedit::insertPoint(r, 4, {200.0f, 32.0f});
+        const bool shifted = at == 4 && r.roadPts.size() == 7 &&
+                             r.bridges[0].a == 1 && r.bridges[0].b == 3 &&
+                             r.tunnels[0].a == 5 && r.tunnels[0].b == 6 &&
+                             r.loops[0].a == 2 && r.loops[0].b == 5;
+        const bool inherits = std::fabs(r.liftOf(4) - 3.0f) < 1e-4f &&
+                              std::fabs(r.bankOf(4) - 6.0f) < 1e-4f;
+        const bool erased = roadedit::removePoint(r, 3) && r.roadPts.size() == 6 &&
+                            r.bridges.empty() &&
+                            r.tunnels.size() == 1 && r.tunnels[0].a == 4 && r.tunnels[0].b == 5 &&
+                            r.loops.size() == 1 && r.loops[0].a == 2 && r.loops[0].b == 4;
+        const bool outOfRange = !roadedit::removePoint(r, 99) && r.roadPts.size() == 6;
+        // Where a click lands: between the points either side of it, or past an
+        // open end -- extending the road there rather than splitting its last stretch.
+        const bool picks = roadedit::insertIndex(r, {201.0f, -60.0f}) == 1 &&
+                           roadedit::insertIndex(r, {200.0f, -120.0f}) == 0 &&
+                           roadedit::insertIndex(r, {200.0f, 130.0f}) == 6;
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "insert shifts %s, new point %s, erase %s, out of range %s, "
+                      "click picks %s", shifted ? "ok" : "WRONG", inherits ? "inherits" : "WRONG",
+                      erased ? "ok" : "WRONG", outOfRange ? "refused" : "WRONG",
+                      picks ? "ok" : "WRONG");
+        check(shifted && inherits && erased && outOfRange && picks,
+              "adding and deleting points keeps bridges, tunnels and loops on theirs", buf);
     }
 
     glfwDestroyWindow(win);

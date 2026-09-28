@@ -230,6 +230,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/ThumbCache.cpp
     # The Lua script editor window (its buffer, completion, New Script dialog).
     src/ScriptEditor.cpp
+    # The road tool's viewport handles and the point list's bookkeeping.
+    src/RoadEdit.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -682,7 +684,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/LevelGen.cpp
                          src/RoadSet.cpp src/RoadSystem.cpp src/RoadBridge.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
-                         src/RoadSide.cpp
+                         src/RoadSide.cpp src/RoadEdit.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/CitySystem.cpp
                          src/StreetSign.cpp
