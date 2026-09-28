@@ -89,6 +89,7 @@
 #include "MixerPanel.hpp"
 #include "Cursor3D.hpp"
 #include "MeshPaintPanel.hpp"
+#include "ViewTool.hpp"
 #include "ViewportPick.hpp"
 #include "ModelsPanel.hpp"
 #include "PrefabsPanel.hpp"
@@ -761,7 +762,8 @@ int main(int argc, char** argv) {
         motes.init();
         bool motesOn = false;
 
-        bool      grassPaintMode = false;      // grass brush active
+        // Which tool has the left mouse button in the viewport (ViewTool.hpp).
+        ViewTool  viewTool       = ViewTool::None;
         bool      brushErase     = false;      // stamp vs erase (shared)
         float     brushRadius    = 4.0f;       // world units (shared)
         float     brushDensity   = 1.0f;       // scatter-count multiplier (shared)
@@ -778,7 +780,6 @@ int main(int argc, char** argv) {
             setTerrainEditSnapshot(std::make_shared<const TerrainEditField>(sculptWork));
         };
         publishSculpt();                     // install the (empty) snapshot
-        bool  sculptMode     = false;
         // The brush's settings and the gesture in flight (see SculptPanel.hpp).
         sculptui::Brush sculpt;
 
@@ -792,7 +793,6 @@ int main(int argc, char** argv) {
             setTerrainPaintSnapshot(std::make_shared<const TerrainPaintField>(paintWork));
         };
         publishPaint();                      // install the (empty) snapshot
-        bool  paintMode     = false;
         int   paintLayer    = 0;             // which of the first 4 texture layers to paint
         float paintRadius   = 8.0f;          // world units
         float paintStrength = 0.5f;          // 0..1 brush intensity
@@ -802,14 +802,12 @@ int main(int argc, char** argv) {
         // A brush that puts textures on a modelled object: the painting itself
         // is in MeshPaint.cpp, the panel and the gesture in the viewport in
         // MeshPaintPanel.cpp, the brush's settings and stroke in meshBrush.
-        bool               meshPaintMode = false;
         meshpaintui::Brush meshBrush;
 
         // --- Object scatter -------------------------------------------------
         // A 3D brush that sprinkles imported models over the terrain as regular
         // Model entities, grouped under a root "Scattered" Empty; one stamp =
         // one undo step. Settings/placement/panel live in ScatterTool.
-        bool               scatterMode = false;
         scatterui::Settings scatterCfg;
 
         // --- Procedural buildings -------------------------------------------
@@ -980,7 +978,6 @@ int main(int argc, char** argv) {
         };
         applyGfx(gfxSet);   // the saved choices, before the first frame is drawn
 
-        bool roadEditMode = false;   // edit-mode flag (mutually exclusive brushes)
         int  roadSel      = -1;       // selected control point (-1 = none)
         int  roadSel2     = -1;       // shift-clicked second point (bridge far end)
         bool roadDragging = false;    // dragging the selected handle
@@ -1304,7 +1301,6 @@ int main(int argc, char** argv) {
         // is being edited, which of its points is selected, and whether a drag is
         // in flight. The undo bracket is the road's, with a Snapshot in place of
         // a Shape.
-        bool splineEditMode   = false;  // owns the LMB (mutually exclusive brushes)
         bool showSplines      = false;  // the panel's open flag
         int  splineSel        = -1;     // selected path
         int  splinePtSel      = -1;     // selected control point of that path
@@ -1336,10 +1332,9 @@ int main(int argc, char** argv) {
         };
 
         // --- Water editor state + undo ---------------------------------------
-        // The spline editor's five flags again. The one difference is what a
+        // The spline editor's flags again. The one difference is what a
         // commit means: pushing the undo step is also what re-cuts the bed, so
         // every gesture ends in exactly one carve however many frames it took.
-        bool riverEditMode   = false;  // owns the LMB (mutually exclusive brushes)
         bool showRivers      = false;  // the panel's open flag
         int  riverSel        = -1;     // selected watercourse
         int  riverPtSel      = -1;     // selected control point of it
@@ -3076,15 +3071,12 @@ int main(int argc, char** argv) {
 
         // --- Flowers (owned by VegetationSystem) -----------------------------
         if (!veg.initFlowers()) return 1;
-        bool flowerPaintMode = false; // brush mode flag; rest of flower state in veg
 
         // Gameplay RNG for spawner launch-direction randomization (persists across
         // spawns so successive emits vary within a Play session).
         std::mt19937 spawnRng(1234u);
         std::uniform_real_distribution<float> spawnU(0.0f, 1.0f);
 
-        // Tree brush mode flag; the rest of the tree state/logic lives in veg.
-        bool treePaintMode = false;
 
         // --- Audio: weather-driven sound layers --------------------------
         showProgress(0.82f, "Loading audio...");
@@ -7015,9 +7007,9 @@ int main(int argc, char** argv) {
                 // tool), then a second Esc clears the selection. Never quits.
                 // A road point selection is the innermost thing to let go of, so
                 // it clears first -- the bridge pair with it.
-                else if (roadEditMode && roadSel >= 0) { roadSel = roadSel2 = -1; }
-                else if (splineEditMode && splinePtSel >= 0) { splinePtSel = -1; }
-                else if (riverEditMode && riverPtSel >= 0) { riverPtSel = -1; }
+                else if (viewTool == ViewTool::Road && roadSel >= 0) { roadSel = roadSel2 = -1; }
+                else if (viewTool == ViewTool::Spline && splinePtSel >= 0) { splinePtSel = -1; }
+                else if (viewTool == ViewTool::River && riverPtSel >= 0) { riverPtSel = -1; }
                 else if (placeMode) { placeMode = false; }
                 else if (entityEditMode) { entityEditMode = false; }
                 else if (sel.valid()) { sel.clear(); }
@@ -9837,24 +9829,19 @@ int main(int argc, char** argv) {
                     // the left mouse button in the viewport.
                     gap();
                     {
+                        const bool roadOn = viewTool == ViewTool::Road;
                         char tip[160];
                         std::snprintf(tip, sizeof tip,
                                       "Road editor%s\n"
                                       "Click ground = add point, drag = move,\n"
                                       "Ctrl+drag = raise/lower, Del = delete.",
-                                      roadEditMode ? " (on)" : "");
-                        const bool hit = icon::button("roadTool", bs, tip, false, c,
-                                                    roadEditMode);
-                        icon::road(dl, c, r, roadEditMode ? icon::on() : icon::kOff);
+                                      roadOn ? " (on)" : "");
+                        const bool hit = icon::button("roadTool", bs, tip, false, c, roadOn);
+                        icon::road(dl, c, r, roadOn ? icon::on() : icon::kOff);
                         if (hit) {
-                            roadEditMode = !roadEditMode;
-                            if (roadEditMode) {
-                                // Same hand-off the panel's Edit mode checkbox
-                                // does: one tool owns the left button at a time.
-                                grassPaintMode = sculptMode = treePaintMode =
-                                    flowerPaintMode = paintMode = scatterMode = false;
-                                showRoads = true; // the tunables belong with the tool
-                            }
+                            // Takes the left button from whichever tool had it.
+                            takeTool(viewTool, ViewTool::Road, !roadOn);
+                            if (!roadOn) showRoads = true; // the tunables belong with the tool
                         }
                     }
                 }
@@ -10217,7 +10204,7 @@ int main(int argc, char** argv) {
                 // --- Road edit handles: the tool is in RoadEdit.cpp; main only
                 //     hands it the viewport and the undo bracket, like the
                 //     spline handles below.
-                if (roadEditMode) {
+                if (viewTool == ViewTool::Road) {
                     roadedit::Context rc{roads, roadSel, roadSel2, roadDragging, roadDragHeight};
                     rc.view        = sceneView;
                     rc.beginEdit   = beginRoadEdit;
@@ -10246,18 +10233,8 @@ int main(int argc, char** argv) {
                     sc.preview   = splinePreview.empty() ? nullptr : &splinePreview;
                     return sc;
                 };
-                if (splineEditMode) {
-                    // Only one tool may own the left button. The sibling panels
-                    // each switch their rivals off from their own list; rather
-                    // than thread this flag through three more PanelStates, the
-                    // newcomer yields whenever one of them is on.
-                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
-                        sculptMode || paintMode || scatterMode || roadEditMode ||
-                        meshPaintMode || riverEditMode) {
-                        splineEditMode = false;
-                    } else {
-                        splineedit::handle(splineContext());
-                    }
+                if (viewTool == ViewTool::Spline) {
+                    splineedit::handle(splineContext());
                 } else if (showSplines) {
                     // Panel open, edit mode off: still show the paths -- a bare
                     // one has nothing else to be seen by -- and the preview.
@@ -10268,20 +10245,14 @@ int main(int argc, char** argv) {
                 //     and canals. The tool is in RiverEdit.cpp -- main only hands
                 //     it the viewport and the undo bracket, and the bracket is
                 //     what cuts the bed when the gesture ends.
-                if (riverEditMode) {
-                    if (grassPaintMode || treePaintMode || flowerPaintMode ||
-                        sculptMode || paintMode || scatterMode || roadEditMode ||
-                        meshPaintMode || splineEditMode) {
-                        riverEditMode = false;
-                    } else {
-                        riveredit::Context rc{rivers, riverSel, riverPtSel,
-                                              riverDragging, riverDragHeight};
-                        rc.view      = sceneView;
-                        rc.beginEdit = beginRiverEdit;
-                        rc.endEdit   = commitRiverEdit;
-                        rc.editOpen  = [&riverUndoOpen] { return riverUndoOpen; };
-                        riveredit::handle(rc);
-                    }
+                if (viewTool == ViewTool::River) {
+                    riveredit::Context rc{rivers, riverSel, riverPtSel,
+                                          riverDragging, riverDragHeight};
+                    rc.view      = sceneView;
+                    rc.beginEdit = beginRiverEdit;
+                    rc.endEdit   = commitRiverEdit;
+                    rc.editOpen  = [&riverUndoOpen] { return riverUndoOpen; };
+                    riveredit::handle(rc);
                 }
 
                 // --- Vehicle setup handles: the tuning geometry drawn where it
@@ -10316,7 +10287,7 @@ int main(int argc, char** argv) {
                 // --- Grass brush: stamp/erase instanced blades under a circular
                 //     3D brush that hugs the terrain. Hold LMB and drag to paint;
                 //     hold Alt (or toggle Erase) to rub grass out. -------------
-                if (grassPaintMode) {
+                if (viewTool == ViewTool::Grass) {
                     const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
                     // Throttled so a slow drag doesn't pile blades up: a stamp
                     // every ~0.4 radius makes an even trail.
@@ -10332,7 +10303,7 @@ int main(int argc, char** argv) {
 
                 // --- Tree brush: scatter/erase hand-placed trees under a circular
                 //     3D brush. Drag LMB to plant; hold Alt (or Erase) to remove.
-                if (treePaintMode) {
+                if (viewTool == ViewTool::Trees) {
                     const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
                     groundbrush::drag(
                         at, lastStampPos, veg.treeBrushRadius * 0.5f,
@@ -10347,7 +10318,7 @@ int main(int argc, char** argv) {
 
                 // --- Flower brush: scatter/erase hand-placed blooms under a
                 //     circular 3D brush. Drag LMB to plant; Alt (or Erase) removes.
-                if (flowerPaintMode) {
+                if (viewTool == ViewTool::Flowers) {
                     const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
                     groundbrush::drag(
                         at, lastStampPos, veg.flowerBrushRadius * 0.4f,
@@ -10363,7 +10334,7 @@ int main(int argc, char** argv) {
                 // --- Object scatter brush: sprinkle weighted random models under
                 //     a circular 3D brush (one stamp = one undo step). Drag LMB
                 //     to scatter; hold Alt (or Erase) to remove scattered objects.
-                if (scatterMode) {
+                if (viewTool == ViewTool::Scatter) {
                     const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
                     // Throttled so a slow drag doesn't pile objects up: a stamp
                     // every ~0.6 radius makes an even trail.
@@ -10375,14 +10346,14 @@ int main(int argc, char** argv) {
 
                 // --- Terrain sculpt brush (SculptPanel.cpp): raise/lower/smooth/
                 //     flatten the ground under a 3D disc that hugs the surface. --
-                if (sculptMode)
+                if (viewTool == ViewTool::Sculpt)
                     sculptui::brushViewport(sculpt, sceneView, sculptWork, streamer, publishSculpt,
                                             veg.grassDirty, dt);
 
                 // --- Terrain texture paint brush: paint the chosen layer onto the
                 //     ground under a 3D disc. Hold LMB to paint; Alt (or Erase)
                 //     reverts toward the automatic height/slope blend. ----------
-                if (paintMode) {
+                if (viewTool == ViewTool::Paint) {
                     const groundbrush::Aim at = groundbrush::aim(sceneView, paintErase);
                     if (at.onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
                         const glm::vec2 c(at.center.x, at.center.z);
@@ -10404,13 +10375,13 @@ int main(int argc, char** argv) {
                 // --- Mesh texture paint brush: the terrain's layers, brushed
                 //     onto the selected modelled object. Hold LMB over the mesh;
                 //     Alt (or Erase) takes the paint back off. --------------
-                if (meshPaintMode)
-                    meshpaintui::brushViewport(
-                        editorCtx, sceneView, meshBrush, meshPaintMode,
-                        grassPaintMode || treePaintMode || flowerPaintMode || sculptMode ||
-                            paintMode || scatterMode || roadEditMode || splineEditMode ||
-                            riverEditMode,
-                        dt);
+                //     Also while a stroke is still open after the button went
+                //     to another tool: that call only closes it.
+                if (viewTool == ViewTool::MeshPaint || meshBrush.stroking) {
+                    bool on = viewTool == ViewTool::MeshPaint;
+                    meshpaintui::brushViewport(editorCtx, sceneView, meshBrush, on, dt);
+                    takeTool(viewTool, ViewTool::MeshPaint, on);
+                }
 
                 // --- Volumetric fog volume: a wireframe box while it is being
                 //     placed -------------------------------------------------
@@ -10482,10 +10453,7 @@ int main(int argc, char** argv) {
                     // actions on one click (road points used to drop a primitive
                     // under every waypoint placed in Create mode).
                     const bool toolOwnsClick =
-                        grassPaintMode || treePaintMode || flowerPaintMode ||
-                        roadEditMode || sculptMode || paintMode || scatterMode ||
-                        splineEditMode || meshPaintMode || riverEditMode ||
-                        vehGizmoOwnsMouse || modelling;
+                        viewTool != ViewTool::None || vehGizmoOwnsMouse || modelling;
                     viewpick::Host pickHost;
                     pickHost.canPick   = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
                                          !toolOwnsClick && viewportHovered;
@@ -10703,21 +10671,26 @@ int main(int argc, char** argv) {
             // road, since regenerating the ground moved all of them.
             if (roadsDirty) { roads.markNeedsBuild(); roadsDirty = false; }
 
-            sculptui::drawPanel({
-                showSculpt, sculptMode,
-                grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, paintMode,
-                scatterMode,
-                sculpt,
-                sculptWork, streamer, veg.grassDirty, publishSculpt,
-            });
-
-            paintui::drawPanel({
-                showPaint, paintMode,
-                grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, sculptMode,
-                scatterMode,
-                look, paintLayer, paintRadius, paintStrength, paintErase,
-                paintWork, streamer, publishPaint,
-            });
+            // Each tool panel shows its own on/off; switching one on takes the
+            // viewport's left button from whichever tool had it (ViewTool.hpp).
+            {
+                bool on = viewTool == ViewTool::Sculpt;
+                sculptui::drawPanel({
+                    showSculpt, on,
+                    sculpt,
+                    sculptWork, streamer, veg.grassDirty, publishSculpt,
+                });
+                takeTool(viewTool, ViewTool::Sculpt, on);
+            }
+            {
+                bool on = viewTool == ViewTool::Paint;
+                paintui::drawPanel({
+                    showPaint, on,
+                    look, paintLayer, paintRadius, paintStrength, paintErase,
+                    paintWork, streamer, publishPaint,
+                });
+                takeTool(viewTool, ViewTool::Paint, on);
+            }
 
             {
                 // Children of the "Scattered" group, for the panel's counter.
@@ -10726,14 +10699,14 @@ int main(int argc, char** argv) {
                 if (sg >= 0)
                     for (const Entity& e : entities)
                         if (e.parent == sg) ++scatteredCount;
+                bool on = viewTool == ViewTool::Scatter;
                 scatterui::drawPanel({
-                    showScatter, scatterMode,
-                    grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode,
-                    sculptMode, paintMode,
+                    showScatter, on,
                     brushErase, scatterCfg, models, scatteredCount,
                     roads.active().roadPts.size() >= 2,
                     scatterRoadside, scatterClearAll,
                 });
+                takeTool(viewTool, ViewTool::Scatter, on);
             }
 
             if (showBuildings) {
@@ -10780,9 +10753,11 @@ int main(int argc, char** argv) {
                 ImGui::Text("Blades: %d", veg.grassCount);
 
                 ui::sectionText("Paint grass (3D brush)");
-                if (ImGui::Checkbox("Paint mode", &grassPaintMode) && grassPaintMode)
-                    roadEditMode = sculptMode = treePaintMode = flowerPaintMode = paintMode = scatterMode = false; // brush owns the left button
-                if (grassPaintMode) {
+                {
+                    bool on = viewTool == ViewTool::Grass;
+                    if (ImGui::Checkbox("Paint mode", &on)) takeTool(viewTool, ViewTool::Grass, on);
+                }
+                if (viewTool == ViewTool::Grass) {
                     ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
                         "Drag = paint | hold Alt = erase");
                 } else {
@@ -10817,10 +10792,11 @@ int main(int argc, char** argv) {
                 ImGui::SameLine();
                 ImGui::TextDisabled("(grass.txt)");
 
-                veg.panelTrees(treePaintMode, brushErase, [&]{
-                    grassPaintMode = roadEditMode = sculptMode =
-                        flowerPaintMode = paintMode = scatterMode = false; // own the LMB
-                });
+                {
+                    bool on = viewTool == ViewTool::Trees;
+                    veg.panelTrees(on, brushErase);
+                    takeTool(viewTool, ViewTool::Trees, on);
+                }
 
                 ui::sectionText("Flowers");
                 ImGui::Checkbox("Flowers", &veg.flowerEnabled);
@@ -10831,9 +10807,12 @@ int main(int argc, char** argv) {
                 ImGui::Text("Flowers: %d", veg.flowerCount);
 
                 ui::sectionText("Paint flowers (3D brush)");
-                if (ImGui::Checkbox("Paint mode##flower", &flowerPaintMode) && flowerPaintMode)
-                    grassPaintMode = roadEditMode = sculptMode = treePaintMode = paintMode = scatterMode = false;
-                if (flowerPaintMode)
+                {
+                    bool on = viewTool == ViewTool::Flowers;
+                    if (ImGui::Checkbox("Paint mode##flower", &on))
+                        takeTool(viewTool, ViewTool::Flowers, on);
+                }
+                if (viewTool == ViewTool::Flowers)
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f),
                         "Drag = plant | hold Alt = erase");
                 else
@@ -10878,10 +10857,8 @@ int main(int argc, char** argv) {
 
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
-            roadui::drawPanel({showRoads, roads, roadEditMode, roadSel, roadSel2, assetDb,
-                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = splineEditMode =
-                         riverEditMode = false; }, // don't fight over LMB
+            bool roadOn = viewTool == ViewTool::Road;
+            roadui::drawPanel({showRoads, roads, roadOn, roadSel, roadSel2, assetDb,
                 buildRoad, deleteRoadPoint,
                 addRoad, deleteRoad, selectRoad,
                 roadPrefabCfg,
@@ -10891,15 +10868,14 @@ int main(int argc, char** argv) {
                          : prefab::list(d); },
                 placeRoadPrefabs,
                 beginRoadEdit, commitRoadEdit});
+            takeTool(viewTool, ViewTool::Road, roadOn);
 
             // Fences, walls and railway track: the paths live in SplineSystem
             // (saved + undoable on their own timeline), the panel only edits them.
             // See SplinePanel.cpp.
-            splineui::drawPanel({showSplines, splines, splineEditMode, splineSel,
+            bool splineOn = viewTool == ViewTool::Spline;
+            splineui::drawPanel({showSplines, splines, splineOn, splineSel,
                 splinePtSel, materials,
-                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = roadEditMode =
-                         riverEditMode = false; },
                 [&](fitzel::AssetId id) {
                     // Jump to the material the author just pointed an element at,
                     // so giving it a texture is one click from the picker.
@@ -10915,16 +10891,16 @@ int main(int argc, char** argv) {
                          ? std::vector<std::pair<std::string, std::string>>()
                          : prefab::list(d); },
                 placeAlongSpline});
+            takeTool(viewTool, ViewTool::Spline, splineOn);
 
             // Brooks, rivers and canals: the courses live in RiverSystem (saved +
             // undoable on their own timeline), the panel only edits them. See
             // RiverPanel.cpp.
-            riverui::drawPanel({showRivers, rivers, riverEditMode, riverSel,
+            bool riverOn = viewTool == ViewTool::River;
+            riverui::drawPanel({showRivers, rivers, riverOn, riverSel,
                 riverPtSel,
-                [&]{ grassPaintMode = sculptMode = treePaintMode = flowerPaintMode =
-                         paintMode = scatterMode = roadEditMode =
-                         splineEditMode = false; },
                 beginRiverEdit, commitRiverEdit});
+            takeTool(viewTool, ViewTool::River, riverOn);
 
             // Roadside city: the biome rules live on the road (saved + undoable
             // with it), the panel only edits them. See CityPanel.cpp.
@@ -11000,11 +10976,12 @@ int main(int argc, char** argv) {
             // through and the open project to keep its patches in.
             if (showSynth) synthPanel.draw(showSynth, audio, currentProject);
 
-            if (showMeshPaint)
+            if (showMeshPaint) {
+                bool on = viewTool == ViewTool::MeshPaint;
                 meshpaintui::panel(editorCtx, meshBrush,
-                                   {showMeshPaint, meshPaintMode, paintMode, grassPaintMode,
-                                    roadEditMode, treePaintMode, flowerPaintMode, sculptMode,
-                                    scatterMode, showMaterials, [&] { convertToMesh(); }});
+                                   {showMeshPaint, on, showMaterials, [&] { convertToMesh(); }});
+                takeTool(viewTool, ViewTool::MeshPaint, on);
+            }
 
             cursor3d::panel(editorCtx, cursor,
                             {showCursor, showGrid, gridFade,

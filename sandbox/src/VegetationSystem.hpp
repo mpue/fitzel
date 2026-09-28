@@ -253,10 +253,10 @@ public:
     void removeLOD(int s, int lod);
     void setLODModel(int s, int lod, const std::string& file);
     void setBillboard(int s, const std::string& file);
-    // The whole Trees + Paint-trees editor panel (keeps main.cpp small). onGrabLMB
-    // switches the sibling viewport brushes off when tree paint mode is enabled.
-    void panelTrees(bool& treePaintMode, bool& brushErase,
-                    const std::function<void()>& onGrabLMB);
+    // The whole Trees + Paint-trees editor panel (keeps main.cpp small).
+    // treePaintMode is the tree brush's own switch; which tool has the left
+    // button is main's (ViewTool.hpp).
+    void panelTrees(bool& treePaintMode, bool& brushErase);
     // Scene persistence for the species config (main threads these into its own
     // settings JSON block). Painted trees are saved separately by main.
     void serializeTrees(nlohmann::json& j) const;

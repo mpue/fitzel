@@ -73,9 +73,7 @@ void drawPanel(const PanelState& s) {
             return;
         }
 
-        if (ImGui::Checkbox("Paint mode", &s.paintMode) && s.paintMode)
-            s.terrainPaintMode = s.grassPaintMode = s.roadEditMode = s.treePaintMode =
-                s.flowerPaintMode = s.sculptMode = s.scatterMode = false; // owns the LMB
+        ImGui::Checkbox("Paint mode", &s.paintMode);
         if (s.paintMode)
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.85f, 1.0f),
                 "Hold LMB on the object | Alt (or Erase) takes the paint back off");
@@ -183,8 +181,6 @@ void panel(EditorContext& ed, Brush& brush, const Host& h) {
     bool     wantClearPaint = false;
     drawPanel({
         h.show, h.paintMode,
-        h.terrainPaintMode, h.grassPaintMode, h.roadEditMode, h.treePaintMode,
-        h.flowerPaintMode, h.sculptMode, h.scatterMode,
         ed.materials, brush.slot, brush.radius, brush.strength,
         brush.detail, brush.erase,
         mc, haveSel,
@@ -227,7 +223,7 @@ void panel(EditorContext& ed, Brush& brush, const Host& h) {
 }
 
 void brushViewport(EditorContext& ed, const ViewportFrame& view, Brush& brush,
-                   bool& paintMode, bool othersActive, float dt) {
+                   bool& paintMode, float dt) {
     MeshComponent* mc = selectedMesh(ed);
     // Bank a stroke that is in progress, whichever way this is left. Without
     // it, dropping the brush mid-stroke keeps the snapshot around and the NEXT
@@ -242,12 +238,10 @@ void brushViewport(EditorContext& ed, const ViewportFrame& view, Brush& brush,
         auto cmd = std::make_unique<ModifyEntityCmd>(brush.before, *e);
         if (!cmd->trivial()) ed.history.pushApplied(std::move(cmd));
     };
-    // Only one tool may own the left button. The older panels each switch
-    // their rivals off from their own list; rather than add this one to six of
-    // them, the newcomer yields -- the same deal the spline editor takes.
-    if (othersActive) {
+    // The button went to another tool (ViewTool.hpp): close the stroke it
+    // left open, and nothing else.
+    if (!paintMode) {
         bankStroke();
-        paintMode = false;
         return;
     }
     if (!mc) {

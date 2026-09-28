@@ -74,16 +74,9 @@ struct Brush {
 
 struct PanelState {
     bool& show;
+    // Only this tool's own switch: which tool has the left button is main's
+    // (ViewTool.hpp), so turning this on switches the others off there.
     bool& sculptMode;
-
-    // The other viewport brushes -- switched off when sculpt grabs the left button
-    // so only one tool owns the LMB at a time.
-    bool& grassPaintMode;
-    bool& roadEditMode;
-    bool& treePaintMode;
-    bool& flowerPaintMode;
-    bool& paintMode;
-    bool& scatterMode;
 
     Brush& brush;
 

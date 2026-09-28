@@ -15,15 +15,9 @@ namespace paintui {
 
 struct PanelState {
     bool& show;
+    // Only this tool's own switch: which tool has the left button is main's
+    // (ViewTool.hpp), so turning this on switches the others off there.
     bool& paintMode;
-
-    // Other viewport brushes -- switched off when paint grabs the left button.
-    bool& grassPaintMode;
-    bool& roadEditMode;
-    bool& treePaintMode;
-    bool& flowerPaintMode;
-    bool& sculptMode;
-    bool& scatterMode;
 
     const TerrainLook& look;   // layer list, for naming the paint targets
     int&   layer;              // paint slot (0..3) = which textured layer to paint

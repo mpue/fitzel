@@ -34,9 +34,6 @@ struct PanelState {
     // is how a wall gets a brick texture and its coping a stone one.
     std::vector<MaterialDef>& materials;
 
-    // Turning edit mode on has to switch the sibling brushes off, or two tools
-    // fight over the left button. main owns those flags; it hands us the one call.
-    std::function<void()> grabLMB;
     // Show a material in the Materials panel (main owns the selection + that
     // window's flag), so "give this brick a texture" is one click from here
     // instead of a hunt through a list of look-alike names.

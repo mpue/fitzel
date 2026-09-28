@@ -10,9 +10,13 @@
 //     to the modelling panel; a drop on empty sky changes nothing.
 //   - the mesh paint brush (MeshPaintPanel): a held button paints the chosen
 //     slot onto the mesh under the cursor, splitting its faces, and the whole
-//     stroke is one undo step; an empty slot lays nothing down; a rival tool
-//     or a selection off the mesh makes it let go of the left button. It runs
-//     inside a real ImGui frame, just one nobody draws.
+//     stroke is one undo step; an empty slot lays nothing down; the button
+//     going to another tool mid-stroke banks the stroke it left open, and a
+//     selection off the mesh makes it let go of the button. It runs inside a
+//     real ImGui frame, just one nobody draws.
+//   - which tool has the left button (ViewTool): switching one on takes it
+//     from the one that had it; switching off one that did not have it
+//     changes nothing.
 //   - the ground brushes' drag (GroundBrush: grass, trees, flowers, scatter):
 //     a press stamps, a held drag stamps again only every `spacing` metres, a
 //     fresh press starts over, erasing rubs every frame and never stamps, and
@@ -81,6 +85,7 @@
 #include "../src/ModelMode.hpp"
 #include "../src/VehicleGizmo.hpp"
 #include "../src/ViewportHud.hpp"
+#include "../src/ViewTool.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -153,6 +158,18 @@ int main() {
     blue.assetId = fitzel::AssetId::generate();
     blue.name    = "Blue";
     materials.push_back(blue);
+
+    // --- Which tool has the left button --------------------------------------------------------
+    {
+        ViewTool tool = ViewTool::Road;
+        takeTool(tool, ViewTool::Spline, true);
+        const bool took = tool == ViewTool::Spline;
+        takeTool(tool, ViewTool::Road, false);   // the road was not holding it
+        const bool kept = tool == ViewTool::Spline;
+        takeTool(tool, ViewTool::Spline, false);
+        check(took && kept && tool == ViewTool::None,
+              "a tool switched on takes the left button; one switched off that did not have it changes nothing");
+    }
 
     // --- The frame a camera sees through an image -------------------------------------------
     {
@@ -251,11 +268,11 @@ int main() {
     // Scene window as main calls it.
     meshpaintui::Brush brush;
     bool paintMode = true;
-    auto paintFrame = [&](bool lmb, bool othersActive = false) {
+    auto paintFrame = [&](bool lmb) {
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
         ImGui::NewFrame();
         ImGui::Begin("Scene");
-        meshpaintui::brushViewport(ed, view, brush, paintMode, othersActive, 1.0f / 60.0f);
+        meshpaintui::brushViewport(ed, view, brush, paintMode, 1.0f / 60.0f);
         ImGui::End();
         ImGui::Render();
     };
@@ -310,12 +327,17 @@ int main() {
         brush.slot = 0;
     }
     {
-        // A rival grabs the left button mid-stroke: the stroke is banked, not lost.
+        // The button goes to another tool mid-stroke: main still calls the
+        // brush while its stroke is open, with its switch off, and the stroke
+        // is banked, not lost.
         const unsigned rev = history.revision();
         for (int i = 0; i < 5; ++i) paintFrame(true);
-        paintFrame(true, true);
+        ViewTool tool = ViewTool::MeshPaint;
+        takeTool(tool, ViewTool::Grass, true);
+        paintMode = tool == ViewTool::MeshPaint;
+        paintFrame(true);
         check(!paintMode && !brush.stroking && history.revision() == rev + 1,
-              "a rival tool takes the left button: the brush banks its stroke and lets go");
+              "the left button goes to another tool mid-stroke: the brush banks the stroke it left open");
         paintFrame(false);
     }
     {

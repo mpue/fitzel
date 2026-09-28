@@ -1659,8 +1659,7 @@ void VegetationSystem::drawTreeBillboards(const FrameContext& c,
     glEnable(GL_CULL_FACE);
 }
 
-void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
-                                  const std::function<void()>& onGrabLMB) {
+void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase) {
     // Master toggle + one-line status so the section reads at a glance.
     ImGui::Checkbox("Trees", &treeEnabled);
     ImGui::SameLine();
@@ -1847,7 +1846,7 @@ void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase,
     // === Paint trees (foldable, closed by default) =========================
     if (ui::header("Paint trees (3D brush)")) {
         ImGui::Indent();
-        if (ImGui::Checkbox("Paint mode##tree", &treePaintMode) && treePaintMode) onGrabLMB();
+        ImGui::Checkbox("Paint mode##tree", &treePaintMode);
         if (treePaintMode)
             ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1.0f),
                                "Drag = plant | hold Alt = erase");

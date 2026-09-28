@@ -84,15 +84,9 @@ std::vector<int> collectInBrush(const Document& doc, int groupId,
 
 struct PanelState {
     bool& show;
+    // Only this tool's own switch: which tool has the left button is main's
+    // (ViewTool.hpp), so turning this on switches the others off there.
     bool& scatterMode;
-
-    // The other viewport brushes -- switched off when scatter grabs the LMB.
-    bool& grassPaintMode;
-    bool& roadEditMode;
-    bool& treePaintMode;
-    bool& flowerPaintMode;
-    bool& sculptMode;
-    bool& paintMode;
 
     bool&         brushErase;     // stamp vs erase (shared with the other brushes)
     Settings&     cfg;

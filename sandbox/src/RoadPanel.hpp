@@ -34,9 +34,6 @@ struct PanelState {
     // side-object model picker -- not just the ones already imported.
     fitzel::AssetDatabase& assetDb;
 
-    // Turning edit mode on has to switch the sibling brushes off, or two tools
-    // fight over the left button. main owns those flags; it hands us the one call.
-    std::function<void()> grabLMB;
     // Commit the road into the terrain (grades the corridor, lofts mesh+collider,
     // republishes the terrain). main owns the terrain field, so it owns this.
     std::function<void()> build;

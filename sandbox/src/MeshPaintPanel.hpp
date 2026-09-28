@@ -59,16 +59,9 @@ struct SlotEdit {
 
 struct PanelState {
     bool& show;
+    // Only this tool's own switch: which tool has the left button is main's
+    // (ViewTool.hpp), so turning this on switches the others off there.
     bool& paintMode;
-
-    // Other viewport brushes -- switched off when this one grabs the left button.
-    bool& terrainPaintMode;
-    bool& grassPaintMode;
-    bool& roadEditMode;
-    bool& treePaintMode;
-    bool& flowerPaintMode;
-    bool& sculptMode;
-    bool& scatterMode;
 
     const std::vector<MaterialDef>& materials; // the library the slots pick from
     int&   slot;               // which of the mesh's four slots the brush paints
@@ -100,15 +93,7 @@ void drawPanel(const PanelState& s);
 // What the panel needs from main beyond the editor's core.
 struct Host {
     bool& show;
-    bool& paintMode;
-    // The other viewport brushes (see PanelState).
-    bool& terrainPaintMode;
-    bool& grassPaintMode;
-    bool& roadEditMode;
-    bool& treePaintMode;
-    bool& flowerPaintMode;
-    bool& sculptMode;
-    bool& scatterMode;
+    bool& paintMode;               // this tool's own switch (see PanelState)
     bool& showMaterials;           // "Edit" on a slot opens the Materials panel
     std::function<void()> convert; // built-in shape -> editable mesh
 };
@@ -118,12 +103,13 @@ struct Host {
 // undo step once it has drawn.
 void panel(EditorContext& ed, Brush& brush, const Host& h);
 
-// One frame of the brush while mesh paint owns the left mouse button: hold it
-// over the selected mesh to paint the chosen slot, Alt (or Erase) takes the
-// paint back off; the cursor ring lies in the face under it. `othersActive`: a
-// rival tool has the left button, so this one banks its stroke and lets go --
-// as it does when the selection moves off the mesh.
+// One frame of the brush: while `paintMode` (mesh paint has the left mouse
+// button), hold it over the selected mesh to paint the chosen slot, Alt (or
+// Erase) takes the paint back off; the cursor ring lies in the face under it.
+// Call it too while a stroke is still open after the button went to another
+// tool: with `paintMode` off it banks that stroke and does nothing else -- as
+// it does, letting go of the button, when the selection moves off the mesh.
 void brushViewport(EditorContext& ed, const ViewportFrame& view, Brush& brush,
-                   bool& paintMode, bool othersActive, float dt);
+                   bool& paintMode, float dt);
 
 } // namespace meshpaintui

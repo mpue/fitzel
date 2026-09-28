@@ -13,9 +13,7 @@ namespace sculptui {
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
     if (ImGui::Begin("Terrain Sculpt", &s.show)) {
-        if (ImGui::Checkbox("Sculpt mode", &s.sculptMode) && s.sculptMode)
-            s.grassPaintMode = s.roadEditMode = s.treePaintMode =
-                s.flowerPaintMode = s.paintMode = s.scatterMode = false; // brush owns the LMB
+        ImGui::Checkbox("Sculpt mode", &s.sculptMode);
         if (s.sculptMode)
             ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.6f, 1.0f),
                 s.brush.tool == 8 ? "Press and drag to pull the ground out"

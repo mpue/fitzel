@@ -272,9 +272,7 @@ std::vector<int> collectInBrush(const Document& doc, int groupId,
 void drawPanel(const PanelState& s) {
     if (!s.show) return;
     if (ImGui::Begin("Scatter", &s.show)) {
-        if (ImGui::Checkbox("Scatter mode", &s.scatterMode) && s.scatterMode)
-            s.grassPaintMode = s.roadEditMode = s.treePaintMode =
-                s.flowerPaintMode = s.sculptMode = s.paintMode = false; // brush owns the LMB
+        ImGui::Checkbox("Scatter mode", &s.scatterMode);
         if (s.scatterMode)
             ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.4f, 1.0f),
                 "Drag = scatter | hold Alt (or Erase) = remove");
