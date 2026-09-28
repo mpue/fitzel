@@ -17,12 +17,16 @@
 //     a press stamps, a held drag stamps again only every `spacing` metres, a
 //     fresh press starts over, erasing rubs every frame and never stamps, and
 //     a cursor off the ground does nothing.
+//   - the viewport's marks (ViewportOverlay, ViewportFrame::wireBox): the
+//     selection's box and an Empty's icon are drawn when they are in front of
+//     the camera and not at all from behind it, and nothing without a selection.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -36,6 +40,7 @@
 #include "../src/Document.hpp"
 #include "../src/EditorContext.hpp"
 #include "../src/GroundBrush.hpp"
+#include "../src/ViewportOverlay.hpp"
 #include "../src/MeshPaintPanel.hpp"
 #include "../src/ModelLibrary.hpp"
 #include "../src/SceneDrop.hpp"
@@ -307,6 +312,39 @@ int main() {
         dragFrame(12.0f, true);
         check(puts.size() == stamped && rubs == 4, "a cursor off the viewport stamps nothing");
         dragFrame(12.0f, false);
+    }
+
+    // --- The viewport's marks -----------------------------------------------------------
+    {
+        // How many vertices one call adds to the Scene window's draw list.
+        auto drawn = [&](const std::function<void()>& draw) {
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            const int before = dl->VtxBuffer.Size;
+            draw();
+            const int added = dl->VtxBuffer.Size - before;
+            ImGui::End();
+            ImGui::Render();
+            return added;
+        };
+        entities.clear();
+        sel.clear();
+        entities.push_back(makeBox(4, glm::vec3(0.0f)));                 // in view
+        entities.push_back(makeBox(5, glm::vec3(0.0f, 0.0f, 20.0f)));    // behind the camera
+        check(drawn([&] { overlay::selection(ed, view); }) == 0, "no selection, no box");
+        sel.select(4);
+        check(drawn([&] { overlay::selection(ed, view); }) > 0, "the selected box is outlined");
+        sel.select(5);
+        check(drawn([&] { overlay::selection(ed, view); }) == 0,
+              "...and not from behind the camera");
+        std::vector<Entity> empties;
+        empties.push_back(makeBox(6, glm::vec3(0.0f)));
+        empties.back().type = EntityType::Empty;
+        check(drawn([&] { overlay::empties(empties, view); }) > 0, "an Empty in view gets its icon");
+        empties.back().center = glm::vec3(0.0f, 0.0f, 20.0f);
+        check(drawn([&] { overlay::empties(empties, view); }) == 0, "...and not from behind the camera");
+        sel.clear();
     }
 
     ImGui::DestroyContext();

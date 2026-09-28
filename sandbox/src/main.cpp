@@ -116,6 +116,7 @@
 #include "EditorContext.hpp"
 #include "SceneDrop.hpp"
 #include "GroundBrush.hpp"
+#include "ViewportOverlay.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -10754,34 +10755,12 @@ int main(int argc, char** argv) {
                 // box is drawn, from the same helper the march is fed by -- what
                 // is outlined here IS what is marched, follow-camera included.
                 if (volFogSet.showVolume && !playMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
                     glm::vec3 lo, hi;
                     VolumetricFog::worldBox(volFogSet, camera.position(), lo, hi);
-
-                    ImVec2 sp[8];
-                    bool   ok[8];
-                    for (int c = 0; c < 8; ++c) {
-                        const glm::vec3 w((c & 1) ? hi.x : lo.x, (c & 2) ? hi.y : lo.y,
-                                          (c & 4) ? hi.z : lo.z);
-                        const glm::vec4 cc = vp * glm::vec4(w, 1.0f);
-                        ok[c] = cc.w > 1e-4f;
-                        if (ok[c]) {
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            ok[c] = n.z <= 1.0f;
-                            sp[c] = ImVec2(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                           org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                        }
-                    }
-                    static const int kEdges[12][2] = {
-                        {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
-                        {0,4},{1,5},{2,6},{3,7}};
-                    ImDrawList* dl = ImGui::GetWindowDrawList();
-                    const ImU32 col = volFogSet.enabled ? IM_COL32(150, 200, 255, 190)
-                                                        : IM_COL32(150, 200, 255, 80);
-                    for (const auto& e : kEdges)
-                        if (ok[e[0]] && ok[e[1]]) dl->AddLine(sp[e[0]], sp[e[1]], col, 1.5f);
+                    sceneView.wireBox(glm::mat4(1.0f), lo, hi,
+                                      volFogSet.enabled ? IM_COL32(150, 200, 255, 190)
+                                                        : IM_COL32(150, 200, 255, 80),
+                                      1.5f);
                 }
 
                 // --- Solid blocks: click to select an existing box or place a
@@ -10803,31 +10782,7 @@ int main(int argc, char** argv) {
                     }
                     // Draw it: a red/white split ring with crosshair ticks, always
                     // on top (2D overlay), so it reads like Blender's cursor.
-                    if (cursorVisible && !playMode) {
-                        const glm::vec4 cc = vp * glm::vec4(cursor3D, 1.0f);
-                        if (cc.w > 1e-4f) {
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            if (n.z <= 1.0f) {
-                                const ImVec2 c(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                               rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                                ImDrawList* cdl = ImGui::GetWindowDrawList();
-                                const float R = 10.0f;
-                                const ImU32 red = IM_COL32(232, 66, 66, 255);
-                                const ImU32 wht = IM_COL32(245, 245, 245, 255);
-                                for (int s = 0; s < 8; ++s) {
-                                    const float a0 = s * 0.7853982f, a1 = (s + 1) * 0.7853982f;
-                                    cdl->PathArcTo(c, R, a0, a1, 8);
-                                    cdl->PathStroke((s & 1) ? wht : red, 0, 2.2f);
-                                }
-                                const ImU32 k = IM_COL32(20, 20, 20, 220);
-                                cdl->AddLine({c.x - R - 5, c.y}, {c.x - R + 1, c.y}, k, 1.4f);
-                                cdl->AddLine({c.x + R - 1, c.y}, {c.x + R + 5, c.y}, k, 1.4f);
-                                cdl->AddLine({c.x, c.y - R - 5}, {c.x, c.y - R + 1}, k, 1.4f);
-                                cdl->AddLine({c.x, c.y + R - 1}, {c.x, c.y + R + 5}, k, 1.4f);
-                                cdl->AddCircleFilled(c, 1.6f, k);
-                            }
-                        }
-                    }
+                    if (cursorVisible && !playMode) overlay::cursorMark(sceneView, cursor3D);
                     // The mesh being modelled: wireframe, corners, the element under
                     // the pointer, the selection, the preview of a hovered button
                     // and the flash of the last edit. Drawn as a 2D overlay like
@@ -11128,139 +11083,13 @@ int main(int argc, char** argv) {
                             }
                         }
 
-                        // Oriented wireframe highlight. One projector, reused for the
-                        // active object (bright) and any other selected objects (dim),
-                        // so a multi-selection shows every picked box.
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        auto wireBox = [&](const Entity& e, ImU32 col, float thick) {
-                            const glm::mat4 boxX =
-                                composeModel(e.center, e.rotation, glm::vec3(1.0f));
-                            ImVec2 sp[8]; bool ok[8];
-                            for (int c = 0; c < 8; ++c) {
-                                const glm::vec3 lh((c & 1) ? e.half.x : -e.half.x,
-                                                   (c & 2) ? e.half.y : -e.half.y,
-                                                   (c & 4) ? e.half.z : -e.half.z);
-                                const glm::vec4 cc = vp * (boxX * glm::vec4(lh, 1.0f));
-                                ok[c] = cc.w > 1e-4f;
-                                if (ok[c]) {
-                                    const glm::vec3 n = glm::vec3(cc) / cc.w;
-                                    ok[c] = n.z <= 1.0f;
-                                    sp[c] = ImVec2(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                                   rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                                }
-                            }
-                            static const int kBoxEdges[12][2] = {
-                                {0,1},{2,3},{4,5},{6,7}, {0,2},{1,3},{4,6},{5,7},
-                                {0,4},{1,5},{2,6},{3,7}};
-                            for (const auto& ed : kBoxEdges)
-                                if (ok[ed[0]] && ok[ed[1]])
-                                    dl->AddLine(sp[ed[0]], sp[ed[1]], col, thick);
-                        };
-                        // Other selected objects first (dim) so the active box (bright)
-                        // draws on top.
-                        for (int sid : sel.multi()) {
-                            if (sid == selId) continue;
-                            if (const Entity* se = document.find(sid))
-                                wireBox(*se, IM_COL32(255, 170, 40, 150), 1.4f);
-                        }
-                        wireBox(b, IM_COL32(255, 140, 0, 230), 1.8f);
-
-                        // Component gizmos: each component of the selected entity
-                        // draws its own world-space overlay (a radius, a path).
-                        // Generic -- the viewport only supplies the projection, so
-                        // a new component brings its gizmo with no change here.
-                        struct VpGizmo : GizmoDraw {
-                            ImDrawList* dl; glm::mat4 vp; ImVec2 org; float vw, vh;
-                            bool project(const glm::vec3& w, ImVec2& out) const {
-                                const glm::vec4 c = vp * glm::vec4(w, 1.0f);
-                                if (c.w <= 1e-4f) return false;
-                                const glm::vec3 n = glm::vec3(c) / c.w;
-                                if (n.z > 1.0f) return false;
-                                out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * vw,
-                                             org.y + (1.0f - (n.y * 0.5f + 0.5f)) * vh);
-                                return true;
-                            }
-                            static ImU32 toCol(const glm::vec4& c) {
-                                return IM_COL32(int(c.r * 255.0f), int(c.g * 255.0f),
-                                                int(c.b * 255.0f), int(c.a * 255.0f));
-                            }
-                            void line(const glm::vec3& a, const glm::vec3& b,
-                                      const glm::vec4& c) override {
-                                ImVec2 pa, pb;
-                                if (project(a, pa) && project(b, pb))
-                                    dl->AddLine(pa, pb, toCol(c), 2.0f);
-                            }
-                            void circle(const glm::vec3& ctr, float rad,
-                                        const glm::vec3& axis, const glm::vec4& c) override {
-                                const glm::vec3 n = glm::normalize(axis);
-                                const glm::vec3 up = (std::abs(n.y) < 0.99f)
-                                    ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0);
-                                const glm::vec3 u = glm::normalize(glm::cross(n, up));
-                                const glm::vec3 v = glm::cross(n, u);
-                                const int SEG = 40;
-                                ImVec2 prev; bool have = false;
-                                for (int i = 0; i <= SEG; ++i) {
-                                    const float a = 6.2831853f * i / SEG;
-                                    ImVec2 s2;
-                                    if (!project(ctr + (u * std::cos(a) + v * std::sin(a)) * rad, s2)) {
-                                        have = false; continue;
-                                    }
-                                    if (have) dl->AddLine(prev, s2, toCol(c), 1.5f);
-                                    prev = s2; have = true;
-                                }
-                            }
-                        };
-                        VpGizmo gz;
-                        gz.dl = dl; gz.vp = vp; gz.org = rmin;
-                        gz.vw = static_cast<float>(viewW); gz.vh = static_cast<float>(viewH);
-                        if (b.parent >= 0)
-                            if (const Entity* pe = document.find(b.parent)) {
-                                gz.parentCenter = pe->center;
-                                gz.parentHalf   = pe->half;
-                                gz.hasParent    = true;
-                            }
-                        // A multishot camera's "parent" for gizmo purposes is
-                        // what it SHOOTS, which is deliberately not what it hangs
-                        // from (see CameraComponent::shotTarget). Same question --
-                        // which object is this camera about -- so it goes down the
-                        // same channel rather than growing a second one.
-                        if (const auto* mcam = b.components.get<CameraComponent>();
-                            mcam && mcam->mode == CameraComponent::Multishot &&
-                            mcam->shotTarget >= 0)
-                            if (const Entity* se = document.find(mcam->shotTarget)) {
-                                gz.parentCenter = se->center;
-                                gz.parentHalf   = se->half;
-                                gz.hasParent    = true;
-                            }
-                        for (const auto& comp : b.components.items)
-                            comp->onGizmo(gz, b.center, glm::quat(glm::radians(b.rotation)));
                     }
+                    // The selection's wire boxes and its component gizmos -- after
+                    // the gizmo, so they show where it put things this frame.
+                    overlay::selection(editorCtx, sceneView);
 
-                    // Empties have no mesh, so draw a constant-size screen icon at
-                    // each one (editor only) -- otherwise they'd be invisible and
-                    // only reachable from the hierarchy. Their AABB pick box still
-                    // makes them clickable in the viewport.
-                    if (!playMode) {
-                        ImDrawList* odl = ImGui::GetWindowDrawList();
-                        for (const Entity& e : entities) {
-                            if (e.type != EntityType::Empty) continue;
-                            if (!e.activeInHierarchy) continue;   // hidden group node
-                            const glm::vec4 cc = vp * glm::vec4(e.center, 1.0f);
-                            if (cc.w <= 1e-4f) continue;
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            if (n.z > 1.0f) continue;
-                            const ImVec2 sc(rmin.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            rmin.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            const float r = 7.0f;
-                            const ImU32 col = IM_COL32(170, 175, 185, 220);
-                            odl->AddLine({sc.x - r, sc.y}, {sc.x + r, sc.y}, col, 1.5f);
-                            odl->AddLine({sc.x, sc.y - r}, {sc.x, sc.y + r}, col, 1.5f);
-                            odl->AddCircle(sc, r * 0.45f, col, 0, 1.5f);
-                            if (!e.name.empty())
-                                odl->AddText({sc.x + r + 3.0f, sc.y - 7.0f}, col,
-                                             e.name.c_str());
-                        }
-                    }
+                    // Empties have no mesh: an icon at each (see ViewportOverlay.hpp).
+                    if (!playMode) overlay::empties(entities, sceneView);
 
                     // Click to select/place, but not while grabbing the gizmo or
                     // running a viewport tool -- the active tool owns the left

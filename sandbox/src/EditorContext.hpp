@@ -73,6 +73,14 @@ struct ViewportFrame {
     void mouseRay(glm::vec3& origin, glm::vec3& dir) const;
     // A world point in screen pixels; false behind the camera.
     bool toScreen(const glm::vec3& p, ImVec2& out) const;
+    // ...and false past the far plane as well: for marks that must not show
+    // through from beyond what the view draws.
+    bool project(const glm::vec3& p, ImVec2& out) const;
+    // A box's twelve edges -- the corners lo..hi, through `model` -- into the
+    // current window's draw list. An edge with a corner behind the camera or
+    // past the far plane is left out.
+    void wireBox(const glm::mat4& model, const glm::vec3& lo, const glm::vec3& hi,
+                 ImU32 col, float thick) const;
 };
 
 // An entity's editable mesh in the world: the mesh is drawn stretched to the
