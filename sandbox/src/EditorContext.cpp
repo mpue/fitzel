@@ -2,6 +2,8 @@
 
 #include <memory>
 
+#include <glm/gtc/quaternion.hpp>
+
 #include "Component.hpp"
 #include "EditMesh.hpp"
 #include "SceneGraph.hpp"
@@ -64,6 +66,21 @@ void ViewportFrame::wireBox(const glm::mat4& model, const glm::vec3& lo, const g
 
 glm::mat4 meshModelOf(const Entity& e, const MeshComponent& mc) {
     return scenegraph::compose(e.center, e.rotation, editmesh::fitScale(mc.mesh, e.half));
+}
+
+void normalizeMeshEntity(const std::vector<Entity>& entities, Entity& e, MeshComponent& mc,
+                         const glm::vec3& scale) {
+    const glm::vec3 shift = editmesh::recenter(mc.mesh);
+    glm::vec3 mn, mx;
+    mc.mesh.bounds(mn, mx);
+    e.half = glm::max((mx - mn) * 0.5f * scale, glm::vec3(1e-3f));
+    if (glm::dot(shift, shift) > 0.0f) {
+        const glm::quat q  = glm::quat(glm::radians(e.rotation));
+        const glm::mat4 pw = scenegraph::parentWorld(entities, e);
+        scenegraph::setWorld(e, e.center + q * (shift * scale), e.rotation,
+                             e.parent >= 0 ? &pw : nullptr);
+    }
+    mc.touch();
 }
 
 std::vector<glm::vec3> meshFaceWorld(const Entity& e, const MeshComponent& mc, int face) {

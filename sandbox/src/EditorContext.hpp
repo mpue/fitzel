@@ -89,3 +89,14 @@ struct ViewportFrame {
 glm::mat4 meshModelOf(const Entity& e, const MeshComponent& mc);
 // One face's corners in world space (empty for a face that is not there).
 std::vector<glm::vec3> meshFaceWorld(const Entity& e, const MeshComponent& mc, int face);
+
+// What every mesh edit ends with, whichever way it was made -- a panel button or
+// a gizmo drag: re-centre the geometry on the object's origin, move the object
+// by that same shift so nothing appears to jump, and take the new bounds as its
+// half-extents. That invariant is what keeps the pick box, the gizmo and the
+// collider describing the shape that is actually there -- an extruded tower
+// whose AABB still claimed to be the original cube would be unpickable at the
+// top and would collide with air at the bottom. `scale` is the one the entity
+// applied to its mesh before the edit (editmesh::fitScale), kept across it.
+void normalizeMeshEntity(const std::vector<Entity>& entities, Entity& e, MeshComponent& mc,
+                         const glm::vec3& scale);

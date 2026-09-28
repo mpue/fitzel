@@ -25,6 +25,13 @@
 //     click on nothing clears, Ctrl+click toggles one, a Ctrl+drag box adds
 //     every centre inside it, Create mode places on empty ground, and a click
 //     the modelling panel takes selects nothing.
+//   - the transform gizmo (TransformGizmo), dragged by its centre with real
+//     mouse events through ImGuizmo: the object moves with the pointer and its
+//     child with it, as one undo step banked after the release; Ctrl on a world
+//     move lands on the grid, but only on the axes the drag moves; the other
+//     selected roots take the same delta; a picked face moves alone while the
+//     rest of the mesh stays where it is in the world, and a face scaled and
+//     held still stays at the size the pointer says -- it does not keep growing.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -47,6 +54,9 @@
 #include "../src/GroundBrush.hpp"
 #include "../src/ViewportOverlay.hpp"
 #include "../src/ViewportPick.hpp"
+#include "../src/TransformGizmo.hpp"
+#include "../src/ModelingTools.hpp"
+#include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
 #include "../src/ModelLibrary.hpp"
 #include "../src/SceneDrop.hpp"
@@ -417,6 +427,192 @@ int main() {
         host.canPick = false;
         clickAt(centre);
         check(!sel.valid() && placed.size() == 1, "and while a tool owns the button, a click does nothing");
+    }
+
+    // --- The transform gizmo --------------------------------------------------------------
+    {
+        // The Scene window pinned over the whole display, as ImGuizmo only takes
+        // the mouse over the window its draw list belongs to.
+        gizmo::Drag drag;
+        auto gizmoFrame = [&](glm::vec2 px, bool lmb, bool ctrl, const gizmo::Settings& gs) {
+            io.AddMousePosEvent(px.x, px.y);
+            io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGuizmo::BeginFrame();
+            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+            ImGui::SetNextWindowSize(ImVec2(view.w, view.h));
+            ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                               ImGuiWindowFlags_NoSavedSettings);
+            gizmo::frame(ed, view, drag, gs);
+            ImGui::End();
+            ImGui::Render();
+        };
+        auto screenOf = [&](const glm::vec3& w) {
+            ImVec2 s;
+            view.toScreen(w, s);
+            return glm::vec2(s.x, s.y);
+        };
+        // Press on the gizmo's centre at `from`, drag to `to` over a few frames,
+        // let go, and one frame more -- the one the drag is banked on.
+        auto dragGizmo = [&](glm::vec2 from, glm::vec2 to, bool ctrl, const gizmo::Settings& gs) {
+            gizmoFrame(from, false, ctrl, gs);
+            gizmoFrame(from, false, ctrl, gs);
+            gizmoFrame(from, true, ctrl, gs);
+            for (int i = 1; i <= 4; ++i) gizmoFrame(from + (to - from) * (i / 4.0f), true, ctrl, gs);
+            gizmoFrame(to, false, ctrl, gs);
+            gizmoFrame(to, false, ctrl, gs);
+        };
+        auto near = [](float a, float b, float eps) { return std::abs(a - b) <= eps; };
+        gizmo::Settings gs;   // Move, world axes, grid 1 m
+
+        // An object with a child two metres above it.
+        entities.clear();
+        sel.clear();
+        entities.push_back(makeBox(30, glm::vec3(0.0f)));
+        {
+            Entity child = makeBox(31, glm::vec3(0.0f, 2.0f, 0.0f));
+            child.parent = 30;
+            child.localCenter = glm::vec3(0.0f, 2.0f, 0.0f);
+            entities.push_back(child);
+        }
+        scenegraph::resolve(entities);
+        sel.select(30);
+        {
+            const unsigned rev = history.revision();
+            const glm::vec2 c = screenOf(entities[0].center);
+            gizmoFrame(c, false, false, gs);
+            gizmoFrame(c, false, false, gs);
+            gizmoFrame(c, true, false, gs);
+            for (int i = 1; i <= 4; ++i) gizmoFrame(c + glm::vec2(25.0f * i, 0.0f), true, false, gs);
+            const glm::vec3 held = entities[0].center;
+            check(history.revision() == rev && drag.active, "a gizmo drag banks nothing while held");
+            gizmoFrame(c + glm::vec2(100.0f, 0.0f), false, false, gs);
+            gizmoFrame(c + glm::vec2(100.0f, 0.0f), false, false, gs);
+            const glm::vec3 at = entities[0].center;
+            check(at.x > 0.5f && near(at.y, 0.0f, 1e-3f) && near(at.z, 0.0f, 1e-3f) && at == held,
+                  "dragging the gizmo's centre right moves the object right, and only that",
+                  "x " + std::to_string(at.x).substr(0, 5));
+            scenegraph::resolve(entities);
+            check(near(entities[1].center.x, at.x, 1e-4f) && near(entities[1].center.y, 2.0f, 1e-4f),
+                  "...its child comes along");
+            check(history.revision() == rev + 1, "...and the drag is one undo step, banked after the release");
+            history.undo(document);
+            scenegraph::resolve(entities);
+            check(entities[0].center == glm::vec3(0.0f) && near(entities[1].center.x, 0.0f, 1e-5f),
+                  "one undo puts it back");
+        }
+        {
+            // Ctrl on a world move: onto the grid, but only along what the drag moves.
+            entities[0].center = entities[0].localCenter = glm::vec3(0.0f, 0.3f, 0.0f);
+            scenegraph::resolve(entities);
+            const glm::vec2 c = screenOf(entities[0].center);
+            dragGizmo(c, c + glm::vec2(100.0f, 0.0f), true, gs);
+            const glm::vec3 at = entities[0].center;
+            check(at.x >= 1.0f && near(at.x, std::round(at.x), 1e-5f) && near(at.y, 0.3f, 1e-4f),
+                  "Ctrl lands a world move on the grid, and leaves the axis it did not move alone",
+                  "x " + std::to_string(at.x).substr(0, 5) + ", y " + std::to_string(at.y).substr(0, 5));
+            history.undo(document);
+        }
+        {
+            // Two roots selected: the other one takes the same step.
+            entities.clear();
+            entities.push_back(makeBox(40, glm::vec3(0.0f)));
+            entities.push_back(makeBox(41, glm::vec3(0.0f, -3.0f, 0.0f)));
+            sel.select(41);
+            sel.toggle(40);   // 40 active, 41 along
+            const glm::vec2 c = screenOf(entities[0].center);
+            dragGizmo(c, c + glm::vec2(100.0f, 0.0f), false, gs);
+            const float dx = entities[0].center.x;
+            check(dx > 0.5f && near(entities[1].center.x, dx, 1e-4f) &&
+                      near(entities[1].center.y, -3.0f, 1e-4f),
+                  "with two roots selected the other one takes the same step");
+            history.undo(document);
+        }
+        {
+            // A face of a modelled box, picked and moved.
+            entities.clear();
+            sel.clear();
+            {
+                Entity e = makeBox(50, glm::vec3(0.0f));
+                auto mc = std::make_unique<MeshComponent>();
+                mc->mesh = EditMesh::box(e.half);
+                e.components.items.push_back(std::move(mc));
+                entities.push_back(std::move(e));
+            }
+            sel.select(50);
+            auto mesh = [&]() -> const MeshComponent& {
+                return *entities[0].components.get<MeshComponent>();
+            };
+            int front = -1, back = -1;   // the +Z face (towards the camera) and the -Z one
+            for (int f = 0; f < static_cast<int>(mesh().mesh.faces.size()); ++f) {
+                const std::vector<glm::vec3> w = meshFaceWorld(entities[0], mesh(), f);
+                const glm::vec3 n = glm::normalize(glm::cross(w[1] - w[0], w[2] - w[0]));
+                if (n.z > 0.9f) front = f;
+                if (n.z < -0.9f) back = f;
+            }
+            modeltools::Selection msel;
+            msel.faces = {front};
+            faceSel    = front;
+            faceOwner  = 50;
+            gizmo::Settings fs = gs;
+            fs.faceMode = true;
+            fs.modelSel = &msel;
+            auto centreOf = [](const std::vector<glm::vec3>& w) {
+                glm::vec3 c(0.0f);
+                for (const glm::vec3& p : w) c += p;
+                return c / static_cast<float>(w.size());
+            };
+            const std::vector<glm::vec3> front0 = meshFaceWorld(entities[0], mesh(), front);
+            const std::vector<glm::vec3> back0  = meshFaceWorld(entities[0], mesh(), back);
+            const unsigned rev = history.revision();
+            const glm::vec2 c = screenOf(centreOf(front0));
+            dragGizmo(c, c + glm::vec2(100.0f, 0.0f), false, fs);
+            const glm::vec3 moved = centreOf(meshFaceWorld(entities[0], mesh(), front)) - centreOf(front0);
+            const std::vector<glm::vec3> back1 = meshFaceWorld(entities[0], mesh(), back);
+            float backShift = 0.0f;
+            for (std::size_t i = 0; i < back0.size() && i < back1.size(); ++i)
+                backShift = std::max(backShift, glm::length(back1[i] - back0[i]));
+            check(moved.x > 0.5f && near(moved.y, 0.0f, 1e-3f) && near(moved.z, 0.0f, 1e-3f),
+                  "a picked face moves with the gizmo", "x " + std::to_string(moved.x).substr(0, 5));
+            check(backShift < 1e-4f, "...and the rest of the mesh stays where it is in the world",
+                  "back face moved " + std::to_string(backShift));
+            check(history.revision() == rev + 1 && !drag.faceActive, "...as one undo step");
+            history.undo(document);
+            const glm::vec3 undone = centreOf(meshFaceWorld(entities[0], mesh(), front)) - centreOf(front0);
+            check(glm::length(undone) < 1e-4f, "one undo puts the face back");
+
+            // Scaled by its centre and held still: it stays at what the pointer says.
+            fs.op = ImGuizmo::SCALE;
+            auto width = [&] {
+                const std::vector<glm::vec3> w = meshFaceWorld(entities[0], mesh(), front);
+                float most = 0.0f;
+                for (const glm::vec3& a : w)
+                    for (const glm::vec3& b2 : w) most = std::max(most, glm::length(a - b2));
+                return most;
+            };
+            const float w0 = width();
+            const glm::vec2 s0 = screenOf(centreOf(front0));
+            gizmoFrame(s0, false, false, fs);
+            gizmoFrame(s0, false, false, fs);
+            gizmoFrame(s0, true, false, fs);
+            for (int i = 1; i <= 5; ++i) gizmoFrame(s0 + glm::vec2(10.0f * i, 0.0f), true, false, fs);
+            std::vector<float> held;
+            for (int i = 0; i < 4; ++i) {
+                gizmoFrame(s0 + glm::vec2(50.0f, 0.0f), true, false, fs);
+                held.push_back(width() / w0);
+            }
+            gizmoFrame(s0 + glm::vec2(50.0f, 0.0f), false, false, fs);
+            gizmoFrame(s0 + glm::vec2(50.0f, 0.0f), false, false, fs);
+            const float spread = *std::max_element(held.begin(), held.end()) -
+                                 *std::min_element(held.begin(), held.end());
+            check(near(held.back(), 1.5f, 0.02f) && spread < 1e-4f,
+                  "a face scaled 50 px and held still stays at 1.5x -- it does not keep growing",
+                  "x" + std::to_string(held.back()).substr(0, 5) + ", drift " + std::to_string(spread));
+            history.undo(document);
+            check(near(width() / w0, 1.0f, 1e-4f), "one undo takes the scale off");
+        }
+        sel.clear();
     }
 
     ImGui::DestroyContext();

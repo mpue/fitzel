@@ -248,6 +248,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/ViewportOverlay.cpp
     # Selecting in the viewport: click, Ctrl+click, Ctrl+drag box, click-to-place.
     src/ViewportPick.cpp
+    # The transform gizmo, on the selected object or on the face being modelled.
+    src/TransformGizmo.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -736,12 +738,15 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # paint brush (a held stroke paints and splits, and undoes as one step) and the
 # ground brushes' drag (a stamp every so many metres, erase every frame), and
 # the viewport's marks (drawn in front of the camera, never from behind it) and
-# selecting in it (click, cycle, Ctrl toggle and box, click-to-place).
+# selecting in it (click, cycle, Ctrl toggle and box, click-to-place), and the
+# transform gizmo dragged with real mouse events (move, Ctrl grid, multi-select,
+# a face moved and scaled, one undo step per drag).
 #   build/release/bin/editorcheck.exe
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
                            src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
+                           src/TransformGizmo.cpp src/ModelingTools.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp

@@ -1,5 +1,6 @@
 #include "SceneGraph.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <unordered_set>
 
@@ -55,6 +56,40 @@ void resolve(std::vector<Entity>& entities) {
         }
     };
     for (Entity& e : entities) one(e);
+}
+
+glm::mat4 worldOf(const Entity& e) {
+    return compose(e.center, e.rotation, glm::vec3(1.0f));
+}
+
+glm::mat4 parentWorld(const std::vector<Entity>& entities, const Entity& e) {
+    if (e.parent < 0) return glm::mat4(1.0f);
+    for (const Entity& p : entities)
+        if (p.id == e.parent) return worldOf(p);
+    return glm::mat4(1.0f);
+}
+
+void setWorld(Entity& e, const glm::vec3& worldPos, const glm::vec3& worldRotDeg,
+              const glm::mat4* parentWorld) {
+    e.center = worldPos; e.rotation = worldRotDeg;
+    if (!parentWorld) { e.localCenter = worldPos; e.localRotation = worldRotDeg; return; }
+    const glm::mat4 lm =
+        glm::inverse(*parentWorld) * compose(worldPos, worldRotDeg, glm::vec3(1.0f));
+    glm::vec3 scale;
+    decompose(lm, e.localCenter, e.localRotation, scale);
+}
+
+std::vector<int> subtree(const std::vector<Entity>& entities, int rootId) {
+    std::vector<int> ids{rootId};
+    for (bool grew = true; grew; ) {
+        grew = false;
+        for (const Entity& e : entities) {
+            const bool have     = std::find(ids.begin(), ids.end(), e.id) != ids.end();
+            const bool parentIn = std::find(ids.begin(), ids.end(), e.parent) != ids.end();
+            if (!have && parentIn) { ids.push_back(e.id); grew = true; }
+        }
+    }
+    return ids;
 }
 
 } // namespace scenegraph

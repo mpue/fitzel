@@ -118,6 +118,7 @@
 #include "SceneDrop.hpp"
 #include "GroundBrush.hpp"
 #include "ViewportOverlay.hpp"
+#include "TransformGizmo.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -1639,22 +1640,13 @@ int main(int argc, char** argv) {
         // nothing on a different mesh.
         int  meshFaceSel     = -1;
         int  meshFaceOwner   = -1;   // entity id that index belongs to
-        // A face-gizmo drag in flight: the entity as it was when the drag began
-        // (one undo step for the whole drag) and the scale it applies to its mesh.
-        bool      faceGizmoActive = false;
-        Entity    faceGizmoBefore;
-        glm::vec3 faceGizmoScale{1.0f};
-        // The scale the gizmo has reported so far in this drag (see the SCALE
-        // branch: ImGuizmo measures that one from the start of the drag, not from
-        // the last frame).
-        glm::vec3 faceGizmoAccScale{1.0f};
 #ifndef FITZEL_PLAYER
         // Corners and edges picked while modelling, and which of vertex / edge /
         // face the viewport is picking (the face itself stays in meshFaceSel).
         modeltools::Selection modelSel;
-        // Where the gizmo's pivot was in the world when the drag began, for the
-        // distance read-out next to the pointer.
-        glm::vec3 faceGizmoStartPivot{0.0f};
+        // A transform-gizmo drag in flight, of the object or of the picked face
+        // (see TransformGizmo.hpp).
+        gizmo::Drag gizmoDrag;
 #endif
         bool showVehiclePanel = false;
         bool showGliderPanel  = false;
@@ -2237,22 +2229,13 @@ int main(int argc, char** argv) {
         // World transform (translate*rotate, ImGuizmo Euler convention) of an
         // entity's cached world center/rotation. Scale is not part of the
         // hierarchy -- each entity keeps its own size (half).
-        auto worldOf = [&](const Entity& e) {
-            return composeModel(e.center, e.rotation, glm::vec3(1.0f));
-        };
+        auto worldOf = [&](const Entity& e) { return scenegraph::worldOf(e); };
         // Convert a world-space edit (gizmo, physics) into the entity's LOCAL
         // transform (the source of truth), given its parent's world matrix (null
         // for a root). Also mirrors into center/rotation for this frame.
         auto setWorld = [&](Entity& e, const glm::vec3& wPos, const glm::vec3& wRot,
                             const glm::mat4* parentWorld) {
-            e.center = wPos; e.rotation = wRot;
-            if (!parentWorld) { e.localCenter = wPos; e.localRotation = wRot; return; }
-            const glm::mat4 lm =
-                glm::inverse(*parentWorld) * composeModel(wPos, wRot, glm::vec3(1.0f));
-            float t[3], r[3], s[3];
-            ImGuizmo::DecomposeMatrixToComponents(glm::value_ptr(lm), t, r, s);
-            e.localCenter   = glm::vec3(t[0], t[1], t[2]);
-            e.localRotation = glm::vec3(r[0], r[1], r[2]);
+            scenegraph::setWorld(e, wPos, wRot, parentWorld);
         };
         // Rebase local onto a (changed) parent so the entity's current world stays
         // put -- used on reparent/unparent.
@@ -2286,9 +2269,7 @@ int main(int argc, char** argv) {
         };
         // World matrix of an entity's PARENT (identity for a root) -- for setWorld.
         auto parentWorldMat = [&](const Entity& e) -> glm::mat4 {
-            if (e.parent < 0) return glm::mat4(1.0f);
-            const Entity* p = document.find(e.parent);
-            return p ? worldOf(*p) : glm::mat4(1.0f);
+            return scenegraph::parentWorld(entities, e);
         };
 
         // --- 3D-cursor snap operations (shared by the panel + the Shift+S popup) --
@@ -2353,27 +2334,11 @@ int main(int argc, char** argv) {
         auto meshScaleOf = [](const Entity& e, const MeshComponent& mc) {
             return editmesh::fitScale(mc.mesh, e.half);
         };
-        // What every mesh edit ends with, whichever way it was made -- a panel
-        // button or a gizmo drag: re-centre the geometry on the object's origin,
-        // move the object by that same shift so nothing appears to jump, and take
-        // the new bounds as its half-extents. That invariant is what keeps the
-        // pick box, the gizmo and the collider describing the shape that is
-        // actually there -- an extruded tower whose AABB still claimed to be the
-        // original cube would be unpickable at the top and would collide with air
-        // at the bottom.
+        // What every mesh edit ends with (see normalizeMeshEntity in
+        // EditorContext.hpp): geometry re-centred, bounds taken as half-extents.
         auto normalizeMeshEntity = [&](Entity& e, MeshComponent& mc,
                                        const glm::vec3& scale) {
-            const glm::vec3 shift = editmesh::recenter(mc.mesh);
-            glm::vec3 mn, mx;
-            mc.mesh.bounds(mn, mx);
-            e.half = glm::max((mx - mn) * 0.5f * scale, glm::vec3(1e-3f));
-            if (glm::dot(shift, shift) > 0.0f) {
-                const glm::quat q  = glm::quat(glm::radians(e.rotation));
-                const glm::mat4 pw = parentWorldMat(e);
-                setWorld(e, e.center + q * (shift * scale), e.rotation,
-                         e.parent >= 0 ? &pw : nullptr);
-            }
-            mc.touch();
+            ::normalizeMeshEntity(entities, e, mc, scale);
         };
         // Run one face operation as one undoable step.
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
@@ -2690,19 +2655,7 @@ int main(int argc, char** argv) {
         };
 #endif // !FITZEL_PLAYER
         // Ids of an entity and all its descendants (for a parented gizmo drag).
-        auto collectSubtreeIds = [&](int rootId) {
-            std::vector<int> ids{rootId};
-            for (bool grew = true; grew; ) {
-                grew = false;
-                for (const Entity& e : entities) {
-                    const bool have = std::find(ids.begin(), ids.end(), e.id) != ids.end();
-                    const bool parentIn =
-                        std::find(ids.begin(), ids.end(), e.parent) != ids.end();
-                    if (!have && parentIn) { ids.push_back(e.id); grew = true; }
-                }
-            }
-            return ids;
-        };
+        auto collectSubtreeIds = [&](int rootId) { return scenegraph::subtree(entities, rootId); };
         auto snapshotEntities = [&](const std::vector<int>& ids) {
             std::vector<Entity> out;
             out.reserve(ids.size());
@@ -3313,17 +3266,8 @@ int main(int argc, char** argv) {
         viewnav::Nav viewNav;
 #endif
 
-        // Undo/redo edge state + gizmo-drag snapshot (a drag is one undoable step).
+        // Undo/redo edge state.
         bool                prevUndo = false, prevRedo = false;
-        bool                gizmoActive = false;
-        std::vector<int>    gizmoIds;
-        std::vector<Entity> gizmoBefore;
-        // Multi-select gizmo drag: the selected roots being moved together and the
-        // active object's world transform last frame, so each other root gets the
-        // same incremental delta applied (individual-origins style).
-        std::vector<int>    gizmoRoots;
-        glm::vec3           gizmoPrevT{0.0f}, gizmoPrevR{0.0f}, gizmoPrevS{1.0f};
-        glm::vec3           gizmoStartT{0.0f}; // where the drag began (Ctrl grid snap)
         // Inspector edit transaction: snapshot the selected entity's subtree while
         // a field is being touched, commit one ModifyEntities step when released.
         int                 inspEditId = -1;
@@ -10762,10 +10706,7 @@ int main(int argc, char** argv) {
                 //     new one on the terrain; Del removes the selected block. ----
                 {   // Viewport interaction: selecting works in both modes; the
                     // transform gizmo and click-to-place are Edit-mode only.
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 view = camera.viewMatrix();
-                    const glm::mat4 proj = camera.projectionMatrix(asp);
-                    const glm::mat4 vp = proj * view;
+                    const glm::mat4& vp = sceneView.viewProj;
 
                     // --- Blender-style 3D cursor -----------------------------
                     // Shift+Right-click drops the cursor onto the terrain (the look
@@ -10811,7 +10752,7 @@ int main(int argc, char** argv) {
                         if (const MeshComponent* mc = keyHost().mesh) {
                             modeltools::Hit hov;
                             const bool hovering =
-                                viewportHovered && !ImGuizmo::IsUsing() && !faceGizmoActive &&
+                                viewportHovered && !ImGuizmo::IsUsing() && !gizmoDrag.faceActive &&
                                 !modelkeys::busy() && !ImGui::IsMouseDown(ImGuiMouseButton_Right);
                             if (hovering)
                                 hov = modeltools::pick(mc->mesh, mv, ImGui::GetIO().MousePos,
@@ -10861,223 +10802,20 @@ int main(int argc, char** argv) {
                     }
                     ImGui::PopStyleVar(); // WindowPadding
 
-                    // Transform gizmo for the selected block (move / scale).
-                    if (entityEditMode) {
-                        ImGuizmo::SetOrthographic(camera.orthographic());
-                        ImGuizmo::SetDrawlist();
-                        ImGuizmo::SetRect(rmin.x, rmin.y, static_cast<float>(viewW),
-                                                          static_cast<float>(viewH));
-                        // A finished gizmo drag becomes one undoable Transform step.
-                        if (gizmoActive && !ImGuizmo::IsUsing()) {
-                            gizmoActive = false;
-                            auto cmd = std::make_unique<ModifyEntitiesCmd>(
-                                gizmoBefore, snapshotEntities(gizmoIds));
-                            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                        }
-                    }
-                    if (sel.valid() &&
-                        entities[sel.index()].type != EntityType::Sun) {
-                        Entity& b = entities[sel.index()];
-                        const int selId = b.id;
-                        float t[3] = {b.center.x, b.center.y, b.center.z};
-                        float r[3] = {b.rotation.x, b.rotation.y, b.rotation.z};
-                        float s[3] = {b.half.x * 2.0f, b.half.y * 2.0f, b.half.z * 2.0f};
-
-                        // Ctrl rasters the drag (see snapAngle). ImGuizmo's own
-                        // snap counts steps from where the drag began: right for
-                        // a turn and a scale, and for a move along the object's
-                        // own axes, which have no grid to meet. A move along the
-                        // WORLD axes lands on the grid itself instead (rounded
-                        // below), so what you place lines up with the lattice
-                        // drawn under it rather than keeping its old offset.
-                        const bool snapHeld   = ImGui::GetIO().KeyCtrl;
-                        const bool snapToLattice =
-                            snapHeld && gizmoOp == ImGuizmo::TRANSLATE &&
-                            gizmoMode == ImGuizmo::WORLD;
-                        float snapStep[3] = {cursorGrid, cursorGrid, cursorGrid};
-                        if (gizmoOp == ImGuizmo::ROTATE) snapStep[0] = snapAngle;
-                        if (gizmoOp == ImGuizmo::SCALE)  snapStep[0] = snapScale;
-
-                        // --- Face gizmo -------------------------------------
-                        // With a face selected in Modeling, the gizmo drives THAT
-                        // face rather than the object: the same Move/Rotate/Scale
-                        // handles (Q/W/E), the same drag, applied to four corners
-                        // instead of a transform. The panel's numbered buttons
-                        // stay -- typing 0.4 m and dragging to about 0.4 m are
-                        // different tools, and which one is right depends on the
-                        // day and on the hand.
-                        MeshComponent* faceMc =
-                            (showModeling && entityEditMode && !meshBusy)
-                                ? b.components.get<MeshComponent>() : nullptr;
-                        // What it drives: the selected face's corners, or in vertex
-                        // and edge mode the picked corners (both ends of each edge).
-                        const std::vector<int> gizmoVerts =
-                            faceMc ? modeltools::activeVerts(modelSel, faceMc->mesh, meshFaceSel)
-                                   : std::vector<int>{};
-                        if (gizmoVerts.empty()) faceMc = nullptr;
-                        if (faceMc) {
-                            const glm::mat4 M = meshModelOf(b, *faceMc);
-                            // The gizmo sits at the face's centre, oriented like
-                            // the object. Handed over fresh each frame; what comes
-                            // back is a DELTA, which is the only form that can be
-                            // baked into geometry -- an absolute matrix would be
-                            // re-applied on top of itself every frame and a scale
-                            // drag would run away exponentially.
-                            glm::vec3 pivot(0.0f);   // the centre of what it drives
-                            for (int vi : gizmoVerts) pivot += faceMc->mesh.verts[vi];
-                            pivot /= static_cast<float>(gizmoVerts.size());
-                            const glm::mat4 F = glm::translate(glm::mat4(1.0f), pivot);
-                            glm::mat4 world = M * F;
-                            // A face snaps in steps from where it started: its
-                            // corners, not its centre, are what would have to
-                            // meet the grid.
-                            float delta[16];
-                            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                                 gizmoOp, gizmoMode,
-                                                 glm::value_ptr(world), delta,
-                                                 snapHeld ? snapStep : nullptr);
-                            const bool using3d = ImGuizmo::IsUsing();
-                            if (using3d && !faceGizmoActive) {
-                                faceGizmoActive   = true;
-                                faceGizmoBefore   = b;   // one undo step per drag
-                                faceGizmoScale    = meshScaleOf(b, *faceMc);
-                                faceGizmoAccScale = glm::vec3(1.0f);
-                                faceGizmoStartPivot = glm::vec3(M * glm::vec4(pivot, 1.0f));
-                            }
-                            if (using3d) {
-                                const glm::mat4 D = glm::make_mat4(delta);
-                                glm::mat4 L(1.0f);
-                                if (gizmoOp == ImGuizmo::SCALE) {
-                                    // ImGuizmo reports the scale delta on different
-                                    // terms from the other two: measured from the
-                                    // START of the drag, and in the gizmo's own
-                                    // frame -- while move and rotate report the step
-                                    // since the last frame, in world space. Applying
-                                    // it as if it were a step multiplies the face by
-                                    // the whole drag again every frame, which runs
-                                    // away exponentially. Divide out what has
-                                    // already been applied to get the actual step.
-                                    const glm::vec3 acc(D[0][0], D[1][1], D[2][2]);
-                                    const glm::vec3 step =
-                                        acc / glm::max(faceGizmoAccScale, glm::vec3(1e-6f));
-                                    faceGizmoAccScale = acc;
-                                    L = F * glm::scale(glm::mat4(1.0f), step) *
-                                        glm::inverse(F);
-                                } else {
-                                    // World-space step, conjugated into the mesh's
-                                    // own space: p' = M^-1 * D * M * p.
-                                    L = glm::inverse(M) * D * M;
-                                }
-                                editmesh::transformVerts(faceMc->mesh, gizmoVerts, L);
-                                // Square the object's bounds with the new shape NOW,
-                                // not when the drag ends. The mesh is drawn at
-                                // half/bounds, so leaving `half` behind while the
-                                // geometry grows shrinks that factor by exactly as
-                                // much as the mesh grew: the shape would sit there
-                                // apparently unmoved while its local size ran off,
-                                // and let go of it at the end to reveal a body
-                                // stretched to the horizon.
-                                normalizeMeshEntity(b, *faceMc, faceGizmoScale);
-
-                                // How far, next to the pointer: the drag says in
-                                // numbers what it is doing while it does it.
-                                char rd[96];
-                                if (gizmoOp == ImGuizmo::TRANSLATE) {
-                                    const glm::mat4 M2 = meshModelOf(b, *faceMc);
-                                    glm::vec3 p2(0.0f);
-                                    for (int vi : gizmoVerts) p2 += faceMc->mesh.verts[vi];
-                                    p2 /= static_cast<float>(gizmoVerts.size());
-                                    const glm::vec3 d =
-                                        glm::vec3(M2 * glm::vec4(p2, 1.0f)) - faceGizmoStartPivot;
-                                    std::snprintf(rd, sizeof rd, "%.2f m   (%+.2f, %+.2f, %+.2f)",
-                                                  glm::length(d), d.x, d.y, d.z);
-                                } else if (gizmoOp == ImGuizmo::SCALE) {
-                                    std::snprintf(rd, sizeof rd, "x %.2f  %.2f  %.2f",
-                                                  faceGizmoAccScale.x, faceGizmoAccScale.y,
-                                                  faceGizmoAccScale.z);
-                                } else {
-                                    std::snprintf(rd, sizeof rd, "rotating %d corner%s",
-                                                  static_cast<int>(gizmoVerts.size()),
-                                                  gizmoVerts.size() == 1 ? "" : "s");
-                                }
-                                const ImVec2 mp = ImGui::GetIO().MousePos;
-                                modeltools::readout(ImGui::GetWindowDrawList(),
-                                                    ImVec2(mp.x + 18.0f, mp.y + 18.0f), rd);
-                            } else if (faceGizmoActive) {
-                                // Drag finished: bank the whole of it as one
-                                // undoable step. The bounds are already square with
-                                // the shape -- that happens on every frame above.
-                                faceGizmoActive = false;
-                                auto cmd = std::make_unique<ModifyEntityCmd>(faceGizmoBefore, b);
-                                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                            }
-                        }
-                        else if (entityEditMode && !vehGizmoOwnsMouse && !meshBusy) {
-                            float model[16];
-                            ImGuizmo::RecomposeMatrixFromComponents(t, r, s, model);
-                            ImGuizmo::Manipulate(glm::value_ptr(view), glm::value_ptr(proj),
-                                                 gizmoOp, gizmoMode, model, nullptr,
-                                                 (snapHeld && !snapToLattice) ? snapStep
-                                                                              : nullptr);
-                            const bool gizmoUsing = ImGuizmo::IsUsing();
-                            if (gizmoUsing && !gizmoActive) { // drag start: snapshot subtrees
-                                gizmoActive = true;
-                                gizmoRoots  = sel.ids();
-                                gizmoIds.clear();
-                                for (int rid : gizmoRoots)
-                                    for (int id : collectSubtreeIds(rid))
-                                        if (std::find(gizmoIds.begin(), gizmoIds.end(), id)
-                                                == gizmoIds.end())
-                                            gizmoIds.push_back(id);
-                                gizmoBefore = snapshotEntities(gizmoIds);
-                                gizmoPrevT = glm::vec3(t[0], t[1], t[2]);
-                                gizmoPrevR = glm::vec3(r[0], r[1], r[2]);
-                                gizmoPrevS = glm::vec3(s[0], s[1], s[2]);
-                                gizmoStartT = gizmoPrevT;
-                            }
-                            if (gizmoUsing) {
-                                ImGuizmo::DecomposeMatrixToComponents(model, t, r, s);
-                                // Onto the grid -- but only the axes the drag
-                                // actually moves. Pulling the X arrow must not
-                                // also drop the object's height onto a grid line.
-                                // ImGuizmo hands back the unsnapped target every
-                                // frame (it measures from the ray, not from what
-                                // it got last time), so rounding it here holds.
-                                if (snapToLattice && cursorGrid > 0.0f)
-                                    for (int k = 0; k < 3; ++k)
-                                        if (std::abs(t[k] - gizmoStartT[k]) > 1e-4f)
-                                            t[k] = std::round(t[k] / cursorGrid) * cursorGrid;
-                                const glm::vec3 newT(t[0], t[1], t[2]);
-                                const glm::vec3 newR(r[0], r[1], r[2]);
-                                const glm::vec3 newS(s[0], s[1], s[2]);
-                                b.half = glm::max(newS * 0.5f, glm::vec3(0.05f));
-                                // World-space edit -> local (children then follow via
-                                // resolveHierarchy).
-                                const glm::mat4 pw = parentWorldMat(b);
-                                setWorld(b, newT, newR, b.parent >= 0 ? &pw : nullptr);
-                                // Multi-select: apply the active object's incremental
-                                // delta to every other selected root (each scales /
-                                // rotates about its own centre; children follow via
-                                // resolveHierarchy).
-                                if (gizmoRoots.size() > 1) {
-                                    const glm::vec3 dT = newT - gizmoPrevT;
-                                    const glm::vec3 dR = newR - gizmoPrevR;
-                                    const glm::vec3 ratio =
-                                        newS / glm::max(gizmoPrevS, glm::vec3(1e-4f));
-                                    for (int rid : gizmoRoots) {
-                                        if (rid == selId) continue;
-                                        Entity* re = document.find(rid);
-                                        if (!re || re->type == EntityType::Sun) continue;
-                                        re->half = glm::max(re->half * ratio, glm::vec3(0.05f));
-                                        const glm::mat4 rpw = parentWorldMat(*re);
-                                        setWorld(*re, re->center + dT, re->rotation + dR,
-                                                 re->parent >= 0 ? &rpw : nullptr);
-                                    }
-                                }
-                                gizmoPrevT = newT; gizmoPrevR = newR; gizmoPrevS = newS;
-                            }
-                        }
-
+                    // The transform gizmo: on the selected object, or while
+                    // modelling on the picked face (TransformGizmo.hpp).
+                    {
+                        gizmo::Settings gs;
+                        gs.op         = gizmoOp;
+                        gs.mode       = gizmoMode;
+                        gs.editMode   = entityEditMode;
+                        gs.objectFree = !vehGizmoOwnsMouse && !meshBusy;
+                        gs.faceMode   = showModeling && !meshBusy;
+                        gs.modelSel   = &modelSel;
+                        gs.grid       = cursorGrid;
+                        gs.snapAngle  = snapAngle;
+                        gs.snapScale  = snapScale;
+                        gizmo::frame(editorCtx, sceneView, gizmoDrag, gs);
                     }
                     // The selection's wire boxes and its component gizmos -- after
                     // the gizmo, so they show where it put things this frame.
