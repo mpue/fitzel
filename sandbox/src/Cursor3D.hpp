@@ -38,7 +38,8 @@ enum class Snap {
 };
 // `groundAt` is the terrain's height (for CursorToTerrain). The selection ones
 // move the active object through its local transform, so a parented one stays
-// where its parent puts it; with nothing selected they do nothing.
+// where its parent puts it, as one undo step; with nothing selected they do
+// nothing.
 void snap(Snap op, EditorContext& ed, Cursor& c,
           const std::function<float(float, float)>& groundAt);
 

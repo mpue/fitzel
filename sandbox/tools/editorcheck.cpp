@@ -36,7 +36,8 @@
 //     the pointer, and neither a plain right-click nor one in Play does;
 //     Shift+S opens the snap menu; the snap operations round it onto the grid,
 //     drop it onto the terrain, fetch it from the selection, and move the
-//     selection to it -- a parented object included, through its local transform.
+//     selection to it -- a parented object included, through its local transform
+//     -- each move of the selection one undo step.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -687,6 +688,8 @@ int main() {
         cursor3d::snap(cursor3d::Snap::CursorToSelection, ed, cur, v.groundAt);
         check(glm::length(cur.pos - entities[1].center) < 1e-5f, "Cursor to selection fetches it");
         cur.pos = glm::vec3(3.0f, 2.0f, -1.0f);
+        const glm::vec3 childWas = entities[1].center;
+        const unsigned  revWas   = history.revision();
         cursor3d::snap(cursor3d::Snap::SelectionToCursor, ed, cur, v.groundAt);
         scenegraph::resolve(entities);   // what main does every frame: world from local
         check(glm::length(entities[1].center - cur.pos) < 1e-4f && entities[1].parent == 60,
@@ -694,12 +697,32 @@ int main() {
               "at (" + std::to_string(entities[1].center.x).substr(0, 5) + ", " +
                   std::to_string(entities[1].center.y).substr(0, 5) + ", " +
                   std::to_string(entities[1].center.z).substr(0, 5) + ")");
+        check(history.revision() == revWas + 1 &&
+                  std::string(history.undoName()) == "Selection to cursor",
+              "...as one undo step", history.undoName());
+        history.undo(document);
+        scenegraph::resolve(entities);
+        check(glm::length(entities[1].center - childWas) < 1e-5f, "...which one undo takes back");
         cur.grid = 1.0f;
         entities[0].center = entities[0].localCenter = glm::vec3(0.3f, 0.6f, -1.7f);
         entities[0].rotation = entities[0].localRotation = glm::vec3(0.0f);
         sel.select(60);
         cursor3d::snap(cursor3d::Snap::SelectionToGrid, ed, cur, v.groundAt);
         check(entities[0].center == glm::vec3(0.0f, 1.0f, -2.0f), "Selection to grid rounds the object onto it");
+        check(std::string(history.undoName()) == "Selection to grid", "...as one undo step",
+              history.undoName());
+        history.undo(document);
+        check(entities[0].center == glm::vec3(0.3f, 0.6f, -1.7f), "...which one undo takes back");
+        {
+            const unsigned rev = history.revision();
+            cursor3d::snap(cursor3d::Snap::SelectionToGrid, ed, cur, v.groundAt);
+            history.undo(document);
+            entities[0].center = entities[0].localCenter = glm::vec3(1.0f, 2.0f, 3.0f);
+            const unsigned mid = history.revision();
+            cursor3d::snap(cursor3d::Snap::SelectionToGrid, ed, cur, v.groundAt);
+            check(rev + 1 <= mid && history.revision() == mid,
+                  "a snap that moves nothing leaves no empty undo step");
+        }
         sel.clear();
     }
 

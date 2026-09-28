@@ -1,6 +1,8 @@
 #include "Cursor3D.hpp"
 
 #include <cmath>
+#include <utility>
+#include <vector>
 
 #include <imgui.h>
 
@@ -20,12 +22,17 @@ glm::vec3 snapToGrid(const glm::vec3& p, float step) {
 namespace {
 
 // Move the selected entity to a world position (via the local source of truth,
-// so it respects any parent -- same path the gizmo/inspector use).
-void moveSelectionTo(EditorContext& ed, const glm::vec3& wPos) {
+// so it respects any parent -- same path the gizmo/inspector use), as one undo
+// step. Its children follow through the hierarchy, so the entity alone is what
+// changed.
+void moveSelectionTo(EditorContext& ed, const glm::vec3& wPos, const char* label) {
     if (!ed.sel.valid()) return;
     Entity& b = ed.entities[ed.sel.index()];
+    const std::vector<int> ids{b.id};
+    std::vector<Entity>    before = ed.snapshot(ids);
     const glm::mat4 pw = scenegraph::parentWorld(ed.entities, b);
     scenegraph::setWorld(b, wPos, b.rotation, b.parent >= 0 ? &pw : nullptr);
+    ed.commitEdit(std::move(before), ids, label);
 }
 
 } // namespace
@@ -42,10 +49,11 @@ void snap(Snap op, EditorContext& ed, Cursor& c,
         case Snap::CursorToSelection:
             if (haveSel) c.pos = ed.entities[ed.sel.index()].center;
             break;
-        case Snap::SelectionToCursor: moveSelectionTo(ed, c.pos); break;
+        case Snap::SelectionToCursor: moveSelectionTo(ed, c.pos, "Selection to cursor"); break;
         case Snap::SelectionToGrid:
             if (haveSel)
-                moveSelectionTo(ed, snapToGrid(ed.entities[ed.sel.index()].center, c.grid));
+                moveSelectionTo(ed, snapToGrid(ed.entities[ed.sel.index()].center, c.grid),
+                                "Selection to grid");
             break;
     }
 }
