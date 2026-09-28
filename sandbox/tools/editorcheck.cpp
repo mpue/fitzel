@@ -32,6 +32,11 @@
 //     selected roots take the same delta; a picked face moves alone while the
 //     rest of the mesh stays where it is in the world, and a face scaled and
 //     held still stays at the size the pointer says -- it does not keep growing.
+//   - the 3D cursor (Cursor3D): Shift+Right-click puts it on the ground under
+//     the pointer, and neither a plain right-click nor one in Play does;
+//     Shift+S opens the snap menu; the snap operations round it onto the grid,
+//     drop it onto the terrain, fetch it from the selection, and move the
+//     selection to it -- a parented object included, through its local transform.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -55,6 +60,7 @@
 #include "../src/ViewportOverlay.hpp"
 #include "../src/ViewportPick.hpp"
 #include "../src/TransformGizmo.hpp"
+#include "../src/Cursor3D.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -612,6 +618,88 @@ int main() {
             history.undo(document);
             check(near(width() / w0, 1.0f, 1e-4f), "one undo takes the scale off");
         }
+        sel.clear();
+    }
+
+    // --- The 3D cursor ---------------------------------------------------------------------
+    {
+        cursor3d::Cursor cur;
+        ViewportFrame v = view;
+        v.pickTerrain = [](glm::vec2 ndc, const glm::mat4&, glm::vec3& hit) {
+            hit = glm::vec3(ndc.x * 20.0f, 1.5f, ndc.y * 20.0f);
+            return true;
+        };
+        v.groundAt = [](float x, float z) { return 0.25f * x + 0.5f * z; };
+        bool menuOpen = false;
+        // One frame: Shift, the right button, S -- then the cursor's two calls in
+        // the Scene window, as main makes them.
+        auto cursorFrame = [&](glm::vec2 ndc, bool shift, bool rmb, bool sKey, bool editing) {
+            v.mouseNdc = ndc;
+            io.AddMousePosEvent(v.origin.x + (ndc.x * 0.5f + 0.5f) * v.w,
+                                v.origin.y + (0.5f - ndc.y * 0.5f) * v.h);
+            io.AddKeyEvent(ImGuiMod_Shift, shift);
+            io.AddKeyEvent(ImGuiKey_S, sKey);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Right, rmb);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            cursor3d::viewport(v, cur, editing);
+            cursor3d::snapMenu(ed, v, cur, editing);
+            menuOpen = ImGui::IsPopupOpen("##snapMenu");
+            ImGui::End();
+            ImGui::Render();
+        };
+        auto release = [&] { cursorFrame(glm::vec2(0.0f), false, false, false, true); };
+        release();
+        cursorFrame(glm::vec2(0.5f, -0.25f), true, true, false, true);
+        release();
+        check(cur.pos == glm::vec3(10.0f, 1.5f, -5.0f),
+              "Shift+Right-click puts the cursor on the ground under the pointer");
+        cursorFrame(glm::vec2(-0.5f, 0.5f), false, true, false, true);
+        release();
+        check(cur.pos == glm::vec3(10.0f, 1.5f, -5.0f), "...a plain right-click does not");
+        cursorFrame(glm::vec2(-0.5f, 0.5f), true, true, false, false);
+        release();
+        check(cur.pos == glm::vec3(10.0f, 1.5f, -5.0f), "...nor one in Play");
+        cursorFrame(glm::vec2(0.0f), true, false, true, true);
+        check(menuOpen, "Shift+S opens the snap menu");
+
+        cur.pos  = glm::vec3(1.4f, 2.6f, -0.2f);
+        cur.grid = 0.5f;
+        cursor3d::snap(cursor3d::Snap::CursorToGrid, ed, cur, v.groundAt);
+        check(cur.pos == glm::vec3(1.5f, 2.5f, 0.0f), "Cursor to grid rounds it onto the grid step");
+        cursor3d::snap(cursor3d::Snap::CursorToTerrain, ed, cur, v.groundAt);
+        check(cur.pos == glm::vec3(1.5f, 0.375f, 0.0f), "Cursor to terrain drops it onto the ground");
+
+        entities.clear();
+        sel.clear();
+        entities.push_back(makeBox(60, glm::vec3(0.0f)));
+        {
+            Entity child = makeBox(61, glm::vec3(0.0f));
+            child.parent      = 60;
+            child.localCenter = glm::vec3(0.0f, 1.0f, 0.0f);
+            entities.push_back(child);
+        }
+        entities[0].rotation = entities[0].localRotation = glm::vec3(0.0f, 90.0f, 0.0f);
+        scenegraph::resolve(entities);
+        cursor3d::snap(cursor3d::Snap::CursorToSelection, ed, cur, v.groundAt);
+        check(cur.pos == glm::vec3(1.5f, 0.375f, 0.0f), "Cursor to selection with nothing selected does nothing");
+        sel.select(61);
+        cursor3d::snap(cursor3d::Snap::CursorToSelection, ed, cur, v.groundAt);
+        check(glm::length(cur.pos - entities[1].center) < 1e-5f, "Cursor to selection fetches it");
+        cur.pos = glm::vec3(3.0f, 2.0f, -1.0f);
+        cursor3d::snap(cursor3d::Snap::SelectionToCursor, ed, cur, v.groundAt);
+        scenegraph::resolve(entities);   // what main does every frame: world from local
+        check(glm::length(entities[1].center - cur.pos) < 1e-4f && entities[1].parent == 60,
+              "Selection to cursor moves a parented object there, and it stays parented",
+              "at (" + std::to_string(entities[1].center.x).substr(0, 5) + ", " +
+                  std::to_string(entities[1].center.y).substr(0, 5) + ", " +
+                  std::to_string(entities[1].center.z).substr(0, 5) + ")");
+        cur.grid = 1.0f;
+        entities[0].center = entities[0].localCenter = glm::vec3(0.3f, 0.6f, -1.7f);
+        entities[0].rotation = entities[0].localRotation = glm::vec3(0.0f);
+        sel.select(60);
+        cursor3d::snap(cursor3d::Snap::SelectionToGrid, ed, cur, v.groundAt);
+        check(entities[0].center == glm::vec3(0.0f, 1.0f, -2.0f), "Selection to grid rounds the object onto it");
         sel.clear();
     }
 

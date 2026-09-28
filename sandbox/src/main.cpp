@@ -87,6 +87,7 @@
 #include "InspectorPanel.hpp"
 #include "MaterialsPanel.hpp"
 #include "MixerPanel.hpp"
+#include "Cursor3D.hpp"
 #include "MeshPaintPanel.hpp"
 #include "ViewportPick.hpp"
 #include "ModelsPanel.hpp"
@@ -1440,17 +1441,9 @@ int main(int argc, char** argv) {
         int       entityCounter = 0; // for unique default names
 
         // Blender-style 3D cursor: a world-space reference point placed with
-        // Shift+Right-click, used as a snap/placement anchor (see the "3D Cursor"
-        // panel). cursorGrid is the step for the grid-snap operations.
-        glm::vec3 cursor3D{0.0f};
-        bool      cursorVisible = true;
-        float     cursorGrid    = 1.0f;
-        // Holding Ctrl while dragging the gizmo rasters it: a move lands on
-        // cursorGrid, a turn goes in snapAngle steps, a scale in snapScale steps
-        // of the size it started at. A hand that shakes then cannot nudge a value
-        // it has already found -- the next step is a whole step away.
-        float     snapAngle     = 15.0f;
-        float     snapScale     = 0.1f;
+        // Shift+Right-click, used as a snap/placement anchor, and the snap steps
+        // Ctrl rasters a gizmo drag to (see Cursor3D.hpp).
+        cursor3d::Cursor cursor;
         // The construction grid draws that snap step on the cursor's plane, so
         // the lattice you aim at and the one "snap to grid" rounds to are the
         // same thing seen twice. Held here rather than on the renderer (which is
@@ -1821,7 +1814,7 @@ int main(int argc, char** argv) {
         //  3. `dist` ahead in the air -- floating, but in front of you.
 #ifndef FITZEL_PLAYER
         auto spawnPoint = [&](float dist) -> glm::vec3 {
-            if (cursorVisible) return cursor3D;
+            if (cursor.visible) return cursor.pos;
             const glm::vec3 eye = camera.position();
             const glm::mat4 vp  = camera.projectionMatrix(
                                       static_cast<float>(viewW) / static_cast<float>(viewH)) *
@@ -2272,30 +2265,10 @@ int main(int argc, char** argv) {
             return scenegraph::parentWorld(entities, e);
         };
 
-        // --- 3D-cursor snap operations (shared by the panel + the Shift+S popup) --
+        // Is anything selected (the 3D cursor's snap operations are in Cursor3D.cpp).
         auto cursorHaveSel = [&] {
             return sel.valid();
         };
-        auto snapToGrid = [&](glm::vec3 p) {
-            const float g = cursorGrid;
-            if (g <= 0.0f) return p;
-            return glm::vec3(std::round(p.x / g) * g, std::round(p.y / g) * g,
-                             std::round(p.z / g) * g);
-        };
-        // Move the selected entity to a world position (via the local source of
-        // truth, so it respects any parent -- same path the gizmo/inspector use).
-        auto moveSelectionTo = [&](const glm::vec3& wPos) {
-            if (!cursorHaveSel()) return;
-            Entity& b = entities[sel.index()];
-            const glm::mat4 pw = parentWorldMat(b);
-            setWorld(b, wPos, b.rotation, b.parent >= 0 ? &pw : nullptr);
-        };
-        auto snapCursorToOrigin    = [&] { cursor3D = glm::vec3(0.0f); };
-        auto snapCursorToGrid      = [&] { cursor3D = snapToGrid(cursor3D); };
-        auto snapCursorToTerrain   = [&] { cursor3D.y = streamer.heightAt(cursor3D.x, cursor3D.z); };
-        auto snapCursorToSelection = [&] { if (cursorHaveSel()) cursor3D = entities[sel.index()].center; };
-        auto snapSelectionToCursor = [&] { moveSelectionTo(cursor3D); };
-        auto snapSelectionToGrid   = [&] { if (cursorHaveSel()) moveSelectionTo(snapToGrid(entities[sel.index()].center)); };
 
 #ifndef FITZEL_PLAYER
         // --- Face modelling ---------------------------------------------------
@@ -3767,9 +3740,9 @@ int main(int argc, char** argv) {
         addF("waterColorB", waterColor.z);
         addF("waterReflectivity", waterReflectivity); addF("waterClarity", waterClarity);
         addF("waterIor", waterIor);
-        addF("cursorX", cursor3D.x); addF("cursorY", cursor3D.y); addF("cursorZ", cursor3D.z);
-        addF("cursorGrid", cursorGrid);
-        addF("snapAngle", snapAngle);          addF("snapScale", snapScale);
+        addF("cursorX", cursor.pos.x); addF("cursorY", cursor.pos.y); addF("cursorZ", cursor.pos.z);
+        addF("cursorGrid", cursor.grid);
+        addF("snapAngle", cursor.snapAngle);          addF("snapScale", cursor.snapScale);
 #ifndef FITZEL_PLAYER
         addB("camPreview", showCamPreview);    // editor-only: the player has no viewport corner
 #endif
@@ -10709,16 +10682,9 @@ int main(int argc, char** argv) {
                     const glm::mat4& vp = sceneView.viewProj;
 
                     // --- Blender-style 3D cursor -----------------------------
-                    // Shift+Right-click drops the cursor onto the terrain (the look
-                    // control ignores right-drag while Shift is held, see above).
-                    if (!playMode && viewportHovered && ImGui::GetIO().KeyShift &&
-                        ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                        glm::vec3 h;
-                        if (roadPickTerrain(viewportMouseNdc, vp, h)) cursor3D = h;
-                    }
-                    // Draw it: a red/white split ring with crosshair ticks, always
-                    // on top (2D overlay), so it reads like Blender's cursor.
-                    if (cursorVisible && !playMode) overlay::cursorMark(sceneView, cursor3D);
+                    // Shift+Right-click places it (the look control ignores
+                    // right-drag while Shift is held, see above); its mark.
+                    cursor3d::viewport(sceneView, cursor, !playMode);
                     // The mesh being modelled: wireframe, corners, the element under
                     // the pointer, the selection, the preview of a hovered button
                     // and the flash of the last edit. Drawn as a 2D overlay like
@@ -10765,42 +10731,7 @@ int main(int argc, char** argv) {
                     }
 
                     // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
-                    if (!playMode && viewportHovered && !ImGui::GetIO().WantTextInput &&
-                        ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl &&
-                        ImGui::IsKeyPressed(ImGuiKey_S))
-                        ImGui::OpenPopup("##snapMenu");
-                    // Moderate outer padding; the menu labels get an explicit left
-                    // (and matching right) inset via Indent, since MenuItem renders
-                    // its label flush to the window's inner edge otherwise.
-                    const ImVec2 basePad = ImGui::GetStyle().WindowPadding;
-                    const float  inset   = basePad.x * 0.9f;
-                    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
-                                        ImVec2(basePad.x, basePad.y * 1.7f));
-                    if (ImGui::BeginPopup("##snapMenu")) {
-                        const bool haveSel = cursorHaveSel();
-                        ImGui::Indent(inset);
-                        ImGui::TextDisabled("Snap");
-                        ImGui::Unindent(inset);
-                        ImGui::Separator();
-                        ImGui::Indent(inset);
-                        // Trailing spaces reserve right-edge room so the label isn't
-                        // flush against the popup's right border either.
-                        if (ImGui::MenuItem("Cursor to World Origin      ")) snapCursorToOrigin();
-                        if (ImGui::MenuItem("Cursor to Grid      "))         snapCursorToGrid();
-                        if (ImGui::MenuItem("Cursor to Terrain      "))      snapCursorToTerrain();
-                        if (ImGui::MenuItem("Cursor to Selection      ", nullptr, false, haveSel))
-                            snapCursorToSelection();
-                        ImGui::Unindent(inset);
-                        ImGui::Separator();
-                        ImGui::Indent(inset);
-                        if (ImGui::MenuItem("Selection to Cursor      ", nullptr, false, haveSel))
-                            snapSelectionToCursor();
-                        if (ImGui::MenuItem("Selection to Grid      ", nullptr, false, haveSel))
-                            snapSelectionToGrid();
-                        ImGui::Unindent(inset);
-                        ImGui::EndPopup();
-                    }
-                    ImGui::PopStyleVar(); // WindowPadding
+                    cursor3d::snapMenu(editorCtx, sceneView, cursor, !playMode);
 
                     // The transform gizmo: on the selected object, or while
                     // modelling on the picked face (TransformGizmo.hpp).
@@ -10812,9 +10743,9 @@ int main(int argc, char** argv) {
                         gs.objectFree = !vehGizmoOwnsMouse && !meshBusy;
                         gs.faceMode   = showModeling && !meshBusy;
                         gs.modelSel   = &modelSel;
-                        gs.grid       = cursorGrid;
-                        gs.snapAngle  = snapAngle;
-                        gs.snapScale  = snapScale;
+                        gs.grid       = cursor.grid;
+                        gs.snapAngle  = cursor.snapAngle;
+                        gs.snapScale  = cursor.snapScale;
                         gizmo::frame(editorCtx, sceneView, gizmoDrag, gs);
                     }
                     // The selection's wire boxes and its component gizmos -- after
@@ -11298,7 +11229,7 @@ int main(int argc, char** argv) {
 
             // Whole towns: the rules live in CitySystem, the streets in `roads`;
             // the panel edits both through one undo step each. See CityPlanPanel.cpp.
-            citygenui::drawPanel({showTowns, towns, roads, townSel, cursor3D,
+            citygenui::drawPanel({showTowns, towns, roads, townSel, cursor.pos,
                                   townUndoBefore, townEditing,
                                   [&](std::unique_ptr<Command> c) {
                                       history.pushApplied(std::move(c));
@@ -11375,7 +11306,7 @@ int main(int argc, char** argv) {
                     },
                     mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
                     mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
-                    cursor3D, &splines,
+                    cursor.pos, &splines,
                 });
                 ImGui::EndDisabled();
             }
@@ -11416,62 +11347,10 @@ int main(int argc, char** argv) {
                                     roadEditMode, treePaintMode, flowerPaintMode, sculptMode,
                                     scatterMode, showMaterials, [&] { convertToMesh(); }});
 
-            if (showCursor) { if (ImGui::Begin("3D Cursor", &showCursor)) {
-                ImGui::Checkbox("Show cursor", &cursorVisible);
-                ui::hint(cursorVisible
-                             ? "New objects are placed on the cursor."
-                             : "Hidden: new objects are placed in view.");
-                ImGui::TextDisabled("Shift+Right-click in the viewport to place it.");
-                ImGui::DragFloat3("Position", &cursor3D.x, 0.05f, 0.0f, 0.0f, "%.2f");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Grid step", &cursorGrid, 0.05f, 0.01f, 100.0f, "%.2f m");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Rotate step", &snapAngle, 0.5f, 1.0f, 90.0f, "%.0f deg");
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Scale step", &snapScale, 0.01f, 0.01f, 1.0f, "%.2f x");
-                ui::hint("Hold Ctrl while dragging the gizmo: a move lands on the\n"
-                         "grid, a turn and a scale go in these steps.");
-                ImGui::TextDisabled("Shift+S in the viewport opens the snap menu.");
-
-                // The drawn grid IS this step, on this cursor's plane -- so these
-                // controls belong next to it rather than in a panel of their own.
-                ui::sectionText("Grid");
-                ImGui::Checkbox("Show grid", &showGrid);
-                ImGui::BeginDisabled(!showGrid);
-                ImGui::SetNextItemWidth(140.0f);
-                ImGui::DragFloat("Fade out", &gridFade, 2.0f, 20.0f, 1000.0f, "%.0f m");
-                ImGui::EndDisabled();
-                ui::hint("One cell = the grid step above, a heavier line every ten.\n"
-                         "It lies on the cursor's height, so moving the cursor up\n"
-                         "moves the plane you are building on with it. The fade is\n"
-                         "capped by the view distance -- it cannot reach past it.");
-
-                const bool haveSel = cursorHaveSel();
-
-                ui::sectionText("Snap cursor");
-                if (ImGui::Button("To world origin")) snapCursorToOrigin();
-                ImGui::SameLine();
-                if (ImGui::Button("To grid"))         snapCursorToGrid();
-                if (ImGui::Button("To terrain"))      snapCursorToTerrain();
-                ImGui::SameLine();
-                ImGui::BeginDisabled(!haveSel);
-                if (ImGui::Button("To selection"))    snapCursorToSelection();
-                ImGui::EndDisabled();
-
-                ui::sectionText("Snap selection");
-                ImGui::BeginDisabled(!haveSel);
-                if (ImGui::Button("Selection to cursor")) snapSelectionToCursor();
-                ImGui::SameLine();
-                if (ImGui::Button("Selection to grid"))   snapSelectionToGrid();
-                ImGui::EndDisabled();
-
-                ui::sectionText("Create");
-                if (ImGui::Button("Add object at cursor"))
-                    addEntity(cursor3D, entityNewType);
-                ImGui::SameLine();
-                ImGui::TextDisabled("(base rests on the cursor)");
-            }
-            ImGui::End(); }
+            cursor3d::panel(editorCtx, cursor,
+                            {showCursor, showGrid, gridFade,
+                             [&](float x, float z) { return streamer.heightAt(x, z); },
+                             [&](const glm::vec3& at) { addEntity(at, entityNewType); }});
 
             // The scene tree: selection, inline rename, drag-to-reparent and the
             // create/duplicate/delete menu (see HierarchyPanel.cpp).
@@ -13948,15 +13827,15 @@ int main(int argc, char** argv) {
             // in Play, and skipped in presentation mode -- which draws the game
             // straight to the screen and has no viewport image to draw onto.
             if (showGrid && !playMode && !presentMode) {
-                grid.cell   = cursorGrid;   // what you see is what you snap to
-                grid.plane  = cursor3D.y;   // ...on the plane the cursor is on
-                grid.cursor = cursor3D;
+                grid.cell   = cursor.grid;   // what you see is what you snap to
+                grid.plane  = cursor.pos.y;   // ...on the plane the cursor is on
+                grid.cursor = cursor.pos;
                 // Never fade beyond what the camera can see: the grid's quad ends
                 // at its fade distance, so a fade further out than the far plane
                 // would be sliced off mid-strength by the clip instead of easing
                 // away. View distance is the knob for seeing further.
                 grid.fade   = std::min(gridFade, camera.farPlane() * 0.7f);
-                grid.highlightCursorCell = cursorVisible;
+                grid.highlightCursorCell = cursor.visible;
                 grid.viewportPx    = glm::vec2(fbW, fbH);
                 grid.sceneDepthUnit = 0;
                 hdrRT.bindDepthTexture(0);
