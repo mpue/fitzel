@@ -10,8 +10,12 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include "Command.hpp"
 #include "Component.hpp"
 #include "Document.hpp"
+#include "EditorContext.hpp"
+#include "SkidSystem.hpp"
+#include "TrailSystem.hpp"
 #include "PropertyMeta.hpp"
 #include "SceneTypes.hpp"
 #include "UiStyle.hpp"
@@ -214,6 +218,103 @@ int panelSection(Document& doc, int selectedId,
     if (!sel) ImGui::TextDisabled("Select a model in the scene first.");
     if (!lastMsg.empty()) ImGui::TextWrapped("%s", lastMsg.c_str());
     return pick;
+}
+
+
+void window(EditorContext& ed, const Window& w) {
+    if (!w.show) return;
+    if (ImGui::Begin("Vehicle", &w.show)) {
+        if (ImGui::Checkbox("Drive mode (V)", &w.driveMode) && w.setDriving)
+            w.setDriving(w.driveMode);
+        if (w.driveMode)
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
+                               "W/S drive, A/D steer, Space brake, Esc exit");
+        else
+            ImGui::TextDisabled("Press V or tick above to drive");
+
+        // Per-scene Play options (saved with the scene / exported game).
+        ui::sectionText("Play start");
+        // WHAT Play starts as lives in File > Game Settings ("Start as"). It is
+        // a statement about the game rather than about this panel, there are
+        // five answers rather than one checkbox here and another in the Glider
+        // panel, and two checkboxes could disagree. The pointer stays because
+        // this is where people look for it.
+        ImGui::TextDisabled("Start mode: File > Game Settings");
+        ImGui::Checkbox("Show crosshair", &w.showCrosshair);
+
+        ui::sectionText("Skid marks");
+        ImGui::Checkbox("Enable skid marks", &w.skids.enabled);
+        ImGui::BeginDisabled(!w.skids.enabled);
+        ImGui::SliderFloat("Slip threshold", &w.skids.slipThresh, 0.1f, 1.5f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How much a wheel must slip (lock/spin/drift)\n"
+                              "before it leaves a mark (lower = more marks).");
+        ImGui::SliderFloat("Mark width", &w.skids.markHalfW, 0.05f, 0.6f, "%.2f m");
+        ImGui::SliderFloat("Darkness", &w.skids.opacity, 0.1f, 1.0f, "%.2f");
+        ImGui::EndDisabled();
+
+        ui::sectionText("Contrails");
+        ImGui::Checkbox("Enable contrails", &w.trails.enabled);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Vapour trails streaming behind the racers\n"
+                              "(the driven craft and every opponent) in Play.");
+        ImGui::BeginDisabled(!w.trails.enabled);
+        ImGui::SliderFloat("Trail length", &w.trails.life, 0.3f, 5.0f, "%.1f s");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How long each puff lingers before it fades\n"
+                              "out -- longer = a longer streak.");
+        ImGui::SliderFloat("Trail width", &w.trails.width, 0.05f, 1.5f, "%.2f m");
+        ImGui::SliderFloat("Trail opacity", &w.trails.opacity, 0.05f, 1.0f, "%.2f");
+        ImGui::SliderFloat("Trail glow", &w.trails.glow, 0.0f, 6.0f, "%.1f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Self-illumination: the streak glows on its\n"
+                              "own instead of being lit (and dimmed) by the sun.");
+        ImGui::SliderFloat("Trail spacing", &w.trails.minStep, 0.2f, 3.0f, "%.1f m");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Distance between recorded points. Smaller = a\n"
+                              "smoother ribbon (more geometry).");
+        ImGui::ColorEdit3("Trail colour", &w.trails.color.x);
+        ImGui::EndDisabled();
+
+        ui::sectionText("Missiles");
+        if (w.weaponSettings) w.weaponSettings();
+
+        // Scene vehicles: hook a model into the vehicle system with one click.
+        // The auto-setup edit goes through the undo history.
+        auto makeDrivable = [&](int rootId) -> std::string {
+            Entity* e = ed.document.find(rootId);
+            if (!e) return std::string();
+            const Entity before = *e;
+            std::string rep = autoSetup(ed.document, rootId);
+            if (Entity* after = ed.document.find(rootId)) {
+                auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
+                if (!cmd->trivial()) ed.history.pushApplied(std::move(cmd));
+            }
+            return rep;
+        };
+        const int selId = ed.sel.valid() ? ed.entities[ed.sel.index()].id : -1;
+        const int pick = panelSection(ed.document, selId, makeDrivable);
+        if (pick >= 0) ed.sel.select(pick);
+
+        ui::sectionText("Setup gizmo");
+        ImGui::Checkbox("Edit setup in viewport", &w.gizmoEdit);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(
+                "Drag the axles, track, wheels, collision box and centre\n"
+                "of mass directly in the viewport.\n\n"
+                "The shape is ALWAYS drawn for the selected vehicle -- this\n"
+                "hands the handles the left mouse button, so the transform\n"
+                "gizmo pauses while it is on.\n\n"
+                "Arrow keys nudge the selected handle (Shift = bigger steps).");
+        ImGui::TextDisabled("Select a vehicle to see its setup drawn.");
+
+        ui::sectionText("Test car");
+        ImGui::Checkbox("Show vehicle", &w.showTestCar);
+        if (ImGui::Button("Place at camera") && w.placeTestCar) w.placeTestCar();
+        if (w.testCarPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(w.testCarSpeed) * 3.6f);
+        else                 ImGui::TextDisabled("Vehicle not placed yet");
+    }
+    ImGui::End();
 }
 
 } // namespace vehicleui

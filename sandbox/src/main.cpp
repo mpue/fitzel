@@ -10762,146 +10762,28 @@ int main(int argc, char** argv) {
                 ImGui::End();
             }
 
-            if (showVehiclePanel) { if (ImGui::Begin("Vehicle", &showVehiclePanel)) {
-                if (ImGui::Checkbox("Drive mode (V)", &vehicleMode)) {
-                    if (vehicleMode) enterVehicleMode();
-                    else             endEditorDrive();
-                }
-                if (vehicleMode)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "W/S drive, A/D steer, Space brake, Esc exit");
-                else
-                    ImGui::TextDisabled("Press V or tick above to drive");
+            // The Vehicle and Glider windows live with their tools (VehicleTool.cpp,
+            // GliderTool.cpp); the drive and flight themselves are main's.
+            vehicleui::window(editorCtx, {
+                showVehiclePanel, vehicleMode,
+                [&](bool on) { if (on) enterVehicleMode(); else endEditorDrive(); },
+                showCrosshair, skids, trails,
+                [&] { weapons.settingsPanel(soundPickerCombo); },
+                vehGizmoEdit, showVehicle, [&] { placeCar(); }, carPlaced, carSpeed,
+            });
 
-                // Per-scene Play options (saved with the scene / exported game).
-                ui::sectionText("Play start");
-                // WHAT Play starts as lives in File > Game Settings now ("Start
-                // as"). It is a statement about the game rather than about this
-                // panel, there are five answers rather than one checkbox here and
-                // another in the Glider panel, and two checkboxes could disagree.
-                // The pointer stays because this is where people look for it.
-                ImGui::TextDisabled("Start mode: File > Game Settings");
-                ImGui::Checkbox("Show crosshair", &showCrosshair);
-
-                ui::sectionText("Skid marks");
-                ImGui::Checkbox("Enable skid marks", &skids.enabled);
-                ImGui::BeginDisabled(!skids.enabled);
-                ImGui::SliderFloat("Slip threshold", &skids.slipThresh, 0.1f, 1.5f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How much a wheel must slip (lock/spin/drift)\n"
-                                      "before it leaves a mark (lower = more marks).");
-                ImGui::SliderFloat("Mark width", &skids.markHalfW, 0.05f, 0.6f, "%.2f m");
-                ImGui::SliderFloat("Darkness", &skids.opacity, 0.1f, 1.0f, "%.2f");
-                ImGui::EndDisabled();
-
-                ui::sectionText("Contrails");
-                ImGui::Checkbox("Enable contrails", &trails.enabled);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Vapour trails streaming behind the racers\n"
-                                      "(the driven craft and every opponent) in Play.");
-                ImGui::BeginDisabled(!trails.enabled);
-                ImGui::SliderFloat("Trail length", &trails.life, 0.3f, 5.0f, "%.1f s");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How long each puff lingers before it fades\n"
-                                      "out -- longer = a longer streak.");
-                ImGui::SliderFloat("Trail width", &trails.width, 0.05f, 1.5f, "%.2f m");
-                ImGui::SliderFloat("Trail opacity", &trails.opacity, 0.05f, 1.0f, "%.2f");
-                ImGui::SliderFloat("Trail glow", &trails.glow, 0.0f, 6.0f, "%.1f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Self-illumination: the streak glows on its\n"
-                                      "own instead of being lit (and dimmed) by the sun.");
-                ImGui::SliderFloat("Trail spacing", &trails.minStep, 0.2f, 3.0f, "%.1f m");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Distance between recorded points. Smaller = a\n"
-                                      "smoother ribbon (more geometry).");
-                ImGui::ColorEdit3("Trail colour", &trails.color.x);
-                ImGui::EndDisabled();
-
-                ui::sectionText("Missiles");
-                weapons.settingsPanel(soundPickerCombo);
-
-                // Scene vehicles: hook a model into the vehicle system with one
-                // click. The auto-setup edit goes through the undo history.
-                auto makeDrivable = [&](int rootId) -> std::string {
-                    Entity* e = document.find(rootId);
-                    if (!e) return std::string();
-                    const Entity before = *e;
-                    std::string rep = vehicleui::autoSetup(document, rootId);
-                    if (Entity* after = document.find(rootId)) {
-                        auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
-                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                    }
-                    return rep;
-                };
-                const int selId =
-                    (sel.valid())
-                        ? entities[sel.index()].id : -1;
-                const int pick = vehicleui::panelSection(document, selId, makeDrivable);
-                if (pick >= 0) sel.select(pick);
-
-                ui::sectionText("Setup gizmo");
-                ImGui::Checkbox("Edit setup in viewport", &vehGizmoEdit);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip(
-                        "Drag the axles, track, wheels, collision box and centre\n"
-                        "of mass directly in the viewport.\n\n"
-                        "The shape is ALWAYS drawn for the selected vehicle -- this\n"
-                        "hands the handles the left mouse button, so the transform\n"
-                        "gizmo pauses while it is on.\n\n"
-                        "Arrow keys nudge the selected handle (Shift = bigger steps).");
-                ImGui::TextDisabled("Select a vehicle to see its setup drawn.");
-
-                ui::sectionText("Test car");
-                ImGui::Checkbox("Show vehicle", &showVehicle);
-                if (ImGui::Button("Place at camera")) placeCar();
-                if (carPlaced) ImGui::Text("Speed: %.0f km/h", std::abs(carSpeed) * 3.6f);
-                else           ImGui::TextDisabled("Vehicle not placed yet");
-            }
-            ImGui::End(); }
-
-            if (showGliderPanel) { if (ImGui::Begin("Glider", &showGliderPanel)) {
-                if (ImGui::Checkbox("Fly mode (G)", &gliderMode)) {
-                    if (gliderMode) {
+            gliderui::window(editorCtx, {
+                showGliderPanel, gliderMode,
+                [&](bool on) {
+                    if (on) {
                         if (vehicleMode) { vehicleMode = false; endEditorDrive(); }
                         enterGliderMode();
                     } else {
                         endGliderDrive();
                     }
-                }
-                if (gliderMode && driveGliderId >= 0)
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                                       "W/S thrust, A/D steer, Space air-brake, Esc exit");
-                else
-                    ImGui::TextDisabled("Add a Glider component, then press G to fly");
-
-                // Starting Play already flying is File > Game Settings ("Start
-                // as") now -- see the note in the Vehicle panel.
-                ui::sectionText("Play start");
-                ImGui::TextDisabled("Start mode: File > Game Settings");
-
-                // Turn a selected model into a glider with one click (undoable).
-                auto makeGlider = [&](int rootId) -> std::string {
-                    Entity* e = document.find(rootId);
-                    if (!e) return std::string();
-                    const Entity before = *e;
-                    std::string rep = gliderui::autoSetup(document, rootId);
-                    if (Entity* after = document.find(rootId)) {
-                        auto cmd = std::make_unique<ModifyEntityCmd>(before, *after);
-                        if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-                    }
-                    return rep;
-                };
-                const int selId =
-                    (sel.valid())
-                        ? entities[sel.index()].id : -1;
-                const int pick = gliderui::panelSection(document, selId, makeGlider);
-                if (pick >= 0) sel.select(pick);
-
-                if (gliderMode && driveGliderId >= 0)
-                    ImGui::Text("Speed: %.0f km/h",
-                                glm::length(glm::vec3(gliderVel.x, 0.0f, gliderVel.z)) * 3.6f);
-            }
-            ImGui::End(); }
+                },
+                driveGliderId, gliderVel,
+            });
 
             // Scene UI overlay editor: author the per-scene 2D HUD (text, buttons,
             // images). The list edit is bracketed into one undo step -- opened when
