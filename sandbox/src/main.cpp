@@ -794,56 +794,8 @@ int main(int argc, char** argv) {
         };
         publishSculpt();                     // install the (empty) snapshot
         bool  sculptMode     = false;
-        int   sculptTool     = 0;            // 0 raise 1 lower 2 smooth 3 flatten 4 erode 5 stamp 6 noise 7 carve 8 pull 9 rain
-        float sculptRadius   = 8.0f;         // world units
-        float sculptStrength = 0.5f;         // 0..1 brush intensity
-        float sculptFlattenH = 0.0f;         // flatten target height (grabbed on press)
-        int   stampShape     = 0;            // 0 dome 1 cone 2 plateau 3 crater 4 ridge
-        float stampHeight    = 12.0f;        // stamp peak height (m); negative digs in
-        float stampRot       = 0.0f;         // ridge orientation (radians)
-        float noiseFreq      = 0.35f;        // roughen feature size
-        float noiseSeed      = 0.0f;         // advanced per dab so detail layers up
-        float carveDepth     = 12.0f;        // valley depth (m); Alt raises a ridge
-
-        // --- Proportional pull ------------------------------------------------
-        // Press on the ground and the point under the cursor follows it up or
-        // down, with the disc around it coming along less and less out to the rim.
-        //
-        // It is the one sculpt tool here that is not a dab. Every other brush
-        // applies a step per frame and the ground ends up wherever holding the
-        // button for that long put it -- which means the result depends on the
-        // steadiness of a hand, and getting a hill to a particular height means
-        // creeping up on it. This one is ABSOLUTE: the height is a function of
-        // where the mouse is now, not of how long it has been down, so overshoot
-        // costs nothing, wobble leaves nothing behind, and letting go early
-        // leaves exactly what was on screen. That is the whole reason it exists
-        // next to Raise rather than instead of it.
-        float pullFalloff    = 1.0f;         // skirt shape (see TerrainEditField::pull)
-        // What one CLICK is worth. The drag is a convenience on top of it, not
-        // the way in: press-and-move is exactly the gesture this editor exists to
-        // not require (see the Parkinson note in the project's UI rules), so the
-        // tool has to be complete without it -- set the number with the panel's
-        // steppers, click the ground, done. A drag ends by writing what it
-        // arrived at back into here, so the next click repeats it.
-        float pullHeight     = 4.0f;         // metres per click; negative pushes in
-        bool      pullActive  = false;       // a pull gesture is in progress
-        glm::vec2 pullCenter{0.0f};          // where it was anchored
-        float     pullRadius  = 8.0f;        // ...and the radius it was anchored with
-        float     pullShape   = 1.0f;        // ...and the shape, both frozen for the drag
-        float     pullApplied = 0.0f;        // metres already written to the field
-        float     pullStartY  = 0.0f;        // mouse Y at the press, in screen pixels
-        float     pullScale   = 0.05f;       // world metres per screen pixel, at the anchor
-
-        // --- Rain: hydraulic erosion ----------------------------------------
-        // Anchored the way Pull is: the press decides where it rains, and holding
-        // keeps it raining THERE, so a hand that drifts or shakes does not smear
-        // the gullies across the slope. A click alone is one shower; held, the
-        // showers come at a fixed pace rather than one per frame.
-        bool          rainActive = false;
-        glm::vec2     rainCenter{0.0f};
-        float         rainRadius = 8.0f;
-        float         rainClock  = 0.0f;     // seconds to the next shower while held
-        std::uint32_t rainSeed   = 1;        // advanced per shower, so no two fall alike
+        // The brush's settings and the gesture in flight (see SculptPanel.hpp).
+        sculptui::Brush sculpt;
 
         // --- Terrain texture painting --------------------------------------
         // A parallel sparse field of per-layer paint weights, baked into the terrain
@@ -11160,233 +11112,20 @@ int main(int argc, char** argv) {
                     }
                 }
 
-                // --- Terrain sculpt brush: raise/lower/smooth/flatten the ground
-                //     under a 3D disc that hugs the surface. Hold LMB to apply;
-                //     Alt inverts raise/lower. -------------------------------
+                // --- Terrain sculpt brush (SculptPanel.cpp): raise/lower/smooth/
+                //     flatten the ground under a 3D disc that hugs the surface. --
                 if (sculptMode) {
                     const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-
-                    // Grab the flatten target from the surface on press.
-                    if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        sculptFlattenH = center.y;
-
-                    // --- Pull: one gesture, absolute height ------------------
-                    // Anchored on the press and driven by the mouse from there on
-                    // -- deliberately NOT by where the cursor lands on the ground,
-                    // because the ground it would be asking is the ground this
-                    // gesture is busy moving, and a tool that reads its own output
-                    // runs away from you.
-                    if (sculptTool == 8) {
-                        if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                            pullActive  = true;
-                            pullCenter  = glm::vec2(center.x, center.z);
-                            pullRadius  = sculptRadius;
-                            pullShape   = pullFalloff;
-                            pullApplied = 0.0f;
-                            pullStartY  = ImGui::GetIO().MousePos.y;
-                            // How many metres of world one pixel of drag is worth,
-                            // measured AT THE ANCHOR: project a metre of height
-                            // there and see how tall it comes out on screen. So
-                            // the peak keeps up with the cursor whether the anchor
-                            // is at your feet or across the valley, which is the
-                            // difference between a tool that feels like pulling
-                            // and one that feels like a slider in disguise.
-                            const glm::vec4 a = vp * glm::vec4(center, 1.0f);
-                            const glm::vec4 b = vp * glm::vec4(center + glm::vec3(0.0f, 1.0f, 0.0f), 1.0f);
-                            const float pxPerM = (a.w > 1e-4f && b.w > 1e-4f)
-                                ? std::fabs((b.y / b.w - a.y / a.w)) * 0.5f * viewH
-                                : 0.0f;
-                            // Clamped, because the measurement degenerates: from
-                            // straight overhead a metre of height is worth almost
-                            // no pixels at all, and an unclamped scale there turns
-                            // a twitch into a mountain.
-                            pullScale = glm::clamp(
-                                (pxPerM > 0.5f) ? 1.0f / pxPerM : 0.5f, 0.01f, 0.5f);
-                        }
-                        if (pullActive && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                            // A drag ends by becoming the new click height, so
-                            // the next hill matches the one just made without
-                            // anybody having to read a number off the screen.
-                            if (std::fabs(pullApplied) > 1e-3f) pullHeight = pullApplied;
-                            pullActive = false;
-                        }
-                        if (pullActive) {
-                            const ImGuiIO& io = ImGui::GetIO();
-                            // The click is worth `pullHeight` on its own; moving
-                            // up or down from there adjusts it. Up the screen is
-                            // up the world, and Shift is the fine gear -- the same
-                            // gesture over four times the travel.
-                            float travel = (pullStartY - io.MousePos.y) * pullScale;
-                            if (io.KeyShift) travel *= 0.25f;
-                            const float want = pullHeight + travel;
-                            const float step = want - pullApplied;
-                            if (std::fabs(step) > 1e-4f) {
-                                sculptWork.pull(pullCenter, pullRadius, step, pullShape);
-                                pullApplied = want;
-                                publishSculpt();
-                                const float m = pullRadius + 3.0f * sculptWork.cell;
-                                streamer.editsChanged(
-                                    glm::vec2(pullCenter.x - m, pullCenter.y - m),
-                                    glm::vec2(pullCenter.x + m, pullCenter.y + m));
-                                veg.grassDirty = true;
-                            }
-                        }
-                    }
-
-                    // --- Rain: showers at the anchor ----------------------------
-                    if (sculptTool == 9) {
-                        if (onGround && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                            rainActive = true;
-                            rainCenter = glm::vec2(center.x, center.z);
-                            rainRadius = sculptRadius;
-                            rainClock  = 0.0f;           // the click itself is a shower
-                        }
-                        if (rainActive && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
-                            rainActive = false;
-                        if (rainActive) {
-                            rainClock -= dt;
-                            if (rainClock <= 0.0f) {
-                                rainClock = std::max(rainClock + 0.1f, 0.0f);
-                                // About 0.06 drops per square metre per shower at full
-                                // strength: ten showers a second cut clear gullies in
-                                // a couple of seconds of holding, while one click only
-                                // roughens the slope a little.
-                                const float area = 3.14159265f * rainRadius * rainRadius;
-                                const int drops = std::clamp(
-                                    static_cast<int>(area * sculptStrength * 0.06f), 4, 40000);
-                                const float reach = sculptWork.rain(streamer.settings(),
-                                    rainCenter, rainRadius, drops, rainSeed++);
-                                publishSculpt();
-                                const float m = reach + 3.0f * sculptWork.cell;
-                                streamer.editsChanged(
-                                    glm::vec2(rainCenter.x - m, rainCenter.y - m),
-                                    glm::vec2(rainCenter.x + m, rainCenter.y + m));
-                                veg.grassDirty = true;
-                            }
-                        }
-                    }
-
-                    // Stamp drops a landform once per click; the other tools apply
-                    // continuously while the button is held.
-                    const bool stampTool = (sculptTool == 5);
-                    const bool apply = onGround && sculptTool != 8 && sculptTool != 9 &&
-                        (stampTool ? ImGui::IsMouseClicked(ImGuiMouseButton_Left)
-                                   : ImGui::IsMouseDown(ImGuiMouseButton_Left));
-                    if (apply) {
-                        const glm::vec2 c(center.x, center.z);
-                        const bool invert = ImGui::GetIO().KeyAlt;
-                        switch (sculptTool) {
-                            case 0: case 1: {                 // raise / lower
-                                float dir = (sculptTool == 1) ? -1.0f : 1.0f;
-                                if (invert) dir = -dir;
-                                sculptWork.raise(c, sculptRadius,
-                                                 dir * sculptStrength * 14.0f * dt);
-                                break;
-                            }
-                            case 2:                           // smooth
-                                sculptWork.smooth(streamer.settings(), c, sculptRadius,
-                                    glm::clamp(sculptStrength * 5.0f * dt, 0.0f, 1.0f));
-                                break;
-                            case 3:                           // flatten to grabbed height
-                                sculptWork.flatten(streamer.settings(), c, sculptRadius,
-                                    glm::clamp(sculptStrength * 5.0f * dt, 0.0f, 1.0f),
-                                    sculptFlattenH);
-                                break;
-                            case 4:                           // erode (weathering)
-                                sculptWork.erode(streamer.settings(), c, sculptRadius,
-                                    glm::clamp(sculptStrength * 6.0f * dt, 0.0f, 1.0f));
-                                break;
-                            case 5:                           // stamp a landform
-                                sculptWork.stamp(c, sculptRadius,
-                                    invert ? -stampHeight : stampHeight,
-                                    stampShape, stampRot);
-                                break;
-                            case 6:                           // noise / roughen
-                                sculptWork.roughen(c, sculptRadius,
-                                    sculptStrength * 3.0f * dt, noiseFreq, noiseSeed);
-                                noiseSeed += 1.7f;            // decorrelate next dab
-                                break;
-                            case 7:                           // carve valley (Alt: ridge)
-                                sculptWork.carve(streamer.settings(), c, sculptRadius,
-                                    glm::clamp(sculptStrength * 4.0f * dt, 0.0f, 1.0f),
-                                    invert ? -carveDepth : carveDepth);
-                                break;
-                        }
-                        // Publish the new shape, then rebuild the touched chunks.
-                        // Erosion/stamp reach a little past the disc, so pad the
-                        // rebuilt rectangle beyond the radius.
-                        publishSculpt();
-                        const float m = sculptRadius + 3.0f * sculptWork.cell;
-                        streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
-                                              glm::vec2(c.x + m, c.y + m));
-                        veg.grassDirty = true; // vegetation re-drapes on the new ground
-                    }
-
-                    // Brush cursor: a ground-hugging ring, coloured per tool.
-                    // Once a pull is under way the ring stays on its ANCHOR --
-                    // that is where the edit is, and a ring that followed the
-                    // cursor would be pointing at ground the tool is not touching.
-                    const bool ringHere = onGround || pullActive || rainActive;
-                    const glm::vec2 ringAt = pullActive ? pullCenter
-                                           : rainActive ? rainCenter
-                                                        : glm::vec2(center.x, center.z);
-                    const float ringR = pullActive ? pullRadius
-                                      : rainActive ? rainRadius : sculptRadius;
-                    if (ringHere) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = sculptTool == 9 ? IM_COL32(70, 140, 235, 235)
-                                        : sculptTool == 8 ? IM_COL32(150, 255, 210, 235)
-                                        : sculptTool == 2 ? IM_COL32(120, 200, 255, 225)
-                                        : sculptTool == 3 ? IM_COL32(255, 210, 90, 225)
-                                        : sculptTool == 4 ? IM_COL32(200, 150, 110, 225)
-                                        : sculptTool == 5 ? IM_COL32(200, 140, 255, 225)
-                                        : sculptTool == 6 ? IM_COL32(180, 180, 190, 225)
-                                        : sculptTool == 7 ? IM_COL32(90, 170, 255, 225)
-                                        : sculptTool == 1 ? IM_COL32(255, 130, 90, 225)
-                                                          : IM_COL32(140, 235, 140, 225);
-                        const int SEG = 56;
-                        ImVec2 prev; bool have = false;
-                        auto toScreen = [&](float wx, float wy, float wz, ImVec2& out) {
-                            const glm::vec4 cc = vp * glm::vec4(wx, wy, wz, 1.0f);
-                            if (cc.w <= 1e-4f) return false;
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                         org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            return true;
-                        };
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = ringAt.x + std::cos(a) * ringR;
-                            const float wz = ringAt.y + std::sin(a) * ringR;
-                            ImVec2 sp;
-                            if (!toScreen(wx, streamer.heightAt(wx, wz) + 0.05f, wz, sp)) {
-                                have = false; continue;
-                            }
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                        // A pull also draws its own stem and says how far it has
-                        // come. Reading the height off the silhouette of a hill
-                        // you are in the middle of making is guesswork, and this
-                        // tool is here so that a height can be aimed at.
-                        if (pullActive) {
-                            const float ground = streamer.heightAt(ringAt.x, ringAt.y);
-                            ImVec2 foot, tip;
-                            if (toScreen(ringAt.x, ground - pullApplied, ringAt.y, foot) &&
-                                toScreen(ringAt.x, ground, ringAt.y, tip)) {
-                                dl->AddLine(foot, tip, col, 2.0f);
-                                dl->AddCircleFilled(tip, 4.0f, col);
-                                char lbl[32];
-                                std::snprintf(lbl, sizeof lbl, "%+.2f m", pullApplied);
-                                dl->AddText(ImVec2(tip.x + 8.0f, tip.y - 8.0f), col, lbl);
-                            }
-                        }
-                    }
+                    sculptui::Viewport sv;
+                    sv.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
+                    sv.origin      = rmin;
+                    sv.viewW       = static_cast<float>(viewW);
+                    sv.viewH       = static_cast<float>(viewH);
+                    sv.hovered     = viewportHovered;
+                    sv.mouseNdc    = viewportMouseNdc;
+                    sv.pickTerrain = roadPickTerrain;
+                    sculptui::brushViewport(sculpt, sv, sculptWork, streamer, publishSculpt,
+                                            veg.grassDirty, dt);
                 }
 
                 // --- Terrain texture paint brush: paint the chosen layer onto the
@@ -12716,9 +12455,7 @@ int main(int argc, char** argv) {
                 showSculpt, sculptMode,
                 grassPaintMode, roadEditMode, treePaintMode, flowerPaintMode, paintMode,
                 scatterMode,
-                sculptTool, sculptRadius, sculptStrength, pullFalloff, pullHeight,
-                sculptFlattenH,
-                stampShape, stampHeight, stampRot, noiseFreq, carveDepth,
+                sculpt,
                 sculptWork, streamer, veg.grassDirty, publishSculpt,
             });
 
