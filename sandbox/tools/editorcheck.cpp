@@ -19,6 +19,9 @@
 //     each other's copies; one main camera; an Empty slid in above an object
 //     leaves it where it was; a cockpit camera faces the nose; a vehicle gets
 //     its four lights; a prefab instance unpacks -- each one undo step.
+//   - the panels moved out of main: the Unity importer lists every .fbx below
+//     a folder, any case, sorted; the Assets browser takes a file dropped on it
+//     and leaves one dropped beside it alone.
 //   - which tool has the left button (ViewTool): switching one on takes it
 //     from the one that had it; switching off one that did not have it
 //     changes nothing.
@@ -68,6 +71,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <string>
@@ -92,6 +96,8 @@
 #include "../src/ViewportHud.hpp"
 #include "../src/ViewTool.hpp"
 #include "../src/SceneOps.hpp"
+#include "../src/AssetsPanel.hpp"
+#include "../src/UnityImportPanel.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -1235,6 +1241,42 @@ int main() {
         check(drawnBy([&] { viewhud::traceStatus(vmin, ""); }) == 0 &&
                   drawnBy([&] { viewhud::traceStatus(vmin, "Waiting for the view to settle"); }) > 0,
               "the tracer's status shows only when there is one");
+    }
+
+    // --- Panels moved out of main -------------------------------------------------------------
+    {
+        const fs::path root = dir / "unity";
+        fs::create_directories(root / "Pack" / "Meshes");
+        fs::create_directories(root / "Pack" / "Textures");
+        auto touch = [](const fs::path& f) { std::ofstream(f) << "x"; };
+        touch(root / "Pack" / "Meshes" / "Rock.FBX");
+        touch(root / "Pack" / "Meshes" / "Tree.fbx");
+        touch(root / "Pack" / "Textures" / "Rock_Albedo.png");
+        touch(root / "Loose.fbx");
+        const auto found = unityimportui::scanFbx(root.generic_string());
+        std::string got;
+        for (const auto& f : found) got += f.first + " ";
+        check(found.size() == 3 && found[0].first == "Loose.fbx" &&
+                  found[1].first == "Pack/Meshes/Rock.FBX" && found[2].first == "Pack/Meshes/Tree.fbx",
+              "the Unity importer lists every .fbx below the folder, any case, sorted", got);
+
+        assetsui::State as;
+        bool showAssets = true;
+        const std::string noProject;
+        std::vector<std::string> dropped{(dir / "some.png").generic_string()};
+        auto assetsFrame = [&](float dx, float dy) {
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(ImVec2(100.0f, 100.0f));
+            ImGui::SetNextWindowSize(ImVec2(400.0f, 300.0f));
+            assetsui::panel(ed, as, {showAssets, noProject, nullptr, dropped, dx, dy, nullptr});
+            ImGui::Render();
+        };
+        assetsFrame(50.0f, 50.0f);   // beside the window
+        const bool leftAlone = dropped.size() == 1 && as.dropStatus.empty();
+        assetsFrame(300.0f, 250.0f); // on it
+        check(leftAlone && dropped.empty() && !as.dropStatus.empty(),
+              "the Assets browser leaves a file dropped beside it alone, and takes one dropped on it",
+              as.dropStatus);
     }
 
     ImGui::DestroyContext();

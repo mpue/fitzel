@@ -89,6 +89,10 @@
 #include "MixerPanel.hpp"
 #include "Cursor3D.hpp"
 #include "SceneOps.hpp"
+#ifndef FITZEL_PLAYER
+#include "AssetsPanel.hpp"
+#include "UnityImportPanel.hpp"
+#endif
 #include "MeshPaintPanel.hpp"
 #include "ViewTool.hpp"
 #include "ViewportPick.hpp"
@@ -1493,10 +1497,7 @@ int main(int argc, char** argv) {
 #ifndef FITZEL_PLAYER
         std::unordered_map<fitzel::AssetId, std::shared_ptr<Texture>> assetThumbs;
         std::unordered_set<fitzel::AssetId>                           thumbRequested;
-        float assetThumbSize = 76.0f;
-        char  assetFilter[64] = "";
-        bool  assetTexturesOnly = false;
-        std::string assetDropStatus; // outcome of the last drop from Explorer
+        assetsui::State assetsBrowser;   // the Assets panel's size, filter, last drop
 
         struct ThumbWork {
             std::mutex              mutex;
@@ -1653,17 +1654,11 @@ int main(int argc, char** argv) {
         bool showMixer       = false;
         bool showUnityImport = false;
         std::string modelFile;       // selected file in the Models panel
-        // "Import Unity Asset" panel: a browsed asset folder, the chosen FBX, and
-        // a cached texture-match preview (recomputed when the selection changes).
-        std::string unityDir;        // asset folder being browsed (default: models/)
-        std::string unityFbx;        // selected .fbx (absolute path), "" = none
-        std::vector<std::pair<std::string, std::string>> unityFbxList; // (rel, abs)
-        std::string unityFbxScanDir; // folder unityFbxList was scanned for ("" = stale)
-        std::vector<fitzel::UnityTexMatch> unityPreview;
-        std::vector<std::string> unityNearby; // image files near the selected FBX
-        std::string unityPreviewFor; // path unityPreview was computed for
-        bool        unityFlipV = true;   // mirror V on import (FBX UV convention)
-        std::string unityStatus;         // last import result, shown in the panel
+#ifndef FITZEL_PLAYER
+        // "Import Unity Asset" panel: the browsed folder, the chosen FBX and its
+        // texture-match preview (see UnityImportPanel.hpp).
+        unityimportui::State unityImport;
+#endif
 
         // The audio mixer. The desk itself lives in MixerPanel.hpp: Master
         // scales everything via the device, Ambient the looping weather/zone
@@ -10656,361 +10651,33 @@ int main(int argc, char** argv) {
             // Import Unity asset: browse an asset folder, preview which textures
             // map by Unity naming convention, then import the FBX as a hierarchy
             // with those maps auto-assigned (the matching also runs on reload).
-            if (showUnityImport) {
-                ImGui::SetNextWindowSize(ImVec2(560.0f, 470.0f), ImGuiCond_FirstUseEver);
-                if (ImGui::Begin("Import Unity asset", &showUnityImport)) {
-                    if (unityDir.empty()) unityDir = modelDir;
-                    ImGui::TextWrapped(
-                        "Unity FBX files don't reference their textures directly, so a plain "
-                        "import leaves them unmapped. Point this at an asset's folder: maps "
-                        "kept in a Textures/ folder and named like the material or model "
-                        "(e.g. Rock_Albedo, Rock_Normal) are matched automatically.");
-                    ImGui::Separator();
-
-                    ImGui::TextWrapped("Folder: %s",
-                                       unityDir.empty() ? "(none)" : unityDir.c_str());
-                    if (ImGui::Button("Browse...")) {
-                        std::string picked;
-                        if (ed::pickFolder(picked, unityDir)) {
-                            unityDir = picked; unityFbx.clear(); unityFbxScanDir.clear();
-                        }
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Use models/ folder")) {
-                        unityDir = modelDir; unityFbx.clear(); unityFbxScanDir.clear();
-                    }
-                    ImGui::SameLine();
-                    if (ImGui::Button("Rescan")) unityFbxScanDir.clear();
-
-                    // (Re)scan only when the folder changes -- a manual directory
-                    // stack so one unreadable or over-long subfolder can't abort the
-                    // whole listing (recursive_directory_iterator aborts on the first
-                    // error), and so we don't hit the disk every frame.
-                    if (unityDir != unityFbxScanDir) {
-                        unityFbxList.clear();
-                        unityFbxScanDir = unityDir;
-                        std::vector<std::filesystem::path> stack;
-                        if (!unityDir.empty()) stack.push_back(std::filesystem::path(unityDir));
-                        int scanned = 0;
-                        while (!stack.empty() && unityFbxList.size() < 2000 && scanned < 40000) {
-                            const std::filesystem::path dir = stack.back();
-                            stack.pop_back();
-                            std::error_code lec;
-                            std::filesystem::directory_iterator
-                                dit(dir, std::filesystem::directory_options::skip_permission_denied, lec),
-                                dend;
-                            for (; !lec && dit != dend; dit.increment(lec)) {
-                                ++scanned;
-                                std::error_code tec;
-                                if (dit->is_directory(tec)) { stack.push_back(dit->path()); continue; }
-                                std::string ext = dit->path().extension().string();
-                                for (char& c : ext) c = static_cast<char>(std::tolower(
-                                    static_cast<unsigned char>(c)));
-                                if (ext != ".fbx") continue;
-                                std::error_code rec;
-                                std::string rel = std::filesystem::relative(
-                                    dit->path(), unityDir, rec).generic_string();
-                                if (rel.empty()) rel = dit->path().filename().string();
-                                unityFbxList.push_back({ rel, dit->path().generic_string() });
-                            }
-                        }
-                        std::sort(unityFbxList.begin(), unityFbxList.end());
-                    }
-
-                    ImGui::Spacing();
-                    ImGui::Text("FBX files (%d):", static_cast<int>(unityFbxList.size()));
-                    ImGui::BeginChild("##fbxlist", ImVec2(0.0f, 130.0f), true);
-                    for (const auto& h : unityFbxList)
-                        if (ImGui::Selectable(h.first.c_str(), unityFbx == h.second))
-                            unityFbx = h.second;
-                    if (unityFbxList.empty())
-                        ImGui::TextDisabled("(no .fbx found under this folder)");
-                    ImGui::EndChild();
-
-                    // Recompute the texture-match preview when the selection changes.
-                    if (unityFbx != unityPreviewFor) {
-                        unityPreview = unityFbx.empty()
-                            ? std::vector<fitzel::UnityTexMatch>{}
-                            : fitzel::previewUnityTextures(unityFbx);
-                        unityNearby = unityFbx.empty()
-                            ? std::vector<std::string>{}
-                            : fitzel::nearbyTextureFiles(unityFbx);
-                        unityPreviewFor = unityFbx;
-                    }
-
-                    if (!unityFbx.empty()) {
-                        ImGui::Text("Materials & matched maps:");
-                        if (ImGui::BeginTable("##unitytex", 4,
-                                ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                                ImGuiTableFlags_SizingStretchProp |
-                                ImGuiTableFlags_ScrollY,
-                                ImVec2(0.0f, 150.0f))) {
-                            ImGui::TableSetupColumn("Material");
-                            ImGui::TableSetupColumn("Albedo");
-                            ImGui::TableSetupColumn("Normal");
-                            ImGui::TableSetupColumn("Emission");
-                            ImGui::TableHeadersRow();
-                            const ImVec4 ok(0.55f, 0.85f, 0.55f, 1.0f);
-                            const ImVec4 no(0.6f, 0.6f, 0.6f, 1.0f);
-                            auto cell = [&](const std::string& p){
-                                if (p.empty()) ImGui::TextColored(no, "- none");
-                                else ImGui::TextColored(ok, "%s",
-                                    std::filesystem::path(p).filename().string().c_str());
-                            };
-                            for (const auto& m : unityPreview) {
-                                ImGui::TableNextRow();
-                                ImGui::TableSetColumnIndex(0);
-                                ImGui::TextUnformatted(m.material.c_str());
-                                ImGui::TableSetColumnIndex(1); cell(m.albedo);
-                                ImGui::TableSetColumnIndex(2); cell(m.normal);
-                                ImGui::TableSetColumnIndex(3); cell(m.emission);
-                            }
-                            ImGui::EndTable();
-                        }
-                        if (unityPreview.empty())
-                            ImGui::TextDisabled("(no materials found in this FBX)");
-
-                        // Diagnostic: the actual image files the matcher looked at.
-                        // If maps show "- none" above but files are listed here, the
-                        // naming is unusual -- tell me these names and I'll tune it.
-                        if (ImGui::TreeNode("Texture files found nearby "
-                                            "(diagnostic)")) {
-                            if (unityNearby.empty())
-                                ImGui::TextDisabled("(no image files found in the "
-                                                    "usual Textures/ folders)");
-                            for (const std::string& n : unityNearby)
-                                ImGui::BulletText("%s", n.c_str());
-                            ImGui::TreePop();
-                        }
-                    }
-
-                    ImGui::Separator();
-                    ImGui::BeginDisabled(unityFbx.empty());
-                    if (ImGui::Button("Import to scene", ImVec2(160.0f, 0.0f))) {
-                        std::error_code cec;
-                        std::string src = unityFbx;
-                        // A model imported from OUTSIDE the project's asset tree has
-                        // no persistent GUID, so it would vanish on reload and never
-                        // show in Assets. Copy it (plus the maps the matcher resolved)
-                        // into the project's models/ folder, register it, and import
-                        // the copy -- now it round-trips through save/load by GUID.
-                        if (!assetDb.idForPath(unityFbx).valid()) {
-                            const std::filesystem::path fp(unityFbx);
-                            std::string parent = fp.parent_path().filename().string();
-                            for (char& c : parent) c = static_cast<char>(std::tolower(
-                                static_cast<unsigned char>(c)));
-                            const bool inMeshDir = parent == "meshes" || parent == "models" ||
-                                                   parent == "mesh"   || parent == "fbx";
-                            const std::string pack = (inMeshDir
-                                ? fp.parent_path().parent_path().filename()
-                                : fp.parent_path().filename()).string();
-                            const std::string destPack = modelDir + "/" +
-                                (pack.empty() ? fp.stem().string() : pack);
-                            const std::string destMesh = destPack + "/Meshes";
-                            const std::string destTex  = destPack + "/Textures";
-                            std::filesystem::create_directories(destMesh, cec);
-                            std::filesystem::create_directories(destTex, cec);
-                            const std::string destFbx = destMesh + "/" + fp.filename().string();
-                            std::filesystem::copy_file(unityFbx, destFbx,
-                                std::filesystem::copy_options::overwrite_existing, cec);
-                            int nTex = 0;
-                            std::unordered_set<std::string> done;
-                            for (const auto& m : fitzel::previewUnityTextures(unityFbx))
-                                for (const std::string& t : {m.albedo, m.normal, m.emission})
-                                    if (!t.empty() && done.insert(t).second) {
-                                        std::error_code fc;
-                                        std::filesystem::copy_file(t, destTex + "/" +
-                                            std::filesystem::path(t).filename().string(),
-                                            std::filesystem::copy_options::skip_existing, fc);
-                                        if (!fc) ++nTex;
-                                    }
-                            assetDb.refresh(); // register the copied FBX + maps (GUIDs)
-                            src = destFbx;
-                            char buf[256];
-                            std::snprintf(buf, sizeof(buf),
-                                "Copied into project (%d map(s)); it now persists and "
-                                "appears in Assets.", nTex);
-                            unityStatus = buf;
-                        } else {
-                            unityStatus = "Imported (already in the project).";
-                        }
-                        addModelHierarchy(spawnPoint(8.0f), src, unityFlipV);
-                    }
-                    ImGui::EndDisabled();
-                    if (!unityStatus.empty()) ImGui::TextDisabled("%s", unityStatus.c_str());
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("One entity per part.");
-                    ImGui::Checkbox("Flip texture V", &unityFlipV);
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(?)");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("If the texture looks misplaced on an atlas, toggle "
-                                          "this and re-import.\nFBX/DAE usually need it on; some "
-                                          "packs need it off.");
-                    ImGui::TextDisabled("Tip: keep the asset inside your project so it "
-                                        "reloads with the scene.");
-                }
-                ImGui::End();
-            }
+            unityimportui::panel(unityImport,
+                                 {showUnityImport, modelDir, assetDb,
+                                  [&] { return spawnPoint(8.0f); },
+                                  [&](glm::vec3 at, const std::string& path, bool flipV) {
+                                      addModelHierarchy(at, path, flipV);
+                                  }});
 
             // Asset browser: every asset in the database, grouped by source
             // (Engine vs Project) and labelled by type. Drag a Model onto the
             // viewport to place it, or a Texture onto a material's Base texture
             // slot. Double-click a Model to drop it ahead of the camera.
             if (showAssets) {
-                if (ImGui::Begin("Assets", &showAssets)) {
-                    // Toolbar: preview size, name filter, texture-only toggle.
-                    ImGui::SetNextItemWidth(120.0f);
-                    ImGui::SliderFloat("Size", &assetThumbSize, 48.0f, 160.0f, "%.0f");
-                    ImGui::SameLine();
-                    ImGui::SetNextItemWidth(150.0f);
-                    ImGui::InputTextWithHint("##assetFilter", "filter...",
-                                             assetFilter, sizeof(assetFilter));
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Textures only", &assetTexturesOnly);
-                    ImGui::TextDisabled("Drag a tile onto a material slot / the "
-                                        "viewport; double-click a model to place it.");
-                    ImGui::TextDisabled("Drop files here from Explorer to copy them "
-                                        "into the project.");
-
-                    // Take an OS file drop that landed on this window. The hit test
-                    // uses the cursor position captured in the drop callback, not
-                    // the live one: the pointer may have moved on since, and a file
-                    // dropped on Assets belongs in Assets either way.
-                    if (!g_fileDrop.paths.empty()) {
-                        const ImVec2 wp = ImGui::GetWindowPos();
-                        const ImVec2 ws = ImGui::GetWindowSize();
-                        if (g_fileDrop.x >= wp.x && g_fileDrop.x < wp.x + ws.x &&
-                            g_fileDrop.y >= wp.y && g_fileDrop.y < wp.y + ws.y) {
-                            const std::string proj =
-                                currentProject.empty()
-                                    ? std::string()
-                                    : std::filesystem::path(currentProject)
-                                          .parent_path().generic_string();
-                            assetDropStatus =
-                                assetdrop::importInto(proj, g_fileDrop.paths, assetDb)
-                                    .message;
-                            g_fileDrop.paths.clear();
-                        }
-                    }
-                    if (!assetDropStatus.empty())
-                        ImGui::TextColored(ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "%s",
-                                           assetDropStatus.c_str());
-                    ImGui::Separator();
-
-                    // (Thumbnails finished off-thread are uploaded once per frame by
-                    // pumpThumbnails(), before the panels are drawn.)
-
-                    // Case-insensitive substring match for the filter box.
-                    std::string flt = assetFilter;
-                    std::transform(flt.begin(), flt.end(), flt.begin(),
-                        [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                    auto matches = [&](const std::string& s){
-                        if (flt.empty()) return true;
-                        std::string l = s;
-                        std::transform(l.begin(), l.end(), l.begin(),
-                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                        return l.find(flt) != std::string::npos;
-                    };
-
-                    const float pad  = ImGui::GetStyle().ItemSpacing.x;
-                    const auto& srcs = assetDb.sources();
-                    for (int si = 0; si < static_cast<int>(srcs.size()); ++si) {
-                        const char* kind = srcs[si].kind == AssetSourceKind::Engine
-                                               ? "Engine" : "Project";
-                        const std::string hdr =
-                            srcs[si].name + " (" + kind + ")###src" + std::to_string(si);
-                        if (!ui::header(hdr.c_str(),
-                                                     ImGuiTreeNodeFlags_DefaultOpen))
-                            continue;
-                        ImGui::PushID(si);
-                        const float avail = ImGui::GetContentRegionAvail().x;
-                        const int   cols  = std::max(1,
-                            static_cast<int>(avail / (assetThumbSize + pad)));
-                        int shown = 0, col = 0;
-                        for (AssetId id : assetDb.allAssets()) {
-                            const AssetDatabase::Entry* e = assetDb.entry(id);
-                            if (!e || e->sourceIndex != si) continue;
-                            const bool isTex = (e->type == AssetType::Texture);
-                            if (assetTexturesOnly && !isTex) continue;
-                            if (!matches(e->relPath)) continue;
-                            ++shown;
-                            if (col != 0) ImGui::SameLine();
-
-                            ImGui::PushID(id.toString().c_str());
-                            ImGui::BeginGroup();
-
-                            // Resolve a small preview thumbnail via the shared cache.
-                            // Only request a decode when the tile is actually on
-                            // screen, so scrolling a big browser doesn't queue every
-                            // texture at once.
-                            unsigned tid = 0;
-                            if (isTex) {
-                                auto it = assetThumbs.find(id);
-                                if (it != assetThumbs.end())
-                                    tid = it->second ? it->second->id() : 0;
-                                else if (ImGui::IsRectVisible(
-                                             ImVec2(assetThumbSize, assetThumbSize)))
-                                    tid = thumbFor(id);
-                            }
-
-                            const ImVec2 sz(assetThumbSize, assetThumbSize);
-                            if (tid) {
-                                ImGui::ImageButton("##thumb",
-                                    (ImTextureID)(intptr_t)tid, sz);
-                            } else {
-                                const char* tag = isTex ? "TEX"
-                                    : e->type == AssetType::Model ? "MDL"
-                                    : e->type == AssetType::Sound ? "SND"
-                                    : e->type == AssetType::Video ? "VID" : "?";
-                                ImGui::Button(tag, sz);
-                            }
-
-                            // Drag source (same GUID payload the drop targets expect).
-                            if (ImGui::BeginDragDropSource(
-                                    ImGuiDragDropFlags_SourceAllowNullID)) {
-                                const std::string g = id.toString();
-                                ImGui::SetDragDropPayload("ASSET_GUID", g.data(), 32);
-                                ImGui::Text("%s  %s", assetTypeName(e->type),
-                                            e->relPath.c_str());
-                                ImGui::EndDragDropSource();
-                            }
-                            if (ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s\n%s", assetTypeName(e->type),
-                                                  e->relPath.c_str());
-                            if (e->type == AssetType::Model &&
-                                ImGui::IsItemHovered() &&
-                                ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                                const std::string mp = e->absPath.string();
-                                const glm::vec3 g = spawnPoint(8.0f);
-                                if (isStructuredModel(mp)) addModelHierarchy(g, mp);
-                                else {
-                                    const int id2 = models.import(mp, assetDb, materials);
-                                    if (id2 >= 0) addModelEntity(g, id2);
-                                }
-                            }
-
-                            // Caption: file name, clipped to the tile width.
-                            std::string stem =
-                                std::filesystem::path(e->relPath).filename().string();
-                            const int maxCh = std::max(4,
-                                static_cast<int>(assetThumbSize / 7.0f));
-                            if (static_cast<int>(stem.size()) > maxCh)
-                                stem = stem.substr(0, maxCh - 1) + "\xE2\x80\xA6"; // ellipsis
-                            ImGui::PushTextWrapPos(
-                                ImGui::GetCursorPosX() + assetThumbSize);
-                            ImGui::TextUnformatted(stem.c_str());
-                            ImGui::PopTextWrapPos();
-
-                            ImGui::EndGroup();
-                            ImGui::PopID();
-                            col = (col + 1) % cols;
-                        }
-                        if (shown == 0) ImGui::TextDisabled("  (empty)");
-                        ImGui::PopID();
-                    }
-                }
-                ImGui::End();
+                const std::string projDir =
+                    currentProject.empty()
+                        ? std::string()
+                        : std::filesystem::path(currentProject).parent_path().generic_string();
+                assetsui::panel(editorCtx, assetsBrowser,
+                                {showAssets, projDir,
+                                 // A cached preview, or a decode started for a tile on screen.
+                                 [&](AssetId id, bool onScreen) -> unsigned {
+                                     const auto it = assetThumbs.find(id);
+                                     if (it != assetThumbs.end())
+                                         return it->second ? it->second->id() : 0u;
+                                     return onScreen ? thumbFor(id) : 0u;
+                                 },
+                                 g_fileDrop.paths, g_fileDrop.x, g_fileDrop.y,
+                                 [&] { return spawnPoint(8.0f); }});
             }
 
 

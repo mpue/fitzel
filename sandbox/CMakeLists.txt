@@ -262,6 +262,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/ViewportHud.cpp
     # Delete, duplicate, unpack, main camera and the hierarchy menu's "add ...".
     src/SceneOps.cpp
+    # The Assets browser and the Unity asset importer's panel.
+    src/AssetsPanel.cpp
+    src/UnityImportPanel.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -765,12 +768,17 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
                            src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp
                            src/IconEmbed.cpp src/InstallerBuild.cpp
+                           src/AssetsPanel.cpp src/AssetDrop.cpp src/VideoImport.cpp
+                           src/UnityImportPanel.cpp src/FolderDialog.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                            src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(editorcheck PRIVATE fitzel imgui stb_headers
                                           nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(editorcheck PRIVATE ole32 shell32)   # the folder picker
+endif()
 
 add_executable(prefabeditcheck tools/prefabeditcheck.cpp
                                src/PrefabEdit.cpp src/PrefabSystem.cpp
