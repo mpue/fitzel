@@ -2755,6 +2755,25 @@ int main(int argc, char** argv) {
             for (int id : ids) if (const Entity* e = document.find(id)) out.push_back(*e);
             return out;
         };
+        // "Unpack Prefab": the instance `id` belongs to -- and every other
+        // selected instance when `id` is part of the selection -- becomes
+        // ordinary objects, its prefab tags dropped. One undoable step.
+        auto unpackPrefab = [&](int id) {
+            std::vector<int> ids;
+            auto addInstance = [&](int eid) {
+                for (int m : prefab::instanceMembers(entities, eid))
+                    if (std::find(ids.begin(), ids.end(), m) == ids.end()) ids.push_back(m);
+            };
+            addInstance(id);
+            if (sel.contains(id))
+                for (int sid : sel.ids()) addInstance(sid);
+            if (ids.empty()) return;
+            std::vector<Entity> before = snapshotEntities(ids);
+            for (int m : ids)
+                if (Entity* e = document.find(m)) prefab::unpack(*e);
+            history.pushApplied(std::make_unique<ModifyEntitiesCmd>(
+                std::move(before), snapshotEntities(ids), "Unpack Prefab"));
+        };
 
 #ifndef FITZEL_PLAYER
         // --- Procedural buildings (see BuildingGen.hpp) -------------------------
@@ -4070,6 +4089,10 @@ int main(int argc, char** argv) {
                              "normalMap", ov[key]);
                     slotJson(md.emissionTexId, md.emissionTex, md.modelEmissionTex,
                              "emissionMap", ov[key]);
+                    // Models ship no opacity map of their own (glTF has no
+                    // slot for one), so there is no "emptied" state to keep.
+                    slotJson(md.opacityTexId, md.opacityTex, nullptr,
+                             "opacityMap", ov[key]);
                 }
             }
             j["modelMaterialOverrides"] = std::move(ov);
@@ -4394,7 +4417,9 @@ int main(int argc, char** argv) {
                             const AssetId gid = AssetId::fromString(s);
                             if (!gid.valid()) return;
                             id  = gid;
-                            tex = assetDb.loadTexture(gid);
+                            // The way the model's own maps are the right way
+                            // up: unflipped (see loadTextureForModel).
+                            tex = assetDb.loadTextureForModel(gid);
                         };
                         readSlot("texture", md.texId, md.tex);
                         // Reference only -- the bind pass in the frame loop opens
@@ -4404,6 +4429,7 @@ int main(int argc, char** argv) {
                                 AssetId::fromString(e["video"].get<std::string>());
                         readSlot("normalMap", md.normalTexId, md.normalTex);
                         readSlot("emissionMap", md.emissionTexId, md.emissionTex);
+                        readSlot("opacityMap", md.opacityTexId, md.opacityTex);
                     }
                 }
             }
@@ -12928,7 +12954,8 @@ int main(int argc, char** argv) {
                                     addShotCamera, addCockpitCamera,
                                     addVehicleLights, setMainCamera,
                                     isUnderId, worldOf, rebaseLocal,
-                                    prefabNameBuf, sizeof(prefabNameBuf), showPrefabs});
+                                    prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
+                                    unpackPrefab});
 
             // The Inspector: the selected entity's fields and its components,
             // each card rendering from its own metadata (see InspectorPanel.cpp).
@@ -12948,7 +12975,7 @@ int main(int argc, char** argv) {
                                     showMaterials, showModels, activeCam,
                                     entityNewHalf,
                                     animClips, animEditClip, animPlay, animAutoKey,
-                                    animGraphs, showGraphEditor, &synths});
+                                    animGraphs, showGraphEditor, &synths, unpackPrefab});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

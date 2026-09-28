@@ -231,6 +231,7 @@ void drawPanel(const PanelState& s) {
         // Components: optional attached capabilities. Each renders from
         // its own metadata; add/remove is open via the type registry.
         // (Re-fetch: Delete##insp above may have cleared the selection.)
+        int unpackReq = -1;   // done after the cards: it removes one of them
         if (s.sel.valid()) {
             Entity& be = s.entities[s.sel.index()];
             ui::sectionText("Components");
@@ -258,6 +259,12 @@ void drawPanel(const PanelState& s) {
                 }
                 if (open) {
                     ImGui::Indent();
+                if (dynamic_cast<PrefabComponent*>(c)) {
+                    ImGui::TextWrapped("Placed from a prefab. Unpacking makes the whole "
+                                       "instance ordinary objects, no longer counted as "
+                                       "copies of it.");
+                    if (s.unpackPrefab && ImGui::Button("Unpack Prefab")) unpackReq = be.id;
+                }
                 if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
                     // Bespoke picker: enumerate the project's .lua files.
                     std::vector<std::string> luaFiles = s.listScripts();
@@ -991,6 +998,9 @@ void drawPanel(const PanelState& s) {
                 if (!cmd->trivial()) s.history.pushApplied(std::move(cmd));
             }
         }
+        // After the cards and after the edit above is committed: unpacking
+        // removes the card it was asked from, and is its own undo step.
+        if (unpackReq >= 0 && s.unpackPrefab) s.unpackPrefab(unpackReq);
     } else {
         ImGui::TextDisabled("Select an object in the Hierarchy or viewport.");
     }

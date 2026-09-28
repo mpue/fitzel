@@ -1,13 +1,17 @@
 #include "SceneSubmit.hpp"
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <fitzel/graphics/Material.hpp>
 #include <fitzel/graphics/Mesh.hpp>
 #include <fitzel/graphics/Shader.hpp>
+#include <fitzel/graphics/Texture.hpp>
 #include <fitzel/render/Renderer.hpp>
 
 #include "Component.hpp"
@@ -30,6 +34,87 @@ namespace {
 bool isBlended(const MaterialDef& md) {
     return md.alphaMode == AlphaMode::Blend || md.glass;
 }
+
+// Which channel of an opacity map holds the coverage: a grey image carries it
+// in every channel (R is read), but some packs ship a WHITE image with the mask
+// in its alpha -- read R there and nothing would ever be transparent.
+int coverageChannel(const fitzel::ImagePixels& img) {
+    if (img.channels < 4) return 0;
+    int rLo = 255, rHi = 0, aLo = 255, aHi = 0;
+    const std::size_t texels = img.pixels.size() / 4;
+    for (std::size_t i = 0; i < texels; i += 7) {
+        const int r = img.pixels[i * 4], a = img.pixels[i * 4 + 3];
+        rLo = std::min(rLo, r); rHi = std::max(rHi, r);
+        aLo = std::min(aLo, a); aHi = std::max(aHi, a);
+    }
+    return (rHi - rLo < 8 && aHi - aLo >= 8) ? 3 : 0;
+}
+
+// The texture a material's base colour is drawn from, with its opacity map (if
+// it has one) standing in for the alpha channel. Both images are read back off
+// the GPU rather than off disk: a model's maps have no file, and the ones that
+// do are already the right way up in the texture -- the same orientation the
+// other map was loaded in, which is what makes them line up texel for texel.
+// The coverage is resampled to the base's size, so the two need not match.
+// Rebuilt only when either input changes (MaterialDef::opacityFold).
+const fitzel::Texture* baseColour(const MaterialDef& md) {
+    if (!md.opacityTex || !md.opacityTex->isValid()) return md.tex.get();
+    // A playing video rewrites its texture every frame; a folded copy would
+    // stop it on the frame it was taken from.
+    if (md.videoId.valid()) return md.tex.get();
+    MaterialDef::OpacityFold& f = md.opacityFold;
+    if (f.merged && f.opacity.lock() == md.opacityTex && f.hadBase == (md.tex != nullptr) &&
+        f.base.lock() == md.tex)
+        return f.merged.get();
+
+    const fitzel::ImagePixels op = md.opacityTex->readback();
+    if (!op.valid()) return md.tex.get();
+    fitzel::ImagePixels base;
+    if (md.tex) {
+        base = md.tex->readback();
+        if (!base.valid()) return md.tex.get();
+    }
+    const int w  = base.valid() ? base.width  : op.width;
+    const int h  = base.valid() ? base.height : op.height;
+    const int bc = base.valid() ? base.channels : 0;
+    const int oc = op.channels;
+    const int ch = coverageChannel(op);
+    auto cov = [&](int x, int y) {
+        x = std::clamp(x, 0, op.width - 1);
+        y = std::clamp(y, 0, op.height - 1);
+        return static_cast<float>(
+            op.pixels[(static_cast<std::size_t>(y) * op.width + x) * oc + std::min(ch, oc - 1)]);
+    };
+    std::vector<unsigned char> px(static_cast<std::size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y) {
+        // Bilinear, texel centre to texel centre.
+        const float sy = (static_cast<float>(y) + 0.5f) * op.height / h - 0.5f;
+        const int   y0 = static_cast<int>(std::floor(sy));
+        const float fy = sy - static_cast<float>(y0);
+        for (int x = 0; x < w; ++x) {
+            const float sx = (static_cast<float>(x) + 0.5f) * op.width / w - 0.5f;
+            const int   x0 = static_cast<int>(std::floor(sx));
+            const float fx = sx - static_cast<float>(x0);
+            const float a = (cov(x0, y0) * (1.0f - fx) + cov(x0 + 1, y0) * fx) * (1.0f - fy) +
+                            (cov(x0, y0 + 1) * (1.0f - fx) + cov(x0 + 1, y0 + 1) * fx) * fy;
+            unsigned char* d = &px[(static_cast<std::size_t>(y) * w + x) * 4];
+            if (bc > 0) {
+                const unsigned char* b = &base.pixels[(static_cast<std::size_t>(y) * w + x) * bc];
+                d[0] = b[0];
+                d[1] = b[bc > 1 ? 1 : 0];
+                d[2] = b[bc > 2 ? 2 : 0];
+            } else {
+                d[0] = d[1] = d[2] = 255;   // untextured: white, tinted by the albedo
+            }
+            d[3] = static_cast<unsigned char>(std::clamp(a + 0.5f, 0.0f, 255.0f));
+        }
+    }
+    f.merged  = std::make_shared<fitzel::Texture>(fitzel::Texture::fromPixels(px.data(), w, h, 4));
+    f.base    = md.tex;
+    f.opacity = md.opacityTex;
+    f.hadBase = md.tex != nullptr;
+    return f.merged->isValid() ? f.merged.get() : md.tex.get();
+}
 } // namespace
 
 void submit(const Context& c, Scratch& scratch) {
@@ -48,9 +133,12 @@ void submit(const Context& c, Scratch& scratch) {
         // uploads.
         if (md.glass)
             m.set("uIor", md.ior).set("uGlassThickness", md.thickness);
-        if (md.tex)
-            m.set("uColorMode", 2).setTexture("uTexture", *md.tex, 0)
-             .set("uTint", md.tint); // always written (shared program)
+        // An untextured material with an opacity map is drawn from a white
+        // texture carrying the map, tinted by its albedo -- the same colour it
+        // had without one.
+        if (const fitzel::Texture* base = baseColour(md))
+            m.set("uColorMode", 2).setTexture("uTexture", *base, 0)
+             .set("uTint", md.tex ? md.tint : md.albedo); // always written (shared program)
         else
             m.set("uColorMode", 0).set("uAlbedo", md.albedo);
         if (md.normalTex)

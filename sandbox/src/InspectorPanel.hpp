@@ -145,6 +145,9 @@ struct PanelState {
     // The Synth card's preview: it plays the object's synth right here, in the
     // editor, through the same players Play uses.
     SynthSystem*  synths = nullptr;
+
+    // "Unpack Prefab" on the Prefab Instance card (see HierarchyPanel's).
+    std::function<void(int)> unpackPrefab = {};
 };
 
 void drawPanel(const PanelState& s);

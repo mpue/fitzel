@@ -229,6 +229,39 @@ bool alphaCutsHoles(const SharedPixels& rgba) {
     return holeFrac > 0.10f && holeFrac < 0.99f && midFrac < 0.15f;
 }
 
+// Does this base-colour image's NAME say its alpha is coverage?
+//
+// Blender's glTF exporter packs a separate opacity map into the base colour's
+// alpha and names the result after both ("Std_Eyelash_Diffuse-Std_Eyelash_
+// Opacity") -- and then declares the material OPAQUE, because the shader graph
+// it read that from was too elaborate for it to see the transparency. Lashes,
+// hair and lace out of Character Creator, DAZ and most figure pipelines arrive
+// exactly like that. Their soft alpha fails alphaCutsHoles on purpose (a ramp
+// looks like a data channel there), so the name is what is left to go on.
+bool nameSaysOpacity(const cgltf_image* img) {
+    if (!img) return false;
+    std::string n;
+    if (img->name) n = img->name;
+    else if (img->uri && std::strncmp(img->uri, "data:", 5) != 0) n = img->uri;
+    for (char& c : n) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    for (const char* k : {"opacity", "alpha", "transparen", "cutout"})
+        if (n.find(k) != std::string::npos) return true;
+    return false;
+}
+
+// Is any of the alpha channel actually transparent? A map named for opacity
+// that is solid throughout (a shoe whose template was never painted) must not
+// turn its material into a cut-out for nothing. Sampled like alphaCutsHoles.
+bool alphaHasTransparency(const SharedPixels& rgba) {
+    const std::size_t texels = rgba.size() / 4;
+    std::size_t seen = 0, clear = 0;
+    for (std::size_t i = 0; i < texels; i += 7) {
+        ++seen;
+        if (rgba[i * 4 + 3] < 128) ++clear;
+    }
+    return seen > 0 && static_cast<float>(clear) / static_cast<float>(seen) > 0.005f;
+}
+
 // Name an encoded image's container from its magic bytes, so an undecodable
 // embedded texture reports WHAT it is (stb can't read WebP/KTX2/etc.).
 const char* imageFormat(const unsigned char* p, std::size_t n) {
@@ -280,7 +313,12 @@ void decodeImage(const cgltf_image* img, const std::string& baseDir,
         const char* comma = std::strchr(img->uri, ',');
         if (!comma) return;
         const char* b64 = comma + 1;
-        const cgltf_size outSize = (std::strlen(b64) / 4) * 3;
+        // The bytes the characters carry, padding left out: cgltf's decoder
+        // stops with an error on an '=' it is asked to read, and two images in
+        // three end in one -- they arrived as flat colour.
+        std::size_t chars = std::strlen(b64);
+        while (chars > 0 && b64[chars - 1] == '=') --chars;
+        const cgltf_size outSize = chars * 3 / 4;
         void* decoded = nullptr;
         cgltf_options opts{};
         if (cgltf_load_buffer_base64(&opts, outSize, b64, &decoded) ==
@@ -604,6 +642,10 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         // foliage that ships as OPAQUE with a leaf mask is common (see
         // alphaCutsHoles), and taking it at its word draws the leaf cards solid.
         if (!mp.alphaCutout && alphaCutsHoles(mp.texPixels)) mp.alphaCutout = true;
+        // ...or the image's name does (see nameSaysOpacity).
+        if (!mp.alphaCutout && colorTex && nameSaysOpacity(colorTex->image) &&
+            alphaHasTransparency(mp.texPixels))
+            mp.alphaCutout = true;
         // Tangent-space normal map (KHR standard normal_texture).
         if (mat->normal_texture.texture)
             assignImage(gltfImage(images, mat->normal_texture.texture->image,
@@ -642,10 +684,15 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
         if (nrm) cgltf_accessor_read_float(nrm, idx, n, 3);
         if (uv)  cgltf_accessor_read_float(uv,  idx, t, 2);
         if (uvHasXform) { // KHR_texture_transform: scale, then rotate, then offset
+            // The rotation turns the other way from the textbook matrix: glTF's
+            // V runs DOWN the image, so "counter-clockwise" as the spec means it
+            // (and as the Khronos viewer and Blender's exporter compute it) is
+            // R(-angle) in these coordinates. The textbook sign turned a 90-degree
+            // mapping by 180 -- a roof's tiles standing on their heads.
             const float u = t[0], v = t[1];
             const float cs = std::cos(uvRotation), sn = std::sin(uvRotation);
-            t[0] = uvScale[0] * u * cs - uvScale[1] * v * sn + uvOffset[0];
-            t[1] = uvScale[0] * u * sn + uvScale[1] * v * cs + uvOffset[1];
+            t[0] =  uvScale[0] * u * cs + uvScale[1] * v * sn + uvOffset[0];
+            t[1] = -uvScale[0] * u * sn + uvScale[1] * v * cs + uvOffset[1];
         }
 
         const glm::vec3 wp = glm::vec3(model * glm::vec4(p[0], p[1], p[2], 1.0f));

@@ -97,6 +97,12 @@ public:
     // unknown/mismatched id or a decode failure.
     std::shared_ptr<Texture>   loadTexture(AssetId id);
     std::shared_ptr<ModelData> loadModelData(AssetId id);
+    // The same texture as an imported MODEL samples it: never flipped. A
+    // model's UVs start at the top of the image (glTF's convention, and the one
+    // the model's own maps are uploaded in), while a texture asset is flipped
+    // for the engine's own primitives -- so a map dropped on a model's material
+    // through loadTexture() stood on its head. Cached apart from that copy.
+    std::shared_ptr<Texture>   loadTextureForModel(AssetId id);
 
     // Path convenience overloads (resolve, then load).
     std::shared_ptr<Texture>   loadTexture(const std::filesystem::path& path);
@@ -127,6 +133,7 @@ private:
 
     // Weak dedup caches: alive only while some caller holds the shared handle.
     std::unordered_map<AssetId, std::weak_ptr<Texture>>   m_texCache;
+    std::unordered_map<AssetId, std::weak_ptr<Texture>>   m_modelTexCache; // unflipped
     std::unordered_map<AssetId, std::weak_ptr<ModelData>> m_modelCache;
 };
 

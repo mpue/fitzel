@@ -67,6 +67,10 @@ struct PanelState {
     char*       prefabNameBuf;
     std::size_t prefabNameCap;
     bool&       showPrefabs;
+
+    // "Unpack Prefab": the instance the entity (by id) belongs to becomes
+    // ordinary objects. One undoable step; main owns the history.
+    std::function<void(int)> unpackPrefab = {};
 };
 
 void drawPanel(const PanelState& s);

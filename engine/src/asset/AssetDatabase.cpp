@@ -279,6 +279,25 @@ std::shared_ptr<Texture> AssetDatabase::loadTexture(AssetId id) {
     return sp;
 }
 
+std::shared_ptr<Texture> AssetDatabase::loadTextureForModel(AssetId id) {
+    const Entry* e = entry(id);
+    if (!e || e->type != AssetType::Texture) return nullptr;
+
+    if (auto it = m_modelTexCache.find(id); it != m_modelTexCache.end()) {
+        if (auto sp = it->second.lock()) return sp;
+    }
+
+    Texture tex = Texture::fromFile(e->absPath.string(), /*flipVertically=*/false);
+    if (!tex.isValid()) {
+        std::fprintf(stderr, "[Fitzel] failed to load texture '%s'\n",
+                     e->absPath.string().c_str());
+        return nullptr;
+    }
+    auto sp = std::make_shared<Texture>(std::move(tex));
+    m_modelTexCache[id] = sp;
+    return sp;
+}
+
 std::shared_ptr<ModelData> AssetDatabase::loadModelData(AssetId id) {
     const Entry* e = entry(id);
     if (!e || e->type != AssetType::Model) return nullptr;
@@ -306,13 +325,19 @@ void AssetDatabase::reloadInPlace(const Entry& e) {
     // otherwise the next load() re-reads from disk anyway. Reload into the same
     // object so existing shared handles observe the change without being rebound.
     if (e.type == AssetType::Texture) {
-        auto it = m_texCache.find(e.id);
-        if (it == m_texCache.end()) return;
-        if (auto sp = it->second.lock()) {
-            Texture t = Texture::fromFile(e.absPath.string(),
-                                          e.textureImport.flipVertically);
-            if (t.isValid()) *sp = std::move(t); // keep old pixels on a bad read
-        }
+        if (auto it = m_texCache.find(e.id); it != m_texCache.end())
+            if (auto sp = it->second.lock()) {
+                Texture t = Texture::fromFile(e.absPath.string(),
+                                              e.textureImport.flipVertically);
+                if (t.isValid()) *sp = std::move(t); // keep old pixels on a bad read
+            }
+        // ...and the copy a model samples, if one is alive (see
+        // loadTextureForModel). Checked on its own: either may be held alone.
+        if (auto mt = m_modelTexCache.find(e.id); mt != m_modelTexCache.end())
+            if (auto sp = mt->second.lock()) {
+                Texture t = Texture::fromFile(e.absPath.string(), false);
+                if (t.isValid()) *sp = std::move(t);
+            }
     } else if (e.type == AssetType::Model) {
         auto it = m_modelCache.find(e.id);
         if (it == m_modelCache.end()) return;
@@ -371,6 +396,7 @@ std::vector<AssetChange> AssetDatabase::pollChanges() {
         changes.push_back({id, AssetChange::Kind::Removed, e.type});
         m_byPath.erase(e.absPath.generic_string());
         m_texCache.erase(id);
+        m_modelTexCache.erase(id);
         m_modelCache.erase(id);
         m_order.erase(std::remove(m_order.begin(), m_order.end(), id), m_order.end());
         m_byId.erase(id);

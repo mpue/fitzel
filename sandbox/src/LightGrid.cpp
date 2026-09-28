@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 
+#include <fitzel/asset/Vfs.hpp>
 #include <fitzel/render/Renderer.hpp>
 
 namespace lightgrid {
@@ -58,15 +59,25 @@ bool save(const Grid& grid, const std::filesystem::path& file) {
 }
 
 bool load(Grid& grid, const std::filesystem::path& file) {
-    std::ifstream in(file, std::ios::binary);
-    if (!in) return false;
+    // Through the VFS: in an exported game the grid is an archive entry, and an
+    // ifstream finds nothing there -- the scene then fell back to the HDRI's
+    // ambient without a word, a different colour of light than it was baked
+    // with (the scaper town went yellow in the export).
+    const std::vector<std::uint8_t> bytes = fitzel::vfs::read(file.generic_string());
+    std::size_t at = 0;
+    auto take = [&](void* dst, std::size_t n) {
+        if (bytes.size() - at < n) return false;
+        std::memcpy(dst, bytes.data() + at, n);
+        at += n;
+        return true;
+    };
 
     char magic[sizeof(kMagic)] = {};
-    in.read(magic, sizeof(magic));
+    if (!take(magic, sizeof(magic))) return false;
     if (std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) return false;
 
     int dims[3] = {0, 0, 0};
-    in.read(reinterpret_cast<char*>(dims), sizeof(dims));
+    if (!take(dims, sizeof(dims))) return false;
     Grid g;
     g.nx = dims[0]; g.ny = dims[1]; g.nz = dims[2];
     if (g.nx < 2 || g.ny < 2 || g.nz < 2) return false;
@@ -74,13 +85,11 @@ bool load(Grid& grid, const std::filesystem::path& file) {
     // reading it, and a corrupt header should fail rather than allocate.
     if (static_cast<long long>(g.nx) * g.ny * g.nz > kMaxProbes) return false;
 
-    in.read(reinterpret_cast<char*>(&g.lo), sizeof(glm::vec3));
-    in.read(reinterpret_cast<char*>(&g.hi), sizeof(glm::vec3));
+    if (!take(&g.lo, sizeof(glm::vec3)) || !take(&g.hi, sizeof(glm::vec3))) return false;
     g.probes.resize(static_cast<std::size_t>(g.count()));
     for (pathtrace::ProbeSh& p : g.probes) {
         float v[12] = {};
-        in.read(reinterpret_cast<char*>(v), sizeof(v));
-        if (!in) return false;
+        if (!take(v, sizeof(v))) return false;
         p.sh0 = {v[0], v[1], v[2]};
         p.shX = {v[3], v[4], v[5]};
         p.shY = {v[6], v[7], v[8]};

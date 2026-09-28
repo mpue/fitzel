@@ -285,11 +285,12 @@ private:
 // for a gizmo drag that moves a parent and its children as one undoable step.
 class ModifyEntitiesCmd : public Command {
 public:
-    ModifyEntitiesCmd(std::vector<Entity> before, std::vector<Entity> after)
-        : m_before(std::move(before)), m_after(std::move(after)) {}
+    ModifyEntitiesCmd(std::vector<Entity> before, std::vector<Entity> after,
+                      const char* label = "Transform")
+        : m_before(std::move(before)), m_after(std::move(after)), m_label(label) {}
     void redo(Document& d) override { for (const Entity& e : m_after)  assign(d, e); }
     void undo(Document& d) override { for (const Entity& e : m_before) assign(d, e); }
-    const char* name() const override { return "Transform"; }
+    const char* name() const override { return m_label; }
     bool trivial() const {
         if (m_before.size() != m_after.size()) return false;
         for (std::size_t i = 0; i < m_before.size(); ++i)
@@ -302,4 +303,5 @@ private:
         if (Entity* e = d.find(v.id)) *e = v;
     }
     std::vector<Entity> m_before, m_after;
+    const char*         m_label = "Transform";   // a static string
 };

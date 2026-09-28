@@ -98,6 +98,40 @@ std::optional<Prefab> fromSubtree(const std::vector<Entity>& scene, int rootId,
     return p;
 }
 
+std::vector<int> instanceMembers(const std::vector<Entity>& scene, int id) {
+    auto tagOf = [](const Entity& e) { return e.components.get<PrefabComponent>(); };
+    const Entity* e = findEntity(scene, id);
+    const PrefabComponent* pc = e ? tagOf(*e) : nullptr;
+    if (!pc) return {};
+    const AssetId source = pc->source;
+    // Up to the instance's root; if the root lost its tag, the highest tagged
+    // ancestor of the same prefab stands in for it.
+    const Entity* root = e;
+    for (const Entity* cur = e; cur;) {
+        const PrefabComponent* t = tagOf(*cur);
+        if (!t || t->source != source) break;
+        root = cur;
+        if (t->isRoot()) break;
+        cur = cur->parent >= 0 ? findEntity(scene, cur->parent) : nullptr;
+    }
+    std::vector<int> out{root->id};
+    std::vector<int> open{root->id};
+    while (!open.empty()) {
+        const int at = open.back();
+        open.pop_back();
+        for (const Entity& c : scene) {
+            if (c.parent != at) continue;
+            const PrefabComponent* t = tagOf(c);
+            if (t && t->source == source && t->isRoot()) continue;   // another instance
+            if (t && t->source == source) out.push_back(c.id);
+            open.push_back(c.id);
+        }
+    }
+    return out;
+}
+
+void unpack(Entity& e) { stripPrefabTag(e); }
+
 bool save(const projectio::Context& ctx, Prefab& p, const std::string& dir) {
     if (p.entities.empty()) return false;
     if (!p.guid.valid()) p.guid = AssetId::generate();

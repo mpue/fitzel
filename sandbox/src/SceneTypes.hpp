@@ -153,6 +153,25 @@ struct MaterialDef {
     float       emissionStrength = 1.0f;
     std::shared_ptr<fitzel::Texture> emissionTex;
     fitzel::AssetId emissionTexId;
+    // Optional opacity ("transparency") map: its brightness is the surface's
+    // alpha -- white solid, black gone -- in place of the base texture's own
+    // alpha channel. For the packs that ship coverage as a grey image of its
+    // own (hair, lashes, lace, leaves). Like the alpha it stands in for, it
+    // only counts under Cutout or Blend.
+    //
+    // Folded into the base colour's alpha where the material is handed to the
+    // GPU (SceneSubmit), so everything that reads that alpha -- the lit pass,
+    // both shadow passes, the path tracers -- gets it without a second sampler.
+    std::shared_ptr<fitzel::Texture> opacityTex;
+    fitzel::AssetId opacityTexId;
+    // That fold, cached (not serialized): the combined texture and the two it
+    // was made from, so it is rebuilt when either changes and not every frame.
+    struct OpacityFold {
+        std::shared_ptr<fitzel::Texture> merged;
+        std::weak_ptr<fitzel::Texture>   base, opacity;
+        bool                             hadBase = false;
+    };
+    mutable OpacityFold opacityFold;
     // Procedural window grid: lit windows hashed out of the world position, on
     // the vertical faces only. This is what turns a generated tower's flat
     // glazing into an inhabited facade, and it costs no texture and no geometry

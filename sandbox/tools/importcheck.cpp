@@ -210,9 +210,130 @@ void checkModel(const std::string& path) {
     check(maskedFlagged, "a cut-out texture arrives flagged as cut-out");
 }
 
+// --- Synthetic files: what no downloaded model can pin down ------------------
+// One triangle, written out as a .gltf with everything inline, so the numbers
+// the loader must produce are known exactly rather than eyeballed off a render.
+
+std::string base64(const unsigned char* p, std::size_t n) {
+    static const char* k =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    for (std::size_t i = 0; i < n; i += 3) {
+        const unsigned v = (p[i] << 16) | ((i + 1 < n ? p[i + 1] : 0) << 8) |
+                           (i + 2 < n ? p[i + 2] : 0);
+        out += k[(v >> 18) & 63];
+        out += k[(v >> 12) & 63];
+        out += i + 1 < n ? k[(v >> 6) & 63] : '=';
+        out += i + 2 < n ? k[v & 63] : '=';
+    }
+    return out;
+}
+
+// 1x1, opaque.
+const char* kPngSolid =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGM4MS3lPwAGrgLCN5ttDQAAAABJRU5ErkJggg==";
+// 16x16, alpha ramping 0..255 across: soft coverage, the way hair and lashes
+// have it -- which alphaCutsHoles reads as a data channel, on purpose.
+const char* kPngRamp =
+    "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAIElEQVR42mM8MS2FgYGBQZBczMRAIRg1YNSAUQMGiwEATskC4RMa9EYAAAAASUVORK5CYII=";
+
+// The triangle (0,0,0) (1,0,0) (0,1,0) with UVs (0,0) (1,0) (0,1), its base
+// colour an image called `imageName`, with `textureInfoExtra` spliced into the
+// baseColorTexture object. Returns the path written.
+std::string writeTriangle(const std::string& file, const std::string& imageName,
+                          const char* png, const std::string& textureInfoExtra) {
+    const float data[15] = {0, 0, 0,  1, 0, 0,  0, 1, 0,   0, 0,  1, 0,  0, 1};
+    const std::string buf =
+        base64(reinterpret_cast<const unsigned char*>(data), sizeof(data));
+    const std::string json =
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"extensionsUsed\":[\"KHR_texture_transform\"],"
+        "\"buffers\":[{\"byteLength\":60,\"uri\":\"data:application/octet-stream;base64," +
+        buf + "\"}],"
+        "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":24}],"
+        "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\","
+        "\"min\":[0,0,0],\"max\":[1,1,0]},"
+        "{\"bufferView\":1,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}],"
+        "\"images\":[{\"name\":\"" + imageName + "\",\"uri\":\"data:image/png;base64," +
+        png + "\"}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"materials\":[{\"name\":\"M\",\"pbrMetallicRoughness\":{\"baseColorTexture\":"
+        "{\"index\":0" + textureInfoExtra + "}}}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"TEXCOORD_0\":1},"
+        "\"material\":0}]}],"
+        "\"nodes\":[{\"mesh\":0}],\"scenes\":[{\"nodes\":[0]}],\"scene\":0}";
+    std::FILE* f = std::fopen(file.c_str(), "wb");
+    if (!f) return {};
+    std::fwrite(json.data(), 1, json.size(), f);
+    std::fclose(f);
+    return file;
+}
+
+void syntheticChecks() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path dir = fs::temp_directory_path(ec) / "fitzel_importcheck";
+    fs::create_directories(dir, ec);
+    std::printf("\n[synthetic glTF]\n");
+
+    // KHR_texture_transform with a quarter turn -- a Blender Mapping node of
+    // rotation 90, scale 0.2, exported. The UVs must be the ones Blender's
+    // exporter meant (texture_transform_blender_to_gltf, inverted) and the
+    // Khronos viewer draws: u' = s*v - 0.2, v' = 1 - s*u. The old sign gave
+    // (1,0) -> (-0.2, 1.2), the texture turned 180 degrees.
+    {
+        const std::string file = writeTriangle(
+            (dir / "rot90.gltf").string(), "Roof", kPngSolid,
+            ",\"extensions\":{\"KHR_texture_transform\":{\"offset\":[-0.2,1.0],"
+            "\"rotation\":1.5707963,\"scale\":[0.2,0.2]}}");
+        const fitzel::ModelData md = fitzel::loadGltf(file);
+        const bool one = md.primitives.size() == 1 &&
+                         md.primitives[0].vertices.size() == 24;
+        check(one, "rotated-UV triangle loads");
+        if (one) {
+            const std::vector<float>& v = md.primitives[0].vertices;
+            const float want[3][2] = {{-0.2f, 1.0f}, {-0.2f, 0.8f}, {0.0f, 1.0f}};
+            bool ok = true;
+            for (int i = 0; i < 3; ++i) {
+                const float u = v[i * 8 + 6], w = v[i * 8 + 7];
+                std::printf("       uv%d = (%.4f, %.4f), want (%.1f, %.1f)\n",
+                            i, u, w, want[i][0], want[i][1]);
+                ok = ok && std::abs(u - want[i][0]) < 1e-4f &&
+                     std::abs(w - want[i][1]) < 1e-4f;
+            }
+            check(ok, "a 90-degree texture transform turns the way Blender meant");
+        }
+    }
+
+    // Opacity packed into the base colour's alpha, the material declared
+    // OPAQUE -- Blender's export of a lash or hair material. The name says
+    // what the soft alpha is; without the name the same pixels stay opaque.
+    {
+        const fitzel::ModelData named = fitzel::loadGltf(writeTriangle(
+            (dir / "lash.gltf").string(), "Std_Eyelash_Diffuse-Std_Eyelash_Opacity",
+            kPngRamp, ""));
+        const fitzel::ModelData plain = fitzel::loadGltf(writeTriangle(
+            (dir / "plain.gltf").string(), "Std_Eyelash_Diffuse", kPngRamp, ""));
+        // Both images must have arrived at all -- an inline image whose base64
+        // ends in padding did not (see decodeImage), which would make the
+        // second check below pass for nothing.
+        check(!named.primitives.empty() && named.primitives[0].texWidth == 16 &&
+              !plain.primitives.empty() && plain.primitives[0].texWidth == 16,
+              "inline (data URI) images decode, padding and all");
+        check(!named.primitives.empty() && named.primitives[0].alphaCutout,
+              "packed opacity (named so) arrives as a cut-out");
+        check(!plain.primitives.empty() && !plain.primitives[0].alphaCutout,
+              "the same soft alpha without the name stays opaque");
+    }
+    fs::remove_all(dir, ec);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
+    syntheticChecks();
+
     std::vector<std::string> models;
     for (int i = 1; i < argc; ++i) models.emplace_back(argv[i]);
 

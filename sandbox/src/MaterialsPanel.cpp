@@ -94,6 +94,14 @@ std::string duplicate(const PanelState& s, int i) {
         keep(md.normalTex, md.normalTexId, "normal", false);
         keep(md.emissionTex, md.emissionTexId, "emission", true);
         keep(md.ormTex, md.ormTexId, "orm", false);
+        // An opacity map on a model's material was loaded the model's way up
+        // (loadTextureForModel), but the copy is a library material, reloaded
+        // by its file's own flip setting -- so it is written out like the
+        // model's maps, which keeps it lined up with the base colour.
+        if (md.opacityTex) {
+            md.opacityTexId = {};
+            keep(md.opacityTex, md.opacityTexId, "opacity", false);
+        }
         md.fromModel = false;
         md.modelTex.reset();
         md.modelNormalTex.reset();
@@ -264,10 +272,12 @@ void drawPanel(const PanelState& s) {
             // one back, "Clear" empties the slot. Bound textures persist
             // by GUID: into the .fmat for library materials, into the
             // scene's model-material overrides for model-owned ones.
+            // Returns true on the frame a texture is dropped into the slot.
             auto mapSlot = [&](const char* label, const char* tag,
                                std::shared_ptr<Texture>& tex,
                                AssetId& texId,
                                const std::shared_ptr<Texture>& shipped) {
+                bool bound = false;
                 std::string slot = "(none)";
                 if (texId.valid()) {
                     const AssetDatabase::Entry* te = s.assetDb.entry(texId);
@@ -293,7 +303,12 @@ void drawPanel(const PanelState& s) {
                             static_cast<const char*>(pl->Data), pl->DataSize));
                         if (s.assetDb.typeForId(gid) == AssetType::Texture) {
                             texId = gid;
-                            tex   = s.assetDb.loadTexture(gid);
+                            // On a model's material, the way the model's own
+                            // maps are the right way up (loadTextureForModel):
+                            // flipped for a primitive, it stood on its head.
+                            tex   = md.fromModel ? s.assetDb.loadTextureForModel(gid)
+                                                 : s.assetDb.loadTexture(gid);
+                            bound = true;
                         }
                     }
                     ImGui::EndDragDropTarget();
@@ -314,6 +329,7 @@ void drawPanel(const PanelState& s) {
                         tex   = shipped;
                     }
                 }
+                return bound;
             };
             mapSlot("Base texture:", "texslot", md.tex, md.texId,
                     md.modelTex);
@@ -370,6 +386,18 @@ void drawPanel(const PanelState& s) {
                     md.modelNormalTex);
             mapSlot("Emission map:", "emslot", md.emissionTex,
                     md.emissionTexId, md.modelEmissionTex);
+            // Opacity: a grey image, white solid and black gone. Dropping
+            // the first one on an opaque material makes it a Cutout -- an
+            // opacity map on a surface that ignores alpha does nothing,
+            // and that is not what anyone dropping one wants.
+            if (mapSlot("Opacity map:", "opslot", md.opacityTex,
+                        md.opacityTexId, nullptr) &&
+                md.alphaMode == AlphaMode::Opaque)
+                md.alphaMode = AlphaMode::Cutout;
+            if (md.opacityTex)
+                ImGui::TextDisabled("White is solid, black is see-through. Replaces the\n"
+                                    "base texture's alpha; Cutout for hard edges (hair,\n"
+                                    "leaves), Blend for soft ones.");
             ImGui::TextDisabled("Reflectivity mirrors the scene (env probe).");
         }
     }

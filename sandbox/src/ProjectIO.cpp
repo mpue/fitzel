@@ -95,6 +95,7 @@ nlohmann::json materialJson(const MaterialDef& md) {
     if (md.videoId.valid())       m["video"]       = md.videoId.toString();
     if (md.normalTexId.valid())   m["normalMap"]   = md.normalTexId.toString();
     if (md.emissionTexId.valid()) m["emissionMap"] = md.emissionTexId.toString();
+    if (md.opacityTexId.valid())  m["opacityMap"]  = md.opacityTexId.toString();
     if (md.ormTexId.valid()) {
         m["ormMap"]  = md.ormTexId.toString();
         m["ormMean"] = vec2Json(md.ormMean);
@@ -399,6 +400,10 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
             if (md.ormTexId.valid()) md.ormTex = ctx.assetDb.loadTexture(md.ormTexId);
             md.ormMean = readVec2Json(m.value("ormMean", nlohmann::json{}), md.ormMean);
         }
+        if (m.contains("opacityMap")) {
+            md.opacityTexId = AssetId::fromString(m["opacityMap"].get<std::string>());
+            if (md.opacityTexId.valid()) md.opacityTex = ctx.assetDb.loadTexture(md.opacityTexId);
+        }
         if (m.contains("emissionMap")) {
             md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
             if (md.emissionTexId.valid()) md.emissionTex = ctx.assetDb.loadTexture(md.emissionTexId);
@@ -464,6 +469,10 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
             md.ormTexId = AssetId::fromString(m["ormMap"].get<std::string>());
             if (md.ormTexId.valid()) md.ormTex = ctx.assetDb.loadTexture(md.ormTexId);
             md.ormMean = readVec2Json(m.value("ormMean", nlohmann::json{}), md.ormMean);
+        }
+        if (m.contains("opacityMap")) {
+            md.opacityTexId = AssetId::fromString(m["opacityMap"].get<std::string>());
+            if (md.opacityTexId.valid()) md.opacityTex = ctx.assetDb.loadTexture(md.opacityTexId);
         }
         ctx.materials.push_back(std::move(md));
     }

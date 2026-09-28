@@ -296,6 +296,59 @@ int main() {
               "deleting one that is already gone is not an error");
     }
 
+    // --- Unpack Prefab: an instance becomes ordinary objects -------------------
+    // Two instances of one prefab, the second parented inside the first, and an
+    // object the author hung under the first by hand. Unpacking the first -- asked
+    // from any of its members -- drops the tags of exactly its own members; the
+    // nested instance stays one, the hand-added object was never a member, and
+    // one undo brings every tag back.
+    {
+        prefab::Prefab kit;
+        kit.guid = fitzel::AssetId::generate();
+        kit.name = "Kit";
+        kit.entities.push_back(mk(0, -1, "Kit",   glm::vec3(0.0f)));
+        kit.entities.push_back(mk(1, 0,  "Arm",   glm::vec3(1.0f, 0.0f, 0.0f)));
+        kit.entities.push_back(mk(2, 1,  "Hand",  glm::vec3(0.0f, 1.0f, 0.0f)));
+        Document doc;
+        std::vector<Entity>& es = doc.entities();
+        int counter = 500;
+        std::vector<Entity> a = prefab::instantiate(kit, counter, glm::vec3(0.0f), 0.0f);
+        std::vector<Entity> b = prefab::instantiate(kit, counter, glm::vec3(5.0f, 0.0f, 0.0f), 0.0f);
+        const int aRoot = a[0].id, aArm = a[1].id, aHand = a[2].id;
+        const int bRoot = b[0].id;
+        b[0].parent = aArm;                          // an instance inside the other
+        for (Entity& e : a) es.push_back(std::move(e));
+        for (Entity& e : b) es.push_back(std::move(e));
+        es.push_back(mk(counter++, aRoot, "Added by hand", glm::vec3(0.0f)));
+
+        const std::vector<int> fromHand = prefab::instanceMembers(es, aHand);
+        check(fromHand.size() == 3 && fromHand[0] == aRoot,
+              "asked from any member, the instance is its root and its own members",
+              std::to_string(fromHand.size()) + " members");
+        check(prefab::instanceMembers(es, bRoot).size() == 3,
+              "the instance parented inside it is an instance of its own");
+
+        auto tagged = [&](int id) {
+            const Entity* e = doc.find(id);
+            return e && e->components.get<PrefabComponent>() != nullptr;
+        };
+        CommandStack hist;
+        std::vector<Entity> before;
+        for (int id : fromHand) before.push_back(*doc.find(id));
+        for (int id : fromHand) prefab::unpack(*doc.find(id));
+        std::vector<Entity> after;
+        for (int id : fromHand) after.push_back(*doc.find(id));
+        hist.pushApplied(std::make_unique<ModifyEntitiesCmd>(std::move(before), std::move(after),
+                                                             "Unpack Prefab"));
+        check(!tagged(aRoot) && !tagged(aArm) && !tagged(aHand),
+              "unpacked, its objects are ordinary ones");
+        check(tagged(bRoot), "the nested instance is still an instance");
+        check(prefab::instanceMembers(es, aRoot).empty(),
+              "and the unpacked one belongs to no instance any more");
+        hist.undo(doc);
+        check(tagged(aRoot) && tagged(aArm) && tagged(aHand), "one undo makes it an instance again");
+    }
+
     // --- A vehicle's wheels (VehicleRig.hpp, VehicleComponent::wheelTurn) -------
     // Wheels spin and steer about the CAR's axes, over the wheel as modelled
     // and the author's correction: at rest nothing moves; a left wheel modelled

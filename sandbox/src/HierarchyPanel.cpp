@@ -30,6 +30,7 @@ void drawPanel(const PanelState& s) {
     // space to unparent); right-click for Duplicate/Delete.
     int reparentSrc = -1, reparentTo = -2; // -2 = none, -1 = root
     int dupReq = -1, delReq = -1;
+    int unpackReq = -1;
     // Deferred context-menu creation requests (applied after the tree
     // is drawn, so entities isn't mutated mid-iteration).
     int emptyParentReq = -1, emptyChildReq = -1, primChildReq = -1;
@@ -127,6 +128,9 @@ void drawPanel(const PanelState& s) {
                                   "%s", s.entities[i].name.c_str());
                     s.showPrefabs = true;
                 }
+                if (s.unpackPrefab && s.entities[i].components.get<PrefabComponent>() &&
+                    ImGui::MenuItem("Unpack Prefab"))
+                    unpackReq = i;
                 ImGui::Separator();
                 if (ImGui::MenuItem("Create Empty Parent")) emptyParentReq = i;
                 if (ImGui::MenuItem("Create Empty Child"))  emptyChildReq = i;
@@ -222,6 +226,7 @@ void drawPanel(const PanelState& s) {
         if (reqIsMultiSelected(delReq)) s.deleteSelection();
         else                            s.deleteEntity(delReq);
     }
+    else if (unpackReq >= 0)      s.unpackPrefab(s.entities[unpackReq].id);
     else if (emptyParentReq >= 0) s.addEmptyParent(emptyParentReq);
     else if (emptyChildReq >= 0)  s.addEmptyChild(emptyChildReq);
     else if (primChildReq >= 0)   s.addPrimitiveChild(primChildReq, primChildType);

@@ -97,4 +97,16 @@ bool deleteFile(const std::string& path, std::string& err);
 std::vector<Entity> instantiate(const Prefab& p, int& entityCounter,
                                 const glm::vec3& pos, float yawDeg);
 
+// The prefab instance `id` is part of: its root (the nearest self-or-ancestor
+// tagged as that prefab's root) first, then every entity below it tagged from
+// the same prefab -- stopping at another instance of it parented inside. Empty
+// when `id` belongs to no instance. Objects added under an instance afterwards
+// carry no tag and are not members.
+std::vector<int> instanceMembers(const std::vector<Entity>& scene, int id);
+
+// Make an entity an ordinary object: drop its prefab tag (and nothing else --
+// transform, components and children stay as they are). "Unpack Prefab" is
+// this over instanceMembers().
+void unpack(Entity& e);
+
 } // namespace prefab
