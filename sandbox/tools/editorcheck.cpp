@@ -45,6 +45,9 @@
 //     step when committed; a click picks the face under the pointer; the face
 //     selection is dropped when the object changes; and G, driven by real key
 //     and mouse events, grabs the face, Enter keeps it, Esc puts it back.
+//   - the vehicle setup gizmo (VehicleGizmo), through the frame's ViewportFrame:
+//     the front-axle handle is grabbed where it is drawn and follows the pointer
+//     along its own axis, one undo bracket for the drag.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -71,6 +74,7 @@
 #include "../src/TransformGizmo.hpp"
 #include "../src/Cursor3D.hpp"
 #include "../src/ModelMode.hpp"
+#include "../src/VehicleGizmo.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -906,6 +910,58 @@ int main() {
         check(!modelkeys::busy() && near(centre(front).x, 0.0f) && history.revision() == rev,
               "...Esc puts it back and banks nothing");
         sel.clear();
+    }
+
+    // --- The vehicle setup gizmo -----------------------------------------------------------
+    {
+        auto near = [](float a, float b, float eps) { return std::abs(a - b) <= eps; };
+        VehicleComponent vc;   // its defaults: a car-sized setup, nose along +Z
+        // Looking at the car from up and to the side, so the axles run across
+        // the picture and the three handles on the front axle stand apart.
+        const glm::vec3 eye(8.0f, 8.0f, 0.0f);
+        ViewportFrame v = view;
+        v.viewProj  = camera.projectionMatrix(16.0f / 9.0f) *
+                      glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        v.cameraPos = eye;
+        int  vsel = vehiclegizmo::kNone;
+        bool vdrag = false;
+        int  opened = 0;
+        std::vector<std::string> closed;
+        vehiclegizmo::Context gc{vc, glm::mat4(1.0f), vsel, vdrag};
+        gc.editable  = true;
+        gc.beginEdit = [&] { ++opened; };
+        gc.endEdit   = [&](const char* label) { closed.push_back(label); };
+        gc.editOpen  = [] { return false; };
+        auto px = [&](const glm::vec3& w) {
+            ImVec2 s;
+            v.toScreen(w, s);
+            return glm::vec2(s.x, s.y);
+        };
+        auto vframe = [&](glm::vec2 at, bool lmb) {
+            gc.view          = v;
+            gc.view.mousePos = ImVec2(at.x, at.y);
+            gc.view.mouseNdc = glm::vec2(at.x / v.w * 2.0f - 1.0f, 1.0f - at.y / v.h * 2.0f);
+            io.AddMousePosEvent(at.x, at.y);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            vehiclegizmo::handle(gc);
+            ImGui::End();
+            ImGui::Render();
+        };
+        const float z0 = vc.frontZ;
+        const glm::vec2 grip = px(glm::vec3(0.0f, vc.wheelY, z0));
+        vframe(grip, false);
+        vframe(grip, true);
+        check(vsel == vehiclegizmo::kFrontZ && vdrag && opened == 1,
+              "the vehicle gizmo's front-axle handle is grabbed where it is drawn");
+        const glm::vec2 ahead = px(glm::vec3(0.0f, vc.wheelY, z0 + 0.5f));
+        vframe(ahead, true);
+        vframe(ahead, false);
+        check(near(vc.frontZ, z0 + 0.5f, 1e-3f) && !vdrag && closed.size() == 1,
+              "...follows the pointer along its axis, and the drag is one undo bracket",
+              "front axle " + std::to_string(z0).substr(0, 5) + " -> " +
+                  std::to_string(vc.frontZ).substr(0, 5));
     }
 
     ImGui::DestroyContext();

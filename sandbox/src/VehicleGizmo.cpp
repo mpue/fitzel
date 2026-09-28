@@ -76,15 +76,8 @@ bool handle(const Context& c) {
     auto toWorld = [&](const glm::vec3& lp) {
         return glm::vec3(c.world * glm::vec4(lp, 1.0f));
     };
-    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
-        const glm::vec4 clip = c.viewProj * glm::vec4(wp, 1.0f);
-        if (clip.w <= 1e-4f) return false;
-        const glm::vec3 n = glm::vec3(clip) / clip.w;
-        if (n.z > 1.0f) return false;
-        out = ImVec2(c.origin.x + (n.x * 0.5f + 0.5f) * c.viewW,
-                     c.origin.y + (1.0f - (n.y * 0.5f + 0.5f)) * c.viewH);
-        return true;
-    };
+    // False behind the camera or past the far plane.
+    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) { return c.view.project(wp, out); };
     auto localLine = [&](const glm::vec3& a, const glm::vec3& b, ImU32 col,
                          float th = 1.5f) {
         ImVec2 s0, s1;
@@ -210,11 +203,11 @@ bool handle(const Context& c) {
     // What the cursor is over. Nearest wins, so overlapping handles on a small
     // car still resolve to whichever one is actually closer to the cursor.
     int hot = kNone;
-    if (c.hovered && !c.dragging) {
+    if (c.view.hovered && !c.dragging) {
         float bestD = kGrabRadius;
         for (int i = 0; i < kCount; ++i) {
             if (!gOk[i]) continue;
-            const float d = std::hypot(gs[i].x - c.mousePos.x, gs[i].y - c.mousePos.y);
+            const float d = std::hypot(gs[i].x - c.view.mousePos.x, gs[i].y - c.view.mousePos.y);
             if (d < bestD) { bestD = d; hot = i; }
         }
     }
@@ -232,11 +225,11 @@ bool handle(const Context& c) {
 
     if (c.dragging && c.sel > kNone && c.sel < kCount) {
         // The eye ray through the cursor, in world space.
-        const glm::mat4 invVP = glm::inverse(c.viewProj);
-        glm::vec4 far4 = invVP * glm::vec4(c.mouseNdc.x, c.mouseNdc.y, 1.0f, 1.0f);
+        const glm::mat4 invVP = glm::inverse(c.view.viewProj);
+        glm::vec4 far4 = invVP * glm::vec4(c.view.mouseNdc.x, c.view.mouseNdc.y, 1.0f, 1.0f);
         if (std::abs(far4.w) > 1e-6f) {
             const glm::vec3 farP = glm::vec3(far4) / far4.w;
-            const glm::vec3 dir  = glm::normalize(farP - c.cameraPos);
+            const glm::vec3 dir  = glm::normalize(farP - c.view.cameraPos);
 
             const Grip& gr = g[c.sel];
             // The handle's line, in world space: its own axis through its anchor.
@@ -244,7 +237,7 @@ bool handle(const Context& c) {
             const glm::vec3 Ax = glm::normalize(
                 glm::vec3(c.world * glm::vec4(gr.axis, 0.0f)));
             float s = 0.0f;
-            if (closestOnAxis(A, Ax, c.cameraPos, dir, s)) {
+            if (closestOnAxis(A, Ax, c.view.cameraPos, dir, s)) {
                 // `s` is the signed slide from where the handle sits right now,
                 // so most handles just add it to the value they already show --
                 // no world-to-local bookkeeping per handle, and no jump on grab.
@@ -279,7 +272,7 @@ bool handle(const Context& c) {
     // --- The keyboard nudge --------------------------------------------------
     // Whole steps, no aim required, and the whole burst of key repeats lands in
     // one undo entry rather than fifty.
-    if (c.sel > kNone && c.sel < kCount && !c.dragging && c.hovered) {
+    if (c.sel > kNone && c.sel < kCount && !c.dragging && c.view.hovered) {
         const float step = ImGui::GetIO().KeyShift ? kNudgeCoarse : kNudgeFine;
         float d = 0.0f;
         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,    true)) d += step;

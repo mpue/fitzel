@@ -757,7 +757,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
                            src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
-                           src/ModelMode.cpp src/ModelingKeys.cpp
+                           src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp

@@ -10411,18 +10411,10 @@ int main(int argc, char** argv) {
                 if (!playMode && sel.valid()) {
                     Entity& ve = entities[sel.index()];
                     if (auto* gvc = ve.components.get<VehicleComponent>()) {
-                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                         vehiclegizmo::Context gc{*gvc, worldOf(ve),
                                                  vehGizmoSel, vehGizmoDrag};
                         gc.editable  = vehGizmoEdit;
-                        gc.origin    = rmin;
-                        gc.viewW     = static_cast<float>(viewW);
-                        gc.viewH     = static_cast<float>(viewH);
-                        gc.viewProj  = camera.projectionMatrix(asp) * camera.viewMatrix();
-                        gc.hovered   = viewportHovered;
-                        gc.mouseNdc  = viewportMouseNdc;
-                        gc.mousePos  = mp;
-                        gc.cameraPos = camera.position();
+                        gc.view      = sceneView;
                         // Where the collision box sits is main's relation (it is
                         // what places the Jolt body at Play), so the gizmo asks
                         // rather than repeating it -- a box drawn a hand's width
