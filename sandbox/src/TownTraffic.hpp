@@ -82,10 +82,15 @@ public:
     // near (split screen: the second eye looks elsewhere).
     void setView(const glm::vec3& eye, const glm::mat4& viewProj, bool cull = true);
 
-    // Rebuild when the towns changed, advance, and re-skin. Call before the
-    // frame's GPU materials are built: the palette is find-or-created here.
-    void update(const CitySystem& towns, float dt, double clock,
-                std::vector<MaterialDef>& materials);
+    // Move everyone on by `dt` (the signals' time is `clock`). Once a frame,
+    // BEFORE the cameras and before playTick: whatever shoots or follows a
+    // vehicle has to see where it is this frame, not where it was.
+    void advance(float dt, double clock);
+
+    // Rebuild when the towns changed, and re-skin what advance() moved. Call
+    // before the frame's GPU materials are built: the palette is
+    // find-or-created here.
+    void update(const CitySystem& towns, float dt, std::vector<MaterialDef>& materials);
 
     // Every mesh and the material it wears (world space, identity model).
     void forEachDraw(const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&)>& fn) const;

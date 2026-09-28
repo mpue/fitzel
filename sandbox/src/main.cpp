@@ -9952,6 +9952,26 @@ int main(int argc, char** argv) {
                 }
             }
 
+            // --- Town traffic: advance it, then move its CPU drivers ------------
+            // BEFORE the cameras. A camera shooting a CPU car has to see where
+            // the car is this frame: stepped after the cameras had their turn,
+            // every one of them aimed at where the car was a frame ago while it
+            // was drawn where it is -- off by speed x the last frame time, which
+            // swings with every frame, so the car jittered in shot. After the
+            // physics step, because the drivers' crash test reads the knock that
+            // step just gave them. Hit hard, they crash; the traffic stops for
+            // the wrecks and for the player's car.
+            townTraffic.advance(dt, now);
+            if (playMode) {
+                townTraffic.setPlayerCar(physics && physics->hasVehicle() ? physCarId : 0,
+                                         physCarHalf);
+                townTraffic.playTick(entities, physics.get(), dt,
+                    [&](Entity& e, const glm::vec3& p, const glm::vec3& r) {
+                        const glm::mat4 pw = parentWorldMat(e);
+                        setWorld(e, p, r, e.parent >= 0 ? &pw : nullptr);
+                    });
+            }
+
             // --- Scripts: tick each scripted entity's Lua update while playing --
             if (playMode) {
                 host.camPos = camera.position();
@@ -15978,19 +15998,6 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // The traffic's CPU drivers move their scene objects -- before the
-            // resolve, so wheels and anything else parented follow this frame.
-            // Hit hard, they crash; the traffic stops for the wrecks and for
-            // the player's car.
-            if (playMode) {
-                townTraffic.setPlayerCar(physics && physics->hasVehicle() ? physCarId : 0,
-                                         physCarHalf);
-                townTraffic.playTick(entities, physics.get(), dt,
-                    [&](Entity& e, const glm::vec3& p, const glm::vec3& r) {
-                        const glm::mat4 pw = parentWorldMat(e);
-                        setWorld(e, p, r, e.parent >= 0 ? &pw : nullptr);
-                    });
-            }
             // Resolve the scene-graph so every entity's world center/rotation
             // reflects this frame's edits/scripts/physics and its parent chain.
             resolveHierarchy();
@@ -16088,7 +16095,7 @@ int main(int argc, char** argv) {
             {
                 const long long fzTraffic = prof::mark();
                 townTraffic.setView(camera.position(), proj * camera.viewMatrix(), views == 1);
-                townTraffic.update(towns, dt, now, materials);
+                townTraffic.update(towns, dt, materials);
                 prof::addSince("traffic update", fzTraffic);
             }
 

@@ -90,6 +90,7 @@ void run(cityplan::Preset preset) {
     std::vector<float> travelled(V.size(), 0.0f);
     std::vector<glm::vec3> last = start;
     float worstOverlap = 0.0f, fastest = 0.0f;
+    float worstJump = 0.0f, worstTurn = 0.0f;   // pose: metres beyond the distance driven, radians
     int redRuns = 0, dwells = 0;
     double stepMs = 0.0;
     const int steps = static_cast<int>(300.0f / dt);
@@ -113,6 +114,15 @@ void run(cityplan::Preset preset) {
             }
             if (a.dwell > 0.0f && b.dwell <= 0.0f) ++dwells;
             fastest = std::max(fastest, a.v / a.vmax);
+            // The pose moves as far as the vehicle drove, and turns gradually:
+            // a camera shooting it sees every jump (lane to turn to lane).
+            {
+                const traffic::Pose pa = sim.pose(a), pb = sim.pose(b);
+                const float moved = glm::length(glm::vec2(pa.pos.x - pb.pos.x, pa.pos.z - pb.pos.z));
+                worstJump = std::max(worstJump, moved - (a.odo - b.odo));
+                const float c = glm::clamp(glm::dot(pa.heading, pb.heading), -1.0f, 1.0f);
+                worstTurn = std::max(worstTurn, std::acos(c));
+            }
             const glm::vec3 p = sim.pose(a).pos;
             travelled[i] += glm::length(p - last[i]);
             last[i] = p;
@@ -137,6 +147,12 @@ void run(cityplan::Preset preset) {
           std::to_string(dwells) + " calls");
     check(fastest <= 1.001f, "nobody faster than their kind allows",
           std::to_string(fastest).substr(0, 5) + " of top speed");
+    // Measured before the fix: 6.6 m and 108 degrees in one step, where a turn
+    // handed the vehicle on to its next lane. Now a tight village corner at its
+    // turning speed turns a car ~3.7 degrees a step (30 a second).
+    check(worstJump < 0.02f && worstTurn < glm::radians(5.0f), "poses move smoothly, no jumps",
+          "worst " + std::to_string(worstJump).substr(0, 5) + " m beyond the distance driven, " +
+              std::to_string(glm::degrees(worstTurn)).substr(0, 5) + " deg in one step");
 
     // People: never on a carriageway.
     float worstIn = -1e9f;

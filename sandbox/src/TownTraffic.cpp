@@ -366,8 +366,12 @@ void TownTraffic::skin(const Instance& in, const glm::mat4& m) {
     }
 }
 
-void TownTraffic::update(const CitySystem& towns, float dt, double clock,
-                         std::vector<MaterialDef>& materials) {
+void TownTraffic::advance(float dt, double clock) {
+    if (m_playing) placeDrivers();
+    m_sim.step(dt, clock);
+}
+
+void TownTraffic::update(const CitySystem& towns, float dt, std::vector<MaterialDef>& materials) {
     // The streets may not be built yet when a town first derives (a project
     // still loading): then there is no surface to drive on, and the network
     // comes out empty. Try again every couple of seconds while that lasts.
@@ -397,9 +401,7 @@ void TownTraffic::update(const CitySystem& towns, float dt, double clock,
             if (v.entity < 0) m_instances[i++].prev = matOf(m_sim.pose(v));
         for (const Walker& w : m_sim.walkers()) m_instances[i++].prev = matOf(m_sim.pose(w));
     }
-    if (m_playing) placeDrivers();
     if (m_sim.vehicles().empty() && m_sim.walkers().empty()) return;
-    m_sim.step(dt, clock);
 
     // Every pose is worked out (the motion vectors need last frame's for
     // whatever comes into view), only what is in view is skinned. Past these

@@ -60,6 +60,7 @@ struct Vehicle {
     Kind  kind   = Kind::Car;
     int   lane   = 0;       // the lane it is on -- or leaving, while turning
     int   next   = -1;      // the lane it takes at the end of this one
+    int   prev   = -1;      // the lane it turned in from: its rear is still in that turn
     float s      = 0.0f;    // FRONT bumper: metres along the lane, or along the turn
     bool  turning = false;
     float v      = 0.0f;    // m/s
@@ -173,6 +174,17 @@ public:
     bool mustStop(int l, float dist, float v, double clock) const;
 
 private:
+    // A point of a vehicle's path: where, which way, and the road's height.
+    // The path is the lane it turned in from, that turn, its lane, the turn it
+    // is taking and the lane it turns into, joined end to end -- so a point
+    // sliding along it never jumps, whichever of them it is on.
+    struct PathPoint { glm::vec2 p{0.0f}, t{1.0f, 0.0f}; float y = 0.0f; };
+    PathPoint at(const Vehicle& v, float d) const;             // d as its front bumper's s
+    PathPoint onLane(int lane, int prev, float d) const;       // d from the lane's start
+    PathPoint inTurn(int a, int b, float d) const;             // d along the turn
+
+    float turnSpeed(int a, int b, float vmax) const;   // how fast the turn a -> b is taken
+
     int  pickNext(Vehicle& v) const;
     void addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
                  const std::function<void(Vehicle&)>& dress);

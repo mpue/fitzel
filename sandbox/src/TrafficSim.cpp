@@ -354,10 +354,42 @@ float Sim::turnLength(int a, int b) const {
 void Sim::turnPoint(int a, int b, float s, glm::vec2& p, glm::vec2& t) const {
     const Lane& A = m_lanes[static_cast<std::size_t>(a)];
     const Lane& B = m_lanes[static_cast<std::size_t>(b)];
-    const float u = std::clamp(s / turnLength(a, b), 0.0f, 1.0f);
-    p = bezier(A.p1, controlPoint(A, B), B.p0, u, t);
+    const glm::vec2 c = controlPoint(A, B);
+    // By distance along the curve, not by its parameter: a Bezier's parameter
+    // runs faster through the wide part than the tight one, and a point slid
+    // along by a steady `s` would speed up and slow down through the corner.
+    // The same 12 chords turnLength measures, so s = turnLength is the end.
+    float u = 1.0f, acc = 0.0f, uPrev = 0.0f;
+    glm::vec2 prev = A.p1;
+    for (int k = 1; k <= 12; ++k) {
+        const float uk = static_cast<float>(k) / 12.0f;
+        const glm::vec2 q = bezier(A.p1, c, B.p0, uk, t);
+        const float seg = glm::length(q - prev);
+        if (acc + seg >= s) {
+            u = uPrev + (uk - uPrev) * (seg > 1e-6f ? std::clamp((s - acc) / seg, 0.0f, 1.0f) : 0.0f);
+            break;
+        }
+        acc  += seg;
+        prev  = q;
+        uPrev = uk;
+    }
+    p = bezier(A.p1, c, B.p0, std::clamp(u, 0.0f, 1.0f), t);
     if (glm::dot(t, t) < 1e-8f) t = A.dir;
     t = glm::normalize(t);
+}
+
+float Sim::turnSpeed(int a, int b, float vmax) const {
+    // As fast as the corner allows at a comfortable sideways pull (a town
+    // driver's ~0.25 g), its radius being the turn's length over the angle it
+    // turns through. A fixed turning speed took a village's 2 m corner at the
+    // pace of a wide city one -- 1.7 g, the car flung round it.
+    const float c = glm::clamp(glm::dot(m_lanes[static_cast<std::size_t>(a)].dir,
+                                        m_lanes[static_cast<std::size_t>(b)].dir), -1.0f, 1.0f);
+    const float angle = std::acos(c);
+    if (angle < 0.35f) return vmax;   // straight on
+    constexpr float kSideways = 2.5f;   // m/s^2
+    const float radius = turnLength(a, b) / angle;
+    return std::clamp(std::sqrt(kSideways * radius), 2.0f, vmax);
 }
 
 bool Sim::mustStop(int l, float dist, float v, double clock) const {
@@ -470,13 +502,11 @@ void Sim::step(float dt, double clock) {
             // Slow for the turn ahead: a speed that brakes comfortably to the
             // turning speed by the stop line.
             if (v.next >= 0) {
-                const float c = glm::dot(L.dir, m_lanes[static_cast<std::size_t>(v.next)].dir);
-                const float vTurn = c > 0.94f ? v.vmax : c > -0.5f ? 5.5f : 3.0f;
+                const float vTurn = turnSpeed(v.lane, v.next, v.vmax);
                 v0 = std::min(v0, std::sqrt(vTurn * vTurn + 2.0f * bComf * std::max(toEnd, 0.0f)));
             }
         } else {
-            const float c = glm::dot(L.dir, m_lanes[static_cast<std::size_t>(v.next)].dir);
-            v0 = std::min(v0, c > 0.94f ? v.vmax : c > -0.5f ? 5.5f : 3.0f);
+            v0 = std::min(v0, turnSpeed(v.lane, v.next, v.vmax));
         }
 
         // Intelligent Driver Model.
@@ -501,6 +531,7 @@ void Sim::step(float dt, double clock) {
             const float tl = turnLength(v.lane, v.next);
             if (v.s >= tl) {
                 v.s -= tl;
+                v.prev    = v.lane;   // its rear is still in the turn (see pose)
                 v.lane    = v.next;
                 v.turning = false;
                 v.next    = pickNext(v);
@@ -525,30 +556,60 @@ void Sim::step(float dt, double clock) {
     }
 }
 
-Pose Sim::pose(const Vehicle& v) const {
-    Pose p;
-    const Lane& L = m_lanes[static_cast<std::size_t>(v.lane)];
-    const float c = v.s - 0.5f * v.length;   // the vehicle's middle
-    if (!v.turning) {
-        const glm::vec2 xz = L.p0 + L.dir * c;
-        p.pos     = {xz.x, L.heightAt(c), xz.y};
-        p.heading = L.dir;
-        const float wb = 0.6f * v.length;
-        p.pitch = std::atan2(L.heightAt(c + 0.5f * wb) - L.heightAt(c - 0.5f * wb), wb);
-        return p;
+Sim::PathPoint Sim::inTurn(int a, int b, float d) const {
+    PathPoint q;
+    turnPoint(a, b, d, q.p, q.t);
+    const Lane& A = m_lanes[static_cast<std::size_t>(a)];
+    const Lane& B = m_lanes[static_cast<std::size_t>(b)];
+    const float u = std::clamp(d / turnLength(a, b), 0.0f, 1.0f);
+    q.y = A.y.back() + (B.y.front() - A.y.back()) * u;
+    return q;
+}
+
+Sim::PathPoint Sim::onLane(int lane, int prev, float d) const {
+    const Lane& L = m_lanes[static_cast<std::size_t>(lane)];
+    PathPoint q;
+    if (d >= 0.0f || prev < 0) {        // on it (or before it, for one that never turned in)
+        q.p = L.p0 + L.dir * d;
+        q.t = L.dir;
+        q.y = L.heightAt(d);
+        return q;
     }
-    const Lane& N = m_lanes[static_cast<std::size_t>(v.next)];
+    const float tl = turnLength(prev, lane);
+    if (tl + d >= 0.0f) return inTurn(prev, lane, tl + d);
+    const Lane& P = m_lanes[static_cast<std::size_t>(prev)];   // further back still
+    const float e = P.len + tl + d;
+    q.p = P.p0 + P.dir * e;
+    q.t = P.dir;
+    q.y = P.heightAt(e);
+    return q;
+}
+
+Sim::PathPoint Sim::at(const Vehicle& v, float d) const {
+    if (!v.turning || v.next < 0) return onLane(v.lane, v.prev, d);
+    // Turning: d runs along the turn, the lane it is leaving lies behind 0.
     const float tl = turnLength(v.lane, v.next);
-    glm::vec2 xz, t;
-    if (c >= 0.0f) {
-        turnPoint(v.lane, v.next, c, xz, t);
-    } else {                        // the middle is still on the lane behind
-        xz = L.p1 + L.dir * c;
-        t  = L.dir;
-    }
-    const float u = std::clamp(c / tl, 0.0f, 1.0f);
-    p.pos     = {xz.x, L.y.back() + (N.y.front() - L.y.back()) * u, xz.y};
-    p.heading = t;
+    if (d < 0.0f) return onLane(v.lane, v.prev, m_lanes[static_cast<std::size_t>(v.lane)].len + d);
+    if (d <= tl)  return inTurn(v.lane, v.next, d);
+    return onLane(v.next, v.lane, d - tl);
+}
+
+Pose Sim::pose(const Vehicle& v) const {
+    // Where its two axles are on its path, and the body between them: it
+    // points from the rear one to the front one, sits at their middle and
+    // pitches with the road between them. A body that spans a corner cuts it
+    // the way a real one does, and nothing jumps as the front moves from lane
+    // to turn to lane -- a camera shooting a car sees every such jump.
+    const float wb  = 0.6f * v.length;
+    const float mid = v.s - 0.5f * v.length;
+    const PathPoint f = at(v, mid + 0.5f * wb), r = at(v, mid - 0.5f * wb);
+    Pose p;
+    const glm::vec2 d = f.p - r.p;
+    const float len = glm::length(d);
+    p.heading = len > 1e-4f ? d / len : f.t;
+    const glm::vec2 m = 0.5f * (f.p + r.p);
+    p.pos   = {m.x, 0.5f * (f.y + r.y), m.y};
+    p.pitch = std::atan2(f.y - r.y, std::max(len, 1e-3f));
     return p;
 }
 
