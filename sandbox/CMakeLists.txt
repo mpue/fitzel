@@ -240,6 +240,9 @@ set(SANDBOX_EDITOR_SOURCES
     # them: an asset dropped on the scene.
     src/EditorContext.cpp
     src/SceneDrop.cpp
+    # What the grass/tree/flower/scatter brushes and texture paint share: the
+    # aim at the ground, the throttled drag, the ring.
+    src/GroundBrush.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -724,12 +727,14 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # editorcheck (sandbox/tools/editorcheck.cpp): the editor's core as the tools
 # outside main() see it (EditorContext), and those tools, without a window: an
 # asset dropped on the scene (a material dresses the object or the face under
-# the cursor, as one undo step; a drop on empty sky does nothing) and the mesh
-# paint brush (a held stroke paints and splits, and undoes as one step).
+# the cursor, as one undo step; a drop on empty sky does nothing), the mesh
+# paint brush (a held stroke paints and splits, and undoes as one step) and the
+# ground brushes' drag (a stamp every so many metres, erase every frame).
 #   build/release/bin/editorcheck.exe
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
+                           src/GroundBrush.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp

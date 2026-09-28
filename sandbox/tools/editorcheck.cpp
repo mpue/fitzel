@@ -13,9 +13,14 @@
 //     stroke is one undo step; an empty slot lays nothing down; a rival tool
 //     or a selection off the mesh makes it let go of the left button. It runs
 //     inside a real ImGui frame, just one nobody draws.
+//   - the ground brushes' drag (GroundBrush: grass, trees, flowers, scatter):
+//     a press stamps, a held drag stamps again only every `spacing` metres, a
+//     fresh press starts over, erasing rubs every frame and never stamps, and
+//     a cursor off the ground does nothing.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -30,6 +35,7 @@
 #include "../src/Component.hpp"
 #include "../src/Document.hpp"
 #include "../src/EditorContext.hpp"
+#include "../src/GroundBrush.hpp"
 #include "../src/MeshPaintPanel.hpp"
 #include "../src/ModelLibrary.hpp"
 #include "../src/SceneDrop.hpp"
@@ -244,6 +250,65 @@ int main() {
         paintFrame(false);
         check(!paintMode, "with no mesh selected the brush lets go of the left button");
     }
+    // --- The ground brushes' drag ------------------------------------------------------
+    {
+        // Flat ground under the whole viewport, 20 m to an NDC unit, so where
+        // the cursor is IS where the brush lands.
+        ViewportFrame ground = view;
+        ground.pickTerrain = [](glm::vec2 ndc, const glm::mat4&, glm::vec3& hit) {
+            hit = glm::vec3(ndc.x * 20.0f, 0.0f, ndc.y * 20.0f);
+            return true;
+        };
+        std::vector<glm::vec2> puts;
+        int  rubs = 0;
+        glm::vec2 last(1e9f);
+        bool eraseToggle = false;
+        // One frame, the cursor `x` metres along the ground, the button held or not.
+        auto dragFrame = [&](float x, bool lmb) {
+            ground.mouseNdc = glm::vec2(x / 20.0f, 0.0f);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            const groundbrush::Aim at = groundbrush::aim(ground, eraseToggle);
+            groundbrush::drag(at, last, 2.0f,
+                              [&](glm::vec2 p) { puts.push_back(p); },
+                              [&](glm::vec2) { ++rubs; });
+            groundbrush::ring(ground, at, 3.0f, IM_COL32(120, 235, 120, 220));
+            ImGui::End();
+            ImGui::Render();
+        };
+        dragFrame(0.0f, false);
+        dragFrame(0.0f, true);
+        check(puts.size() == 1 && std::abs(puts[0].x) < 1e-4f, "a press on the ground stamps once");
+        dragFrame(0.0f, true);
+        dragFrame(1.0f, true);
+        dragFrame(1.9f, true);
+        check(puts.size() == 1, "...and holding within the spacing lays nothing more",
+              std::to_string(puts.size()) + " stamps");
+        dragFrame(2.5f, true);
+        dragFrame(4.0f, true);
+        dragFrame(5.0f, true);
+        check(puts.size() == 3 && std::abs(puts[1].x - 2.5f) < 1e-3f && std::abs(puts[2].x - 5.0f) < 1e-3f,
+              "a held drag stamps again every time it has gone the spacing",
+              std::to_string(puts.size()) + " stamps");
+        dragFrame(5.0f, false);
+        dragFrame(5.0f, true);
+        check(puts.size() == 4, "a fresh press on the same spot stamps again");
+        dragFrame(5.0f, false);
+        eraseToggle = true;
+        const std::size_t stamped = puts.size();
+        for (int i = 0; i < 4; ++i) dragFrame(6.0f, true);
+        check(rubs == 4 && puts.size() == stamped, "erasing rubs every held frame and never stamps",
+              std::to_string(rubs) + " rubs");
+        dragFrame(6.0f, false);
+        eraseToggle = false;
+        ground.hovered = false;
+        dragFrame(9.0f, true);
+        dragFrame(12.0f, true);
+        check(puts.size() == stamped && rubs == 4, "a cursor off the viewport stamps nothing");
+        dragFrame(12.0f, false);
+    }
+
     ImGui::DestroyContext();
 
     std::printf(failures ? "\neditorcheck: %d FAILED\n" : "\neditorcheck: all good\n", failures);

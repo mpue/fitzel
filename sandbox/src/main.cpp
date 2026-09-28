@@ -115,6 +115,7 @@
 #include "LookPanels.hpp"
 #include "EditorContext.hpp"
 #include "SceneDrop.hpp"
+#include "GroundBrush.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -10649,230 +10650,78 @@ int main(int argc, char** argv) {
                 //     3D brush that hugs the terrain. Hold LMB and drag to paint;
                 //     hold Alt (or toggle Erase) to rub grass out. -------------
                 if (grassPaintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    // A fresh press starts a stroke; forget the last stamp point.
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            veg.eraseGrass(cxz, brushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > brushRadius * 0.4f) {
-                            // Throttle so a slow drag doesn't pile blades up: step
-                            // ~0.4 radius between stamps for an even trail.
-                            veg.stampGrass(cxz, brushRadius, brushRng, brushDensity,
-                                           waterLevel, look.snowLevel);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    // Brush cursor: a ground-hugging ring drawn in the overlay.
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(120, 235, 120, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * brushRadius;
-                            const float wz = center.z + std::sin(a) * brushRadius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    // Throttled so a slow drag doesn't pile blades up: a stamp
+                    // every ~0.4 radius makes an even trail.
+                    groundbrush::drag(
+                        at, lastStampPos, brushRadius * 0.4f,
+                        [&](glm::vec2 p) {
+                            veg.stampGrass(p, brushRadius, brushRng, brushDensity, waterLevel,
+                                           look.snowLevel);
+                        },
+                        [&](glm::vec2 p) { veg.eraseGrass(p, brushRadius); });
+                    groundbrush::ring(sceneView, at, brushRadius, IM_COL32(120, 235, 120, 220));
                 }
 
                 // --- Tree brush: scatter/erase hand-placed trees under a circular
                 //     3D brush. Drag LMB to plant; hold Alt (or Erase) to remove.
                 if (treePaintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            veg.eraseTree(cxz, veg.treeBrushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > veg.treeBrushRadius * 0.5f) {
-                            veg.stampTree(cxz, veg.treeBrushRadius, brushRng, waterLevel,
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    groundbrush::drag(
+                        at, lastStampPos, veg.treeBrushRadius * 0.5f,
+                        [&](glm::vec2 p) {
+                            veg.stampTree(p, veg.treeBrushRadius, brushRng, waterLevel,
                                           look.snowLevel);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(90, 200, 120, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * veg.treeBrushRadius;
-                            const float wz = center.z + std::sin(a) * veg.treeBrushRadius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                        },
+                        [&](glm::vec2 p) { veg.eraseTree(p, veg.treeBrushRadius); });
+                    groundbrush::ring(sceneView, at, veg.treeBrushRadius,
+                                      IM_COL32(90, 200, 120, 220));
                 }
 
                 // --- Flower brush: scatter/erase hand-placed blooms under a
                 //     circular 3D brush. Drag LMB to plant; Alt (or Erase) removes.
                 if (flowerPaintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            veg.eraseFlower(cxz, veg.flowerBrushRadius);
-                        } else if (glm::length(cxz - lastStampPos) > veg.flowerBrushRadius * 0.4f) {
-                            veg.stampFlower(cxz, veg.flowerBrushRadius, brushRng, waterLevel,
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    groundbrush::drag(
+                        at, lastStampPos, veg.flowerBrushRadius * 0.4f,
+                        [&](glm::vec2 p) {
+                            veg.stampFlower(p, veg.flowerBrushRadius, brushRng, waterLevel,
                                             look.snowLevel);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(240, 150, 210, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * veg.flowerBrushRadius;
-                            const float wz = center.z + std::sin(a) * veg.flowerBrushRadius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                        },
+                        [&](glm::vec2 p) { veg.eraseFlower(p, veg.flowerBrushRadius); });
+                    groundbrush::ring(sceneView, at, veg.flowerBrushRadius,
+                                      IM_COL32(240, 150, 210, 220));
                 }
 
                 // --- Object scatter brush: sprinkle weighted random models under
                 //     a circular 3D brush (one stamp = one undo step). Drag LMB
                 //     to scatter; hold Alt (or Erase) to remove scattered objects.
                 if (scatterMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    const bool erasing  = brushErase || ImGui::GetIO().KeyAlt;
-
-                    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        lastStampPos = glm::vec2(1e9f);
-
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 cxz(center.x, center.z);
-                        if (erasing) {
-                            scatterErase(cxz);
-                        } else if (glm::length(cxz - lastStampPos) > scatterCfg.radius * 0.6f) {
-                            // Throttle so a slow drag doesn't pile objects up: step
-                            // ~0.6 radius between stamps for an even trail.
-                            scatterStamp(cxz);
-                            lastStampPos = cxz;
-                        }
-                    }
-
-                    // Brush cursor: a ground-hugging ring drawn in the overlay.
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const ImU32 col = erasing ? IM_COL32(255, 90, 70, 220)
-                                                  : IM_COL32(255, 190, 90, 220);
-                        const int SEG = 48;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * scatterCfg.radius;
-                            const float wz = center.z + std::sin(a) * scatterCfg.radius;
-                            const glm::vec4 c = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (c.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(c) / c.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, brushErase);
+                    // Throttled so a slow drag doesn't pile objects up: a stamp
+                    // every ~0.6 radius makes an even trail.
+                    groundbrush::drag(at, lastStampPos, scatterCfg.radius * 0.6f,
+                                      [&](glm::vec2 p) { scatterStamp(p); },
+                                      [&](glm::vec2 p) { scatterErase(p); });
+                    groundbrush::ring(sceneView, at, scatterCfg.radius, IM_COL32(255, 190, 90, 220));
                 }
 
                 // --- Terrain sculpt brush (SculptPanel.cpp): raise/lower/smooth/
                 //     flatten the ground under a 3D disc that hugs the surface. --
-                if (sculptMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    sculptui::Viewport sv;
-                    sv.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    sv.origin      = rmin;
-                    sv.viewW       = static_cast<float>(viewW);
-                    sv.viewH       = static_cast<float>(viewH);
-                    sv.hovered     = viewportHovered;
-                    sv.mouseNdc    = viewportMouseNdc;
-                    sv.pickTerrain = roadPickTerrain;
-                    sculptui::brushViewport(sculpt, sv, sculptWork, streamer, publishSculpt,
+                if (sculptMode)
+                    sculptui::brushViewport(sculpt, sceneView, sculptWork, streamer, publishSculpt,
                                             veg.grassDirty, dt);
-                }
 
                 // --- Terrain texture paint brush: paint the chosen layer onto the
                 //     ground under a 3D disc. Hold LMB to paint; Alt (or Erase)
                 //     reverts toward the automatic height/slope blend. ----------
                 if (paintMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
-                    const glm::mat4 vp = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    const ImVec2 org = rmin;
-                    glm::vec3 center;
-                    const bool onGround = viewportHovered &&
-                                          roadPickTerrain(viewportMouseNdc, vp, center);
-                    if (onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                        const glm::vec2 c(center.x, center.z);
-                        const bool  erasing = paintErase || ImGui::GetIO().KeyAlt;
+                    const groundbrush::Aim at = groundbrush::aim(sceneView, paintErase);
+                    if (at.onGround && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                        const glm::vec2 c(at.center.x, at.center.z);
                         const float rate = glm::clamp(paintStrength * 4.0f * dt, 0.0f, 1.0f);
-                        if (erasing) paintWork.erase(c, paintRadius, rate);
-                        else         paintWork.paint(c, paintRadius, paintLayer, rate);
+                        if (at.erasing) paintWork.erase(c, paintRadius, rate);
+                        else            paintWork.paint(c, paintRadius, paintLayer, rate);
                         // Republish + rebuild the touched chunks (paint is baked into
                         // the mesh, so it rides the same edit-rebuild path as sculpt).
                         publishPaint();
@@ -10880,28 +10729,9 @@ int main(int argc, char** argv) {
                         streamer.editsChanged(glm::vec2(c.x - m, c.y - m),
                                               glm::vec2(c.x + m, c.y + m));
                     }
-                    // Brush cursor: a ground-hugging ring (teal paint / grey erase).
-                    if (onGround) {
-                        ImDrawList* dl = ImGui::GetWindowDrawList();
-                        const bool erasing = paintErase || ImGui::GetIO().KeyAlt;
-                        const ImU32 col = erasing ? IM_COL32(205, 205, 215, 225)
-                                                  : IM_COL32(90, 230, 210, 225);
-                        const int SEG = 56;
-                        ImVec2 prev; bool have = false;
-                        for (int i = 0; i <= SEG; ++i) {
-                            const float a  = static_cast<float>(i) / SEG * 6.2831853f;
-                            const float wx = center.x + std::cos(a) * paintRadius;
-                            const float wz = center.z + std::sin(a) * paintRadius;
-                            const glm::vec4 cc = vp * glm::vec4(
-                                wx, streamer.heightAt(wx, wz) + 0.05f, wz, 1.0f);
-                            if (cc.w <= 1e-4f) { have = false; continue; }
-                            const glm::vec3 n = glm::vec3(cc) / cc.w;
-                            const ImVec2 sp(org.x + (n.x * 0.5f + 0.5f) * viewW,
-                                            org.y + (1.0f - (n.y * 0.5f + 0.5f)) * viewH);
-                            if (have) dl->AddLine(prev, sp, col, 2.0f);
-                            prev = sp; have = true;
-                        }
-                    }
+                    // Brush cursor: teal paint / grey erase.
+                    groundbrush::ring(sceneView, at, paintRadius, IM_COL32(90, 230, 210, 225),
+                                      IM_COL32(205, 205, 215, 225), 56);
                 }
 
                 // --- Mesh texture paint brush: the terrain's layers, brushed
