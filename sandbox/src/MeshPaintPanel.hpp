@@ -8,6 +8,8 @@
 #include "SceneTypes.hpp" // MaterialDef (the paint slots pick from the library)
 
 class MeshComponent;
+struct EditorContext;
+struct ViewportFrame;
 
 // The editor's "Mesh Paint" panel: a brush that puts textures on a modelled
 // object. Same gesture as the terrain's paint brush and the same four weights
@@ -21,6 +23,26 @@ class MeshComponent;
 // their geometry is shared by every copy in the scene and painting one would
 // paint them all.
 namespace meshpaintui {
+
+// The brush: its settings, which the panel edits, and the stroke in flight,
+// which the viewport keeps from frame to frame. One object in main.
+//
+// The weights it lays down live on the mesh's own corners (EditMesh::paint) and
+// what they MEAN lives there too (MeshComponent::paintSlots), so a painted
+// object is self-contained: it travels, it copies, it becomes a prefab, and none
+// of that depends on what the terrain happens to be textured with. The brush
+// splits the faces it crosses, because paint on four corners is not a stroke.
+struct Brush {
+    int   slot     = 0;      // which of the mesh's own four slots
+    float radius   = 0.6f;   // world units -- an object-sized brush
+    float strength = 0.5f;
+    float detail   = 0.25f;  // split faces down to this edge length
+    bool  erase    = false;
+    // One held button = one undo step: the entity as it was when the stroke
+    // started, banked when it ends.
+    bool   stroking = false;
+    Entity before;
+};
 
 // A slot change the panel WANTS, applied by the host after the panel is done
 // drawing. Not applied on the spot, because banking it as an undo step assigns
@@ -74,5 +96,34 @@ struct PanelState {
 };
 
 void drawPanel(const PanelState& s);
+
+// What the panel needs from main beyond the editor's core.
+struct Host {
+    bool& show;
+    bool& paintMode;
+    // The other viewport brushes (see PanelState).
+    bool& terrainPaintMode;
+    bool& grassPaintMode;
+    bool& roadEditMode;
+    bool& treePaintMode;
+    bool& flowerPaintMode;
+    bool& sculptMode;
+    bool& scatterMode;
+    bool& showMaterials;           // "Edit" on a slot opens the Materials panel
+    std::function<void()> convert; // built-in shape -> editable mesh
+};
+
+// The panel for the selected object: drawPanel fed from the editor's core, and
+// what it asks for (a slot filled or rescaled, the paint cleared) applied as one
+// undo step once it has drawn.
+void panel(EditorContext& ed, Brush& brush, const Host& h);
+
+// One frame of the brush while mesh paint owns the left mouse button: hold it
+// over the selected mesh to paint the chosen slot, Alt (or Erase) takes the
+// paint back off; the cursor ring lies in the face under it. `othersActive`: a
+// rival tool has the left button, so this one banks its stroke and lets go --
+// as it does when the selection moves off the mesh.
+void brushViewport(EditorContext& ed, const ViewportFrame& view, Brush& brush,
+                   bool& paintMode, bool othersActive, float dt);
 
 } // namespace meshpaintui

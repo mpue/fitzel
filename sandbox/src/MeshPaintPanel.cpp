@@ -1,11 +1,17 @@
 #include "MeshPaintPanel.hpp"
 #include "UiStyle.hpp"
 
+#include <cmath>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 
+#include "Command.hpp"
 #include "Component.hpp"
+#include "EditorContext.hpp"
+#include "MeshPaint.hpp"
 
 namespace meshpaintui {
 
@@ -31,6 +37,16 @@ const MaterialDef* slotMaterial(const PanelState& s, const MeshPaintSlot& sl) {
         if (md.assetId == sl.material) return &md;
     return nullptr;
 }
+
+// The editable mesh on the selected object, if it has one.
+MeshComponent* selectedMesh(EditorContext& ed) {
+    if (!ed.sel.valid()) return nullptr;
+    return ed.entities[ed.sel.index()].components.get<MeshComponent>();
+}
+
+// Where a stroke stops splitting. A brush held down over a wall would otherwise
+// quarter its faces until the editor stops.
+constexpr int kMaxFaces = 4000;
 
 } // namespace
 
@@ -148,6 +164,183 @@ void drawPanel(const PanelState& s) {
         ImGui::EndDisabled();
     }
     ImGui::End();
+}
+
+void panel(EditorContext& ed, Brush& brush, const Host& h) {
+    MeshComponent* mc  = selectedMesh(ed);
+    const bool haveSel = ed.sel.valid();
+    int painted = 0;
+    if (mc)
+        for (const glm::vec4& w : mc->mesh.paint)
+            if (w.x > 0.0f || w.y > 0.0f || w.z > 0.0f || w.w > 0.0f) ++painted;
+    brush.slot = glm::clamp(brush.slot, 0, 3);
+    // The panel does not touch the document: it says what it wants and this
+    // does it below, once the panel has stopped reading from the component. An
+    // undo push assigns the entity's snapshot over it and replaces its
+    // components, so a panel that edited in place would spend the rest of its
+    // frame drawing from freed memory -- which is exactly what it used to do.
+    SlotEdit slotEdit;
+    bool     wantClearPaint = false;
+    drawPanel({
+        h.show, h.paintMode,
+        h.terrainPaintMode, h.grassPaintMode, h.roadEditMode, h.treePaintMode,
+        h.flowerPaintMode, h.sculptMode, h.scatterMode,
+        ed.materials, brush.slot, brush.radius, brush.strength,
+        brush.detail, brush.erase,
+        mc, haveSel,
+        haveSel && !mc && isSolidPrimitive(ed.entities[ed.sel.index()].type),
+        mc ? static_cast<int>(mc->mesh.faces.size()) : 0, painted,
+        slotEdit,
+        h.convert,
+        [&]{ wantClearPaint = true; },
+        // "Edit" on a slot: the texture itself is a material, and the place to
+        // change a material is the Materials panel. Reads only, so it is safe
+        // from inside the panel.
+        [&](int k) {
+            MeshComponent* m = selectedMesh(ed);
+            if (!m || k < 0 || k >= static_cast<int>(m->paintSlots.size())) return;
+            const fitzel::AssetId id = m->paintSlots[k].material;
+            if (!id.valid()) return;
+            ed.matSel       = ed.document.materialIndex(id);
+            h.showMaterials = true;
+        },
+    });
+
+    // What the panel asked for, applied as one undo step each. Filling a slot
+    // needs no touch(): the geometry did not move, only what its weights are
+    // drawn with.
+    if (MeshComponent* m = selectedMesh(ed)) {
+        Entity&      e      = ed.entities[ed.sel.index()];
+        const Entity before = e;
+        bool         did    = false;
+        if (slotEdit.slot >= 0 && slotEdit.slot < static_cast<int>(m->paintSlots.size())) {
+            MeshPaintSlot& sl = m->paintSlots[slotEdit.slot];
+            if (slotEdit.setMaterial) { sl.material = slotEdit.material; did = true; }
+            if (slotEdit.setScale)    { sl.scale    = slotEdit.scale;    did = true; }
+        }
+        if (wantClearPaint && meshpaint::clear(m->mesh)) { m->touch(); did = true; }
+        if (did) {
+            auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
+            if (!cmd->trivial()) ed.history.pushApplied(std::move(cmd));
+        }
+    }
+}
+
+void brushViewport(EditorContext& ed, const ViewportFrame& view, Brush& brush,
+                   bool& paintMode, bool othersActive, float dt) {
+    MeshComponent* mc = selectedMesh(ed);
+    // Bank a stroke that is in progress, whichever way this is left. Without
+    // it, dropping the brush mid-stroke keeps the snapshot around and the NEXT
+    // stroke undoes back past it -- one Ctrl+Z throwing away work the user
+    // never joined up. Looks the entity up by id: the push replaces components,
+    // so no pointer taken before it survives, `mc` included.
+    auto bankStroke = [&]{
+        if (!brush.stroking) return;
+        brush.stroking = false;
+        Entity* e = ed.document.find(brush.before.id);
+        if (!e) return;
+        auto cmd = std::make_unique<ModifyEntityCmd>(brush.before, *e);
+        if (!cmd->trivial()) ed.history.pushApplied(std::move(cmd));
+    };
+    // Only one tool may own the left button. The older panels each switch
+    // their rivals off from their own list; rather than add this one to six of
+    // them, the newcomer yields -- the same deal the spline editor takes.
+    if (othersActive) {
+        bankStroke();
+        paintMode = false;
+        return;
+    }
+    if (!mc) {
+        bankStroke();
+        // The selection moved off the mesh -- there is nothing to paint on, so
+        // let go of the left button rather than sit on it invisibly.
+        paintMode = false;
+        return;
+    }
+
+    Entity& me = ed.entities[ed.sel.index()];
+    // The matrix the mesh is DRAWN through, so the brush measures metres where
+    // the user sees them even on an object somebody scaled.
+    const glm::mat4 mm = meshModelOf(me, *mc);
+
+    glm::vec3 ro, rd;
+    view.mouseRay(ro, rd);
+
+    meshpaint::Hit hit;
+    const bool onMesh  = view.hovered && meshpaint::pick(mc->mesh, mm, ro, rd, hit);
+    const bool erasing = brush.erase || ImGui::GetIO().KeyAlt;
+
+    // An empty slot has nothing to lay down, so the brush does not lay it down:
+    // weights in a slot the shader will skip are invisible work, and the panel
+    // says so where the slot is chosen. Erasing stays available -- taking paint
+    // off needs no slot at all.
+    const bool slotReady = brush.slot >= 0 &&
+                           brush.slot < static_cast<int>(mc->paintSlots.size()) &&
+                           mc->paintSlots[brush.slot].material.valid();
+    if (onMesh && (slotReady || erasing) && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        if (!brush.stroking) {
+            brush.stroking = true;
+            brush.before   = me; // the whole stroke undoes as one
+        }
+        const float rate = glm::clamp(brush.strength * 4.0f * dt, 0.0f, 1.0f);
+        // Split first, then paint: the dab lands on the corners the split just
+        // made rather than on the four the face started with. Erasing never
+        // splits -- taking paint off needs no more corners than putting it on did.
+        const int split =
+            erasing ? 0
+                    : meshpaint::refine(mc->mesh, mm, hit.world, brush.radius, brush.detail,
+                                        kMaxFaces);
+        const bool dabbed =
+            meshpaint::dab(mc->mesh, mm, hit.world, brush.radius, brush.slot, rate, erasing);
+        if (split > 0 || dabbed) mc->touch();
+        // A split leaves the selected index pointing at a QUARTER of the face it
+        // was picked on. Rather than hand the modelling panel a face nobody
+        // chose, drop the selection.
+        if (split > 0) ed.meshFaceSel = -1;
+    }
+    // The stroke ended -- but the undo push is deferred to the BOTTOM of this
+    // function on purpose. Pushing runs the command's redo, which assigns the
+    // "after" snapshot over the entity and so replaces its components with
+    // fresh clones: every MeshComponent* taken above is dead the instant it
+    // happens, `mc` included, and the brush cursor below still wants it. Bank
+    // the stroke once nothing needs the pointer any more.
+    const bool endStroke = brush.stroking && !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+
+    // Brush cursor: a ring lying in the surface it would paint, lifted a hair
+    // off it so it is not swallowed by the face.
+    if (onMesh && mc->mesh.validFace(hit.face)) {
+        std::vector<glm::vec3> w;
+        for (int i : mc->mesh.faces[hit.face])
+            w.push_back(glm::vec3(mm * glm::vec4(mc->mesh.verts[i], 1.0f)));
+        glm::vec3 fn(0.0f, 1.0f, 0.0f);
+        if (w.size() >= 3) {
+            const glm::vec3 c = glm::cross(w[1] - w[0], w[2] - w[0]);
+            if (glm::dot(c, c) > 1e-12f) fn = glm::normalize(c);
+        }
+        // Any two axes in the face's plane will do for a circle.
+        const glm::vec3 ref = (std::abs(fn.y) > 0.9f) ? glm::vec3(1.0f, 0.0f, 0.0f)
+                                                      : glm::vec3(0.0f, 1.0f, 0.0f);
+        const glm::vec3 t1 = glm::normalize(glm::cross(ref, fn));
+        const glm::vec3 t2 = glm::cross(fn, t1);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImU32 col = erasing ? IM_COL32(205, 205, 215, 225)
+                                  : IM_COL32(90, 230, 210, 225);
+        const int SEG = 48;
+        ImVec2 prev; bool have = false;
+        for (int i = 0; i <= SEG; ++i) {
+            const float a = static_cast<float>(i) / SEG * 6.2831853f;
+            const glm::vec3 p = hit.world + fn * 0.01f +
+                                (t1 * std::cos(a) + t2 * std::sin(a)) * brush.radius;
+            ImVec2 sp;
+            if (!view.toScreen(p, sp)) { have = false; continue; }
+            if (have) dl->AddLine(prev, sp, col, 2.0f);
+            prev = sp; have = true;
+        }
+    }
+
+    // Last thing here: see the comment at `endStroke`. `mc` must be treated as
+    // dangling from here on.
+    if (endStroke) bankStroke();
 }
 
 } // namespace meshpaintui

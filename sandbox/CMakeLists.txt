@@ -722,12 +722,14 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # save/load path; no GL, no window.
 #   build/release/bin/prefabeditcheck.exe
 # editorcheck (sandbox/tools/editorcheck.cpp): the editor's core as the tools
-# outside main() see it (EditorContext), and those tools, without a window --
-# for now an asset dropped on the scene: a material dresses the object or the
-# face under the cursor, as one undo step, and a drop on empty sky does nothing.
+# outside main() see it (EditorContext), and those tools, without a window: an
+# asset dropped on the scene (a material dresses the object or the face under
+# the cursor, as one undo step; a drop on empty sky does nothing) and the mesh
+# paint brush (a held stroke paints and splits, and undoes as one step).
 #   build/release/bin/editorcheck.exe
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
+                           src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
