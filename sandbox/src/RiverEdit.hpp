@@ -5,6 +5,8 @@
 #include <glm/glm.hpp>
 #include <imgui.h>
 
+#include "ViewportFrame.hpp"
+
 class RiverSystem;
 
 // The water tool's viewport half: draggable control-point handles, click-to-add,
@@ -33,22 +35,9 @@ struct Context {
     bool& dragging;    // a handle is being dragged (persists across frames)
     bool& dragHeight;  // ...vertically (Ctrl held on grab): the water level here
 
-    // The viewport, as the editor already has it.
-    glm::mat4 viewProj{1.0f};
-    ImVec2    origin{0.0f, 0.0f};
-    float     viewW = 1.0f, viewH = 1.0f;
-    bool      hovered = false;
-    glm::vec2 mouseNdc{0.0f};
-    ImVec2    mousePos{0.0f, 0.0f};
-    glm::vec3 cameraPos{0.0f};
-    glm::vec3 cameraFront{0.0f, 0.0f, -1.0f};  // for the camera-relative nudge
-    float     cameraFov = 60.0f;
-    float     orthoHalfH = 0.0f; // > 0: the view is orthographic, this tall (half)
-
-    // Raycast the terrain under a viewport NDC point (main's roadPickTerrain),
-    // and sample its height. Injected so this file stays free of the terrain.
-    std::function<bool(glm::vec2, const glm::mat4&, glm::vec3&)> pickTerrain;
-    std::function<float(float, float)>                           groundAt;
+    // The viewport this frame (ViewportFrame.hpp): the camera, the image on
+    // screen, the cursor over it, and the ground under a point of it.
+    ViewportFrame view;
 
     // Undo bracket, same contract as the panel's: open on grab, commit on
     // release -- and the commit is also what re-cuts the bed.

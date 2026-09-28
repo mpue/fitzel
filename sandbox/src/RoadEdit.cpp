@@ -114,37 +114,29 @@ void handle(const Context& c) {
     // ends by index). Bound here rather than per use: the selection
     // cannot change in the middle of a viewport gesture.
     RoadSystem& road = c.roads.active();
-    const glm::mat4& vp = c.viewProj;
-    const ImVec2 org = c.origin; // image top-left in screen space
+    const glm::mat4& vp = c.view.viewProj;
     // Handles sit on the road, not on the ground: a lifted point
     // has to be grabbable where its road actually runs.
     auto handleWorld = [&](int i) {
         return glm::vec3(road.roadPts[i].x,
-                         c.groundAt(road.roadPts[i].x, road.roadPts[i].y)
+                         c.view.groundAt(road.roadPts[i].x, road.roadPts[i].y)
                              + 0.10f + road.liftOf(i),
                          road.roadPts[i].y);
     };
-    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
-        const glm::vec4 clip = vp * glm::vec4(wp, 1.0f);
-        if (clip.w <= 1e-4f) return false;
-        const glm::vec3 n = glm::vec3(clip) / clip.w;
-        if (n.z > 1.0f) return false;
-        out = ImVec2(org.x + (n.x * 0.5f + 0.5f) * c.viewW,
-                     org.y + (1.0f - (n.y * 0.5f + 0.5f)) * c.viewH);
-        return true;
-    };
+    // False behind the camera or past the far plane.
+    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) { return c.view.project(wp, out); };
 
     // Handle under the cursor, or -1. Computed every frame (not
     // only on click) so the drawing below can show what a click
     // would grab -- and so picking and highlighting can never
     // disagree about which point that is.
     int roadHover = -1;
-    if (c.hovered && !c.dragging) {
+    if (c.view.hovered && !c.dragging) {
         float bestD = 12.0f; // pixel grab radius
         for (int i = 0; i < static_cast<int>(road.roadPts.size()); ++i) {
             ImVec2 sp;
             if (!toScreen(handleWorld(i), sp)) continue;
-            const float d = std::hypot(sp.x - c.mousePos.x, sp.y - c.mousePos.y);
+            const float d = std::hypot(sp.x - c.view.mousePos.x, sp.y - c.view.mousePos.y);
             if (d < bestD) { bestD = d; roadHover = i; }
         }
     }
@@ -164,19 +156,19 @@ void handle(const Context& c) {
         return top;
     };
     int loopHover = -1;
-    if (c.hovered && !c.dragging && roadHover < 0) {
+    if (c.view.hovered && !c.dragging && roadHover < 0) {
         float bestD = 15.0f; // pixel grab radius, a touch larger
         for (int i = 0; i < static_cast<int>(builtLoops.size()); ++i) {
             if (builtLoops[i].frames.empty()) continue;
             ImVec2 sp;
             if (!toScreen(loopCrown(builtLoops[i]), sp)) continue;
-            const float d = std::hypot(sp.x - c.mousePos.x, sp.y - c.mousePos.y);
+            const float d = std::hypot(sp.x - c.view.mousePos.x, sp.y - c.view.mousePos.y);
             if (d < bestD) { bestD = d; loopHover = i; }
         }
     }
 
     // Pick / add on click.
-    if (c.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (c.view.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         const int best = roadHover;
         if (best >= 0) {
             // Shift-click marks the far end of a bridge instead of
@@ -201,7 +193,7 @@ void handle(const Context& c) {
             c.sel2 = builtLoops[loopHover].pb;
         } else {
             glm::vec3 h;
-            if (c.pickTerrain(c.mouseNdc, vp, h)) {
+            if (c.view.pickTerrain(c.view.mouseNdc, vp, h)) {
                 // With an END of the road selected, extend from
                 // THAT end. Otherwise insert at the nearest
                 // segment, so a click on an existing road drops a
@@ -234,18 +226,14 @@ void handle(const Context& c) {
             // point tracks the cursor instead of drifting away
             // from it as you zoom in or out.
             const glm::vec3 hw = handleWorld(c.sel);
-            const float dist = glm::length(hw - c.cameraPos);
-            const float mpp = (c.orthoHalfH > 0.0f
-                                   ? 2.0f * c.orthoHalfH
-                                   : 2.0f * dist * std::tan(glm::radians(c.cameraFov * 0.5f))) /
-                              std::max(1.0f, c.viewH);
+            const float mpp = c.view.metresPerPixel(hw);
             const float dy = ImGui::GetIO().MouseDelta.y;
             if (dy != 0.0f)
                 road.setLift(c.sel,
                              road.liftOf(c.sel) - dy * mpp);
         } else {
             glm::vec3 h;
-            if (c.pickTerrain(c.mouseNdc, vp, h)) {
+            if (c.view.pickTerrain(c.view.mouseNdc, vp, h)) {
                 road.roadPts[c.sel] = glm::vec2(h.x, h.z);
                 road.needsBuild = true;
             }
@@ -269,7 +257,7 @@ void handle(const Context& c) {
     if (c.sel >= 0 && c.sel < static_cast<int>(road.roadPts.size()) &&
         !ImGui::GetIO().WantTextInput && !c.dragging) {
         const float step = (ImGui::GetIO().KeyShift ? 2.5f : 0.25f);
-        glm::vec3 f = c.cameraFront;
+        glm::vec3 f = c.view.cameraFront;
         f.y = 0.0f;
         if (glm::length(f) < 1e-4f) f = glm::vec3(0, 0, -1);
         f = glm::normalize(f);
@@ -542,11 +530,11 @@ void handle(const Context& c) {
     // than dropped: it still has to be findable behind a ridge,
     // just not compete with the ones you can actually see.
     auto occluded = [&](const glm::vec3& wp) {
-        const glm::vec3 eye = c.cameraPos;
+        const glm::vec3 eye = c.view.cameraPos;
         const glm::vec3 d   = wp - eye;
         for (int s = 1; s < 24; ++s) { // skip the endpoints
             const glm::vec3 p = eye + d * (static_cast<float>(s) / 24.0f);
-            if (c.groundAt(p.x, p.z) > p.y + 0.25f) return true;
+            if (c.view.groundAt(p.x, p.z) > p.y + 0.25f) return true;
         }
         return false;
     };

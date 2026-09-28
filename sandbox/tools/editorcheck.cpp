@@ -144,6 +144,20 @@ int main() {
     blue.name    = "Blue";
     materials.push_back(blue);
 
+    // --- The viewport's metres per pixel ------------------------------------------------
+    {
+        ViewportFrame v;
+        v.h         = 900.0f;
+        v.cameraPos = glm::vec3(0.0f, 0.0f, 10.0f);
+        v.cameraFov = 60.0f;
+        const float persp = v.metresPerPixel(glm::vec3(0.0f));
+        v.orthoHalfH = 5.0f;
+        const float ortho = v.metresPerPixel(glm::vec3(0.0f, 0.0f, -90.0f));
+        check(std::abs(persp - 2.0f * 10.0f * std::tan(glm::radians(30.0f)) / 900.0f) < 1e-7f &&
+                  std::abs(ortho - 10.0f / 900.0f) < 1e-7f,
+              "a pixel spans the right metres at a point's depth, and the same at any depth in ortho");
+    }
+
     // --- A material dropped on a box ------------------------------------------------
     entities.push_back(makeBox(1, glm::vec3(0.0f)));
     scenedrop::dropOnScene(ed, view, red.assetId);

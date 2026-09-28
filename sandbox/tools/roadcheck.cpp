@@ -61,6 +61,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <utility>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -68,6 +69,8 @@
 #include <glad/gl.h>
 #include <GLFW/glfw3.h>
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <imgui.h>
 
 #include <nlohmann/json.hpp>
 
@@ -78,6 +81,7 @@
 #include "../src/LevelGen.hpp"
 #include "../src/RoadSet.hpp"
 #include "../src/RoadEdit.hpp"
+#include "../src/ViewportFrame.hpp"
 #include "../src/CitySystem.hpp"
 #include "../src/SandboxMath.hpp"
 
@@ -1081,6 +1085,131 @@ int main(int argc, char** argv) {
                       picks ? "ok" : "WRONG");
         check(shifted && inherits && erased && outOfRange && picks,
               "adding and deleting points keeps bridges, tunnels and loops on theirs", buf);
+    }
+
+    // --- The road tool in the viewport (roadedit::handle), driven by the mouse -------
+    // Through the frame's ViewportFrame, like every viewport tool: a handle is
+    // grabbed where it is drawn and dragged across the ground, Ctrl raises it by
+    // as many metres as the pointer moved at its depth, and a click on open
+    // ground with the last point selected extends the road from there.
+    {
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename  = nullptr;
+        io.DisplaySize  = ImVec2(1600.0f, 900.0f);
+        io.DeltaTime    = 1.0f / 60.0f;
+        io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+        io.ConfigInputTrickleEventQueue = false;
+
+        const int iH = roads.add("Handles");
+        roads.select(iH);
+        RoadSystem& r = roads.active();
+        setRoad(r, "Handles", straightRun(0.0f, -20.0f, 20.0f, 3), 6.0f);
+
+        // Looking down at the road from 40 m up and 40 m back, over flat ground.
+        const glm::vec3 eye(0.0f, 40.0f, 40.0f);
+        ViewportFrame view;
+        view.viewProj = glm::perspective(glm::radians(60.0f), 1600.0f / 900.0f, 0.1f, 2000.0f) *
+                        glm::lookAt(eye, glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+        view.w = 1600.0f;
+        view.h = 900.0f;
+        view.hovered     = true;
+        view.cameraPos   = eye;
+        view.cameraFront = glm::normalize(-eye);
+        view.cameraFov   = 60.0f;
+        view.groundAt    = [](float, float) { return 0.0f; };
+        view.pickTerrain = [](glm::vec2 ndc, const glm::mat4& vp, glm::vec3& hit) {
+            const glm::mat4 inv = glm::inverse(vp);
+            glm::vec4 pn = inv * glm::vec4(ndc, -1.0f, 1.0f); pn /= pn.w;
+            glm::vec4 pf = inv * glm::vec4(ndc,  1.0f, 1.0f); pf /= pf.w;
+            const glm::vec3 o(pn), d = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+            if (std::fabs(d.y) < 1e-6f) return false;
+            const float s = -o.y / d.y;
+            if (s < 0.0f) return false;
+            hit = o + d * s;
+            return true;
+        };
+
+        int  sel = -1, sel2 = -1;
+        bool dragging = false, dragHeight = false;
+        int  begins = 0;
+        std::vector<std::string>                   ends;
+        std::vector<std::pair<int, glm::vec2>>     adds;
+        roadedit::Context rc{roads, sel, sel2, dragging, dragHeight};
+        rc.view        = view;
+        rc.beginEdit   = [&] { ++begins; };
+        rc.endEdit     = [&](const char* label) { ends.push_back(label); };
+        rc.editOpen    = [] { return false; };
+        rc.addPoint    = [&](int at, glm::vec2 q) { adds.push_back({at, q}); };
+        rc.deletePoint = [](int) {};
+
+        auto toPx = [&](const glm::vec3& w) {
+            ImVec2 s;
+            view.toScreen(w, s);
+            return glm::vec2(s.x, s.y);
+        };
+        auto ndcOf = [&](glm::vec2 px) {
+            return glm::vec2(px.x / view.w * 2.0f - 1.0f, 1.0f - px.y / view.h * 2.0f);
+        };
+        auto handleAt = [&](int i) {   // where the tool draws point i's handle
+            return glm::vec3(r.roadPts[i].x, 0.10f + r.liftOf(i), r.roadPts[i].y);
+        };
+        auto frame = [&](glm::vec2 px, bool lmb, bool ctrl) {
+            rc.view.mousePos = ImVec2(px.x, px.y);
+            rc.view.mouseNdc = ndcOf(px);
+            io.AddMousePosEvent(px.x, px.y);
+            io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            roadedit::handle(rc);
+            ImGui::End();
+            ImGui::Render();
+        };
+
+        // Grab the middle handle and pull it 120 px to the right.
+        const glm::vec2 h1 = toPx(handleAt(1));
+        frame(h1, false, false);
+        frame(h1, true, false);
+        const bool grabbed = sel == 1 && dragging && !dragHeight && begins == 1;
+        for (int i = 1; i <= 3; ++i) frame(h1 + glm::vec2(40.0f * i, 0.0f), true, false);
+        glm::vec3 under;
+        view.pickTerrain(ndcOf(h1 + glm::vec2(120.0f, 0.0f)), view.viewProj, under);
+        frame(h1 + glm::vec2(120.0f, 0.0f), false, false);
+        const bool moved = glm::length(r.roadPts[1] - glm::vec2(under.x, under.z)) < 1e-3f &&
+                           r.roadPts[1].x > 1.0f && !dragging &&
+                           ends.size() == 1 && ends[0] == std::string("Move point");
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "grabbed %s, now at (%.2f, %.2f) under the pointer %s",
+                      grabbed ? "yes" : "NO", r.roadPts[1].x, r.roadPts[1].y, moved ? "yes" : "NO");
+        check(grabbed && moved, "a road handle is grabbed where it is drawn and dragged across the ground", buf);
+
+        // Ctrl-grab it and raise it 50 px: 50 of the view's metres-per-pixel at the handle.
+        const glm::vec2 h1b = toPx(handleAt(1));
+        const float mpp = rc.view.metresPerPixel(handleAt(1));
+        frame(h1b, false, true);
+        frame(h1b, true, true);
+        const bool heightGrab = dragging && dragHeight;
+        frame(h1b + glm::vec2(0.0f, -50.0f), true, true);
+        frame(h1b + glm::vec2(0.0f, -50.0f), false, true);
+        const bool raised = std::fabs(r.liftOf(1) - 50.0f * mpp) < 1e-4f &&
+                            ends.size() == 2 && ends[1] == std::string("Raise point");
+        std::snprintf(buf, sizeof buf, "lift %.3f m for 50 px at %.4f m/px", r.liftOf(1), mpp);
+        check(heightGrab && raised, "Ctrl raises it by as much as the pointer moved, at its depth", buf);
+
+        // The last point selected, a click on open ground past it extends the road.
+        sel = 2;
+        const glm::vec2 past = toPx(glm::vec3(0.0f, 0.0f, 32.0f));
+        frame(past, false, false);
+        frame(past, true, false);
+        frame(past, false, false);
+        const bool extended = adds.size() == 1 && adds[0].first == 3 &&
+                              glm::length(adds[0].second - glm::vec2(0.0f, 32.0f)) < 1e-2f;
+        std::snprintf(buf, sizeof buf, "%d point(s) added%s", static_cast<int>(adds.size()),
+                      adds.empty() ? "" : adds[0].first == 3 ? " after the last" : " somewhere else");
+        check(extended, "a click past the selected end extends the road from there", buf);
+
+        ImGui::DestroyContext();
     }
 
     glfwDestroyWindow(win);

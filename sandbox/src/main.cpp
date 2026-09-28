@@ -10246,6 +10246,10 @@ int main(int argc, char** argv) {
                     sceneView.hovered     = viewportHovered;
                     sceneView.mouseNdc    = viewportMouseNdc;
                     sceneView.mousePos    = mp;
+                    sceneView.cameraPos   = camera.position();
+                    sceneView.cameraFront = camera.front();
+                    sceneView.cameraFov   = camera.fov();
+                    sceneView.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
                     sceneView.pickTerrain = roadPickTerrain;
                     sceneView.groundAt    = [&streamer](float x, float z) {
                         return streamer.heightAt(x, z);
@@ -10331,23 +10335,8 @@ int main(int argc, char** argv) {
                 //     hands it the viewport and the undo bracket, like the
                 //     spline handles below.
                 if (roadEditMode) {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     roadedit::Context rc{roads, roadSel, roadSel2, roadDragging, roadDragHeight};
-                    rc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    rc.origin      = rmin;
-                    rc.viewW       = static_cast<float>(viewW);
-                    rc.viewH       = static_cast<float>(viewH);
-                    rc.hovered     = viewportHovered;
-                    rc.mouseNdc    = viewportMouseNdc;
-                    rc.mousePos    = mp;
-                    rc.cameraPos   = camera.position();
-                    rc.cameraFront = camera.front();
-                    rc.cameraFov   = camera.fov();
-                    rc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                    rc.pickTerrain = roadPickTerrain;
-                    rc.groundAt    = [&streamer](float x, float z) {
-                        return streamer.heightAt(x, z);
-                    };
+                    rc.view        = sceneView;
                     rc.beginEdit   = beginRoadEdit;
                     rc.endEdit     = commitRoadEdit;
                     rc.editOpen    = [&roadUndoOpen] { return roadUndoOpen; };
@@ -10365,24 +10354,9 @@ int main(int argc, char** argv) {
                 if (showSplines && splinePlaceCfg.preview)
                     splinePreview = splineplace::spots(splines, splineSel, splinePlaceCfg);
                 auto splineContext = [&]() {
-                    const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                     splineedit::Context sc{splines, splineSel, splinePtSel,
                                            splineDragging, splineDragHeight};
-                    sc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                    sc.origin      = rmin;
-                    sc.viewW       = static_cast<float>(viewW);
-                    sc.viewH       = static_cast<float>(viewH);
-                    sc.hovered     = viewportHovered;
-                    sc.mouseNdc    = viewportMouseNdc;
-                    sc.mousePos    = mp;
-                    sc.cameraPos   = camera.position();
-                    sc.cameraFront = camera.front();
-                    sc.cameraFov   = camera.fov();
-                    sc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                    sc.pickTerrain = roadPickTerrain;
-                    sc.groundAt    = [&streamer](float x, float z) {
-                        return streamer.heightAt(x, z);
-                    };
+                    sc.view      = sceneView;
                     sc.beginEdit = beginSplineEdit;
                     sc.endEdit   = commitSplineEdit;
                     sc.editOpen  = [&splineUndoOpen] { return splineUndoOpen; };
@@ -10417,24 +10391,9 @@ int main(int argc, char** argv) {
                         meshPaintMode || splineEditMode) {
                         riverEditMode = false;
                     } else {
-                        const float asp = static_cast<float>(viewW) / static_cast<float>(viewH);
                         riveredit::Context rc{rivers, riverSel, riverPtSel,
                                               riverDragging, riverDragHeight};
-                        rc.viewProj    = camera.projectionMatrix(asp) * camera.viewMatrix();
-                        rc.origin      = rmin;
-                        rc.viewW       = static_cast<float>(viewW);
-                        rc.viewH       = static_cast<float>(viewH);
-                        rc.hovered     = viewportHovered;
-                        rc.mouseNdc    = viewportMouseNdc;
-                        rc.mousePos    = mp;
-                        rc.cameraPos   = camera.position();
-                        rc.cameraFront = camera.front();
-                        rc.cameraFov   = camera.fov();
-                        rc.orthoHalfH  = camera.orthographic() ? camera.orthoHalfHeight() : 0.0f;
-                        rc.pickTerrain = roadPickTerrain;
-                        rc.groundAt    = [&streamer](float x, float z) {
-                            return streamer.heightAt(x, z);
-                        };
+                        rc.view      = sceneView;
                         rc.beginEdit = beginRiverEdit;
                         rc.endEdit   = commitRiverEdit;
                         rc.editOpen  = [&riverUndoOpen] { return riverUndoOpen; };

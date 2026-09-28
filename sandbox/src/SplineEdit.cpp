@@ -14,13 +14,7 @@ namespace {
 // World point -> viewport pixel. False when it is behind the camera or past the
 // far plane, so callers can skip it rather than draw it somewhere absurd.
 bool toScreen(const Context& c, const glm::vec3& wp, ImVec2& out) {
-    const glm::vec4 clip = c.viewProj * glm::vec4(wp, 1.0f);
-    if (clip.w <= 1e-4f) return false;
-    const glm::vec3 n = glm::vec3(clip) / clip.w;
-    if (n.z > 1.0f) return false;
-    out = ImVec2(c.origin.x + (n.x * 0.5f + 0.5f) * c.viewW,
-                 c.origin.y + (1.0f - (n.y * 0.5f + 0.5f)) * c.viewH);
-    return true;
+    return c.view.project(wp, out);
 }
 
 // Every path's centreline. The selected path in warm yellow, the rest in a cool
@@ -120,7 +114,7 @@ void handle(const Context& c) {
     // neighbouring fence's point selects that fence, which is how a scene with a
     // dozen runs stays navigable without going back to the list each time.
     int hoverPath = -1, hoverPt = -1;
-    if (c.hovered && !c.dragging) {
+    if (c.view.hovered && !c.dragging) {
         float bestD = kGrabRadius;
         for (int pi = 0; pi < static_cast<int>(sp.paths.size()); ++pi) {
             const SplineSystem::Path& p = sp.paths[pi];
@@ -128,14 +122,14 @@ void handle(const Context& c) {
             for (int i = 0; i < static_cast<int>(p.points.size()); ++i) {
                 ImVec2 s;
                 if (!toScreen(sp.pointWorld(pi, i) + glm::vec3(0.0f, 0.15f, 0.0f), s)) continue;
-                const float d = std::hypot(s.x - c.mousePos.x, s.y - c.mousePos.y);
+                const float d = std::hypot(s.x - c.view.mousePos.x, s.y - c.view.mousePos.y);
                 if (d < bestD) { bestD = d; hoverPath = pi; hoverPt = i; }
             }
         }
     }
 
     // --- Click: pick a handle, or lay a new point ----------------------------
-    if (c.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (c.view.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (hoverPath >= 0) {
             c.sel        = hoverPath;
             c.ptSel      = hoverPt;
@@ -144,7 +138,7 @@ void handle(const Context& c) {
             c.beginEdit();   // opened here, pushed on release: one drag, one step
         } else if (c.sel >= 0) {
             glm::vec3 h;
-            if (c.pickTerrain && c.pickTerrain(c.mouseNdc, c.viewProj, h)) {
+            if (c.view.pickTerrain && c.view.pickTerrain(c.view.mouseNdc, c.view.viewProj, h)) {
                 SplineSystem::Path& p = sp.paths[c.sel];
                 const int n = static_cast<int>(p.points.size());
                 // With an END selected, extend from THAT end -- so a run of clicks
@@ -169,17 +163,13 @@ void handle(const Context& c) {
             // Metres per pixel at the handle's own depth, so the point tracks the
             // cursor instead of drifting away from it as you zoom in or out.
             const glm::vec3 hw = handleWorld(c, c.ptSel);
-            const float dist = glm::length(hw - c.cameraPos);
-            const float mpp = (c.orthoHalfH > 0.0f
-                                   ? 2.0f * c.orthoHalfH
-                                   : 2.0f * dist * std::tan(glm::radians(c.cameraFov * 0.5f))) /
-                              std::max(1.0f, c.viewH);
+            const float mpp = c.view.metresPerPixel(hw);
             const float dy = ImGui::GetIO().MouseDelta.y;
             if (dy != 0.0f)
                 sp.setLift(c.sel, c.ptSel, sp.liftOf(c.sel, c.ptSel) - dy * mpp);
         } else {
             glm::vec3 h;
-            if (c.pickTerrain && c.pickTerrain(c.mouseNdc, c.viewProj, h)) {
+            if (c.view.pickTerrain && c.view.pickTerrain(c.view.mouseNdc, c.view.viewProj, h)) {
                 sp.paths[c.sel].points[c.ptSel] = glm::vec2(h.x, h.z);
                 sp.touch(c.sel);
             }
@@ -207,7 +197,7 @@ void handle(const Context& c) {
         // world's X axis happens to point. Held keys repeat, and the whole burst
         // is one undo step.
         const float step = ImGui::GetIO().KeyShift ? 2.5f : 0.25f;
-        glm::vec3 fwd(c.cameraFront.x, 0.0f, c.cameraFront.z);
+        glm::vec3 fwd(c.view.cameraFront.x, 0.0f, c.view.cameraFront.z);
         if (glm::length(fwd) < 1e-4f) fwd = glm::vec3(0.0f, 0.0f, -1.0f);
         fwd = glm::normalize(fwd);
         const glm::vec3 right(-fwd.z, 0.0f, fwd.x);
@@ -247,7 +237,7 @@ void handle(const Context& c) {
         const int  n = static_cast<int>(p.points.size());
         for (int i = 0; i < n; ++i) {
             const glm::vec2 q = p.points[i];
-            const float g = c.groundAt ? c.groundAt(q.x, q.y) : 0.0f;
+            const float g = c.view.groundAt ? c.view.groundAt(q.x, q.y) : 0.0f;
             const float lift = i < static_cast<int>(p.lifts.size()) ? p.lifts[i] : 0.0f;
             // On the run itself -- for a bridge that is its deck, however far
             // above the ground the point is.

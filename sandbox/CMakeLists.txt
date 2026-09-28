@@ -236,9 +236,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/RoadEdit.cpp
     # The Sky & atmosphere and Colour grade panels (their settings: PostLook.hpp).
     src/LookPanels.cpp
-    # The editor's core as the tools outside main() see it, and the first of
-    # them: an asset dropped on the scene.
+    # The editor's core as the tools outside main() see it, the viewport as
+    # they take it, and the first of them: an asset dropped on the scene.
     src/EditorContext.cpp
+    src/ViewportFrame.cpp
     src/SceneDrop.cpp
     # What the grass/tree/flower/scatter brushes and texture paint share: the
     # aim at the ground, the throttled drag, the ring.
@@ -708,7 +709,7 @@ add_executable(roadcheck tools/roadcheck.cpp
                          src/LevelGen.cpp
                          src/RoadSet.cpp src/RoadSystem.cpp src/RoadBridge.cpp
                          src/RoadTunnel.cpp src/RoadLoop.cpp src/RoadJunction.cpp
-                         src/RoadSide.cpp src/RoadEdit.cpp
+                         src/RoadSide.cpp src/RoadEdit.cpp src/ViewportFrame.cpp
                          src/RoadDecal.cpp src/CityGen.cpp src/BuildingGen.cpp
                          src/HouseGen.cpp src/CityPlan.cpp src/CivicGen.cpp src/CitySystem.cpp
                          src/StreetSign.cpp
@@ -752,7 +753,7 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # a face picked by a click, G driven by real keys).
 #   build/release/bin/editorcheck.exe
 add_executable(editorcheck tools/editorcheck.cpp
-                           src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
+                           src/EditorContext.cpp src/ViewportFrame.cpp src/SceneDrop.cpp src/SandboxMath.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
                            src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp

@@ -23,7 +23,7 @@ glm::vec3 handleWorld(const Context& c, int path, int i) {
     const glm::vec2 q = p.points[i];
     float y = 0.0f;
     if (!c.rivers.handleHeight(path, i, y)) {
-        y = (c.groundAt ? c.groundAt(q.x, q.y) : 0.0f) +
+        y = (c.view.groundAt ? c.view.groundAt(q.x, q.y) : 0.0f) +
             (i < static_cast<int>(p.bias.size()) ? p.bias[i] : 0.0f);
     }
     return glm::vec3(q.x, y + 0.15f, q.y);
@@ -57,36 +57,29 @@ void handle(const Context& c) {
     if (rv.paths.empty()) return;
     if (c.sel >= static_cast<int>(rv.paths.size())) { c.sel = -1; c.ptSel = -1; }
 
-    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) {
-        const glm::vec4 clip = c.viewProj * glm::vec4(wp, 1.0f);
-        if (clip.w <= 1e-4f) return false;
-        const glm::vec3 n = glm::vec3(clip) / clip.w;
-        if (n.z > 1.0f) return false;
-        out = ImVec2(c.origin.x + (n.x * 0.5f + 0.5f) * c.viewW,
-                     c.origin.y + (1.0f - (n.y * 0.5f + 0.5f)) * c.viewH);
-        return true;
-    };
+    // False behind the camera or past the far plane.
+    auto toScreen = [&](const glm::vec3& wp, ImVec2& out) { return c.view.project(wp, out); };
 
     // --- What the cursor is over ---------------------------------------------
     // Handles of EVERY watercourse are pickable, not just the selected one's:
     // clicking a neighbouring brook's point selects that brook, which is how a
     // valley with three streams in it stays navigable.
     int hoverPath = -1, hoverPt = -1;
-    if (c.hovered && !c.dragging) {
+    if (c.view.hovered && !c.dragging) {
         float bestD = kGrabRadius;
         for (int pi = 0; pi < static_cast<int>(rv.paths.size()); ++pi) {
             if (!rv.paths[pi].enabled) continue;
             for (int i = 0; i < static_cast<int>(rv.paths[pi].points.size()); ++i) {
                 ImVec2 s;
                 if (!toScreen(handleWorld(c, pi, i), s)) continue;
-                const float d = std::hypot(s.x - c.mousePos.x, s.y - c.mousePos.y);
+                const float d = std::hypot(s.x - c.view.mousePos.x, s.y - c.view.mousePos.y);
                 if (d < bestD) { bestD = d; hoverPath = pi; hoverPt = i; }
             }
         }
     }
 
     // --- Click: pick a handle, or lay a new point ----------------------------
-    if (c.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (c.view.hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (hoverPath >= 0) {
             c.sel        = hoverPath;
             c.ptSel      = hoverPt;
@@ -95,7 +88,7 @@ void handle(const Context& c) {
             c.beginEdit();   // opened here, pushed on release: one drag, one step
         } else if (c.sel >= 0) {
             glm::vec3 h;
-            if (c.pickTerrain && c.pickTerrain(c.mouseNdc, c.viewProj, h)) {
+            if (c.view.pickTerrain && c.view.pickTerrain(c.view.mouseNdc, c.view.viewProj, h)) {
                 RiverSystem::Path& p = rv.paths[c.sel];
                 const int n = static_cast<int>(p.points.size());
                 // With an END selected, extend from THAT end -- so a run of
@@ -120,17 +113,13 @@ void handle(const Context& c) {
             // Metres per pixel at the handle's own depth, so the point tracks the
             // cursor instead of drifting away from it as you zoom in or out.
             const glm::vec3 hw = handleWorld(c, c.sel, c.ptSel);
-            const float dist = glm::length(hw - c.cameraPos);
-            const float mpp = (c.orthoHalfH > 0.0f
-                                   ? 2.0f * c.orthoHalfH
-                                   : 2.0f * dist * std::tan(glm::radians(c.cameraFov * 0.5f))) /
-                              std::max(1.0f, c.viewH);
+            const float mpp = c.view.metresPerPixel(hw);
             const float dy = ImGui::GetIO().MouseDelta.y;
             if (dy != 0.0f)
                 rv.setBias(c.sel, c.ptSel, rv.biasOf(c.sel, c.ptSel) - dy * mpp);
         } else {
             glm::vec3 h;
-            if (c.pickTerrain && c.pickTerrain(c.mouseNdc, c.viewProj, h)) {
+            if (c.view.pickTerrain && c.view.pickTerrain(c.view.mouseNdc, c.view.viewProj, h)) {
                 rv.paths[c.sel].points[c.ptSel] = glm::vec2(h.x, h.z);
                 rv.touch(c.sel);
             }
@@ -158,7 +147,7 @@ void handle(const Context& c) {
         // world's X axis happens to point. Held keys repeat, and the whole burst
         // is one undo step -- and therefore one cut.
         const float step = ImGui::GetIO().KeyShift ? 2.5f : 0.25f;
-        glm::vec3 fwd(c.cameraFront.x, 0.0f, c.cameraFront.z);
+        glm::vec3 fwd(c.view.cameraFront.x, 0.0f, c.view.cameraFront.z);
         if (glm::length(fwd) < 1e-4f) fwd = glm::vec3(0.0f, 0.0f, -1.0f);
         fwd = glm::normalize(fwd);
         const glm::vec3 right(-fwd.z, 0.0f, fwd.x);
@@ -280,7 +269,7 @@ void handle(const Context& c) {
             // A stalk down to the ground the water left. Without it a handle on
             // water standing above the hillside is just a dot in mid-air -- and
             // standing above the hillside is exactly what a dammed pool does.
-            const float g = c.groundAt ? c.groundAt(hw.x, hw.z) : hw.y;
+            const float g = c.view.groundAt ? c.view.groundAt(hw.x, hw.z) : hw.y;
             if (std::fabs(g - (hw.y - 0.15f)) > 0.05f) {
                 ImVec2 gp;
                 if (toScreen(glm::vec3(hw.x, g, hw.z), gp)) {
