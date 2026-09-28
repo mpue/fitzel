@@ -20,6 +20,11 @@
 //   - the viewport's marks (ViewportOverlay, ViewportFrame::wireBox): the
 //     selection's box and an Empty's icon are drawn when they are in front of
 //     the camera and not at all from behind it, and nothing without a selection.
+//   - selecting in the viewport (ViewportPick): a click takes the nearest
+//     object under the cursor and the next one behind it when repeated, a
+//     click on nothing clears, Ctrl+click toggles one, a Ctrl+drag box adds
+//     every centre inside it, Create mode places on empty ground, and a click
+//     the modelling panel takes selects nothing.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -41,6 +46,7 @@
 #include "../src/EditorContext.hpp"
 #include "../src/GroundBrush.hpp"
 #include "../src/ViewportOverlay.hpp"
+#include "../src/ViewportPick.hpp"
 #include "../src/MeshPaintPanel.hpp"
 #include "../src/ModelLibrary.hpp"
 #include "../src/SceneDrop.hpp"
@@ -345,6 +351,72 @@ int main() {
         empties.back().center = glm::vec3(0.0f, 0.0f, 20.0f);
         check(drawn([&] { overlay::empties(empties, view); }) == 0, "...and not from behind the camera");
         sel.clear();
+    }
+
+    // --- Selecting in the viewport ----------------------------------------------------
+    {
+        io.ConfigInputTrickleEventQueue = false;   // a click and its position land together
+        entities.clear();
+        sel.clear();
+        entities.push_back(makeBox(7, glm::vec3(0.0f)));                  // nearest on the ray
+        entities.push_back(makeBox(8, glm::vec3(0.0f, 0.0f, -5.0f)));     // behind it
+        viewpick::Picker picker;
+        viewpick::Host   host;
+        host.canPick = true;
+        std::vector<glm::vec3> placed;
+        host.place = [&](const glm::vec3& at) { placed.push_back(at); };
+        // One frame: the cursor at an NDC point, the left button, Ctrl.
+        auto pickFrame = [&](glm::vec2 ndc, bool lmb, bool ctrl) {
+            ViewportFrame v = view;
+            v.mouseNdc = ndc;
+            io.AddMousePosEvent(v.origin.x + (ndc.x * 0.5f + 0.5f) * v.w,
+                                v.origin.y + (0.5f - ndc.y * 0.5f) * v.h);
+            io.AddKeyEvent(ImGuiMod_Ctrl, ctrl);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            viewpick::click(ed, v, picker, host);
+            ImGui::End();
+            ImGui::Render();
+        };
+        auto clickAt = [&](glm::vec2 ndc, bool ctrl = false) {
+            pickFrame(ndc, true, ctrl);
+            pickFrame(ndc, false, ctrl);
+        };
+        const glm::vec2 centre(0.0f), sky(0.95f, 0.95f);
+        clickAt(centre);
+        check(sel.valid() && sel.activeId() == 7, "a click takes the nearest object under the cursor");
+        clickAt(centre);
+        check(sel.activeId() == 8, "...clicked again, the one behind it");
+        clickAt(centre);
+        check(sel.activeId() == 7, "...and again, round to the nearest");
+        clickAt(sky);
+        check(!sel.valid(), "a click on nothing clears the selection");
+        clickAt(centre, true);
+        check(sel.contains(7) && !sel.contains(8), "Ctrl+click toggles the object in");
+        clickAt(centre, true);
+        check(!sel.contains(7), "...and out again");
+        pickFrame(glm::vec2(-0.99f, 0.99f), true, true);
+        pickFrame(glm::vec2(0.99f, -0.99f), true, true);
+        pickFrame(glm::vec2(0.99f, -0.99f), false, true);
+        check(sel.contains(7) && sel.contains(8), "a Ctrl+drag box adds every centre inside it");
+        sel.clear();
+        host.placeMode = true;
+        view.pickTerrain = [](glm::vec2, const glm::mat4&, glm::vec3& hit) {
+            hit = glm::vec3(3.0f, 0.0f, -7.0f);
+            return true;
+        };
+        clickAt(sky);
+        check(placed.size() == 1 && placed[0] == glm::vec3(3.0f, 0.0f, -7.0f),
+              "in Create mode a click on empty ground places there");
+        host.placeMode = false;
+        host.meshClick = [] { return true; };
+        clickAt(centre);
+        check(!sel.valid(), "a click the modelling panel takes selects nothing");
+        host.meshClick = nullptr;
+        host.canPick = false;
+        clickAt(centre);
+        check(!sel.valid() && placed.size() == 1, "and while a tool owns the button, a click does nothing");
     }
 
     ImGui::DestroyContext();

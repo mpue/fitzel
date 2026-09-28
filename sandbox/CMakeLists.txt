@@ -246,6 +246,8 @@ set(SANDBOX_EDITOR_SOURCES
     # The marks drawn over the scene image: the 3D cursor, the selection's
     # boxes and component gizmos, the Empties' icons.
     src/ViewportOverlay.cpp
+    # Selecting in the viewport: click, Ctrl+click, Ctrl+drag box, click-to-place.
+    src/ViewportPick.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -733,12 +735,13 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # the cursor, as one undo step; a drop on empty sky does nothing), the mesh
 # paint brush (a held stroke paints and splits, and undoes as one step) and the
 # ground brushes' drag (a stamp every so many metres, erase every frame), and
-# the viewport's marks (drawn in front of the camera, never from behind it).
+# the viewport's marks (drawn in front of the camera, never from behind it) and
+# selecting in it (click, cycle, Ctrl toggle and box, click-to-place).
 #   build/release/bin/editorcheck.exe
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
-                           src/GroundBrush.cpp src/ViewportOverlay.cpp
+                           src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
