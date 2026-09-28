@@ -9444,67 +9444,9 @@ int main(int argc, char** argv) {
                 ImGui::PopStyleVar(2);
             }
 
-            // --- New Project / Save As wizard --------------------------------
-            if (wizardOpen) { ImGui::OpenPopup("Project Wizard"); wizardOpen = false; }
-            ImGui::SetNextWindowSize(ImVec2(520.0f, 0.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("Project Wizard", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::TextUnformatted(wizardIsNew
-                    ? "Create a new project" : "Save project as");
-                ImGui::Separator();
-                const float fieldW = 340.0f;
-                ImGui::SetNextItemWidth(fieldW);
-                ImGui::InputText("Name", wizName, sizeof(wizName));
-                ImGui::SetNextItemWidth(fieldW);
-                ImGui::InputText("Location", wizLocation, sizeof(wizLocation));
-                ImGui::SameLine();
-                if (ImGui::Button("Browse...")) {
-                    std::string picked;
-                    if (ed::pickFolder(picked,
-                            wizLocation[0] ? std::string(wizLocation) : prefLocation))
-                        std::snprintf(wizLocation, sizeof(wizLocation), "%s",
-                                      picked.c_str());
-                }
-
-                const std::string safe = safeName(wizName);
-                const std::string loc(wizLocation);
-                const std::string target = loc.empty() ? std::string()
-                                                       : (loc + "/" + safe);
-                std::error_code vec;
-                const bool nameOk = wizName[0] != '\0';
-                const bool locOk  = !loc.empty() &&
-                                    std::filesystem::is_directory(loc, vec);
-                const bool exists = nameOk && locOk &&
-                                    std::filesystem::exists(target, vec);
-
-                ImGui::Spacing();
-                if (!target.empty()) {
-                    // Bound the wrap so a long path can't stretch the modal wide.
-                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 460.0f);
-                    ImGui::TextDisabled("Folder: %s", target.c_str());
-                    ImGui::PopTextWrapPos();
-                }
-                const ImVec4 warn(1.0f, 0.55f, 0.3f, 1.0f);
-                if (!nameOk)      ImGui::TextColored(warn, "Enter a project name.");
-                else if (!locOk)  ImGui::TextColored(warn, "Location does not exist.");
-                else if (exists)  ImGui::TextColored(warn,
-                                      "A folder with that name already exists here.");
-                ImGui::Spacing();
-
-                const bool canGo = nameOk && locOk && !exists;
-                ImGui::BeginDisabled(!canGo);
-                if (ImGui::Button(wizardIsNew ? "Create" : "Save",
-                                  ImVec2(120.0f, 0.0f))) {
-                    if (wizardIsNew) newProject();
-                    saveProjectTo(target);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
+            // --- New Project / Save As wizard (EditorMenus.cpp) ---------------
+            editormenu::drawProjectWizard(fileMenu, [&] { newProject(); },
+                                          [&](const std::string& t) { saveProjectTo(t); });
 
             // --- Crash recovery ----------------------------------------------
             // A snapshot outlived its session, so the editor comes up asking about
@@ -9547,101 +9489,19 @@ int main(int argc, char** argv) {
                     game::save(gsFolder, gameSettings);
             }
 
-            // --- Scene manager dialogs (New / Rename / Delete) ---------------
-            if (sceneNewOpen)    { ImGui::OpenPopup("New Scene");    sceneNewOpen = false; }
-            if (sceneRenameOpen) { ImGui::OpenPopup("Rename Scene"); sceneRenameOpen = false; }
-            if (sceneDeleteOpen) { ImGui::OpenPopup("Delete Scene"); sceneDeleteOpen = false; }
-            const std::string sceneFolder = currentProject.empty() ? std::string()
-                : std::filesystem::path(currentProject).parent_path().generic_string();
-            // 0 = ok, 1 = empty, 2 = a scene with that name already exists. `self`
-            // allows the current scene's own file to match (used by Rename).
-            auto sceneNameState = [&](bool allowSelf) -> int {
-                if (sceneNameBuf[0] == '\0') return 1;
-                const std::string target =
-                    sceneFolder + "/" + safeName(sceneNameBuf) + ".fitzel";
-                std::error_code ec;
-                if (std::filesystem::exists(target, ec) &&
-                    !(allowSelf && target == currentProject)) return 2;
-                return 0;
-            };
-            const ImVec4 sceneWarn(1.0f, 0.55f, 0.3f, 1.0f);
-
-            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("New Scene", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::TextUnformatted("New scene in this project");
-                ImGui::TextDisabled("Shares the project's materials; starts from the "
-                                    "current world with no objects.");
-                ImGui::Separator();
-                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-                ImGui::SetNextItemWidth(300.0f);
-                ImGui::InputText("Name##newscene", sceneNameBuf, sizeof(sceneNameBuf));
-                const int st = sceneNameState(false);
-                if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
-                else if (st == 2) ImGui::TextColored(sceneWarn,
-                                      "A scene with that name already exists.");
-                ImGui::Spacing();
-                ImGui::BeginDisabled(st != 0);
-                if (ImGui::Button("Create", ImVec2(120.0f, 0.0f))) {
-                    saveSceneFile(currentProject);          // keep the scene we leave
-                    resetWorldForNewScene();                // blank terrain/road/vegetation
-                    newSceneInProject(sceneFolder, sceneNameBuf);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
-
-            ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_Appearing);
-            if (ImGui::BeginPopupModal("Rename Scene", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::TextUnformatted("Rename the current scene");
-                ImGui::Separator();
-                if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-                ImGui::SetNextItemWidth(300.0f);
-                ImGui::InputText("Name##renscene", sceneNameBuf, sizeof(sceneNameBuf));
-                const int st = sceneNameState(true); // its own file may match
-                if (st == 1)      ImGui::TextColored(sceneWarn, "Enter a scene name.");
-                else if (st == 2) ImGui::TextColored(sceneWarn,
-                                      "A scene with that name already exists.");
-                ImGui::Spacing();
-                ImGui::BeginDisabled(st != 0);
-                if (ImGui::Button("Rename", ImVec2(120.0f, 0.0f))) {
-                    renameScene(currentProject, sceneNameBuf);
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
-
-            if (ImGui::BeginPopupModal("Delete Scene", nullptr,
-                                       ImGuiWindowFlags_AlwaysAutoResize)) {
-                ImGui::Text("Delete scene \"%s\"?",
-                    std::filesystem::path(currentProject).stem().string().c_str());
-                ImGui::TextDisabled("This permanently removes the .fitzel file from disk.");
-                ImGui::Spacing();
-                if (ImGui::Button("Delete", ImVec2(120.0f, 0.0f))) {
-                    const std::string gone = currentProject;
-                    std::string next; // switch to another scene before removing this one
-                    for (const auto& [n, p] : listScenesIn(sceneFolder))
-                        if (p != gone) { next = p; break; }
-                    if (!next.empty()) {
-                        loadSceneFile(next);
-                        deleteSceneFile(gone);
-                    }
-                    ImGui::CloseCurrentPopup();
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Cancel", ImVec2(120.0f, 0.0f)))
-                    ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
-            }
+            // --- Scene manager dialogs: New / Rename / Delete (EditorMenus.cpp)
+            editormenu::drawSceneDialogs(sceneMenu, {
+                [&](const std::string& folder, const std::string& name) {
+                    saveSceneFile(currentProject);   // keep the scene we leave
+                    resetWorldForNewScene();         // blank terrain/road/vegetation
+                    newSceneInProject(folder, name);
+                },
+                [&](const std::string& name) { renameScene(currentProject, name); },
+                [&](const std::string& next, const std::string& gone) {
+                    loadSceneFile(next);
+                    deleteSceneFile(gone);
+                },
+            });
 
             // Non-blocking project/scene load: a modal over the (still-rendering)
             // editor shows progress while stepLoad streams the scene in over the
