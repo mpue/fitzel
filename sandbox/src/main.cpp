@@ -81,6 +81,7 @@
 #include "SceneGraph.hpp"
 #include "SceneSubmit.hpp"
 #include "PhysicsShapes.hpp"
+#include "PlayWorld.hpp"
 #include "MeshQuery.hpp"
 #include "HierarchyPanel.hpp"
 #include "InspectorPanel.hpp"
@@ -4672,12 +4673,8 @@ int main(int argc, char** argv) {
         // physics world at Play start and thrown away with it (see SoftBodySystem).
         SoftBodySystem                softBodies;
         float                         softWindTime = 0.0f; // seconds of Play, keys the gusts
-        // Knockable road side objects (posts/bollards): each a dynamic body created
-        // at Play start, rendered from its live physics transform so a car bowls it
-        // over. Rebuilt every Play; the derived static instances take over in the
-        // editor. Holds what rendering needs: the body + which model at what scale.
-        struct SidePost { PhysicsBodyId body; int modelId; float scale; };
-        std::vector<SidePost> sidePosts;
+        // Knockable road side objects (posts/bollards), see playworld::SidePost.
+        std::vector<playworld::SidePost> sidePosts;
 
         // --- Scene-vehicle drive helpers (see VehicleTool for the setup UI) ---
         // The nearest entity carrying a VehicleComponent, or -1.
@@ -6044,79 +6041,10 @@ int main(int argc, char** argv) {
                     ? glm::vec2(startPos.x, startPos.z)
                     : glm::vec2(camera.position().x, camera.position().z);
             refitTerrainCollision(groundCenter);
-            // Roads: every one in the scene, each with its own collider, its own
-            // rails and posts and its own city. A hidden road is not there to be
-            // driven on either, which is what makes the checkbox in the road list
-            // a way to try a layout without deleting the other one.
-            sidePosts.clear();
-            for (const RoadSystem* rp : roads) {
-                const RoadSystem& road = *rp;
-                if (!road.enabled) continue;
-                // A static triangle-mesh collider (from the last Build, graded
-                // into the terrain), so the player and objects can walk/drive on it.
-                if (road.collIndices().size() >= 3)
-                    physics->addMesh(road.collVerts().data(),
-                                     static_cast<int>(road.collVerts().size()),
-                                     road.collIndices().data(),
-                                     static_cast<int>(road.collIndices().size()));
-                // Side objects collide as a box each, sized to the model's AABB. Rails
-                // and curbs are static (mass 0) -- they stop a car driving off the edge.
-                // Knockable lines (posts, bollards) are DYNAMIC, so the car bowls them
-                // over; those are tracked in sidePosts and rendered from their live
-                // transform below. The fresh physics world discards all of them when
-                // Play stops, like the road mesh.
-                for (const RoadSystem::SideBatch& batch : road.sideBatches()) {
-                    LoadedModel* lm = resolveSideModel(batch.model);
-                    if (!lm) continue;
-                    for (const roadside::Instance& in : batch.instances) {
-                        const glm::vec3 half =
-                            glm::max(lm->size() * 0.5f * in.scale, glm::vec3(0.02f));
-                        glm::vec3 c =
-                            in.pos + glm::vec3(0.0f, half.y, 0.0f); // base on the ground
-                        const glm::quat q = glm::angleAxis(in.yaw, glm::vec3(0, 1, 0));
-                        if (batch.knockable) {
-                            // Start a hair clear of the ground so the body settles
-                            // onto it instead of being ejected out of a penetration
-                            // (the physics heightfield is coarser than the terrain).
-                            c.y += 0.03f;
-                            const PhysicsBodyId id = physics->addBox(
-                                half, c, q, glm::max(batch.mass, 0.1f));
-                            if (id) sidePosts.push_back({id, lm->id, in.scale});
-                        } else {
-                            physics->addBox(half, c, q, 0.0f); // static
-                        }
-                    }
-                }
-                // The city's facades: a static box per piece the generator flagged as
-                // solid (its masses and podium, not the bands, fins or signs), so a
-                // vehicle crashes into a building instead of driving through it. That
-                // is a handful per tower rather than one per part -- BuildingGen only
-                // marks the load-bearing shapes -- which is what keeps a whole
-                // district's collision affordable. Discarded with the physics world
-                // when Play stops, like the road mesh.
-                if (road.cityEnabled)
-                    for (const city::Piece& pc : road.district().colliders) {
-                        physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
-                                        glm::angleAxis(glm::radians(pc.yaw),
-                                                       glm::vec3(0, 1, 0)),
-                                        0.0f);
-                    }
-            }
-            // The towns' buildings: one static box per solid part, like the
-            // roadside city's.
-            towns.forEachCollider([&](const city::Piece& pc) {
-                physics->addBox(glm::max(pc.half, glm::vec3(0.05f)), pc.center,
-                                glm::angleAxis(glm::radians(pc.yaw), glm::vec3(0, 1, 0)),
-                                0.0f);
-            });
-            // Fences, walls, track and bridges: one static box per short run of
-            // path (see splinegen::Collider). Coarse on purpose -- a car needs the
-            // wall to be there, not to be able to thread the gap between two
-            // rails -- and discarded with the physics world when Play stops.
-            for (const SplineSystem::Run& run : splines.runs())
-                for (const splinegen::Collider& col : run.geo.colliders)
-                    physics->addBox(glm::max(col.half, glm::vec3(0.02f)), col.center,
-                                    col.rotation(), 0.0f);
+            // The static world: roads with their side objects and cities, the
+            // towns' buildings, and the splines' walls (see PlayWorld.hpp).
+            playworld::addStaticWorld(*physics, roads, towns, splines, resolveSideModel,
+                                      sidePosts);
 
             skids.clear(); // no skid marks carry over from a previous Play session
             trails.clear(); // ...nor stale contrails
@@ -6127,28 +6055,7 @@ int main(int argc, char** argv) {
             // it flew belongs to the scene that is being restarted.
             race2 = racesim::RaceState{};
             driveGliderId2 = -1;
-            physicsBody.clear();
-            for (Entity& e : entities) {
-                const auto* pc = e.components.get<PhysicsComponent>();
-                if (!pc || !e.activeInHierarchy ||
-                    e.type == EntityType::Light || e.type == EntityType::Sun)
-                    continue;
-                // Opponents are kinematic (driven along the road each frame), so
-                // they must never get a dynamic body -- one would be flung by the
-                // solver (e.g. spawning inside the terrain) and fight the tick.
-                if (e.components.get<OpponentComponent>()) continue;
-                // ...and so are the ones the town traffic drives (their box is
-                // kinematic, see TownTraffic::beginPlay).
-                if (traffic::TownTraffic::drives(e)) continue;
-                // A soft body IS this entity's physics; a rigid collider beside it
-                // would be a second, differently shaped copy fighting the first.
-                if (e.components.get<SoftBodyComponent>()) continue;
-                const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
-                const auto* mdl = e.components.get<ModelComponent>();
-                const PhysicsBodyId id = addEntityBody(
-                    *physics, e, m, mdl ? models.byId(mdl->modelId) : nullptr);
-                if (id) physicsBody[e.id] = id;
-            }
+            playworld::addEntityBodies(*physics, entities, models, physicsBody);
             // Jelly, balloons and cloth. After the loop above and after the world's
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
@@ -13883,7 +13790,7 @@ int main(int argc, char** argv) {
             // transform (its centre == the model's AABB centre, as placed) and draw
             // the model there, so a clipped post tumbles and flies off.
             if (playMode && physics)
-                for (const SidePost& p : sidePosts) {
+                for (const playworld::SidePost& p : sidePosts) {
                     LoadedModel* lm = models.byId(p.modelId);
                     glm::vec3 pos; glm::quat rot;
                     if (!lm || !physics->getTransform(p.body, pos, rot)) continue;

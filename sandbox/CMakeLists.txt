@@ -9,6 +9,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # What booting means (console, working dir, game archive, boot config,
     # content roots, core shaders), out of main(): the player boots the same way.
     src/Startup.cpp
+    # Play's physics world: the scene's static colliders and the entities' bodies.
+    src/PlayWorld.cpp
     src/Primitives.cpp
     # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
     # the shipped player has to be able to build and draw it too. Only the panel
