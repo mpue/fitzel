@@ -252,6 +252,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/TransformGizmo.cpp
     # The 3D cursor: Shift+Right-click, the Shift+S snap menu, its panel.
     src/Cursor3D.cpp
+    # The modelling mode's host side: edits as undo steps, the modal edits of
+    # its keys, the viewport while it is on, and its Modeling and UV panels.
+    src/ModelMode.cpp
+    src/ModelModePanels.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -743,13 +747,16 @@ target_link_libraries(shotcheck PRIVATE glm::glm)
 # selecting in it (click, cycle, Ctrl toggle and box, click-to-place), and the
 # transform gizmo dragged with real mouse events (move, Ctrl grid, multi-select,
 # a face moved and scaled, one undo step per drag), and the 3D cursor (placed
-# with Shift+Right-click, the Shift+S menu, the snap operations).
+# with Shift+Right-click, the Shift+S menu, the snap operations), and the
+# modelling mode (a solid made a mesh, an edit and a modal edit as one undo step,
+# a face picked by a click, G driven by real keys).
 #   build/release/bin/editorcheck.exe
 add_executable(editorcheck tools/editorcheck.cpp
                            src/EditorContext.cpp src/SceneDrop.cpp src/SandboxMath.cpp
                            src/MeshPaint.cpp src/MeshPaintPanel.cpp src/UiStyle.cpp
                            src/GroundBrush.cpp src/ViewportOverlay.cpp src/ViewportPick.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
+                           src/ModelMode.cpp src/ModelingKeys.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp

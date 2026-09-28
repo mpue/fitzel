@@ -38,6 +38,13 @@
 //     drop it onto the terrain, fetch it from the selection, and move the
 //     selection to it -- a parented object included, through its local transform
 //     -- each move of the selection one undo step.
+//   - the modelling mode (ModelMode): Make editable turns a solid into a mesh of
+//     its size as one undo step; an edit moves what it moves and nothing else,
+//     squares the object with it and is one undo step; a modal edit starts
+//     from the base every frame, puts everything back when cancelled and is one
+//     step when committed; a click picks the face under the pointer; the face
+//     selection is dropped when the object changes; and G, driven by real key
+//     and mouse events, grabs the face, Enter keeps it, Esc puts it back.
 //   build/release/bin/editorcheck.exe
 
 #include <algorithm>
@@ -51,6 +58,7 @@
 
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/scene/Camera.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
 
 #include "../src/Command.hpp"
@@ -62,6 +70,7 @@
 #include "../src/ViewportPick.hpp"
 #include "../src/TransformGizmo.hpp"
 #include "../src/Cursor3D.hpp"
+#include "../src/ModelMode.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -663,6 +672,12 @@ int main() {
         check(cur.pos == glm::vec3(10.0f, 1.5f, -5.0f), "...nor one in Play");
         cursorFrame(glm::vec2(0.0f), true, false, true, true);
         check(menuOpen, "Shift+S opens the snap menu");
+        ImGui::NewFrame();
+        ImGui::Begin("Scene");
+        if (ImGui::BeginPopup("##snapMenu")) { ImGui::CloseCurrentPopup(); ImGui::EndPopup(); }
+        ImGui::End();
+        ImGui::Render();
+        release();
 
         cur.pos  = glm::vec3(1.4f, 2.6f, -0.2f);
         cur.grid = 0.5f;
@@ -723,6 +738,159 @@ int main() {
             check(rev + 1 <= mid && history.revision() == mid,
                   "a snap that moves nothing leaves no empty undo step");
         }
+        sel.clear();
+    }
+
+    // --- The modelling mode -------------------------------------------------------------
+    {
+        auto near = [](float a, float b, float eps = 1e-4f) { return std::abs(a - b) <= eps; };
+        entities.clear();
+        sel.clear();
+        faceSel = faceOwner = -1;
+        entities.push_back(makeBox(70, glm::vec3(0.0f)));
+        sel.select(70);
+        unsigned rev = history.revision();
+        modelmode::convertToMesh(ed);
+        const MeshComponent* made = modelmode::selectedMesh(ed);
+        glm::vec3 mn(0.0f), mx(0.0f);
+        if (made) made->mesh.bounds(mn, mx);
+        check(made && history.revision() == rev + 1 && glm::length(mn + glm::vec3(1.0f)) < 1e-5f &&
+                  glm::length(mx - glm::vec3(1.0f)) < 1e-5f,
+              "Make editable turns the selected solid into a mesh of its size, as one undo step");
+        rev = history.revision();
+        modelmode::convertToMesh(ed);
+        check(history.revision() == rev, "...and once it is one, doing it again changes nothing");
+
+        auto mesh = [&]() -> MeshComponent& { return *modelmode::selectedMesh(ed); };
+        auto centre = [&](int f) {
+            const std::vector<glm::vec3> w = meshFaceWorld(entities[0], mesh(), f);
+            glm::vec3 c(0.0f);
+            for (const glm::vec3& q : w) c += q;
+            return w.empty() ? c : c / static_cast<float>(w.size());
+        };
+        auto faceToward = [&](const glm::vec3& dir) {
+            for (int f = 0; f < static_cast<int>(mesh().mesh.faces.size()); ++f) {
+                const std::vector<glm::vec3> w = meshFaceWorld(entities[0], mesh(), f);
+                if (w.size() >= 3 &&
+                    glm::dot(glm::normalize(glm::cross(w[1] - w[0], w[2] - w[0])), dir) > 0.9f)
+                    return f;
+            }
+            return -1;
+        };
+        const int front = faceToward(glm::vec3(0.0f, 0.0f, 1.0f));
+        const int back  = faceToward(glm::vec3(0.0f, 0.0f, -1.0f));
+        // Moves the front face `d` metres out, in the mesh's own space.
+        auto pull = [front](float d) {
+            return [front, d](EditMesh& m) {
+                const std::vector<int> vs(m.faces[front].begin(), m.faces[front].end());
+                editmesh::transformVerts(m, vs, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, d)));
+            };
+        };
+
+        rev = history.revision();
+        modelmode::applyEdit(ed, [&](MeshComponent& mc) { pull(1.0f)(mc.mesh); return front; }, "Pull");
+        check(near(centre(front).z, 2.0f) && near(centre(back).z, -1.0f) &&
+                  near(entities[0].half.z, 1.5f) && faceSel == front,
+              "an edit moves the face, leaves the rest of the mesh where it was, and squares the object with it",
+              "front z " + std::to_string(centre(front).z).substr(0, 5) + ", half z " +
+                  std::to_string(entities[0].half.z).substr(0, 5));
+        check(history.revision() == rev + 1, "...as one undo step", history.undoName());
+        history.undo(document);
+        check(near(centre(front).z, 1.0f) && near(entities[0].half.z, 1.0f), "...which one undo takes back");
+
+        modelmode::Session sess;
+        rev = history.revision();
+        modelmode::live(ed, sess, modelkeys::Live::Begin, nullptr, nullptr);
+        modelmode::live(ed, sess, modelkeys::Live::Set, pull(1.0f), nullptr);
+        modelmode::live(ed, sess, modelkeys::Live::Set, pull(2.0f), nullptr);
+        check(near(centre(front).z, 3.0f) && history.revision() == rev,
+              "a modal edit starts from the base every frame -- 1 m then 2 m is 2 m -- and banks nothing yet",
+              "front z " + std::to_string(centre(front).z).substr(0, 5));
+        modelmode::live(ed, sess, modelkeys::Live::Cancel, nullptr, nullptr);
+        check(near(centre(front).z, 1.0f) && near(entities[0].half.z, 1.0f) && history.revision() == rev,
+              "...cancelled, it puts the mesh back exactly");
+        modelmode::live(ed, sess, modelkeys::Live::Begin, nullptr, nullptr);
+        modelmode::live(ed, sess, modelkeys::Live::Set, pull(0.5f), nullptr);
+        modelmode::live(ed, sess, modelkeys::Live::Commit, nullptr, "Grab");
+        check(near(centre(front).z, 1.5f) && history.revision() == rev + 1,
+              "...committed, it is one undo step");
+        history.undo(document);
+
+        // A click on the mesh picks the face under the pointer.
+        auto screenOf = [&](const glm::vec3& w) {
+            ImVec2 s;
+            view.toScreen(w, s);
+            return glm::vec2(s.x, s.y);
+        };
+        auto clickAt = [&](glm::vec2 px) {
+            io.AddMousePosEvent(px.x, px.y);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            const bool took = modelmode::click(ed, view, sess);
+            ImGui::End();
+            ImGui::Render();
+            return took;
+        };
+        faceSel = -1;
+        sess.sel.clear();
+        const bool tookFront = clickAt(screenOf(centre(front)));
+        check(tookFront && faceSel == front, "a click on the mesh picks the face under the pointer");
+        check(!clickAt(glm::vec2(20.0f, 20.0f)), "...and a click beside it is not the mesh's");
+
+        faceSel   = front;
+        faceOwner = 70;
+        check(modelmode::keepFaceSelection(ed) && faceSel == front,
+              "the face selection stays while the object does");
+        entities.push_back(makeBox(71, glm::vec3(5.0f, 0.0f, 0.0f)));
+        sel.select(71);
+        modelmode::keepFaceSelection(ed);
+        check(faceSel == -1 && faceOwner == 71, "...and is dropped when the selection moves on");
+        sel.select(70);
+        faceOwner = 70;
+        faceSel   = 999;
+        modelmode::keepFaceSelection(ed);
+        check(faceSel == -1, "...or when the mesh has no such face any more");
+
+        // G, Enter and Esc as the keyboard sends them.
+        sel.select(70);
+        faceSel   = front;
+        faceOwner = 70;
+        sess.sel  = modeltools::Selection{};
+        sess.sel.faces = {front};
+        modelmode::ViewportHost mh;
+        auto keyFrame = [&](glm::vec2 px, ImGuiKey k, bool down) {
+            io.AddMousePosEvent(px.x, px.y);
+            if (k != ImGuiKey_None) io.AddKeyEvent(k, down);
+            ImGui::NewFrame();
+            ImGui::Begin("Scene");
+            modelmode::viewport(ed, view, sess, mh);
+            ImGui::End();
+            ImGui::Render();
+        };
+        auto press = [&](glm::vec2 px, ImGuiKey k) { keyFrame(px, k, true); keyFrame(px, k, false); };
+        const glm::vec2 c0 = screenOf(centre(front));
+        rev = history.revision();
+        keyFrame(c0, ImGuiKey_None, false);
+        press(c0, ImGuiKey_G);
+        for (int i = 1; i <= 4; ++i) keyFrame(c0 + glm::vec2(15.0f * i, 0.0f), ImGuiKey_None, false);
+        const float grabbed = centre(front).x;
+        keyFrame(c0 + glm::vec2(60.0f, 0.0f), ImGuiKey_None, false);
+        keyFrame(c0 + glm::vec2(60.0f, 0.0f), ImGuiKey_None, false);
+        check(grabbed > 0.3f && near(centre(front).x, grabbed, 1e-5f) && near(centre(back).x, 0.0f) &&
+                  history.revision() == rev && modelkeys::busy(),
+              "G grabs the picked face, which follows the pointer and holds still with it, banking nothing yet",
+              "x " + std::to_string(grabbed).substr(0, 5));
+        press(c0 + glm::vec2(60.0f, 0.0f), ImGuiKey_Enter);
+        check(!modelkeys::busy() && history.revision() == rev + 1 && near(centre(front).x, grabbed, 1e-5f),
+              "...Enter keeps it, as one undo step");
+        history.undo(document);
+        rev = history.revision();
+        keyFrame(c0, ImGuiKey_None, false);
+        press(c0, ImGuiKey_G);
+        keyFrame(c0 + glm::vec2(40.0f, 0.0f), ImGuiKey_None, false);
+        press(c0 + glm::vec2(40.0f, 0.0f), ImGuiKey_Escape);
+        check(!modelkeys::busy() && near(centre(front).x, 0.0f) && history.revision() == rev,
+              "...Esc puts it back and banks nothing");
         sel.clear();
     }
 

@@ -120,6 +120,7 @@
 #include "GroundBrush.hpp"
 #include "ViewportOverlay.hpp"
 #include "TransformGizmo.hpp"
+#include "ModelMode.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -1634,9 +1635,9 @@ int main(int argc, char** argv) {
         int  meshFaceSel     = -1;
         int  meshFaceOwner   = -1;   // entity id that index belongs to
 #ifndef FITZEL_PLAYER
-        // Corners and edges picked while modelling, and which of vertex / edge /
-        // face the viewport is picking (the face itself stays in meshFaceSel).
-        modeltools::Selection modelSel;
+        // The modelling mode's picked corners and edges and a modal edit in
+        // flight (see ModelMode.hpp); the face itself stays in meshFaceSel.
+        modelmode::Session modelSess;
         // A transform-gizmo drag in flight, of the object or of the picked face
         // (see TransformGizmo.hpp).
         gizmo::Drag gizmoDrag;
@@ -2271,95 +2272,14 @@ int main(int argc, char** argv) {
         };
 
 #ifndef FITZEL_PLAYER
-        // --- Face modelling ---------------------------------------------------
-        // The editable mesh on the selected object, if it has one.
-        auto selectedMesh = [&]() -> MeshComponent* {
-            if (!cursorHaveSel()) return nullptr;
-            return entities[sel.index()].components.get<MeshComponent>();
-        };
-        // Turn the selected solid into an editable mesh of exactly the same size --
-        // built at the object's real dimensions, so a metre in the modelling
-        // panel is a metre in the world rather than a fraction of a unit cube.
-        // Nothing else about the object changes: same transform, same material,
-        // and the same type, so it keeps the collider of the shape it started
-        // as (a ramp stays a slope to walk and hover up), fitted to its bounds.
-        auto convertToMesh = [&] {
-            if (!cursorHaveSel()) return;
-            Entity& e = entities[sel.index()];
-            if (!isSolidPrimitive(e.type) || e.components.get<MeshComponent>()) return;
-            const Entity before = e;
-            auto mc = std::make_unique<MeshComponent>();
-            switch (e.type) {
-                case EntityType::Ramp:     mc->mesh = EditMesh::ramp(e.half);     break;
-                case EntityType::Cylinder: mc->mesh = EditMesh::cylinder(e.half); break;
-                case EntityType::Sphere:   mc->mesh = EditMesh::sphere(e.half);   break;
-                case EntityType::Plane:    mc->mesh = EditMesh::plane(e.half);    break;
-                default:                   mc->mesh = EditMesh::box(e.half);      break;
-            }
-            mc->touch();
-            e.components.items.push_back(std::move(mc));
-            meshFaceSel = -1;
-            history.pushApplied(std::make_unique<ModifyEntityCmd>(before, e));
-        };
-        // The scale an entity currently applies to its mesh (1 unless someone has
-        // dragged the Scale gizmo). Read before an edit and re-applied after, or
-        // re-deriving the half-extents from raw bounds would quietly undo it.
-        auto meshScaleOf = [](const Entity& e, const MeshComponent& mc) {
-            return editmesh::fitScale(mc.mesh, e.half);
-        };
-        // What every mesh edit ends with (see normalizeMeshEntity in
-        // EditorContext.hpp): geometry re-centred, bounds taken as half-extents.
-        auto normalizeMeshEntity = [&](Entity& e, MeshComponent& mc,
-                                       const glm::vec3& scale) {
-            ::normalizeMeshEntity(entities, e, mc, scale);
-        };
-        // Run one face operation as one undoable step.
+        // --- Face modelling (ModelMode.cpp) ---------------------------------------
+        // The editable mesh on the selected object, if it has one; a solid made
+        // one; a face operation run as one undo step.
+        auto selectedMesh  = [&]() -> MeshComponent* { return modelmode::selectedMesh(editorCtx); };
+        auto convertToMesh = [&] { modelmode::convertToMesh(editorCtx); };
         auto applyMeshEdit = [&](const std::function<int(MeshComponent&)>& op,
                                  const char* label) {
-            if (!cursorHaveSel()) return;
-            Entity& e = entities[sel.index()];
-            MeshComponent* mc = e.components.get<MeshComponent>();
-            if (!mc || !op) return;
-            const Entity    before = e;
-            const glm::vec3 scale  = meshScaleOf(e, *mc);
-            const glm::mat4 model  = meshModelOf(e, *mc);
-            const EditMesh  beforeMesh = mc->mesh;
-            meshFaceSel = op(*mc);
-            // Before the re-centre: the world positions it computes with `model`
-            // are the ones the re-centred mesh keeps, and the edges that changed
-            // glow for a moment where they now are.
-            modeltools::flash(beforeMesh, mc->mesh, model, label);
-            normalizeMeshEntity(e, *mc, scale);
-            auto cmd = std::make_unique<ModifyEntityCmd>(before, e);
-            if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-        };
-        // A modal edit of the modelling mode (G, E, Ctrl+B ...; ModelingKeys.hpp):
-        // every frame starts again from the entity as it was, so the operation
-        // is always "base + what the pointer says now", never a pile-up.
-        Entity    meshLiveBefore;
-        glm::vec3 meshLiveScale{1.0f};
-        auto meshLive = [&](modelkeys::Live ph, const std::function<void(EditMesh&)>& op,
-                            const char* label) {
-            if (!cursorHaveSel()) return;
-            Entity& e = entities[sel.index()];
-            if (ph == modelkeys::Live::Begin) {
-                meshLiveBefore = e;
-                if (const MeshComponent* mc = e.components.get<MeshComponent>())
-                    meshLiveScale = meshScaleOf(e, *mc);
-            } else if (ph == modelkeys::Live::Set || ph == modelkeys::Live::Cancel) {
-                e = meshLiveBefore;
-                MeshComponent* mc = e.components.get<MeshComponent>();
-                if (ph == modelkeys::Live::Set && mc && op) {
-                    op(mc->mesh);
-                    normalizeMeshEntity(e, *mc, meshLiveScale);
-                }
-            } else {
-                if (const MeshComponent* mc = e.components.get<MeshComponent>())
-                    if (const MeshComponent* b0 = meshLiveBefore.components.get<MeshComponent>())
-                        modeltools::flash(b0->mesh, mc->mesh, meshModelOf(meshLiveBefore, *b0), label);
-                auto cmd = std::make_unique<ModifyEntityCmd>(meshLiveBefore, e);
-                if (!cmd->trivial()) history.pushApplied(std::move(cmd));
-            }
+            modelmode::applyEdit(editorCtx, op, label);
         };
 #endif // !FITZEL_PLAYER
         // True if box `a` is `ancestorId` or below it (to reject cyclic reparenting).
@@ -10685,49 +10605,20 @@ int main(int argc, char** argv) {
                     // Shift+Right-click places it (the look control ignores
                     // right-drag while Shift is held, see above); its mark.
                     cursor3d::viewport(sceneView, cursor, !playMode);
-                    // The mesh being modelled: wireframe, corners, the element under
-                    // the pointer, the selection, the preview of a hovered button
-                    // and the flash of the last edit. Drawn as a 2D overlay like
-                    // the cursor: authoring marks, not things in the scene.
-                    if (showModeling && !playMode && selectedMesh()) {
-                        modeltools::View mv;
-                        mv.vp   = vp;
-                        mv.min  = rmin;
-                        mv.size = ImVec2(static_cast<float>(viewW), static_cast<float>(viewH));
-                        modelkeys::Host kh;
-                        auto keyHost = [&] {   // fresh each call: a modal edit replaces the mesh
-                            kh.mesh      = selectedMesh();
-                            mv.model     = meshModelOf(entities[sel.index()], *kh.mesh);
-                            kh.sel       = &modelSel;
-                            kh.faceSel   = &meshFaceSel;
-                            kh.view      = mv;
-                            kh.hovered   = viewportHovered;
-                            kh.keysFree  = !ImGui::GetIO().WantTextInput;
-                            kh.gizmoOver = entityEditMode && (ImGuizmo::IsOver() || ImGuizmo::IsUsing());
-                            kh.edit      = applyMeshEdit;
-                            kh.live      = meshLive;
-                            kh.frame     = [&](const glm::vec3& c, float r) {
-                                const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
-                                camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
-                                camFocusing     = true;
-                                if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
-                            };
-                            return kh;
+                    // The mesh being modelled: its keys, and its wireframe,
+                    // corners, the element under the pointer, the selection and
+                    // the flash of the last edit as a 2D overlay (ModelMode.cpp).
+                    if (showModeling && !playMode) {
+                        modelmode::ViewportHost mh;
+                        mh.gizmoOut    = entityEditMode;
+                        mh.faceDragged = gizmoDrag.faceActive;
+                        mh.frame       = [&](const glm::vec3& c, float r) {
+                            const float fov = glm::radians(glm::max(camera.fov(), 1.0f));
+                            camFocusTarget  = c - camera.front() * (r / std::max(std::tan(fov * 0.5f), 0.05f) * 1.3f);
+                            camFocusing     = true;
+                            if (camera.orthographic()) camera.setOrthoHalfHeight(r * 1.3f);
                         };
-                        modelkeys::update(keyHost());
-                        if (const MeshComponent* mc = keyHost().mesh) {
-                            modeltools::Hit hov;
-                            const bool hovering =
-                                viewportHovered && !ImGuizmo::IsUsing() && !gizmoDrag.faceActive &&
-                                !modelkeys::busy() && !ImGui::IsMouseDown(ImGuiMouseButton_Right);
-                            if (hovering)
-                                hov = modeltools::pick(mc->mesh, mv, ImGui::GetIO().MousePos,
-                                                       modelSel.mode);
-                            modeltools::drawOverlay(ImGui::GetWindowDrawList(), mc->mesh, mv,
-                                                    modelSel, meshFaceSel,
-                                                    hovering ? &hov : nullptr);
-                            modelkeys::drawHud(ImGui::GetWindowDrawList(), kh);
-                        }
+                        modelmode::viewport(editorCtx, sceneView, modelSess, mh);
                     }
 
                     // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
@@ -10742,7 +10633,7 @@ int main(int argc, char** argv) {
                         gs.editMode   = entityEditMode;
                         gs.objectFree = !vehGizmoOwnsMouse && !meshBusy;
                         gs.faceMode   = showModeling && !meshBusy;
-                        gs.modelSel   = &modelSel;
+                        gs.modelSel   = &modelSess.sel;
                         gs.grid       = cursor.grid;
                         gs.snapAngle  = cursor.snapAngle;
                         gs.snapScale  = cursor.snapScale;
@@ -10774,19 +10665,7 @@ int main(int argc, char** argv) {
                     // While modelling, a click that lands on the selected mesh
                     // picks one of its faces (or corners, or edges).
                     pickHost.meshClick = [&] {
-                        if (!showModeling) return false;
-                        const MeshComponent* mc = selectedMesh();
-                        if (!mc) return false;
-                        const ImGuiIO& io = ImGui::GetIO();
-                        modeltools::View mv;
-                        mv.model = meshModelOf(entities[sel.index()], *mc);
-                        mv.vp    = vp;
-                        mv.min   = ImVec2(viewportRectMin.x, viewportRectMin.y);
-                        mv.size  = ImVec2(viewportRectSize.x, viewportRectSize.y);
-                        const modeltools::Hit h =
-                            modeltools::pick(mc->mesh, mv, io.MousePos, modelSel.mode);
-                        return modeltools::click(modelSel, meshFaceSel, h,
-                                                 modelSel.additive || io.KeyShift);
+                        return showModeling && modelmode::click(editorCtx, sceneView, modelSess);
                     };
                     viewpick::click(editorCtx, sceneView, scenePick, pickHost);
                     // While modelling, Del is the mesh's (the modelling mode's
@@ -11275,66 +11154,17 @@ int main(int argc, char** argv) {
             // material in it. The viewport half of it -- what the pointer is
             // over, the wireframe, the preview and the flash -- is drawn up in
             // the Scene window (modeltools::drawOverlay).
-            if (showModeling) {
-                MeshComponent* mc = selectedMesh();
-                const bool haveSel = cursorHaveSel();
-                // A face index belongs to one object's mesh and to one version of
-                // it: drop it when the selection moves, or when an undo left the
-                // mesh with fewer faces than the index. validate() does the same
-                // for the picked corners and edges.
-                const int selId = haveSel ? entities[sel.index()].id : -1;
-                if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
-                if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
-                    meshFaceSel = -1;
-                modeltools::validate(modelSel, selId, mc ? &mc->mesh : nullptr, &meshFaceSel);
-                ImGui::BeginDisabled(modelkeys::busy());
-                modelui::drawPanel({
-                    showModeling, mc, meshFaceSel, modelSel, materials, haveSel,
-                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
-                    mc ? meshModelOf(entities[sel.index()], *mc) : glm::mat4(1.0f),
-                    ImVec2(viewportRectMin.x, viewportRectMin.y),
-                    ImVec2(viewportRectMin.x + viewportRectSize.x,
-                           viewportRectMin.y + viewportRectSize.y),
-                    [&]{ convertToMesh(); }, applyMeshEdit,
-                    // "Edit" on a face's material: the surface itself is a
-                    // material, and the place to change one is the Materials
-                    // panel. Reads only, so it is safe from inside the panel.
-                    [&](AssetId id) {
-                        if (!id.valid()) return;
-                        matSel        = document.materialIndex(id);
-                        showMaterials = true;
-                    },
-                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
-                    mc ? static_cast<int>(mc->mesh.verts.size()) : 0,
-                    cursor.pos, &splines,
-                });
-                ImGui::EndDisabled();
-            }
+            modelmode::modelingPanel(
+                editorCtx, modelSess,
+                {showModeling, showMaterials, ImVec2(viewportRectMin.x, viewportRectMin.y),
+                 ImVec2(viewportRectMin.x + viewportRectSize.x,
+                        viewportRectMin.y + viewportRectSize.y),
+                 cursor.pos, &splines});
 
             // Where the selected face's texture sits. Shares the Modeling
             // panel's face selection and its one-undo-step edit callback: this
             // is the same mesh being shaped, looked at from the texture's side.
-            if (showUv) {
-                MeshComponent* mc = selectedMesh();
-                const bool haveSel = cursorHaveSel();
-                const int  selId   = haveSel ? entities[sel.index()].id : -1;
-                if (selId != meshFaceOwner) { meshFaceOwner = selId; meshFaceSel = -1; }
-                if (!mc || meshFaceSel >= static_cast<int>(mc->mesh.faces.size()))
-                    meshFaceSel = -1;
-                // The material the OBJECT wears: the panel draws the texture the
-                // face is actually seen through, and a face wearing none of its
-                // own is seen through this one.
-                AssetId objMat;
-                if (haveSel)
-                    if (const auto* mcp = entities[sel.index()].components.get<MaterialComponent>())
-                        objMat = mcp->material;
-                uvui::drawPanel({
-                    showUv, mc, meshFaceSel, materials, objMat, haveSel,
-                    haveSel && !mc && isSolidPrimitive(entities[sel.index()].type),
-                    [&]{ convertToMesh(); }, applyMeshEdit,
-                    mc ? static_cast<int>(mc->mesh.faces.size()) : 0,
-                });
-            }
+            modelmode::uvPanel(editorCtx, showUv);
 
             // The modular synth: building a patch and hearing it. Everything it
             // needs is its own (see SynthPanel.hpp); it takes the engine to play
