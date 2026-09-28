@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 
 #include <glm/glm.hpp>
 
@@ -8,7 +9,7 @@
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
 
-namespace fitzel { class Renderer; }
+namespace fitzel { class AssetDatabase; class EnvironmentIBL; class Renderer; }
 
 // The two panels that set how the picture looks: "Sky & atmosphere" (time of
 // day, the cloud deck and its layers, the height haze and the world's
@@ -35,5 +36,35 @@ struct SkyPanelState {
 
 void drawSkyPanel(const SkyPanelState& s);
 void drawGradePanel(bool& show, PostLook& look);
+
+// "Environment": image-based lighting from an HDRI panorama picked from the
+// asset library (.hdr / .exr textures that are not a material's maps).
+struct EnvironmentPanelState {
+    bool&                   show;
+    fitzel::EnvironmentIBL& environment;
+    fitzel::AssetDatabase&  assetDb;
+    std::string&            hdriLoaded;    // the panorama's library path ("" = none)
+    std::string&            hdriAbsPath;   // ...and its file (the offline renderer's)
+    bool&                   iblEnabled;
+    bool&                   iblSkybox;     // draw it as the sky background
+    float&                  iblIntensity;
+};
+void drawEnvironmentPanel(const EnvironmentPanelState& s);
+
+// "Water": the lake's level, swell, ripples, foam and optics.
+struct WaterPanelState {
+    bool&      show;
+    float&     level;
+    float&     waveHeight;     // Gerstner swell amplitude
+    float&     waveChoppy;
+    float&     rippleStrength;
+    float&     rippleScale;
+    float&     foamWidth;
+    float&     reflectivity;   // max mirror strength (Fresnel cap)
+    float&     clarity;        // higher = clearer (less depth tint)
+    float&     ior;            // index of refraction (Fresnel + bend)
+    glm::vec3& tint;
+};
+void drawWaterPanel(const WaterPanelState& s);
 
 } // namespace lookui

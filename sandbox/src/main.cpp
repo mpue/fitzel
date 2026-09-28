@@ -92,6 +92,7 @@
 #ifndef FITZEL_PLAYER
 #include "AssetsPanel.hpp"
 #include "UnityImportPanel.hpp"
+#include "ViewPanels.hpp"
 #endif
 #include "MeshPaintPanel.hpp"
 #include "ViewTool.hpp"
@@ -2722,11 +2723,6 @@ int main(int argc, char** argv) {
         bool  prevFlashOn  = false;
 
         bool requestDockRebuild = false; // set by "Reset layout" to re-apply the default
-
-        // Camera angle controls.
-        float camFov   = camera.fov();
-        float camYaw   = camera.yaw();
-        float camPitch = camera.pitch();
 
         // Presentation mode: borderless fullscreen with the editor UI hidden.
         bool presentMode = false;
@@ -10077,106 +10073,20 @@ int main(int argc, char** argv) {
 
             luaapi::draw(luaApi, gui.monoFont());
 
-            if (showAbout) {
-                ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
-                if (ImGui::Begin("About Fitzel", &showAbout,
-                                 ImGuiWindowFlags_NoDocking |
-                                 ImGuiWindowFlags_NoSavedSettings)) {
-                    ImGui::Text("Fitzel %d.%d.%d",
-                                fitzel::kVersionMajor, fitzel::kVersionMinor,
-                                fitzel::kVersionPatch);
-                    ImGui::TextDisabled("3D vegetation & road engine");
-                    ImGui::Separator();
-                    // The four-part version alone can't tell two builds of one
-                    // commit apart, so show what identifies this binary exactly.
-                    ImGui::Text("Build %d", fitzel::kVersionBuild);
-                    if (fitzel::kGitHash[0])
-                        ImGui::Text("Commit %s%s", fitzel::kGitHash,
-                                    fitzel::kGitDirty ? " (uncommitted changes)" : "");
-                    ImGui::Spacing();
-                    if (ImGui::Button("Copy version"))
-                        ImGui::SetClipboardText(fitzel::kVersionFull);
-                }
-                ImGui::End();
-            }
+            editormenu::drawAbout(showAbout);
 
-            if (showStats) { if (ImGui::Begin("Stats", &showStats)) {
-                const char* sceneNames[] = {"Nature", "Empty (build)"};
-                if (ImGui::Combo("Scene", &scene, sceneNames, 2)) applyScene(scene);
-                ImGui::Separator();
-                ImGui::Text("%.1f FPS (%.2f ms)", ImGui::GetIO().Framerate,
-                            1000.0f / ImGui::GetIO().Framerate);
-                ImGui::Text("Camera: %.0f, %.0f, %.0f",
-                            camera.position().x, camera.position().y, camera.position().z);
-                ImGui::Text("Chunks: %d loaded, %d pending",
-                            streamer.loadedChunkCount(), streamer.pendingChunkCount());
-                ImGui::Text("Entities: %d (%d selected)",
-                            static_cast<int>(entities.size()),
-                            static_cast<int>(sel.count()));
-                ImGui::Text("Draws: %d visible, %d culled",
-                            renderer.lastDrawn(), renderer.lastCulled());
-                ImGui::Separator();
-                ImGui::SliderFloat("Move speed", &camera.moveSpeed, 2.0f, 80.0f);
-                ImGui::SliderInt("View distance", &viewRadius, 2, 9, "%d chunks");
-                ImGui::SameLine();
-                ImGui::Text("(%.0f m)", viewRadius * streamer.settings().chunkSize);
-                // The culling limit. Deliberately next to View distance and the
-                // draw counters above: those three are one dial each on the same
-                // trade, and the counters are the readout you tune against.
-                ImGui::Checkbox("Auto far plane", &farPlaneAuto);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Tie the culling limit to the streamed terrain\n"
-                                      "(1.7 chunks past the ring, so its corners\n"
-                                      "stay inside the frustum) -- and to the\n"
-                                      "roadside city's range, whichever reaches\n"
-                                      "further, so a skyline is never sliced off\n"
-                                      "before its own range runs out. Turn off to\n"
-                                      "set it by hand.");
-                ImGui::BeginDisabled(farPlaneAuto);
-                ImGui::SliderFloat("Far plane", &farPlaneManual, 100.0f, 5000.0f,
-                                   "%.0f m");
-                ImGui::EndDisabled();
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Where the camera stops drawing. Past the\n"
-                                      "streamed terrain you see the ring end;\n"
-                                      "past ~2000 m the depth buffer starts\n"
-                                      "fighting itself in the distance (the near\n"
-                                      "plane is 0.1 m). Set by hand this does NOT\n"
-                                      "follow the city's range, so a city set to\n"
-                                      "reach further than this gets cut off here.\n"
-                                      "Shadows stop at the streamed terrain either\n"
-                                      "way -- pushing this out costs draws, not\n"
-                                      "shadow resolution.");
-                ImGui::SameLine();
-                ImGui::TextDisabled("now %.0f m", camera.farPlane());
-                ImGui::Separator();
-                if (ImGui::Button("Reset layout")) requestDockRebuild = true;
-            }
-            ImGui::End(); }
+            viewui::drawStats({showStats, scene, applyScene, camera, streamer, renderer,
+                               static_cast<int>(entities.size()), static_cast<int>(sel.count()),
+                               viewRadius, farPlaneAuto, farPlaneManual, requestDockRebuild});
 
-            if (showCamera) { if (ImGui::Begin("Camera", &showCamera)) {
-                if (ImGui::Checkbox("First-person (Shift+F)", &fpsMode)) {
-                    input.setCursorLocked(fpsMode);
-                    fpsVelY = 0.0f;
-                    if (fpsMode) {
-                        const glm::vec3 p = camera.position();
-                        camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
-                    }
+            viewui::drawCamera({showCamera, camera, fpsMode, [&](bool on) {
+                input.setCursorLocked(on);
+                fpsVelY = 0.0f;
+                if (on) {
+                    const glm::vec3 p = camera.position();
+                    camera.setPosition({p.x, streamer.heightAt(p.x, p.z) + eyeHeight, p.z});
                 }
-                ImGui::SameLine();
-                ImGui::TextDisabled(fpsMode ? "(walk + jump, Esc to exit)"
-                                            : "(hold right mouse: look + WASD/QE fly)");
-                // Sync from the camera (mouse-look may have changed it), then
-                // apply only when a slider is actually edited.
-                camFov = camera.fov(); camYaw = camera.yaw(); camPitch = camera.pitch();
-                if (ImGui::SliderFloat("FOV",   &camFov, 25.0f, 100.0f, "%.0f deg"))
-                    camera.setFov(camFov);
-                if (ImGui::SliderFloat("Yaw",   &camYaw, -180.0f, 180.0f, "%.0f"))
-                    camera.setYaw(camYaw);
-                if (ImGui::SliderFloat("Pitch", &camPitch, -89.0f, 89.0f, "%.0f"))
-                    camera.setPitch(camPitch);
-            }
-            ImGui::End(); }
+            }});
 
             // The audio mixer. The desk is drawn in MixerPanel.cpp; what it
             // needs from here is the state, the frame time (the meters have
@@ -10230,28 +10140,9 @@ int main(int argc, char** argv) {
 
             lookui::drawGradePanel(showColorGrade, postLook);
 
-            if (showWater) { if (ImGui::Begin("Water", &showWater)) {
-                ImGui::SliderFloat("Level",       &waterLevel, -15.0f, 15.0f);
-                ImGui::SliderFloat("Swell height",&waveHeight, 0.0f, 2.5f);
-                ImGui::SliderFloat("Choppiness",  &waveChoppy, 0.0f, 1.0f);
-                ImGui::SliderFloat("Ripples",     &waveStrength, 0.0f, 0.05f, "%.3f");
-                ImGui::SliderFloat("Ripple size", &waveScale, 0.01f, 0.2f, "%.3f");
-                ImGui::SliderFloat("Shore foam",  &foamWidth, 0.0f, 8.0f);
-                ImGui::SliderFloat("Reflectivity",&waterReflectivity, 0.0f, 1.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Max mirror strength. Lower = less glassy,\n"
-                                      "more of the water body shows through.");
-                ImGui::SliderFloat("Clarity",     &waterClarity, 0.2f, 3.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("How clear the water is. Higher = see the bed\n"
-                                      "deeper; lower = murkier, tints sooner.");
-                ImGui::SliderFloat("IOR",         &waterIor, 1.0f, 2.0f, "%.3f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Index of refraction. Water = 1.33 (~2%% edge-on\n"
-                                      "reflection); higher = more reflective + more bend.");
-                ImGui::ColorEdit3("Tint",         &waterColor.x);
-            }
-            ImGui::End(); }
+            lookui::drawWaterPanel({showWater, waterLevel, waveHeight, waveChoppy, waveStrength,
+                                    waveScale, foamWidth, waterReflectivity, waterClarity,
+                                    waterIor, waterColor});
 
             // Serve finished texture thumbnails to every panel drawn this frame
             // (materials, terrain, assets) from the shared cache.
@@ -10620,68 +10511,8 @@ int main(int argc, char** argv) {
                             now);
 
             // HDRI environment lighting (image-based lighting).
-            if (showEnv) {
-                if (ImGui::Begin("Environment", &showEnv)) {
-                    ImGui::TextDisabled("Equirectangular .hdr / .exr panorama.");
-                    // Gather HDRI panoramas from the asset library: .hdr/.exr
-                    // textures, excluding PBR material maps (normal/rough/etc).
-                    auto isMaterialMap = [](const std::string& n){
-                        std::string s = n;
-                        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c){
-                            return static_cast<char>(std::tolower(c)); });
-                        for (const char* t : {"_nor", "_normal", "_rough", "_disp",
-                                "_diff", "_albedo", "_ao", "_spec", "_metal",
-                                "_height", "_bump", "_opacity", "_mask", "_gloss",
-                                "_translucent", "_color"})
-                            if (s.find(t) != std::string::npos) return true;
-                        return false;
-                    };
-                    std::vector<std::pair<std::string, std::string>> hdris; // (label, path)
-                    for (const AssetId id : assetDb.allAssets()) {
-                        const AssetDatabase::Entry* e = assetDb.entry(id);
-                        if (!e || e->type != AssetType::Texture) continue;
-                        std::string ext = e->absPath.extension().string();
-                        std::transform(ext.begin(), ext.end(), ext.begin(),
-                            [](unsigned char c){ return static_cast<char>(std::tolower(c)); });
-                        if ((ext != ".exr" && ext != ".hdr") || isMaterialMap(e->relPath))
-                            continue;
-                        hdris.push_back({e->relPath, e->absPath.string()});
-                    }
-                    std::sort(hdris.begin(), hdris.end());
-
-                    ImGui::SetNextItemWidth(260.0f);
-                    const char* curLabel = hdriLoaded.empty() ? "(select HDRI)"
-                                                              : hdriLoaded.c_str();
-                    if (ImGui::BeginCombo("HDRI", curLabel)) {
-                        if (hdris.empty())
-                            ImGui::TextDisabled("(no .hdr/.exr panoramas found)");
-                        for (const auto& [label, path] : hdris)
-                            if (ImGui::Selectable(label.c_str(), label == hdriLoaded)) {
-                                if (environment.load(path)) {
-                                    hdriLoaded  = label;
-                                    hdriAbsPath = path;
-                                    iblEnabled  = true;
-                                }
-                            }
-                        ImGui::EndCombo();
-                    }
-                    ImGui::SameLine();
-                    ImGui::TextDisabled(environment.valid() ? "loaded" : "not loaded");
-
-                    ImGui::BeginDisabled(!environment.valid());
-                    ImGui::Checkbox("Enable IBL lighting", &iblEnabled);
-                    ImGui::Checkbox("Show HDRI as background", &iblSkybox);
-                    ImGui::SliderFloat("Intensity", &iblIntensity, 0.0f, 4.0f);
-                    if (environment.valid())
-                        ImGui::TextDisabled("auto-normalised x%.3g (panoramas differ\n"
-                                            "in absolute brightness by decades)",
-                                            environment.exposureScale());
-                    ImGui::EndDisabled();
-                    ImGui::TextDisabled("Lights surfaces from the panorama\n"
-                                        "(diffuse irradiance + specular).");
-                }
-                ImGui::End();
-            }
+            lookui::drawEnvironmentPanel({showEnv, environment, assetDb, hdriLoaded, hdriAbsPath,
+                                          iblEnabled, iblSkybox, iblIntensity});
 
             // The Vehicle and Glider windows live with their tools (VehicleTool.cpp,
             // GliderTool.cpp); the drive and flight themselves are main's.

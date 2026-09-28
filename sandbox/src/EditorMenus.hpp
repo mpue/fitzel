@@ -105,4 +105,7 @@ void drawEditMenu(const EditMenuCtx& c);
 void drawViewMenu(fitzel::Gui& gui, const std::vector<PanelEntry>& panels,
                   viewnav::Nav& viewNav, bool& prefsDirty, bool& requestDockRebuild);
 
+// Help > About: the version, the build, and the commit it was built from.
+void drawAbout(bool& show);
+
 } // namespace editormenu

@@ -265,6 +265,8 @@ set(SANDBOX_EDITOR_SOURCES
     # The Assets browser and the Unity asset importer's panel.
     src/AssetsPanel.cpp
     src/UnityImportPanel.cpp
+    # The Stats and Camera windows.
+    src/ViewPanels.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp

@@ -7,6 +7,7 @@
 
 #include <imgui_internal.h>   // DockBuilder
 
+#include <fitzel/Version.hpp>
 #include <fitzel/core/Window.hpp>
 #include <fitzel/ui/Gui.hpp>
 
@@ -300,6 +301,27 @@ void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
                           "own arrangement is remembered in imgui.ini\n"
                           "and wins until you ask for this.");
     ImGui::EndMenu();
+}
+
+void drawAbout(bool& show) {
+    if (!show) return;
+    ImGui::SetNextWindowSize(ImVec2(360.0f, 0.0f), ImGuiCond_Appearing);
+    if (ImGui::Begin("About Fitzel", &show,
+                     ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::Text("Fitzel %d.%d.%d", fitzel::kVersionMajor, fitzel::kVersionMinor,
+                    fitzel::kVersionPatch);
+        ImGui::TextDisabled("3D vegetation & road engine");
+        ImGui::Separator();
+        // The four-part version alone can't tell two builds of one commit
+        // apart, so show what identifies this binary exactly.
+        ImGui::Text("Build %d", fitzel::kVersionBuild);
+        if (fitzel::kGitHash[0])
+            ImGui::Text("Commit %s%s", fitzel::kGitHash,
+                        fitzel::kGitDirty ? " (uncommitted changes)" : "");
+        ImGui::Spacing();
+        if (ImGui::Button("Copy version")) ImGui::SetClipboardText(fitzel::kVersionFull);
+    }
+    ImGui::End();
 }
 
 } // namespace editormenu

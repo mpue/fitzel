@@ -1,10 +1,16 @@
 #include "LookPanels.hpp"
 
+#include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <utility>
+#include <vector>
 
 #include <imgui.h>
 
+#include <fitzel/asset/AssetDatabase.hpp>
+#include <fitzel/graphics/EnvironmentIBL.hpp>
 #include <fitzel/render/Renderer.hpp>
 
 #include "SkyLayers.hpp"
@@ -310,6 +316,98 @@ void drawGradePanel(bool& show, PostLook& look) {
             ImGui::SetTooltip("Light falling off towards the corners, as through\n"
                               "a real lens. Frames the picture; 0 = off.");
         ImGui::SliderFloat("Film grain", &look.filmGrain, 0.0f, 0.1f, "%.3f");
+    }
+    ImGui::End();
+}
+
+namespace {
+
+// A PBR material's map rather than a panorama (normal, roughness, albedo ...).
+bool isMaterialMap(const std::string& n) {
+    std::string s = n;
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    for (const char* t : {"_nor", "_normal", "_rough", "_disp", "_diff", "_albedo", "_ao",
+                          "_spec", "_metal", "_height", "_bump", "_opacity", "_mask", "_gloss",
+                          "_translucent", "_color"})
+        if (s.find(t) != std::string::npos) return true;
+    return false;
+}
+
+} // namespace
+
+void drawEnvironmentPanel(const EnvironmentPanelState& s) {
+    if (!s.show) return;
+    if (ImGui::Begin("Environment", &s.show)) {
+        ImGui::TextDisabled("Equirectangular .hdr / .exr panorama.");
+        // HDRI panoramas from the asset library: .hdr/.exr textures, excluding
+        // PBR material maps (normal/rough/etc).
+        std::vector<std::pair<std::string, std::string>> hdris; // (label, path)
+        for (const fitzel::AssetId id : s.assetDb.allAssets()) {
+            const fitzel::AssetDatabase::Entry* e = s.assetDb.entry(id);
+            if (!e || e->type != fitzel::AssetType::Texture) continue;
+            std::string ext = e->absPath.extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(),
+                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if ((ext != ".exr" && ext != ".hdr") || isMaterialMap(e->relPath)) continue;
+            hdris.push_back({e->relPath, e->absPath.string()});
+        }
+        std::sort(hdris.begin(), hdris.end());
+
+        ImGui::SetNextItemWidth(260.0f);
+        const char* curLabel = s.hdriLoaded.empty() ? "(select HDRI)" : s.hdriLoaded.c_str();
+        if (ImGui::BeginCombo("HDRI", curLabel)) {
+            if (hdris.empty()) ImGui::TextDisabled("(no .hdr/.exr panoramas found)");
+            for (const auto& [label, path] : hdris)
+                if (ImGui::Selectable(label.c_str(), label == s.hdriLoaded)) {
+                    if (s.environment.load(path)) {
+                        s.hdriLoaded  = label;
+                        s.hdriAbsPath = path;
+                        s.iblEnabled  = true;
+                    }
+                }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled(s.environment.valid() ? "loaded" : "not loaded");
+
+        ImGui::BeginDisabled(!s.environment.valid());
+        ImGui::Checkbox("Enable IBL lighting", &s.iblEnabled);
+        ImGui::Checkbox("Show HDRI as background", &s.iblSkybox);
+        ImGui::SliderFloat("Intensity", &s.iblIntensity, 0.0f, 4.0f);
+        if (s.environment.valid())
+            ImGui::TextDisabled("auto-normalised x%.3g (panoramas differ\n"
+                                "in absolute brightness by decades)",
+                                s.environment.exposureScale());
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("Lights surfaces from the panorama\n"
+                            "(diffuse irradiance + specular).");
+    }
+    ImGui::End();
+}
+
+void drawWaterPanel(const WaterPanelState& s) {
+    if (!s.show) return;
+    if (ImGui::Begin("Water", &s.show)) {
+        ImGui::SliderFloat("Level",        &s.level, -15.0f, 15.0f);
+        ImGui::SliderFloat("Swell height", &s.waveHeight, 0.0f, 2.5f);
+        ImGui::SliderFloat("Choppiness",   &s.waveChoppy, 0.0f, 1.0f);
+        ImGui::SliderFloat("Ripples",      &s.rippleStrength, 0.0f, 0.05f, "%.3f");
+        ImGui::SliderFloat("Ripple size",  &s.rippleScale, 0.01f, 0.2f, "%.3f");
+        ImGui::SliderFloat("Shore foam",   &s.foamWidth, 0.0f, 8.0f);
+        ImGui::SliderFloat("Reflectivity", &s.reflectivity, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Max mirror strength. Lower = less glassy,\n"
+                              "more of the water body shows through.");
+        ImGui::SliderFloat("Clarity",      &s.clarity, 0.2f, 3.0f, "%.2f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("How clear the water is. Higher = see the bed\n"
+                              "deeper; lower = murkier, tints sooner.");
+        ImGui::SliderFloat("IOR",          &s.ior, 1.0f, 2.0f, "%.3f");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Index of refraction. Water = 1.33 (~2%% edge-on\n"
+                              "reflection); higher = more reflective + more bend.");
+        ImGui::ColorEdit3("Tint",          &s.tint.x);
     }
     ImGui::End();
 }
