@@ -114,9 +114,18 @@ bool Sim::addDriver(int entity, glm::vec2 pos, glm::vec2 heading, Kind kind, flo
     v.s      = std::clamp(bestS, std::min(v.length, m_lanes[static_cast<std::size_t>(best)].len),
                           m_lanes[static_cast<std::size_t>(best)].len);
     v.entity = entity;
+    v.uid    = m_nextUid++;
     v.rng    = 0x9e3779b9U ^ static_cast<std::uint32_t>(entity * 7919 + 1);
     v.next   = pickNext(v);
     m_vehicles.push_back(v);
+    return true;
+}
+
+bool Sim::removeVehicle(std::uint32_t uid) {
+    const auto it = std::find_if(m_vehicles.begin(), m_vehicles.end(),
+                                 [uid](const Vehicle& v) { return v.uid == uid; });
+    if (it == m_vehicles.end()) return false;
+    m_vehicles.erase(it);
     return true;
 }
 
@@ -133,6 +142,10 @@ void Sim::removeDrivers() {
 }
 
 void Sim::setObstacles(const std::vector<Obstacle>& obstacles) {
+    // A lane is followed on into the crossings at its ends, along its own line:
+    // a wreck in the middle of one stops who would drive through it straight
+    // on (they wait at the stop line), not only who is on the lane it lies in.
+    constexpr float kIntoCrossing = 12.0f;
     m_blocks.clear();
     for (const Obstacle& o : obstacles)
         for (int l = 0; l < static_cast<int>(m_lanes.size()); ++l) {
@@ -149,7 +162,7 @@ void Sim::setObstacles(const std::vector<Obstacle>& obstacles) {
             const float s = glm::dot(d, L.dir);
             // A car keeps to the middle of its lane and is about 2 m wide.
             if (std::abs(glm::dot(d, side)) > rs + 1.1f) continue;
-            if (s + ra < 0.0f || s - ra > L.len) continue;
+            if (s + ra < -kIntoCrossing || s - ra > L.len + kIntoCrossing) continue;
             // ...and it is in the street, not on a bridge over it or under it.
             const float y = L.heightAt(s);
             if (o.center.y - ry > y + 2.5f || o.center.y + ry < y - 0.5f) continue;
@@ -280,6 +293,7 @@ void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
             }
             if (!placed) continue;
             v.next = pickNext(v);
+            v.uid  = m_nextUid++;
             m_vehicles.push_back(v);
         }
     }

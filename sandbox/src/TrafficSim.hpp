@@ -27,8 +27,9 @@
 //     meet in the middle of a village crossing and drive through each other.
 //   - People walk round their block on the middle of the pavement and never
 //     cross a street.
-//   - A wreck or the player's car (setObstacles) blocks the lanes it stands in;
-//     inside a crossing, where the turns run, nobody sees it.
+//   - A wreck or the player's car (setObstacles) blocks the lanes it stands in,
+//     and in a crossing the lanes whose straight line runs through it; the
+//     curve of a turn is not checked.
 namespace traffic {
 
 enum class Kind : std::uint8_t { Car, Bus, Truck, Count };
@@ -55,6 +56,7 @@ struct Node {
 };
 
 struct Vehicle {
+    std::uint32_t uid = 0;  // who it is, for as long as it lives (its index shifts)
     Kind  kind   = Kind::Car;
     int   lane   = 0;       // the lane it is on -- or leaving, while turning
     int   next   = -1;      // the lane it takes at the end of this one
@@ -140,6 +142,8 @@ public:
                    float vmax);
     void removeDriver(int entity);   // it crashed: out of the traffic, a wreck now
     void removeDrivers();
+    // A town vehicle crashed: out of the traffic. False if it is not there.
+    bool removeVehicle(std::uint32_t uid);
 
     // What stands in the street this frame (wrecks, the player's car). Every
     // lane it reaches into is blocked from its near end to its far end: who
@@ -180,6 +184,7 @@ private:
     std::vector<Lane>    m_lanes;
     std::vector<Vehicle> m_vehicles;
     std::vector<Block>   m_blocks;
+    std::uint32_t        m_nextUid = 1;   // never reset: a rebuild must not hand out an old one
     std::vector<Walker>  m_walkers;
     std::vector<std::vector<glm::vec3>> m_walks;
     std::vector<std::vector<float>>     m_walkLen;   // cumulative length per walk

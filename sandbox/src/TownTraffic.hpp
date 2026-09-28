@@ -105,6 +105,13 @@ public:
     // hard enough, moves the rest and lays the wrecks where the physics has
     // them -- `place` sets an entity's world transform (main's setWorld,
     // parent-aware). endPlay lets them go.
+    //
+    // The towns' own vehicles get the same near the player (or the eye): the
+    // nearest few are lent a driven body each, so the player's car meets real
+    // mass there, and a hard knock crashes them into a wreck. Far off they stay
+    // what they were -- the simulation, drawn, and nothing to collide with --
+    // which is how the big open-world games keep a whole city of traffic cheap.
+    // After Play the traffic is built again, so the crashed come back.
     static bool drives(const Entity& e) { return e.components.get<TrafficDriverComponent>(); }
     void beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics);
     void playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics, float dt,
@@ -177,6 +184,7 @@ private:
         int                     kind = 0;
         float                   weight = 1.0f;
         float                   length = 4.3f;
+        glm::vec3               size{4.3f, 1.5f, 1.8f};   // its box: long, high, wide
         std::vector<PrefabPart> parts;
         glm::mat4               frame{1.0f};   // prefab frame -> vehicle frame
         Rig                     rig;
@@ -199,6 +207,31 @@ private:
         float     wheelR = 0.35f, wheelbase = 2.7f, maxSteer = 0.55f, spinSign = 1.0f;
     };
     void placeDrivers();   // put every driver not yet on a lane onto one
+
+    // A town vehicle near the player, lent a driven body so it can be hit (the
+    // way the drivers' are); keyed by Vehicle::uid, given back when it is out
+    // of reach again.
+    struct Proxy {
+        std::uint32_t uid = 0, body = 0;
+        glm::vec3     half{1.0f};
+        glm::vec3     askedVel{0.0f}, askedSpin{0.0f};
+        bool          wanted = false;   // still near this tick
+    };
+    // A town vehicle that crashed: out of the traffic, drawn where its body lies.
+    struct Wreck {
+        std::uint32_t body = 0;
+        glm::vec3     half{1.0f};
+        int           prefab = -1;
+        float         odo = 0.0f;        // its wheels stay turned where they stopped
+        Instance      inst;              // its placeholder, and last frame's pose
+        glm::mat4     now{1.0f};         // this frame's pose, in the vehicle frame
+    };
+    void tickTownBodies(fitzel::PhysicsWorld& physics, float dt);
+    glm::vec3 halfOf(const Vehicle& v) const;
+    // The parts of a prefab look, posed by m with its wheels turned.
+    void drawLook(const PrefabLook& look, const glm::mat4& m, float spin, float steer, bool detail,
+                  const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&,
+                                           const glm::mat4&, bool)>& fn) const;
 
     void rebuild(const CitySystem& towns);
     bool flatten(const prefab::Prefab& p, int forward, PrefabLook& out);
@@ -234,6 +267,9 @@ private:
     bool                        m_playing = false;
     std::uint32_t               m_playerBody = 0;
     glm::vec3                   m_playerHalf{1.0f};
+    std::vector<Proxy>          m_proxies;
+    std::vector<Wreck>          m_wrecks;
+    bool                        m_crashedTown = false;   // rebuild after Play: bring them back
 };
 
 } // namespace traffic

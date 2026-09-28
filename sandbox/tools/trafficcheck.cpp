@@ -194,6 +194,20 @@ void drivers() {
     check(dressed > 0 && longOnes > 0, "vehicles dressed as a prefab carry its length",
           std::to_string(longOnes) + " of " + std::to_string(sim.vehicles().size()));
 
+    // Who is who (TownTraffic keys the bodies it lends by it): every vehicle
+    // its own uid, and a crashed one leaves the traffic alone.
+    {
+        std::vector<std::uint32_t> uids;
+        for (const traffic::Vehicle& v : sim.vehicles()) uids.push_back(v.uid);
+        std::sort(uids.begin(), uids.end());
+        const bool unique = std::adjacent_find(uids.begin(), uids.end()) == uids.end() && uids.front() != 0;
+        const std::size_t n = sim.vehicles().size();
+        const std::uint32_t gone = sim.vehicles()[n / 2].uid;
+        const bool removed = sim.removeVehicle(gone) && sim.vehicles().size() + 1 == n &&
+                             !sim.removeVehicle(gone);
+        check(unique && removed, "every vehicle has its own id, and a crashed one leaves alone");
+    }
+
     // A driver dropped next to a street, facing along it.
     const Street& st = L.streets[L.streets.size() / 2];
     const glm::vec2 a = st.pts[1], b = st.pts[2];
@@ -318,6 +332,46 @@ void obstacles() {
     for (std::size_t n = 0; n < waiting.size(); ++n) moved += sim.vehicles()[waiting[n]].odo - odo[n] > 30.0f;
     check(!waiting.empty() && moved == static_cast<int>(waiting.size()), "cleared away, the queue drives on",
           std::to_string(moved) + " of " + std::to_string(waiting.size()) + " went on 30 m in a minute");
+
+    // A wreck in a crossing, 4 m past the end of a lane on its line: who comes
+    // along that lane waits at the stop line instead of driving into it.
+    std::vector<int> ends;
+    std::vector<traffic::Obstacle> cross;
+    for (int l : order) {
+        const traffic::Lane& ln = sim.lanes()[static_cast<std::size_t>(l)];
+        if (ln.len < 30.0f || ends.size() == 3) break;
+        bool clear = true;
+        for (const traffic::Vehicle& v : sim.vehicles())
+            if (v.lane == l && (v.turning || v.s > ln.len - 30.0f)) clear = false;
+        if (!clear) continue;
+        traffic::Obstacle o;
+        const glm::vec2 c = ln.p1 + ln.dir * 4.0f;
+        o.center  = {c.x, ln.heightAt(ln.len) + 0.75f, c.y};
+        o.axes[0] = glm::vec3(ln.dir.x, 0.0f, ln.dir.y) * 2.2f;
+        o.axes[1] = glm::vec3(0.0f, 0.75f, 0.0f);
+        o.axes[2] = glm::vec3(-ln.dir.y, 0.0f, ln.dir.x) * 0.9f;
+        cross.push_back(o);
+        ends.push_back(l);
+    }
+    sim.setObstacles(cross);
+    int through = 0;
+    for (int k = 0; k < 180 * 30; ++k) {
+        const std::vector<traffic::Vehicle> before = sim.vehicles();
+        sim.step(1.0f / 30.0f, 300.0 + k / 30.0);
+        for (std::size_t i = 0; i < before.size(); ++i)
+            if (!before[i].turning && sim.vehicles()[i].turning &&
+                std::find(ends.begin(), ends.end(), before[i].lane) != ends.end())
+                ++through;
+    }
+    int atLine = 0;
+    for (const traffic::Vehicle& v : sim.vehicles())
+        if (!v.turning && v.v < 0.1f && std::find(ends.begin(), ends.end(), v.lane) != ends.end() &&
+            sim.lanes()[static_cast<std::size_t>(v.lane)].len - v.s < 10.0f)
+            ++atLine;
+    check(!ends.empty() && through == 0 && atLine > 0,
+          "a wreck in a crossing: who comes straight at it waits at the stop line",
+          std::to_string(ends.size()) + " crossings, " + std::to_string(through) + " drove in, " +
+              std::to_string(atLine) + " waiting at the line after 3 min");
 }
 
 // The physics side of a CPU car (TownTraffic::playTick): its driven body is

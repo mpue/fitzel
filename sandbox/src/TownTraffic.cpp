@@ -287,7 +287,25 @@ namespace {
 // How near a prefab-dressed vehicle is drawn as its prefab, and how near that
 // one also casts a shadow and shows in reflections.
 constexpr float kPrefabReach = 200.0f, kPrefabDetail = 60.0f;
+
+// A vehicle's frame for its pose: x along its nose, y up, standing on the road.
+glm::mat4 frameOf(const Pose& p) {
+    glm::mat4 m = glm::translate(glm::mat4(1.0f), p.pos);
+    m = glm::rotate(m, std::atan2(-p.heading.y, p.heading.x), glm::vec3(0, 1, 0));
+    return glm::rotate(m, p.pitch, glm::vec3(0, 0, 1));
+}
 } // namespace
+
+glm::vec3 TownTraffic::halfOf(const Vehicle& v) const {
+    if (v.prefab >= 0 && v.prefab < static_cast<int>(m_looks.size()))
+        return 0.5f * m_looks[static_cast<std::size_t>(v.prefab)].size;
+    // The placeholders' boxes (see init).
+    switch (v.kind) {
+        case Kind::Bus:   return {6.0f, 1.55f, 1.25f};
+        case Kind::Truck: return {4.75f, 1.8f, 1.25f};
+        default:          return {2.15f, 0.76f, 0.9f};
+    }
+}
 
 glm::mat4 TownTraffic::wheelTurn(const Rig& rig, int i, float spin, float steer) {
     const RigWheel& w = rig.wheels[static_cast<std::size_t>(i)];
@@ -410,6 +428,15 @@ void TownTraffic::update(const CitySystem& towns, float dt, double clock,
     for (const Walker& w : m_sim.walkers()) {
         const Pose p = m_sim.pose(w);
         pose(p, p.bob, false, false);
+    }
+    // Wrecks, where playTick last found their bodies; a prefab one near
+    // enough is drawn by forEachPrefabDraw instead.
+    for (Wreck& w : m_wrecks) {
+        const glm::vec3 at(w.now[3]);
+        const bool asLook = w.prefab >= 0 && w.prefab < static_cast<int>(m_looks.size()) &&
+                            (!m_haveView || glm::distance(at, m_eye) < kPrefabReach);
+        if (!asLook && inView(at, kCarReach, 9.0f)) skin(w.inst, w.now);
+        w.inst.prev = w.now;
     }
     for (std::size_t s = 0; s < SlotCount; ++s) {
         m_live[s] = !m_idx[s].empty();
@@ -551,6 +578,7 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
     out.rig    = rig;
     out.parts  = std::move(parts);
     out.length = std::max(hi.x - lo.x, 1.0f);
+    out.size   = glm::max(hi - lo, glm::vec3(0.4f));
     return true;
 }
 
@@ -561,24 +589,34 @@ void TownTraffic::forEachPrefabDraw(
         const Pose p = m_sim.pose(v);
         if (!asPrefab(v, p.pos) || !inView(p.pos, kPrefabReach, 0.6f * v.length + 2.0f)) continue;
         const bool detail = !m_haveView || glm::length(p.pos - m_eye) < kPrefabDetail;
-        glm::mat4 m = glm::translate(glm::mat4(1.0f), p.pos);
-        m = glm::rotate(m, std::atan2(-p.heading.y, p.heading.x), glm::vec3(0, 1, 0));
-        m = glm::rotate(m, p.pitch, glm::vec3(0, 0, 1));
         const PrefabLook& look = m_looks[static_cast<std::size_t>(v.prefab)];
-        std::array<glm::mat4, 4> turned;
-        if (look.rig.any) {
-            const float spin  = v.odo / look.rig.radius;
-            const float steer = steerOf(v, look.rig.wheelbase, look.rig.maxSteer);
-            for (int i = 0; i < 4; ++i)
-                turned[static_cast<std::size_t>(i)] = look.frame * wheelTurn(look.rig, i, spin, steer);
-        }
-        for (const PrefabPart& part : look.parts)
-            fn(*part.mesh, part.material,
-               part.wheel >= 0 && look.rig.any
-                   ? m * turned[static_cast<std::size_t>(part.wheel)] * part.rest
-                   : m * part.local,
-               detail);
+        drawLook(look, frameOf(p), v.odo / look.rig.radius,
+                 steerOf(v, look.rig.wheelbase, look.rig.maxSteer), detail, fn);
     }
+    for (const Wreck& w : m_wrecks) {
+        if (w.prefab < 0 || w.prefab >= static_cast<int>(m_looks.size())) continue;
+        const glm::vec3 at(w.now[3]);
+        const PrefabLook& look = m_looks[static_cast<std::size_t>(w.prefab)];
+        if (!inView(at, kPrefabReach, 0.6f * look.length + 2.0f)) continue;
+        const bool detail = !m_haveView || glm::length(at - m_eye) < kPrefabDetail;
+        drawLook(look, w.now, w.odo / look.rig.radius, 0.0f, detail, fn);
+    }
+}
+
+void TownTraffic::drawLook(const PrefabLook& look, const glm::mat4& m, float spin, float steer,
+                           bool detail,
+                           const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&,
+                                                    const glm::mat4&, bool)>& fn) const {
+    std::array<glm::mat4, 4> turned;
+    if (look.rig.any)
+        for (int i = 0; i < 4; ++i)
+            turned[static_cast<std::size_t>(i)] = look.frame * wheelTurn(look.rig, i, spin, steer);
+    for (const PrefabPart& part : look.parts)
+        fn(*part.mesh, part.material,
+           part.wheel >= 0 && look.rig.any
+               ? m * turned[static_cast<std::size_t>(part.wheel)] * part.rest
+               : m * part.local,
+           detail);
 }
 
 // --- Scene objects driving in the traffic ------------------------------------------
@@ -615,15 +653,162 @@ bool obstacleOf(fitzel::PhysicsWorld& physics, std::uint32_t body, const glm::ve
     o.vel = {vel.x, vel.z};
     return true;
 }
+
+// Steer a driven body onto (pos, q) over the coming step -- or jump it there
+// when that is a leap (put on a lane, or on another after a rebuild) or a sharp
+// turn: flown, it would go through whatever is in between, and the physics caps
+// how fast a body spins, so the spin it did not get would read as a crash next
+// tick. Then read back what it was asked, to tell a knock from the driving.
+void steerBody(fitzel::PhysicsWorld& ph, std::uint32_t body, const glm::vec3& pos,
+               const glm::quat& q, float vmax, float dt, glm::vec3& askedVel, glm::vec3& askedSpin) {
+    glm::vec3 now(0.0f);
+    glm::quat nowQ(1.0f, 0.0f, 0.0f, 0.0f);
+    ph.getTransform(body, now, nowQ);
+    const float turn = 2.0f * std::acos(std::min(1.0f, std::abs(glm::dot(nowQ, q))));
+    if (glm::distance(now, pos) > 1.0f + 2.0f * vmax * std::max(dt, 1.0f / 60.0f) ||
+        turn > glm::radians(30.0f))
+        ph.setTransform(body, pos, q);
+    else
+        ph.setKinematicTarget(body, pos, q, std::max(dt, 1e-3f));
+    ph.getLinearVelocity(body, askedVel);
+    ph.getAngularVelocity(body, askedSpin);
+}
+
+// How hard the physics step just taken knocked a driven body (traffic::jolt),
+// and whether that crashes it.
+bool knocked(fitzel::PhysicsWorld& ph, std::uint32_t body, const glm::vec3& askedVel,
+             const glm::vec3& askedSpin, float reach, float limit, float& j) {
+    glm::vec3 vel(0.0f), spin(0.0f);
+    ph.getLinearVelocity(body, vel);
+    ph.getAngularVelocity(body, spin);
+    j = jolt(vel, askedVel, spin, askedSpin, reach);
+    return j >= limit;
+}
+
+// The knock that crashes a town vehicle: TrafficDriverComponent's default.
+constexpr float kTownCrash = 10.0f / 3.6f;
+// The town vehicles lent a body: the nearest this many, this near the player.
+constexpr float       kBodyReach = 70.0f;
+constexpr std::size_t kBodiesAtMost = 32;
+
+const char* kindName(Kind k) {
+    return k == Kind::Bus ? "bus" : k == Kind::Truck ? "lorry" : "car";
+}
 } // namespace
 
 int TownTraffic::wreckCount() const {
-    return static_cast<int>(std::count_if(m_drivers.begin(), m_drivers.end(),
+    return static_cast<int>(m_wrecks.size()) +
+           static_cast<int>(std::count_if(m_drivers.begin(), m_drivers.end(),
                                           [](const Driver& d) { return d.wrecked; }));
+}
+
+void TownTraffic::tickTownBodies(fitzel::PhysicsWorld& physics, float dt) {
+    const std::vector<Vehicle>& V = m_sim.vehicles();
+    auto indexOf = [&](std::uint32_t uid) {
+        for (int i = 0; i < static_cast<int>(V.size()); ++i)
+            if (V[static_cast<std::size_t>(i)].uid == uid) return i;
+        return -1;
+    };
+
+    // Crashes first: what the step just taken knocked harder than it takes
+    // leaves the traffic -- with its placeholder instance, which runs parallel
+    // to the town's vehicles -- and lies where its body goes from now on.
+    for (std::size_t k = 0; k < m_proxies.size();) {
+        const Proxy px = m_proxies[k];
+        const int vi = indexOf(px.uid);
+        float j = 0.0f;
+        if (vi < 0 || !knocked(physics, px.body, px.askedVel, px.askedSpin, glm::length(px.half),
+                               kTownCrash, j)) {
+            ++k;
+            continue;
+        }
+        const Vehicle& v = V[static_cast<std::size_t>(vi)];
+        std::size_t inst = 0;
+        for (int i = 0; i < vi; ++i) inst += V[static_cast<std::size_t>(i)].entity < 0;
+        Wreck w;
+        w.body   = px.body;
+        w.half   = px.half;
+        w.prefab = v.prefab;
+        w.odo    = v.odo;
+        if (inst < m_instances.size()) {
+            w.inst = m_instances[inst];
+            m_instances.erase(m_instances.begin() + static_cast<std::ptrdiff_t>(inst));
+        } else {
+            w.inst = {&m_templates[static_cast<std::size_t>(v.kind)], v.look, false};
+        }
+        w.now = w.inst.prev;
+        std::fprintf(stderr, "[Fitzel] a town %s crashed (a %.0f km/h jolt)\n", kindName(v.kind),
+                     j * 3.6f);
+        physics.releaseBody(px.body);
+        m_sim.removeVehicle(px.uid);   // v is gone after this
+        m_wrecks.push_back(w);
+        m_crashedTown = true;
+        m_proxies.erase(m_proxies.begin() + static_cast<std::ptrdiff_t>(k));
+    }
+
+    // Who is near the player's car (or the eye, on foot): the nearest few get
+    // a body, steered onto the pose the simulation gives them.
+    glm::vec3 focus = m_eye;
+    if (m_playerBody) {
+        glm::vec3 p;
+        glm::quat q;
+        if (physics.getTransform(m_playerBody, p, q)) focus = p;
+    }
+    std::vector<std::pair<float, int>> near;
+    for (int i = 0; i < static_cast<int>(V.size()); ++i) {
+        const Vehicle& v = V[static_cast<std::size_t>(i)];
+        if (v.entity >= 0) continue;
+        const glm::vec3 d = m_sim.pose(v).pos - focus;
+        const float d2 = glm::dot(d, d);
+        if (d2 < kBodyReach * kBodyReach) near.push_back({d2, i});
+    }
+    if (near.size() > kBodiesAtMost) {
+        std::partial_sort(near.begin(), near.begin() + kBodiesAtMost, near.end());
+        near.resize(kBodiesAtMost);
+    }
+    for (Proxy& px : m_proxies) px.wanted = false;
+    for (const auto& n : near) {
+        const Vehicle& v = V[static_cast<std::size_t>(n.second)];
+        const glm::mat4 f = frameOf(m_sim.pose(v));
+        std::size_t k = 0;
+        while (k < m_proxies.size() && m_proxies[k].uid != v.uid) ++k;
+        const glm::vec3 half = k < m_proxies.size() ? m_proxies[k].half : halfOf(v);
+        const glm::vec3 centre(f * glm::vec4(0.0f, half.y, 0.0f, 1.0f));
+        const glm::quat q = glm::quat_cast(glm::mat3(f));
+        if (k == m_proxies.size()) {
+            Proxy px;
+            px.uid  = v.uid;
+            px.half = half;
+            px.body = physics.addDrivenBox(half, centre, q, kindMass(v.kind));
+            if (!px.body) continue;
+            m_proxies.push_back(px);
+        }
+        Proxy& px = m_proxies[k];
+        px.wanted = true;
+        steerBody(physics, px.body, centre, q, v.vmax, dt, px.askedVel, px.askedSpin);
+    }
+    // Out of reach again: the body goes back.
+    for (std::size_t k = 0; k < m_proxies.size();) {
+        if (m_proxies[k].wanted) { ++k; continue; }
+        physics.removeBody(m_proxies[k].body);
+        m_proxies.erase(m_proxies.begin() + static_cast<std::ptrdiff_t>(k));
+    }
+
+    // The wrecks' poses for drawing: their bodies, down to the vehicle frame
+    // (which stands on the road, the box sits on it).
+    for (Wreck& w : m_wrecks) {
+        glm::vec3 p;
+        glm::quat q;
+        if (physics.getTransform(w.body, p, q))
+            w.now = glm::translate(glm::mat4(1.0f), p) * glm::mat4_cast(q) *
+                    glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -w.half.y, 0.0f));
+    }
 }
 
 void TownTraffic::beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics) {
     m_drivers.clear();
+    m_proxies.clear();
+    m_wrecks.clear();
     m_playing = true;
     for (const Entity& e : entities) {
         const auto* dc = e.components.get<TrafficDriverComponent>();
@@ -701,18 +886,18 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
     // the physics has it.
     if (physics)
         for (Driver& d : m_drivers) {
-            if (!d.body || d.wrecked) continue;
-            glm::vec3 vel(0.0f), spin(0.0f);
-            physics->getLinearVelocity(d.body, vel);
-            physics->getAngularVelocity(d.body, spin);
-            const float j = jolt(vel, d.askedVel, spin, d.askedSpin, glm::length(d.half));
-            if (j < d.crashJolt) continue;
+            float j = 0.0f;
+            if (!d.body || d.wrecked ||
+                !knocked(*physics, d.body, d.askedVel, d.askedSpin, glm::length(d.half), d.crashJolt, j))
+                continue;
             d.wrecked = true;
             physics->releaseBody(d.body);
             m_sim.removeDriver(d.entity);
             std::fprintf(stderr, "[Fitzel] traffic driver '%s' crashed (a %.0f km/h jolt)\n",
                          d.name.c_str(), j * 3.6f);
         }
+    // ...and the towns' own vehicles near the player.
+    if (physics) tickTownBodies(*physics, dt);
 
     for (const Vehicle& v : m_sim.vehicles()) {
         if (v.entity < 0) continue;
@@ -752,26 +937,9 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
                     break;
                 }
         }
-        if (physics && d->body) {
-            // Steered there -- unless "there" is a jump (put on its lane, or
-            // on another after a rebuild), which it makes at once rather than
-            // flying through whatever is in between. A big turn in one frame
-            // is a jump too: the physics caps how fast a body spins, and the
-            // spin it did not get would read as a crash next tick.
-            const glm::quat q = glm::quat(glm::radians(rot));
-            glm::vec3 now(0.0f);
-            glm::quat nowQ(1.0f, 0.0f, 0.0f, 0.0f);
-            physics->getTransform(d->body, now, nowQ);
-            const float turn = 2.0f * std::acos(std::min(1.0f, std::abs(glm::dot(nowQ, q))));
-            if (glm::distance(now, pos) > 1.0f + 2.0f * d->vmax * std::max(dt, 1.0f / 60.0f) ||
-                turn > glm::radians(30.0f))
-                physics->setTransform(d->body, pos, q);
-            else
-                physics->setKinematicTarget(d->body, pos, q, std::max(dt, 1e-3f));
-            // What it was asked, to tell a knock from the driving next tick.
-            physics->getLinearVelocity(d->body, d->askedVel);
-            physics->getAngularVelocity(d->body, d->askedSpin);
-        }
+        if (physics && d->body)
+            steerBody(*physics, d->body, pos, glm::quat(glm::radians(rot)), d->vmax, dt,
+                      d->askedVel, d->askedSpin);
     }
 
     // Wrecks lie where the physics has them, tumbled as they are.
@@ -790,6 +958,8 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
         Obstacle o;
         for (const Driver& d : m_drivers)
             if (d.wrecked && obstacleOf(*physics, d.body, d.half, o)) obstacles.push_back(o);
+        for (const Wreck& w : m_wrecks)
+            if (obstacleOf(*physics, w.body, w.half, o)) obstacles.push_back(o);
         if (obstacleOf(*physics, m_playerBody, m_playerHalf, o)) obstacles.push_back(o);
     }
     m_sim.setObstacles(obstacles);
@@ -799,8 +969,13 @@ void TownTraffic::endPlay() {
     m_sim.removeDrivers();
     m_sim.setObstacles({});
     m_drivers.clear();
+    m_proxies.clear();   // their bodies go with Play's physics world
+    m_wrecks.clear();
     m_playing    = false;
     m_playerBody = 0;
+    // The crashed come back: the traffic is built again, as it was.
+    if (m_crashedTown) m_revision = -1;
+    m_crashedTown = false;
 }
 
 } // namespace traffic
