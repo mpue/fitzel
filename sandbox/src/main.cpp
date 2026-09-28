@@ -111,6 +111,7 @@
 #include "LuaCompletion.hpp"
 #include "ThumbCache.hpp"
 #include "ScriptEditor.hpp"
+#include "LookPanels.hpp"
 #include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
@@ -184,6 +185,7 @@
 #include "UiOverlayCommand.hpp"
 #include "UiStyle.hpp"
 #include "Startup.hpp"
+#include "PostLook.hpp"
 
 using namespace fitzel;
 
@@ -518,11 +520,8 @@ int main(int argc, char** argv) {
         // The post chain's knobs stay HERE, not on the chain: they are edited by
         // the Sky & atmosphere and Colour grade panels, saved with the project,
         // and driven by the weather -- all of which is main's business. The chain
-        // is handed them per frame.
-        float bloomIntensity = 0.35f;
-        float rayIntensity   = 0.5f;
-        float bloomThreshold = 1.0f;  // luminance where the glow starts
-        float bloomKnee      = 0.5f;  // soft-knee width below it
+        // is handed them per frame. All of them are one PostLook (PostLook.hpp).
+        PostLook postLook;
 
         // The final composited image lives in this target and is shown as the
         // central "Viewport" dock panel (IDE/editor style). Its size tracks the
@@ -618,40 +617,16 @@ int main(int argc, char** argv) {
         glm::vec3& blurAnchorWorld = race.blurAnchorWorld;
         bool&      blurAnchorValid = race.blurAnchorValid;
         float&     blurSpeed01     = race.blurSpeed01; // craft speed 0..~1.4 -> streak len
-        bool fxaaEnabled = true;
-        // Temporal AA (see PostChain / taa.frag). Wins over FXAA when on; not
-        // used in split screen, where one history would serve two cameras.
-        bool  taaEnabled = true;
-        float taaSharpen = 0.35f;
         unsigned  taaFrame = 0;            // jitter sequence position
         glm::mat4 taaPrevVP[2]{glm::mat4(1.0f), glm::mat4(1.0f)}; // per pane, unjittered
         glm::vec3 taaPrevEye[2]{glm::vec3(0.0f), glm::vec3(0.0f)};
         bool      taaHavePrev[2]{false, false};
-        // Screen-space reflections (lit.frag ssrTrace), traced through the last
-        // frame the post chain kept. Needs taaPrevVP, which is kept either way.
-        bool      ssrEnabled = true;
-        // Contact shadows (lit.frag contactShadow): short rays to the sun
-        // through the same history, for what the cascades are too coarse for.
-        bool      contactShadows = true;
         int  viewW = hdrW, viewH = hdrH;
         bool viewportHovered = false;
         glm::vec2 viewportMouseNdc(0.0f); // cursor within the viewport, NDC [-1,1]
         bool viewportClicked = false;     // left-click landed on the viewport image
         glm::vec2 viewportRectMin(0.0f);  // viewport image top-left in screen px
         glm::vec2 viewportRectSize(0.0f); // viewport image size in screen px
-        // The horizon-based AO samples along screen-space directions it derives
-        // itself, so there is no sample kernel to upload any more.
-        float ssaoStrength = 0.7f;
-        // Cube-face size of the reflection probe, mirrored here so it can be a
-        // scene setting; the renderer owns the actual cubes (see
-        // setEnvProbeResolution, which reallocates them).
-        int   envProbeRes  = fitzel::Renderer::kDefaultEnvProbeRes;
-        // Cap on the probe's cube faces per frame. The default buys back most of
-        // the reflection lag at speed; 1 is the old amortized behaviour.
-        int   envProbeFaces = 3;
-        float ssaoRadius   = 1.5f;
-        float ssaoBias     = 0.15f; // radians: horizons below this don't occlude
-        float ssaoPower    = 1.6f;
 
         // Day/night cycle.
         float timeOfDay = 7.3f;    // hours [0,24)
@@ -982,10 +957,10 @@ int main(int argc, char** argv) {
         auto applyGfx = [&](const gfxmenu::Settings& prev) {
             gfxmenu::Targets t;
             t.viewRadius    = &viewRadius;
-            t.envProbeRes   = &envProbeRes;
-            t.envProbeFaces = &envProbeFaces;
-            t.fxaa          = &fxaaEnabled;
-            t.taa           = &taaEnabled;
+            t.envProbeRes   = &postLook.envProbeRes;
+            t.envProbeFaces = &postLook.envProbeFaces;
+            t.fxaa          = &postLook.fxaaEnabled;
+            t.taa           = &postLook.taaEnabled;
             t.grassEnabled  = &veg.grassEnabled;
             t.flowerEnabled = &veg.flowerEnabled;
             t.grassDensity  = &veg.grassDensity;
@@ -3330,39 +3305,6 @@ int main(int argc, char** argv) {
         bool      listenerHasPrev = false;
         bool  prevFlashOn  = false;
 
-        // Depth of field (distance blur). dofMax = 0 disables it.
-        float dofMax   = 5.0f;      // max blur radius (pixels)
-        float dofNear  = 25.0f;     // sharp up to here (metres)
-        float dofFar   = 140.0f;    // fully blurred beyond here
-
-        // Camera motion blur: streaks the scene along per-pixel screen velocity
-        // (this frame's camera transform vs last frame's, by depth reprojection).
-        // Purely camera motion -- fast turns/flight smear, a static view stays
-        // sharp. 0 disables it (like dofMax).
-        float motionBlurStrength = 0.6f; // 0 off .. ~2 heavy (exposure fraction)
-
-        // Tonemapping exposure + HSV colour grade.
-        float exposure   = 1.0f;
-        float hueShift   = 0.0f;
-        float saturation = 1.35f; // richer, less milky greens
-        float valueGain  = 1.0f;
-        float warmth     = 0.18f; // golden-hour white balance
-        float contrast   = 0.16f; // lift the flat look
-        // Split toning and vibrance (composite.frag): cool shadows, warm
-        // highlights, and more colour where there is little -- the graded look
-        // of a landscape photograph. 0 = off, the default.
-        float gradeSplit    = 0.0f;
-        float gradeVibrance = 0.0f;
-        // Tonemap curve (0 ACES fit, 1 AgX, 2 PBR Neutral -- see composite.frag)
-        // and auto exposure relative to `exposure` (see PostChain::Params).
-        int   tonemapCurve  = 1;
-        float vignette      = 0.2f;   // lens fall-off to the corners (composite.frag)
-        float filmGrain     = 0.0f;
-        bool  autoExposure  = true;
-        float autoMinEv     = -1.5f;
-        float autoMaxEv     = 2.5f;
-        float adaptSpeed    = 1.5f;
-
         bool requestDockRebuild = false; // set by "Reset layout" to re-apply the default
 
         // Camera angle controls.
@@ -3878,23 +3820,23 @@ int main(int argc, char** argv) {
         addB("volFogSelfShadow", volFogSet.medium.selfShadow);
         addI("volFogSteps", volFogSet.medium.steps);
         addI("volFogRes", volFogSet.resScale);
-        addF("exposure", exposure);            addF("bloom", bloomIntensity);
-        addF("rays", rayIntensity);            addF("ssao", ssaoStrength);
-        addF("ssaoRadius", ssaoRadius);        addF("ssaoBias", ssaoBias);
-        addF("bloomThreshold", bloomThreshold); addF("bloomKnee", bloomKnee);
+        addF("exposure", postLook.exposure);            addF("bloom", postLook.bloomIntensity);
+        addF("rays", postLook.rayIntensity);            addF("ssao", postLook.ssaoStrength);
+        addF("ssaoRadius", postLook.ssaoRadius);        addF("ssaoBias", postLook.ssaoBias);
+        addF("bloomThreshold", postLook.bloomThreshold); addF("bloomKnee", postLook.bloomKnee);
         addF("cascadeSplit", renderer.shadows().splitLambda);
-        addI("envProbeRes", envProbeRes);      addI("envProbeFaces", envProbeFaces);
-        addF("hue", hueShift);                 addF("saturation", saturation);
-        addF("value", valueGain);              addF("warmth", warmth);
-        addF("gradeSplit", gradeSplit);        addF("gradeVibrance", gradeVibrance);
-        addF("contrast", contrast);            addF("motionBlur", motionBlurStrength);
-        addF("dofBlur", dofMax);               addF("dofNear", dofNear);
-        addF("dofFar", dofFar);
-        addI("tonemapCurve", tonemapCurve);    addB("autoExposure", autoExposure);
-        addF("autoMinEv", autoMinEv);          addF("autoMaxEv", autoMaxEv);
-        addF("adaptSpeed", adaptSpeed);        addB("ssr", ssrEnabled);
-        addB("contactShadows", contactShadows);
-        addF("vignette", vignette);            addF("filmGrain", filmGrain);
+        addI("envProbeRes", postLook.envProbeRes);      addI("envProbeFaces", postLook.envProbeFaces);
+        addF("hue", postLook.hueShift);                 addF("saturation", postLook.saturation);
+        addF("value", postLook.valueGain);              addF("warmth", postLook.warmth);
+        addF("gradeSplit", postLook.gradeSplit);        addF("gradeVibrance", postLook.gradeVibrance);
+        addF("contrast", postLook.contrast);            addF("motionBlur", postLook.motionBlurStrength);
+        addF("dofBlur", postLook.dofMax);               addF("dofNear", postLook.dofNear);
+        addF("dofFar", postLook.dofFar);
+        addI("tonemapCurve", postLook.tonemapCurve);    addB("autoExposure", postLook.autoExposure);
+        addF("autoMinEv", postLook.autoMinEv);          addF("autoMaxEv", postLook.autoMaxEv);
+        addF("adaptSpeed", postLook.adaptSpeed);        addB("ssr", postLook.ssrEnabled);
+        addB("contactShadows", postLook.contactShadows);
+        addF("vignette", postLook.vignette);            addF("filmGrain", postLook.filmGrain);
         addF("waterLevel", waterLevel);        addF("waveHeight", waveHeight);
         addF("waveChoppy", waveChoppy);        addF("waveStrength", waveStrength);
         addF("waveScale", waveScale);          addF("foamWidth", foamWidth);
@@ -4169,8 +4111,8 @@ int main(int argc, char** argv) {
             cloudShadowsOn = false;
             wildlifeOn     = false;
             sunLatitude    = 0.0f;
-            gradeSplit     = 0.0f;
-            gradeVibrance  = 0.0f;
+            postLook.gradeSplit     = 0.0f;
+            postLook.gradeVibrance  = 0.0f;
             sunDeclination = -10.4f;
             motesOn        = false;
             soundscapeOn   = false;
@@ -4182,10 +4124,10 @@ int main(int argc, char** argv) {
             // The probe size is the one setting that owns GPU memory: push it
             // through, or the scene's value sits in the variable while the
             // renderer keeps the cubes it already had.
-            renderer.setEnvProbeResolution(envProbeRes);
-            envProbeRes = renderer.envProbeResolution(); // as clamped/rounded
-            renderer.setEnvProbeMaxFaces(envProbeFaces);
-            envProbeFaces = renderer.envProbeMaxFaces();
+            renderer.setEnvProbeResolution(postLook.envProbeRes);
+            postLook.envProbeRes = renderer.envProbeResolution(); // as clamped/rounded
+            renderer.setEnvProbeMaxFaces(postLook.envProbeFaces);
+            postLook.envProbeFaces = renderer.envProbeMaxFaces();
             // Does this file keep its terrain in an entity? (Consumed and reset by
             // afterSceneLoadFn, which migrates the ones that don't.)
             sceneStoredTerrainEntity = j.value("terrainEntity", false);
@@ -8536,7 +8478,7 @@ int main(int argc, char** argv) {
             // Times what auto exposure applied a couple of frames ago: the
             // renderer's exposure is what the path tracer's capture reads, and a
             // render has to come out as bright as the viewport it was taken from.
-            renderer.setExposure(exposure * post.autoExposureScale());
+            renderer.setExposure(postLook.exposure * post.autoExposureScale());
 
             // Atmospheric fog, tinted by time of day to match the sky horizon.
             // Colours are authored in sRGB and linearised for the linear-space
@@ -12142,301 +12084,14 @@ int main(int argc, char** argv) {
                                       audio.ok()});
             }
 
-            if (showSky) { if (ImGui::Begin("Sky & atmosphere", &showSky)) {
-                ImGui::SliderFloat("Time of day", &timeOfDay, 0.0f, 24.0f, "%.1f h");
-                ImGui::SameLine();
-                ImGui::Checkbox("Pause", &timePaused);
-                ImGui::SliderFloat("Day length",  &dayLength, 0.0f, 600.0f, "%.0f s");
-                ImGui::SliderFloat("Coverage",    &skySet.coverage, 0.0f, 1.0f);
-                ImGui::SliderFloat("Density",     &skySet.density, 0.0f, 3.0f);
-                ImGui::SliderFloat("Cloud scale", &skySet.scale, 0.0003f, 0.005f, "%.4f");
-                ImGui::SliderFloat("Wind",        &skySet.wind, 0.0f, 20.0f);
-                ImGui::SliderFloat("Cloud base",  &skySet.base, 100.0f, 3000.0f, "%.0f m");
-                ImGui::SliderFloat("Cloud top",   &skySet.top, 300.0f, 7000.0f, "%.0f m");
-                ui::hint("Base, top and scale decide whether the sky reads as\n"
-                         "weather or as a ceiling. A cumulus is at least as\n"
-                         "TALL as it is wide, so a thin slab under wide\n"
-                         "features can only ever be a textured lid -- scale\n"
-                         "sets that width, and LOWER means bigger clouds.\n"
-                         "Coverage does two jobs: how much sky is taken, and\n"
-                         "how far the tops build into it.");
+            lookui::drawSkyPanel({showSky, timeOfDay, timePaused, dayLength, skySet, volFogSet,
+                                  postLook, splitScreen, renderer, post.autoExposureScale(),
+                                  camera.position(),
+                                  [&streamer](float x, float z) {
+                                      return streamer.heightAt(x, z);
+                                  }});
 
-                // --- The other layers ---------------------------------------
-                // One section per cloud type, each with its own height, wind
-                // and direction, drawn in SkyLayers.cpp. The sliders above are
-                // the cumulus, which is the one layer that is raymarched and so
-                // the one that needs a base, a top and a density rather than a
-                // height; everything below is a sheet.
-                ui::sectionText("Layers");
-                ui::hint("Each type is its own deck at its own height, and they\n"
-                         "stack in that order -- a stratus under the cumulus\n"
-                         "hides it, one above it does not. The cumulus above is\n"
-                         "the only layer with real depth; the rest are sheets,\n"
-                         "which is what they are in the air as well.");
-                skylayers::drawPanel(skySet);
-                ImGui::SliderFloat("Fog density", &skySet.fogDensity, 0.0f, 0.02f, "%.4f");
-                ImGui::SliderFloat("Fog falloff", &skySet.fogFalloff, 0.005f, 0.1f, "%.3f");
-                ui::hint("Everything in this panel down to the volumetric fog is\n"
-                         "part of a weather preset. Weather & audio is where a\n"
-                         "sky gets a name and is kept.");
-
-                // --- Volumetric fog: the world-wide volume ----------------
-                // Folded away by default, and deliberately sitting right under
-                // the two sliders it is not: those are the height haze, which is
-                // everywhere and has no shape.
-                //
-                // This one box is the WORLD's air. Mist that belongs somewhere in
-                // particular is not authored here at all -- it is a Volumetric Fog
-                // component on an entity, so it can be placed, scaled and rotated
-                // like anything else in the scene, and there can be many. Both end
-                // up in the same march; the hint says so, because a panel that
-                // does not mention the other way is a panel that hides it.
-                if (ui::header("Volumetric fog (world)")) {
-                    ImGui::Checkbox("Enabled##volfog", &volFogSet.enabled);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Show volume", &volFogSet.showVolume);
-                    ui::hint("The haze above does distance. This does shape:\n"
-                             "banks that drift, holes that pass, sun shafts.\n"
-                             "For mist in ONE place, add a Volumetric Fog\n"
-                             "component to an Empty and scale it instead.");
-
-                    ui::sectionText("Volume");
-                    ImGui::DragFloat3("Centre", &volFogSet.center.x, 0.5f,
-                                      -20000.0f, 20000.0f, "%.0f m");
-                    ImGui::DragFloat3("Size", &volFogSet.size.x, 0.5f,
-                                      1.0f, 20000.0f, "%.0f m");
-                    // Placing a volume you cannot grab is the awkward part, so
-                    // the two placements anyone actually wants are buttons: put
-                    // it where I am standing, and sit it on the ground under it.
-                    if (ImGui::Button("Centre on camera"))
-                        volFogSet.center = camera.position();
-                    ImGui::SameLine();
-                    if (ImGui::Button("Sit on ground"))
-                        volFogSet.center.y =
-                            streamer.heightAt(volFogSet.center.x, volFogSet.center.z) +
-                            volFogSet.size.y * 0.5f;
-                    ImGui::Checkbox("Follow camera (X/Z)", &volFogSet.followCamera);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Ground mist over a whole track without a\n"
-                                          "box big enough to cover it: the same steps\n"
-                                          "spread over kilometres lose all structure.");
-                    ImGui::SliderFloat("Edge fade", &volFogSet.medium.edge, 0.02f, 1.0f);
-                    ImGui::SliderFloat("Height falloff##volfog",
-                                       &volFogSet.medium.heightFalloff, 0.0f, 3.0f);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much harder it is for fog to exist near\n"
-                                          "the top of the box. Carves the lid out of the\n"
-                                          "noise, so the layer has a ragged top rather\n"
-                                          "than a smooth fade.");
-
-                    ui::sectionText("Medium");
-                    ImGui::SliderFloat("Thickness", &volFogSet.medium.density, 0.0f, 0.5f,
-                                       "%.3f /m");
-                    ImGui::ColorEdit3("Tint##volfog", &volFogSet.medium.color.x);
-                    ImGui::SliderFloat("Coverage##volfog", &volFogSet.medium.coverage,
-                                       0.0f, 0.95f);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much of the volume has fog in it at all.\n"
-                                          "Low = a solid body, high = separate banks\n"
-                                          "with clear air between them.");
-
-                    ui::sectionText("Noise");
-                    ImGui::SliderFloat("Scale##volfog", &volFogSet.medium.noiseScale,
-                                       0.001f, 0.06f, "%.4f");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Smaller = bigger banks.");
-                    ImGui::SliderFloat("Vertical detail",
-                                       &volFogSet.medium.verticalDetail, 0.25f, 8.0f,
-                                       "%.2fx");
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much finer the field is going up than\n"
-                                          "sideways. At 1 a shallow layer sits inside a\n"
-                                          "single feature and the fog looks like a flat\n"
-                                          "pattern pulled upward.");
-                    ImGui::SliderFloat("Detail", &volFogSet.medium.detail, 0.0f, 0.95f);
-                    ImGui::SliderFloat("Swirl", &volFogSet.medium.warp, 0.0f, 1.5f);
-                    ImGui::DragFloat3("Wind##volfog", &volFogSet.medium.wind.x, 0.05f,
-                                      -30.0f, 30.0f, "%.2f m/s");
-
-                    ui::sectionText("Light");
-                    ImGui::SliderFloat("Forward scatter", &volFogSet.medium.anisotropy,
-                                       -0.9f, 0.9f);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("How much light keeps going the way it came.\n"
-                                          "High values put the glow around the sun.");
-                    ImGui::SliderFloat("Sun##volfog", &volFogSet.medium.sunIntensity, 0.0f, 4.0f);
-                    ImGui::SliderFloat("Ambient##volfog", &volFogSet.medium.ambientIntensity,
-                                       0.0f, 4.0f);
-                    ImGui::Checkbox("Sun shafts", &volFogSet.medium.shafts);
-                    ImGui::SameLine();
-                    ImGui::Checkbox("Self-shadow", &volFogSet.medium.selfShadow);
-
-                    ui::sectionText("Cost");
-                    ImGui::SliderInt("Steps", &volFogSet.medium.steps, 8, 128);
-                    ImGui::SliderInt("Resolution", &volFogSet.resScale, 1, 4,
-                                     "1/%d of the pane");
-                    ui::hint("Steps buy structure along the ray, resolution buys it\n"
-                             "across the screen. Fog is soft, so 1/2 is free money.\n"
-                             "Resolution is the whole PASS -- every placed volume\n"
-                             "is marched into the same buffer.");
-                }
-                ImGui::SliderFloat("Exposure",   &exposure, 0.2f, 3.0f);
-                {
-                    const char* curves[] = {"ACES (classic)", "AgX", "Neutral"};
-                    ImGui::Combo("Tonemap", &tonemapCurve, curves, IM_ARRAYSIZE(curves));
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("ACES: punchy, but bright colours slide in hue\n"
-                                          "(blue sky to cyan) and clip early.\n"
-                                          "AgX: highlights fade to white along their own\n"
-                                          "hue, three more stops before a cloud clips.\n"
-                                          "Neutral: base colours exactly as authored.");
-                    ImGui::Checkbox("Auto exposure", &autoExposure);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Corrects the exposure above for how bright the\n"
-                                          "frame is -- up in a tunnel or at dusk, down when\n"
-                                          "it is all sky -- within the range below. A\n"
-                                          "sunlit daytime frame stays as you set it.");
-                    if (autoExposure) {
-                        ImGui::SameLine();
-                        ImGui::TextDisabled("%+.1f EV", std::log2(post.autoExposureScale()));
-                        ImGui::SliderFloat("Darken at most", &autoMinEv, -4.0f, 0.0f, "%.1f EV");
-                        ImGui::SliderFloat("Brighten at most", &autoMaxEv, 0.0f, 6.0f, "%.1f EV");
-                        ImGui::SliderFloat("Adaptation", &adaptSpeed, 0.2f, 8.0f, "%.1f /s");
-                    }
-                }
-                ImGui::SliderFloat("Bloom",      &bloomIntensity, 0.0f, 1.5f);
-                ImGui::SliderFloat("Bloom threshold", &bloomThreshold, 0.2f, 4.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Luminance where the glow starts. Lower it to make\n"
-                                      "emissive materials bloom sooner; the knee below\n"
-                                      "keeps the onset soft instead of popping.");
-                ImGui::SliderFloat("Bloom knee", &bloomKnee, 0.0f, 1.5f, "%.2f");
-                ImGui::SliderFloat("Sun rays",   &rayIntensity, 0.0f, 1.5f);
-                ImGui::SliderFloat("SSAO",       &ssaoStrength, 0.0f, 1.0f);
-                ImGui::SliderFloat("SSAO radius",&ssaoRadius, 0.2f, 4.0f);
-                ImGui::SliderFloat("SSAO angle bias", &ssaoBias, 0.0f, 0.6f, "%.2f rad");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Horizons below this elevation don't occlude.\n"
-                                      "Raise it if flat surfaces look dirty, lower it\n"
-                                      "for more contact shading in creases.");
-                ImGui::SliderFloat("Cascade split", &renderer.shadows().splitLambda, 0.0f, 1.0f);
-                ImGui::Checkbox("Contact shadows", &contactShadows);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Short rays towards the sun for the small shadows\n"
-                                      "the cascades are too coarse to cast -- a wheel\n"
-                                      "on the road, a stone on the ground. Near the\n"
-                                      "camera only.");
-                // Reflection probe: the cubemap a wet road (and any reflective
-                // material) mirrors. Applied on pick rather than per frame --
-                // changing it reallocates both cubes.
-                {
-                    ui::sectionText("Reflections");
-                    ImGui::Checkbox("Screen-space reflections", &ssrEnabled);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Smooth surfaces -- wet roads, puddles, paint,\n"
-                                          "glass -- reflect what is actually beside them,\n"
-                                          "traced through the last frame. The probe fills\n"
-                                          "in whatever is off screen.");
-                    const int sizes[] = {128, 256, 512, 1024};
-                    char cur[16];
-                    std::snprintf(cur, sizeof(cur), "%d", envProbeRes);
-                    if (ImGui::BeginCombo("Probe resolution", cur)) {
-                        for (int s : sizes) {
-                            char lbl[16];
-                            std::snprintf(lbl, sizeof(lbl), "%d", s);
-                            if (ImGui::Selectable(lbl, s == envProbeRes)) {
-                                envProbeRes = s;
-                                renderer.setEnvProbeResolution(s);
-                            }
-                        }
-                        ImGui::EndCombo();
-                    }
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Cube-face size of the environment probe: how\n"
-                                          "sharp reflections are on a wet road or a\n"
-                                          "reflective material. Six scene passes either\n"
-                                          "way -- raising it costs fill, not draw calls --\n"
-                                          "but 1024 is 64x the pixels of 128.");
-                    // How fresh that cube is kept. This is a LATENCY control,
-                    // not a quality one: the probe is filled one face at a
-                    // time, so a cube filled at one face per frame is six to
-                    // twelve frames old when it is sampled -- twenty metres of
-                    // it at racing speed, which reads as the reflection
-                    // dragging behind the car. The rate is only spent when the
-                    // viewpoint actually moves, so raising this costs nothing
-                    // in a parked editor.
-                    const char* faceLbl[] = {"1 face (cheapest)", "2 faces",
-                                             "3 faces", "4 faces", "5 faces",
-                                             "6 faces (no lag)"};
-                    const int fi = glm::clamp(envProbeFaces, 1, 6) - 1;
-                    if (ImGui::BeginCombo("Probe refresh", faceLbl[fi])) {
-                        for (int k = 0; k < 6; ++k)
-                            if (ImGui::Selectable(faceLbl[k], k == fi)) {
-                                envProbeFaces = k + 1;
-                                renderer.setEnvProbeMaxFaces(envProbeFaces);
-                            }
-                        ImGui::EndCombo();
-                    }
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Cube faces the probe may refresh per frame,\n"
-                                          "at most. The actual rate follows how fast the\n"
-                                          "camera moves, so a still scene pays one face\n"
-                                          "whatever this says. Raise it if reflections\n"
-                                          "lag behind at speed; lower it if the probe\n"
-                                          "costs too much (it is six scene passes).");
-                }
-                ui::sectionText("Depth of field");
-                ImGui::SliderFloat("DOF blur", &dofMax, 0.0f, 12.0f, "%.1f px");
-                ImGui::SliderFloat("Focus near", &dofNear, 2.0f, 120.0f, "%.0f m");
-                ImGui::SliderFloat("Focus far",  &dofFar, 20.0f, 400.0f, "%.0f m");
-                ui::sectionText("Motion blur");
-                ImGui::SliderFloat("Speed blur", &motionBlurStrength, 0.0f, 2.0f, "%.2f");
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Radial speed streak while driving/flying: the\n"
-                                      "world smears outward past the craft, growing\n"
-                                      "with speed. 0 = off. (No effect on the free camera.)");
-                ui::sectionText("Anti-aliasing");
-                ImGui::Checkbox("TAA", &taaEnabled);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Temporal anti-aliasing: every pixel gathered over\n"
-                                      "several frames. Grass, fences and far edges stop\n"
-                                      "crawling. Replaces FXAA while on; split screen\n"
-                                      "falls back to FXAA.");
-                if (taaEnabled)
-                    ImGui::SliderFloat("Sharpen", &taaSharpen, 0.0f, 1.0f, "%.2f");
-                ImGui::BeginDisabled(taaEnabled);
-                ImGui::Checkbox("FXAA", &fxaaEnabled);
-                ImGui::EndDisabled();
-                ui::sectionText("Split screen");
-                ImGui::Checkbox("Two panes", &splitScreen);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Draw the world twice, side by side, one pane\n"
-                                      "per player. The whole frame costs roughly\n"
-                                      "double -- watch the profiler before counting\n"
-                                      "on it.");
-            }
-            ImGui::End(); }
-
-            if (showColorGrade) { if (ImGui::Begin("Colour grade", &showColorGrade)) {
-                ImGui::SliderFloat("Hue",        &hueShift, -180.0f, 180.0f, "%.0f");
-                ImGui::SliderFloat("Saturation", &saturation, 0.0f, 2.0f);
-                ImGui::SliderFloat("Brightness", &valueGain, 0.3f, 2.0f);
-                ImGui::SliderFloat("Warmth",     &warmth, -0.5f, 0.5f);
-                ImGui::SliderFloat("Split tone", &gradeSplit, 0.0f, 1.5f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Cool shadows, warm highlights.");
-                ImGui::SliderFloat("Vibrance",   &gradeVibrance, -0.5f, 1.0f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("More colour where there is little;\n"
-                                      "already vivid colours stay as they are.");
-                ImGui::SliderFloat("Contrast",   &contrast, 0.0f, 0.6f);
-                ImGui::SliderFloat("Vignette",   &vignette, 0.0f, 1.0f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Light falling off towards the corners, as through\n"
-                                      "a real lens. Frames the picture; 0 = off.");
-                ImGui::SliderFloat("Film grain", &filmGrain, 0.0f, 0.1f, "%.3f");
-            }
-            ImGui::End(); }
+            lookui::drawGradePanel(showColorGrade, postLook);
 
             if (showWater) { if (ImGui::Begin("Water", &showWater)) {
                 ImGui::SliderFloat("Level",       &waterLevel, -15.0f, 15.0f);
@@ -14473,7 +14128,7 @@ int main(int argc, char** argv) {
                     std::snprintf(nm, sizeof(nm), "uLayerDir[%zu]", li);
                     sky.setVec2(nm, glm::vec2(L.dirX, L.dirZ));
                 }
-                sky.setFloat("uExposure", exposure);
+                sky.setFloat("uExposure", postLook.exposure);
                 sky.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
                 glDepthMask(GL_TRUE);
@@ -14498,7 +14153,7 @@ int main(int argc, char** argv) {
                 skybox.setMat4("uInvViewProj", invViewProj);
                 skybox.setVec3("uCameraPos", eye);
                 skybox.setFloat("uIntensity", iblIntensity);
-                skybox.setFloat("uExposure", exposure);
+                skybox.setFloat("uExposure", postLook.exposure);
                 skybox.setInt("uTonemap", tonemap ? 1 : 0);
                 fsQuad.draw();
                 glDepthMask(GL_TRUE);
@@ -14519,13 +14174,13 @@ int main(int argc, char** argv) {
             // render comes out flat and cool beside the viewport, because the
             // viewport never shows an ungraded image -- not even in a project
             // nobody has touched the Colour grade panel in.
-            ptLook.grade.hueShift   = hueShift;
-            ptLook.grade.saturation = saturation;
-            ptLook.grade.value      = valueGain;
-            ptLook.grade.warmth     = warmth;
-            ptLook.grade.contrast   = contrast;
-            ptLook.grade.curve      = tonemapCurve;
-            ptLook.grade.vignette   = vignette;
+            ptLook.grade.hueShift   = postLook.hueShift;
+            ptLook.grade.saturation = postLook.saturation;
+            ptLook.grade.value      = postLook.valueGain;
+            ptLook.grade.warmth     = postLook.warmth;
+            ptLook.grade.contrast   = postLook.contrast;
+            ptLook.grade.curve      = postLook.tonemapCurve;
+            ptLook.grade.vignette   = postLook.vignette;
             // The grass, which the harvest cannot see: the tracer regenerates it
             // from the same parameters the streamed field was built from.
             if (veg.grassEnabled) {
@@ -14668,7 +14323,7 @@ int main(int argc, char** argv) {
             // offset every frame, and the resolve gathers them. Only in a single
             // full-shading pane -- one history cannot serve two cameras, and a
             // wireframe gathered over frames is a smear.
-            const bool useTaa = taaEnabled && views == 1 && shadeFull;
+            const bool useTaa = postLook.taaEnabled && views == 1 && shadeFull;
             const glm::mat4  projUnjittered = vcam.projectionMatrix(aspect);
             glm::vec2 taaJitter(0.0f);
             glm::mat4 projJ = projUnjittered;
@@ -14847,8 +14502,8 @@ int main(int argc, char** argv) {
             const bool history = views == 1 && shadeFull && post.historyColor() != 0 &&
                                  !vcam.orthographic() &&
                                  glm::distance(camPos, taaPrevEye[vi]) < 25.0f; // not across a cut
-            const bool ssr     = history && ssrEnabled && gfxSet.reflections > 0;
-            const bool contact = history && contactShadows && gfxSet.shadows > 0 &&
+            const bool ssr     = history && postLook.ssrEnabled && gfxSet.reflections > 0;
+            const bool contact = history && postLook.contactShadows && gfxSet.shadows > 0 &&
                                  renderer.shadowsEnabled();
             // The scene in two halves: the solid objects now, the see-through
             // ones after the vegetation and the water (below).
@@ -14974,7 +14629,7 @@ int main(int argc, char** argv) {
                 water.setFloat("uFogDensity", fog.density);
                 water.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 water.setFloat("uFogHeight", fog.height);
-                water.setFloat("uExposure", exposure);
+                water.setFloat("uExposure", postLook.exposure);
                 water.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
                 water.setInt("uReflection", 0);
                 water.setInt("uRefraction", 1);
@@ -15036,7 +14691,7 @@ int main(int argc, char** argv) {
                 river.setFloat("uFogDensity", fog.density);
                 river.setFloat("uFogHeightFalloff", fog.heightFalloff);
                 river.setFloat("uFogHeight", fog.height);
-                river.setFloat("uExposure", exposure);
+                river.setFloat("uExposure", postLook.exposure);
                 river.setInt("uTonemap", 0); // linear into HDR; composite tonemaps
                 // The scene probe, for the reflection. Unit 2 is the renderer's
                 // own probe unit and it rebinds it every lit pass, so borrowing
@@ -15210,10 +14865,10 @@ int main(int argc, char** argv) {
                 // those belong to the scene's author, and switching an effect back
                 // on has to return the look that was authored, not a default.
                 const gfxmenu::PostGate gate = gfxmenu::gatePost(
-                    gfxSet, ssaoStrength, bloomIntensity, rayIntensity, dofMax,
-                    motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
-                pp.ssaoRadius = ssaoRadius; pp.ssaoBias = ssaoBias;
-                pp.ssaoPower  = ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
+                    gfxSet, postLook.ssaoStrength, postLook.bloomIntensity, postLook.rayIntensity, postLook.dofMax,
+                    postLook.motionBlurStrength * blurSt.blurSpeed01 * 0.35f);
+                pp.ssaoRadius = postLook.ssaoRadius; pp.ssaoBias = postLook.ssaoBias;
+                pp.ssaoPower  = postLook.ssaoPower;  pp.ssaoStrength = gate.ssaoStrength;
                 // What share of a sunlit, level surface's light is the sky's:
                 // that is all the AO may take away where the sun reaches
                 // (composite.frag). Floored at 0.3, because the AO also stands
@@ -15230,26 +14885,26 @@ int main(int argc, char** argv) {
                 }
                 pp.shadows     = renderer.shadowsEnabled() ? &renderer.shadows() : nullptr;
                 pp.viewForward = vcam.front();
-                pp.bloomThreshold = bloomThreshold; pp.bloomKnee = bloomKnee;
+                pp.bloomThreshold = postLook.bloomThreshold; pp.bloomKnee = postLook.bloomKnee;
                 pp.bloomIntensity = gate.bloomIntensity;
                 pp.rayIntensity   = gate.rayIntensity;
-                pp.dofNear = dofNear; pp.dofFar = dofFar; pp.dofMax = gate.dofMax;
+                pp.dofNear = postLook.dofNear; pp.dofFar = postLook.dofFar; pp.dofMax = gate.dofMax;
                 if (playMode && scriptFocusFar > 0.0f) {
                     pp.dofNear = scriptFocusNear;
                     pp.dofFar  = scriptFocusFar;
                 }
-                pp.exposure = exposure;
-                pp.hueShift = hueShift; pp.saturation = saturation;
-                pp.valueGain = valueGain; pp.warmth = warmth; pp.contrast = contrast;
-                pp.split = gradeSplit; pp.vibrance = gradeVibrance;
-                pp.curve        = tonemapCurve;
-                pp.vignette     = vignette;
-                pp.grain        = filmGrain;
+                pp.exposure = postLook.exposure;
+                pp.hueShift = postLook.hueShift; pp.saturation = postLook.saturation;
+                pp.valueGain = postLook.valueGain; pp.warmth = postLook.warmth; pp.contrast = postLook.contrast;
+                pp.split = postLook.gradeSplit; pp.vibrance = postLook.gradeVibrance;
+                pp.curve        = postLook.tonemapCurve;
+                pp.vignette     = postLook.vignette;
+                pp.grain        = postLook.filmGrain;
                 pp.frame        = taaFrame;
-                pp.autoExposure = autoExposure;
-                pp.autoMinEv    = autoMinEv;
-                pp.autoMaxEv    = autoMaxEv;
-                pp.adaptSpeed   = adaptSpeed;
+                pp.autoExposure = postLook.autoExposure;
+                pp.autoMinEv    = postLook.autoMinEv;
+                pp.autoMaxEv    = postLook.autoMaxEv;
+                pp.adaptSpeed   = postLook.adaptSpeed;
                 pp.dt           = dt;
                 pp.blurStrength     = gate.blurStrength;
                 pp.blurAnchor       = blurSt.blurAnchorWorld;
@@ -15312,8 +14967,8 @@ int main(int argc, char** argv) {
               // puts back what the stretch takes (CAS: it lifts texture, not
               // the edges' aliasing).
               const bool upscaled = rw < paneW;
-              const float sharp = useTaa ? taaSharpen : (upscaled ? 0.35f : 0.0f);
-              post.present(fsQuad, fxaaEnabled && !useTaa,
+              const float sharp = useTaa ? postLook.taaSharpen : (upscaled ? 0.35f : 0.0f);
+              post.present(fsQuad, postLook.fxaaEnabled && !useTaa,
                            upscaled ? std::min(1.0f, sharp + 0.25f) : sharp, upscaled); }
             } // per-pane loop
             fzGpuFrame.reset();

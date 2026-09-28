@@ -232,6 +232,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/ScriptEditor.cpp
     # The road tool's viewport handles and the point list's bookkeeping.
     src/RoadEdit.cpp
+    # The Sky & atmosphere and Colour grade panels (their settings: PostLook.hpp).
+    src/LookPanels.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
