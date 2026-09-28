@@ -107,6 +107,11 @@
 #include "PathTracePanel.hpp"
 #include "ViewportTrace.hpp"
 #include "ShotList.hpp"
+#include "EditorMenus.hpp"
+#include "LuaCompletion.hpp"
+#include "ThumbCache.hpp"
+#include "ScriptEditor.hpp"
+#include "ToolbarIcons.hpp"
 #endif
 #include "SpraySystem.hpp"
 #include "ParticleSystem.hpp"
@@ -177,6 +182,7 @@
 #include "UiOverlay.hpp"
 #include "UiOverlayCommand.hpp"
 #include "UiStyle.hpp"
+#include "Startup.hpp"
 
 using namespace fitzel;
 
@@ -187,180 +193,11 @@ extern "C" {
     __declspec(dllexport) unsigned long NvOptimusEnablement = 1;
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
-// AttachConsole, for the windowed Release build (see main()). GLFW has already
-// defined APIENTRY by this point and windows.h defines it again, identically --
-// drop it first so the duplicate doesn't warn.
-#define NOMINMAX
-#define WIN32_LEAN_AND_MEAN
-#undef APIENTRY
-#include <windows.h>
 #endif
 
 #ifndef FITZEL_PLAYER
 namespace {
 
-// --- Thumbnail disk cache --------------------------------------------------
-// Decoding a 4K texture (or a huge EXR) down to a 128px preview is expensive and
-// hammers the disk -- opening the Assets browser would otherwise re-read every
-// source texture in full. We cache each decoded preview to a tiny file keyed by
-// the asset GUID and tagged with the source's last-write time (so edits
-// invalidate it); the thumbnail worker loads these instead of re-decoding.
-std::filesystem::path thumbCacheDir() {
-    std::error_code ec;
-    std::filesystem::path d =
-        std::filesystem::temp_directory_path(ec) / "fitzel_thumbs";
-    std::filesystem::create_directories(d, ec);
-    return d;
-}
-
-long long sourceMtime(const std::string& path) {
-    std::error_code ec;
-    const auto t = std::filesystem::last_write_time(path, ec);
-    return ec ? 0 : static_cast<long long>(t.time_since_epoch().count());
-}
-
-// Cache file layout: magic 'FTH1' | int64 srcMtime | int32 w,h,ch | raw pixels.
-bool loadThumbCache(const std::filesystem::path& file, long long srcMtime,
-                    fitzel::ImagePixels& out) {
-    std::ifstream f(file, std::ios::binary);
-    if (!f) return false;
-    char magic[4] = {};
-    f.read(magic, 4);
-    if (!f || magic[0] != 'F' || magic[1] != 'T' ||
-        magic[2] != 'H' || magic[3] != '1') return false;
-    long long mt = 0; int w = 0, h = 0, ch = 0;
-    f.read(reinterpret_cast<char*>(&mt), sizeof mt);
-    f.read(reinterpret_cast<char*>(&w),  sizeof w);
-    f.read(reinterpret_cast<char*>(&h),  sizeof h);
-    f.read(reinterpret_cast<char*>(&ch), sizeof ch);
-    if (!f || mt != srcMtime ||
-        w < 0 || h < 0 || ch < 0 || w > 4096 || h > 4096 || ch > 4) return false;
-    const std::size_t n = static_cast<std::size_t>(w) * h * ch;
-    if (n == 0) { out = {}; return true; } // negative cache: source has no usable preview
-    out.pixels.resize(n);
-    f.read(reinterpret_cast<char*>(out.pixels.data()),
-           static_cast<std::streamsize>(n));
-    if (!f) { out.pixels.clear(); return false; }
-    out.width = w; out.height = h; out.channels = ch;
-    return true;
-}
-
-// Always writes -- an invalid image is stored as a zero-size "negative" entry so a
-// source that can't produce a preview is not re-decoded on every session.
-void saveThumbCache(const std::filesystem::path& file, long long srcMtime,
-                    const fitzel::ImagePixels& img) {
-    std::ofstream f(file, std::ios::binary | std::ios::trunc);
-    if (!f) return;
-    f.write("FTH1", 4);
-    f.write(reinterpret_cast<const char*>(&srcMtime), sizeof srcMtime);
-    const int w = img.width, h = img.height, ch = img.channels;
-    f.write(reinterpret_cast<const char*>(&w),  sizeof w);
-    f.write(reinterpret_cast<const char*>(&h),  sizeof h);
-    f.write(reinterpret_cast<const char*>(&ch), sizeof ch);
-    f.write(reinterpret_cast<const char*>(img.pixels.data()),
-            static_cast<std::streamsize>(img.pixels.size()));
-}
-
-// One entry in the Lua editor's code-completion list: the identifier to insert
-// plus a short signature/description shown greyed after it.
-struct Completion { const char* text; const char* hint; };
-
-// Top-level identifiers: Lua keywords + the stdlib bits scripts use + the script
-// lifecycle functions and the `e` entity fields. Offered when the word being
-// typed is not a `game.` member.
-const Completion kTopLevel[] = {
-    {"function", "def"}, {"local", "scope"}, {"return", ""}, {"end", ""},
-    {"then", ""}, {"else", ""}, {"elseif", ""}, {"for", ""}, {"while", ""},
-    {"repeat", ""}, {"until", ""}, {"break", ""}, {"true", ""}, {"false", ""},
-    {"nil", ""}, {"and", ""}, {"or", ""}, {"not", ""}, {"in", ""},
-    {"start", "start(e)  -- called once on spawn"},
-    {"update", "update(e, dt, t)  -- called each frame"},
-    {"game", "engine API table"},
-    {"synth", "Synth components: notes, dials, MIDI songs"},
-    {"print", "print(...)"}, {"pairs", "pairs(t)"}, {"ipairs", "ipairs(t)"},
-    {"tostring", "tostring(v)"}, {"tonumber", "tonumber(v)"}, {"type", "type(v)"},
-    {"math", "math.*"}, {"string", "string.*"}, {"table", "table.*"},
-};
-
-// Members of the `game` table (functions + constants), offered after "game.".
-// Signatures mirror ScriptSystem.cpp's C bindings.
-const Completion kGameMembers[] = {
-    {"keyDown", "keyDown(KEY) -> bool  (held)"},
-    {"keyPressed", "keyPressed(KEY) -> bool  (this frame)"},
-    {"mouseDown", "mouseDown(btn) -> bool"},
-    {"mousePressed", "mousePressed(btn) -> bool"},
-    {"cameraPos", "cameraPos() -> x, y, z"},
-    {"cameraDir", "cameraDir() -> x, y, z"},
-    {"spawn", "spawn{type=,x=,y=,z=,...} -> id"},
-    {"destroy", "destroy(id)"},
-    {"getPos", "getPos(id) -> x, y, z"},
-    {"setPos", "setPos(id, x, y, z)"},
-    {"setVelocity", "setVelocity(id, x, y, z)"},
-    {"applyImpulse", "applyImpulse(id, x, y, z)"},
-    {"playSound", "playSound(name)"},
-    {"addScore", "addScore(n)"}, {"getScore", "getScore() -> n"},
-    {"setHud", "setHud(text)"},
-    {"hudRect", "hudRect(x, y, w, h, r, g, b, a, rounding)  -- 1080-high canvas"},
-    {"hudGradient", "hudGradient(x, y, w, h, r, g, b, a, r2, g2, b2, a2)"},
-    {"hudFrame", "hudFrame(x, y, w, h, r, g, b, a, thickness, rounding)"},
-    {"hudLine", "hudLine(x1, y1, x2, y2, r, g, b, a, thickness)"},
-    {"hudCircle", "hudCircle(x, y, radius, r, g, b, a, thickness)  -- no thickness = filled"},
-    {"hudTri", "hudTri(x1, y1, x2, y2, x3, y3, r, g, b, a)"},
-    {"hudText", "hudText(x, y, text, size, r, g, b, a, align, bold)"},
-    {"hudTextSize", "hudTextSize(text, size, bold) -> w, h"},
-    {"hudSize", "hudSize() -> w, h  (h is always 1080)"},
-    {"setCrosshair", "setCrosshair(on)"},
-    {"setCameraFov", "setCameraFov(degrees)"},
-    {"setFocus", "setFocus(near, far)  -- depth of field in metres; setFocus() = the view's own"},
-    {"BOX", "type 0"}, {"RAMP", "type 1"}, {"CYLINDER", "type 2"}, {"SPHERE", "type 3"},
-    {"EMPTY", "type 7"}, {"PLANE", "type 8"},
-    {"MOUSE_LEFT", "0"}, {"MOUSE_RIGHT", "1"}, {"MOUSE_MIDDLE", "2"},
-    {"KEY_SPACE", "32"}, {"KEY_ENTER", "257"}, {"KEY_ESCAPE", "256"},
-    {"KEY_LSHIFT", "340"}, {"KEY_LCTRL", "341"},
-    {"KEY_LEFT", "263"}, {"KEY_RIGHT", "262"}, {"KEY_UP", "265"}, {"KEY_DOWN", "264"},
-    {"KEY_W", "87"}, {"KEY_A", "65"}, {"KEY_S", "83"}, {"KEY_D", "68"},
-};
-
-// Members of the `synth` table, offered after "synth.". `id` is an object with a
-// Synth component; a note is a number (60) or a name ("C4", "F#3").
-const Completion kSynthMembers[] = {
-    {"play", "play(id) -> ok  -- start it, and its song if it has one"},
-    {"stop", "stop(id)"},
-    {"noteOn", "noteOn(id, note, velocity) -> ok  -- note 60 or \"C4\", velocity 0..1"},
-    {"noteOff", "noteOff(id, note)  -- noteOff(id) lets every note go"},
-    {"set", "set(id, dial, value) -> ok  -- a dial of the patch"},
-    {"playMidi", "playMidi(id, file, loop) -> ok  -- file under content/midi/"},
-    {"stopMidi", "stopMidi(id)"},
-    {"isPlaying", "isPlaying(id) -> bool  -- is its song playing"},
-    {"setTempo", "setTempo(id, scale)  -- 1 = as written"},
-    {"note", "note(\"A4\") -> 69"},
-    {"lastError", "lastError() -> text  -- why the last call said no"},
-};
-
-// New-script templates, offered in the "New Script" dialog. An "empty component"
-// is just the two lifecycle stubs; the documented one lists the entity fields
-// and the game API as a starting reference.
-const char* kTemplateEmpty =
-    "-- %s : entity component (runs in Play)\n\n"
-    "function start(e)\n"
-    "end\n\n"
-    "function update(e, dt, t)\n"
-    "end\n";
-
-const char* kTemplateDocumented =
-    "-- %s : entity component (runs in Play)\n"
-    "-- e fields: x/y/z pos, rx/ry/rz rot(deg), sx/sy/sz half-size, name, id\n"
-    "--           (mutate them to move/rotate/scale this entity)\n"
-    "-- API: game.keyDown/keyPressed(KEY_*), game.mouseDown/mousePressed(MOUSE_*),\n"
-    "--      game.spawn{...}, game.destroy(id), game.setPos/getPos(id,...),\n"
-    "--      game.setVelocity/applyImpulse(id,...), game.playSound(name),\n"
-    "--      game.addScore(n)/getScore(), game.setHud(text), game.cameraPos/Dir()\n\n"
-    "function start(e)\n"
-    "    -- called once when the entity enters Play\n"
-    "end\n\n"
-    "function update(e, dt, t)\n"
-    "    -- dt = seconds since last frame, t = seconds since Play started\n"
-    "end\n";
 
 #ifndef FITZEL_PLAYER
 // Files the OS file manager has dropped on the window, waiting for the frame to
@@ -386,214 +223,6 @@ FileDrop g_fileDrop;
 
 
 namespace {
-
-// --- Startup ---------------------------------------------------------------
-// The handful of things that must happen before anything is loaded, hoisted out
-// of main() so the top of the function reads as a list of what booting means
-// rather than fifty lines of how.
-
-// Release builds link as a GUI app (see sandbox/CMakeLists.txt), so
-// double-clicking the exe no longer flashes up a console window. That would also
-// throw away every fprintf(stderr) log line -- so if we WERE started from a
-// terminal, adopt it and point the C streams back at it. Started from Explorer
-// there is no parent console, AttachConsole fails, and the streams stay where
-// they were (nowhere). Nothing else changes.
-void adoptParentConsole() {
-#if defined(_WIN32) && defined(FITZEL_WINDOWED)
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-        FILE* f = nullptr;
-        freopen_s(&f, "CONOUT$", "w", stdout);
-        freopen_s(&f, "CONOUT$", "w", stderr);
-    }
-#endif
-}
-
-// Resolve all relative paths (assets/, content/, scripts/, game.json, project/)
-// against the executable's own directory, so the app behaves the same whether
-// launched from a shell, a shortcut, or a double-click.
-void setWorkingDirToExe(int argc, char** argv) {
-    if (argc <= 0) return;
-    std::error_code ec;
-    const auto exePath = std::filesystem::absolute(argv[0], ec);
-    if (!ec && exePath.has_parent_path())
-        std::filesystem::current_path(exePath.parent_path(), ec);
-}
-
-// An exported game ships one encrypted archive next to the exe instead of loose
-// content/, project/ and assets/ folders. Mounted before anything is read, so
-// every load after this point -- textures, models, sounds, shaders, scenes,
-// scripts -- resolves against it. With no archive present (dev runs, the editor)
-// nothing changes: the VFS falls straight through to disk.
-void mountGameArchive() {
-    std::error_code ec;
-    if (std::filesystem::exists("game.fpak", ec))
-        fitzel::vfs::mount("game.fpak", std::filesystem::current_path(ec));
-}
-
-// How this run starts. An exported/player build ships a game.json next to the exe
-// that boots straight into the game with the editor hidden; `--play <project>`
-// does the same from a command line. An empty project means the editor.
-struct BootConfig {
-    std::string project;
-    std::string scene;             // start scene stem ("" = default scene)
-    bool        fullscreen = true;
-    // --- Benchmark mode ------------------------------------------------------
-    // `--profile <file>` plays the project for a few seconds, writes what the
-    // frame cost -- every CPU and GPU zone, and what the vegetation submitted --
-    // to that file, and quits.
-    //
-    // It exists because the alternative is reading numbers off a screen: the
-    // Performance window is the right tool while you are in there working, and
-    // the wrong one for "is this change faster than that one", which needs the
-    // same scene measured twice under the same conditions and the two numbers
-    // side by side. This is that.
-    std::string profilePath;
-    // Where to drop a PNG of the last measured frame. A benchmark that only
-    // reports milliseconds cannot tell you whether the change that bought them
-    // also removed a shadow -- which, for anything in this area, is the more
-    // likely outcome of the two. Same run, same camera, one picture.
-    //
-    // Editor build only: the PNG writer's implementation lives in the editor's
-    // Render panel, and the player has no reason to carry an image encoder for
-    // a development flag.
-    std::string profileShot;
-    double      profileSeconds = 8.0;
-    // `--shots <list>`: photograph a list of fixed views in one run and quit
-    // (see ShotList.hpp). `--shots-out <dir>` says where the PNGs go.
-    std::string shotsPath;
-    std::string shotsOut;
-    // `--shots-trace <samples>`: a path-traced still of every shot as well.
-    int         shotsTrace = 0;
-    bool        shotsTraceGpu = false;   // `--shots-trace-gpu 1`: the GPU tracer too
-    // `--open <project>`: the editor starts with this project open (not Play).
-    std::string editorOpen;
-};
-
-BootConfig loadBootConfig(int argc, char** argv) {
-    BootConfig cfg;
-    std::error_code ec;
-    if (std::filesystem::exists("game.json", ec)) {
-        std::ifstream gin("game.json");
-        try {
-            nlohmann::json gj; gin >> gj;
-            cfg.project    = gj.value("project", std::string{});
-            cfg.scene      = gj.value("startScene", std::string{});
-            cfg.fullscreen = gj.value("fullscreen", true);
-        } catch (...) {}
-    }
-    for (int i = 1; i + 1 < argc; ++i) {
-        const std::string a = argv[i];
-        if (a == "--play")            cfg.project     = argv[i + 1];
-        else if (a == "--scene")      cfg.scene       = argv[i + 1];
-        else if (a == "--profile")    cfg.profilePath = argv[i + 1];
-        else if (a == "--profile-shot") cfg.profileShot = argv[i + 1];
-        else if (a == "--profile-seconds")
-            cfg.profileSeconds = std::max(1.0, std::atof(argv[i + 1]));
-        else if (a == "--shots")      cfg.shotsPath   = argv[i + 1];
-        else if (a == "--shots-out")  cfg.shotsOut    = argv[i + 1];
-        else if (a == "--shots-trace") cfg.shotsTrace = std::atoi(argv[i + 1]);
-        else if (a == "--shots-trace-gpu") cfg.shotsTraceGpu = std::atoi(argv[i + 1]) != 0;
-        else if (a == "--open")       cfg.editorOpen  = argv[i + 1];
-    }
-    return cfg;
-}
-
-// --- Content roots ---------------------------------------------------------
-
-// Where this build's content lives. A portable/exported build ships a `content/`
-// next to the exe; a dev run falls back to the compile-time tree CMake injected.
-struct ContentRoots {
-    std::string content;
-    std::string models;
-    std::string textures;
-    std::string sounds;
-};
-
-ContentRoots resolveContentRoots() {
-    const bool local = fitzel::vfs::isDirectory("content");
-    ContentRoots r;
-    r.content  = local ? std::filesystem::absolute("content").generic_string()
-                       : std::string(FITZEL_CONTENT_DIR);
-    r.models   = local ? r.content + "/models"   : std::string(FITZEL_MODEL_DIR);
-    r.textures = local ? r.content + "/textures" : std::string(FITZEL_TEXTURE_DIR);
-    r.sounds   = local ? r.content + "/sounds"   : std::string(FITZEL_SOUND_DIR);
-    return r;
-}
-
-// --- Core shaders ----------------------------------------------------------
-
-// The engine's own shader programs -- the ones every frame goes through.
-struct CoreShaders {
-    Shader lit;     // scene geometry + terrain
-    Shader water;   // the water surface
-    // Running water (brooks, rivers, canals). Its own program rather than the
-    // one above because the lake's planar reflection is rendered for ONE height
-    // and a river is at a different one every ten metres -- see river.frag.
-    Shader river;
-    Shader sky;     // sky + volumetric clouds (fullscreen raymarch pass)
-    Shader skybox;  // HDRI background (reuses the fullscreen sky vertex shader)
-};
-
-// All four in one go, so a program that failed to compile is reported here by
-// name instead of turning up as a black screen halfway through the first frame.
-// Returns false if a REQUIRED one failed. The skybox is not one of them: an HDRI
-// background is optional, so losing it costs the background, not the session.
-bool loadCoreShaders(CoreShaders& out) {
-    const auto load = [](Shader& dst, const char* vert, const char* frag,
-                         const char* name) {
-        dst = Shader::fromFiles(vert, frag);
-        if (!dst.isValid())
-            std::fprintf(stderr, "Failed to load %s shader\n", name);
-        return dst.isValid();
-    };
-    bool ok = true;
-    ok = load(out.lit,   "assets/shaders/lit.vert",   "assets/shaders/lit.frag",   "lit")   && ok;
-    ok = load(out.water, "assets/shaders/water.vert", "assets/shaders/water.frag", "water") && ok;
-    ok = load(out.river, "assets/shaders/river.vert", "assets/shaders/river.frag", "river") && ok;
-    ok = load(out.sky,   "assets/shaders/sky.vert",   "assets/shaders/sky.frag",   "sky")   && ok;
-    load(out.skybox,     "assets/shaders/sky.vert",   "assets/shaders/skybox.frag", "skybox");
-    return ok;
-}
-
-// --- Startup geometry ------------------------------------------------------
-
-// A tessellated water grid so Gerstner waves can displace its vertices. Unit
-// sized in XZ around the origin; the water pass scales it to the world.
-Mesh makeWaterGrid(int n) {
-    std::vector<Vertex>        verts;
-    std::vector<std::uint32_t> idx;
-    verts.reserve(static_cast<std::size_t>(n) * n);
-    for (int z = 0; z < n; ++z) {
-        for (int x = 0; x < n; ++x) {
-            const float fx = static_cast<float>(x) / (n - 1) - 0.5f;
-            const float fz = static_cast<float>(z) / (n - 1) - 0.5f;
-            verts.push_back({{fx, 0.0f, fz}, {0, 1, 0},
-                             {static_cast<float>(x) / (n - 1),
-                              static_cast<float>(z) / (n - 1)}});
-        }
-    }
-    for (int z = 0; z < n - 1; ++z) {
-        for (int x = 0; x < n - 1; ++x) {
-            const std::uint32_t i0 = static_cast<std::uint32_t>(z * n + x);
-            const std::uint32_t i1 = i0 + 1;
-            const std::uint32_t i2 = i0 + static_cast<std::uint32_t>(n);
-            const std::uint32_t i3 = i2 + 1;
-            idx.insert(idx.end(), {i0, i2, i1, i1, i2, i3});
-        }
-    }
-    return Mesh::create(verts, idx);
-}
-
-// The quad every fullscreen pass is drawn through: sky, HDRI skybox, post chain.
-Mesh makeFullscreenQuad() {
-    const std::vector<Vertex> verts = {
-        {{-1.0f, -1.0f, 0.0f}, {0, 0, 1}, {0, 0}},
-        {{ 1.0f, -1.0f, 0.0f}, {0, 0, 1}, {1, 0}},
-        {{ 1.0f,  1.0f, 0.0f}, {0, 0, 1}, {1, 1}},
-        {{-1.0f,  1.0f, 0.0f}, {0, 0, 1}, {0, 1}},
-    };
-    return Mesh::create(verts, {0, 1, 2, 0, 2, 3});
-}
 
 // --- Weather ambience ------------------------------------------------------
 
@@ -677,659 +306,16 @@ constexpr float kGridOrbitHeight = 5.5f;    // metres above it
 constexpr float kGridOrbitRate   = 0.28f;   // rad/s -- about 22 s for a full lap
 constexpr float kGridOrbitFov    = 55.0f;   // a touch tighter than the chase cam
 
-#ifndef FITZEL_PLAYER
-
-// --- Lua code completion ---------------------------------------------------
-
-// The completion popup's state: the matches for the identifier under the cursor
-// (the popup shows while this is non-empty and the editor is focused), the word
-// being completed, and what Esc last did about it.
-struct Completions {
-    std::vector<Completion> items;
-    std::string             prefix;             // the partial word being completed
-    int                     sel  = 0;           // highlighted match
-    bool                    open = false;
-    bool                    gameMember  = false; // completing after "game."
-    bool                    synthMember = false; // completing after "synth."
-    bool                    manualClose = false; // Esc: stay closed until
-    std::string             closedPrefix;        // the prefix changes
-};
-
-// Refresh the candidates from the identifier under the cursor. Called each frame
-// after the editor renders, so it sees the latest edit.
-void refreshCompletion(TextEditor& ed, Completions& c) {
-    c.items.clear();
-    const auto        cur  = ed.GetCursorPosition();
-    const std::string line = ed.GetCurrentLineText();
-    const int         tab  = ed.GetTabSize();
-    // Map the tab-expanded cursor column back to a byte index in the line.
-    int idx = 0, col = 0;
-    while (idx < static_cast<int>(line.size()) && col < cur.mColumn) {
-        col += (line[idx] == '\t') ? (tab - (col % tab)) : 1;
-        ++idx;
-    }
-    auto isIdent = [](char ch){
-        return std::isalnum(static_cast<unsigned char>(ch)) || ch == '_'; };
-    int start = idx;
-    while (start > 0 && isIdent(line[start - 1])) --start;
-    c.prefix = line.substr(start, idx - start);
-    // "game." member context: a '.' right before the word, and the token before
-    // the dot is exactly "game".
-    c.gameMember  = false;
-    c.synthMember = false;
-    if (start > 0 && line[start - 1] == '.') {
-        int ws = start - 1;
-        while (ws > 0 && isIdent(line[ws - 1])) --ws;
-        const std::string owner = line.substr(ws, (start - 1) - ws);
-        c.gameMember  = owner == "game";
-        c.synthMember = owner == "synth";
-    }
-    if (c.prefix.empty() && !c.gameMember && !c.synthMember) {
-        c.open = false; c.manualClose = false; return;
-    }
-    // Esc keeps the popup closed until the prefix actually changes.
-    if (c.manualClose) {
-        if (c.prefix == c.closedPrefix) { c.open = false; return; }
-        c.manualClose = false;
-    }
-    auto lower = [](std::string s){
-        for (char& ch : s) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        return s; };
-    const std::string pfx = lower(c.prefix);
-    auto consider = [&](const Completion* arr, std::size_t count){
-        for (std::size_t i = 0; i < count; ++i)
-            if (lower(arr[i].text).rfind(pfx, 0) == 0) c.items.push_back(arr[i]);
-    };
-    if (c.gameMember)
-        consider(kGameMembers, sizeof(kGameMembers) / sizeof(kGameMembers[0]));
-    else if (c.synthMember)
-        consider(kSynthMembers, sizeof(kSynthMembers) / sizeof(kSynthMembers[0]));
-    else
-        consider(kTopLevel, sizeof(kTopLevel) / sizeof(kTopLevel[0]));
-    // Nothing useful to offer (no match, or the sole match is already typed).
-    if (c.items.empty() || (c.items.size() == 1 && lower(c.items[0].text) == pfx)) {
-        c.open = false; return;
-    }
-    if (c.sel >= static_cast<int>(c.items.size())) c.sel = 0;
-    c.open = true;
-}
-
-// --- The toolbar strip's icons ---------------------------------------------
-// Every button in the strip paints its own picture into the window's draw list.
-// No icon font: nothing extra to ship, nothing to fall back to when a glyph is
-// missing, and a 26 px symbol built from a handful of lines stays sharp where a
-// scaled bitmap would not. It is all pure painting -- draw list, centre, radius,
-// colour -- which is why it lives out here, and why the strip itself is left
-// holding only what a click does.
-namespace icon {
-
-// This tool/shape is active: the theme's accent, read back from the style so the
-// strip follows fitzel::Gui -- the bright cut (CheckMark), since a 2 px line needs
-// more luminance than a filled button to read as the same colour.
-ImU32 on() { return ImGui::GetColorU32(ImGuiCol_CheckMark); }
-constexpr ImU32 kOff = IM_COL32(215, 215, 220, 255);
-constexpr ImU32 kDim = IM_COL32(130, 132, 140, 255);  // offered but not available
-
-// The primitive shapes, drawn as themselves.
-void shape(ImDrawList* dl, EntityType t, ImVec2 c, float r, ImU32 col) {
-    switch (t) {
-        case EntityType::Box:
-            dl->AddRect({c.x - r, c.y - r}, {c.x + r, c.y + r}, col, 0.0f, 0, 2.0f);
-            break;
-        case EntityType::Ramp:
-            dl->AddTriangle({c.x - r, c.y + r}, {c.x + r, c.y + r},
-                            {c.x + r, c.y - r}, col, 2.0f);
-            break;
-        case EntityType::Cylinder:
-            dl->AddRect({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y + r},
-                        col, 4.0f, 0, 2.0f);
-            dl->AddLine({c.x - r * 0.7f, c.y - r}, {c.x + r * 0.7f, c.y - r}, col, 2.0f);
-            break;
-        case EntityType::Sphere:
-            dl->AddCircle(c, r, col, 0, 2.0f);
-            break;
-        case EntityType::Plane: {
-            // A quad seen at a shallow angle: the flat thing it is, told apart
-            // from the Box beside it by being flat rather than by a label.
-            const ImVec2 p[4] = {{c.x - r, c.y + r * 0.45f}, {c.x - r * 0.45f, c.y - r * 0.45f},
-                                 {c.x + r, c.y - r * 0.45f}, {c.x + r * 0.45f, c.y + r * 0.45f}};
-            dl->AddPolyline(p, 4, col, ImDrawFlags_Closed, 2.0f);
-            break;
-        }
-        case EntityType::Light:
-            dl->AddCircleFilled(c, r * 0.45f, col);
-            for (int a = 0; a < 8; ++a) {
-                const float  ang = a * 0.7853982f;
-                const ImVec2 d(std::cos(ang), std::sin(ang));
-                dl->AddLine({c.x + d.x * r * 0.7f, c.y + d.y * r * 0.7f},
-                            {c.x + d.x * r, c.y + d.y * r}, col, 1.5f);
-            }
-            break;
-        case EntityType::Empty:  // small dashed cross = transform node
-            dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.5f);
-            dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.5f);
-            dl->AddCircle(c, r * 0.4f, col, 0, 1.5f);
-            break;
-        default: break;
-    }
-}
-
-// A mouse arrow for Select; the same arrow with a plus next to it for Create.
-void pointer(ImDrawList* dl, bool create, ImVec2 c, float r, ImU32 col) {
-    const ImVec2 a(c.x - r * (create ? 0.9f : 0.45f), c.y - r);
-    dl->AddTriangleFilled(a, {a.x, a.y + r * 1.7f},
-                          {a.x + r * 1.15f, a.y + r * 1.15f}, col);
-    if (create) {
-        const ImVec2 q(c.x + r * 0.6f, c.y - r * 0.3f);
-        dl->AddLine({q.x - r * 0.5f, q.y}, {q.x + r * 0.5f, q.y}, col, 2.0f);
-        dl->AddLine({q.x, q.y - r * 0.5f}, {q.x, q.y + r * 0.5f}, col, 2.0f);
-    }
-}
-
-// A little horizon with a hill on it.
-void terrain(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
-    dl->AddLine({c.x - r, c.y + r * 0.6f}, {c.x + r, c.y + r * 0.6f}, col, 1.5f);
-    dl->AddTriangle({c.x - r * 0.8f, c.y + r * 0.6f}, {c.x, c.y - r * 0.7f},
-                    {c.x + r * 0.8f, c.y + r * 0.6f}, col, 1.8f);
-}
-
-// The three gizmo operations: a 4-way arrow, a circular arrow, a diagonal
-// between a filled and an open handle.
-void gizmo(ImDrawList* dl, ImGuizmo::OPERATION op, ImVec2 c, float r, ImU32 col) {
-    const float a = r * 0.44f; // arrowhead, in step with the icon's size
-    if (op == ImGuizmo::TRANSLATE) {
-        dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.6f);
-        dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.6f);
-        dl->AddTriangleFilled({c.x + r, c.y}, {c.x + r - a, c.y - a}, {c.x + r - a, c.y + a}, col);
-        dl->AddTriangleFilled({c.x - r, c.y}, {c.x - r + a, c.y - a}, {c.x - r + a, c.y + a}, col);
-        dl->AddTriangleFilled({c.x, c.y - r}, {c.x - a, c.y - r + a}, {c.x + a, c.y - r + a}, col);
-        dl->AddTriangleFilled({c.x, c.y + r}, {c.x - a, c.y + r - a}, {c.x + a, c.y + r - a}, col);
-    } else if (op == ImGuizmo::ROTATE) {
-        dl->PathArcTo(c, r, 0.6f, 5.4f, 20);
-        dl->PathStroke(col, 0, 1.8f);
-        const ImVec2 e(c.x + std::cos(5.4f) * r, c.y + std::sin(5.4f) * r);
-        const ImVec2 tg(-std::sin(5.4f), std::cos(5.4f));
-        const ImVec2 no(std::cos(5.4f), std::sin(5.4f));
-        dl->AddTriangleFilled({e.x + tg.x * a, e.y + tg.y * a},
-                              {e.x - no.x * a * 0.7f, e.y - no.y * a * 0.7f},
-                              {e.x + no.x * a * 0.7f, e.y + no.y * a * 0.7f}, col);
-    } else {
-        dl->AddLine({c.x - r * 0.7f, c.y + r * 0.7f}, {c.x + r * 0.7f, c.y - r * 0.7f}, col, 1.8f);
-        const float h = r * 0.375f; // handle half-size
-        dl->AddRectFilled({c.x + r * 0.7f - h, c.y - r * 0.7f - h},
-                          {c.x + r * 0.7f + h, c.y - r * 0.7f + h}, col);
-        dl->AddRect({c.x - r * 0.7f - h, c.y + r * 0.7f - h},
-                    {c.x - r * 0.7f + h, c.y + r * 0.7f + h}, col, 0.0f, 0, 1.5f);
-    }
-}
-
-// Object box with its own tilted axis = local frame; globe with meridian and
-// equator = world frame.
-void gizmoSpace(ImDrawList* dl, bool local, ImVec2 c, float r, ImU32 col) {
-    if (local) {
-        dl->AddRect({c.x - r * 0.7f, c.y - r * 0.55f},
-                    {c.x + r * 0.35f, c.y + r * 0.7f}, col, 0.0f, 0, 1.6f);
-        dl->AddLine({c.x + r * 0.35f, c.y - r * 0.55f}, {c.x + r, c.y - r}, col, 1.6f);
-    } else {
-        dl->AddCircle(c, r, col, 0, 1.6f);
-        dl->AddLine({c.x - r, c.y}, {c.x + r, c.y}, col, 1.2f);
-        dl->AddLine({c.x, c.y - r}, {c.x, c.y + r}, col, 1.2f);
-        dl->AddBezierQuadratic({c.x, c.y - r}, {c.x - r * 0.9f, c.y},
-                               {c.x, c.y + r}, col, 1.1f);
-        dl->AddBezierQuadratic({c.x, c.y - r}, {c.x + r * 0.9f, c.y},
-                               {c.x, c.y + r}, col, 1.1f);
-    }
-}
-
-// Two edges converging into the distance plus a dashed centre line: a road,
-// readable at 26 px without an icon font.
-void road(ImDrawList* dl, ImVec2 c, float r, ImU32 col) {
-    dl->AddLine({c.x - r, c.y + r}, {c.x - r * 0.35f, c.y - r}, col, 1.8f);
-    dl->AddLine({c.x + r, c.y + r}, {c.x + r * 0.35f, c.y - r}, col, 1.8f);
-    dl->AddLine({c.x, c.y + r * 0.9f}, {c.x, c.y + r * 0.2f}, col, 1.4f);
-    dl->AddLine({c.x, c.y - r * 0.2f}, {c.x, c.y - r * 0.8f}, col, 1.4f);
-}
-
-// The viewport shading ladder: a wire cube, then the same ball with as much of
-// the material as each mode keeps -- nothing, the scene's light, the paintwork.
-// One shape across three of the four, because what changes between them is not
-// the object.
-void shade(ImDrawList* dl, int mode, ImVec2 c, float r, ImU32 col) {
-    // The toolbar's own background, for the pattern that has to be cut OUT of a
-    // filled ball rather than drawn on top of it -- these icons have one colour
-    // to draw with, and a checker needs two.
-    const ImU32 kInk = ImGui::GetColorU32(ImGuiCol_WindowBg);
-    if (mode == 3) { // wireframe: a cube with its far edges left in
-        const float a = r * 0.78f, o = r * 0.42f;
-        dl->AddRect({c.x - a, c.y - a + o}, {c.x + a - o, c.y + a}, col, 0.0f, 0, 1.5f);
-        dl->AddRect({c.x - a + o, c.y - a}, {c.x + a, c.y + a - o}, col, 0.0f, 0, 1.1f);
-        dl->AddLine({c.x - a, c.y - a + o}, {c.x - a + o, c.y - a}, col, 1.1f);
-        dl->AddLine({c.x + a - o, c.y + a}, {c.x + a, c.y + a - o}, col, 1.1f);
-        return;
-    }
-    if (mode == 4) {                       // pathtraced: a ray bouncing off it
-        dl->AddCircleFilled({c.x + r * 0.25f, c.y + r * 0.3f}, r * 0.55f, col);
-        dl->AddLine({c.x - r, c.y - r}, {c.x - r * 0.1f, c.y - r * 0.15f}, col, 1.4f);
-        dl->AddLine({c.x - r * 0.1f, c.y - r * 0.15f}, {c.x + r * 0.35f, c.y - r}, col, 1.4f);
-        dl->AddLine({c.x + r * 0.35f, c.y - r}, {c.x + r, c.y - r * 0.35f}, col, 1.4f);
-        return;
-    }
-    dl->AddCircleFilled(c, r * 0.85f, col);
-    if (mode == 2) {                       // solid lit: the scene's sun on it
-        for (int i = 0; i < 5; ++i) {
-            const float ang = 3.4f + i * 0.30f;
-            const ImVec2 d(std::cos(ang), std::sin(ang));
-            dl->AddLine({c.x + d.x * r * 1.15f, c.y + d.y * r * 1.15f},
-                        {c.x + d.x * r * 1.55f, c.y + d.y * r * 1.55f}, col, 1.3f);
-        }
-    } else if (mode == 0) {                // textured: a pattern, cut in
-        const float q = r * 0.42f;
-        dl->AddRectFilled({c.x - q, c.y - q}, {c.x, c.y}, kInk);
-        dl->AddRectFilled({c.x, c.y}, {c.x + q, c.y + q}, kInk);
-    }
-}
-
-} // namespace icon
-
-// One button in the strip: a blank fixed-size button with a tooltip, whose
-// picture the caller paints afterwards at `center` -- afterwards, so it lands on
-// top of the button rather than under it. A disabled button still draws itself:
-// greyed out is a state worth showing, missing is not. An `active` button (the
-// current tool, shape, mode) sits on a wash of the accent, so what is on reads
-// from the button's shape and not only from the thin lines of its picture.
-bool iconButton(const char* id, ImVec2 size, const char* tip, bool disabled,
-                ImVec2& center, bool active = false) {
-    ImGui::PushID(id);
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    if (active) {
-        ImVec4 wash = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
-        wash.w = 0.22f;
-        ImGui::PushStyleColor(ImGuiCol_Button, wash);
-        wash.w = 0.32f;
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, wash);
-    }
-    ImGui::BeginDisabled(disabled);
-    const bool clicked = ImGui::Button("##b", size);
-    ImGui::EndDisabled();
-    if (active) ImGui::PopStyleColor(2);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
-    center = ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f);
-    ImGui::PopID();
-    ImGui::SameLine();
-    return clicked;
-}
-
-// --- The default panel layout ----------------------------------------------
-
-// First run (or after "Reset layout"): lay the panels out into a tidy right-hand
-// column, split top/bottom, so they don't start as a heap of floating windows.
-// Once arranged, ImGui persists it in imgui.ini.
-void buildDefaultDockLayout(ImGuiID dockId) {
-    ImGui::DockBuilderRemoveNode(dockId);
-    ImGui::DockBuilderAddNode(dockId, ImGuiDockNodeFlags_PassthruCentralNode
-                                    | ImGuiDockNodeFlags_DockSpace);
-    ImGui::DockBuilderSetNodeSize(dockId, ImGui::GetMainViewport()->WorkSize);
-
-    // Hierarchy (left) | Scene (centre) | Inspector over ONE tool dock
-    // (right).
-    //
-    // Every tool panel is pre-docked into that single node, so opening
-    // one adds a TAB rather than a window. Left to float, they get
-    // dragged out into a tiled wall -- which is exactly what happened:
-    // fourteen panels side by side and the viewport reduced to a tab
-    // behind one of them. The panels are not the work; the scene is,
-    // and it keeps the middle.
-    //
-    // This does not make the panels fewer, only stop them competing
-    // for the same space. Fewer is a different job (merging them by
-    // task rather than by source file).
-    ImGuiID central = 0;
-    ImGuiID left  = ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.18f,
-                                                nullptr, &central);
-    ImGuiID right = ImGui::DockBuilderSplitNode(central, ImGuiDir_Right, 0.30f,
-                                                nullptr, &central);
-    // Inspector keeps its own strip above the tools: it is the one
-    // panel wanted WHILE a tool is open (pick a road point, look at
-    // what it is), so making it a peer tab would mean flipping back
-    // and forth.
-    ImGuiID inspector = 0;
-    ImGuiID tools = ImGui::DockBuilderSplitNode(right, ImGuiDir_Down, 0.62f,
-                                                nullptr, &inspector);
-
-    ImGui::DockBuilderDockWindow("Scene", central);
-    ImGui::DockBuilderDockWindow("Hierarchy", left);
-    ImGui::DockBuilderDockWindow("Inspector", inspector);
-    // Titles must match the ImGui::Begin() strings exactly -- a typo
-    // costs a floating window and nothing else, which is why they are
-    // in one list rather than scattered over the call sites.
-    for (const char* w : {
-            "Terrain", "Terrain Sculpt", "Terrain Paint", "Water",
-            "Sky & atmosphere", "Weather & audio", "Colour grade",
-            "Environment", "Advanced nature",
-            "Vegetation", "Scatter",
-            "Roads", "City", "Buildings",
-            "Materials", "Models", "Prefabs", "Assets",
-            "UI Overlay", "Camera path", "Timeline", "Animation graph",
-            "Camera", "3D Cursor", "Render",
-            "Vehicle", "Glider", "Voxels", "Mixer", "Scripts",
-            "Performance", "Stats"})
-        ImGui::DockBuilderDockWindow(w, tools);
-    ImGui::DockBuilderFinish(dockId);
-}
-
-// --- The menu bar ----------------------------------------------------------
-// Each menu gets exactly the slice of main's state it touches, gathered once
-// into a context of references and callbacks -- the same shape projectio's
-// Context already uses -- and handed back every frame. That lets the menu bodies
-// move out of main() unchanged, which is the point: a menu that had to be
-// rewritten in order to be moved is a menu whose behaviour you can no longer
-// diff against the one that worked.
-
-using NameAndPath = std::vector<std::pair<std::string, std::string>>;
-
-struct FileMenuCtx {
-    Window&                         window;
-    const std::string&              currentProject;
-    const std::string&              prefLocation;
-    const std::vector<std::string>& recentProjects;
-    const std::string&              exportStatus;
-    const std::string&              autosaveStatus;
-    const char*                     projNameBuf;
-    char*                           wizName;
-    std::size_t                     wizNameCap;
-    char*                           wizLocation;
-    std::size_t                     wizLocationCap;
-    bool&                           wizardOpen;
-    bool&                           wizardIsNew;
-    game::Settings&                 gameSettings;
-    bool&                           gameSettingsOpen;
-    std::function<void()>                          saveCurrent;
-    std::function<void(const std::string&)>        exportGame;
-    std::function<bool(const std::string&)>        openProjectAsync;
-    std::function<NameAndPath(const std::string&)> listProjectsIn;
-};
-
-struct SceneMenuCtx {
-    const std::string& currentProject;
-    char*              sceneNameBuf;
-    std::size_t        sceneNameCap;
-    bool&              sceneNewOpen;
-    bool&              sceneRenameOpen;
-    bool&              sceneDeleteOpen;
-    std::function<void(const std::string&)>        saveSceneFile;
-    std::function<bool(const std::string&)>        loadSceneAsync;
-    std::function<NameAndPath(const std::string&)> listScenesIn;
-};
-
-struct EditMenuCtx {
-    CommandStack&        history;
-    Document&            document;
-    std::vector<Entity>& entities;
-    Selection&           sel;
-    char*                prefabNameBuf;
-    std::size_t          prefabNameCap;
-    bool&                showPrefabs;
-    std::function<void()>             clampRoadSel;
-    std::function<void()>             clampSplineSel;
-    // Also re-cuts the watercourse beds: an undo puts different PATHS back and
-    // the terrain has to follow them. See main's clampRiverSel.
-    std::function<void()>             clampRiverSel;
-    std::function<void()>             duplicateSelection;
-    std::function<void()>             deleteSelection;
-};
-
-// One row per entry in the View menu: the submenu it sits under, its label
-// (nullptr = a separator within that submenu), the shortcut hint, and the bool
-// it toggles. A table rather than twenty-eight MenuItem calls, because "Close
-// all panels" has to clear exactly the set the menu opens -- kept as two
-// hand-written lists they drift apart, and a panel you cannot close is worse
-// than one you cannot open. `closeAll = false` holds an entry out of that sweep.
-struct PanelEntry {
-    const char* group;
-    const char* label;
-    const char* shortcut;
-    bool*       flag;
-    bool        closeAll = true;
-};
-
-
-void drawFileMenu(const FileMenuCtx& c) {
-    if (!ImGui::BeginMenu("File")) return;
-    if (ImGui::MenuItem("New Project...")) {
-        c.wizardIsNew = true;
-        c.wizName[0] = '\0';
-        std::snprintf(c.wizLocation, c.wizLocationCap, "%s",
-                      c.prefLocation.c_str());
-        c.wizardOpen = true;
-    }
-    if (ImGui::MenuItem("Save Project", nullptr, false,
-                        !c.currentProject.empty()))
-        c.saveCurrent();
-    if (ImGui::MenuItem("Save Project As...")) {
-        c.wizardIsNew = false;
-        std::snprintf(c.wizName, c.wizNameCap, "%s", c.projNameBuf);
-        std::snprintf(c.wizLocation, c.wizLocationCap, "%s",
-                      c.prefLocation.c_str());
-        c.wizardOpen = true;
-    }
-    ImGui::Separator();
-    if (ImGui::MenuItem("Game Settings...", nullptr, false,
-                        !c.currentProject.empty())) {
-        // Load the project's current settings, then open the modal.
-        c.gameSettings = game::load(
-            std::filesystem::path(c.currentProject)
-                .parent_path().generic_string());
-        c.gameSettingsOpen = true;
-    }
-    if (ImGui::MenuItem("Export Game...", nullptr, false,
-                        !c.currentProject.empty())) {
-        std::string picked;
-        if (ed::pickFolder(picked, c.prefLocation)) c.exportGame(picked);
-    }
-    if (!c.exportStatus.empty())
-        ImGui::TextDisabled("%s", c.exportStatus.c_str());
-    // When the last crash snapshot was taken. Not an action, just proof the
-    // safety net is there -- which is the only thing anyone wants to know about
-    // it until the day they need it.
-    if (!c.autosaveStatus.empty())
-        ImGui::TextDisabled("%s", c.autosaveStatus.c_str());
-    ImGui::Separator();
-    if (ImGui::BeginMenu("Open Project")) {
-        if (ImGui::MenuItem("Browse folder...")) {
-            std::string picked;
-            if (ed::pickFolder(picked, c.prefLocation) &&
-                !c.openProjectAsync(picked))
-                std::fprintf(stderr,
-                    "No project (.fitzel) in %s\n", picked.c_str());
-        }
-        if (!c.recentProjects.empty()) {
-            ui::sectionText("Recent");
-            int ri = 0;
-            for (const std::string& folder : c.recentProjects) {
-                // Scope each item by index so two entries can never
-                // share an ImGui id, even if a duplicate path slips
-                // into the list.
-                ImGui::PushID(ri++);
-                const std::string lbl =
-                    std::filesystem::path(folder).filename().string();
-                if (ImGui::MenuItem(lbl.c_str()))
-                    c.openProjectAsync(folder);
-                ImGui::PopID();
-            }
-        }
-        ui::sectionText("In default location");
-        const auto projs = c.listProjectsIn(c.prefLocation);
-        if (projs.empty()) ImGui::TextDisabled("(none)");
-        for (const auto& [n, folder] : projs)
-            if (ImGui::MenuItem((n + "##d" + folder).c_str()))
-                c.openProjectAsync(folder);
-        ImGui::EndMenu();
-    }
-    ImGui::Separator();
-    if (ImGui::MenuItem("Exit")) c.window.requestClose();
-    ImGui::EndMenu();
-}
-
-void drawSceneMenu(const SceneMenuCtx& c) {
-    if (!ImGui::BeginMenu("Scene")) return;
-    if (c.currentProject.empty()) {
-        ImGui::TextDisabled("Open or create a project first.");
-    } else {
-        const std::string projFolder =
-            std::filesystem::path(c.currentProject).parent_path().generic_string();
-        if (ImGui::MenuItem("New Scene...")) {
-            c.sceneNameBuf[0] = '\0';
-            c.sceneNewOpen = true;
-        }
-        if (ImGui::MenuItem("Save Scene"))
-            c.saveSceneFile(c.currentProject);
-        if (ImGui::MenuItem("Rename Scene...")) {
-            std::snprintf(c.sceneNameBuf, c.sceneNameCap, "%s",
-                std::filesystem::path(c.currentProject).stem().string().c_str());
-            c.sceneRenameOpen = true;
-        }
-        const auto scenes = c.listScenesIn(projFolder);
-        ImGui::BeginDisabled(scenes.size() < 2); // keep at least one scene
-        if (ImGui::MenuItem("Delete Scene..."))
-            c.sceneDeleteOpen = true;
-        ImGui::EndDisabled();
-        ui::sectionText("Switch to");
-        for (const auto& [n, path] : scenes) {
-            const bool active = (path == c.currentProject);
-            if (ImGui::MenuItem((n + "##sc" + path).c_str(), nullptr, active) &&
-                !active) {
-                c.saveSceneFile(c.currentProject); // don't lose current edits
-                c.loadSceneAsync(path);
-            }
-        }
-    }
-    ImGui::EndMenu();
-}
-
-void drawEditMenu(const EditMenuCtx& c) {
-    if (!ImGui::BeginMenu("Edit")) return;
-    const std::string undoLbl = c.history.canUndo()
-        ? std::string("Undo ") + c.history.undoName() : "Undo";
-    const std::string redoLbl = c.history.canRedo()
-        ? std::string("Redo ") + c.history.redoName() : "Redo";
-    if (ImGui::MenuItem(undoLbl.c_str(), "Ctrl+Z", false, c.history.canUndo())) {
-        c.history.undo(c.document); c.sel.clear(); c.clampRoadSel(); c.clampSplineSel();
-        c.clampRiverSel();
-    }
-    if (ImGui::MenuItem(redoLbl.c_str(), "Ctrl+Y", false, c.history.canRedo())) {
-        c.history.redo(c.document); c.sel.clear(); c.clampRoadSel(); c.clampSplineSel();
-        c.clampRiverSel();
-    }
-    ImGui::Separator();
-    const bool hasSel = c.sel.valid() &&
-        c.entities[c.sel.index()].type != EntityType::Sun;
-    const int selCount = static_cast<int>(c.sel.count());
-    const char* dupLbl = selCount > 1 ? "Duplicate selection" : "Duplicate";
-    const char* delLbl = selCount > 1 ? "Delete selection"    : "Delete";
-    if (ImGui::MenuItem(dupLbl, nullptr, false, hasSel))
-        c.duplicateSelection();
-    if (ImGui::MenuItem(delLbl, nullptr, false, hasSel))
-        c.deleteSelection();
-    if (ImGui::MenuItem("Save as Prefab...", nullptr, false, hasSel)) {
-        // Seed the name field from the selection and open the panel;
-        // the panel's "Create" button does the actual save.
-        const std::string nm = c.entities[c.sel.index()].name;
-        std::snprintf(c.prefabNameBuf, c.prefabNameCap, "%s",
-                      nm.c_str());
-        c.showPrefabs = true;
-    }
-    ImGui::Separator();
-    if (ImGui::MenuItem("Clear objects")) {
-        c.entities.erase(std::remove_if(c.entities.begin(), c.entities.end(),
-            [](const Entity& e){ return e.type != EntityType::Sun; }),
-            c.entities.end());
-        c.sel.clear();
-        c.history.clear(); // bulk reset -> drop history
-    }
-    ImGui::EndMenu();
-}
-
-void drawViewMenu(Gui& gui, const std::vector<PanelEntry>& panels,
-                  viewnav::Nav& viewNav,
-                  bool& prefsDirty, bool& requestDockRebuild) {
-    if (!ImGui::BeginMenu("View")) return;
-    // Where the camera looks from, before which windows are open: it is the one
-    // entry here that changes the picture rather than the furniture, and it is
-    // the way to reach a standard view without a numpad -- or without holding
-    // anything steady, which is the point (see the editor's aims in README).
-    viewNav.drawMenu();
-    ImGui::Separator();
-    // Grouped by the JOB, not by which file draws it. A flat list of twenty-eight
-    // entries is a list you read start to finish every time; "where do I set fog"
-    // has an obvious answer only once the entries are sorted the way the work is.
-    const char* group = nullptr;
-    bool        open  = false;
-    for (const PanelEntry& e : panels) {
-        if (!group || std::strcmp(group, e.group) != 0) {
-            if (open) ImGui::EndMenu();
-            group = e.group;
-            open  = ImGui::BeginMenu(group);
-        }
-        if (!open)    continue;
-        if (!e.label) ImGui::Separator();
-        else          ImGui::MenuItem(e.label, e.shortcut, e.flag);
-    }
-    if (open) ImGui::EndMenu();
-    ImGui::Separator();
-    // Text size/typeface are a comfort setting, not a scene one: they live in the
-    // editor prefs and apply immediately.
-    if (ImGui::BeginMenu("Interface")) {
-        float px = gui.fontSize();
-        ImGui::SetNextItemWidth(180.0f);
-        if (ImGui::SliderFloat("Text size", &px, 14.0f, 28.0f, "%.0f pt")) {
-            gui.setFontSize(px);
-            prefsDirty = true;
-        }
-        if (gui.fontFamilyCount() > 1) {
-            ImGui::SetNextItemWidth(180.0f);
-            if (ImGui::BeginCombo("Typeface",
-                                  gui.fontFamilyName(gui.fontFamily()))) {
-                for (int i = 0; i < gui.fontFamilyCount(); ++i)
-                    if (ImGui::Selectable(gui.fontFamilyName(i),
-                                          i == gui.fontFamily())) {
-                        gui.setFontFamily(i);
-                        ui::setBoldFont(gui.boldFont());
-                        prefsDirty = true;
-                    }
-                ImGui::EndCombo();
-            }
-        }
-        ui::hint("Verdana and Tahoma have the largest x-height "
-                 "-- easiest to read at small sizes.");
-        ImGui::EndMenu();
-    }
-    if (ImGui::MenuItem("Close all panels")) {
-        // One click back to scene + hierarchy + inspector. The panels are cheap
-        // to reopen and expensive to look past.
-        for (const PanelEntry& e : panels)
-            if (e.flag && e.closeAll) *e.flag = false;
-    }
-    if (ImGui::MenuItem("Reset layout")) requestDockRebuild = true;
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Put the panels back into one docked tab\n"
-                          "strip on the right, with the scene in the\n"
-                          "middle. Needed once after an update: your\n"
-                          "own arrangement is remembered in imgui.ini\n"
-                          "and wins until you ask for this.");
-    ImGui::EndMenu();
-}
-
-#endif // !FITZEL_PLAYER
 
 } // namespace
 
 int main(int argc, char** argv) {
     try {
-        adoptParentConsole();
-        setWorkingDirToExe(argc, argv);
-        mountGameArchive();
+        startup::adoptParentConsole();
+        startup::setWorkingDirToExe(argc, argv);
+        startup::mountGameArchive();
 
-        const BootConfig   boot           = loadBootConfig(argc, argv);
+        const startup::BootConfig boot    = startup::loadBootConfig(argc, argv);
         const std::string& bootProject    = boot.project;
         const std::string& bootScene      = boot.scene;
         const bool         bootFullscreen = boot.fullscreen;
@@ -1382,7 +368,7 @@ int main(int argc, char** argv) {
 
         // Content roots: prefer a `content/` next to the exe (a portable/exported
         // build ships its assets there), else the compile-time dev tree.
-        const ContentRoots roots       = resolveContentRoots();
+        const startup::ContentRoots roots = startup::resolveContentRoots();
         const std::string& contentRoot = roots.content;
         const std::string& modelDir    = roots.models;
 
@@ -1410,8 +396,8 @@ int main(int argc, char** argv) {
         AssetDatabase assetDb(contentRoot);
         assetDb.refresh();
 
-        CoreShaders shaders;
-        if (!loadCoreShaders(shaders)) return 1;
+        startup::CoreShaders shaders;
+        if (!startup::loadCoreShaders(shaders)) return 1;
         Shader& lit    = shaders.lit;
         Shader& water  = shaders.water;
         Shader& river  = shaders.river;
@@ -1473,7 +459,7 @@ int main(int argc, char** argv) {
 
         // Water: planar reflection/refraction targets + a surface quad.
         // A tessellated water grid so Gerstner waves can displace its vertices.
-        Mesh waterMesh = makeWaterGrid(400);
+        Mesh waterMesh = startup::makeWaterGrid(400);
         // Half-resolution reflection/refraction: the water distortion hides it
         // and it roughly quarters the cost of those two textured passes.
         RenderTarget reflectRT(640, 360);
@@ -1493,7 +479,7 @@ int main(int argc, char** argv) {
         float     waterClarity      = 1.0f;  // higher = clearer (less depth tint)
         float     waterIor          = 1.33f; // index of refraction (drives Fresnel + bend)
 
-        Mesh fsQuad = makeFullscreenQuad();
+        Mesh fsQuad = startup::makeFullscreenQuad();
         // Puts the depth back to "nothing here" (1.0) wherever the stencil test
         // lets it through -- the far terrain's own depth, once it is drawn.
         Shader depthToFar = Shader::fromSource(
@@ -2713,7 +1699,7 @@ int main(int argc, char** argv) {
         };
         ThumbWork thumbWork;
         std::thread thumbThread([&thumbWork]{
-            const std::filesystem::path cacheDir = thumbCacheDir();
+            const std::filesystem::path cacheDir = thumbcache::thumbCacheDir();
             for (;;) {
                 std::pair<fitzel::AssetId, std::string> job;
                 {
@@ -2729,11 +1715,11 @@ int main(int argc, char** argv) {
                 // the result. decodeThumbnail never throws (empty image on failure).
                 const std::filesystem::path cacheFile =
                     cacheDir / (job.first.toString() + ".fth");
-                const long long mt = sourceMtime(job.second);
+                const long long mt = thumbcache::sourceMtime(job.second);
                 fitzel::ImagePixels img;
-                if (!loadThumbCache(cacheFile, mt, img)) {
+                if (!thumbcache::loadThumbCache(cacheFile, mt, img)) {
                     img = Texture::decodeThumbnail(job.second, 128);
-                    saveThumbCache(cacheFile, mt, img);
+                    thumbcache::saveThumbCache(cacheFile, mt, img);
                 }
                 std::lock_guard<std::mutex> lk(thumbWork.mutex);
                 thumbWork.done.emplace_back(job.first, std::move(img));
@@ -2792,7 +1778,6 @@ int main(int argc, char** argv) {
             ImGui::SameLine();
         };
 #endif // !FITZEL_PLAYER
-        bool showScriptEditor = false;
         bool showAbout       = false;
 #ifndef FITZEL_PLAYER
         luaapi::State luaApi;             // Help -> Lua API
@@ -5803,21 +4788,6 @@ int main(int argc, char** argv) {
         int            sessionRaceLevel   = gameDifficulty.level;
         ScriptSystem scripts; // Lua entity scripts, ticked while playing
 
-        // --- Lua script editor (ImGuiColorTextEdit) --------------------------
-#ifndef FITZEL_PLAYER
-        TextEditor  luaEditor;
-        luaEditor.SetLanguageDefinition(TextEditor::LanguageDefinition::Lua());
-        luaEditor.SetPalette(TextEditor::GetDarkPalette());
-        std::string editorPath;          // "scripts/<file>.lua" open ("" = none)
-        bool        editorDirty = false;  // unsaved changes
-        char        newScriptName[64] = "";
-        int         newScriptTemplate = 0; // 0 = empty component, 1 = documented
-        // Code-completion popup state for the Lua editor (see Completions): the
-        // popup shows while there are matches and the editor is focused --
-        // Tab/Enter accepts, arrows navigate, Esc dismisses. See the editor
-        // window below.
-        Completions comp;
-#endif // !FITZEL_PLAYER
         // Where entity scripts live: the open project's scripts/ folder, or the
         // bundled scripts/ next to the exe when no project is open (demo scripts).
         auto scriptsDir = [&]() -> std::string {
@@ -5830,28 +4800,11 @@ int main(int argc, char** argv) {
             return scriptsDir() + "/" + file;
         };
 #ifndef FITZEL_PLAYER
-        // .lua files currently in the scripts dir (bare names, sorted).
-        auto listScripts = [&](){
-            std::vector<std::string> out;
-            std::error_code ec;
-            for (const auto& de :
-                 std::filesystem::directory_iterator(scriptsDir(), ec))
-                if (de.is_regular_file() && de.path().extension() == ".lua")
-                    out.push_back(de.path().filename().string());
-            std::sort(out.begin(), out.end());
-            return out;
-        };
-        // Open a script (bare filename under the scripts dir) in the editor.
-        auto openScript = [&](const std::string& file){
-            if (file.empty()) return;
-            const std::string path = scriptPath(file);
-            std::ifstream in(path);
-            std::stringstream ss; ss << in.rdbuf();
-            luaEditor.SetText(ss.str());
-            editorPath = path;
-            editorDirty = false;
-            showScriptEditor = true;
-        };
+        // --- Lua script editor (see ScriptEditor.hpp) ------------------------
+        ScriptEditor scriptEditor;
+        scriptEditor.scriptsDir = scriptsDir;
+        auto listScripts = [&] { return scriptEditor.list(); };
+        auto openScript  = [&](const std::string& file) { scriptEditor.open(file); };
         // Exported script parameters (module-level globals), cached per file and
         // re-scanned when the .lua changes on disk -- so editing a script and
         // returning to the Inspector shows the current set. The struct lives in
@@ -5872,12 +4825,6 @@ int main(int argc, char** argv) {
                 it = scriptParamCache.insert_or_assign(path, std::move(s)).first;
             }
             return it->second;
-        };
-        // Write the editor buffer back and reload the VM so Play picks it up.
-        auto saveEditor = [&](){
-            if (editorPath.empty()) return;
-            std::ofstream out(editorPath);
-            if (out) { out << luaEditor.GetText(); scripts.reset(); editorDirty = false; }
         };
 #endif // !FITZEL_PLAYER
         // Sounds and sprites known to the asset database (engine + project), by
@@ -7588,16 +6535,7 @@ int main(int argc, char** argv) {
                 for (Entity& b : playEntities) {
                     if (b.id != e.id) continue;
                     if (auto* bv = b.components.get<VehicleComponent>()) {
-                        bool moved = false;
-                        for (int i = 0; i < 4; ++i) {
-                            moved |= bv->wheelTurn[i] != vc->wheelTurn[i];
-                            bv->wheelTurn[i] = vc->wheelTurn[i];
-                        }
-#ifndef FITZEL_PLAYER
-                        if (moved) editorDirty = true;
-#else
-                        (void)moved;
-#endif
+                        for (int i = 0; i < 4; ++i) bv->wheelTurn[i] = vc->wheelTurn[i];
                     }
                     break;
                 }
@@ -7684,19 +6622,19 @@ int main(int argc, char** argv) {
 #ifndef FITZEL_PLAYER
         // The menu bar's slice of the state above, gathered once (everything it
         // names lives for the whole loop) and redrawn from every frame.
-        FileMenuCtx fileMenu{
+        editormenu::FileMenuCtx fileMenu{
             window, currentProject, prefLocation, recentProjects, exportStatus,
             autoSave.status(), projNameBuf,
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
             wizardOpen, wizardIsNew, gameSettings, gameSettingsOpen,
             saveCurrent, exportGame, openProjectAsync, listProjectsIn,
         };
-        SceneMenuCtx sceneMenu{
+        editormenu::SceneMenuCtx sceneMenu{
             currentProject, sceneNameBuf, sizeof(sceneNameBuf),
             sceneNewOpen, sceneRenameOpen, sceneDeleteOpen,
             saveSceneFile, loadSceneAsync, listScenesIn,
         };
-        EditMenuCtx editMenu{
+        editormenu::EditMenuCtx editMenu{
             history, document, entities, sel,
             prefabNameBuf, sizeof(prefabNameBuf), showPrefabs,
             clampRoadSel, clampSplineSel, clampRiverSel,
@@ -7704,7 +6642,7 @@ int main(int argc, char** argv) {
         };
         // The View menu, as data (see PanelEntry). "Close all panels" walks this
         // same table, so it can no longer fall behind the menu.
-        const std::vector<PanelEntry> viewPanels = {
+        const std::vector<editormenu::PanelEntry> viewPanels = {
             {"World",    "Terrain",            nullptr, &showTerrain},
             {"World",    "Terrain sculpt",     nullptr, &showSculpt},
             {"World",    "Terrain paint",      nullptr, &showPaint},
@@ -7745,7 +6683,7 @@ int main(int argc, char** argv) {
             {"Assets",   "Models",             nullptr, &showModels},
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
-            {"Assets",   "Scripts",            nullptr, &showScriptEditor},
+            {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
             // The synth lives with the assets it makes: a patch is a sound
             // file's replacement, authored here and played by the game.
             {"Assets",   "Synth",              nullptr, &showSynth},
@@ -11138,10 +10076,10 @@ int main(int argc, char** argv) {
             else {
             // --- Main menu bar (File / Scene / Edit / View / Help) -------
             if (ImGui::BeginMainMenuBar()) {
-                drawFileMenu(fileMenu);
-                drawSceneMenu(sceneMenu);
-                drawEditMenu(editMenu);
-                drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild);
+                editormenu::drawFileMenu(fileMenu);
+                editormenu::drawSceneMenu(sceneMenu);
+                editormenu::drawEditMenu(editMenu);
+                editormenu::drawViewMenu(gui, viewPanels, viewNav, prefsDirty, requestDockRebuild);
                 if (ImGui::BeginMenu("Help")) {
                     if (ImGui::MenuItem("Lua API")) luaapi::show(luaApi);
                     ImGui::Separator();
@@ -11198,7 +10136,7 @@ int main(int argc, char** argv) {
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, pad);
                 // At rest the buttons are just their pictures on the strip; the
                 // button body shows up on hover, and as an accent wash on the
-                // ones that are on (iconButton's `active`).
+                // ones that are on (icon::button's `active`).
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
                 const bool barOpen = ImGui::BeginViewportSideBar(
                     "##PrimToolbar", tvp, ImGuiDir_Up, barH,
@@ -11230,7 +10168,7 @@ int main(int argc, char** argv) {
                     // boxes. Esc steps back out of Create.
                     auto modeToggle = [&](bool create, const char* tip) {
                         const bool on  = (placeMode == create);
-                        const bool hit = iconButton(create ? "modeCreate" : "modeSelect",
+                        const bool hit = icon::button(create ? "modeCreate" : "modeSelect",
                                                     bs, tip, false, c, on);
                         icon::pointer(dl, create, c, r, on ? icon::on() : icon::kOff);
                         if (hit) placeMode = create;
@@ -11241,7 +10179,7 @@ int main(int argc, char** argv) {
 
                     auto shapeBtn = [&](EntityType t, const char* id, const char* tip) {
                         const bool on  = (entityNewType == t);
-                        const bool hit = iconButton(id, bs, tip, false, c, on);
+                        const bool hit = icon::button(id, bs, tip, false, c, on);
                         icon::shape(dl, t, c, r, on ? icon::on() : icon::kOff);
                         if (hit) {
                             entityNewType = t;
@@ -11268,7 +10206,7 @@ int main(int argc, char** argv) {
                     // other. Not a shapeBtn -- it is a component on an Empty, not
                     // an entity type -- and disabled once the scene has ground,
                     // since a scene has one terrain.
-                    if (iconButton("terrainAdd", bs,
+                    if (icon::button("terrainAdd", bs,
                                    terrainOn ? "Terrain (the scene already has one)"
                                              : "Terrain (adds ground to the scene)",
                                    terrainOn, c))
@@ -11280,7 +10218,7 @@ int main(int argc, char** argv) {
                     auto modeBtn = [&](ImGuizmo::OPERATION op, const char* id,
                                        const char* tip) {
                         const bool on  = (gizmoOp == op);
-                        const bool hit = iconButton(id, bs, tip, false, c, on);
+                        const bool hit = icon::button(id, bs, tip, false, c, on);
                         icon::gizmo(dl, op, c, r, on ? icon::on() : icon::kOff);
                         if (hit) gizmoOp = op;
                     };
@@ -11300,7 +10238,7 @@ int main(int argc, char** argv) {
                                       isLocal ? "Local" : "World");
                         // A two-way switch whose picture IS the state, so no
                         // accent: there is no "off" for it to stand out from.
-                        const bool hit = iconButton("gizmoSpace", bs, tip, false, c);
+                        const bool hit = icon::button("gizmoSpace", bs, tip, false, c);
                         icon::gizmoSpace(dl, isLocal, c, r, icon::kOff);
                         if (hit) gizmoMode = isLocal ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
                     }
@@ -11330,7 +10268,7 @@ int main(int argc, char** argv) {
                         };
                         for (const ShadeBtn& b : kShades) {
                             const bool on  = !playMode && viewShade == b.mode;
-                            const bool hit = iconButton(b.id, bs, b.tip, playMode, c, on);
+                            const bool hit = icon::button(b.id, bs, b.tip, playMode, c, on);
                             icon::shade(dl, b.mode, c, r,
                                         playMode ? icon::kDim
                                         : on ? icon::on() : icon::kOff);
@@ -11355,7 +10293,7 @@ int main(int argc, char** argv) {
                                       "Click ground = add point, drag = move,\n"
                                       "Ctrl+drag = raise/lower, Del = delete.",
                                       roadEditMode ? " (on)" : "");
-                        const bool hit = iconButton("roadTool", bs, tip, false, c,
+                        const bool hit = icon::button("roadTool", bs, tip, false, c,
                                                     roadEditMode);
                         icon::road(dl, c, r, roadEditMode ? icon::on() : icon::kOff);
                         if (hit) {
@@ -11595,7 +10533,7 @@ int main(int argc, char** argv) {
 
             if (requestDockRebuild || ImGui::DockBuilderGetNode(dockId) == nullptr) {
                 requestDockRebuild = false;
-                buildDefaultDockLayout(dockId);
+                editormenu::buildDefaultDockLayout(dockId);
             }
 
             // Central scene viewport: shows the composited render texture. Its
@@ -15224,178 +14162,8 @@ int main(int argc, char** argv) {
                 ImGui::End();
             }
 
-            // Lua script editor (syntax-highlighted). Open/create/save the .lua
-            // files under scripts/; saving reloads the script VM so the next Play
-            // uses the edited code. Assign a script to an entity in the Inspector.
-            if (showScriptEditor) {
-                bool openNewScript = false;
-                if (ImGui::Begin("Scripts", &showScriptEditor,
-                                 ImGuiWindowFlags_MenuBar)) {
-                    bool doSave = false;
-                    if (ImGui::BeginMenuBar()) {
-                        if (ImGui::BeginMenu("File")) {
-                            if (ImGui::MenuItem("New...")) openNewScript = true;
-                            if (ImGui::BeginMenu("Open")) {
-                                const auto files = listScripts();
-                                if (files.empty()) ImGui::TextDisabled("(none)");
-                                for (const std::string& f : files)
-                                    if (ImGui::MenuItem(f.c_str())) openScript(f);
-                                ImGui::EndMenu();
-                            }
-                            if (ImGui::MenuItem("Save", "Ctrl+S", false,
-                                                !editorPath.empty()))
-                                doSave = true;
-                            ImGui::EndMenu();
-                        }
-                        ImGui::EndMenuBar();
-                    }
 
-                    ImGui::Text("%s%s", editorPath.empty() ? "(no file)"
-                                                           : editorPath.c_str(),
-                                editorDirty ? " *" : "");
-                    if (!scripts.lastError().empty()) {
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.35f, 1.0f),
-                                           "  %s", scripts.lastError().c_str());
-                    }
-
-                    // Ctrl+S saves while the editor window is focused.
-                    const bool winFocused =
-                        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-                    if (winFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
-                        doSave = true;
-
-                    // Code completion: intercept navigate/accept/dismiss keys BEFORE
-                    // the editor consumes them. We disable the editor's keyboard only
-                    // on the exact frame we act on a key, so typing is unaffected.
-                    ImFont* mono = gui.monoFont();
-                    bool acceptComp = false, suppressKb = false;
-                    if (comp.open && winFocused && !comp.items.empty()) {
-                        const int n = static_cast<int>(comp.items.size());
-                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
-                            comp.sel = (comp.sel + 1) % n; suppressKb = true;
-                        } else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
-                            comp.sel = (comp.sel - 1 + n) % n; suppressKb = true;
-                        } else if (ImGui::IsKeyPressed(ImGuiKey_Tab)) {
-                            acceptComp = true; suppressKb = true;
-                        } else if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                            comp.open = false; suppressKb = true;
-                            comp.manualClose = true; comp.closedPrefix = comp.prefix;
-                        }
-                    }
-
-                    if (mono) ImGui::PushFont(mono);
-                    if (suppressKb) luaEditor.SetHandleKeyboardInputs(false);
-                    luaEditor.Render("LuaText");
-                    if (suppressKb) luaEditor.SetHandleKeyboardInputs(true);
-                    const ImVec2 edMin = ImGui::GetItemRectMin();
-                    const ImVec2 edMax = ImGui::GetItemRectMax();
-                    const float  charW = mono ? ImGui::CalcTextSize("A").x : 8.0f;
-                    const float  lineH = ImGui::GetTextLineHeightWithSpacing();
-                    if (mono) ImGui::PopFont();
-
-                    if (luaEditor.IsTextChanged()) editorDirty = true;
-
-                    // Accept the highlighted match: insert the identifier's tail
-                    // after the already-typed prefix.
-                    if (acceptComp && comp.sel >= 0 && comp.sel < static_cast<int>(comp.items.size())) {
-                        const std::string full = comp.items[comp.sel].text;
-                        if (full.size() > comp.prefix.size())
-                            luaEditor.InsertText(full.substr(comp.prefix.size()));
-                        comp.open = false; editorDirty = true;
-                    }
-
-                    // Recompute candidates from the new cursor/text (skip on the
-                    // frame we suppressed the editor, so navigation/dismiss stick).
-                    if (!winFocused) comp.open = false;
-                    else if (!suppressKb) refreshCompletion(luaEditor, comp);
-
-                    // Completion popup, best-effort anchored under the caret and
-                    // clamped inside the editor rect.
-                    if (comp.open && !comp.items.empty()) {
-                        const auto cur = luaEditor.GetCursorPosition();
-                        ImVec2 at(edMin.x + charW * (6.0f + cur.mColumn),
-                                  edMin.y + lineH * (cur.mLine + 1));
-                        at.x = std::min(at.x, edMax.x - 300.0f);
-                        at.y = std::min(at.y, edMax.y - lineH);
-                        at.x = std::max(at.x, edMin.x);
-                        at.y = std::max(at.y, edMin.y);
-                        ImGui::SetNextWindowPos(at);
-                        ImGui::SetNextWindowSizeConstraints(
-                            ImVec2(240.0f, 0.0f), ImVec2(520.0f, lineH * 10.0f + 12.0f));
-                        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
-                        if (ImGui::Begin("##luacomplete", nullptr,
-                                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoFocusOnAppearing |
-                                ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_AlwaysAutoResize |
-                                ImGuiWindowFlags_NoSavedSettings)) {
-                            for (int i = 0; i < static_cast<int>(comp.items.size()); ++i) {
-                                const bool sel = (i == comp.sel);
-                                if (mono) ImGui::PushFont(mono);
-                                if (ImGui::Selectable(comp.items[i].text, sel)) {
-                                    const std::string full = comp.items[i].text;
-                                    if (full.size() > comp.prefix.size())
-                                        luaEditor.InsertText(full.substr(comp.prefix.size()));
-                                    comp.open = false; editorDirty = true;
-                                }
-                                if (mono) ImGui::PopFont();
-                                if (comp.items[i].hint && comp.items[i].hint[0]) {
-                                    ImGui::SameLine();
-                                    ImGui::TextDisabled("%s", comp.items[i].hint);
-                                }
-                                if (sel) ImGui::SetScrollHereY();
-                            }
-                        }
-                        ImGui::End();
-                        ImGui::PopStyleVar();
-                    }
-
-                    if (doSave) saveEditor();
-                }
-                ImGui::End();
-
-                // New-script modal: create scripts/<name>.lua from a template.
-                if (openNewScript) ImGui::OpenPopup("New Script");
-                if (ImGui::BeginPopupModal("New Script", nullptr,
-                                           ImGuiWindowFlags_AlwaysAutoResize)) {
-                    ImGui::SetNextItemWidth(260.0f);
-                    ImGui::InputText("Name", newScriptName, sizeof(newScriptName));
-                    const char* templates[] = { "Empty component",
-                                                "Component (documented)" };
-                    ImGui::SetNextItemWidth(260.0f);
-                    ImGui::Combo("Template", &newScriptTemplate, templates, 2);
-                    const std::string safe = safeName(newScriptName);
-                    const std::string file = safe + ".lua";
-                    std::error_code sec;
-                    const bool exists = newScriptName[0] &&
-                        std::filesystem::exists(scriptPath(file), sec);
-                    if (exists)
-                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
-                                           "scripts/%s already exists.", file.c_str());
-                    ImGui::BeginDisabled(newScriptName[0] == '\0' || exists);
-                    if (ImGui::Button("Create", ImVec2(110.0f, 0.0f))) {
-                        std::error_code ec;
-                        std::filesystem::create_directories(scriptsDir(), ec);
-                        std::ofstream out(scriptPath(file));
-                        if (out) {
-                            char body[2048];
-                            std::snprintf(body, sizeof(body),
-                                newScriptTemplate == 1 ? kTemplateDocumented
-                                                       : kTemplateEmpty,
-                                file.c_str());
-                            out << body;
-                        }
-                        newScriptName[0] = '\0';
-                        openScript(file);
-                        ImGui::CloseCurrentPopup();
-                    }
-                    ImGui::EndDisabled();
-                    ImGui::SameLine();
-                    if (ImGui::Button("Cancel", ImVec2(110.0f, 0.0f)))
-                        ImGui::CloseCurrentPopup();
-                    ImGui::EndPopup();
-                }
-            }
+            scriptEditor.panel(scripts, gui);
 
             // The offline renderer's panel. Draws itself, including the
             // preview of whatever the running render has reached so far;

@@ -6,6 +6,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/PhysicsShapes.cpp
     src/MeshQuery.cpp
     src/main.cpp
+    # What booting means (console, working dir, game archive, boot config,
+    # content roots, core shaders), out of main(): the player boots the same way.
+    src/Startup.cpp
     src/Primitives.cpp
     # Editable meshes are RUNTIME, not editor-only: the shape is scene data, so
     # the shipped player has to be able to build and draw it too. Only the panel
@@ -218,6 +221,15 @@ set(SANDBOX_EDITOR_SOURCES
     src/SynthPanel.cpp
     # Help -> Lua API: docs/lua-scripting.md, read and searched in the editor.
     src/LuaApiPanel.cpp
+    # Taken out of main.cpp: the menu bar and the default dock layout, the
+    # toolbar strip's icons, the Lua editor's completion + script templates,
+    # and the Assets browser's thumbnail disk cache.
+    src/EditorMenus.cpp
+    src/ToolbarIcons.cpp
+    src/LuaCompletion.cpp
+    src/ThumbCache.cpp
+    # The Lua script editor window (its buffer, completion, New Script dialog).
+    src/ScriptEditor.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
