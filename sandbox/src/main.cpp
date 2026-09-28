@@ -94,6 +94,7 @@
 #include "UnityImportPanel.hpp"
 #include "ViewPanels.hpp"
 #include "Toolbar.hpp"
+#include "UiOverlayPanel.hpp"
 #endif
 #include "MeshPaintPanel.hpp"
 #include "ViewTool.hpp"
@@ -1414,13 +1415,13 @@ int main(int argc, char** argv) {
 
         // --- Scene UI overlay (2D screen-space HUD authored per scene) --------
         // Text/button/image elements drawn over the view while playing. Not in the
-        // Document (like the road), so it carries its own selection + undo state:
-        // an interaction opens with the list it found and commits the difference,
-        // so a slider dragged across many frames is one undo step.
+        // Document (like the road), so it carries its own selection -- and, in the
+        // editor, its own undo bracket (see UiOverlayPanel.hpp).
         UiOverlay              uiOverlay;
         int                    uiSel = -1;
-        std::vector<UiElement> uiEditBefore;
-        bool                   uiEditOpen = false;
+#ifndef FITZEL_PLAYER
+        uioverlayui::Bracket   uiEditBracket;
+#endif
 
         std::vector<Entity>& entities = document.entities();
         // What is selected: the active object plus, when more than one is picked,
@@ -10203,56 +10204,10 @@ int main(int argc, char** argv) {
             // images). The list edit is bracketed into one undo step -- opened when
             // a field is first touched, committed when nothing is active -- exactly
             // like the Inspector and the road edits.
-            if (showUiOverlay) {
-                const std::vector<UiElement> uiFrameStart = uiOverlay.elements();
-
-                // Scene names for the LoadScene action picker (stems of the sibling
-                // .fitzel files), and the sound list for PlaySound.
-                std::vector<std::string> sceneNames;
-                if (!currentProject.empty()) {
-                    const std::string projFolder =
-                        std::filesystem::path(currentProject).parent_path().generic_string();
-                    for (const auto& sc : listScenesIn(projFolder))
-                        sceneNames.push_back(sc.first);
-                }
-                const std::vector<std::string> soundNames = listSounds();
-
-                // "Copy to scene": write this overlay into a sibling scene file
-                // without opening it. Only the overlay keys of the target's
-                // settings are touched -- its entities and everything else stay.
-                auto copyOverlayToScene = [&](const std::string& stem) -> std::string {
-                    if (currentProject.empty()) return "No project open.";
-                    const std::filesystem::path cur(currentProject);
-                    if (cur.stem().string() == stem)
-                        return "That's the scene you're editing.";
-                    const std::filesystem::path target =
-                        cur.parent_path() / (stem + ".fitzel");
-                    std::error_code cec;
-                    if (!std::filesystem::exists(target, cec))
-                        return "Scene not found: " + stem;
-                    nlohmann::json keys = nlohmann::json::object();
-                    uiOverlay.save(keys); // "uiOverlay" + "uiOverlayMenu"
-                    if (keys.empty()) return "Nothing to copy.";
-                    if (!projectio::mergeSceneSettings(target.generic_string(), keys))
-                        return "Could not write " + stem + ".fitzel";
-                    return "Copied " + std::to_string(uiOverlay.elements().size()) +
-                           " element(s) into " + stem +
-                           " (its previous overlay was replaced).";
-                };
-
-                uiOverlay.drawEditorPanel(&showUiOverlay, uiSel, assetDb,
-                                          sceneNames, soundNames, copyOverlayToScene);
-
-                const bool uiActive  = ImGui::IsAnyItemActive();
-                const bool uiChanged = uiOverlay.elements() != uiFrameStart;
-                if (uiChanged && !uiEditOpen) { uiEditOpen = true; uiEditBefore = uiFrameStart; }
-                if (uiEditOpen && !uiActive) {
-                    uiEditOpen = false;
-                    auto cmd = std::make_unique<UiOverlayCmd>(
-                        uiOverlay, uiEditBefore, uiOverlay.elements());
-                    if (!cmd->trivial()) history.push(std::move(cmd), document);
-                }
-            }
+            if (showUiOverlay)   // the sound list walks the asset library: only when open
+                uioverlayui::panel(uiOverlay, uiEditBracket,
+                                   {showUiOverlay, uiSel, assetDb, currentProject, listSounds(),
+                                    history, document});
 
             } // end editor UI (skipped in presentation mode)
 #endif // !FITZEL_PLAYER

@@ -21,7 +21,9 @@
 //     its four lights; a prefab instance unpacks -- each one undo step.
 //   - the panels moved out of main: the Unity importer lists every .fbx below
 //     a folder, any case, sorted; the Assets browser takes a file dropped on it
-//     and leaves one dropped beside it alone.
+//     and leaves one dropped beside it alone; the UI overlay's "Copy to scene"
+//     replaces only the overlay keys of the other scene file, and refuses the
+//     scene being edited and one that is not there.
 //   - which tool has the left button (ViewTool): switching one on takes it
 //     from the one that had it; switching off one that did not have it
 //     changes nothing.
@@ -78,6 +80,7 @@
 #include <vector>
 
 #include <fitzel/asset/AssetDatabase.hpp>
+#include <nlohmann/json.hpp>
 #include <fitzel/scene/Camera.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <imgui.h>
@@ -98,6 +101,7 @@
 #include "../src/SceneOps.hpp"
 #include "../src/AssetsPanel.hpp"
 #include "../src/UnityImportPanel.hpp"
+#include "../src/UiOverlayPanel.hpp"
 #include "../src/ModelingTools.hpp"
 #include "../src/SceneGraph.hpp"
 #include "../src/MeshPaintPanel.hpp"
@@ -1277,6 +1281,42 @@ int main() {
         check(leftAlone && dropped.empty() && !as.dropStatus.empty(),
               "the Assets browser leaves a file dropped beside it alone, and takes one dropped on it",
               as.dropStatus);
+
+        // "Copy to scene": the overlay goes into the other scene's settings,
+        // replacing its old overlay and nothing else.
+        const fs::path proj = dir / "proj";
+        fs::create_directories(proj);
+        const std::string cur = (proj / "level1.fitzel").generic_string();
+        { std::ofstream(cur) << "{}"; }
+        {
+            nlohmann::json other;
+            other["entities"] = nlohmann::json::array({{{"name", "Keep me"}}});
+            other["settings"]["waterLevel"] = 3.5;
+            other["settings"]["uiOverlay"]  = nlohmann::json::array();
+            std::ofstream(proj / "level2.fitzel") << other.dump(2);
+        }
+        UiOverlay ov;
+        UiElement el;
+        el.text = "Score";
+        ov.setElements({el, el});
+        const std::string said = uioverlayui::copyToScene(ov, cur, "level2");
+        nlohmann::json back;
+        { std::ifstream(proj / "level2.fitzel") >> back; }
+        nlohmann::json expected = nlohmann::json::object();
+        ov.save(expected);
+        const bool keysIn = !expected.empty() && [&] {
+            for (const auto& [k, v] : expected.items())
+                if (!back["settings"].contains(k) || back["settings"][k] != v) return false;
+            return true;
+        }();
+        check(keysIn && back["settings"]["waterLevel"] == 3.5 &&
+                  back["entities"][0]["name"] == "Keep me",
+              "Copy to scene writes the overlay into the other scene and leaves the rest of it alone",
+              said);
+        check(uioverlayui::copyToScene(ov, cur, "level1") == "That's the scene you're editing." &&
+                  uioverlayui::copyToScene(ov, cur, "nowhere") == "Scene not found: nowhere" &&
+                  uioverlayui::copyToScene(ov, "", "level2") == "No project open.",
+              "...and refuses the scene being edited, one that is not there, and no project");
     }
 
     ImGui::DestroyContext();

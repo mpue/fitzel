@@ -269,6 +269,8 @@ set(SANDBOX_EDITOR_SOURCES
     src/ViewPanels.cpp
     # The toolbar strip under the menu bar.
     src/Toolbar.cpp
+    # The UI overlay panel: its undo bracket and "Copy to scene".
+    src/UiOverlayPanel.cpp
     # Picture buttons (a floppy for save, a sine for sine...): the words go in
     # the tooltip, the shape is what you aim at.
     src/Pictogram.cpp
@@ -774,6 +776,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/IconEmbed.cpp src/InstallerBuild.cpp
                            src/AssetsPanel.cpp src/AssetDrop.cpp src/VideoImport.cpp
                            src/UnityImportPanel.cpp src/FolderDialog.cpp
+                           src/UiOverlayPanel.cpp src/UiOverlay.cpp
                            src/SceneGraph.cpp src/Selection.cpp
                            src/ModelLibrary.cpp src/Component.cpp
                            src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
