@@ -495,6 +495,13 @@ void save(nlohmann::json& j, const Rule& r) {
             return a;
         }()},
         {"placeholderWeight", r.placeholderWeight},
+        {"personPrefabs", [&] {
+            nlohmann::json a = nlohmann::json::array();
+            for (const PersonPrefab& p : r.personPrefabs)
+                a.push_back({{"prefab", p.prefab}, {"weight", p.weight}, {"forward", p.forward}});
+            return a;
+        }()},
+        {"personPlaceholderWeight", r.personPlaceholderWeight},
         {"people", r.people},
         {"collider", r.collider},
     };
@@ -569,6 +576,16 @@ void load(const nlohmann::json& j, Rule& r) {
             r.vehiclePrefabs.push_back(p);
         }
     r.placeholderWeight = j.value("placeholderWeight", d.placeholderWeight);
+    r.personPrefabs.clear();
+    if (j.contains("personPrefabs") && j["personPrefabs"].is_array())
+        for (const nlohmann::json& v : j["personPrefabs"]) {
+            PersonPrefab p;
+            p.prefab  = v.value("prefab", std::string());
+            p.weight  = v.value("weight", 1.0f);
+            p.forward = std::clamp(v.value("forward", 0), 0, 3);
+            r.personPrefabs.push_back(p);
+        }
+    r.personPlaceholderWeight = j.value("personPlaceholderWeight", d.personPlaceholderWeight);
     r.powerLineLength = j.value("powerLineLength", d.powerLineLength);
     r.busShare      = j.value("busShare", d.busShare);
     r.truckShare    = j.value("truckShare", d.truckShare);

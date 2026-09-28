@@ -7,6 +7,8 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include "WalkPace.hpp"
+
 namespace {
 
 // Blend two joint palettes. Linear in the matrices, which is not a rotation
@@ -15,70 +17,6 @@ namespace {
 void blendPalette(std::vector<glm::mat4>& a, const std::vector<glm::mat4>& b, float w) {
     if (b.size() != a.size() || w <= 0.0f) return;
     for (std::size_t i = 0; i < a.size(); ++i) a[i] = a[i] * (1.0f - w) + b[i] * w;
-}
-
-// How fast a clip walks: a hoof on the ground moves backwards under the body
-// at exactly the speed the body has to move forwards, or it slides. So: find
-// the hooves (the vertices that come lowest in the cycle, one per corner of
-// the body), follow each through the cycle, and average its backward speed
-// over the samples where it is down. Model units per second; negative = the
-// model walks the other way round than it was told; 0 = no contact found (or
-// the clip carries its own root motion).
-float stanceSpeed(const fitzel::ModelData& m, int clip, glm::vec3 fwd) {
-    if (clip < 0 || clip >= static_cast<int>(m.animations.size()) || m.primitives.empty())
-        return 0.0f;
-    const float dur = m.animations[clip].duration;
-    if (dur <= 1e-3f) return 0.0f;
-    std::size_t big = 0;
-    for (std::size_t i = 1; i < m.primitives.size(); ++i)
-        if (m.primitives[i].vertexCount() > m.primitives[big].vertexCount()) big = i;
-    const int kN = 96;
-    std::vector<std::vector<fitzel::Vertex>> frames(kN);
-    for (int k = 0; k < kN; ++k)
-        fitzel::skinPrimitive(m.primitives[big], fitzel::sampleSkeleton(m, clip, dur * k / kN),
-                              frames[k]);
-    const std::size_t nv = frames[0].size();
-    if (nv == 0) return 0.0f;
-    // Each vertex's lowest point in the cycle; the hooves are what comes
-    // within a couple of percent of the lowest of all.
-    std::vector<float> low(nv, 1e30f);
-    for (const auto& f : frames)
-        for (std::size_t i = 0; i < nv && i < f.size(); ++i) low[i] = std::min(low[i], f[i].position.y);
-    const float floorY = *std::min_element(low.begin(), low.end());
-    const float H = std::max(m.height(), 1e-3f);
-    glm::vec3 c(0.0f);
-    for (const auto& v : frames[0]) c += v.position;
-    c /= static_cast<float>(nv);
-    const glm::vec3 side(fwd.z, 0.0f, -fwd.x);
-    // One representative per corner (front/back x left/right): the vertex
-    // that gets lowest there.
-    int rep[4] = {-1, -1, -1, -1};
-    for (std::size_t i = 0; i < nv; ++i) {
-        if (low[i] > floorY + 0.02f * H) continue;
-        const glm::vec3 d = frames[0][i].position - c;
-        const int q = (glm::dot(d, fwd) > 0.0f ? 1 : 0) + (glm::dot(d, side) > 0.0f ? 2 : 0);
-        if (rep[q] < 0 || low[i] < low[static_cast<std::size_t>(rep[q])]) rep[q] = static_cast<int>(i);
-    }
-    const float dt = dur / kN;
-    double sum = 0.0;
-    int n = 0;
-    for (int q = 0; q < 4; ++q) {
-        if (rep[q] < 0) continue;
-        const std::size_t i = static_cast<std::size_t>(rep[q]);
-        float hi = -1e30f;
-        for (int k = 0; k < kN; ++k) hi = std::max(hi, frames[k][i].position.y);
-        for (int k = 0; k < kN; ++k) {
-            const glm::vec3 p0 = frames[k][i].position, p1 = frames[(k + 1) % kN][i].position;
-            // Down: in the lowest quarter of its own lift, and going back. (A
-            // clip's body bobs, so "down" cannot be a fixed height.)
-            const float cut = low[i] + 0.25f * (hi - low[i]);
-            const float back = -glm::dot(p1 - p0, fwd);
-            if (p0.y > cut || p1.y > cut || back <= 0.0f) continue;
-            sum += back / dt;
-            ++n;
-        }
-    }
-    return n > 0 ? static_cast<float>(sum / n) : 0.0f;
 }
 
 } // namespace
@@ -127,7 +65,7 @@ bool Herd::load(const Config& cfg, fitzel::Shader& lit) {
         const glm::vec3 fwd(-std::sin(off), 0.0f, std::cos(off));
         m_clipSpeeds.clear();
         for (int c = 0; c < static_cast<int>(m_model.animations.size()); ++c)
-            m_clipSpeeds.push_back(stanceSpeed(m_model, c, fwd) * m_scale);
+            m_clipSpeeds.push_back(walkpace::stanceSpeed(m_model, c, fwd) * m_scale);
         const float v = (cfg.walkClip >= 0 && cfg.walkClip < static_cast<int>(m_clipSpeeds.size()))
                             ? m_clipSpeeds[static_cast<std::size_t>(cfg.walkClip)] : 0.0f;
         m_flip = v < -0.2f;

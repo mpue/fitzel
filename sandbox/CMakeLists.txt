@@ -49,6 +49,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/Soundscape.cpp
     # A herd grazing in a meadow: a skinned model, each animal on its own clock.
     src/Herd.cpp
+    # How a walk clip walks (its pace, its stride pairs): the herd and the
+    # towns' people.
+    src/WalkPace.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
@@ -494,7 +497,7 @@ target_link_libraries(signcheck PRIVATE fitzel nlohmann_json::nlohmann_json stb_
 # at their stops, people stay on their pavement -- over a few simulated minutes
 # in real towns. Pure simulation, no GL.
 #   build/release/bin/trafficcheck.exe
-add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp
+add_executable(trafficcheck tools/trafficcheck.cpp src/TrafficSim.cpp src/WalkPace.cpp
                             src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
                             src/StreetSign.cpp src/BuildingGen.cpp src/HouseGen.cpp
                             src/Component.cpp src/Primitives.cpp src/EditMesh.cpp

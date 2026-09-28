@@ -2,6 +2,8 @@
 
 #include <array>
 #include <functional>
+#include <map>
+#include <memory>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -68,9 +70,9 @@ class TownTraffic {
 public:
     // The road surface under a point (see Sim::surfaceAt).
     std::function<bool(glm::vec2, float&)> surfaceAt;
-    // Where vehicle prefabs come from (the towns' Rule::vehiclePrefabs name
-    // them): a prefab by name, the models its entities show, and the cache that
-    // uploads the ones modelled in the editor.
+    // Where vehicle and person prefabs come from (the towns' Rule::vehiclePrefabs
+    // and personPrefabs name them): a prefab by name, the models its entities
+    // show, and the cache that uploads the ones modelled in the editor.
     std::function<const prefab::Prefab*(const std::string&)> findPrefab;
     ModelLibrary*  models    = nullptr;
     EditMeshCache* meshCache = nullptr;
@@ -100,6 +102,8 @@ public:
     // a shadow and a reflection. Farther off a prefab vehicle is drawn as its
     // kind's placeholder -- a detailed model is tens of thousands of triangles
     // and a draw per part, and a street of them cost more than the landscape.
+    // The same for the people dressed in a person prefab: the nearest of them
+    // (see kPersonPrefabReach), each in the pose of the walk its steps reached.
     void forEachPrefabDraw(const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&,
                                                     const glm::mat4&, bool detail)>& fn);
 
@@ -194,6 +198,36 @@ private:
         glm::mat4               frame{1.0f};   // prefab frame -> vehicle frame
         Rig                     rig;
     };
+    // A person prefab, flattened: its drawn parts in the person's frame (x the
+    // way they walk, y up, feet on y = 0, centred). An animated model's parts
+    // come as the poses of one stride pair of its walk, skinned once; a person
+    // shows the one their steps have reached, so no one is skinned per frame
+    // however many walk.
+    // A model's walk, skinned: `count` poses of each of its primitives
+    // (pose-major) over one `period` of the clip, and its pace
+    // (walkpace::stanceSpeed). Kept across rebuilds per model and clip --
+    // skinning takes a moment, and a town is rebuilt on every edit of it.
+    struct Walk {
+        std::vector<std::unique_ptr<fitzel::Mesh>> poses;
+        std::size_t prims  = 0;
+        int         count  = 0;
+        float       period = 1.0f;   // seconds of clip
+        float       pace   = 0.0f;   // model units per second, along its front
+    };
+    struct PersonPart {
+        std::vector<const fitzel::Mesh*> poses;   // 1 (static) or a Walk's count
+        fitzel::AssetId                  material;
+        glm::mat4                        local{1.0f};
+    };
+    struct PersonLook {
+        std::vector<PersonPart>            parts;
+        std::vector<std::shared_ptr<Walk>> walks;   // what its parts' poses live in
+        float cycle = 1.4f;    // metres one run of the walk carries them
+    };
+    bool flattenPerson(const prefab::Prefab& p, int forward, PersonLook& out,
+                       std::map<std::string, std::shared_ptr<Walk>>& used);
+    struct PersonChoice { int look = -1; float weight = 1.0f; };
+
     struct Driver {
         int       entity = -1;
         traffic::Kind kind = traffic::Kind::Car;
@@ -268,6 +302,12 @@ private:
     fitzel::Shader              m_motion;
     std::vector<PrefabLook>     m_looks;             // every town's vehicle prefabs
     std::vector<std::vector<int>> m_townLooks;       // per town: indices into m_looks
+    // The person prefabs in use, per town the ones it walks (by weight), and
+    // the skinned walks (see Walk) by model and clip.
+    std::vector<PersonLook>                         m_personLooks;
+    std::vector<std::vector<PersonChoice>>          m_townPeople;
+    std::map<std::string, std::shared_ptr<Walk>>    m_walks;
+    std::vector<unsigned char>                      m_personNear;   // per walker, this frame
     std::vector<Driver>         m_drivers;
     bool                        m_playing = false;
     std::uint32_t               m_playerBody = 0;

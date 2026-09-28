@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <string>
 
 #include <glad/gl.h>
@@ -14,6 +15,7 @@
 #include "SandboxMath.hpp"
 #include "SceneGraph.hpp"
 #include "VehicleRig.hpp"
+#include "WalkPace.hpp"
 
 #include <fitzel/physics/Physics.hpp>
 
@@ -242,6 +244,47 @@ void TownTraffic::rebuild(const CitySystem& towns) {
             m_townLooks[t].push_back(static_cast<int>(m_looks.size()));
             m_looks.push_back(std::move(look));
         }
+    // Every town's person prefabs, flattened once (the walks skinned for an
+    // earlier build are reused), and each person dressed in one of their town's,
+    // or left a figure, by weight.
+    m_personLooks.clear();
+    m_townPeople.assign(towns.towns.size(), {});
+    {
+        std::map<std::string, std::shared_ptr<Walk>> used;
+        std::map<std::string, int>                   byKey;
+        for (std::size_t t = 0; t < towns.towns.size(); ++t)
+            for (const cityplan::PersonPrefab& pp : towns.towns[t].personPrefabs) {
+                if (pp.prefab.empty() || pp.weight <= 0.0f || !findPrefab) continue;
+                const std::string key = pp.prefab + "#" + std::to_string(pp.forward);
+                int li = -1;
+                if (const auto it = byKey.find(key); it != byKey.end()) {
+                    li = it->second;
+                } else {
+                    const prefab::Prefab* p = findPrefab(pp.prefab);
+                    PersonLook look;
+                    if (!p || !flattenPerson(*p, pp.forward, look, used)) continue;
+                    li = static_cast<int>(m_personLooks.size());
+                    m_personLooks.push_back(std::move(look));
+                    byKey[key] = li;
+                }
+                m_townPeople[t].push_back({li, pp.weight});
+            }
+        m_walks = std::move(used);   // the walks no town wears any more go
+    }
+    auto dressWalker = [&](Walker& w) {
+        if (w.town < 0 || w.town >= static_cast<int>(m_townPeople.size())) return;
+        const std::vector<PersonChoice>& choices = m_townPeople[static_cast<std::size_t>(w.town)];
+        if (choices.empty()) return;
+        float total = std::max(towns.towns[static_cast<std::size_t>(w.town)].personPlaceholderWeight, 0.0f);
+        for (const PersonChoice& c : choices) total += c.weight;
+        if (total <= 0.0f) return;
+        w.rng ^= w.rng << 13; w.rng ^= w.rng >> 17; w.rng ^= w.rng << 5;
+        float pick = static_cast<float>(w.rng & 0xffffffU) / 16777215.0f * total;
+        for (const PersonChoice& c : choices) {
+            pick -= c.weight;
+            if (pick < 0.0f) { w.prefab = c.look; return; }
+        }
+    };
     auto dress = [&](Vehicle& v) {
         if (v.town < 0 || v.town >= static_cast<int>(m_townLooks.size())) return;
         float total = std::max(towns.towns[static_cast<std::size_t>(v.town)].placeholderWeight, 0.0f);
@@ -258,7 +301,7 @@ void TownTraffic::rebuild(const CitySystem& towns) {
             if (pick < 0.0f) { v.prefab = li; v.length = L.length; return; }
         }
     };
-    m_sim.build(towns.towns, built, 1, dress);
+    m_sim.build(towns.towns, built, 1, dress, dressWalker);
     // Scene objects driving in the traffic come back after a rebuild, where
     // they last were.
     for (Driver& d : m_drivers) d.placed = false;
@@ -287,6 +330,15 @@ namespace {
 // How near a prefab-dressed vehicle is drawn as its prefab, and how near that
 // one also casts a shadow and shows in reflections.
 constexpr float kPrefabReach = 200.0f, kPrefabDetail = 60.0f;
+// The same for people -- smaller, and many more of them: at most this many of
+// the nearest are drawn as their prefab, the rest as the figures.
+constexpr float kPersonPrefabReach = 60.0f, kPersonDetail = 25.0f;
+constexpr int   kPersonPrefabCap   = 120;
+// How densely a walk is skinned: poses per second of clip (one stride pair of
+// f_casual_walk1 is 1.26 s: 63 poses, 0.76 MB each welded).
+constexpr float kWalkPosesPerSecond = 50.0f;
+constexpr int   kWalkPosesMin = 16, kWalkPosesMax = 72;
+constexpr float kTwoPi = 6.2831853f;
 
 // A vehicle's frame for its pose: x along its nose, y up, standing on the road.
 glm::mat4 frameOf(const Pose& p) {
@@ -427,9 +479,28 @@ void TownTraffic::update(const CitySystem& towns, float dt, std::vector<Material
             const Pose p = m_sim.pose(v);
             pose(p, 0.0f, true, asPrefab(v, p.pos));
         }
-    for (const Walker& w : m_sim.walkers()) {
-        const Pose p = m_sim.pose(w);
-        pose(p, p.bob, false, false);
+    // Which people are drawn as their prefab this frame: the nearest in view.
+    m_personNear.assign(m_sim.walkers().size(), 0);
+    {
+        std::vector<std::pair<float, std::size_t>> near;
+        const std::vector<Walker>& ws = m_sim.walkers();
+        for (std::size_t k = 0; k < ws.size(); ++k) {
+            const Walker& w = ws[k];
+            if (w.prefab < 0 || w.prefab >= static_cast<int>(m_personLooks.size())) continue;
+            const glm::vec3 at = m_sim.pose(w).pos;
+            if (!inView(at, kPersonPrefabReach, 1.5f)) continue;
+            const glm::vec3 d = at - m_eye;
+            near.push_back({m_haveView ? glm::dot(d, d) : 0.0f, k});
+        }
+        if (static_cast<int>(near.size()) > kPersonPrefabCap) {
+            std::nth_element(near.begin(), near.begin() + kPersonPrefabCap, near.end());
+            near.resize(static_cast<std::size_t>(kPersonPrefabCap));
+        }
+        for (const auto& n : near) m_personNear[n.second] = 1;
+    }
+    for (std::size_t k = 0; k < m_sim.walkers().size(); ++k) {
+        const Pose p = m_sim.pose(m_sim.walkers()[k]);
+        pose(p, p.bob, false, m_personNear[k] != 0);
     }
     // Wrecks, where playTick last found their bodies; a prefab one near
     // enough is drawn by forEachPrefabDraw instead.
@@ -603,6 +674,27 @@ void TownTraffic::forEachPrefabDraw(
         const bool detail = !m_haveView || glm::length(at - m_eye) < kPrefabDetail;
         drawLook(look, w.now, w.odo / look.rig.radius, 0.0f, detail, fn);
     }
+    // The people update() picked, each in the pose its steps have reached: the
+    // walk runs with the ground, a cycle per `cycle` metres, so the feet stay
+    // where they are put.
+    const std::vector<Walker>& ws = m_sim.walkers();
+    for (std::size_t k = 0; k < ws.size() && k < m_personNear.size(); ++k) {
+        if (!m_personNear[k]) continue;
+        const Walker& w = ws[k];
+        if (w.prefab < 0 || w.prefab >= static_cast<int>(m_personLooks.size())) continue;
+        const PersonLook& look = m_personLooks[static_cast<std::size_t>(w.prefab)];
+        const Pose p = m_sim.pose(w);
+        const bool detail = !m_haveView || glm::length(p.pos - m_eye) < kPersonDetail;
+        const float walked = w.phase / kTwoPi * 1.4f;   // the sim's stride clock, in metres
+        float u = walked / look.cycle;
+        u -= std::floor(u);
+        const glm::mat4 m = frameOf(p);
+        for (const PersonPart& part : look.parts) {
+            const std::size_t n = part.poses.size();
+            const fitzel::Mesh* mesh = part.poses[std::min(static_cast<std::size_t>(u * n), n - 1)];
+            fn(*mesh, part.material, m * part.local, detail);
+        }
+    }
 }
 
 void TownTraffic::drawLook(const PrefabLook& look, const glm::mat4& m, float spin, float steer,
@@ -619,6 +711,132 @@ void TownTraffic::drawLook(const PrefabLook& look, const glm::mat4& m, float spi
                ? m * turned[static_cast<std::size_t>(part.wheel)] * part.rest
                : m * part.local,
            detail);
+}
+
+// --- Person prefabs -----------------------------------------------------------------
+
+bool TownTraffic::flattenPerson(const prefab::Prefab& p, int forward, PersonLook& out,
+                                std::map<std::string, std::shared_ptr<Walk>>& used) {
+    // The prefab's entities in its own frame, their hierarchy resolved.
+    std::vector<Entity> es = p.entities;
+    scenegraph::resolve(es);
+    // The way it faces onto the person frame's +x: +Z turns a quarter left,
+    // -Z a quarter right, +X stays, -X turns round.
+    const float turn = forward == 1 ? -90.0f : forward == 2 ? 0.0f : forward == 3 ? 180.0f : 90.0f;
+    const glm::mat4 toFront = glm::rotate(glm::mat4(1.0f), glm::radians(turn), glm::vec3(0, 1, 0));
+    const glm::vec3 front = forward == 1 ? glm::vec3(0, 0, -1) : forward == 2 ? glm::vec3(1, 0, 0)
+                          : forward == 3 ? glm::vec3(-1, 0, 0) : glm::vec3(0, 0, 1);
+    glm::vec3 lo(1e30f), hi(-1e30f);
+    auto grow = [&](const glm::mat4& m, const glm::vec3& a, const glm::vec3& b) {
+        for (int k = 0; k < 8; ++k) {
+            const glm::vec3 c((k & 1) ? b.x : a.x, (k & 2) ? b.y : a.y, (k & 4) ? b.z : a.z);
+            const glm::vec3 w = glm::vec3(toFront * m * glm::vec4(c, 1.0f));
+            lo = glm::min(lo, w);
+            hi = glm::max(hi, w);
+        }
+    };
+
+    std::vector<PersonPart> parts;
+    float cycle = 0.0f;
+    std::vector<fitzel::Vertex> scratch;
+    for (const Entity& e : es) {
+        if (!e.activeInHierarchy) continue;
+        if (const auto* mc = e.components.get<ModelComponent>(); mc && models) {
+            LoadedModel* lm = models->byId(mc->modelId);
+            if (!lm) continue;
+            // As SceneSubmit draws a model: filling centre +/- half.
+            const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+            const glm::mat4 m = scenegraph::compose(e.center, e.rotation, (e.half * 2.0f) / sz) *
+                                glm::translate(glm::mat4(1.0f), -lm->center());
+            grow(m, lm->boundsMin, lm->boundsMax);
+            const fitzel::ModelData* md = lm->animData.get();
+            if (!lm->animated || !md || md->animations.empty()) {
+                for (std::size_t i = 0; i < lm->meshes.size(); ++i)
+                    parts.push_back({{&lm->meshes[i]}, lm->primMaterialId[i], toFront * m});
+                continue;
+            }
+            // The walk: the prefab's own Animation clip and range (the first
+            // clip, whole, when it has none), skinned into its poses -- or
+            // taken from an earlier build, the same model walking the same way.
+            const auto* ac = e.components.get<AnimationComponent>();
+            const int clip = glm::clamp(ac ? ac->clip : 0, 0, static_cast<int>(md->animations.size()) - 1);
+            const float dur = md->animations[static_cast<std::size_t>(clip)].duration;
+            const float start = ac ? glm::clamp(ac->start, 0.0f, dur) : 0.0f;
+            float end = (ac && ac->end > ac->start) ? glm::clamp(ac->end, 0.0f, dur) : dur;
+            if (end <= start) end = dur;
+            const float span = std::max(end - start, 1e-3f);
+            // The way the person faces, in the model's own space (the entity
+            // may be turned in the prefab).
+            const glm::mat3 rot(scenegraph::compose(glm::vec3(0.0f), e.rotation, glm::vec3(1.0f)));
+            const glm::vec3 fwdModel = glm::normalize(glm::transpose(rot) * front);
+            char key[160];
+            std::snprintf(key, sizeof key, "%p#%d#%d#%.4f#%.4f#%.3f,%.3f,%.3f",
+                          static_cast<const void*>(lm), mc->modelId, clip, start, end,
+                          fwdModel.x, fwdModel.y, fwdModel.z);
+            std::shared_ptr<Walk>& walk = used[key];
+            if (!walk) {
+                if (const auto it = m_walks.find(key); it != m_walks.end()) walk = it->second;
+            }
+            if (!walk) {
+                // One stride pair of it (a clip may hold several), densely:
+                // the poses are all a person has, and too few read as a stutter.
+                walk = std::make_shared<Walk>();
+                walk->prims  = std::min(lm->meshes.size(), md->primitives.size());
+                walk->period = span / static_cast<float>(walkpace::cycles(*md, clip, start, end));
+                walk->count  = std::clamp(static_cast<int>(std::lround(walk->period * kWalkPosesPerSecond)),
+                                          kWalkPosesMin, kWalkPosesMax);
+                std::vector<fitzel::ModelPrimitive>     welded(walk->prims);
+                std::vector<std::vector<std::uint32_t>> indices(walk->prims);
+                for (std::size_t i = 0; i < walk->prims; ++i)
+                    welded[i] = walkpace::weld(md->primitives[i], indices[i]);
+                for (int k = 0; k < walk->count; ++k) {
+                    const std::vector<glm::mat4> palette = fitzel::sampleSkeleton(
+                        *md, clip, start + walk->period * static_cast<float>(k) / static_cast<float>(walk->count));
+                    for (std::size_t i = 0; i < walk->prims; ++i) {
+                        fitzel::skinPrimitive(welded[i], palette, scratch);
+                        walk->poses.push_back(
+                            std::make_unique<fitzel::Mesh>(fitzel::Mesh::create(scratch, indices[i])));
+                    }
+                }
+                walk->pace = std::abs(walkpace::stanceSpeed(*md, clip, fwdModel));
+            }
+            const std::size_t np = std::min({walk->prims, lm->meshes.size(), lm->primMaterialId.size()});
+            for (std::size_t i = 0; i < np; ++i) {
+                PersonPart part{{}, lm->primMaterialId[i], toFront * m};
+                for (int k = 0; k < walk->count; ++k)
+                    part.poses.push_back(walk->poses[static_cast<std::size_t>(k) * walk->prims + i].get());
+                parts.push_back(std::move(part));
+            }
+            out.walks.push_back(walk);
+            // How far one run of the walk carries them: the clip's own pace
+            // scaled into metres.
+            if (cycle <= 0.0f) {
+                const float scale = glm::length(glm::mat3(m) * fwdModel);
+                if (walk->pace * scale > 0.2f) cycle = walk->pace * scale * walk->period;
+            }
+        } else if (const auto* meshC = e.components.get<MeshComponent>(); meshC && meshCache) {
+            // Modelled in the editor: uploaded by the shared cache under an id
+            // of its own (one per person look and entity), dressed as SceneSubmit does.
+            const int cacheId = 0x78000000 + static_cast<int>(m_personLooks.size()) * 4096 + e.id;
+            const glm::mat4 m = scenegraph::compose(e.center, e.rotation,
+                                                    editmesh::fitScale(meshC->mesh, e.half));
+            const auto* matC = e.components.get<MaterialComponent>();
+            const fitzel::AssetId own = matC ? matC->material : fitzel::AssetId{};
+            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, meshC->revision, meshC->mesh))
+                parts.push_back({{&sub.mesh}, sub.material.valid() ? sub.material : own, toFront * m});
+            glm::vec3 mlo, mhi;
+            meshC->mesh.bounds(mlo, mhi);
+            grow(m, mlo, mhi);
+        }
+    }
+    if (parts.empty() || lo.x > hi.x) return false;
+    // Feet on y = 0, centred in x and z.
+    const glm::mat4 centre = glm::translate(
+        glm::mat4(1.0f), glm::vec3(-0.5f * (lo.x + hi.x), -lo.y, -0.5f * (lo.z + hi.z)));
+    for (PersonPart& part : parts) part.local = centre * part.local;
+    out.parts = std::move(parts);
+    out.cycle = cycle > 0.2f ? cycle : 1.4f;   // unmeasured: a stride pair
+    return true;
 }
 
 // --- Scene objects driving in the traffic ------------------------------------------

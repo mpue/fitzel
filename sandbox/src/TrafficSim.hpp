@@ -90,6 +90,9 @@ struct Walker {
     float speed = 1.3f;
     float phase = 0.0f;     // stride clock, for the bob
     int   look  = 0;        // coat variant
+    int   town  = 0;        // which town's rule it was spawned from
+    int   prefab = -1;      // a person prefab dressing it (TownTraffic), -1 = placeholder
+    std::uint32_t rng = 1;  // its own dice, for whoever dresses it
 };
 
 // Something in the street that is not traffic -- a wreck, the player's car --
@@ -131,9 +134,12 @@ public:
     // `dress` sees every vehicle as it is spawned -- its kind and town known,
     // not yet placed -- and may set its length and prefab (TownTraffic's
     // vehicle prefabs), so it is spaced by the size it will really have.
+    // `dressWalker` does the same for every person (TownTraffic's person
+    // prefabs); it changes nothing about how they walk.
     void build(const std::vector<cityplan::Rule>& rules,
                const std::vector<const cityplan::Town*>& towns, std::uint32_t seed = 1,
-               const std::function<void(Vehicle&)>& dress = {});
+               const std::function<void(Vehicle&)>& dress = {},
+               const std::function<void(Walker&)>& dressWalker = {});
     void clear();
 
     // A scene object joining the traffic (TrafficDriverComponent): put on the
@@ -187,7 +193,8 @@ private:
 
     int  pickNext(Vehicle& v) const;
     void addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
-                 const std::function<void(Vehicle&)>& dress);
+                 const std::function<void(Vehicle&)>& dress,
+                 const std::function<void(Walker&)>& dressWalker);
 
     // An obstacle's stretch of one lane (metres from its start) and its speed along it.
     struct Block { int lane = 0; float back = 0.0f, front = 0.0f, v = 0.0f; };

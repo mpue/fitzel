@@ -554,6 +554,50 @@ void drawPanel(const PanelState& s) {
             }
             ImGui::TreePop();
         }
+        // Prefabs the people walk as instead of the built-in figures.
+        if (ImGui::TreeNode("People prefabs")) {
+            ui::hint("Each person is one of these or a figure, by weight.\n"
+                     "An animated model walks its Animation clip (the\n"
+                     "prefab's own clip and range), in step with the ground.\n"
+                     "The nearest people show as their prefab, the rest\n"
+                     "as figures.");
+            changed |= row("Figures", r.personPlaceholderWeight, 0.5f, 0.0f, 50.0f, "%.1f",
+                           "How much the built-in figures weigh against the prefabs\n"
+                           "(0 = only prefabs).");
+            const std::vector<std::string> names =
+                s.prefabNames ? s.prefabNames() : std::vector<std::string>{};
+            static const char* kFaces[] = {"Faces +Z", "Faces -Z", "Faces +X", "Faces -X"};
+            int remove = -1;
+            for (int i = 0; i < static_cast<int>(r.personPrefabs.size()); ++i) {
+                cityplan::PersonPrefab& pp = r.personPrefabs[static_cast<std::size_t>(i)];
+                ImGui::PushID(1000 + i);
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 40.0f);
+                if (ImGui::BeginCombo("##prefab", pp.prefab.empty() ? "(pick a prefab)" : pp.prefab.c_str())) {
+                    for (const std::string& n : names)
+                        if (ImGui::Selectable(n.c_str(), n == pp.prefab)) { pp.prefab = n; changed = true; }
+                    if (names.empty()) ImGui::TextDisabled("No prefabs in this project (save one first)");
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("X", ImVec2(32.0f, 0.0f))) remove = i;
+                ImGui::SetItemTooltip("Remove this prefab from the people.");
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
+                if (ImGui::Combo("##faces", &pp.forward, kFaces, 4)) changed = true;
+                ImGui::SetItemTooltip("Which way the person faces in the prefab's own frame.");
+                changed |= row("Weight", pp.weight, 0.5f, 0.0f, 50.0f, "%.1f");
+                ImGui::Separator();
+                ImGui::PopID();
+            }
+            if (remove >= 0) {
+                r.personPrefabs.erase(r.personPrefabs.begin() + remove);
+                changed = true;
+            }
+            if (ImGui::Button("Add person prefab")) {
+                r.personPrefabs.push_back({});
+                changed = true;
+            }
+            ImGui::TreePop();
+        }
         changed |= rowInt("Tower palette", r.towerPalette, 1, 0, 7, "%.0f",
                           "Building material slot (0 = A .. 7 = H). Keep it apart\n"
                           "from the roadside city's slots to colour them separately.");
