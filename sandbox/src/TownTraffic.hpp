@@ -24,17 +24,20 @@ namespace prefab { struct Prefab; }
 
 // Hand a scene object -- a car, a bus, anything -- to the towns' traffic: in
 // Play it drives itself on the nearest lane, keeps its distance, stops at red
-// and (as a bus) calls at the stops, a CPU driver instead of the player. It
-// moves kinematically (the traffic sets where it is, no engine or tyres), with
-// a kinematic box so the player's car can hit it; Stop puts it back where it
-// was authored, like everything else Play touches.
+// and (as a bus) calls at the stops, a CPU driver instead of the player. The
+// traffic sets where it is (no engine or tyres), but it is a real body with its
+// mass (PhysicsWorld::addDrivenBox): hit it hard enough and it crashes -- it
+// leaves the traffic and tumbles on as a wreck, and the traffic behind stops
+// for it. Stop puts it back where it was authored, like everything else Play
+// touches.
 class TrafficDriverComponent : public ComponentBase {
 public:
     int   kind     = 0;       // 0 car, 1 bus (calls at the stops), 2 lorry
     float topSpeed = 50.0f;   // km/h
     int   forward  = 0;       // which way its nose points: 0 +Z, 1 -Z, 2 +X, 3 -X
     float ride     = -1.0f;   // its centre above the road, metres; < 0 = its half height
-    bool  collider = true;    // a kinematic box the player's car collides with
+    bool  collider = true;    // a body the player's car collides with (and can crash)
+    float crashJolt = 10.0f;  // km/h: a knock that changes its speed this much crashes it
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<TrafficDriverComponent>(*this);
@@ -97,15 +100,21 @@ public:
 
     // --- Play: scene objects with a TrafficDriverComponent ------------------
     // beginPlay finds them, takes them out of the physics bodies they would
-    // otherwise get (see drives()), gives each a kinematic box and puts it on a
-    // lane. playTick moves them -- `place` sets an entity's world transform
-    // (main's setWorld, parent-aware). endPlay lets them go.
+    // otherwise get (see drives()), gives each a driven box and puts it on a
+    // lane. playTick -- after the physics step -- crashes whoever was knocked
+    // hard enough, moves the rest and lays the wrecks where the physics has
+    // them -- `place` sets an entity's world transform (main's setWorld,
+    // parent-aware). endPlay lets them go.
     static bool drives(const Entity& e) { return e.components.get<TrafficDriverComponent>(); }
     void beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics);
     void playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics, float dt,
                   const std::function<void(Entity&, const glm::vec3&, const glm::vec3&)>& place);
     void endPlay();
     int  driverCount() const { return static_cast<int>(m_drivers.size()); }
+    int  wreckCount() const;
+    // The player's car (its chassis body, 0 = none, and the box's half size):
+    // the traffic brakes for it, and follows it, instead of driving into it.
+    void setPlayerCar(std::uint32_t body, const glm::vec3& half) { m_playerBody = body; m_playerHalf = half; }
 
     // Motion vectors for the moving crowd, into the bound motion target.
     void drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP, const glm::mat4& prevVP);
@@ -178,6 +187,10 @@ private:
         float     length = 4.3f, vmax = 13.0f, ride = 0.0f;
         int       forward = 0;
         std::uint32_t body = 0;
+        glm::vec3 half{1.0f};       // the body's box
+        float     crashJolt = 2.8f; // m/s
+        glm::vec3 askedVel{0.0f}, askedSpin{0.0f};   // what the last target asked of the body
+        bool      wrecked = false;  // crashed: out of the traffic, the physics has it
         glm::vec2 pos{0.0f}, heading{0.0f, 1.0f};   // last known, for a rebuild
         bool      placed = false;   // on a lane yet (Play can start before the towns are)
         std::string name;
@@ -219,6 +232,8 @@ private:
     std::vector<std::vector<int>> m_townLooks;       // per town: indices into m_looks
     std::vector<Driver>         m_drivers;
     bool                        m_playing = false;
+    std::uint32_t               m_playerBody = 0;
+    glm::vec3                   m_playerHalf{1.0f};
 };
 
 } // namespace traffic

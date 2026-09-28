@@ -182,9 +182,13 @@ glm::vec3 attitudeEuler(float yawDeg, float pitchDeg, float rollDeg) {
         glm::mat3(glm::rotate(glm::mat4(1.0f), glm::radians(yawDeg),   glm::vec3(0, 1, 0)) *
                   glm::rotate(glm::mat4(1.0f), glm::radians(pitchDeg), glm::vec3(1, 0, 0)) *
                   glm::rotate(glm::mat4(1.0f), glm::radians(rollDeg),  glm::vec3(0, 0, 1)));
+    // ...expressed in the order the scene composes.
+    return sceneEuler(want);
+}
 
-    // ...expressed in the order the scene composes: Rz(z) * Ry(y) * Rx(x).
-    // glm is column-major, so element [row][col] reads want[col][row].
+glm::vec3 sceneEuler(const glm::mat3& want) {
+    // Rz(z) * Ry(y) * Rx(x). glm is column-major, so element [row][col] reads
+    // want[col][row].
     const float r20 = want[0][2];
     const float ey  = std::asin(std::clamp(-r20, -1.0f, 1.0f));
     float ex, ez;

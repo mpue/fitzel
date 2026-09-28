@@ -36,10 +36,27 @@ public:
     // -- moving platforms, lifts. Lives in the MOVING layer so both collide.
     PhysicsBodyId addKinematicBox(glm::vec3 halfExtents, glm::vec3 pos, glm::quat rot);
 
-    // Move a kinematic body toward a world transform over `dt`, giving it the
-    // velocity needed to arrive so it pushes/carries whatever rests on it. No-op
-    // on an unknown id or a non-positive dt.
+    // Move a kinematic (or driven, see below) body toward a world transform over
+    // `dt`, giving it the velocity needed to arrive so it pushes/carries whatever
+    // rests on it. No-op on an unknown id or a non-positive dt.
     void setKinematicTarget(PhysicsBodyId id, glm::vec3 pos, glm::quat rot, float dt);
+
+    // A driven box: a DYNAMIC body that goes where setKinematicTarget tells it
+    // until it is let go -- the traffic's CPU cars, which follow their lane until
+    // a crash. While driven it has no gravity and passes through the static
+    // world (so the road never drags on it), but it has its mass against every
+    // moving body: a car that hits it is slowed by it and knocks it off its path
+    // by as much as the two masses say, which a kinematic body, infinitely heavy,
+    // never is. That knock is the change in its velocity that the last target
+    // did not ask for. The centre of mass sits low, like a car's.
+    PhysicsBodyId addDrivenBox(glm::vec3 halfExtents, glm::vec3 pos, glm::quat rot, float mass);
+    // Let a driven body go: from now on it falls onto the world, slides with a
+    // tyre's grip and tumbles like any dynamic body. No-op on an unknown id.
+    void releaseBody(PhysicsBodyId id);
+    // Put a body somewhere at once and at rest: a jump, so nothing on the way is
+    // hit (setKinematicTarget over a long way would fire it through everything
+    // in between). No-op on an unknown id.
+    void setTransform(PhysicsBodyId id, glm::vec3 pos, glm::quat rot);
 
     // --- Wheeled vehicle (Jolt VehicleConstraint) ---------------------------
     // Handling knobs that keep the car planted (defaults match the tuned car).

@@ -2278,6 +2278,7 @@ int main(int argc, char** argv) {
         bool  prevViewKey = false;
         bool  prevViewPad = false;
         PhysicsBodyId physCarId = 0;   // Jolt vehicle chassis (Play-mode drive)
+        glm::vec3     physCarHalf{0.9f, 0.35f, 2.0f};   // ...and its box's half size
         bool  carPlaced   = false;
         bool  showVehicle = true;
         // What the game starts as is a GAME setting now -- game.json, the Game
@@ -5950,8 +5951,9 @@ int main(int argc, char** argv) {
             tuning.drive          = vc->drive;
             tuning.uprightAssist  = vc->uprightAssist;
             tuning.suspensionRest = vc->chassisY;
+            physCarHalf = glm::max(vc->chassisHalf, glm::vec3(0.05f));
             physCarId = physics->addVehicle(
-                glm::max(vc->chassisHalf, glm::vec3(0.05f)), vc->mass, sp, q,
+                physCarHalf, vc->mass, sp, q,
                 vc->wheelRadius, vc->wheelWidth, vc->halfTrack,
                 vc->frontZ, vc->rearZ, vc->maxSteerDeg, vc->engineTorque, tuning);
             driveVehicleId = (physCarId != 0) ? id : -1;
@@ -6019,8 +6021,9 @@ int main(int argc, char** argv) {
                         const glm::quat q = glm::angleAxis(std::atan2(f.x, f.z),
                                                            glm::vec3(0, 1, 0));
                         const glm::vec3 sp(p.x, streamer.heightAt(p.x, p.z) + 1.2f, p.z);
+                        physCarHalf = glm::vec3(0.9f, 0.35f, 2.0f);
                         physCarId = physics->addVehicle(
-                            glm::vec3(0.9f, 0.35f, 2.0f), 1200.0f, sp, q,
+                            physCarHalf, 1200.0f, sp, q,
                             0.42f, 0.30f, 0.85f, 1.35f, -1.35f, 32.0f, 2500.0f);
                     }
                 }
@@ -15977,12 +15980,17 @@ int main(int argc, char** argv) {
 
             // The traffic's CPU drivers move their scene objects -- before the
             // resolve, so wheels and anything else parented follow this frame.
-            if (playMode)
+            // Hit hard, they crash; the traffic stops for the wrecks and for
+            // the player's car.
+            if (playMode) {
+                townTraffic.setPlayerCar(physics && physics->hasVehicle() ? physCarId : 0,
+                                         physCarHalf);
                 townTraffic.playTick(entities, physics.get(), dt,
                     [&](Entity& e, const glm::vec3& p, const glm::vec3& r) {
                         const glm::mat4 pw = parentWorldMat(e);
                         setWorld(e, p, r, e.parent >= 0 ? &pw : nullptr);
                     });
+            }
             // Resolve the scene-graph so every entity's world center/rotation
             // reflects this frame's edits/scripts/physics and its parent chain.
             resolveHierarchy();

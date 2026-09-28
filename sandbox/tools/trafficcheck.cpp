@@ -9,16 +9,24 @@
 //   - none enters a signalled crossing on red,
 //   - buses call at their stops,
 //   - nobody goes faster than their kind allows,
-//   - people stay off the carriageways.
+//   - people stay off the carriageways,
+//   - a wreck in the street is queued behind, not driven through,
+//   - and the crash itself: a CPU car's driven body follows its lane exactly,
+//     a hard knock crashes it into a wreck that skids to a stop, a nudge does
+//     not, and a bus shrugs off a car.
 //   build/release/bin/trafficcheck.exe
 
 #include "../src/TrafficSim.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
+
+#include <glm/gtc/quaternion.hpp>
+#include <fitzel/physics/Physics.hpp>
 
 #include "../src/CivicGen.hpp"
 
@@ -220,7 +228,206 @@ void drivers() {
     check(sim.vehicles().size() + 1 == before && !find(), "Stop takes it out of the traffic again");
 }
 
+// A wreck in the street (Sim::setObstacles): whoever comes up behind it stops
+// short and waits -- nobody drives into it -- and once it is cleared away the
+// queue drives on.
+void obstacles() {
+    using namespace cityplan;
+    std::printf("\n== A wreck in the street ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.traffic *= 2.0f;   // enough cars that a queue forms in a few minutes
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float, float) { return 0.0f; };
+    for (const Street& s : L.streets) ctx.roads.push_back({s.pts, s.width * 0.5f, s.name, {}});
+    const Town T = derive(r, pal, ctx);
+    traffic::Sim sim;
+    sim.surfaceAt = [&](glm::vec2 p, float& y) {
+        for (const Street& s : L.streets)
+            for (std::size_t i = 0; i + 1 < s.pts.size(); ++i) {
+                const glm::vec2 a = s.pts[i], ab = s.pts[i + 1] - a;
+                const float t = glm::clamp(glm::dot(p - a, ab) / glm::dot(ab, ab), 0.0f, 1.0f);
+                if (glm::length(p - (a + ab * t)) <= 0.5f * s.width + 0.5f) { y = 0.0f; return true; }
+            }
+        return false;
+    };
+    sim.build({r}, {&T});
+
+    // A car-sized wreck in the middle of the three longest lanes nobody is
+    // about to reach yet.
+    struct Wreck { int lane; float back, front; };
+    std::vector<Wreck> wrecks;
+    std::vector<traffic::Obstacle> obs;
+    std::vector<int> order(sim.lanes().size());
+    for (int i = 0; i < static_cast<int>(order.size()); ++i) order[static_cast<std::size_t>(i)] = i;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return sim.lanes()[static_cast<std::size_t>(a)].len > sim.lanes()[static_cast<std::size_t>(b)].len;
+    });
+    for (int l : order) {
+        const traffic::Lane& ln = sim.lanes()[static_cast<std::size_t>(l)];
+        if (ln.len < 40.0f || wrecks.size() == 3) break;
+        const float mid = 0.5f * ln.len;
+        bool clear = true;
+        for (const traffic::Vehicle& v : sim.vehicles())
+            if ((v.turning && v.next == l) ||
+                (!v.turning && v.lane == l && v.s > mid - 30.0f && v.s - v.length < mid + 2.2f))
+                clear = false;
+        if (!clear) continue;
+        traffic::Obstacle o;
+        const glm::vec2 c = ln.p0 + ln.dir * mid;
+        o.center  = {c.x, ln.heightAt(mid) + 0.75f, c.y};
+        o.axes[0] = glm::vec3(ln.dir.x, 0.0f, ln.dir.y) * 2.2f;
+        o.axes[1] = glm::vec3(0.0f, 0.75f, 0.0f);
+        o.axes[2] = glm::vec3(-ln.dir.y, 0.0f, ln.dir.x) * 0.9f;
+        obs.push_back(o);
+        wrecks.push_back({l, mid - 2.2f, mid + 2.2f});
+    }
+    check(!wrecks.empty(), "wrecks laid in the street", std::to_string(wrecks.size()) + " lanes blocked");
+    if (wrecks.empty()) return;
+    sim.setObstacles(obs);
+
+    float worst = 1e9f;
+    for (int k = 0; k < 240 * 30; ++k) {
+        sim.step(1.0f / 30.0f, k / 30.0);
+        for (const traffic::Vehicle& v : sim.vehicles())
+            for (const Wreck& w : wrecks)
+                if (!v.turning && v.lane == w.lane && v.s - v.length < w.front)
+                    worst = std::min(worst, w.back - v.s);
+    }
+    std::vector<std::size_t> waiting;
+    for (std::size_t i = 0; i < sim.vehicles().size(); ++i) {
+        const traffic::Vehicle& v = sim.vehicles()[i];
+        for (const Wreck& w : wrecks)
+            if (!v.turning && v.lane == w.lane && v.v < 0.1f && w.back - v.s >= 0.0f && w.back - v.s < 15.0f)
+                waiting.push_back(i);
+    }
+    check(worst > -0.05f, "nobody drives into a wreck",
+          worst > 1e8f ? std::string("nobody came") : "tightest " + std::to_string(worst).substr(0, 5) + " m");
+    check(!waiting.empty(), "the traffic queues behind it",
+          std::to_string(waiting.size()) + " waiting at a wreck after 4 min");
+
+    // Cleared away: the queue drives on.
+    std::vector<float> odo;
+    for (std::size_t i : waiting) odo.push_back(sim.vehicles()[i].odo);
+    sim.setObstacles({});
+    for (int k = 0; k < 60 * 30; ++k) sim.step(1.0f / 30.0f, 240.0 + k / 30.0);
+    int moved = 0;
+    for (std::size_t n = 0; n < waiting.size(); ++n) moved += sim.vehicles()[waiting[n]].odo - odo[n] > 30.0f;
+    check(!waiting.empty() && moved == static_cast<int>(waiting.size()), "cleared away, the queue drives on",
+          std::to_string(moved) + " of " + std::to_string(waiting.size()) + " went on 30 m in a minute");
+}
+
+// The physics side of a CPU car (TownTraffic::playTick): its driven body is
+// steered onto its target every tick, and what the step just taken knocked it
+// off what it was asked is the jolt that crashes it. `hitSpeed` sends the
+// player's car -- a plain dynamic box, 1200 kg -- square into its side.
+struct CrashRun {
+    float     maxJolt = 0.0f;      // m/s, over the run while it was driven
+    float     worstError = 0.0f;   // how far off its target it ever was, metres
+    float     endError = 0.0f;     // ...and at the end
+    bool      crashed = false;
+    glm::vec3 crashAt{0.0f}, end{0.0f};
+    float     endSpeed = 0.0f;
+};
+
+CrashRun crashRun(float mass, float hitSpeed, float driveSpeed, float seconds) {
+    const float kCrash = 10.0f / 3.6f;   // TrafficDriverComponent's default
+    fitzel::PhysicsWorld w;
+    w.setGravity({0.0f, -9.81f, 0.0f});
+    const glm::quat q(1.0f, 0.0f, 0.0f, 0.0f);
+    w.addBox({300.0f, 0.5f, 300.0f}, {0.0f, -0.5f, 0.0f}, q, 0.0f);   // the road
+    const glm::vec3 half(0.9f, 0.75f, 2.2f);
+    glm::vec3 target(0.0f, 0.75f, 0.0f);
+    const std::uint32_t car = w.addDrivenBox(half, target, q, mass);
+    if (hitSpeed > 0.0f) {
+        // 30 cm off its side: near enough that the road's friction cannot stop
+        // even a slow push before it lands.
+        const std::uint32_t other = w.addBox({0.9f, 0.5f, 2.0f}, {-(half.x + 0.9f + 0.3f), 0.5f, 0.0f},
+                                             q, 1200.0f);
+        w.setLinearVelocity(other, {hitSpeed, 0.0f, 0.0f});
+    }
+    CrashRun run;
+    glm::vec3 asked(0.0f), askedSpin(0.0f);
+    const float dt = 1.0f / 60.0f;
+    for (int k = 0; k < static_cast<int>(seconds / dt); ++k) {
+        w.step(dt);
+        if (run.crashed) continue;
+        glm::vec3 v(0.0f), s(0.0f), p(0.0f);
+        glm::quat r;
+        w.getLinearVelocity(car, v);
+        w.getAngularVelocity(car, s);
+        w.getTransform(car, p, r);
+        const float j = traffic::jolt(v, asked, s, askedSpin, glm::length(half));
+        run.maxJolt = std::max(run.maxJolt, j);
+        if (j >= kCrash) {
+            run.crashed = true;
+            run.crashAt = p;
+            w.releaseBody(car);
+            continue;
+        }
+        run.worstError = std::max(run.worstError, glm::distance(p, target));
+        run.endError   = glm::distance(p, target);
+        target.z += driveSpeed * dt;
+        w.setKinematicTarget(car, target, q, dt);
+        w.getLinearVelocity(car, asked);
+        w.getAngularVelocity(car, askedSpin);
+    }
+    glm::quat r;
+    glm::vec3 v(0.0f);
+    w.getTransform(car, run.end, r);
+    w.getLinearVelocity(car, v);
+    run.endSpeed = glm::length(v);
+    return run;
+}
+
+void crashes() {
+    std::printf("\n== Crashes ==\n");
+    auto kmh = [](float mps) { return std::to_string(static_cast<int>(std::lround(mps * 3.6f))); };
+
+    const CrashRun drive = crashRun(1300.0f, 0.0f, 13.9f, 3.0f);
+    check(drive.worstError < 0.01f && drive.maxJolt < 0.2f,
+          "a CPU car's body follows its lane, and the road does not drag on it",
+          "off by at most " + std::to_string(drive.worstError).substr(0, 5) + " m, jolt " +
+              std::to_string(drive.maxJolt).substr(0, 4) + " m/s");
+
+    const CrashRun hit = crashRun(1300.0f, 8.0f, 0.0f, 8.0f);
+    check(hit.crashed && hit.maxJolt < 8.0f, "hit at 29 km/h, a waiting car crashes",
+          "a " + kmh(hit.maxJolt) + " km/h jolt");
+    const float slid = glm::length(glm::vec2(hit.end.x - hit.crashAt.x, hit.end.z - hit.crashAt.z));
+    check(hit.crashed && hit.endSpeed < 0.3f && hit.end.y > 0.4f && hit.end.y < 1.3f && slid < 12.0f,
+          "the wreck lands on the road and skids to a stop",
+          "slid " + std::to_string(slid).substr(0, 4) + " m, at " + std::to_string(hit.endSpeed).substr(0, 4) +
+              " m/s after 8 s, centre " + std::to_string(hit.end.y).substr(0, 4) + " m up");
+
+    const CrashRun nudge = crashRun(1300.0f, 1.5f, 0.0f, 4.0f);
+    check(!nudge.crashed && nudge.maxJolt > 0.2f && nudge.endError < 0.02f,
+          "a nudge does not crash it, and it keeps its place",
+          "a " + std::to_string(nudge.maxJolt).substr(0, 4) + " m/s jolt, " +
+              std::to_string(nudge.endError).substr(0, 5) + " m off at the end");
+
+    const CrashRun bus = crashRun(12000.0f, 13.9f, 0.0f, 4.0f);
+    check(!bus.crashed, "a bus shrugs off a car at 50 km/h", "a " + kmh(bus.maxJolt) + " km/h jolt");
+
+    // Put on its lane from far off: a jump, at rest, nothing hit on the way.
+    fitzel::PhysicsWorld w;
+    const glm::quat q(1.0f, 0.0f, 0.0f, 0.0f);
+    const std::uint32_t car = w.addDrivenBox({0.9f, 0.75f, 2.2f}, {0.0f, 0.75f, 0.0f}, q, 1300.0f);
+    w.setTransform(car, {50.0f, 0.75f, -40.0f}, q);
+    w.step(1.0f / 60.0f);
+    glm::vec3 p(0.0f), v(1.0f);
+    glm::quat r;
+    w.getTransform(car, p, r);
+    w.getLinearVelocity(car, v);
+    check(glm::distance(p, glm::vec3(50.0f, 0.75f, -40.0f)) < 1e-3f && glm::length(v) < 1e-3f,
+          "a jump to a far lane arrives at once and at rest");
+}
+
 int main() {
+    crashes();
+    obstacles();
     drivers();
     run(cityplan::Preset::Village);
     run(cityplan::Preset::SmallTown);

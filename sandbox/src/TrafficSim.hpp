@@ -27,6 +27,8 @@
 //     meet in the middle of a village crossing and drive through each other.
 //   - People walk round their block on the middle of the pavement and never
 //     cross a street.
+//   - A wreck or the player's car (setObstacles) blocks the lanes it stands in;
+//     inside a crossing, where the turns run, nobody sees it.
 namespace traffic {
 
 enum class Kind : std::uint8_t { Car, Bus, Truck, Count };
@@ -87,6 +89,22 @@ struct Walker {
     int   look  = 0;        // coat variant
 };
 
+// Something in the street that is not traffic -- a wreck, the player's car --
+// as a box: its centre, and its three axes in world space, each as long as the
+// box is half wide along it (so any tilt a tumbled wreck has is covered). The
+// traffic brakes for it like for the vehicle ahead, at the speed it moves.
+struct Obstacle {
+    glm::vec3 center{0.0f};
+    glm::vec3 axes[3]{};
+    glm::vec2 vel{0.0f};    // XZ, m/s
+};
+
+// How hard a hit shook a driven body: the change in its velocity that its
+// driver did not ask for (`asked`, `askedSpin`), a spin counted at `reach`
+// metres from its middle. That is delta-v, the measure crash severity is given
+// in -- and it weighs the masses by itself: a car shunting a bus barely moves it.
+float jolt(glm::vec3 vel, glm::vec3 asked, glm::vec3 spin, glm::vec3 askedSpin, float reach);
+
 // A vehicle's or a walker's pose for drawing: where it stands (centre on the
 // ground), its heading in XZ, and its pitch (radians, nose up positive).
 struct Pose {
@@ -120,7 +138,14 @@ public:
     // rules as everyone else. False when no lane is near enough (60 m).
     bool addDriver(int entity, glm::vec2 pos, glm::vec2 heading, Kind kind, float length,
                    float vmax);
+    void removeDriver(int entity);   // it crashed: out of the traffic, a wreck now
     void removeDrivers();
+
+    // What stands in the street this frame (wrecks, the player's car). Every
+    // lane it reaches into is blocked from its near end to its far end: who
+    // comes up behind stops short of it, or follows it while it moves on. Kept
+    // until the next call; cleared by a rebuild.
+    void setObstacles(const std::vector<Obstacle>& obstacles);
 
     // Advance by `dt` seconds; `clock` is the signals' time (civic::signalPhase).
     void step(float dt, double clock);
@@ -148,9 +173,13 @@ private:
     void addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
                  const std::function<void(Vehicle&)>& dress);
 
+    // An obstacle's stretch of one lane (metres from its start) and its speed along it.
+    struct Block { int lane = 0; float back = 0.0f, front = 0.0f, v = 0.0f; };
+
     std::vector<Node>    m_nodes;
     std::vector<Lane>    m_lanes;
     std::vector<Vehicle> m_vehicles;
+    std::vector<Block>   m_blocks;
     std::vector<Walker>  m_walkers;
     std::vector<std::vector<glm::vec3>> m_walks;
     std::vector<std::vector<float>>     m_walkLen;   // cumulative length per walk

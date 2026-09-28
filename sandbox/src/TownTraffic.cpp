@@ -593,7 +593,34 @@ glm::vec2 noseOf(const Entity& e, int forward) {
     const glm::vec2 h(n.x, n.z);
     return glm::length(h) > 1e-4f ? glm::normalize(h) : glm::vec2(0.0f, 1.0f);
 }
+
+// What a driven body weighs when its object does not say (a vehicle rig does).
+float kindMass(traffic::Kind k) {
+    switch (k) {
+        case traffic::Kind::Bus:   return 12000.0f;
+        case traffic::Kind::Truck: return 9000.0f;
+        default:                   return 1300.0f;
+    }
+}
+
+// A physics box as the traffic's obstacle. False if the body is gone.
+bool obstacleOf(fitzel::PhysicsWorld& physics, std::uint32_t body, const glm::vec3& half,
+                Obstacle& o) {
+    glm::quat q;
+    glm::vec3 vel(0.0f);
+    if (!body || !physics.getTransform(body, o.center, q)) return false;
+    physics.getLinearVelocity(body, vel);
+    const glm::mat3 m = glm::mat3_cast(q);
+    for (int i = 0; i < 3; ++i) o.axes[i] = m[i] * half[i];
+    o.vel = {vel.x, vel.z};
+    return true;
+}
 } // namespace
+
+int TownTraffic::wreckCount() const {
+    return static_cast<int>(std::count_if(m_drivers.begin(), m_drivers.end(),
+                                          [](const Driver& d) { return d.wrecked; }));
+}
 
 void TownTraffic::beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics) {
     m_drivers.clear();
@@ -632,11 +659,18 @@ void TownTraffic::beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld*
             d.spinSign  = vc->forward == 1 ? -1.0f : 1.0f;
             if (dc->ride < 0.0f) d.ride = d.wheelR - vc->wheelY;   // as the race sim seats it
         }
+        // A body with the car's own weight, standing where it was authored
+        // until the traffic takes it (asked for nothing yet: a car still
+        // waiting for its lane can be crashed too).
+        d.crashJolt = std::max(dc->crashJolt, 1.0f) / 3.6f;
+        if (physics && dc->collider) {
+            const auto* vc = e.components.get<VehicleComponent>();
+            d.half = glm::max(e.half, glm::vec3(0.2f));
+            d.body = physics->addDrivenBox(d.half, e.center, glm::quat(glm::radians(e.rotation)),
+                                           vc ? vc->mass : kindMass(d.kind));
+        }
         // Placed now if the towns' streets are there already, else as soon as
         // they are (a game started straight into Play derives them after this).
-        if (physics && dc->collider)
-            d.body = physics->addKinematicBox(glm::max(e.half, glm::vec3(0.2f)), e.center,
-                                              glm::quat(glm::radians(e.rotation)));
         m_drivers.push_back(d);
     }
     placeDrivers();
@@ -645,7 +679,7 @@ void TownTraffic::beginPlay(std::vector<Entity>& entities, fitzel::PhysicsWorld*
 void TownTraffic::placeDrivers() {
     if (m_sim.lanes().empty()) return;
     for (Driver& d : m_drivers) {
-        if (d.placed) continue;
+        if (d.placed || d.wrecked) continue;
         d.placed = m_sim.addDriver(d.entity, d.pos, d.heading, d.kind, d.length, d.vmax);
         if (!d.placed) {
             std::fprintf(stderr, "[Fitzel] traffic driver '%s': no lane within 60 m\n", d.name.c_str());
@@ -656,13 +690,35 @@ void TownTraffic::placeDrivers() {
 
 void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* physics, float dt,
                            const std::function<void(Entity&, const glm::vec3&, const glm::vec3&)>& place) {
-    if (!m_playing || m_drivers.empty()) return;
+    if (!m_playing) return;
+    auto entityOf = [&](int id) -> Entity* {
+        for (Entity& x : entities) if (x.id == id) return &x;
+        return nullptr;
+    };
+
+    // Crashes: the physics step just taken knocked a driven body off what it
+    // was asked by more than it takes. It leaves the traffic, and from now on
+    // the physics has it.
+    if (physics)
+        for (Driver& d : m_drivers) {
+            if (!d.body || d.wrecked) continue;
+            glm::vec3 vel(0.0f), spin(0.0f);
+            physics->getLinearVelocity(d.body, vel);
+            physics->getAngularVelocity(d.body, spin);
+            const float j = jolt(vel, d.askedVel, spin, d.askedSpin, glm::length(d.half));
+            if (j < d.crashJolt) continue;
+            d.wrecked = true;
+            physics->releaseBody(d.body);
+            m_sim.removeDriver(d.entity);
+            std::fprintf(stderr, "[Fitzel] traffic driver '%s' crashed (a %.0f km/h jolt)\n",
+                         d.name.c_str(), j * 3.6f);
+        }
+
     for (const Vehicle& v : m_sim.vehicles()) {
         if (v.entity < 0) continue;
         Driver* d = nullptr;
         for (Driver& x : m_drivers) if (x.entity == v.entity) { d = &x; break; }
-        Entity* e = nullptr;
-        for (Entity& x : entities) if (x.id == v.entity) { e = &x; break; }
+        Entity* e = entityOf(v.entity);
         if (!d || !e) continue;
         const Pose p = m_sim.pose(v);
         d->pos     = {p.pos.x, p.pos.z};
@@ -696,15 +752,55 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
                     break;
                 }
         }
-        if (physics && d->body)
-            physics->setKinematicTarget(d->body, pos, glm::quat(glm::radians(rot)), std::max(dt, 1e-3f));
+        if (physics && d->body) {
+            // Steered there -- unless "there" is a jump (put on its lane, or
+            // on another after a rebuild), which it makes at once rather than
+            // flying through whatever is in between. A big turn in one frame
+            // is a jump too: the physics caps how fast a body spins, and the
+            // spin it did not get would read as a crash next tick.
+            const glm::quat q = glm::quat(glm::radians(rot));
+            glm::vec3 now(0.0f);
+            glm::quat nowQ(1.0f, 0.0f, 0.0f, 0.0f);
+            physics->getTransform(d->body, now, nowQ);
+            const float turn = 2.0f * std::acos(std::min(1.0f, std::abs(glm::dot(nowQ, q))));
+            if (glm::distance(now, pos) > 1.0f + 2.0f * d->vmax * std::max(dt, 1.0f / 60.0f) ||
+                turn > glm::radians(30.0f))
+                physics->setTransform(d->body, pos, q);
+            else
+                physics->setKinematicTarget(d->body, pos, q, std::max(dt, 1e-3f));
+            // What it was asked, to tell a knock from the driving next tick.
+            physics->getLinearVelocity(d->body, d->askedVel);
+            physics->getAngularVelocity(d->body, d->askedSpin);
+        }
     }
+
+    // Wrecks lie where the physics has them, tumbled as they are.
+    if (physics)
+        for (const Driver& d : m_drivers) {
+            if (!d.wrecked) continue;
+            Entity* e = entityOf(d.entity);
+            glm::vec3 p;
+            glm::quat q;
+            if (e && physics->getTransform(d.body, p, q)) place(*e, p, sceneEuler(glm::mat3_cast(q)));
+        }
+
+    // What the traffic stops for: the wrecks, and the player's car.
+    std::vector<Obstacle> obstacles;
+    if (physics) {
+        Obstacle o;
+        for (const Driver& d : m_drivers)
+            if (d.wrecked && obstacleOf(*physics, d.body, d.half, o)) obstacles.push_back(o);
+        if (obstacleOf(*physics, m_playerBody, m_playerHalf, o)) obstacles.push_back(o);
+    }
+    m_sim.setObstacles(obstacles);
 }
 
 void TownTraffic::endPlay() {
     m_sim.removeDrivers();
+    m_sim.setObstacles({});
     m_drivers.clear();
-    m_playing = false;
+    m_playing    = false;
+    m_playerBody = 0;
 }
 
 } // namespace traffic
@@ -740,6 +836,14 @@ const std::vector<Property>& TrafficDriverComponent::props() const {
         }
         add("Collider", "collider", PropKind::Bool,
             [](void* o) -> void* { return &static_cast<T*>(o)->collider; });
+        {
+            // The knock it takes before it crashes, as the change in its speed
+            // (delta-v): the masses are in it, so a car barely shakes a bus.
+            Property& q = add("Crashes at a jolt of", "crashJolt", PropKind::Float,
+                              [](void* o) -> void* { return &static_cast<T*>(o)->crashJolt; });
+            q.min = 2.0f; q.max = 60.0f; q.speed = 0.5f; q.fmt = "%.0f km/h";
+            q.visible = [](const void* o) { return static_cast<const T*>(o)->collider; };
+        }
         return v;
     }();
     return p;

@@ -56,6 +56,10 @@ float kindSpeed(Kind k) {
     }
 }
 
+float jolt(glm::vec3 vel, glm::vec3 asked, glm::vec3 spin, glm::vec3 askedSpin, float reach) {
+    return std::max(glm::length(vel - asked), glm::length(spin - askedSpin) * reach);
+}
+
 float Lane::heightAt(float s) const {
     if (y.empty()) return 0.0f;
     const float f = std::clamp(s / Sim::kStep, 0.0f, static_cast<float>(y.size() - 1));
@@ -68,6 +72,7 @@ void Sim::clear() {
     m_nodes.clear();
     m_lanes.clear();
     m_vehicles.clear();
+    m_blocks.clear();
     m_walkers.clear();
     m_walks.clear();
     m_walkLen.clear();
@@ -115,10 +120,41 @@ bool Sim::addDriver(int entity, glm::vec2 pos, glm::vec2 heading, Kind kind, flo
     return true;
 }
 
+void Sim::removeDriver(int entity) {
+    m_vehicles.erase(std::remove_if(m_vehicles.begin(), m_vehicles.end(),
+                                    [entity](const Vehicle& v) { return v.entity == entity; }),
+                     m_vehicles.end());
+}
+
 void Sim::removeDrivers() {
     m_vehicles.erase(std::remove_if(m_vehicles.begin(), m_vehicles.end(),
                                     [](const Vehicle& v) { return v.entity >= 0; }),
                      m_vehicles.end());
+}
+
+void Sim::setObstacles(const std::vector<Obstacle>& obstacles) {
+    m_blocks.clear();
+    for (const Obstacle& o : obstacles)
+        for (int l = 0; l < static_cast<int>(m_lanes.size()); ++l) {
+            const Lane& L = m_lanes[static_cast<std::size_t>(l)];
+            const glm::vec2 side = rightOf(L.dir);
+            // The box's reach along the lane, across it and up.
+            float ra = 0.0f, rs = 0.0f, ry = 0.0f;
+            for (const glm::vec3& a : o.axes) {
+                ra += std::abs(a.x * L.dir.x + a.z * L.dir.y);
+                rs += std::abs(a.x * side.x + a.z * side.y);
+                ry += std::abs(a.y);
+            }
+            const glm::vec2 d = glm::vec2(o.center.x, o.center.z) - L.p0;
+            const float s = glm::dot(d, L.dir);
+            // A car keeps to the middle of its lane and is about 2 m wide.
+            if (std::abs(glm::dot(d, side)) > rs + 1.1f) continue;
+            if (s + ra < 0.0f || s - ra > L.len) continue;
+            // ...and it is in the street, not on a bridge over it or under it.
+            const float y = L.heightAt(s);
+            if (o.center.y - ry > y + 2.5f || o.center.y + ry < y - 0.5f) continue;
+            m_blocks.push_back({l, s - ra, s + ra, glm::dot(o.vel, L.dir)});
+        }
 }
 
 void Sim::addTown(const cityplan::Rule& r, const cityplan::Town& t, int town,
@@ -337,6 +373,8 @@ void Sim::step(float dt, double clock) {
     // --- Who is where: per lane, sorted by position -----------------------------
     // A turning vehicle already counts on the lane it is turning into, at the
     // (negative) distance it still has to go -- so whoever follows it in sees it.
+    // An obstacle's block counts by its far end, like a vehicle's front bumper;
+    // its `who` is -1 - its index in m_blocks.
     struct Slot { float pos; int who; };
     std::vector<std::vector<Slot>> onLane(m_lanes.size());
     for (int i = 0; i < static_cast<int>(m_vehicles.size()); ++i) {
@@ -346,8 +384,19 @@ void Sim::step(float dt, double clock) {
         else
             onLane[static_cast<std::size_t>(v.lane)].push_back({v.s, i});
     }
+    for (int k = 0; k < static_cast<int>(m_blocks.size()); ++k)
+        onLane[static_cast<std::size_t>(m_blocks[static_cast<std::size_t>(k)].lane)]
+            .push_back({m_blocks[static_cast<std::size_t>(k)].front, -1 - k});
     for (auto& l : onLane)
         std::sort(l.begin(), l.end(), [](const Slot& a, const Slot& b) { return a.pos < b.pos; });
+    auto backOf = [&](const Slot& o) {
+        return o.who >= 0 ? o.pos - m_vehicles[static_cast<std::size_t>(o.who)].length
+                          : m_blocks[static_cast<std::size_t>(-1 - o.who)].back;
+    };
+    auto speedOf = [&](const Slot& o) {
+        return o.who >= 0 ? m_vehicles[static_cast<std::size_t>(o.who)].v
+                          : m_blocks[static_cast<std::size_t>(-1 - o.who)].v;
+    };
 
     for (int i = 0; i < static_cast<int>(m_vehicles.size()); ++i) {
         Vehicle& v = m_vehicles[static_cast<std::size_t>(i)];
@@ -362,17 +411,18 @@ void Sim::step(float dt, double clock) {
         float gap = 1e9f, vLead = 0.0f;
         auto lead = [&](float g, float vl) { if (g < gap) { gap = g; vLead = vl; } };
 
-        // The vehicle ahead: on this lane, else the first on the next one.
+        // The vehicle ahead: on this lane, else the first on the next one --
+        // and any obstacle before it (a long wreck's near end can be nearer
+        // than the far end it is sorted by).
         const int regLane = v.turning ? v.next : v.lane;
         const float regPos = v.turning ? -(turnLength(v.lane, v.next) - v.s) : v.s;
         bool found = false;
         if (regLane >= 0)
             for (const Slot& o : onLane[static_cast<std::size_t>(regLane)])
                 if (o.who != i && o.pos > regPos) {
-                    const Vehicle& w = m_vehicles[static_cast<std::size_t>(o.who)];
-                    lead(o.pos - w.length - regPos, w.v);
+                    lead(backOf(o) - regPos, speedOf(o));
                     found = true;
-                    break;
+                    if (o.who >= 0) break;
                 }
         float v0 = v.vmax;
         if (!v.turning) {
@@ -382,9 +432,8 @@ void Sim::step(float dt, double clock) {
                 const auto& nl = onLane[static_cast<std::size_t>(v.next)];
                 for (const Slot& o : nl)
                     if (o.who != i) {
-                        const Vehicle& w = m_vehicles[static_cast<std::size_t>(o.who)];
-                        lead(toEnd + tl + o.pos - w.length, w.v);
-                        break;
+                        lead(toEnd + tl + backOf(o), speedOf(o));
+                        if (o.who >= 0) break;
                     }
             }
             // The stop line, when the light says so.

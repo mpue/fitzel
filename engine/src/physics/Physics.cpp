@@ -38,11 +38,13 @@ namespace fitzel {
 
 namespace {
 
-// --- Collision layers (two is plenty: static world vs moving bodies) --------
+// --- Collision layers: the static world, moving bodies, and driven bodies ----
+// (addDrivenBox) that meet only moving ones -- not the world, not each other.
 namespace Layers {
 static constexpr JPH::ObjectLayer NON_MOVING = 0;
 static constexpr JPH::ObjectLayer MOVING     = 1;
-static constexpr JPH::ObjectLayer NUM        = 2;
+static constexpr JPH::ObjectLayer DRIVEN     = 2;
+static constexpr JPH::ObjectLayer NUM        = 3;
 }
 namespace BroadPhaseLayers {
 static constexpr JPH::BroadPhaseLayer NON_MOVING(0);
@@ -68,8 +70,9 @@ class ObjectVsBroadPhaseLayerFilterImpl final
     : public JPH::ObjectVsBroadPhaseLayerFilter {
 public:
     bool ShouldCollide(JPH::ObjectLayer o, JPH::BroadPhaseLayer b) const override {
-        // Moving collides with everything; static only with moving.
-        if (o == Layers::NON_MOVING) return b == BroadPhaseLayers::MOVING;
+        // Moving collides with everything; static and driven only with moving
+        // (a driven body shares the moving broad-phase layer).
+        if (o == Layers::NON_MOVING || o == Layers::DRIVEN) return b == BroadPhaseLayers::MOVING;
         return true;
     }
 };
@@ -77,7 +80,7 @@ public:
 class ObjectLayerPairFilterImpl final : public JPH::ObjectLayerPairFilter {
 public:
     bool ShouldCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) const override {
-        if (a == Layers::NON_MOVING) return b == Layers::MOVING;
+        if (a == Layers::NON_MOVING || a == Layers::DRIVEN) return b == Layers::MOVING;
         return true; // MOVING vs anything
     }
 };
@@ -194,6 +197,54 @@ void PhysicsWorld::setKinematicTarget(PhysicsBodyId id, glm::vec3 pos,
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (!bi.IsAdded(bid)) return;
     bi.MoveKinematic(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot), dt);
+}
+
+PhysicsBodyId PhysicsWorld::addDrivenBox(glm::vec3 half, glm::vec3 pos, glm::quat rot,
+                                         float mass) {
+    const glm::vec3 h = glm::max(half, glm::vec3(0.02f));
+    // A car's weight sits well below the middle of the box around it; with the
+    // centre of mass in the middle a side hit rolls it over like a crate.
+    JPH::RefConst<JPH::Shape> box = new JPH::BoxShape(toJolt(h));
+    JPH::RefConst<JPH::Shape> shape =
+        JPH::OffsetCenterOfMassShapeSettings(JPH::Vec3(0.0f, -0.4f * h.y, 0.0f), box)
+            .Create().Get();
+    JPH::BodyCreationSettings s(shape, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
+                                JPH::EMotionType::Dynamic, Layers::DRIVEN);
+    s.mOverrideMassProperties       = JPH::EOverrideMassProperties::CalculateInertia;
+    s.mMassPropertiesOverride.mMass = glm::max(mass, 1.0f);
+    s.mGravityFactor = 0.0f;    // it goes where it is told, not down
+    s.mAllowSleeping = false;   // told every frame, even standing at a red light
+    // Jolt combines two frictions as their geometric mean and the world is at
+    // its default 0.2, so this is what makes a released car skid on tarmac with
+    // a tyre's ~0.7 rather than slide on for a hundred metres.
+    s.mFriction      = 2.5f;
+    // Once let go it can be knocked fast across a coarse heightfield.
+    s.mMotionQuality = JPH::EMotionQuality::LinearCast;
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    return bi.CreateAndAddBody(s, JPH::EActivation::Activate).GetIndexAndSequenceNumber();
+}
+
+void PhysicsWorld::releaseBody(PhysicsBodyId id) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.SetObjectLayer(bid, Layers::MOVING);
+    bi.SetGravityFactor(bid, 1.0f);
+    {
+        JPH::BodyLockWrite lock(m_impl->system.GetBodyLockInterface(), bid);
+        if (lock.Succeeded()) lock.GetBody().SetAllowSleeping(true);
+    }
+    bi.ActivateBody(bid);
+}
+
+void PhysicsWorld::setTransform(PhysicsBodyId id, glm::vec3 pos, glm::quat rot) {
+    JPH::BodyID bid(id);
+    JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
+    if (!bi.IsAdded(bid)) return;
+    bi.SetPositionAndRotation(bid, JPH::RVec3(pos.x, pos.y, pos.z), toJolt(rot),
+                              JPH::EActivation::Activate);
+    if (bi.GetMotionType(bid) != JPH::EMotionType::Static)
+        bi.SetLinearAndAngularVelocity(bid, JPH::Vec3::sZero(), JPH::Vec3::sZero());
 }
 
 PhysicsBodyId PhysicsWorld::addVehicle(glm::vec3 chassisHalf, float mass,

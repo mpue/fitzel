@@ -86,6 +86,11 @@ std::vector<glm::vec2> sampleSpline(const std::vector<glm::vec2>& pts, bool clos
 // which is the standard gimbal-lock fallback and is what a loop's apex hits.
 glm::vec3 attitudeEuler(float yawDeg, float pitchDeg, float rollDeg);
 
+// The entity Euler triple (degrees) that composes to rotation `r` in the scene's
+// order, Rz * Ry * Rx -- any orientation, e.g. a physics body's (a tumbling
+// wreck). Near straight up/down it takes the gimbal fallback attitudeEuler does.
+glm::vec3 sceneEuler(const glm::mat3& r);
+
 // Which way an entity with this Euler triple points, as a heading in radians in
 // the convention every craft here uses: dir = (sin H, 0, cos H), i.e.
 // atan2(nose.x, nose.z) for a +Z nose.
