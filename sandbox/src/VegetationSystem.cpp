@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <unordered_map>
 #include <unordered_set>
@@ -1657,6 +1658,86 @@ void VegetationSystem::drawTreeBillboards(const FrameContext& c,
     }
     glBindVertexArray(0);
     glEnable(GL_CULL_FACE);
+}
+
+void VegetationSystem::panel(bool& show, const BrushSwitches& b) {
+    if (!show) return;
+    if (ImGui::Begin("Vegetation", &show)) {
+        ui::sectionText("Grass");
+        ImGui::Checkbox("Grass", &grassEnabled);
+        bool regrow = false;
+        regrow |= ImGui::SliderFloat("Density", &grassDensity, 0.1f, 3.0f);
+        regrow |= ImGui::SliderFloat("Grass range", &grassRadius, 20.0f, 90.0f);
+        regrow |= ImGui::SliderFloat("Blade height", &grassHeight, 0.2f, 1.2f);
+        regrow |= ImGui::SliderFloat("Chaos", &grassChaos, 0.0f, 2.0f);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Irregularity of height, density and gaps\n"
+                              "0 = even lawn, 1 = wild meadow");
+        if (regrow) grassDirty = true; // baked per blade -> regrow
+        ImGui::ColorEdit3("Tint", &grassTint.x);
+        ImGui::Text("Blades: %d", grassCount);
+
+        ui::sectionText("Paint grass (3D brush)");
+        ImGui::Checkbox("Paint mode", &b.grass);
+        if (b.grass)
+            ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f), "Drag = paint | hold Alt = erase");
+        else
+            ImGui::TextDisabled("Enable to paint blades onto the terrain");
+        ImGui::Checkbox("Erase", &b.erase);
+        ImGui::SliderFloat("Brush size", &b.grassRadius, 0.5f, 40.0f, "%.1f m");
+        ImGui::SliderFloat("Brush density", &b.grassDensity, 0.1f, 4.0f);
+        ImGui::Text("Painted blades: %d", static_cast<int>(paintedBlades.size() / 7));
+        if (ImGui::Button("Clear painted")) {
+            paintedBlades.clear();
+            paintedDirty = true;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save##grass")) {
+            std::ofstream f("grass.txt");
+            for (std::size_t i = 0; i < paintedBlades.size(); ++i)
+                f << paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load##grass")) {
+            std::ifstream f("grass.txt");
+            if (f) {
+                paintedBlades.clear();
+                float v;
+                while (f >> v) paintedBlades.push_back(v);
+                paintedBlades.resize(paintedBlades.size() / 7 * 7); // whole blades
+                paintedDirty = true;
+            }
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("(grass.txt)");
+
+        panelTrees(b.trees, b.erase);
+
+        ui::sectionText("Flowers");
+        ImGui::Checkbox("Flowers", &flowerEnabled);
+        if (ImGui::SliderFloat("Flower density", &flowerDensity, 0.0f, 2.0f))
+            grassDirty = true; // flowers regenerate with the grass pass
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Regrow")) grassDirty = true;
+        ImGui::Text("Flowers: %d", flowerCount);
+
+        ui::sectionText("Paint flowers (3D brush)");
+        ImGui::Checkbox("Paint mode##flower", &b.flowers);
+        if (b.flowers)
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f), "Drag = plant | hold Alt = erase");
+        else
+            ImGui::TextDisabled("Enable to plant flowers onto the terrain");
+        ImGui::Checkbox("Erase##flower", &b.erase);
+        ImGui::SliderFloat("Brush size##flower", &flowerBrushRadius, 1.0f, 30.0f, "%.1f m");
+        ImGui::SliderFloat("Density##flower", &flowerBrushDensity, 0.1f, 4.0f);
+        ImGui::Text("Painted flowers: %d", static_cast<int>(paintedFlowers.size() / 8));
+        ImGui::BeginDisabled(paintedFlowers.empty());
+        if (ImGui::Button("Clear painted##flower")) clearPaintedFlowers();
+        ImGui::EndDisabled();
+
+        panelBirdsFireflies();
+    }
+    ImGui::End();
 }
 
 void VegetationSystem::panelTrees(bool& treePaintMode, bool& brushErase) {

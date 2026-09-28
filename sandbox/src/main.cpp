@@ -10335,100 +10335,21 @@ int main(int argc, char** argv) {
                 });
             }
 
-            if (showVegetation) { if (ImGui::Begin("Vegetation", &showVegetation)) {
-                ui::sectionText("Grass");
-                ImGui::Checkbox("Grass", &veg.grassEnabled);
-                bool regrow = false;
-                regrow |= ImGui::SliderFloat("Density", &veg.grassDensity, 0.1f, 3.0f);
-                regrow |= ImGui::SliderFloat("Grass range", &veg.grassRadius, 20.0f, 90.0f);
-                regrow |= ImGui::SliderFloat("Blade height", &veg.grassHeight, 0.2f, 1.2f);
-                regrow |= ImGui::SliderFloat("Chaos", &veg.grassChaos, 0.0f, 2.0f);
-                if (ImGui::IsItemHovered())
-                    ImGui::SetTooltip("Irregularity of height, density and gaps\n"
-                                      "0 = even lawn, 1 = wild meadow");
-                if (regrow) veg.grassDirty = true; // baked per blade -> regrow
-                ImGui::ColorEdit3("Tint", &veg.grassTint.x);
-                ImGui::Text("Blades: %d", veg.grassCount);
-
-                ui::sectionText("Paint grass (3D brush)");
-                {
-                    bool on = viewTool == ViewTool::Grass;
-                    if (ImGui::Checkbox("Paint mode", &on)) takeTool(viewTool, ViewTool::Grass, on);
-                }
-                if (viewTool == ViewTool::Grass) {
-                    ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.5f, 1.0f),
-                        "Drag = paint | hold Alt = erase");
-                } else {
-                    ImGui::TextDisabled("Enable to paint blades onto the terrain");
-                }
-                ImGui::Checkbox("Erase", &brushErase);
-                ImGui::SliderFloat("Brush size", &brushRadius, 0.5f, 40.0f, "%.1f m");
-                ImGui::SliderFloat("Brush density", &brushDensity, 0.1f, 4.0f);
-                ImGui::Text("Painted blades: %d",
-                            static_cast<int>(veg.paintedBlades.size() / 7));
-                if (ImGui::Button("Clear painted")) {
-                    veg.paintedBlades.clear();
-                    veg.paintedDirty = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Save##grass")) {
-                    std::ofstream f("grass.txt");
-                    for (std::size_t i = 0; i < veg.paintedBlades.size(); ++i)
-                        f << veg.paintedBlades[i] << ((i % 7 == 6) ? '\n' : ' ');
-                }
-                ImGui::SameLine();
-                if (ImGui::Button("Load##grass")) {
-                    std::ifstream f("grass.txt");
-                    if (f) {
-                        veg.paintedBlades.clear();
-                        float v;
-                        while (f >> v) veg.paintedBlades.push_back(v);
-                        veg.paintedBlades.resize(veg.paintedBlades.size() / 7 * 7); // whole blades
-                        veg.paintedDirty = true;
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::TextDisabled("(grass.txt)");
-
-                {
-                    bool on = viewTool == ViewTool::Trees;
-                    veg.panelTrees(on, brushErase);
-                    takeTool(viewTool, ViewTool::Trees, on);
-                }
-
-                ui::sectionText("Flowers");
-                ImGui::Checkbox("Flowers", &veg.flowerEnabled);
-                if (ImGui::SliderFloat("Flower density", &veg.flowerDensity, 0.0f, 2.0f))
-                    veg.grassDirty = true; // flowers regenerate with the grass pass
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Regrow")) veg.grassDirty = true;
-                ImGui::Text("Flowers: %d", veg.flowerCount);
-
-                ui::sectionText("Paint flowers (3D brush)");
-                {
-                    bool on = viewTool == ViewTool::Flowers;
-                    if (ImGui::Checkbox("Paint mode##flower", &on))
-                        takeTool(viewTool, ViewTool::Flowers, on);
-                }
-                if (viewTool == ViewTool::Flowers)
-                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.85f, 1.0f),
-                        "Drag = plant | hold Alt = erase");
-                else
-                    ImGui::TextDisabled("Enable to plant flowers onto the terrain");
-                ImGui::Checkbox("Erase##flower", &brushErase);
-                ImGui::SliderFloat("Brush size##flower", &veg.flowerBrushRadius, 1.0f, 30.0f, "%.1f m");
-                ImGui::SliderFloat("Density##flower", &veg.flowerBrushDensity, 0.1f, 4.0f);
-                ImGui::Text("Painted flowers: %d",
-                            static_cast<int>(veg.paintedFlowers.size() / 8));
-                ImGui::BeginDisabled(veg.paintedFlowers.empty());
-                if (ImGui::Button("Clear painted##flower")) {
-                    veg.clearPaintedFlowers();
-                }
-                ImGui::EndDisabled();
-
-                veg.panelBirdsFireflies();
+            // The Vegetation window (VegetationSystem.cpp). Its three brushes'
+            // switches come back here; only the one clicked is written back, so a
+            // brush still showing "on" this frame cannot take the button back
+            // from the one just switched on.
+            if (showVegetation) {
+                const bool grass0 = viewTool == ViewTool::Grass;
+                const bool trees0 = viewTool == ViewTool::Trees;
+                const bool flow0  = viewTool == ViewTool::Flowers;
+                bool grass = grass0, trees = trees0, flowers = flow0;
+                veg.panel(showVegetation,
+                          {grass, trees, flowers, brushErase, brushRadius, brushDensity});
+                if (grass != grass0)   takeTool(viewTool, ViewTool::Grass, grass);
+                if (trees != trees0)   takeTool(viewTool, ViewTool::Trees, trees);
+                if (flowers != flow0)  takeTool(viewTool, ViewTool::Flowers, flowers);
             }
-            ImGui::End(); }
 
             if (showCamPath) { if (ImGui::Begin("Camera path", &showCamPath)) {
                 camPathRec.panel(camera);
