@@ -297,7 +297,12 @@ std::vector<Preset> builtins() {
         // shared high layer could not draw at all.
         p.sky.cirrus        = {true, 0.18f, 8000.0f, 1.0f, 2.5f, 0.0f};
         p.sky.contrails     = {true, 0.35f, 10500.0f, 0.5f, 1.0f, 0.5f};
-        p.sky.fogDensity    = 0.0032f;
+        // A clear day sees for tens of kilometres: the valley keeps a thin
+        // haze that parts the ranges into layers, and no more. It was 0.0032,
+        // a 1/e distance of three hundred metres at the valley floor -- a fog,
+        // which laid a third of white over a house two hundred metres off and
+        // cut the feet off every range with a white band.
+        p.sky.fogDensity    = 0.0004f;
         p.sky.fogFalloff    = 0.030f;
         // Says the mist is OFF rather than saying nothing about it: picking a
         // sunny day after a dawn one has to clear the valley, or the preset is
@@ -337,7 +342,8 @@ std::vector<Preset> builtins() {
         // preset reads as early rather than merely dim.
         p.sky.stratocumulus = {true, 0.45f, 1100.0f, 1.2f, 2.0f, 0.5f};
         p.sky.cirrus        = {true, 0.30f, 7500.0f, 1.0f, 1.6f, 0.2f};
-        p.sky.fogDensity   = 0.0075f;
+        // The mist is the volume below; this is only the damp air around it.
+        p.sky.fogDensity   = 0.0025f;
         p.sky.fogFalloff   = 0.045f;
         p.setMist                     = true;
         p.mist.enabled                = true;
@@ -388,7 +394,7 @@ std::vector<Preset> builtins() {
         // faked by turning cumulus coverage up until it closed over -- which
         // gives a lumpy ceiling, not a grey one.
         p.sky.stratus      = {true, 0.85f, 620.0f, 1.8f, 7.0f, 0.4f};
-        p.sky.fogDensity   = 0.0065f;
+        p.sky.fogDensity   = 0.0012f;
         p.sky.fogFalloff   = 0.026f;
         p.setMist          = true;
         p.mist.enabled     = false;
@@ -417,7 +423,8 @@ std::vector<Preset> builtins() {
         // Lower and closed: a rain deck has no gaps in it, and the base comes
         // down as the front does.
         p.sky.stratus      = {true, 0.97f, 330.0f, 2.2f, 13.0f, 0.4f};
-        p.sky.fogDensity   = 0.0100f;
+        // A downpour takes the far side of the valley, not the next street.
+        p.sky.fogDensity   = 0.0022f;
         p.sky.fogFalloff   = 0.022f;
         p.setMist                    = true;
         p.mist.enabled               = true;
@@ -461,7 +468,7 @@ std::vector<Preset> builtins() {
         p.sky.top          = 3000.0f;
         // Right down on the deck and completely shut.
         p.sky.stratus      = {true, 1.0f, 200.0f, 2.6f, 20.0f, 0.4f};
-        p.sky.fogDensity   = 0.0130f;
+        p.sky.fogDensity   = 0.0030f;
         p.sky.fogFalloff   = 0.020f;
         // Off, and meant: a gale scours the air near the ground, and marching a
         // volume in the frame that is already paying for rain, spray and a

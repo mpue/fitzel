@@ -145,9 +145,13 @@ vec3 skyColor(vec3 dir) {
     float day = smoothstep(-0.12, 0.18, uSunDir.y); // 0 night -> 1 day
     vec3 col = skyGradient(dir, uSunDir);
 
-    // Stars and moon fade in at night.
+    // Stars and moon fade in at night -- and go behind the deck with the sun.
+    // Below the angle where the cloud sheets fade out the bare gradient shows
+    // again, and a shut sky with the sun or the stars in its bottom strip is a
+    // hole in it.
     float night = 1.0 - day;
-    col += (starField(dir) + moon(dir)) * night;
+    float open  = 1.0 - uOvercast;
+    col += (starField(dir) + moon(dir)) * night * open;
 
     // Sun disk + tight corona (HDR linear radiance). The soft halo comes from
     // bloom in the composite, so keep the in-sky glow tight to avoid a blowout.
@@ -155,7 +159,7 @@ vec3 skyColor(vec3 dir) {
     float disk = smoothstep(0.9991, 0.9995, sd);  // the bright disk
     float glow = pow(sd, 200.0) * 0.5;            // tight corona only
     vec3 sunTint = uSunColor * vec3(1.0, 0.9, 0.72);
-    col += sunTint * (disk * 9.0 + glow);
+    col += sunTint * (disk * 9.0 + glow) * open;
     return col;
 }
 

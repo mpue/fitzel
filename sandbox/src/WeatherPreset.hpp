@@ -100,7 +100,7 @@ struct Sky {
     Sheet contrails     = {false, 0.40f, 1800.0f, 0.6f,  1.2f, 0.4f};
 
     // The height haze: aerial perspective, everywhere, with no shape.
-    float fogDensity = 0.0045f;
+    float fogDensity = 0.0006f;
     float fogFalloff = 0.028f;
 };
 

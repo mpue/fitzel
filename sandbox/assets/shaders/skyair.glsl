@@ -15,6 +15,15 @@
 // The golden hour: whole with the sun a few degrees up, gone twenty degrees up,
 // and gone again once it has set. main.cpp weighs the haze and the fill light
 // with the same curve.
+// How closed the sky is, 0 clear .. 1 a shut deck, and the grey its horizon
+// goes to (linear) -- both from main.cpp, which weighs the haze with the same
+// pair. Under a lid there is no blue horizon and no glow round the sun left:
+// the dome is the deck's underside, and the far ranges must dissolve into that
+// grey. Fading them into the clear-sky gradient instead is what drew bright
+// peach mountains in front of a dark rain sky. Unset (0) = the clear sky.
+uniform float uOvercast;
+uniform vec3  uOvercastColor;
+
 float goldenHour(vec3 sunDir) {
     return (1.0 - smoothstep(0.0, 0.35, sunDir.y)) * smoothstep(-0.10, 0.0, sunDir.y);
 }
@@ -82,5 +91,5 @@ vec3 skyGradient(vec3 dir, vec3 sunDir) {
     col += (vec3(1.00, 0.76, 0.38) * core * 0.55 + vec3(0.95, 0.55, 0.30) * wide * 0.06)
          * gold;
 
-    return pow(max(col, vec3(0.0)), vec3(2.2));
+    return mix(pow(max(col, vec3(0.0)), vec3(2.2)), uOvercastColor, uOvercast);
 }

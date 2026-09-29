@@ -61,6 +61,11 @@ struct Fog {
     float     density       = 0.006f;
     float     heightFalloff = 0.03f;
     float     height        = 0.0f;
+    // How closed the sky is (0 clear .. 1 a shut deck) and the grey its horizon
+    // goes to, linear. The sky and the far ranges fade into that grey instead of
+    // the clear-sky gradient: under a lid there is no blue horizon left to fade to.
+    float     overcast = 0.0f;
+    glm::vec3 overcastColor{0.0f};
 };
 
 // A submitted object's bounds in world space. Cached for a frame so the shadow

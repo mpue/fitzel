@@ -7543,7 +7543,19 @@ int main(int argc, char** argv) {
             const float effCloudBot  = glm::mix(skySet.base, 80.0f, storm);
             const float effWaveH     = glm::mix(waveHeight, 2.4f, storm);
             const float effWaveC     = glm::mix(waveChoppy, 0.95f, storm);
-            const float effFog       = skySet.fogDensity + storm * 0.011f;
+            // The weather's own haze plus a little for the rain in the air. It
+            // was +0.011 at full storm: on top of a preset's own density that is
+            // a 1/e distance of fifty metres -- the town gone behind a white
+            // wall in a shower, when rain costs a valley kilometres, not all of it.
+            const float effFog       = skySet.fogDensity + storm * 0.0015f;
+            // How shut the sky is: a closed cumulus field or a stratus lid. Not
+            // the storm alone -- an overcast day is a lid with nothing falling.
+            const float overcast = glm::clamp(
+                std::max(glm::smoothstep(0.55f, 0.95f, effCoverage),
+                         skySet.stratus.on
+                             ? glm::smoothstep(0.40f, 0.95f, skySet.stratus.amount)
+                             : 0.0f),
+                0.0f, 1.0f);
             // How much is coming down: the dial's own curve (the one the streaks
             // fall on, shared so the sound and the wet sheen cannot start before
             // there is anything falling) times the weather's amount.
@@ -7797,8 +7809,21 @@ int main(int argc, char** argv) {
                 glm::vec3(0.42f, 0.42f, 0.50f), gold * 0.6f);
             const glm::vec3 sunHazeDisp =
                 glm::mix(hazeDisp, glm::vec3(1.0f, 0.66f, 0.38f), 0.7f * dayF);
-            fog.color    = glm::pow(hazeDisp, glm::vec3(2.2f));
-            fog.sunColor = glm::pow(sunHazeDisp, glm::vec3(2.2f));
+            // Under a shut sky the haze is the deck's grey, and a dim one: the
+            // air is lit by the cloud's underside, not by the sun, and an
+            // overcast horizon is darker than its zenith. The clear haze above
+            // stayed daylight-white in the rain and turned every range into a
+            // bright cut-out in front of a dark sky. No sun-side glow under it
+            // either -- there is no sun to glow round. The sky's horizon takes
+            // the same grey (skyair.glsl), so the ranges fade into what is
+            // really behind them.
+            const glm::vec3 overDisp = glm::mix(glm::vec3(0.035f, 0.04f, 0.055f),
+                                                glm::vec3(0.36f, 0.39f, 0.44f), dayF);
+            const glm::vec3 overLin = glm::pow(overDisp, glm::vec3(2.2f));
+            fog.color    = glm::mix(glm::pow(hazeDisp, glm::vec3(2.2f)), overLin, overcast);
+            fog.sunColor = glm::mix(glm::pow(sunHazeDisp, glm::vec3(2.2f)), overLin, overcast);
+            fog.overcast      = overcast;
+            fog.overcastColor = overLin;
             renderer.setFog(fog);
             // The fauna moves in the world just lit: after the sun, before the
             // passes that draw it.
@@ -11022,6 +11047,8 @@ int main(int argc, char** argv) {
                 sky.setFloat("uCloudSpeed", effWind);
                 sky.setFloat("uCloudBottom", effCloudBot);
                 sky.setFloat("uCloudTop", skySet.top);
+                sky.setFloat("uOvercast", fog.overcast);
+                sky.setVec3("uOvercastColor", fog.overcastColor);
                 // The layer stack, highest first, with the cumulus already in
                 // its place in the order -- see SkyLayers.hpp. The march is one
                 // entry in this list rather than a step after it, which is what

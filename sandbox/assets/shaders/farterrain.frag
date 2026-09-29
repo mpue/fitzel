@@ -159,7 +159,8 @@ vec3 applyAir(vec3 color, vec3 p, vec3 eye, vec3 L) {
                : exp(-y0 / H);
     float a = 1.0 - exp(-dist / Lair * avgD);
     vec3 air = skyAir(normalize(vec3(rd.x, max(rd.y, 0.015), rd.z)));
-    air += uFogSunColor * pow(max(dot(rd, L), 0.0), 8.0) * 0.18;   // forward scatter
+    // Forward scatter round the sun -- only while there is a sun to see.
+    air += uFogSunColor * pow(max(dot(rd, L), 0.0), 8.0) * 0.18 * (1.0 - uOvercast);
     return mix(color, air, a);
 }
 

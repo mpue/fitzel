@@ -52,7 +52,11 @@ void drawSkyPanel(const SkyPanelState& s) {
                  "the only layer with real depth; the rest are sheets,\n"
                  "which is what they are in the air as well.");
         skylayers::drawPanel(s.sky);
-        ImGui::SliderFloat("Fog density", &s.sky.fogDensity, 0.0f, 0.02f, "%.4f");
+        // Logarithmic: a clear day lives at a few ten-thousandths and a storm
+        // at a few thousandths, and on a linear 0..0.02 track the whole clear
+        // range was the first twentieth of the slider.
+        ImGui::SliderFloat("Fog density", &s.sky.fogDensity, 0.0f, 0.02f, "%.5f",
+                           ImGuiSliderFlags_Logarithmic);
         ImGui::SliderFloat("Fog falloff", &s.sky.fogFalloff, 0.005f, 0.1f, "%.3f");
         ui::hint("Everything in this panel down to the volumetric fog is\n"
                  "part of a weather preset. Weather & audio is where a\n"
