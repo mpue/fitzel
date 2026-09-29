@@ -15,6 +15,7 @@
 #include <fitzel/render/Renderer.hpp>
 
 #include "Component.hpp"
+#include "Modifiers.hpp"
 
 namespace scenesubmit {
 
@@ -233,8 +234,11 @@ void submit(const Context& c, Scratch& scratch) {
         // the Scale gizmo -- and then the shape scales with the box, which
         // is what dragging it is asking for.
         if (const auto* meshC = b.components.get<MeshComponent>()) {
+            // What the object shows: its mesh, or what its modifier stack makes
+            // of it -- in the mesh's own space, so the transform is the same.
+            const modifiers::Shown shownMesh = modifiers::shown(b, *meshC);
             const glm::mat4 mm = c.composeModel(
-                b.center, b.rotation, editmesh::fitScale(meshC->mesh, b.half));
+                b.center, b.rotation, editmesh::fitScale(*shownMesh.mesh, b.half));
             const auto* mc = b.components.get<MaterialComponent>();
             const int   own = c.document.materialIndex(mc ? mc->material : AssetId{});
             // Painted? Then this object needs a material of its own: its
@@ -281,7 +285,7 @@ void submit(const Context& c, Scratch& scratch) {
             // Modeling panel is its own piece of geometry, and a mesh nobody has
             // dressed is the one piece it always was (see editmesh::buildGroups).
             for (const EditMeshCache::Sub& sub :
-                     c.meshCache.submeshes(b.id, meshC->revision, meshC->mesh)) {
+                     c.meshCache.submeshes(b.id, shownMesh.revision, *shownMesh.mesh)) {
                 // A face's material by GUID -- not through materialIndex(), which
                 // answers 0 for one it does not know. A material deleted from the
                 // library since the face was dressed hands the face back to the

@@ -47,6 +47,7 @@ void ScriptEditor::save(ScriptSystem& scripts) {
 }
 
 void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
+    m_focused = false;
     if (!visible) return;
     bool openNewScript = false;
     if (ImGui::Begin("Scripts", &visible,
@@ -82,6 +83,7 @@ void ScriptEditor::panel(ScriptSystem& scripts, fitzel::Gui& gui) {
         // Ctrl+S saves while the editor window is focused.
         const bool winFocused =
             ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        m_focused = winFocused;
         if (winFocused && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S))
             doSave = true;
 

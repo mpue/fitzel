@@ -46,6 +46,20 @@ void draw(const State& s) {
             ImGui::SameLine();
         };
 
+        // --- Save --------------------------------------------------------------
+        // First, and a group of its own: the one button in the strip that writes
+        // to disk. Where the eye starts, so it is found without looking for it.
+        {
+            const bool hit = icon::button(
+                "save", bs,
+                s.canSave ? "Save project -- the scene and everything in it (Ctrl+S)"
+                          : "Save project (open a project first; not during Play)",
+                !s.canSave, c);
+            icon::save(dl, c, r, s.canSave ? icon::kOff : icon::kDim);
+            if (hit && s.save) s.save();
+        }
+        gap();
+
         // --- Select / Create -----------------------------------------------
         // The pair that decides what a left-click on empty ground does. Select
         // is the default and the harmless one: it can only pick and deselect.
@@ -160,25 +174,42 @@ void draw(const State& s) {
             }
         }
 
-        // Gap, then the road editor: a toggle, not a one-shot action like the
-        // buttons before it, so it stays lit while it owns the left mouse
-        // button in the viewport.
+        // Gap, then the tools, in the groups the caller lists them in.
         gap();
-        {
-            const bool roadOn = s.viewTool == ViewTool::Road;
-            char tip[160];
-            std::snprintf(tip, sizeof tip,
-                          "Road editor%s\n"
-                          "Click ground = add point, drag = move,\n"
-                          "Ctrl+drag = raise/lower, Del = delete.",
-                          roadOn ? " (on)" : "");
-            const bool hit = icon::button("roadTool", bs, tip, false, c, roadOn);
-            icon::road(dl, c, r, roadOn ? icon::on() : icon::kOff);
-            if (hit) {
-                // Takes the left button from whichever tool had it.
-                takeTool(s.viewTool, ViewTool::Road, !roadOn);
-                if (!roadOn) s.showRoads = true; // the tunables belong with the tool
+        for (std::size_t i = 0; i < s.panels.size(); ++i) {
+            const State::Panel& p = s.panels[i];
+            if (p.tool == icon::Tool::None) {
+                gap();
+                continue;
             }
+            char id[16];
+            std::snprintf(id, sizeof id, "tool%zu", i);
+            if (p.tool == icon::Tool::Road) {
+                // The road editor: a toggle, not a one-shot action, so it stays
+                // lit while it owns the left mouse button in the viewport.
+                const bool roadOn = s.viewTool == ViewTool::Road;
+                char tip[160];
+                std::snprintf(tip, sizeof tip,
+                              "Road editor%s\n"
+                              "Click ground = add point, drag = move,\n"
+                              "Ctrl+drag = raise/lower, Del = delete.",
+                              roadOn ? " (on)" : "");
+                const bool hit = icon::button(id, bs, tip, false, c, roadOn);
+                icon::road(dl, c, r, roadOn ? icon::on() : icon::kOff);
+                if (hit) {
+                    // Takes the left button from whichever tool had it.
+                    takeTool(s.viewTool, ViewTool::Road, !roadOn);
+                    if (!roadOn) s.showRoads = true; // the tunables belong with the tool
+                }
+                continue;
+            }
+            // A tool window: one click opens it, the next closes it again -- the
+            // same switch as its entry in the View menu, lit while it is open.
+            if (!p.open) continue;
+            const bool on  = *p.open;
+            const bool hit = icon::button(id, bs, p.tip, false, c, on);
+            icon::tool(dl, p.tool, c, r, on ? icon::on() : icon::kOff);
+            if (hit) *p.open = !*p.open;
         }
     }
     ImGui::End();

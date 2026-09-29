@@ -119,6 +119,22 @@ struct EditMesh {
     };
     std::vector<FaceUV> faceUV;
 
+    // The box that defines this mesh's own space, where it is not its bounds.
+    // A modifier's result (an array of copies, a thickened shell) reaches
+    // beyond the mesh it was made from but lives in that mesh's space, so it
+    // keeps its source's box: fitScale reads this one, and the result is drawn,
+    // collided with and walked on through the very transform its source is.
+    // Unset -- every mesh anyone edits -- means the mesh's own bounds.
+    bool      hasFrame = false;
+    glm::vec3 frameMin{0.0f}, frameMax{0.0f};
+
+    // Shading. 0 is flat: every face its own normal, the crisp look of a box
+    // model and what every edited mesh has. Above 0, a corner shares its normal
+    // with the faces around it that meet this face flatter than this many
+    // degrees -- a subdivided surface reads as curved, and the edges of a cube
+    // stay sharp. Set by the modifier stack; never saved with a mesh.
+    float     smoothAngle = 0.0f;
+
     // The placement of face `f`, the default where the mesh carries none. Read
     // through this rather than indexing `faceUV`, which is empty on a mesh whose
     // texture nobody has moved.

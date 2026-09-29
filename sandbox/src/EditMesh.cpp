@@ -781,7 +781,8 @@ glm::vec3 recenter(EditMesh& m) {
 
 glm::vec3 fitScale(const EditMesh& m, const glm::vec3& half) {
     glm::vec3 mn, mx;
-    m.bounds(mn, mx);
+    if (m.hasFrame) { mn = m.frameMin; mx = m.frameMax; }
+    else            m.bounds(mn, mx);
     glm::vec3 s(1.0f);
     for (int k = 0; k < 3; ++k)
         if (mx[k] - mn[k] > 1e-4f) s[k] = half[k] * 2.0f / (mx[k] - mn[k]);
@@ -853,11 +854,42 @@ std::vector<Group> buildGroups(const EditMesh& m) {
         return groups.back().data;
     };
 
+    // Smooth shading (EditMesh::smoothAngle): every face's normal and area, and
+    // the faces around every corner, so a corner can sum the neighbours that
+    // meet its face flatter than the angle -- weighted by area, so a sliver does
+    // not tilt the normal of a whole region.
+    const bool smooth = m.smoothAngle > 0.0f;
+    std::vector<glm::vec3> faceN;
+    std::vector<float> faceA;
+    std::vector<std::vector<int>> around;
+    const float cosSmooth = std::cos(glm::radians(glm::clamp(m.smoothAngle, 0.0f, 180.0f)));
+    if (smooth) {
+        faceN.resize(m.faces.size());
+        faceA.resize(m.faces.size());
+        around.resize(m.verts.size());
+        for (std::size_t f = 0; f < m.faces.size(); ++f) {
+            faceN[f] = m.faceNormal(static_cast<int>(f));
+            faceA[f] = m.faceArea(static_cast<int>(f));
+            for (int v : m.faces[f])
+                if (v >= 0 && v < static_cast<int>(around.size()))
+                    around[static_cast<std::size_t>(v)].push_back(static_cast<int>(f));
+        }
+    }
     for (std::size_t f = 0; f < m.faces.size(); ++f) {
         const std::vector<int>& fv = m.faces[f];
         if (fv.size() < 3) continue;
         fitzel::MeshData& d = groupFor(m.faceMaterial(static_cast<int>(f)));
         const glm::vec3 n = m.faceNormal(static_cast<int>(f));
+        auto cornerNormal = [&](int v) {
+            if (!smooth) return n;
+            glm::vec3 sum(0.0f);
+            for (int g : around[static_cast<std::size_t>(v)])
+                if (glm::dot(faceN[static_cast<std::size_t>(g)], n) >= cosSmooth - 1e-5f)
+                    sum += faceN[static_cast<std::size_t>(g)] *
+                           std::max(faceA[static_cast<std::size_t>(g)], 1e-8f);
+            const float len = glm::length(sum);
+            return len > 1e-12f ? sum / len : n;
+        };
         // The face's texture coordinates, in its own loop order. Indexed by
         // POSITION in the loop, not by vertex id: corners are shared between
         // faces and each face places its texture on them itself.
@@ -865,7 +897,7 @@ std::vector<Group> buildGroups(const EditMesh& m) {
         auto vert = [&](std::size_t k) {
             fitzel::Vertex v;
             v.position = m.verts[fv[k]];
-            v.normal   = n;
+            v.normal   = cornerNormal(fv[k]);
             v.uv       = uvs[k];
             v.paint    = m.paintAt(fv[k]);
             return v;

@@ -193,6 +193,7 @@
 #include "StreetSignPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
+#include "Modifiers.hpp"
 #include "HalfResSky.hpp"
 #include "CityPanel.hpp"
 #include "CityPlanPanel.hpp"
@@ -2075,7 +2076,7 @@ int main(int argc, char** argv) {
             // ...and the modelled meshes, keyed by entity id: the next scene's ids
             // start again from 0, so a stale entry would hand a new object the
             // shape of an old one.
-            [&]{ models.clear(); prefabCache.clear(); meshCache.clear(); },
+            [&]{ models.clear(); prefabCache.clear(); meshCache.clear(); modifiers::clearCache(); },
             writeSettingsFn, readSettingsFn, afterSceneLoadFn,
         };
         projectio::loadPrefs(pio);
@@ -2748,6 +2749,7 @@ int main(int argc, char** argv) {
 
         // Undo/redo edge state.
         bool                prevUndo = false, prevRedo = false;
+        bool                prevSave = false;   // Ctrl+S, edge-triggered
         // Inspector edit transaction: snapshot the selected entity's subtree while
         // a field is being touched, commit one ModifyEntities step when released.
         int                 inspEditId = -1;
@@ -4250,7 +4252,8 @@ int main(int argc, char** argv) {
                 // of an L rather than over their bounding boxes.
                 if (const auto* mc = e.components.get<MeshComponent>()) {
                     float top;
-                    if (meshquery::surfaceBelow(e, mc->mesh, x, z, yMax, top) && top > h)
+                    if (meshquery::surfaceBelow(e, *modifiers::shown(e, *mc).mesh, x, z, yMax, top) &&
+                        top > h)
                         h = top;
                     continue;
                 }
@@ -5766,7 +5769,7 @@ int main(int argc, char** argv) {
             autoSave.status(), projNameBuf,
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
             wizardOpen, wizardIsNew, gameSettings, gameSettingsOpen,
-            saveCurrent, exportGame, openProjectAsync, listProjectsIn,
+            saveCurrent, exportGame, openProjectAsync, listProjectsIn, playMode,
         };
         editormenu::SceneMenuCtx sceneMenu{
             currentProject, sceneNameBuf, sizeof(sceneNameBuf),
@@ -6643,6 +6646,24 @@ int main(int argc, char** argv) {
             } else {
                 prevUndo = prevRedo = false;
             }
+#ifndef FITZEL_PLAYER
+            // Save: Ctrl+S, the same as the toolbar's first button and File >
+            // Save Project. Not in Play -- the scene is the game's then, and
+            // saving would write the game's state over the one authored -- and
+            // not while a text field or the script editor has the keyboard (the
+            // script editor's own Ctrl+S saves the script).
+            {
+                const bool ctrl = input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                  input.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+                const bool shift = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                   input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+                const bool wantSave = ctrl && !shift && input.isKeyDown(GLFW_KEY_S) &&
+                                      !playMode && !ImGui::GetIO().WantTextInput &&
+                                      !scriptEditor.focused();
+                if (wantSave && !prevSave && !currentProject.empty()) saveCurrent();
+                prevSave = wantSave;
+            }
+#endif
 
             engineDriving = false; // re-armed by whichever drive block runs below
             gliderAudioActive = false; // re-armed by the glider flight tick below
@@ -7147,7 +7168,7 @@ int main(int argc, char** argv) {
                 auto wallHit = [&](const Entity& b, float px, float pz) {
                     if (const auto* mc = b.components.get<MeshComponent>()) {
                         for (int k = 0; k < 5; ++k)
-                            if (meshquery::blocks(b, mc->mesh, px + rimX[k] * pr,
+                            if (meshquery::blocks(b, *modifiers::shown(b, *mc).mesh, px + rimX[k] * pr,
                                                   pz + rimZ[k] * pr, bodyLo, bodyHi))
                                 return true;
                         return false;
@@ -7187,7 +7208,8 @@ int main(int argc, char** argv) {
                     if (const auto* mc = b.components.get<MeshComponent>()) {
                         for (int k = 0; k < 5; ++k) {
                             float top;
-                            if (meshquery::surfaceBelow(b, mc->mesh, pos.x + rimX[k] * pr,
+                            if (meshquery::surfaceBelow(b, *modifiers::shown(b, *mc).mesh,
+                                                        pos.x + rimX[k] * pr,
                                                         pos.z + rimZ[k] * pr,
                                                         feetY + stepH + 0.01f, top) &&
                                 top > groundY)
@@ -9271,12 +9293,34 @@ int main(int argc, char** argv) {
             }
 
             // --- Toolbar strip under the menu bar (Toolbar.cpp) ---------------
-            toolbar::draw({placeMode, entityNewType,
-                           [&](EntityType t) { addEntity(spawnPoint(6.0f), t); },
-                           terrainOn, [&] { addTerrainEntity(); },
-                           gizmoOp, gizmoMode, playMode, viewShade,
-                           [&] { viewtrace::refresh(viewTrace); },
-                           viewTool, showRoads});
+            {
+                using T = icon::Tool;
+                toolbar::draw({placeMode, entityNewType,
+                               [&](EntityType t) { addEntity(spawnPoint(6.0f), t); },
+                               terrainOn, [&] { addTerrainEntity(); },
+                               gizmoOp, gizmoMode, playMode, viewShade,
+                               [&] { viewtrace::refresh(viewTrace); },
+                               viewTool, showRoads,
+                               [&] { saveCurrent(); }, !currentProject.empty() && !playMode,
+                               {{T::Sculpt, "Terrain sculpt -- raise, lower, pull, erode", &showSculpt},
+                                {T::Paint, "Terrain paint -- paint the ground's layers", &showPaint},
+                                {T::Rivers, "Rivers & brooks", &showRivers},
+                                {T::Water, "Water -- lakes and the sea", &showWater},
+                                {T::None, nullptr, nullptr},
+                                {T::Road, nullptr, nullptr},
+                                {T::Vegetation, "Vegetation -- trees, forests, grass", &showVegetation},
+                                {T::Splines, "Splines & bridges -- fences, walls, tracks, bridges", &showSplines},
+                                {T::Town, "Town generator", &showTowns},
+                                {T::None, nullptr, nullptr},
+                                {T::Sky, "Sky & atmosphere -- cloud layers, haze", &showSky},
+                                {T::Weather, "Weather & audio -- presets, rain, storm", &showWeather},
+                                {T::Environment, "Environment -- time of day, sun, sky image", &showEnv},
+                                {T::None, nullptr, nullptr},
+                                {T::Materials, "Materials", &showMaterials},
+                                {T::Prefabs, "Prefabs", &showPrefabs},
+                                {T::Assets, "Assets", &showAssets},
+                                {T::Modeling, "Modeling -- the selected object's vertices, edges, faces (Tab)", &showModeling}}});
+            }
 
             // --- New Project / Save As wizard (EditorMenus.cpp) ---------------
             editormenu::drawProjectWizard(fileMenu, [&] { newProject(); },

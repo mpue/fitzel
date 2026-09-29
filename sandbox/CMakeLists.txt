@@ -54,6 +54,11 @@ set(SANDBOX_RUNTIME_SOURCES
     src/WalkPace.cpp
     # Generated levels of detail for the trees (bark collapse, leaf thinning).
     src/MeshSimplify.cpp
+    # The modifier stack on modelled meshes (subdivision, decimate, wireframe,
+    # solidify, array): runtime, because a scene keeps the stack and the player
+    # has to show the same result the editor does.
+    src/EditMeshModifiers.cpp
+    src/Modifiers.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
     # trees streamed from it out to the horizon.
     src/Ecology.cpp
@@ -212,6 +217,8 @@ set(SANDBOX_EDITOR_SOURCES
     # always-open panels. Editor-only: the player has no scene to edit.
     src/HierarchyPanel.cpp
     src/InspectorPanel.cpp
+    # The Modifiers component's card in the Inspector.
+    src/ModifierPanel.cpp
     src/MaterialsPanel.cpp
     # The audio mixer's desk. Editor-only, like every other panel --
     # the desk's STATE is a header (MixerPanel.hpp) the player compiles
@@ -544,6 +551,19 @@ target_link_libraries(meshpaintcheck PRIVATE fitzel nlohmann_json::nlohmann_json
 # the cut is planar and leaves the surface closed, and that a dressing survives
 # every operation and the scene file.
 #   build/release/bin/modelcheck.exe
+# modifiercheck (sandbox/tools/modifiercheck.cpp): the modifier stack's geometry
+# and the stack itself -- closed where they must be closed, wound outward, paint
+# and materials carried, hand-worked numbers where there are any.
+#   build/release/bin/modifiercheck.exe
+add_executable(modifiercheck tools/modifiercheck.cpp
+                             src/EditMeshModifiers.cpp src/Modifiers.cpp src/MeshSimplify.cpp
+                             src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                             src/SandboxMath.cpp src/CameraPath.cpp
+                             src/Component.cpp src/Primitives.cpp
+                             src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(modifiercheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(modifiercheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
 add_executable(modelcheck tools/modelcheck.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp
                           src/Component.cpp src/Primitives.cpp
@@ -632,6 +652,7 @@ target_link_libraries(softcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # it, and a second implementation would be a picture of a slightly different scene.
 #   build/release/bin/viewcheck.exe <projectFolder> [out.png] [--size WxH]
 add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp
+                         src/EditMeshModifiers.cpp src/Modifiers.cpp src/MeshSimplify.cpp
                          src/BuildingGen.cpp
                          src/SceneGraph.cpp
                          src/ProjectIO.cpp src/GameSettings.cpp
@@ -868,6 +889,7 @@ target_compile_definitions(camcheck PRIVATE FITZEL_PLAYER)
 # plus a made-editable ramp and plane, and a dynamic mesh on a floor. No GL.
 #   build/release/bin/collidecheck.exe
 add_executable(collidecheck tools/collidecheck.cpp src/PhysicsShapes.cpp src/MeshQuery.cpp src/SceneGraph.cpp
+                            src/EditMeshModifiers.cpp src/Modifiers.cpp src/MeshSimplify.cpp
                             src/SandboxMath.cpp src/Component.cpp src/Primitives.cpp
                             src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                             src/PropertyMeta.cpp src/MultiShot.cpp)

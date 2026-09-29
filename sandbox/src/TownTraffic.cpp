@@ -10,6 +10,7 @@
 
 #include "CitySystem.hpp"
 #include "EditMesh.hpp"
+#include "Modifiers.hpp"
 #include "ModelLibrary.hpp"
 #include "PrefabSystem.hpp"
 #include "SandboxMath.hpp"
@@ -631,14 +632,17 @@ bool TownTraffic::flatten(const prefab::Prefab& p, int forward, PrefabLook& out)
             // Modelled in the editor: uploaded by the shared cache under an id
             // of its own (one per prefab and entity), dressed as SceneSubmit does.
             const int cacheId = 0x70000000 + static_cast<int>(m_looks.size()) * 4096 + e.id;
+            // What it shows: its modifier stack's result, if it has one.
+            const modifiers::Shown sh =
+                modifiers::shown(cacheId, *meshC, e.components.get<ModifierStackComponent>());
             const glm::mat4 m = scenegraph::compose(e.center, e.rotation,
-                                                    editmesh::fitScale(meshC->mesh, e.half));
+                                                    editmesh::fitScale(*sh.mesh, e.half));
             const auto* matC = e.components.get<MaterialComponent>();
             const fitzel::AssetId own = matC ? matC->material : fitzel::AssetId{};
-            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, meshC->revision, meshC->mesh))
+            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, sh.revision, *sh.mesh))
                 parts.push_back({&sub.mesh, sub.material.valid() ? sub.material : own, toNose * m, wi, m});
             glm::vec3 mlo, mhi;
-            meshC->mesh.bounds(mlo, mhi);
+            sh.mesh->bounds(mlo, mhi);
             grow(m, mlo, mhi);
         }
     }
@@ -818,14 +822,16 @@ bool TownTraffic::flattenPerson(const prefab::Prefab& p, int forward, PersonLook
             // Modelled in the editor: uploaded by the shared cache under an id
             // of its own (one per person look and entity), dressed as SceneSubmit does.
             const int cacheId = 0x78000000 + static_cast<int>(m_personLooks.size()) * 4096 + e.id;
+            const modifiers::Shown sh =
+                modifiers::shown(cacheId, *meshC, e.components.get<ModifierStackComponent>());
             const glm::mat4 m = scenegraph::compose(e.center, e.rotation,
-                                                    editmesh::fitScale(meshC->mesh, e.half));
+                                                    editmesh::fitScale(*sh.mesh, e.half));
             const auto* matC = e.components.get<MaterialComponent>();
             const fitzel::AssetId own = matC ? matC->material : fitzel::AssetId{};
-            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, meshC->revision, meshC->mesh))
+            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, sh.revision, *sh.mesh))
                 parts.push_back({{&sub.mesh}, sub.material.valid() ? sub.material : own, toFront * m});
             glm::vec3 mlo, mhi;
-            meshC->mesh.bounds(mlo, mhi);
+            sh.mesh->bounds(mlo, mhi);
             grow(m, mlo, mhi);
         }
     }

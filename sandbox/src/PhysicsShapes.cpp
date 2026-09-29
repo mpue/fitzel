@@ -5,6 +5,7 @@
 
 #include "Component.hpp"
 #include "EditMesh.hpp"
+#include "Modifiers.hpp"
 #include "SceneGraph.hpp"
 
 using fitzel::PhysicsBodyId;
@@ -47,8 +48,10 @@ PhysicsBodyId addMeshBody(fitzel::PhysicsWorld& w, const Entity& e,
 PhysicsBodyId addEntityBody(fitzel::PhysicsWorld& w, const Entity& e, float mass,
                             const LoadedModel* lm) {
     const glm::quat q = glm::quat(glm::radians(e.rotation));
+    // A modelled mesh collides as what it shows -- its modifier stack's result.
     if (const auto* mc = e.components.get<MeshComponent>())
-        if (PhysicsBodyId id = addMeshBody(w, e, mc->mesh, mass, q)) return id;
+        if (PhysicsBodyId id = addMeshBody(w, e, *modifiers::shown(e, *mc).mesh, mass, q))
+            return id;
 
     switch (e.type) {
         case EntityType::Sphere:
