@@ -18,6 +18,7 @@
 #include "Document.hpp"
 #include "GliderTool.hpp"
 #include "ModelLibrary.hpp"
+#include "ModifierPanel.hpp"
 #include "MultiShot.hpp"
 #include "ParticleSystem.hpp"
 #include "PrefabSystem.hpp"
@@ -265,7 +266,10 @@ void drawPanel(const PanelState& s) {
                                        "copies of it.");
                     if (s.unpackPrefab && ImGui::Button("Unpack Prefab")) unpackReq = be.id;
                 }
-                if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
+                if (auto* msc = dynamic_cast<ModifierStackComponent*>(c)) {
+                    // The stack is a list, not a property list: its own card.
+                    modifierui::card(*msc, be, s.entities);
+                } else if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {
                     // Bespoke picker: enumerate the project's .lua files.
                     std::vector<std::string> luaFiles = s.listScripts();
                     const std::string cur = sc->file.empty() ? "(none)" : sc->file;

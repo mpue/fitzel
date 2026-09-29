@@ -9,6 +9,7 @@
 #include "CitySystem.hpp"
 #include "Component.hpp"
 #include "EditMesh.hpp"
+#include "Modifiers.hpp"
 #include "ModelLibrary.hpp"
 #include "PrefabSystem.hpp"
 #include "SceneGraph.hpp"
@@ -145,16 +146,21 @@ bool TownLamps::flatten(const prefab::Prefab& p, int lookIndex, Look& out) const
             }
         } else if (const auto* meshC = e.components.get<MeshComponent>(); meshC && meshCache) {
             // Modelled in the editor: uploaded by the shared cache under an id of
-            // its own (one per look and entity), dressed as SceneSubmit does.
-            const int cacheId = 0x78000000 + lookIndex * 4096 + e.id;
+            // its own (one per look and entity), dressed as SceneSubmit does --
+            // a range of its own too: the traffic keeps 0x70.. and 0x78.., and
+            // two users of one cache entry rebuild it under each other.
+            const int cacheId = 0x7C000000 + lookIndex * 4096 + e.id;
+            // What it shows: its modifier stack's result, if it has one.
+            const modifiers::Shown sh =
+                modifiers::shown(cacheId, *meshC, e.components.get<ModifierStackComponent>());
             const glm::mat4 m = scenegraph::compose(e.center, e.rotation,
-                                                    editmesh::fitScale(meshC->mesh, e.half));
+                                                    editmesh::fitScale(*sh.mesh, e.half));
             const auto* matC = e.components.get<MaterialComponent>();
             const fitzel::AssetId own = matC ? matC->material : fitzel::AssetId{};
-            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, meshC->revision, meshC->mesh))
+            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, sh.revision, *sh.mesh))
                 out.parts.push_back({&sub.mesh, sub.material.valid() ? sub.material : own, m});
             glm::vec3 lo, hi;
-            meshC->mesh.bounds(lo, hi);
+            sh.mesh->bounds(lo, hi);
             grow(m, lo, hi);
         }
         if (const auto* lc = e.components.get<LightComponent>()) {

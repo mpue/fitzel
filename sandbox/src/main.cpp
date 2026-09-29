@@ -193,6 +193,7 @@
 #include "StreetSignPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
+#include "Modifiers.hpp"
 #include "HalfResSky.hpp"
 #include "CityPanel.hpp"
 #include "CityPlanPanel.hpp"
@@ -2075,7 +2076,7 @@ int main(int argc, char** argv) {
             // ...and the modelled meshes, keyed by entity id: the next scene's ids
             // start again from 0, so a stale entry would hand a new object the
             // shape of an old one.
-            [&]{ models.clear(); prefabCache.clear(); meshCache.clear(); },
+            [&]{ models.clear(); prefabCache.clear(); meshCache.clear(); modifiers::clearCache(); },
             writeSettingsFn, readSettingsFn, afterSceneLoadFn,
         };
         projectio::loadPrefs(pio);
@@ -4251,7 +4252,8 @@ int main(int argc, char** argv) {
                 // of an L rather than over their bounding boxes.
                 if (const auto* mc = e.components.get<MeshComponent>()) {
                     float top;
-                    if (meshquery::surfaceBelow(e, mc->mesh, x, z, yMax, top) && top > h)
+                    if (meshquery::surfaceBelow(e, *modifiers::shown(e, *mc).mesh, x, z, yMax, top) &&
+                        top > h)
                         h = top;
                     continue;
                 }
@@ -7166,7 +7168,7 @@ int main(int argc, char** argv) {
                 auto wallHit = [&](const Entity& b, float px, float pz) {
                     if (const auto* mc = b.components.get<MeshComponent>()) {
                         for (int k = 0; k < 5; ++k)
-                            if (meshquery::blocks(b, mc->mesh, px + rimX[k] * pr,
+                            if (meshquery::blocks(b, *modifiers::shown(b, *mc).mesh, px + rimX[k] * pr,
                                                   pz + rimZ[k] * pr, bodyLo, bodyHi))
                                 return true;
                         return false;
@@ -7206,7 +7208,8 @@ int main(int argc, char** argv) {
                     if (const auto* mc = b.components.get<MeshComponent>()) {
                         for (int k = 0; k < 5; ++k) {
                             float top;
-                            if (meshquery::surfaceBelow(b, mc->mesh, pos.x + rimX[k] * pr,
+                            if (meshquery::surfaceBelow(b, *modifiers::shown(b, *mc).mesh,
+                                                        pos.x + rimX[k] * pr,
                                                         pos.z + rimZ[k] * pr,
                                                         feetY + stepH + 0.01f, top) &&
                                 top > groundY)
