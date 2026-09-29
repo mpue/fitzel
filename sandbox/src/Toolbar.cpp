@@ -52,8 +52,8 @@ void draw(const State& s) {
         {
             const bool hit = icon::button(
                 "save", bs,
-                s.canSave ? "Save project -- the scene and everything in it"
-                          : "Save project (open or create a project first)",
+                s.canSave ? "Save project -- the scene and everything in it (Ctrl+S)"
+                          : "Save project (open a project first; not during Play)",
                 !s.canSave, c);
             icon::save(dl, c, r, s.canSave ? icon::kOff : icon::kDim);
             if (hit && s.save) s.save();

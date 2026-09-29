@@ -34,6 +34,9 @@ public:
 
     // The window, while `visible`.
     void panel(ScriptSystem& scripts, fitzel::Gui& gui);
+    // The window had the keyboard last frame: Ctrl+S there saves the script,
+    // so the editor's own Ctrl+S (the project) stands back.
+    bool focused() const { return m_focused; }
 
 private:
     std::string path(const std::string& file) const { return scriptsDir() + "/" + file; }
@@ -41,6 +44,7 @@ private:
     TextEditor  m_editor;
     std::string m_path;              // "scripts/<file>.lua" open ("" = none)
     bool        m_dirty = false;     // unsaved changes
+    bool        m_focused = false;   // see focused()
     char        m_newName[64] = "";
     int         m_newTemplate = 0;   // 0 = empty component, 1 = documented
     // Code-completion popup state (see luacomplete::Completions): the popup

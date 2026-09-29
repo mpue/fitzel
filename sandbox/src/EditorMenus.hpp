@@ -54,6 +54,8 @@ struct FileMenuCtx {
     std::function<void(const std::string&)>        exportGame;
     std::function<bool(const std::string&)>        openProjectAsync;
     std::function<NameAndPath(const std::string&)> listProjectsIn;
+    // In Play the scene is the game's: Save Project waits until it stops.
+    const bool&                     playMode;
 };
 
 struct SceneMenuCtx {

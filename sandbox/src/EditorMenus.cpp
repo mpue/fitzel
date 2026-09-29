@@ -87,8 +87,8 @@ void drawFileMenu(const FileMenuCtx& c) {
                       c.prefLocation.c_str());
         c.wizardOpen = true;
     }
-    if (ImGui::MenuItem("Save Project", nullptr, false,
-                        !c.currentProject.empty()))
+    if (ImGui::MenuItem("Save Project", "Ctrl+S", false,
+                        !c.currentProject.empty() && !c.playMode))
         c.saveCurrent();
     if (ImGui::MenuItem("Save Project As...")) {
         c.wizardIsNew = false;

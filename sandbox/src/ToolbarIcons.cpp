@@ -359,7 +359,8 @@ bool button(const char* id, ImVec2 size, const char* tip, bool disabled,
     const bool clicked = ImGui::Button("##b", size);
     ImGui::EndDisabled();
     if (active) ImGui::PopStyleColor(2);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    // Disabled ones too: the tooltip is where a greyed-out button says why.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tip);
     center = ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f);
     ImGui::PopID();
     ImGui::SameLine();

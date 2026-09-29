@@ -2748,6 +2748,7 @@ int main(int argc, char** argv) {
 
         // Undo/redo edge state.
         bool                prevUndo = false, prevRedo = false;
+        bool                prevSave = false;   // Ctrl+S, edge-triggered
         // Inspector edit transaction: snapshot the selected entity's subtree while
         // a field is being touched, commit one ModifyEntities step when released.
         int                 inspEditId = -1;
@@ -5766,7 +5767,7 @@ int main(int argc, char** argv) {
             autoSave.status(), projNameBuf,
             wizName, sizeof(wizName), wizLocation, sizeof(wizLocation),
             wizardOpen, wizardIsNew, gameSettings, gameSettingsOpen,
-            saveCurrent, exportGame, openProjectAsync, listProjectsIn,
+            saveCurrent, exportGame, openProjectAsync, listProjectsIn, playMode,
         };
         editormenu::SceneMenuCtx sceneMenu{
             currentProject, sceneNameBuf, sizeof(sceneNameBuf),
@@ -6643,6 +6644,24 @@ int main(int argc, char** argv) {
             } else {
                 prevUndo = prevRedo = false;
             }
+#ifndef FITZEL_PLAYER
+            // Save: Ctrl+S, the same as the toolbar's first button and File >
+            // Save Project. Not in Play -- the scene is the game's then, and
+            // saving would write the game's state over the one authored -- and
+            // not while a text field or the script editor has the keyboard (the
+            // script editor's own Ctrl+S saves the script).
+            {
+                const bool ctrl = input.isKeyDown(GLFW_KEY_LEFT_CONTROL) ||
+                                  input.isKeyDown(GLFW_KEY_RIGHT_CONTROL);
+                const bool shift = input.isKeyDown(GLFW_KEY_LEFT_SHIFT) ||
+                                   input.isKeyDown(GLFW_KEY_RIGHT_SHIFT);
+                const bool wantSave = ctrl && !shift && input.isKeyDown(GLFW_KEY_S) &&
+                                      !playMode && !ImGui::GetIO().WantTextInput &&
+                                      !scriptEditor.focused();
+                if (wantSave && !prevSave && !currentProject.empty()) saveCurrent();
+                prevSave = wantSave;
+            }
+#endif
 
             engineDriving = false; // re-armed by whichever drive block runs below
             gliderAudioActive = false; // re-armed by the glider flight tick below
@@ -9279,7 +9298,7 @@ int main(int argc, char** argv) {
                                gizmoOp, gizmoMode, playMode, viewShade,
                                [&] { viewtrace::refresh(viewTrace); },
                                viewTool, showRoads,
-                               [&] { saveCurrent(); }, !currentProject.empty(),
+                               [&] { saveCurrent(); }, !currentProject.empty() && !playMode,
                                {{T::Sculpt, "Terrain sculpt -- raise, lower, pull, erode", &showSculpt},
                                 {T::Paint, "Terrain paint -- paint the ground's layers", &showPaint},
                                 {T::Rivers, "Rivers & brooks", &showRivers},
