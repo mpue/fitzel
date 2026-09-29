@@ -184,6 +184,8 @@ constexpr const char* kShadowBiasName[] = {"uShadowBias0", "uShadowBias1",
                                            "uShadowBias2", "uShadowBias3"};
 constexpr const char* kShadowCubeName[] = {"uShadowCube0", "uShadowCube1",
                                            "uShadowCube2", "uShadowCube3"};
+constexpr const char* kShadowStrengthName[] = {"uShadowStrength0", "uShadowStrength1",
+                                               "uShadowStrength2", "uShadowStrength3"};
 
 // Extract the 6 world-space frustum planes from a view-projection matrix
 // (Gribb-Hartmann). Each plane is (nx, ny, nz, d) with the normal pointing
@@ -431,11 +433,15 @@ void Renderer::prepareShadows(const ShadowCaster& extra) {
     glEnable(GL_DEPTH_TEST);
     glDepthMask(GL_TRUE);
     // The cull state the cascades are drawn with, set here rather than
-    // inherited: back faces, unless the point-shadow pass ran and left its
-    // front-face culling behind -- which is what the terrain's self-shadowing
-    // has always been tuned under. Casters drawn from outside (the trees)
-    // restore to cascadeCullFace() instead of asking GL for it.
-    m_cascadeCull = m_shadowedCount > 0 ? GL_FRONT : GL_BACK;
+    // inherited: back faces, always. The point-shadow pass culls front faces
+    // for its own cubes and puts GL_BACK back when it is done, so back faces is
+    // what the cascades have always been drawn under. It stays set for the lit
+    // pass after them, which is why it must never be anything else: with front
+    // faces here (as it briefly was whenever a point light cast shadows) the
+    // whole scene was drawn inside out -- the far sides of every object, lit
+    // with normals pointing away from the eye. Casters drawn from outside (the
+    // trees) restore to cascadeCullFace() instead of asking GL for it.
+    m_cascadeCull = GL_BACK;
     glEnable(GL_CULL_FACE);
     glCullFace(m_cascadeCull);
 
@@ -852,6 +858,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                 m_pointShadows[k].bindTexture(kPointShadowUnit + k);
                 s->setFloat(kShadowFarName[k], std::max(m_pointLights[k].range, 0.5f));
                 s->setFloat(kShadowBiasName[k], m_pointLights[k].shadowBias);
+                s->setFloat(kShadowStrengthName[k],
+                            std::clamp(m_pointLights[k].shadowStrength, 0.0f, 1.0f));
             } else if (m_shadowedCount > 0) {
                 // Bind a real cubemap so the unit stays a complete cube texture.
                 m_pointShadows[0].bindTexture(kPointShadowUnit + k);

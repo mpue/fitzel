@@ -76,6 +76,12 @@ uniform float uShadowBias0;
 uniform float uShadowBias1;
 uniform float uShadowBias2;
 uniform float uShadowBias3;
+// How much of each shadow shows (PointLight::shadowStrength): a street lamp
+// fades its shadow out on its way out of the few shadowed lights.
+uniform float uShadowStrength0;
+uniform float uShadowStrength1;
+uniform float uShadowStrength2;
+uniform float uShadowStrength3;
 
 float pointShadow(int i, vec3 toFrag, float far, float bias) {
     float cur = length(toFrag) / far;
@@ -1296,7 +1302,9 @@ void main() {
                       : (i == 2) ? uShadowFar2 : uShadowFar3;
             float bias = (i == 0) ? uShadowBias0 : (i == 1) ? uShadowBias1
                        : (i == 2) ? uShadowBias2 : uShadowBias3;
-            sh = pointShadow(i, -d, far, bias); // -d = light -> fragment
+            float strength = (i == 0) ? uShadowStrength0 : (i == 1) ? uShadowStrength1
+                           : (i == 2) ? uShadowStrength2 : uShadowStrength3;
+            sh = pointShadow(i, -d, far, bias) * strength; // -d = light -> fragment
         }
         float ps;
         float ap = widenForLight(alpha, min(1.0, 0.05 / max(dst, 1e-3)), ps);

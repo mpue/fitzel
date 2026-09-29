@@ -236,6 +236,8 @@ void FarTerrain::draw(const FrameContext& ctx, const glm::mat4& view,
     sh.setFloat("uFogDensity", ctx.fogDensity);
     sh.setFloat("uFogHeightFalloff", ctx.fogHeightFalloff);
     sh.setFloat("uFogHeight", ctx.fogHeight);
+    sh.setFloat("uOvercast", ctx.overcast);
+    sh.setVec3("uOvercastColor", ctx.overcastColor);
     sh.setFloat("uTime", static_cast<float>(ctx.time));
     sh.setFloat("uSnowLevel", snowLevel);
     sh.setFloat("uTreeLine", treeLine);

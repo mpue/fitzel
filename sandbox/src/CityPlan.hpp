@@ -126,6 +126,21 @@ struct PersonPrefab {
     }
 };
 
+// A street-lamp prefab the town stands along its pavements: which prefab, how
+// often it turns up against the others, and which way its head (the arm, the
+// lantern's front) points in the prefab (0 +Z, 1 -Z, 2 +X, 3 -X) -- the town
+// turns that side to the street. The prefab stands with its root's pivot on the
+// pavement; a Light component in it (point or spot) is the lamp's light, and it
+// comes on at dusk, like its glowing materials.
+struct LampPrefab {
+    std::string prefab;
+    float       weight  = 1.0f;
+    int         forward = 0;
+    bool operator==(const LampPrefab& o) const {
+        return prefab == o.prefab && weight == o.weight && forward == o.forward;
+    }
+};
+
 // How a town fills the blocks of one public building kind.
 struct CivicSlot {
     int         count    = 0;
@@ -230,6 +245,15 @@ struct Rule {
     // and how much the figures still weigh against them (0 = prefabs only).
     std::vector<PersonPrefab> personPrefabs;
     float personPlaceholderWeight = 1.0f;
+    // Street lamps: prefabs stood on the pavement beside the kerb, one every
+    // `lampEvery` metres of each block side, facing the street. A residential
+    // street is lit from one side, an avenue from both; `lampBothSides` lights
+    // every street from both (staggered). `lampInset` is how far in from the
+    // kerb the prefab's pivot stands. No prefab, no lamps.
+    std::vector<LampPrefab> lampPrefabs;
+    float lampEvery     = 32.0f;
+    bool  lampBothSides = false;
+    float lampInset     = 0.6f;
 
     // --- Look ----------------------------------------------------------------
     // Towers and apartment blocks each take a BuildingGen palette slot ("Building
@@ -369,7 +393,7 @@ struct Stats {
     int skippedRoad = 0, skippedWater = 0, skippedSlope = 0, skippedEmpty = 0;
     int towers = 0, blocks = 0, rows = 0, houses = 0, parks = 0;
     std::array<int, civic::kKinds> civic{};   // blocks built per kind (Industry = estates)
-    int signs = 0, lights = 0, busStops = 0, pylons = 0;
+    int signs = 0, lights = 0, busStops = 0, pylons = 0, lamps = 0;
     bool budgetHit = false;
 };
 
@@ -384,6 +408,14 @@ struct Placed {
 struct ModelPlacement {
     std::string model;
     glm::mat4   transform{1.0f};
+};
+
+// A street lamp: where its pivot stands (on the pavement's top), the way to
+// the street it lights, and which of the rule's lampPrefabs it is.
+struct Lamp {
+    glm::vec3 pos{0.0f};
+    glm::vec2 facing{1.0f, 0.0f};
+    int       prefab = 0;
 };
 
 // A bus stop as the traffic sees it: where the sign stands and which way the
@@ -404,10 +436,11 @@ struct Town {
     std::vector<glm::vec2>              signals;
     std::vector<std::vector<glm::vec3>> walks;
     std::vector<ModelPlacement>         models;   // see CivicSlot::useModel
+    std::vector<Lamp>                   lamps;    // see Rule::lampPrefabs
     Stats               stats;
     void clear() {
         district.clear(); placed.clear(); furniture.clear();
-        stops.clear(); signals.clear(); walks.clear(); models.clear();
+        stops.clear(); signals.clear(); walks.clear(); models.clear(); lamps.clear();
         stats = Stats{};
     }
 };

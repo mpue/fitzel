@@ -37,6 +37,10 @@ struct PointLight {
     float     range = 12.0f;
     bool      castShadows = false; // opt-in omnidirectional shadow
     float     shadowBias  = 0.003f; // normalized depth bias for the shadow cube
+    // How much of its shadow shows, 0..1. A light handed over as one of the
+    // few shadowed ones only while it is among the nearest (the towns' street
+    // lamps) fades its shadow in and out with this, instead of popping it.
+    float     shadowStrength = 1.0f;
 };
 
 // A world-space spot light: a cone shining along `direction`. `color` is HDR
@@ -61,6 +65,11 @@ struct Fog {
     float     density       = 0.006f;
     float     heightFalloff = 0.03f;
     float     height        = 0.0f;
+    // How closed the sky is (0 clear .. 1 a shut deck) and the grey its horizon
+    // goes to, linear. The sky and the far ranges fade into that grey instead of
+    // the clear-sky gradient: under a lid there is no blue horizon left to fade to.
+    float     overcast = 0.0f;
+    glm::vec3 overcastColor{0.0f};
 };
 
 // A submitted object's bounds in world space. Cached for a frame so the shadow

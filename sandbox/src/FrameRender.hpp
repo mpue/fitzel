@@ -27,6 +27,8 @@ struct FrameContext {
     glm::vec3 lightDir{0.0f}, lightColor{0.0f}, ambient{0.0f};
     glm::vec3 fogColor{0.0f}, fogSunColor{0.0f};
     float     fogDensity = 0.0f, fogHeightFalloff = 0.0f, fogHeight = 0.0f;
+    float     overcast = 0.0f;          // see fitzel::Fog
+    glm::vec3 overcastColor{0.0f};
     // The sun's shadow cascades, for layers that RECEIVE it (grass, flowers,
     // trees -- see sunshadow.glsl). Null = this pass has none to give, and
     // receivers draw in full sun: the water mirror, whose view the cascades
@@ -118,6 +120,8 @@ inline FrameContext makeFrameContext(const glm::mat4& viewProj, const glm::vec3&
     c.fogDensity       = fog.density;
     c.fogHeightFalloff = fog.heightFalloff;
     c.fogHeight        = fog.height;
+    c.overcast         = fog.overcast;
+    c.overcastColor    = fog.overcastColor;
     return c;
 }
 

@@ -598,6 +598,60 @@ void drawPanel(const PanelState& s) {
             }
             ImGui::TreePop();
         }
+        // Street lamps: prefabs along the pavements, lit at dusk.
+        if (ImGui::TreeNode("Street lamps")) {
+            ui::hint("Lamps stand on the pavement beside the kerb, facing the\n"
+                     "street: residential streets lit from one side, avenues\n"
+                     "from both. Each lamp is one of these prefabs, by weight.\n"
+                     "Its root's pivot is the foot; give it a Light component\n"
+                     "at the head -- light and glowing glass come on at dusk.\n"
+                     "Needs pavements.");
+            changed |= row("Lamp every", r.lampEvery, 2.0f, 10.0f, 120.0f, "%.0f m",
+                           "Spacing along each side of a block.");
+            changed |= row("From the kerb", r.lampInset, 0.1f, 0.2f, 3.0f, "%.1f m",
+                           "How far in from the kerb the prefab's pivot stands.");
+            if (ImGui::Checkbox("Both sides of every street", &r.lampBothSides)) changed = true;
+            ImGui::SetItemTooltip("Off: one side of an ordinary street, both of an avenue.\n"
+                                  "On: both sides everywhere, staggered.");
+            const std::vector<std::string> names =
+                s.prefabNames ? s.prefabNames() : std::vector<std::string>{};
+            static const char* kHead[] = {"Head +Z", "Head -Z", "Head +X", "Head -X"};
+            int remove = -1;
+            for (int i = 0; i < static_cast<int>(r.lampPrefabs.size()); ++i) {
+                cityplan::LampPrefab& lp = r.lampPrefabs[static_cast<std::size_t>(i)];
+                ImGui::PushID(2000 + i);
+                ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - 40.0f);
+                if (ImGui::BeginCombo("##prefab", lp.prefab.empty() ? "(pick a prefab)" : lp.prefab.c_str())) {
+                    for (const std::string& n : names)
+                        if (ImGui::Selectable(n.c_str(), n == lp.prefab)) { lp.prefab = n; changed = true; }
+                    if (names.empty()) ImGui::TextDisabled("No prefabs in this project (save one first)");
+                    ImGui::EndCombo();
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("X", ImVec2(32.0f, 0.0f))) remove = i;
+                ImGui::SetItemTooltip("Remove this prefab from the lamps.");
+                ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7.0f);
+                if (ImGui::Combo("##head", &lp.forward, kHead, 4)) changed = true;
+                ImGui::SetItemTooltip("Which way the lamp's head (its arm, the lantern's\n"
+                                      "front) points in the prefab's own frame. The town\n"
+                                      "turns that side to the street.");
+                changed |= row("Weight", lp.weight, 0.5f, 0.0f, 50.0f, "%.1f");
+                ImGui::Separator();
+                ImGui::PopID();
+            }
+            if (remove >= 0) {
+                r.lampPrefabs.erase(r.lampPrefabs.begin() + remove);
+                changed = true;
+            }
+            if (ImGui::Button("Add lamp prefab")) {
+                r.lampPrefabs.push_back({});
+                changed = true;
+            }
+            if (!r.pavements)
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f),
+                                   "Pavements are off: no lamps without them.");
+            ImGui::TreePop();
+        }
         changed |= rowInt("Tower palette", r.towerPalette, 1, 0, 7, "%.0f",
                           "Building material slot (0 = A .. 7 = H). Keep it apart\n"
                           "from the roadside city's slots to colour them separately.");
@@ -618,8 +672,8 @@ void drawPanel(const PanelState& s) {
             pub += std::to_string(n) + " " + civic::kindName(static_cast<civic::Kind>(k));
         }
         ImGui::TextWrapped("Public: %s", pub.empty() ? "none" : pub.c_str());
-        ImGui::Text("%d street signs, %d crossings with traffic lights, %d bus stops",
-                    st.signs, st.lights, st.busStops);
+        ImGui::Text("%d street signs, %d crossings with traffic lights, %d bus stops, %d lamps",
+                    st.signs, st.lights, st.busStops, st.lamps);
         ImGui::TextDisabled("Skipped: %d road, %d water, %d slope, %d empty plots%s",
                             st.skippedRoad, st.skippedWater, st.skippedSlope, st.skippedEmpty,
                             st.budgetHit ? "  -- BUDGET HIT" : "");

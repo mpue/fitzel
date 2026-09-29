@@ -1359,10 +1359,10 @@ void VegetationSystem::drawTreeShadow(const glm::mat4& lightSpace, double time,
     // a texture fetch and a discard per fragment -- which is the pass, not a
     // detail of it. Trunks are closed, so nothing that was solid becomes hollow.
     // Saved and put back: this runs INSIDE the renderer's cascade loop, between
-    // that pass's own draws, and the cascade pass inherits a cull face from
-    // whoever ran last (the point-shadow pass leaves GL_FRONT behind). Leaving
-    // ours set would change how the terrain self-shadows -- an acne bug two
-    // files away from anything about trees.
+    // that pass's own draws, and whatever it leaves set is what the rest of the
+    // cascades -- and the lit pass after them -- are drawn with. Leaving ours
+    // set would change how the terrain self-shadows -- an acne bug two files
+    // away from anything about trees.
     // (The pass's own state comes in as `cascadeCull` -- see
     // Renderer::cascadeCullFace -- rather than read back with glGet, which waits
     // for everything queued so far under the driver's threaded optimisation.)

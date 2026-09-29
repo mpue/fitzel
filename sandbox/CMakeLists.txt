@@ -136,6 +136,8 @@ set(SANDBOX_RUNTIME_SOURCES
     # its drawing.
     src/TrafficSim.cpp
     src/TownTraffic.cpp
+    # ...and the street lamps the towns stand along their pavements.
+    src/TownLamps.cpp
     src/HalfResSky.cpp
     src/RainRenderer.cpp
     # Weather presets: the named skies a project keeps in weather.json.

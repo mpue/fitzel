@@ -689,6 +689,84 @@ void checkSignals() {
     check(order, "each axis runs green, amber, red, red+amber");
 }
 
+// Street lamps: on the pavement, facing the street, spread along it, clear of the
+// other furniture, picked by weight -- and none without a prefab or a pavement.
+void checkLamps() {
+    using namespace cityplan;
+    std::printf("\n== Street lamps ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.grid.center   = {200.0f, -150.0f};
+    r.grid.rotation = 17.0f;
+    r.lampEvery     = 30.0f;
+    r.lampPrefabs   = {{"lampA", 1.0f, 0}, {"lampB", 3.0f, 2}};
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float x, float z) { return 0.02f * x + 0.5f * std::sin(z * 0.01f); };
+    ctx.roads = roadsOf(L);
+    const Town T = derive(r, pal, ctx);
+    const std::vector<Lamp>& ls = T.lamps;
+    check(!ls.empty() && T.stats.lamps == static_cast<int>(ls.size()), "the streets get lamps",
+          std::to_string(ls.size()) + " lamps");
+
+    float nearest = 1e9f, farthest = -1e9f;
+    int facingRoad = 0, clearOfOthers = 0, picksB = 0;
+    float closest = 1e9f;
+    for (std::size_t i = 0; i < ls.size(); ++i) {
+        const glm::vec2 p(ls[i].pos.x, ls[i].pos.z);
+        const float c = streetClear(L, p);
+        nearest  = std::min(nearest, c);
+        farthest = std::max(farthest, c);
+        // A step of that distance and a half metre more along the facing lands
+        // on the carriageway: the head is turned to the street it lights.
+        facingRoad += streetClear(L, p + ls[i].facing * (c + 0.5f)) < 0.0f ? 1 : 0;
+        bool clear = true;
+        for (const Placed& f : T.furniture)
+            if (std::abs(f.radius - 0.6f) > 0.01f && glm::length(f.pos - p) < f.radius + 1.0f) clear = false;
+        clearOfOthers += clear ? 1 : 0;
+        picksB += ls[i].prefab == 1 ? 1 : 0;
+        for (std::size_t j = i + 1; j < ls.size(); ++j)
+            closest = std::min(closest, glm::length(glm::vec2(ls[j].pos.x, ls[j].pos.z) - p));
+    }
+    const int n = static_cast<int>(ls.size());
+    check(n > 0 && nearest > 0.1f && farthest < r.sidewalk, "every lamp stands on the pavement",
+          std::to_string(nearest).substr(0, 4) + " .. " + std::to_string(farthest).substr(0, 4) +
+              " m from the carriageway");
+    check(facingRoad == n, "every lamp faces its street",
+          std::to_string(facingRoad) + " of " + std::to_string(n));
+    check(clearOfOthers == n, "no lamp on a traffic light, stop or shelter");
+    check(closest > 5.0f, "lamps spread out, none doubled", std::to_string(closest).substr(0, 4) + " m apart at least");
+    const float shareB = n ? static_cast<float>(picksB) / n : 0.0f;
+    check(shareB > 0.6f && shareB < 0.9f, "prefabs picked by weight (1 : 3)",
+          std::to_string(shareB).substr(0, 4) + " are the heavier one");
+
+    // Without avenues (which are lit from both sides either way), both sides
+    // is about twice the lamps of one.
+    Rule one = r;
+    one.grid.avenueEvery = 0;
+    Rule both = one;
+    both.lampBothSides = true;
+    const std::size_t n1 = derive(one, pal, ctx).lamps.size();
+    const std::size_t n2 = derive(both, pal, ctx).lamps.size();
+    check(n1 > 0 && n2 * 10 > n1 * 17 && n2 * 10 < n1 * 23, "both sides light every street from both",
+          std::to_string(n1) + " -> " + std::to_string(n2));
+    Rule none = r;
+    none.lampPrefabs.clear();
+    Rule bare = r;
+    bare.pavements = false;
+    check(derive(none, pal, ctx).lamps.empty() && derive(bare, pal, ctx).lamps.empty(),
+          "no lamps without a prefab or without pavements");
+
+    nlohmann::json j;
+    save(j, r);
+    Rule back;
+    load(j, back);
+    check(back == r && back.lampPrefabs.size() == 2 && back.lampPrefabs[1].forward == 2,
+          "lamp settings survive save and load");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--parts") { partCosts(); return 0; }
     if (argc > 5 && std::string(argv[1]) == "--scene")
@@ -702,6 +780,7 @@ int main(int argc, char** argv) {
     checkSignals();
     checkCivicModels();
     checkPavementLevel();
+    checkLamps();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "all good", g_fail,
                 g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;
