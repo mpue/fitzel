@@ -234,6 +234,69 @@ public:
     }
 };
 
+class ArrayModifier : public modifiers::ModifierOf<ArrayModifier> {
+public:
+    int       count    = 3;
+    glm::vec3 relative{1.0f, 0.0f, 0.0f};   // times the mesh's own size
+    glm::vec3 constant{0.0f};               // mesh units, on top
+    bool      merge     = false;
+    float     mergeDist = 0.001f;
+
+    const char* typeId() const override { return "array"; }
+    const char* displayName() const override { return "Array"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            std::vector<Property> v;
+            Property c = prop("Count", "count", PropKind::Int, &ArrayModifier::count);
+            c.min = 1.0f; c.max = 200.0f; c.speed = 0.1f;
+            v.push_back(std::move(c));
+            Property r = prop("Relative offset", "relative", PropKind::Vec3, &ArrayModifier::relative);
+            r.speed = 0.01f; r.fmt = "%.2f";
+            v.push_back(std::move(r));
+            Property k = prop("Constant offset", "constant", PropKind::Vec3, &ArrayModifier::constant);
+            k.speed = 0.01f; k.fmt = "%.2f";
+            v.push_back(std::move(k));
+            v.push_back(prop("Merge", "merge", PropKind::Bool, &ArrayModifier::merge));
+            Property d = prop("Merge distance", "mergeDist", PropKind::Float, &ArrayModifier::mergeDist);
+            d.min = 0.0f; d.max = 1.0f; d.speed = 0.0005f; d.fmt = "%.4f";
+            d.visible = [](const void* o) { return static_cast<const ArrayModifier*>(o)->merge; };
+            v.push_back(std::move(d));
+            return v;
+        }();
+        return p;
+    }
+    void apply(EditMesh& m) const override {
+        editmesh::arrayCopies(m, count, relative, constant, merge, mergeDist);
+    }
+};
+
+class SolidifyModifier : public modifiers::ModifierOf<SolidifyModifier> {
+public:
+    float thickness = 0.05f;
+    float offset    = -1.0f;   // Blender's default: the surface is the outside
+    bool  rim       = true;
+    bool  even      = true;
+
+    const char* typeId() const override { return "solidify"; }
+    const char* displayName() const override { return "Solidify"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            std::vector<Property> v;
+            Property t = prop("Thickness", "thickness", PropKind::Float, &SolidifyModifier::thickness);
+            t.min = -10.0f; t.max = 10.0f; t.speed = 0.002f; t.fmt = "%.3f";
+            v.push_back(std::move(t));
+            Property o = prop("Offset", "offset", PropKind::Float, &SolidifyModifier::offset);
+            o.slider = true; o.min = -1.0f; o.max = 1.0f; o.fmt = "%.2f";
+            v.push_back(std::move(o));
+            v.push_back(prop("Fill rim", "rim", PropKind::Bool, &SolidifyModifier::rim));
+            v.push_back(prop("Even thickness", "even", PropKind::Bool, &SolidifyModifier::even));
+            return v;
+        }();
+        return p;
+    }
+    void apply(EditMesh& m) const override { editmesh::solidify(m, thickness, offset, rim, even); }
+};
+
 // Register the kinds, and the component that carries them. A new kind is a
 // class above and one line here.
 struct RegisterModifiers {
@@ -250,6 +313,10 @@ struct RegisterModifiers {
                               "keeping its shape as far as it goes.");
         add<WireframeModifier>("Turn every edge into a solid strut -- a lattice, a cage,\n"
                                "a frame -- of the thickness you give it.");
+        add<ArrayModifier>("Copies in a row: a fence from one post, stairs from one\n"
+                           "step. Each shifted by the mesh's own size and/or a distance.");
+        add<SolidifyModifier>("Give a surface thickness: a plane becomes a slab, an open\n"
+                              "shell a wall with an inside.");
         components::registerType({"modifiers", "Modifiers",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ModifierStackComponent>()); }});
     }

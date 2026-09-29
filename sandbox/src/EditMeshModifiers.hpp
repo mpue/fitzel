@@ -45,4 +45,10 @@ void solidify(EditMesh& m, float thickness, float offset, bool rim, bool even);
 // original faces stay too.
 void wireframe(EditMesh& m, float thickness, float offset, bool replace);
 
+// `count` copies of the mesh in a row, each shifted from the one before by
+// `relative` times the mesh's own size plus `constant` (mesh units). With
+// `merge`, corners of neighbouring copies closer than `mergeDist` become one.
+void arrayCopies(EditMesh& m, int count, const glm::vec3& relative,
+                 const glm::vec3& constant, bool merge, float mergeDist);
+
 } // namespace editmesh

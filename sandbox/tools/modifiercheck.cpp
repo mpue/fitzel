@@ -197,9 +197,27 @@ void solidify() {
           "a closed box becomes hollow with even walls, no rims", "volume " + num(v));
 }
 
+void arrays() {
+    std::printf("\n== Array ==\n");
+    EditMesh cube = EditMesh::box(glm::vec3(0.5f));
+    editmesh::arrayCopies(cube, 3, glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f), false, 0.0f);
+    glm::vec3 mn, mx;
+    cube.bounds(mn, mx);
+    check(cube.faces.size() == 18 && std::abs(mx.x - 2.5f) < 1e-5f, "three in a row, each its own width on",
+          "x " + num(mn.x) + " .. " + num(mx.x));
+    EditMesh merged = EditMesh::box(glm::vec3(0.5f));
+    editmesh::arrayCopies(merged, 3, glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.0f), true, 0.001f);
+    check(merged.verts.size() == 16, "merged: the touching corners become one",
+          std::to_string(merged.verts.size()) + " corners");
+    EditMesh gap = EditMesh::box(glm::vec3(0.5f));
+    editmesh::arrayCopies(gap, 2, glm::vec3(1.0f, 0.0f, 0.0f), glm::vec3(0.5f, 0.0f, 0.0f), false, 0.0f);
+    gap.bounds(mn, mx);
+    check(std::abs(mx.x - 2.0f) < 1e-5f, "a constant offset adds to the relative one");
+}
+
 void stack() {
     std::printf("\n== The stack ==\n");
-    const char* kinds[] = {"subsurf", "decimate", "wireframe"};
+    const char* kinds[] = {"subsurf", "decimate", "wireframe", "array", "solidify"};
     for (const char* k : kinds)
         check(modifiers::make(k) != nullptr, std::string("registered: ") + k);
 
@@ -257,6 +275,17 @@ int writeEntities(const char* out) {
                      {{"subsurf", {{"levels", 2}}}, {"wireframe", {{"thickness", 0.035f}}}}, true});
     demos.push_back({"Cylinder wire", EditMesh::cylinder(glm::vec3(0.5f), 12),
                      {{"wireframe", {{"thickness", 0.05f}}}}, true});
+    // Step two: a post copied into a fence, and half a sphere made a bowl.
+    demos.push_back({"Array", EditMesh::box(glm::vec3(0.08f, 0.5f, 0.08f)),
+                     {{"array", {{"count", 6}, {"relative", {3.0, 0.0, 0.0}}}}}, true});
+    {
+        EditMesh bowl = EditMesh::sphere(glm::vec3(0.5f), 12, 24);
+        std::vector<int> top;
+        for (int f = 0; f < static_cast<int>(bowl.faces.size()); ++f)
+            if (bowl.faceCenter(f).y > 0.0f) top.push_back(f);
+        editmesh::deleteFaces(bowl, top);
+        demos.push_back({"Solidify", bowl, {{"solidify", {{"thickness", 0.06f}}}}, true});
+    }
     nlohmann::json arr = nlohmann::json::array();
     int id = 500;
     float x = -6.0f;
@@ -310,6 +339,7 @@ int main(int argc, char** argv) {
     decimate();
     wireframe();
     solidify();
+    arrays();
     stack();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "all good", g_fail, g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;

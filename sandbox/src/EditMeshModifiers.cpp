@@ -442,4 +442,21 @@ void wireframe(EditMesh& m, float thickness, float offset, bool replace) {
     m = std::move(frame);
 }
 
+void arrayCopies(EditMesh& m, int count, const glm::vec3& relative, const glm::vec3& constant,
+                 bool merge, float mergeDist) {
+    count = std::clamp(count, 1, 1000);
+    if (count == 1 || m.verts.empty()) return;
+    const EditMesh src = m;
+    const Carried  c(src);
+    glm::vec3 mn, mx;
+    src.bounds(mn, mx);
+    const glm::vec3 step = relative * (mx - mn) + constant;
+    for (int i = 1; i < count; ++i) appendMesh(m, src, step * static_cast<float>(i), c);
+    if (merge && mergeDist > 0.0f) {
+        std::vector<int> all(m.verts.size());
+        for (std::size_t v = 0; v < all.size(); ++v) all[v] = static_cast<int>(v);
+        weldVerts(m, all, mergeDist);
+    }
+}
+
 } // namespace editmesh
