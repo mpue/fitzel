@@ -170,6 +170,8 @@ bool TownLamps::flatten(const prefab::Prefab& p, int lookIndex, Look& out) const
             const float inner = outer * (1.0f - glm::clamp(lc->spotBlend, 0.0f, 1.0f));
             L.cosOuter = std::cos(outer);
             L.cosInner = std::cos(inner);
+            L.castShadows = L.type == 0 && lc->castShadows;
+            L.shadowBias  = lc->shadowBias;
             out.lights.push_back(L);
         }
     }
@@ -197,7 +199,8 @@ void TownLamps::forEachDraw(const glm::vec3& eye,
 
 void TownLamps::collectLights(const glm::vec3& eye, float on,
                               std::vector<fitzel::PointLight>& points, int pointCap,
-                              std::vector<fitzel::SpotLight>& spots, int spotCap) const {
+                              std::vector<fitzel::SpotLight>& spots, int spotCap,
+                              int shadowCap) const {
     if (on <= 0.001f || m_lamps.empty()) return;
     const int freePoints = std::max(pointCap - static_cast<int>(points.size()), 0);
     const int freeSpots  = std::max(spotCap - static_cast<int>(spots.size()), 0);
@@ -217,9 +220,27 @@ void TownLamps::collectLights(const glm::vec3& eye, float on,
     float cut = lightReach;
     const std::size_t slots = static_cast<std::size_t>(std::max(freePoints, freeSpots));
     if (nearest.size() > slots) cut = std::min(cut, nearest[slots].first);
+    // The same for the shadows: the slots the scene's own shadowed lights left,
+    // handed out nearest first, and faded out towards the first light that gets
+    // none -- so a shadow comes and goes as smoothly as the light does.
+    int freeShadows = shadowCap;
+    for (const fitzel::PointLight& p : points) freeShadows -= p.castShadows ? 1 : 0;
+    freeShadows = std::max(freeShadows, 0);
+    float shadowCut = cut;
+    {
+        int seen = 0;
+        for (const auto& [d, i] : nearest) {
+            const Placed& l = m_lamps[static_cast<std::size_t>(i)];
+            for (const Light& L : m_looks[static_cast<std::size_t>(l.look)].lights)
+                if (L.castShadows && seen++ == freeShadows) shadowCut = std::min(shadowCut, d);
+            if (seen > freeShadows) break;
+        }
+    }
+    int shadowsGiven = 0;
     for (const auto& [d, i] : nearest) {
         const float fade = on * (1.0f - glm::smoothstep(0.7f * cut, cut, d));
         if (fade <= 0.001f) break;
+        const float shadowFade = 1.0f - glm::smoothstep(0.7f * shadowCut, shadowCut, d);
         const Placed& l = m_lamps[static_cast<std::size_t>(i)];
         for (const Light& L : m_looks[static_cast<std::size_t>(l.look)].lights) {
             const glm::vec3 pos = glm::vec3(l.frame * glm::vec4(L.pos, 1.0f));
@@ -239,6 +260,12 @@ void TownLamps::collectLights(const glm::vec3& eye, float on,
                 pl.position = pos;
                 pl.color    = L.color * fade;
                 pl.range    = L.range;
+                if (L.castShadows && shadowsGiven < freeShadows && shadowFade > 0.001f) {
+                    pl.castShadows    = true;
+                    pl.shadowBias     = L.shadowBias;
+                    pl.shadowStrength = shadowFade;
+                    ++shadowsGiven;
+                }
                 points.push_back(pl);
             }
         }

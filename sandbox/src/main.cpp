@@ -10780,7 +10780,9 @@ int main(int argc, char** argv) {
                 [&](const Mesh& mesh, const fitzel::AssetId& mat, const glm::mat4& m, bool detail) {
                     const int mi = document.materialIndex(mat);
                     if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
-                    renderer.submit(mesh, gpuMats[mi], m, false, isMirror(materials[mi]),
+                    // The near ones cast into the street lamps' shadows too: a
+                    // car passing under a lamp throws its shadow on the road.
+                    renderer.submit(mesh, gpuMats[mi], m, detail, isMirror(materials[mi]),
                                     materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend, detail, detail);
                 });
@@ -10936,7 +10938,8 @@ int main(int argc, char** argv) {
             // before the missiles, with two points left for those.
             townLamps.collectLights(camera.position(), lampsOn,
                                     pointLights, Renderer::kMaxPointLights - 2,
-                                    spotLights, Renderer::kMaxSpotLights);
+                                    spotLights, Renderer::kMaxSpotLights,
+                                    Renderer::kMaxShadowedPoints);
             // Missile motors and detonations are lights too -- a blast that does
             // not light the corner it goes off in reads as a decal pasted over
             // the scene. Appended last so authored scene lights keep priority

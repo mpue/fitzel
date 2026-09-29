@@ -61,9 +61,16 @@ public:
     // The lamps' lights for this frame, appended to the frame's lists until
     // they hold `pointCap` / `spotCap`: the nearest lamp first, each scaled by
     // `on` (see nightFactor) and faded towards lightReach. Nothing by day.
+    //
+    // A point light whose prefab says it casts shadows casts them here too --
+    // but the renderer shadows only a few point lights in all (`shadowCap`,
+    // counting the scene's own shadowed lights already in the list), so only
+    // the nearest lamps get theirs, and the last of them fades its shadow out
+    // on its way out (PointLight::shadowStrength) rather than dropping it.
     void collectLights(const glm::vec3& eye, float on,
                        std::vector<fitzel::PointLight>& points, int pointCap,
-                       std::vector<fitzel::SpotLight>& spots, int spotCap) const;
+                       std::vector<fitzel::SpotLight>& spots, int spotCap,
+                       int shadowCap) const;
 
     // The lamp prefabs' glowing materials and the strength each glows with
     // when lit; the caller sets strength * on on the frame's GPU copy (as the
@@ -86,6 +93,8 @@ private:
         int       type = 0;                // 0 point, 1 spot
         glm::vec3 pos{0.0f}, dir{0.0f, -1.0f, 0.0f}, color{1.0f};
         float     range = 12.0f, cosInner = 0.9f, cosOuter = 0.8f;
+        bool      castShadows = false;     // point only, as in the scene
+        float     shadowBias  = 0.003f;
     };
     struct Look {
         std::string            name;

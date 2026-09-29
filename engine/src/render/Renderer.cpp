@@ -184,6 +184,8 @@ constexpr const char* kShadowBiasName[] = {"uShadowBias0", "uShadowBias1",
                                            "uShadowBias2", "uShadowBias3"};
 constexpr const char* kShadowCubeName[] = {"uShadowCube0", "uShadowCube1",
                                            "uShadowCube2", "uShadowCube3"};
+constexpr const char* kShadowStrengthName[] = {"uShadowStrength0", "uShadowStrength1",
+                                               "uShadowStrength2", "uShadowStrength3"};
 
 // Extract the 6 world-space frustum planes from a view-projection matrix
 // (Gribb-Hartmann). Each plane is (nx, ny, nz, d) with the normal pointing
@@ -856,6 +858,8 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                 m_pointShadows[k].bindTexture(kPointShadowUnit + k);
                 s->setFloat(kShadowFarName[k], std::max(m_pointLights[k].range, 0.5f));
                 s->setFloat(kShadowBiasName[k], m_pointLights[k].shadowBias);
+                s->setFloat(kShadowStrengthName[k],
+                            std::clamp(m_pointLights[k].shadowStrength, 0.0f, 1.0f));
             } else if (m_shadowedCount > 0) {
                 // Bind a real cubemap so the unit stays a complete cube texture.
                 m_pointShadows[0].bindTexture(kPointShadowUnit + k);
