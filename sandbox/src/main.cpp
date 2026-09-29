@@ -9271,12 +9271,34 @@ int main(int argc, char** argv) {
             }
 
             // --- Toolbar strip under the menu bar (Toolbar.cpp) ---------------
-            toolbar::draw({placeMode, entityNewType,
-                           [&](EntityType t) { addEntity(spawnPoint(6.0f), t); },
-                           terrainOn, [&] { addTerrainEntity(); },
-                           gizmoOp, gizmoMode, playMode, viewShade,
-                           [&] { viewtrace::refresh(viewTrace); },
-                           viewTool, showRoads});
+            {
+                using T = icon::Tool;
+                toolbar::draw({placeMode, entityNewType,
+                               [&](EntityType t) { addEntity(spawnPoint(6.0f), t); },
+                               terrainOn, [&] { addTerrainEntity(); },
+                               gizmoOp, gizmoMode, playMode, viewShade,
+                               [&] { viewtrace::refresh(viewTrace); },
+                               viewTool, showRoads,
+                               [&] { saveCurrent(); }, !currentProject.empty(),
+                               {{T::Sculpt, "Terrain sculpt -- raise, lower, pull, erode", &showSculpt},
+                                {T::Paint, "Terrain paint -- paint the ground's layers", &showPaint},
+                                {T::Rivers, "Rivers & brooks", &showRivers},
+                                {T::Water, "Water -- lakes and the sea", &showWater},
+                                {T::None, nullptr, nullptr},
+                                {T::Road, nullptr, nullptr},
+                                {T::Vegetation, "Vegetation -- trees, forests, grass", &showVegetation},
+                                {T::Splines, "Splines & bridges -- fences, walls, tracks, bridges", &showSplines},
+                                {T::Town, "Town generator", &showTowns},
+                                {T::None, nullptr, nullptr},
+                                {T::Sky, "Sky & atmosphere -- cloud layers, haze", &showSky},
+                                {T::Weather, "Weather & audio -- presets, rain, storm", &showWeather},
+                                {T::Environment, "Environment -- time of day, sun, sky image", &showEnv},
+                                {T::None, nullptr, nullptr},
+                                {T::Materials, "Materials", &showMaterials},
+                                {T::Prefabs, "Prefabs", &showPrefabs},
+                                {T::Assets, "Assets", &showAssets},
+                                {T::Modeling, "Modeling -- the selected object's vertices, edges, faces (Tab)", &showModeling}}});
+            }
 
             // --- New Project / Save As wizard (EditorMenus.cpp) ---------------
             editormenu::drawProjectWizard(fileMenu, [&] { newProject(); },

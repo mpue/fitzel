@@ -1,19 +1,22 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include <imgui.h>      // ImGuizmo.h leans on ImGui's types; must come first
 #include <ImGuizmo.h>
 
 #include "SceneTypes.hpp" // EntityType
+#include "ToolbarIcons.hpp"
 #include "ViewTool.hpp"
 
 // The toolbar strip under the menu bar. A viewport side bar reserves space at
 // the top of the work area, so the dockspace below shifts down by itself. It
-// starts with the Select/Create pair (what a viewport click does), then the
-// shapes (clicking one makes that type the active one), the terrain, the
+// starts with Save, then the Select/Create pair (what a viewport click does),
+// the shapes (clicking one makes that type the active one), the terrain, the
 // gizmo's Move/Rotate/Scale and its space, how the viewport draws the scene,
-// and the road editor. The pictures are painted by icon:: (ToolbarIcons.hpp).
+// and then the tools: the road editor and the windows most work happens in
+// (State::panels). The pictures are painted by icon:: (ToolbarIcons.hpp).
 // Editor only.
 namespace toolbar {
 
@@ -30,6 +33,19 @@ struct State {
     std::function<void()> refreshTrace;         // Pathtraced pressed again: look again
     ViewTool& viewTool;
     bool&     showRoads;         // the road editor opens its panel with it
+    // Save: the project and the scene that is open, as File > Save Project.
+    // Greyed out while there is no project to save into.
+    std::function<void()> save;
+    bool canSave = false;
+    // The tools, in the order they are drawn: a button per tool window that
+    // opens and closes it (lit while it is open), Tool::None for the gap
+    // between two groups, Tool::Road for the road editor.
+    struct Panel {
+        icon::Tool  tool;
+        const char* tip;
+        bool*       open;
+    };
+    std::vector<Panel> panels;
 };
 
 void draw(const State& s);
