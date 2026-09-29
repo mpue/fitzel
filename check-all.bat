@@ -129,6 +129,11 @@ REM  ein Loop Cut, der die Seite vergisst, von der er misst, schneidet einen
 REM  Zickzack statt einer Linie -- und ein Face-Material ist ein Array neben
 REM  einem anderen, also landet es Schnitte spaeter auf der falschen Flaeche.
 call :run modelcheck
+REM  modifiercheck misst den Modifier-Stack: jedes Ergebnis geschlossen und nach
+REM  aussen gewunden, Material und Farbgewichte mitgenommen, die Handrechnungen
+REM  (Catmull-Clark-Wuerfelecke auf 5/18, hohle Box 1 - 0.8^3) exakt -- ein Stack,
+REM  der Flaechen verdreht, sieht von vorn oft noch richtig aus.
+call :run modifiercheck
 REM  synthcheck rendert den modularen Synth OFFLINE und misst ihn. Klang faellt
 REM  aus, ohne zu scheitern: ein Filter, der 6 dB daneben liegt, eine Huellkurve
 REM  in Samples statt Sekunden, ein Delay, dessen Interpolation nie laeuft --
