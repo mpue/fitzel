@@ -1,0 +1,250 @@
+#include "TownLamps.hpp"
+
+#include <algorithm>
+#include <cmath>
+
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
+
+#include "CitySystem.hpp"
+#include "Component.hpp"
+#include "EditMesh.hpp"
+#include "ModelLibrary.hpp"
+#include "PrefabSystem.hpp"
+#include "SceneGraph.hpp"
+
+namespace {
+
+// The yaw (degrees about +Y) that turns local +Z onto `v` (x, z): the engine's
+// Y rotation takes (0, 0, 1) to (sin y, 0, cos y).
+float yawOf(glm::vec2 v) { return glm::degrees(std::atan2(v.x, v.y)); }
+
+// Which way a lamp prefab's head points in its own frame (LampPrefab::forward).
+glm::vec2 headAxis(int forward) {
+    switch (forward) {
+        case 1:  return {0.0f, -1.0f};
+        case 2:  return {1.0f, 0.0f};
+        case 3:  return {-1.0f, 0.0f};
+        default: return {0.0f, 1.0f};
+    }
+}
+
+} // namespace
+
+float TownLamps::nightFactor(const glm::vec3& sunDir) {
+    // On from about seven degrees up, fully lit with the sun on the horizon:
+    // a street is dim long before the sky is.
+    return 1.0f - glm::smoothstep(0.0f, 0.12f, sunDir.y);
+}
+
+void TownLamps::update(const CitySystem& towns, const std::vector<MaterialDef>& materials) {
+    bool stale = towns.revision() != m_revision;
+    // A lamp prefab edited and saved: main drops it from its cache, and the next
+    // lookup loads it anew -- at another address. Asked once a second (sixty
+    // frames), and only about prefabs that did load: asking again for one that
+    // failed would print its failure every time.
+    if (!stale && findPrefab && ++m_sinceCheck >= 60) {
+        m_sinceCheck = 0;
+        for (const Look& l : m_looks)
+            if (l.source && findPrefab(l.name) != l.source) {
+                stale = true;
+                break;
+            }
+    }
+    if (stale) rebuild(towns, materials);
+}
+
+void TownLamps::rebuild(const CitySystem& towns, const std::vector<MaterialDef>& materials) {
+    m_revision   = towns.revision();
+    m_sinceCheck = 0;
+    m_looks.clear();
+    m_lamps.clear();
+    m_glow.clear();
+
+    // One look per prefab and head direction, shared by every town naming it. A
+    // prefab that would not load keeps its (empty) look too, so it is asked for
+    // once per rebuild and not once per lamp.
+    auto lookOf = [&](const cityplan::LampPrefab& lp) {
+        for (std::size_t i = 0; i < m_looks.size(); ++i)
+            if (m_looks[i].name == lp.prefab && m_looks[i].forward == lp.forward)
+                return static_cast<int>(i);
+        const int index = static_cast<int>(m_looks.size());
+        Look look;
+        look.name    = lp.prefab;
+        look.forward = lp.forward;
+        const prefab::Prefab* p = findPrefab ? findPrefab(lp.prefab) : nullptr;
+        if (p && flatten(*p, index, look)) look.source = p;
+        m_looks.push_back(std::move(look));
+        return index;
+    };
+
+    const std::vector<CitySystem::Built>& built = towns.built();
+    for (std::size_t t = 0; t < built.size() && t < towns.towns.size(); ++t) {
+        const cityplan::Rule& r = towns.towns[t];
+        if (!r.enabled) continue;
+        for (const cityplan::Lamp& lamp : built[t].town.lamps) {
+            if (lamp.prefab < 0 || lamp.prefab >= static_cast<int>(r.lampPrefabs.size())) continue;
+            const cityplan::LampPrefab& lp = r.lampPrefabs[static_cast<std::size_t>(lamp.prefab)];
+            const int li = lookOf(lp);
+            const Look& look = m_looks[static_cast<std::size_t>(li)];
+            if (look.parts.empty() && look.lights.empty()) continue;
+            // Its head onto the way to the street.
+            const float yaw = yawOf(lamp.facing) - yawOf(headAxis(lp.forward));
+            Placed pl;
+            pl.frame = glm::rotate(glm::translate(glm::mat4(1.0f), lamp.pos), glm::radians(yaw),
+                                   glm::vec3(0.0f, 1.0f, 0.0f));
+            pl.pos  = lamp.pos;
+            pl.look = li;
+            m_lamps.push_back(pl);
+        }
+    }
+
+    // The glowing materials of the looks in use: a lamp's glass is whatever of
+    // it has an emission -- colour or map.
+    for (const Look& l : m_looks)
+        for (const Part& part : l.parts) {
+            const bool seen = std::any_of(m_glow.begin(), m_glow.end(),
+                                          [&](const auto& g) { return g.first == part.material; });
+            if (seen) continue;
+            for (const MaterialDef& m : materials) {
+                if (m.assetId != part.material) continue;
+                if (m.emissionTexId.valid() || glm::dot(m.emission, m.emission) > 0.0f)
+                    m_glow.emplace_back(m.assetId, m.emissionStrength);
+                break;
+            }
+        }
+}
+
+bool TownLamps::flatten(const prefab::Prefab& p, int lookIndex, Look& out) const {
+    // The prefab's entities in its own frame. The root's pivot is the lamp's
+    // foot on the pavement -- where the prefab lands when it is placed by hand
+    // (prefab::instantiate drops the root at the spot and keeps its turn).
+    std::vector<Entity> es = p.entities;
+    for (Entity& e : es)
+        if (e.parent < 0) e.localCenter = glm::vec3(0.0f);
+    scenegraph::resolve(es);
+
+    float lowY = 1e30f;
+    auto grow = [&](const glm::mat4& m, const glm::vec3& a, const glm::vec3& b) {
+        for (int k = 0; k < 8; ++k) {
+            const glm::vec3 c((k & 1) ? b.x : a.x, (k & 2) ? b.y : a.y, (k & 4) ? b.z : a.z);
+            lowY = std::min(lowY, (m * glm::vec4(c, 1.0f)).y);
+        }
+    };
+    for (const Entity& e : es) {
+        if (!e.activeInHierarchy) continue;
+        if (const auto* mc = e.components.get<ModelComponent>(); mc && models) {
+            if (LoadedModel* lm = models->byId(mc->modelId)) {
+                // As SceneSubmit draws a model: filling centre +/- half.
+                const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+                const glm::mat4 m = scenegraph::compose(e.center, e.rotation, (e.half * 2.0f) / sz) *
+                                    glm::translate(glm::mat4(1.0f), -lm->center());
+                for (std::size_t i = 0; i < lm->meshes.size() && i < lm->primMaterialId.size(); ++i)
+                    out.parts.push_back({&lm->meshes[i], lm->primMaterialId[i], m});
+                grow(m, lm->boundsMin, lm->boundsMax);
+            }
+        } else if (const auto* meshC = e.components.get<MeshComponent>(); meshC && meshCache) {
+            // Modelled in the editor: uploaded by the shared cache under an id of
+            // its own (one per look and entity), dressed as SceneSubmit does.
+            const int cacheId = 0x78000000 + lookIndex * 4096 + e.id;
+            const glm::mat4 m = scenegraph::compose(e.center, e.rotation,
+                                                    editmesh::fitScale(meshC->mesh, e.half));
+            const auto* matC = e.components.get<MaterialComponent>();
+            const fitzel::AssetId own = matC ? matC->material : fitzel::AssetId{};
+            for (const EditMeshCache::Sub& sub : meshCache->submeshes(cacheId, meshC->revision, meshC->mesh))
+                out.parts.push_back({&sub.mesh, sub.material.valid() ? sub.material : own, m});
+            glm::vec3 lo, hi;
+            meshC->mesh.bounds(lo, hi);
+            grow(m, lo, hi);
+        }
+        if (const auto* lc = e.components.get<LightComponent>()) {
+            // As main turns a scene light into the renderer's: a spot shines
+            // down the entity's +Z.
+            Light L;
+            L.type  = lc->type == 1 ? 1 : 0;
+            L.pos   = e.center;
+            L.dir   = glm::normalize(glm::quat(glm::radians(e.rotation)) * glm::vec3(0.0f, 0.0f, 1.0f));
+            L.color = lc->color * lc->intensity;
+            L.range = lc->range;
+            const float outer = glm::radians(glm::clamp(lc->spotAngle, 1.0f, 89.0f));
+            const float inner = outer * (1.0f - glm::clamp(lc->spotBlend, 0.0f, 1.0f));
+            L.cosOuter = std::cos(outer);
+            L.cosInner = std::cos(inner);
+            out.lights.push_back(L);
+        }
+    }
+    if (out.parts.empty() && out.lights.empty()) return false;
+    // Stood on the pavement: its lowest point on y = 0. A prefab whose root is
+    // the lamp's middle rather than its foot would otherwise stand half sunk.
+    const float lift = lowY < 1e29f ? -lowY : 0.0f;
+    const glm::mat4 up = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, lift, 0.0f));
+    for (Part& part : out.parts) part.local = up * part.local;
+    for (Light& L : out.lights) L.pos.y += lift;
+    return true;
+}
+
+void TownLamps::forEachDraw(const glm::vec3& eye,
+                            const std::function<void(const fitzel::Mesh&, const fitzel::AssetId&,
+                                                     const glm::mat4&, bool)>& fn) const {
+    for (const Placed& l : m_lamps) {
+        const float d = glm::length(l.pos - eye);
+        if (d > reach) continue;
+        const bool nearEye = d < shadowReach;
+        for (const Part& part : m_looks[static_cast<std::size_t>(l.look)].parts)
+            fn(*part.mesh, part.material, l.frame * part.local, nearEye);
+    }
+}
+
+void TownLamps::collectLights(const glm::vec3& eye, float on,
+                              std::vector<fitzel::PointLight>& points, int pointCap,
+                              std::vector<fitzel::SpotLight>& spots, int spotCap) const {
+    if (on <= 0.001f || m_lamps.empty()) return;
+    const int freePoints = std::max(pointCap - static_cast<int>(points.size()), 0);
+    const int freeSpots  = std::max(spotCap - static_cast<int>(spots.size()), 0);
+    if (freePoints + freeSpots == 0) return;
+    std::vector<std::pair<float, int>> nearest;
+    for (std::size_t i = 0; i < m_lamps.size(); ++i) {
+        const Placed& l = m_lamps[i];
+        if (m_looks[static_cast<std::size_t>(l.look)].lights.empty()) continue;
+        const float d = glm::length(l.pos - eye);
+        if (d < lightReach) nearest.emplace_back(d, static_cast<int>(i));
+    }
+    std::sort(nearest.begin(), nearest.end());
+    // Where the lights stop: the reach, or -- when there are more lamps in it
+    // than lights to give -- the first lamp that gets none. Each fades out on
+    // its way there, so the lamp dropped next is already dark: the distance of
+    // the n-th nearest lamp moves smoothly with the eye, and so does every light.
+    float cut = lightReach;
+    const std::size_t slots = static_cast<std::size_t>(std::max(freePoints, freeSpots));
+    if (nearest.size() > slots) cut = std::min(cut, nearest[slots].first);
+    for (const auto& [d, i] : nearest) {
+        const float fade = on * (1.0f - glm::smoothstep(0.7f * cut, cut, d));
+        if (fade <= 0.001f) break;
+        const Placed& l = m_lamps[static_cast<std::size_t>(i)];
+        for (const Light& L : m_looks[static_cast<std::size_t>(l.look)].lights) {
+            const glm::vec3 pos = glm::vec3(l.frame * glm::vec4(L.pos, 1.0f));
+            if (L.type == 1) {
+                if (static_cast<int>(spots.size()) >= spotCap) continue;
+                fitzel::SpotLight s;
+                s.position  = pos;
+                s.direction = glm::normalize(glm::mat3(l.frame) * L.dir);
+                s.color     = L.color * fade;
+                s.range     = L.range;
+                s.cosInner  = L.cosInner;
+                s.cosOuter  = L.cosOuter;
+                spots.push_back(s);
+            } else {
+                if (static_cast<int>(points.size()) >= pointCap) continue;
+                fitzel::PointLight pl;
+                pl.position = pos;
+                pl.color    = L.color * fade;
+                pl.range    = L.range;
+                points.push_back(pl);
+            }
+        }
+    }
+}
+
+void TownLamps::forEachGlow(const std::function<void(const fitzel::AssetId&, float)>& fn) const {
+    for (const auto& [id, strength] : m_glow) fn(id, strength);
+}

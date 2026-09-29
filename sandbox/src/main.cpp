@@ -192,6 +192,7 @@
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
 #include "TownTraffic.hpp"
+#include "TownLamps.hpp"
 #include "HalfResSky.hpp"
 #include "CityPanel.hpp"
 #include "CityPlanPanel.hpp"
@@ -911,6 +912,7 @@ int main(int argc, char** argv) {
             return roads.surfaceHeightAt(p, y, 1e9f);
         };
         townTraffic.init();
+        TownLamps townLamps;         // the towns' street lamps, from their prefabs
         SkidSystem skids(lit);       // tyre skid marks laid while wheels slip in Play
         TrailSystem trails(lit);     // vapour contrails streaming behind the racers
         // Lock-on missiles for the flown glider. Owns its own targeting, flight,
@@ -4406,6 +4408,10 @@ int main(int argc, char** argv) {
         townTraffic.findPrefab = findPrefab;
         townTraffic.models     = &models;
         townTraffic.meshCache  = &meshCache;
+        // ...and stands its street lamps as prefabs, the same way.
+        townLamps.findPrefab = findPrefab;
+        townLamps.models     = &models;
+        townLamps.meshCache  = &meshCache;
 
         // --- The level generator -------------------------------------------
         // The generator itself is pure (see LevelGen.hpp): it lays a circuit on a
@@ -10660,6 +10666,9 @@ int main(int argc, char** argv) {
                 townTraffic.update(towns, dt, materials);
                 prof::addSince("traffic update", fzTraffic);
             }
+            townLamps.update(towns, materials);
+            // The street lamps are on from dusk: their glass and their light.
+            const float lampsOn = TownLamps::nightFactor(light.direction);
 
             // Handing them over is one function, in SceneSubmit.cpp, so that the
             // editor is a CALLER of it rather than the only place it exists --
@@ -10683,6 +10692,12 @@ int main(int argc, char** argv) {
                 const int mi = document.materialIndex(id);
                 if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
                     submitScratch.gpuMats[static_cast<std::size_t>(mi)].set("uEmissionStrength", glow);
+            });
+            townLamps.forEachGlow([&](const fitzel::AssetId& id, float glow) {
+                const int mi = document.materialIndex(id);
+                if (mi >= 0 && mi < static_cast<int>(submitScratch.gpuMats.size()))
+                    submitScratch.gpuMats[static_cast<std::size_t>(mi)].set("uEmissionStrength",
+                                                                             glow * lampsOn);
             });
 
             // --- Roadside city (see CityGen.hpp) -------------------------------
@@ -10768,6 +10783,14 @@ int main(int argc, char** argv) {
                     renderer.submit(mesh, gpuMats[mi], m, false, isMirror(materials[mi]),
                                     materials[mi].opacity,
                                     materials[mi].alphaMode == AlphaMode::Blend, detail, detail);
+                });
+            townLamps.forEachDraw(camera.position(),
+                [&](const Mesh& mesh, const fitzel::AssetId& mat, const glm::mat4& m, bool nearEye) {
+                    const int mi = document.materialIndex(mat);
+                    if (mi < 0 || mi >= static_cast<int>(gpuMats.size())) return;
+                    renderer.submit(mesh, gpuMats[mi], m, false, isMirror(materials[mi]),
+                                    materials[mi].opacity,
+                                    materials[mi].alphaMode == AlphaMode::Blend, nearEye);
                 });
 
             // --- Road side objects (guard rails, curbs, posts) -----------------
@@ -10909,6 +10932,11 @@ int main(int argc, char** argv) {
             debugoverlay::draw(&showPerf);
             prof::addSince("ui + submit", fzUiMark);
 
+            // The street lamps nearest the eye, after the scene's own lights and
+            // before the missiles, with two points left for those.
+            townLamps.collectLights(camera.position(), lampsOn,
+                                    pointLights, Renderer::kMaxPointLights - 2,
+                                    spotLights, Renderer::kMaxSpotLights);
             // Missile motors and detonations are lights too -- a blast that does
             // not light the corner it goes off in reads as a decal pasted over
             // the scene. Appended last so authored scene lights keep priority

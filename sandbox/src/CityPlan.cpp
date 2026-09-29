@@ -502,6 +502,14 @@ void save(nlohmann::json& j, const Rule& r) {
             return a;
         }()},
         {"personPlaceholderWeight", r.personPlaceholderWeight},
+        {"lampPrefabs", [&] {
+            nlohmann::json a = nlohmann::json::array();
+            for (const LampPrefab& p : r.lampPrefabs)
+                a.push_back({{"prefab", p.prefab}, {"weight", p.weight}, {"forward", p.forward}});
+            return a;
+        }()},
+        {"lampEvery", r.lampEvery}, {"lampBothSides", r.lampBothSides},
+        {"lampInset", r.lampInset},
         {"people", r.people},
         {"collider", r.collider},
     };
@@ -586,6 +594,18 @@ void load(const nlohmann::json& j, Rule& r) {
             r.personPrefabs.push_back(p);
         }
     r.personPlaceholderWeight = j.value("personPlaceholderWeight", d.personPlaceholderWeight);
+    r.lampPrefabs.clear();
+    if (j.contains("lampPrefabs") && j["lampPrefabs"].is_array())
+        for (const nlohmann::json& v : j["lampPrefabs"]) {
+            LampPrefab p;
+            p.prefab  = v.value("prefab", std::string());
+            p.weight  = v.value("weight", 1.0f);
+            p.forward = std::clamp(v.value("forward", 0), 0, 3);
+            r.lampPrefabs.push_back(p);
+        }
+    r.lampEvery     = j.value("lampEvery", d.lampEvery);
+    r.lampBothSides = j.value("lampBothSides", d.lampBothSides);
+    r.lampInset     = j.value("lampInset", d.lampInset);
     r.powerLineLength = j.value("powerLineLength", d.powerLineLength);
     r.busShare      = j.value("busShare", d.busShare);
     r.truckShare    = j.value("truckShare", d.truckShare);
@@ -1765,6 +1785,17 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
         return (roads.surfaceNear(p, y) ? y : ride(p)) + kKerb;
     };
     auto standY = [&](glm::vec2 p) { return paved ? paveY(p) : ground(p); };
+    // Street-lamp spots, gathered along the kerbs below and kept at the end,
+    // once every other piece of furniture has its place (see "Street lamps").
+    struct LampSpot { glm::vec2 at, facing; };
+    std::vector<LampSpot> lampSpots;
+    const bool lamps = r.lampEvery > 4.0f &&
+                       std::any_of(r.lampPrefabs.begin(), r.lampPrefabs.end(),
+                                   [](const LampPrefab& p) { return !p.prefab.empty() && p.weight > 0.0f; });
+    // An avenue's kerb is farther out than a street's: halfway between the two
+    // half-widths tells them apart.
+    const float avenueHalf = 0.25f * (r.built().streetWidth + r.built().avenueWidth);
+    const float lampInset  = glm::clamp(r.lampInset, 0.2f, std::max(0.3f, r.sidewalk - 0.3f));
     std::deque<fitzel::MeshData> paveMeshes;   // stable addresses for the extras
     if (paved) {
         const float w      = r.sidewalk;
@@ -1888,6 +1919,30 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 for (int g = 0; g < 40 && s1 - s0 > 1.0f && blocked(s0); ++g) s0 += 0.25f;
                 for (int g = 0; g < 40 && s1 - s0 > 1.0f && blocked(s1); ++g) s1 -= 0.25f;
                 if (s1 - s0 < 1.0f) continue;
+                // Street lamps along this kerb. A street is lit from one side --
+                // the block on the town's +X or +Z of it, so the same side all
+                // the way along -- and an avenue from both (every street, with
+                // lampBothSides), the two sides staggered by half a spacing so
+                // the pools of light alternate instead of pairing up. Evenly
+                // spread over what the kerb has between the crossings.
+                if (lamps && s1 - s0 > 6.0f) {
+                    const glm::vec2 across =
+                        std::abs(glm::dot(d, lay.axisX)) >= std::abs(glm::dot(d, lay.axisZ))
+                            ? lay.axisZ : lay.axisX;
+                    const bool plus = glm::dot(n, across) > 0.0f;
+                    const bool both = r.lampBothSides || B.streetHalf[k] > avenueHalf;
+                    if (both || plus) {
+                        const float span  = s1 - s0;
+                        const int   count = std::max(1, static_cast<int>(std::lround(span / r.lampEvery)));
+                        const float phase = !both ? 0.5f : plus ? 0.25f : 0.75f;
+                        for (int i = 0; i < count; ++i) {
+                            const float t = s0 + span * (static_cast<float>(i) + phase) / count;
+                            const glm::vec2 at = kerbAt(t) + n * lampInset;
+                            if (wet(at) || roads.clearance(at) < 0.15f) continue;
+                            lampSpots.push_back({at, -n});
+                        }
+                    }
+                }
                 const int m = std::max(1, static_cast<int>(std::ceil((s1 - s0) / 2.0f)));
                 std::vector<float> raw;
                 for (int i = 0; i <= m; ++i) {
@@ -2244,6 +2299,45 @@ Town derive(const Rule& r, const Palettes& pal, const Context& ctx) {
                 }
                 if (any) acc = 0.0f;
             }
+        }
+    }
+
+    // --- Street lamps ---------------------------------------------------------------
+    // The spots gathered along the kerbs, less those a traffic light, a stop or a
+    // shelter already stands on; each gets one of the rule's prefabs by weight,
+    // by a hash of where it stands (so re-deriving keeps every lamp's pick).
+    // Only the placement is made here: a prefab is a whole entity tree -- a
+    // model, a light -- that the merged town cannot hold, so TownLamps draws
+    // and lights them.
+    if (!lampSpots.empty()) {
+        float total = 0.0f;
+        for (const LampPrefab& lp : r.lampPrefabs)
+            if (!lp.prefab.empty()) total += std::max(lp.weight, 0.0f);
+        const std::size_t others = out.furniture.size();
+        for (const LampSpot& s : lampSpots) {
+            bool clear = true;
+            for (std::size_t f = 0; f < others && clear; ++f)
+                clear = glm::length(out.furniture[f].pos - s.at) > out.furniture[f].radius + 1.0f;
+            if (!clear) continue;
+            float pick = total * unit(hash3(r.seed ^ 0x1a3bU,
+                                            static_cast<std::uint32_t>(std::lround(s.at.x * 10.0f)),
+                                            static_cast<std::uint32_t>(std::lround(s.at.y * 10.0f))));
+            int idx = -1;
+            for (int i = 0; i < static_cast<int>(r.lampPrefabs.size()); ++i) {
+                const LampPrefab& lp = r.lampPrefabs[static_cast<std::size_t>(i)];
+                const float w = lp.prefab.empty() ? 0.0f : std::max(lp.weight, 0.0f);
+                if (w <= 0.0f) continue;
+                idx = i;
+                if (pick < w) break;
+                pick -= w;
+            }
+            if (idx < 0) break;
+            out.lamps.push_back({glm::vec3(s.at.x, standY(s.at), s.at.y), s.facing, idx});
+            Placed pl;
+            pl.pos    = s.at;
+            pl.radius = 0.6f;
+            out.furniture.push_back(pl);
+            ++out.stats.lamps;
         }
     }
 
