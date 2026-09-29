@@ -19,6 +19,15 @@ its own environment, on a fresh VM every time Play starts (see
 themselves stay C++, deliberately: a broken script must never be able to take an
 editing session with it.
 
+Around the roads, a **town generator** lays whole settlements from a handful of
+numbers: a street grid that becomes real roads (graded, bridged, editable afterwards),
+blocks zoned from a high-rise core out to detached houses, civic buildings, pavements
+on kerbs, street signs in DIN lettering, traffic lights on the German sequence and bus
+stops -- and life in it: traffic that keeps its distance, stops at red and crashes when
+hit hard, people walking as prefabs, street lamps that come on at dusk. Modelled
+objects get a Blender-style **modifier stack** (Subdivision Surface, Decimate,
+Wireframe, Array, Solidify) that stays non-destructive until it is applied.
+
 Two things in it are not real-time and are not meant to be. A **path tracer** renders
 stills of a scene properly -- bounced light, real penumbrae, a lens that opens -- for
 the picture you show somebody rather than the one you play. The same tracer **bakes
@@ -76,7 +85,8 @@ fitzel/
 │   ├── include/fitzel/     # public API (<fitzel/...>)
 │   └── src/                # implementation
 └── sandbox/                # editor + player
-    ├── src/main.cpp        # streamed infinite terrain + CSM + materials
+    ├── src/                # the runtime and the editor: main.cpp wires the frame,
+    │                       # every tool, panel and system is a file of its own
     ├── assets/shaders/     # GLSL shaders (copied next to the binary)
     └── tools/              # offline checks (see "Offline checks" below)
 ```
@@ -184,6 +194,13 @@ a stride across a valley and a nudge at a kerb, and `Ctrl`+wheel changes the fie
 view instead. `F` frames the selected object; `Shift+F` toggles walking through the
 scene in first person.
 
+The toolbar under the menu bar starts with **Save** (so does `Ctrl+S`; neither saves
+during Play, when the scene is the game's), then what a click does, the shapes, the
+gizmo and the shading modes -- and one button for each of the main tool windows:
+terrain sculpt and paint, rivers, water, roads, vegetation, splines, towns, sky,
+weather, environment, materials, prefabs, assets and modelling. A button is lit while
+its window is open.
+
 ![The editor: hierarchy, inspector, asset browser and the frame-time panel](images/editor.png)
 
 ### Rendering notes
@@ -219,6 +236,12 @@ scene in first person.
 - **Weather**: a single `weather` value (0 clear → 1 storm), drifting automatically or
   driven by a slider, ties together cloud coverage/density/wind/altitude, sun & ambient
   dimming, fog density, Gerstner wave height/choppiness, lightning flashes, and rain.
+- **Haze that follows the sky**: the height fog and the far terrain's aerial perspective
+  fade into the colour of the sky behind them. Under a closed deck -- the cumulus
+  coverage or a stratus layer -- that is a muted grey rather than the clear-sky
+  gradient, with no sun glow through it, so ranges in the rain are dark instead of
+  daylight-bright cut-outs against a dark sky. The weather presets carry sight distances
+  that fit their weather: a clear day sees for kilometres.
 - **Waves & rain**: the water is a tessellated grid displaced by summed **Gerstner
   waves** (with analytic normals and crest-driven whitecaps/foam that's lit, not flat
   white). **Rain** is a box of falling line streaks that follows the camera, wind-slanted
@@ -450,6 +473,80 @@ Mechanically it is one more mode of the existing Camera component
 and works unchanged as the Play camera, as a CameraSwitcher target, in a script, in
 split screen and in the exported player.
 
+### Towns
+
+**View > Track > Town generator.** *New town at cursor* puts a small town on the 3D
+cursor; a preset (village, small town, city, metropolis, suburb) sets its character,
+and every number stays editable. **Lay streets** lays the grid as ordinary roads --
+graded, joined in junction aprons, bridged over rivers -- and laying again replaces
+exactly this town's roads and gives the old corridor back to the ground.
+
+Everything else is *derived* from the rule and never saved: lots zoned from a high-rise
+core through apartment blocks and terraces to detached houses, an industrial estate on
+one side, parks, and civic buildings (town hall, church, schools, police, fire station,
+hospital, station, a power plant with its line of pylons) on whole blocks -- generated,
+or an imported model per kind. The derivation measures instead of trusting: a lot that
+reaches into any carriageway, stands in water or is too steep stays empty, so a town
+can be dropped onto a landscape that already has roads in it.
+
+On the streets: pavements on a 12 cm kerb, level with the road; street-name signs
+lettered in DIN 1451 geometry (invented German names, or the real ones of Frankfurt);
+traffic lights switching on the German sequence; bus stops with shelters. The traffic
+(`TrafficSim`) drives on the right with the intelligent driver model, stops at red and
+calls at the stops, and near the player its cars borrow real bodies -- a hard enough
+knock is a crash, and the wreck blocks the lane. Vehicle and person prefabs replace the
+built-in placeholders by weight; a person prefab walks its own animation clip in step
+with the pavement. A scene object with a *Traffic driver* component joins the traffic in
+Play.
+
+**Street lamps** are prefabs too (*Look > Street lamps*): the root's pivot is the lamp's
+foot, and a Light component in it is its light. The town stands them on the pavement
+beside the kerb, facing the street -- one side of an ordinary street, both sides of an
+avenue -- clear of the traffic lights and stops. Light and glowing glass come on at
+dusk. The lit shader takes sixteen point lights for the whole frame, so only the
+nearest lamps light for real, faded out towards the edge of their ring; the four nearest
+cast shadows when the prefab's light says so.
+
+### Modifier stack
+
+A modelled object -- anything made editable with Tab -- takes a **Modifiers** component
+(*Add Component > Modifiers*, then *Add modifier*). The stack runs over the object's mesh
+top to bottom whenever either changes, and what is drawn, collided with and walked on is
+the result; editing still moves the plain mesh underneath, as Blender's cage does. Each
+modifier can be switched off (kept, settings and all), moved, removed or **applied** --
+baked into the mesh together with every one above it, the object squared with its new
+mesh so nothing moves on screen. *Shade smooth* shares normals across faces that meet
+flatter than its angle.
+
+| Modifier | What it does |
+| -------- | ------------ |
+| Subdivision Surface | Catmull-Clark (or Simple), 0-5 levels; open borders follow a curve of their own. |
+| Decimate | Quadric edge collapse to a share of the triangles, per material. |
+| Wireframe | Every edge a solid strut of the given thickness. |
+| Array | Copies in a row, shifted by the mesh's own size and/or a distance, optionally welded. |
+| Solidify | Thickness along the corner normals, even at corners, the open borders walled in. |
+
+![Modifiers on a row of objects: subdivision, decimate, wireframe, both stacked, a wire cylinder; an array and a bowl behind](docs/img/modifiers.jpg)
+
+A new kind is one class and one line. Its settings are Property rows, which give it its
+inspector fields and its keys in the scene file; `apply()` changes the mesh in place.
+The geometry belongs in `sandbox/src/EditMeshModifiers.cpp`, pure and testable. A
+sketch:
+
+```cpp
+// sandbox/src/Modifiers.cpp
+class MirrorModifier : public modifiers::ModifierOf<MirrorModifier> {
+public:
+    int axis = 0;
+    const char* typeId() const override { return "mirror"; }
+    const char* displayName() const override { return "Mirror"; }
+    const std::vector<Property>& props() const override { /* one row per setting */ }
+    void apply(EditMesh& m) const override { /* change m */ }
+};
+// ...and in the registrar at the bottom of the same file:
+add<MirrorModifier>("Mirror the mesh across one of its axes.");
+```
+
 ### Offline render (path tracer)
 
 **View > Presentation > Render.** Frame a shot in the viewport, press Render, and the
@@ -635,6 +732,9 @@ one thing.
 | `fogcheck <out> <shaders>` | What does the volumetric fog actually look like -- and what is in the field it is made of? |
 | `shotcheck` | Does the multishot camera keep its subject in frame and its eye out of the ground -- over a parked car, a fast one, a lorry and a slope? This is the one fault you cannot see in the editor, because the editor shows you the picture from *inside* the mistake. Exits non-zero. |
 | `citycheck` | Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear. Exits non-zero. |
+| `towncheck` | Does a generated town keep off its own streets? Every preset laid on a slope: one street per grid line, no lot on a carriageway, pavements beside the road and level with it, lights and stops on the pavement, lights only where the town is a city, bridges over water -- and street lamps on the pavement facing their street, none doubled, picked by weight. Exits non-zero. |
+| `trafficcheck` | Does the town's traffic behave for five simulated minutes -- moving, never rear-ending, never through a red, buses calling at the stops, people on the pavements -- and do crashes and wrecks do what they should? `trafficcheck model.glb clip` shows how a real walk clip is cut into stride pairs. Exits non-zero. |
+| `modifiercheck` | Is every modifier's result what it must be whatever it looks like -- closed, wound outward, paint and face materials carried -- and do the hand-worked numbers hold (a Catmull-Clark cube corner on 5/18, a hollow box of volume 1 - 0.8³)? The stack saves, loads, copies, and evaluates again only when it changed. `modifiercheck --entities out.json` writes demo objects to look at. Exits non-zero. |
 | `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). Also pins the light-probe bake against answers a spherical harmonic gets exactly: a uniform sky reconstructs at 1 in every direction, a hemisphere at 1 / 0.5 / 0, and moving the sun must change nothing at all. A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
 | `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, what came back out of a texture, that a texture's alpha channel alone does not make an opaque material transparent, and that each terrain layer coloured the ground its band claims. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
@@ -677,8 +777,6 @@ build/release/bin/fogcheck out sandbox/assets/shaders   # fogcheck.exe on Window
 
 Add new subsystems under `engine/src/` and their headers under
 `engine/include/fitzel/`, then list the sources in `engine/CMakeLists.txt`.
-Natural next steps: triplanar terrain texturing with real albedo maps, a
-material/texture asset system, model loading (glTF/OBJ), and a scene graph.
 
 ## Shipping a game
 
