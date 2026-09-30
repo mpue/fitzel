@@ -379,9 +379,16 @@ braucht die Figur dafür nicht. Tempo 0 hält das erste Bild des Clips – so ko
 auch eine Figur, die nur einen Walk mitbringt, zu einem Idle. Ein Übergang kann
 eine **Überblendung** (Fade, in Sekunden) haben: Der verlassene Zustand spielt
 weiter und gibt seine Pose in dieser Zeit ab; 0 schneidet hart. Überblendet
-werden nur Modell-Animationen, Timeline-Clips schalten sofort um.
+werden nur Modell-Animationen, Timeline-Clips schalten sofort um. Das Tempo eines
+Zustands darf negativ sein (der Clip läuft rückwärts) und kann mit einem
+Zahl-Parameter multipliziert werden („Speed times“): `game.animNumber(id,
+"walkSpeed", -0.5)` lässt den Walk halb so schnell rückwärts laufen, ohne
+Sprung in der Pose.
 `sandbox/scripts/walker.lua` ist ein vollständiges Beispiel: eine Figur mit WASD
-steuern und dabei zwischen Idle und Walk umschalten.
+steuern und dabei zwischen Idle und Walk umschalten. Mit `CAMERA_RELATIVE` und
+einer Kamera als Kind der Figur (Modus *Follow parent*, **Orbit with mouse** an)
+wird daraus eine Third-Person-Steuerung: Die Maus dreht die Kamera um die Figur,
+die Tasten laufen relativ zur Blickrichtung (`game.cameraDir()`).
 
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|

@@ -231,6 +231,94 @@ int main() {
               "a follow camera keeps its horizon level through the same bank");
     }
 
+    // --- 7. Orbit with mouse: a third-person camera ---------------------------
+    // A figure at the origin facing +Z, its camera 6 m behind and 2 m up, aimed
+    // 1.4 m above the figure's centre.
+    {
+        auto orbitScene = [](std::vector<Entity>& es) {
+            add(es, 1, -1, glm::vec3(0.0f), glm::vec3(0.0f));
+            Entity& cam = add(es, 2, 1, glm::vec3(0.0f, 2.0f, -6.0f), glm::vec3(0.0f));
+            addCam(cam, CameraComponent::Follow);
+            auto* cc = cam.components.get<CameraComponent>();
+            cc->orbitMouse = true;
+            cc->orbitSpeed = 0.15f;
+        };
+        const glm::vec3 pivot(0.0f, 1.4f, 0.0f);
+        const float dist0 = glm::length(glm::vec3(0.0f, 2.0f, -6.0f) - pivot);
+
+        std::vector<Entity> es;
+        orbitScene(es);
+        camerasys::CameraSystem cams;
+        frame(es, cams, 0.016f);
+        camerasys::Pose p;
+        bool got = cams.pose(2, p);
+        check(got && dist(p.position, glm::vec3(0.0f, 2.0f, -6.0f)) < 1.0e-4f,
+              "orbit: it opens on the authored shot");
+
+        // 600 px right at 0.15 deg/px is a quarter turn. The view was looking
+        // down +Z, whose right is -X: that is where it must look now.
+        cams.steer(2, glm::vec2(600.0f, 0.0f));
+        frame(es, cams, 0.016f);
+        got = cams.pose(2, p);
+        const glm::vec3 flat = glm::normalize(glm::vec3(p.front.x, 0.0f, p.front.z));
+        char d[96];
+        std::snprintf(d, sizeof d, "front %.2f %.2f %.2f", p.front.x, p.front.y, p.front.z);
+        check(got && glm::dot(flat, glm::vec3(-1.0f, 0.0f, 0.0f)) > 0.999f,
+              "orbit: mouse right turns the view right", d);
+        check(got && std::abs(dist(p.position, pivot) - dist0) < 1.0e-3f,
+              "orbit: and keeps its distance to the pivot");
+        const glm::vec3 eyeAfterSteer = p.position;
+
+        // The figure turning round must NOT drag the camera with it -- that is
+        // what separates this from the follow camera.
+        es[0].localRotation = es[0].rotation = glm::vec3(0.0f, 120.0f, 0.0f);
+        frame(es, cams, 0.016f);
+        got = cams.pose(2, p);
+        check(got && dist(p.position, eyeAfterSteer) < 1.0e-4f,
+              "orbit: the figure turning does not turn the camera");
+
+        // ...but the figure walking takes it along, rigidly: no lag to breathe.
+        es[0].localCenter = es[0].center = glm::vec3(3.0f, 0.0f, 4.0f);
+        frame(es, cams, 0.033f);
+        got = cams.pose(2, p);
+        check(got && dist(p.position, eyeAfterSteer + glm::vec3(3.0f, 0.0f, 4.0f)) < 1.0e-4f,
+              "orbit: the figure walking carries the camera with it");
+
+        // Up and down stop short of flipping over the top and of looking up
+        // from under the ground.
+        cams.steer(2, glm::vec2(0.0f, -100000.0f));      // mouse far down: eye up
+        frame(es, cams, 0.016f);
+        got = cams.pose(2, p);
+        const float downDeg = glm::degrees(std::asin(-p.front.y));
+        cams.steer(2, glm::vec2(0.0f, 100000.0f));       // mouse far up: eye down
+        frame(es, cams, 0.016f);
+        camerasys::Pose q;
+        const bool got2 = cams.pose(2, q);
+        const float upDeg = glm::degrees(std::asin(q.front.y));
+        std::snprintf(d, sizeof d, "looks down at most %.1f deg, up at most %.1f deg",
+                      downDeg, upDeg);
+        check(got && got2 && std::abs(downDeg - 75.0f) < 0.1f && std::abs(upDeg - 30.0f) < 0.1f,
+              "orbit: the tilt is held between the limits", d);
+
+        // Switched off, it is a follow camera again and trails the heading.
+        es[1].components.get<CameraComponent>()->orbitMouse = false;
+        frame(es, cams, 0.016f);
+        got = cams.pose(2, p);
+        check(got && std::abs(p.up.y - 1.0f) < 1.0e-4f,
+              "orbit off: back to an ordinary follow camera");
+
+        // Mouse for another camera does not swing this one.
+        std::vector<Entity> other;
+        orbitScene(other);
+        camerasys::CameraSystem cams2;
+        frame(other, cams2, 0.016f);
+        cams2.steer(99, glm::vec2(600.0f, 0.0f));
+        frame(other, cams2, 0.016f);
+        got = cams2.pose(2, p);
+        check(got && dist(p.position, glm::vec3(0.0f, 2.0f, -6.0f)) < 1.0e-4f,
+              "orbit: only the steered camera moves");
+    }
+
     // --- 6. No parent, no cockpit ---------------------------------------------
     // Same rule as a parentless follow camera: stop being a view rather than
     // stare from the world origin, because the second is a mistake nobody sees.

@@ -4,12 +4,17 @@
 --   W / Up      walk forward          A / Left    turn left
 --   S / Down    walk backward         D / Right   turn right
 --
+-- or, with CAMERA_RELATIVE on (third person, for a camera orbited with the
+-- mouse): W walks away from the camera, S towards it, A / D across it, and the
+-- figure turns to face the way it walks.
+--
 -- WHAT TO SET UP FIRST. The script only moves the figure and tells the graph
 -- whether it is walking; which animation that means lives in the graph.
 --
 --   1. The figure: a Model entity whose model brings its animations along (a
 --      rigged .glb). No dynamic Physics on it -- this script places it every
---      frame and a physics body would fight it.
+--      frame and a physics body would fight it. A parent is fine as long as it
+--      is only moved, not turned or scaled.
 --   2. On the figure: Add Component -> Animation Graph, pick the graph. Then
 --      Add Component -> Script and choose this file (copy it into the
 --      project's scripts/ folder first).
@@ -22,19 +27,34 @@
 --         Walk -> Idle   when `walking` is false, Fade 0.25 s
 --      Parameter: `walking`, Bool. A model that only brings a walk: give Idle
 --      the walk as well, at Speed 0 -- it holds the walk's first frame.
+--      Backing up (S) looks like a moonwalk unless the walk plays backward:
+--      add a Number parameter `walkSpeed` ("Start it at 1") and pick it as the
+--      Walk state's "Speed times". The script then sets it to the pace the
+--      figure really goes -- 1 forward, -0.5 backing up at half speed.
 --      An Animation component on the figure may stay; in a state that names a
 --      model animation, the graph poses the figure instead of it.
 --
 -- Then press Play. The camera follows behind the figure; while it does, the
 -- walking player camera stands aside, so WASD moves only the figure.
+--
+-- THIRD PERSON. Hang a Camera on the figure as its child: Mode "Follow parent",
+-- "Orbit with mouse" and "Active on start" on, and place it where the view
+-- should open (a few metres behind, a little up). Here, switch FOLLOW_CAMERA off
+-- and CAMERA_RELATIVE on. In Play the mouse swings the camera round the figure
+-- and the keys walk it relative to the view. Esc leaves Play.
 
 -- Everything below without a leading underscore shows up in the Script
 -- component's inspector and can be tuned there per figure.
 PARAM          = "walking"   -- the graph's Bool parameter
+SPEED_PARAM    = "walkSpeed" -- the graph's Number the walk's pace is multiplied by
 WALK_SPEED     = 1.4         -- m/s; match it to the clip or the feet slide
 BACK_FACTOR    = 0.5         -- walking backward is slower
 TURN_SPEED     = 120         -- degrees per second
 TURN_ANIMATES  = true        -- turning on the spot counts as walking
+-- Third person: walk relative to the camera, facing the way you walk. Pair it
+-- with an orbiting Camera and FOLLOW_CAMERA off (see above).
+CAMERA_RELATIVE = false
+FACE_SPEED     = 540         -- degrees per second the figure turns to face its way
 -- The model's own facing, in degrees. 0 = the figure looks along +Z; if it walks
 -- backward (or sideways), try 180 (or 90 / -90).
 FACE_OFFSET    = 0
@@ -49,52 +69,120 @@ SHOW_STATE     = true        -- graph state in the corner of the screen
 local _yaw          -- where the figure is heading, without FACE_OFFSET
 local _groundOffset -- the figure's height above the terrain where it started
 local _cx, _cy, _cz -- the camera, smoothed
+local _pace = 1     -- the walk's pace while it last walked (see update)
 
 local function held(a, b)
     return game.keyDown(a) or game.keyDown(b)
+end
+
+-- self.x/y/z are the figure's LOCAL position -- relative to its parent -- while
+-- the terrain and the camera live in the world. Last frame's world position
+-- minus this frame's local one (neither has moved yet) is where the parent puts
+-- it: nothing for a root figure, the parent's position for a parented one.
+local function parentOffset(self)
+    local wx, wy, wz = game.getPos(self.id)
+    if not wx then return 0, 0, 0 end
+    return wx - self.x, wy - self.y, wz - self.z
 end
 
 function start(self, dt, t)
     _yaw = self.ry - FACE_OFFSET
     -- Whatever height the figure was placed at in the editor is the one it
     -- keeps, whether its origin is at the feet or in the middle of the model.
-    _groundOffset = self.y - game.terrainHeight(self.x, self.z)
+    local ox, _, oz = parentOffset(self)
+    _groundOffset = self.y - game.terrainHeight(self.x + ox, self.z + oz)
     _cx = nil
+    _pace = 1
 end
 
-function update(self, dt, t)
-    -- --- Input ---------------------------------------------------------------
+-- The keys as a walk: along the heading and turning (tank), or relative to the
+-- camera and facing the way it goes (third person). Returns the step on the
+-- ground as x, z (a unit direction times how fast, 0..1), whether it counts as
+-- walking, and the pace the walk should play at (negative = backward).
+local function tankWalk(dt)
     local move, turn = 0, 0
     if held(game.KEY_W, game.KEY_UP)    then move = move + 1 end
     if held(game.KEY_S, game.KEY_DOWN)  then move = move - BACK_FACTOR end
     if held(game.KEY_A, game.KEY_LEFT)  then turn = turn + 1 end
     if held(game.KEY_D, game.KEY_RIGHT) then turn = turn - 1 end
-
-    -- --- Move ----------------------------------------------------------------
-    _yaw = _yaw + turn * TURN_SPEED * dt
-    local r = math.rad(_yaw)
     -- A yaw of 0 looks along +Z and a positive one turns toward +X, which is
     -- the figure's left -- so A adds and D subtracts.
-    local fx, fz = math.sin(r), math.cos(r)
-    self.x = self.x + fx * move * WALK_SPEED * dt
-    self.z = self.z + fz * move * WALK_SPEED * dt
+    _yaw = _yaw + turn * TURN_SPEED * dt
+    local r = math.rad(_yaw)
+    -- The legs go the way and the pace the figure does; turning on the spot
+    -- steps forward.
+    return math.sin(r) * move, math.cos(r) * move,
+           move ~= 0 or (TURN_ANIMATES and turn ~= 0),
+           move ~= 0 and move or 1
+end
+
+local function cameraWalk(dt)
+    local ahead, side = 0, 0
+    if held(game.KEY_W, game.KEY_UP)    then ahead = ahead + 1 end
+    if held(game.KEY_S, game.KEY_DOWN)  then ahead = ahead - 1 end
+    if held(game.KEY_A, game.KEY_LEFT)  then side = side - 1 end
+    if held(game.KEY_D, game.KEY_RIGHT) then side = side + 1 end
+    -- The camera's forward, flattened onto the ground. Looking straight down
+    -- leaves no forward, so the figure's own heading stands in.
+    local fx, _, fz = game.cameraDir()
+    local len = math.sqrt(fx * fx + fz * fz)
+    if len > 1e-4 then
+        fx, fz = fx / len, fz / len
+    else
+        fx, fz = math.sin(math.rad(_yaw)), math.cos(math.rad(_yaw))
+    end
+    -- Its right on the ground is forward x up: (-fz, fx).
+    local mx = fx * ahead - fz * side
+    local mz = fz * ahead + fx * side
+    local m = math.sqrt(mx * mx + mz * mz)
+    if m < 1e-4 then return 0, 0, false, 1 end
+    mx, mz = mx / m, mz / m
+    -- Face the way it walks, turning the short way round and no faster than
+    -- FACE_SPEED -- a snap would read as a glitch, a slow turn as sliding.
+    local want = math.deg(math.atan(mx, mz))
+    local diff = (want - _yaw + 180) % 360 - 180
+    local step = FACE_SPEED * dt
+    _yaw = _yaw + math.max(-step, math.min(step, diff))
+    return mx, mz, true, 1      -- it always faces its way: always forward
+end
+
+function update(self, dt, t)
+    local ox, oy, oz = parentOffset(self)   -- before the figure moves
+
+    -- --- Walk ----------------------------------------------------------------
+    local dx, dz, walking, pace
+    if CAMERA_RELATIVE then
+        dx, dz, walking, pace = cameraWalk(dt)
+    else
+        dx, dz, walking, pace = tankWalk(dt)
+    end
+    self.x = self.x + dx * WALK_SPEED * dt
+    self.z = self.z + dz * WALK_SPEED * dt
     self.ry = _yaw + FACE_OFFSET
     if FOLLOW_GROUND then
-        self.y = game.terrainHeight(self.x, self.z) + _groundOffset
+        self.y = game.terrainHeight(self.x + ox, self.z + oz) + _groundOffset
     end
 
     -- --- Tell the graph -----------------------------------------------------
     -- Every frame rather than only on a change: the machine resets its
     -- parameters to their defaults when it starts, and a value sent once before
     -- that would be lost.
-    local walking = move ~= 0 or (TURN_ANIMATES and turn ~= 0)
     game.animBool(self.id, PARAM, walking)
+    -- Standing still keeps the last pace: the walk fading out after backing up
+    -- must go on backing up, not flick forward for its last quarter second.
+    -- (A graph without this parameter simply ignores it.)
+    if walking then _pace = pace end
+    if SPEED_PARAM ~= "" then game.animNumber(self.id, SPEED_PARAM, _pace) end
 
     -- --- Camera --------------------------------------------------------------
     if FOLLOW_CAMERA then
-        local tx = self.x - fx * CAM_DIST
-        local ty = self.y + CAM_HEIGHT
-        local tz = self.z - fz * CAM_DIST
+        -- In the world, where the camera lives: the figure plus its parent.
+        local wx, wy, wz = self.x + ox, self.y + oy, self.z + oz
+        local r = math.rad(_yaw)
+        local fx, fz = math.sin(r), math.cos(r)
+        local tx = wx - fx * CAM_DIST
+        local ty = wy + CAM_HEIGHT
+        local tz = wz - fz * CAM_DIST
         if not _cx then
             _cx, _cy, _cz = tx, ty, tz            -- first frame: no swoop in
         else
@@ -105,7 +193,7 @@ function update(self, dt, t)
             _cz = _cz + (tz - _cz) * k
         end
         game.setCameraPos(_cx, _cy, _cz)
-        game.setCameraDir(self.x - _cx, self.y + LOOK_HEIGHT - _cy, self.z - _cz)
+        game.setCameraDir(wx - _cx, wy + LOOK_HEIGHT - _cy, wz - _cz)
     end
 
     -- A graph that is not switching looks exactly like a graph that is not wired

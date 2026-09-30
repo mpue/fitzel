@@ -58,17 +58,32 @@ void start(const Graph& g, Instance& in) {
     in.state   = g.states.empty() ? -1
                : std::clamp(g.entry, 0, static_cast<int>(g.states.size()) - 1);
     in.time    = 0.0f;
+    in.phase   = 0.0f;
     in.entered = in.state;
     in.fadeFrom = -1;
 }
 
-float clipTime(const State& s, float rawTime, float clipLength) {
-    float t = rawTime * s.speed;
-    if (clipLength > 1e-4f) {
-        if (s.loop) t = std::fmod(t, clipLength);
-        else        t = std::min(t, clipLength);
+float clipTime(const State& s, float phase, float clipLength) {
+    if (clipLength <= 1e-4f) return phase;
+    if (s.loop) {
+        float t = std::fmod(phase, clipLength);
+        return t < 0.0f ? t + clipLength : t;   // backward wraps round the end
     }
-    return t;
+    // Played once: forward it holds at the end; backward it began at the end
+    // and holds at the start.
+    return phase >= 0.0f ? std::min(phase, clipLength)
+                         : std::max(clipLength + phase, 0.0f);
+}
+
+float playRate(const Graph& g, const Instance& in, const State& s) {
+    float r = s.speed;
+    if (!s.speedParam.empty()) {
+        const int pi = findParam(g, s.speedParam);
+        if (pi >= 0 && pi < static_cast<int>(in.values.size()) &&
+            g.params[static_cast<std::size_t>(pi)].type == Param::Type::Number)
+            r *= in.values[static_cast<std::size_t>(pi)];
+    }
+    return r;
 }
 
 float fadeWeight(const Instance& in) {
@@ -145,11 +160,14 @@ void step(const Graph& g, Instance& in, float dt,
     if (g.states.empty()) return;
     if (in.state < 0 || in.state >= static_cast<int>(g.states.size())) start(g, in);
 
-    in.time += dt;
-    // The state fading out keeps its own clock running until the fade is over.
+    in.time  += dt;
+    in.phase += dt * playRate(g, in, g.states[static_cast<std::size_t>(in.state)]);
+    // The state fading out keeps playing, at its own rate, until the fade is over.
     if (in.fadeFrom >= 0) {
-        in.fadeFromTime += dt;
-        in.fadeElapsed  += dt;
+        if (in.fadeFrom < static_cast<int>(g.states.size()))
+            in.fadeFromPhase +=
+                dt * playRate(g, in, g.states[static_cast<std::size_t>(in.fadeFrom)]);
+        in.fadeElapsed += dt;
         if (in.fadeElapsed >= in.fadeLength ||
             in.fadeFrom >= static_cast<int>(g.states.size()))
             in.fadeFrom = -1;
@@ -183,15 +201,16 @@ void step(const Graph& g, Instance& in, float dt,
             // the eye follows, and a chain of half-finished fades is a pose
             // nobody chose.
             if (t.fade > 0.0f) {
-                in.fadeFrom     = in.state;
-                in.fadeFromTime = in.time;
-                in.fadeLength   = t.fade;
-                in.fadeElapsed  = 0.0f;
+                in.fadeFrom      = in.state;
+                in.fadeFromPhase = in.phase;
+                in.fadeLength    = t.fade;
+                in.fadeElapsed   = 0.0f;
             } else {
                 in.fadeFrom = -1;
             }
             in.state   = t.to;
             in.time    = 0.0f;
+            in.phase   = 0.0f;
             in.entered = t.to;
             pass = 2;      // one transition per step: a machine that walks three
             break;         // states in one frame is a loop nobody can see
@@ -200,7 +219,7 @@ void step(const Graph& g, Instance& in, float dt,
 
     const State& s = g.states[static_cast<std::size_t>(in.state)];
     outClip = s.clip;
-    outTime = clipTime(s, in.time, clipLength);
+    outTime = clipTime(s, in.phase, clipLength);
 }
 
 // --- Persistence ------------------------------------------------------------
@@ -241,6 +260,7 @@ void save(nlohmann::json& j, const std::vector<Graph>& graphs) {
         for (const State& s : g.states)
             ss.push_back({{"name", s.name}, {"clip", s.clip}, {"modelClip", s.modelClip},
                           {"loop", s.loop}, {"speed", s.speed},
+                          {"speedParam", s.speedParam},
                           {"x", s.pos.x}, {"y", s.pos.y}});
         gj["states"] = std::move(ss);
 
@@ -286,6 +306,7 @@ void load(const nlohmann::json& j, std::vector<Graph>& graphs) {
                 s.modelClip = sj.value("modelClip", std::string{});
                 s.loop  = sj.value("loop", true);
                 s.speed = sj.value("speed", 1.0f);
+                s.speedParam = sj.value("speedParam", std::string{});
                 s.pos   = glm::vec2(sj.value("x", 0.0f), sj.value("y", 0.0f));
                 g.states.push_back(std::move(s));
             }
@@ -312,6 +333,45 @@ void load(const nlohmann::json& j, std::vector<Graph>& graphs) {
                 : std::clamp(g.entry, 0, static_cast<int>(g.states.size()) - 1);
         graphs.push_back(std::move(g));
     }
+}
+
+namespace {
+
+// A graph as JSON without what does not make it a different machine: its name
+// (the thing being compared FOR) and where its nodes sit on the canvas.
+nlohmann::json contentOf(const Graph& g) {
+    nlohmann::json j;
+    save(j, {g});
+    nlohmann::json gj = j["animGraphs"][0];
+    gj.erase("name");
+    for (auto& sj : gj["states"]) { sj.erase("x"); sj.erase("y"); }
+    return gj;
+}
+
+} // namespace
+
+bool sameGraph(const Graph& a, const Graph& b) { return contentOf(a) == contentOf(b); }
+
+std::unordered_map<std::string, std::string>
+adopt(std::vector<Graph>& scene, const std::vector<Graph>& incoming, const std::string& owner) {
+    std::unordered_map<std::string, std::string> moved;
+    for (const Graph& in : incoming) {
+        for (int n = 0;; ++n) {
+            std::string name = in.name;
+            if (n >= 1) name += " (" + (owner.empty() ? std::string("prefab") : owner) + ")";
+            if (n >= 2) name += " " + std::to_string(n);
+            const int at = findGraph(scene, name);
+            if (at >= 0 && !sameGraph(scene[static_cast<std::size_t>(at)], in)) continue;
+            if (at < 0) {
+                Graph g = in;
+                g.name = name;
+                scene.push_back(std::move(g));
+            }
+            if (name != in.name) moved[in.name] = name;
+            break;
+        }
+    }
+    return moved;
 }
 
 } // namespace animgraph

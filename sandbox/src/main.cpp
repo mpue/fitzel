@@ -1697,6 +1697,13 @@ int main(int argc, char** argv) {
         // because it has to outlive the frames a modal is open (see PanelState).
         char        prefabRenameBuf[96] = "";
         std::string prefabSelPath, prefabSelName;   // the picked prefab, by file
+        // Prefab packages (PrefabPackage.hpp): the import waiting for a yes in
+        // its preview, what the last export or import had to say, and the folder
+        // the last zip went to or came from.
+        prefabpkg::Plan          prefabImportPlan;
+        bool                     prefabImportPending = false;
+        std::vector<std::string> prefabPackageNotes;
+        std::string              prefabPackageDir;
 #endif
         std::string       prefLocation = defaultProjectsRoot; // wizard default dir
         std::vector<std::string> recentProjects;              // folders, newest first
@@ -2371,6 +2378,69 @@ int main(int argc, char** argv) {
             exportStatus = "Deleted prefab: " +
                            std::filesystem::path(path).stem().generic_string();
         };
+
+        // --- Prefabs to and from other projects (see PrefabPackage.hpp) ---------
+        // The zips start out beside the projects, where the other project is.
+        auto packageDir = [&]() -> std::string {
+            if (!prefabPackageDir.empty()) return prefabPackageDir;
+            return currentProject.empty() ? std::string()
+                 : std::filesystem::path(currentProject).parent_path().parent_path()
+                       .generic_string();
+        };
+        auto projectFolder = [&]() {
+            return std::filesystem::path(currentProject).parent_path().generic_string();
+        };
+        auto exportPrefabZip = [&](const std::string& path, const std::string& name) {
+            if (currentProject.empty()) { exportStatus = "Open a project first."; return; }
+            std::string zip;
+            if (!ed::saveFile(zip, packageDir(), projectio::safeName(name) + ".zip",
+                              "Prefab package", "*.zip", "zip"))
+                return;
+            prefabPackageDir = std::filesystem::path(zip).parent_path().generic_string();
+            // The open scene's graphs stand in for a prefab saved before prefabs
+            // carried their own.
+            prefabpkg::ExportSource src{projectFolder(), &assetDb, pio.animGraphs};
+            prefabpkg::Report rep;
+            std::string err;
+            if (!prefabpkg::exportZip(src, path, zip, rep, err)) {
+                exportStatus = "Export failed: " + err;
+                return;
+            }
+            prefabPackageNotes = rep.notes;
+            exportStatus = "Exported \"" + name + "\" with " + std::to_string(rep.files.size()) +
+                           " files to " + zip;
+        };
+        auto importPrefabZip = [&] {
+            if (currentProject.empty()) { exportStatus = "Open a project first."; return; }
+            std::string zip;
+            if (!ed::pickFile(zip, packageDir(), "Prefab package", "*.zip")) return;
+            prefabPackageDir = std::filesystem::path(zip).parent_path().generic_string();
+            std::string err;
+            if (!prefabpkg::planImport({projectFolder(), &assetDb}, zip, prefabImportPlan, err)) {
+                exportStatus = "Import failed: " + err;
+                return;
+            }
+            prefabImportPending = true;   // the panel shows the plan and asks
+        };
+        auto confirmPrefabImport = [&] {
+            prefabImportPending = false;
+            prefabpkg::Applied done;
+            std::string err;
+            if (!prefabpkg::applyImport({projectFolder(), &assetDb}, prefabImportPlan, done, err)) {
+                exportStatus = "Import failed: " + err;
+                return;
+            }
+            // The new files join the asset database and the new materials the
+            // library now -- the next project save would otherwise delete them.
+            if (!projectio::adoptNewFiles(pio))
+                projectio::loadProjectMaterials(pio, projectio::matsDirIn(projectFolder()));
+            prefabCache.clear();          // an updated prefab must not spawn stale
+            prefabPackageNotes = prefabImportPlan.notes;
+            prefabSelPath = done.prefabPath;
+            prefabSelName = prefabImportPlan.prefabName;
+            exportStatus = "Imported \"" + prefabImportPlan.prefabName + "\": " +
+                           std::to_string(done.written.size()) + " files written";
+        };
 #endif
 
         // --- Prefabs along the road (see RoadPrefab.hpp) -----------------------
@@ -2812,6 +2882,9 @@ int main(int argc, char** argv) {
         // The scene's animation state machines. The graphs are shared data; each
         // AnimGraphComponent holds its own run of one (see AnimGraph.hpp).
         std::vector<animgraph::Graph> animGraphs;
+        // Prefabs carry the graphs their objects run and hand them to this scene
+        // when they are loaded (prefab::load), so they need to know where it is.
+        pio.animGraphs = &animGraphs;
         int animEditGraph = 0;      // which one the graph editor is showing
         // The clip the Timeline edits and previews. Clamped rather than trusted:
         // deleting a clip leaves the index one past the end for a frame.
@@ -4846,6 +4919,9 @@ int main(int argc, char** argv) {
         // A script placed the camera this Play (game.setCameraPos): it owns the
         // eye, and the walking player leaves it alone until Play ends.
         bool      scriptOwnsEye = false;
+        // An orbit camera (CameraComponent::orbitMouse) locked the cursor, and
+        // unlocks it again when it stops being the view.
+        bool      orbitHeldCursor = false;
         bool      playPrevEdit = false;
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
         // Whose race you are watching: an opponent's entity id, or -1 for your
@@ -6785,6 +6861,20 @@ int main(int argc, char** argv) {
                     playCue(c.sound, c.gain, c.pitch);
             }
 
+            // An orbit camera as the view owns the mouse (the branch below). When
+            // it stops being the view, the cursor it held is let go again --
+            // unless the walking player holds it for its own look.
+            const bool orbitView = playMode && [&] {
+                const Entity* ce = activeCam >= 0 ? document.find(activeCam) : nullptr;
+                const auto* cc = ce ? ce->components.get<CameraComponent>() : nullptr;
+                return cc && ce->activeInHierarchy && ce->parent >= 0 &&
+                       cc->mode == CameraComponent::Follow && cc->orbitMouse;
+            }();
+            if (!orbitView && orbitHeldCursor) {
+                orbitHeldCursor = false;
+                if (!fpsMode) input.setCursorLocked(false);
+            }
+
             if (gfxUi.open()) {
                 // The graphics menu owns the frame: no look, no walking, no
                 // driving. (The world keeps ticking, like the scene's own menu --
@@ -7064,6 +7154,22 @@ int main(int argc, char** argv) {
                 } else {
                     driveGliderId2 = -1;
                 }
+            } else if (orbitView) {
+                // An orbit camera is the view: the mouse (and the right stick)
+                // swing it round the object it follows. The walking player
+                // stands aside, as it does for a script's eye -- WASD belongs to
+                // the figure now, and a capsule wandering off would drag the
+                // streaming with it -- and the cursor is held, as in any
+                // third-person game. Esc still leaves Play.
+                if (!input.isCursorLocked()) input.setCursorLocked(true);
+                orbitHeldCursor = true;
+                glm::vec2 d = input.mouseDelta();
+                if (input.hasGamepad()) {
+                    const float look = 1200.0f * dt;
+                    d += glm::vec2( input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_X) * look,
+                                   -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
+                }
+                cams.steer(activeCam, d);
             } else if (fpsMode && scriptOwnsEye) {
                 // A script flies the eye (see host.setCamPos): the walking player
                 // stands aside rather than pull the camera back to its capsule --
@@ -9312,7 +9418,7 @@ int main(int argc, char** argv) {
                         const int fc = modelClipOf(e, from.modelClip, fromLen);
                         if (fc >= 0) {
                             ag->skinFromClip  = fc;
-                            ag->skinFromTime  = animgraph::clipTime(from, in.fadeFromTime, fromLen);
+                            ag->skinFromTime  = animgraph::clipTime(from, in.fadeFromPhase, fromLen);
                             ag->skinFromShare = animgraph::fadeWeight(in);
                         }
                     }
@@ -10292,7 +10398,12 @@ int main(int argc, char** argv) {
                                   [&]{ return prefabEdit.active; },
                                   renamePrefabFile, deletePrefabFile,
                                   prefabRenameBuf, sizeof(prefabRenameBuf),
-                                  prefabSelPath, prefabSelName});
+                                  prefabSelPath, prefabSelName,
+                                  exportPrefabZip, importPrefabZip,
+                                  prefabImportPending ? &prefabImportPlan : nullptr,
+                                  confirmPrefabImport,
+                                  [&] { prefabImportPending = false; },
+                                  &prefabPackageNotes});
 
             // Import Unity asset: browse an asset folder, preview which textures
             // map by Unity naming convention, then import the FBX as a hierarchy

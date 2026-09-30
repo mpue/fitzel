@@ -350,17 +350,14 @@ void writeProjectMaterials(const Context& ctx, const std::string& matsDir) {
         if (!md.fromModel) writeMaterialFile(md, matsDir);
 }
 
-void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
-    ctx.materials.clear();
-    for (const std::string& file : fitzel::vfs::listFiles(matsDir, false)) {
-        const std::filesystem::path de(file);
-        if (de.extension().string() != ".fmat") continue;
+bool loadMaterialFile(Context& ctx, const std::string& file, MaterialDef& md) {
+    const std::filesystem::path de(file);
+    {
         const std::string body = fitzel::vfs::readText(file);
-        if (body.empty()) continue;
+        if (body.empty()) return false;
         nlohmann::json m;
         try { m = nlohmann::json::parse(body); }
-        catch (const nlohmann::json::exception&) { continue; }
-        MaterialDef md;
+        catch (const nlohmann::json::exception&) { return false; }
         md.assetId = ctx.assetDb.idForPath(file);
         if (!md.assetId.valid()) md.assetId = AssetId::generate();
         md.name         = m.value("name", de.stem().string());
@@ -408,7 +405,30 @@ void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
             md.emissionTexId = AssetId::fromString(m["emissionMap"].get<std::string>());
             if (md.emissionTexId.valid()) md.emissionTex = ctx.assetDb.loadTexture(md.emissionTexId);
         }
-        ctx.materials.push_back(std::move(md));
+    }
+    return true;
+}
+
+bool adoptNewFiles(Context& ctx) {
+    bool otherChanged = false;
+    for (const fitzel::AssetChange& ch : ctx.assetDb.pollChanges()) {
+        if (ch.type != fitzel::AssetType::Material) continue;
+        if (ch.kind != fitzel::AssetChange::Kind::Added) { otherChanged = true; continue; }
+        MaterialDef md;
+        if (!loadMaterialFile(ctx, ctx.assetDb.pathForId(ch.id).generic_string(), md)) continue;
+        const bool known = std::any_of(ctx.materials.begin(), ctx.materials.end(),
+                                       [&](const MaterialDef& m) { return m.assetId == md.assetId; });
+        if (!known) ctx.materials.push_back(std::move(md));
+    }
+    return !otherChanged;
+}
+
+void loadProjectMaterials(Context& ctx, const std::string& matsDir) {
+    ctx.materials.clear();
+    for (const std::string& file : fitzel::vfs::listFiles(matsDir, false)) {
+        if (std::filesystem::path(file).extension().string() != ".fmat") continue;
+        MaterialDef md;
+        if (loadMaterialFile(ctx, file, md)) ctx.materials.push_back(std::move(md));
     }
     if (ctx.materials.empty()) ctx.seedDefaultMaterials();
     ctx.matSel = 0;

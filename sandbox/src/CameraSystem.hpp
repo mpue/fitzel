@@ -95,6 +95,12 @@ public:
     // was not resolved this frame, or is not active.
     bool pose(int id, Pose& out) const;
 
+    // Mouse travel (pixels, +y = up, as Input reports it) for orbit camera `id`,
+    // taken by the next update(). Only the camera that is the VIEW is steered --
+    // two orbit cameras in a scene must not both swing with one mouse -- so the
+    // caller says which one that is. Ignored by any camera not orbiting.
+    void steer(int id, glm::vec2 mouseDelta);
+
     // The shot a follow camera with these settings would give around `target`
     // this frame -- for an object with no camera of its own, which is what
     // watching a rival is. Every camera entity goes through this same routine, so
@@ -135,7 +141,19 @@ private:
         bool      seeded = false;   // false = snap on the first frame, don't ease
     };
 
+    // An orbit camera's angles round its pivot (see CameraComponent::orbitMouse).
+    // Live state for the same reasons as Chase.
+    struct Orbit {
+        float     yaw   = 0.0f;     // radians; 0 = the eye on the pivot's +Z side
+        float     pitch = 0.0f;     // radians above the pivot's horizon
+        float     dist  = 0.0f;     // metres from the pivot
+        glm::vec2 pending{0.0f};    // mouse travel since the last update
+        bool      seeded = false;   // false = take the authored angle first
+    };
+    Pose orbit(int key, const Entity& target, const FollowShot& shot, float degPerPixel);
+
     std::unordered_map<int, Chase> m_chase;  // camera entity id -> eased state
+    std::unordered_map<int, Orbit> m_orbit;  // orbit camera id -> its angles
     std::unordered_map<int, Pose>  m_pose;   // camera entity id -> this frame
     // Multishot cameras' running edits, kept for the same reason as m_chase and
     // swept the same way. Behind a pointer so this header does not have to drag

@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "PrefabPackage.hpp"
 #include "Selection.hpp"
 #include "SceneTypes.hpp" // Entity
 
@@ -56,6 +57,19 @@ struct PanelState {
     // open, exactly like the hierarchy's rename state.
     std::string& selPath;
     std::string& selName;
+
+    // --- Taking a prefab to another project ------------------------------------
+    // Export packs the picked prefab and everything it needs into one .zip;
+    // Import reads one, SHOWS what it would do, and writes only on a yes. Both
+    // are file work, so both are the caller's -- the panel asks and shows.
+    std::function<void(const std::string& path, const std::string& name)> exportZip;
+    std::function<void()> importZip;              // choose a .zip and plan it
+    // The import waiting for that yes: non-null while its preview is up.
+    const prefabpkg::Plan* importPlan = nullptr;
+    std::function<void()>  importConfirm;
+    std::function<void()>  importCancel;
+    // What the last export or import left out or had to change, one line each.
+    const std::vector<std::string>* packageNotes = nullptr;
 };
 
 void drawPanel(const PanelState& s);
