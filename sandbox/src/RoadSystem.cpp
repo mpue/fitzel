@@ -185,6 +185,7 @@ void RoadSystem::syncJunctionSurface() {
     if (!fitted && m_normTex) m_junctionMat.setTexture("uNormalMap", *m_normTex, 1);
     else                      m_junctionMat.clearTexture("uNormalMap");
     m_junctionMat.set("uHasNormalMap", (!fitted && m_normTex) ? 1 : 0);
+    m_junctionMat.set("uNormalTopDown", (m_normTex && !m_normTex->bottomUp()) ? 1 : 0);
     if (m_wetTex) m_junctionMat.setTexture("uWetMap", *m_wetTex, 4);
     else          m_junctionMat.clearTexture("uWetMap");
     if (m_junctionGlowTex)
@@ -368,6 +369,7 @@ void RoadSystem::setNormal(const std::string& file) {
         m_normTex = t;
         m_mat.setTexture("uNormalMap", *m_normTex, 1); // unit 1: uTexture holds 0
         m_mat.set("uHasNormalMap", 1);
+        m_mat.set("uNormalTopDown", m_normTex->bottomUp() ? 0 : 1);   // green's sign
         syncJunctionSurface();
     }
 }

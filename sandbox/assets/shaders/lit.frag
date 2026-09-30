@@ -369,6 +369,10 @@ uniform int   uAlphaCutout;   // 1 = discard fragments with texture alpha < uAlp
 uniform float uAlphaCutoff;   // cutout discard threshold (masked transparency)
 uniform sampler2D uNormalMap; // tangent-space normal map (object materials)
 uniform int   uHasNormalMap;  // 1 = perturb the normal with uNormalMap
+// 1 = the map was stored top row first (every imported model's, glTF's way:
+// Texture::bottomUp() false), so v runs DOWN the picture and green is flipped
+// (see applyNormalMap). 0 = stored bottom row first (the library's default).
+uniform int   uNormalTopDown;
 // Metallic-roughness-occlusion map of an imported model, glTF layout: R
 // occlusion, G roughness, B metalness. uRoughness / uReflectivity hold the
 // map's AVERAGE, uOrmMean what the map averages to, so texel / mean spreads
@@ -982,8 +986,17 @@ vec3 rainRings(vec3 N, vec2 wp, float amount, float density, float time) {
     return normalize(N);
 }
 
-vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap) {
+// The basis is the direction u grows in, the direction v grows in, and N.
+// A normal map's green points UP THE PICTURE (the OpenGL convention glTF and
+// the "NormalGL" maps use). That is the direction v grows in only when the
+// picture was stored bottom row first; stored top row first -- every imported
+// model's maps -- v grows DOWN the picture, and green has to be flipped, or the
+// relief leans the wrong way: every ridge lit from its shadowed side. Measured
+// in viewcheck with a map whose every texel leans to the picture's top, on a
+// model and on a library material side by side.
+vec3 applyNormalMap(vec3 N, vec3 worldPos, vec2 uv, sampler2D nmap, bool topDown) {
     vec3 nt = texture(nmap, uv).xyz * 2.0 - 1.0; // tangent-space normal
+    if (topDown) nt.y = -nt.y;
     vec3 dp1 = dFdx(worldPos), dp2 = dFdy(worldPos);
     vec2 du1 = dFdx(uv),       du2 = dFdy(uv);
     vec3 dp2p = cross(dp2, N), dp1p = cross(N, dp1);
@@ -1096,7 +1109,7 @@ void main() {
     if (uColorMode == 1) {
         N = terrainNrm;
     } else if (uHasNormalMap == 1) {
-        N = applyNormalMap(N, vWorldPos, vUV, uNormalMap);
+        N = applyNormalMap(N, vWorldPos, vUV, uNormalMap, uNormalTopDown == 1);
     }
 
     // Rain wetness, in two parts, because a wet road is two materials at once.

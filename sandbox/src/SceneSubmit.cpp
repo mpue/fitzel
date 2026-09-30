@@ -142,8 +142,13 @@ void submit(const Context& c, Scratch& scratch) {
              .set("uTint", md.tex ? md.tint : md.albedo); // always written (shared program)
         else
             m.set("uColorMode", 0).set("uAlbedo", md.albedo);
+        // Which way up the map was stored decides green's sign (lit.frag,
+        // applyNormalMap): a model's own maps are top row first, the library's
+        // bottom row first. Written with the map every time -- the program is
+        // shared, and a sign left over from the last material is someone else's.
         if (md.normalTex)
-            m.setTexture("uNormalMap", *md.normalTex, 1).set("uHasNormalMap", 1);
+            m.setTexture("uNormalMap", *md.normalTex, 1).set("uHasNormalMap", 1)
+             .set("uNormalTopDown", md.normalTex->bottomUp() ? 0 : 1);
         else
             m.set("uHasNormalMap", 0);
         // Metallic-roughness-occlusion (imported models). Unit 4, which like

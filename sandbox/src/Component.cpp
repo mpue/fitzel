@@ -289,6 +289,11 @@ const std::vector<Property>& TriggerComponent::properties() {
         radius.slider = true; radius.min = 0.5f; radius.max = 20.0f; radius.fmt = "%.1f m";
         radius.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->radius; };
         p.push_back(std::move(radius));
+        Property reacts;
+        reacts.label = "Reacts to"; reacts.key = "reactsTo"; reacts.kind = PropKind::EnumInt;
+        reacts.enumLabels = {"Player", "Physics objects", "Player + physics objects"};
+        reacts.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->reactsTo; };
+        p.push_back(std::move(reacts));
         Property once;
         once.label = "Fire once"; once.key = "once"; once.kind = PropKind::Bool;
         once.field = [](void* o) -> void* { return &static_cast<TriggerComponent*>(o)->once; };

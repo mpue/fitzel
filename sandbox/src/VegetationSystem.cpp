@@ -704,6 +704,12 @@ bool VegetationSystem::loadTreeMesh(const std::string& path, TreeSpecies& sp, Tr
         tp.hasTex = !p.texPixels.empty();
         if (tp.hasTex)
             tp.tex = Texture::fromPixels(p.texPixels.data(), p.texWidth, p.texHeight, 4);
+        // The bark's relief. Every tree in content ships one and until now it
+        // was decoded and thrown away.
+        tp.hasNrm = !p.normalPixels.empty();
+        if (tp.hasNrm)
+            tp.nrm = Texture::fromPixels(p.normalPixels.data(), p.normalWidth, p.normalHeight, 4);
+        tp.nrmScale = p.normalScale;
         for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
             VertexKey key{};
             key.v[0] = (p.vertices[i + 0] - baseX) * scale;
@@ -796,6 +802,12 @@ void VegetationSystem::applyPartMats(TreeSpecies& sp, TreeLOD& lod) {
         if (want != tp.swapName) {
             tp.swapName = want;
             tp.swapTex  = want.empty() ? nullptr : partTexture(want);
+        }
+        tp.nrmStrength = m ? m->normalStrength : 1.0f;
+        const std::string wantN = m ? m->normal : std::string{};
+        if (wantN != tp.nrmSwapName) {
+            tp.nrmSwapName = wantN;
+            tp.nrmSwapTex  = wantN.empty() ? nullptr : partTexture(wantN);
         }
     }
 }
@@ -985,6 +997,28 @@ void VegetationSystem::setLODModel(int s, int lod, const std::string& file) {
     if (lod < 0 || lod >= static_cast<int>(sp.lods.size())) return;
     sp.lods[lod].model = file;
     loadTreeMesh(modelPath(file), sp, sp.lods[lod]);
+}
+
+int VegetationSystem::adoptTreeModel(const std::string& file, const std::string& name,
+                                     float height) {
+    scanTreeAssets();   // the file may be new since the project was opened
+    for (int s = 0; s < static_cast<int>(m_species.size()); ++s) {
+        TreeSpecies& sp = m_species[static_cast<std::size_t>(s)];
+        if (!sp.lods.empty() && sp.lods.front().model == file) {
+            setLODModel(s, 0, file);        // reloads; the levels and impostor follow
+            return s;
+        }
+    }
+    const int s = addSpecies();
+    TreeSpecies& sp = m_species[static_cast<std::size_t>(s)];
+    sp.name = name;
+    sp.size = std::max(height, 0.5f);
+    // The stock billboard is a picture of some other tree; the impostors are
+    // baked from this one's own mesh.
+    sp.bbEnabled = false;
+    setLODModel(s, 0, file);
+    treeCenter = glm::vec2(1e9f);
+    return s;
 }
 
 void VegetationSystem::setBillboard(int s, const std::string& file) {
@@ -1455,10 +1489,18 @@ void VegetationSystem::drawTrees(const FrameContext& c) {
     m_tree.setFloat("uContrast", treeContrast);
     m_tree.setFloat("uHue", glm::radians(treeHue));
     m_tree.setInt("uTex", 0);
+    m_tree.setInt("uNormalTex", 1);
     // One material group's uniforms, set on every draw: the program is shared by
     // every species, and a value left over from the last part is someone else's.
     const auto setTreePart = [&](const TreeLOD::Prim& tp, bool cutout) {
         tp.bindTex();
+        // Relief on the wood only. A leaf card's normal is bent out of the crown
+        // (that is what shades the crown as one volume); a leaf map on top of it
+        // would put the confetti back.
+        const bool relief = !cutout && tp.relief();
+        if (relief) tp.bindNormal(1);
+        m_tree.setInt("uHasNormal", relief ? 1 : 0);
+        m_tree.setFloat("uNormalStrength", relief ? tp.reliefStrength() : 0.0f);
         m_tree.setInt("uAlphaCutout", cutout ? 1 : 0);
         m_tree.setFloat("uAlphaCutoff", tp.cutoff);
         m_tree.setInt("uHasTex", tp.textured() ? 1 : 0);
@@ -2034,6 +2076,37 @@ void VegetationSystem::panelPartMats(int s) {
                 ImGui::EndDisabled();
                 ui::hint("Alpha below the cutoff is a hole: higher thins the leaves.");
 
+                // The relief (bark parts): the model's own normal map or another,
+                // and how strongly it tilts the light.
+                if (!tp.cutout) {
+                    const char* nPv = cur.normal.empty()
+                                          ? (tp.hasNrm ? "(model's own)" : "(none)")
+                                          : cur.normal.c_str();
+                    if (ImGui::BeginCombo("Normal map", nPv)) {
+                        if (ImGui::Selectable(tp.hasNrm ? "(model's own)" : "(none)",
+                                              cur.normal.empty())) {
+                            cur.normal.clear();
+                            edited = commit = true;
+                        }
+                        for (const std::string& f : m_texFiles)
+                            if (ImGui::Selectable(f.c_str(), f == cur.normal)) {
+                                cur.normal = f;
+                                edited = commit = true;
+                            }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip("Tangent-space, OpenGL convention (green up), "
+                                          "like the NormalGL maps of most texture sites.");
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted("Relief");
+                    ImGui::SameLine();
+                    if (ui::stepper("##relief", cur.normalStrength, 0.1f, 0.0f, 3.0f, "%.1f")) {
+                        edited = commit = true;
+                    }
+                    if (!tp.hasNrm && cur.normal.empty())
+                        ui::hint("No normal map in the model: pick one to give the bark relief.");
+                }
+
                 ImGui::BeginDisabled(!have);
                 if (ImGui::Button("Reset part")) reset = commit = true;
                 ImGui::EndDisabled();
@@ -2068,12 +2141,14 @@ void VegetationSystem::serializeTrees(nlohmann::json& j) const {
         for (const PartMat& m : sp.partMats) {
             const PartMat d;
             if (m.tint == d.tint && m.brightness == d.brightness && m.texture.empty() &&
-                m.cutout == d.cutout && m.cutoff == d.cutoff)
+                m.cutout == d.cutout && m.cutoff == d.cutoff && m.normal.empty() &&
+                m.normalStrength == d.normalStrength)
                 continue;
             mats.push_back({{"model", m.model}, {"prim", m.prim},
                             {"tint", {m.tint.r, m.tint.g, m.tint.b}},
                             {"brightness", m.brightness}, {"texture", m.texture},
-                            {"cutout", m.cutout}, {"cutoff", m.cutoff}});
+                            {"cutout", m.cutout}, {"cutoff", m.cutoff},
+                            {"normal", m.normal}, {"normalStrength", m.normalStrength}});
         }
         arr.push_back({
             {"materials", mats},
@@ -2139,6 +2214,8 @@ void VegetationSystem::deserializeTrees(const nlohmann::json& j) {
                 m.texture    = mj.value("texture", std::string{});
                 m.cutout     = mj.value("cutout", -1);
                 m.cutoff     = mj.value("cutoff", 0.5f);
+                m.normal     = mj.value("normal", std::string{});
+                m.normalStrength = mj.value("normalStrength", 1.0f);
                 sp.partMats.push_back(m);
             }
         if (sj.contains("lods") && sj["lods"].is_array()) {

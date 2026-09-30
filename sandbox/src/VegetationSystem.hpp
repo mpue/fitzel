@@ -159,10 +159,30 @@ public:
             float     cutoff = 0.5f;               // alpha discard threshold
             std::string swapName;                  // texture file drawn instead ("" = model's)
             std::shared_ptr<fitzel::Texture> swapTex;
+            // The relief (tree.frag, bark parts only): the model's own normal map
+            // and its glTF strength, or the part's replacement, times the
+            // part's strength.
+            fitzel::Texture nrm; bool hasNrm = false;
+            float nrmScale = 1.0f;                 // glTF normalTexture.scale
+            float nrmStrength = 1.0f;              // the author's dial (PartMat)
+            std::string nrmSwapName;               // normal map drawn instead ("" = model's)
+            std::shared_ptr<fitzel::Texture> nrmSwapTex;
             bool textured() const { return (swapTex && swapTex->isValid()) || hasTex; }
             void bindTex() const {
                 if (swapTex && swapTex->isValid()) swapTex->bind(0);
                 else if (hasTex) tex.bind(0);
+            }
+            bool relief() const {
+                return nrmStrength > 0.0f && ((nrmSwapTex && nrmSwapTex->isValid()) || hasNrm);
+            }
+            // The strength the shader tilts by: a replacement map has no glTF
+            // scale of its own, so only the model's map carries one.
+            float reliefStrength() const {
+                return nrmStrength * ((nrmSwapTex && nrmSwapTex->isValid()) ? 1.0f : nrmScale);
+            }
+            void bindNormal(std::uint32_t unit) const {
+                if (nrmSwapTex && nrmSwapTex->isValid()) nrmSwapTex->bind(unit);
+                else if (hasNrm) nrm.bind(unit);
             }
         };
         std::vector<Prim> prims;     // per-material draw groups
@@ -201,6 +221,8 @@ public:
         std::string texture;            // file drawn instead of the model's ("" = model's)
         int         cutout = -1;        // -1 as the model says, 0 solid, 1 cut out
         float       cutoff = 0.5f;      // alpha below this is a hole
+        std::string normal;             // normal map drawn instead ("" = model's)
+        float       normalStrength = 1.0f; // 0 = flat, 1 = as the map says
     };
 
     // A configurable tree type: an ordered LOD chain + a far billboard, its own
@@ -253,6 +275,18 @@ public:
     void removeLOD(int s, int lod);
     void setLODModel(int s, int lod, const std::string& file);
     void setBillboard(int s, const std::string& file);
+    // Point a species at a tree model that was just written (the tree
+    // generator, TreeGenPanel.cpp): the species already showing `file` as its
+    // first level is reloaded from it -- the same file saved again -- and
+    // otherwise a new species is made for it, `height` metres tall. The file
+    // must lie in the open project or the content dirs. Returns the species.
+    int  adoptTreeModel(const std::string& file, const std::string& name, float height);
+    // The open project's folder, as last handed to refreshTreeAssets.
+    const std::string& projectDir() const { return m_projectDir; }
+    // Re-read the lists of pickable models and images (content + project) without
+    // reloading any species -- for a file just written into the project, so it
+    // shows up in the pickers at once instead of after the next project open.
+    void rescanTreeFiles() { scanTreeAssets(); }
     // The whole Trees + Paint-trees editor panel (keeps main.cpp small).
     // treePaintMode is the tree brush's own switch; which tool has the left
     // button is main's (ViewTool.hpp).

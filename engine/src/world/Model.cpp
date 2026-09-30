@@ -647,10 +647,12 @@ ModelPrimitive gltfPrimitive(const cgltf_primitive& prim, const glm::mat4& model
             alphaHasTransparency(mp.texPixels))
             mp.alphaCutout = true;
         // Tangent-space normal map (KHR standard normal_texture).
-        if (mat->normal_texture.texture)
+        if (mat->normal_texture.texture) {
             assignImage(gltfImage(images, mat->normal_texture.texture->image,
                                   mp.materialName),
                         mp.normalPixels, mp.normalWidth, mp.normalHeight);
+            mp.normalScale = mat->normal_texture.scale;
+        }
         readMetalRoughOcclusion(*mat, images, uvSet, mp);
         // Emission. The glTF path never read it, so every lit screen, lamp and
         // neon strip in a GLB came in dark. The factor alone is a colour; with a

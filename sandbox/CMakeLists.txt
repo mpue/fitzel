@@ -327,6 +327,10 @@ set(SANDBOX_EDITOR_SOURCES
     src/BuildingPanel.cpp
     src/HousePanel.cpp
     src/StreetSignPanel.cpp
+    src/TreeGen.cpp
+    src/TreeGlb.cpp
+    src/TreePreview.cpp
+    src/TreeGenPanel.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -697,6 +701,25 @@ add_executable(rivercheck tools/rivercheck.cpp src/RiverGen.cpp src/RiverSystem.
 target_link_libraries(rivercheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
                                          stb_headers nlohmann_json::nlohmann_json)
 
+# treecheck (sandbox/tools/treecheck.cpp): the tree generator end to end. Grows
+# every preset, checks the mesh (finite, in range, unit normals, the height asked
+# for), that it is deterministic and that a leaf edit leaves the wood alone, writes
+# the .glb and loads it back the way a vegetation species does -- then draws each
+# tree in the generator's own studio to a PNG, because whether it looks like a tree
+# has no arithmetic answer. Run from the directory the shaders were copied to:
+#   cd build/release/bin && treecheck.exe <outDir> [--preset oak] [--seed n]
+add_executable(treecheck tools/treecheck.cpp src/TreeGen.cpp src/TreeGlb.cpp src/TreePreview.cpp)
+target_compile_definitions(treecheck PRIVATE FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
+target_link_libraries(treecheck PRIVATE fitzel glfw glad_gl_core_43 glm::glm
+                                        stb_headers nlohmann_json::nlohmann_json)
+
+# treepanelcheck (sandbox/tools/treepanelcheck.cpp): the Tree generator window
+# drawn through the editor's own Gui, written to a PNG -- mixercheck's trick.
+#   cd build/release/bin && treepanelcheck.exe out.png [--scroll 900]
+add_executable(treepanelcheck tools/treepanelcheck.cpp src/TreeGenPanel.cpp src/TreeGen.cpp
+                              src/TreeGlb.cpp src/TreePreview.cpp src/UiStyle.cpp)
+target_compile_definitions(treepanelcheck PRIVATE FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
+target_link_libraries(treepanelcheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
 # levelcheck (sandbox/tools/levelcheck.cpp): one seed, one whole race scene.
 # Everything a level generator can get wrong is invisible from a screenshot and
 # expensive to find by driving -- a corner tighter than the craft can hold looks
