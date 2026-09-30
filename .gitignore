@@ -65,3 +65,6 @@ Thumbs.db
 # Python bytecode -- tools/crashdump.py leaves this behind when imported.
 __pycache__/
 *.pyc
+
+# PDF exports of the docs (made locally from the Markdown, not tracked)
+/docs/*.pdf

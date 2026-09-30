@@ -4,8 +4,11 @@ Stand: 2026-09-30. Die Details stehen in der [README](../README.md), die Lua-API
 [lua-scripting.md](lua-scripting.md).
 
 Fitzel ist eine C++20/OpenGL-3.3-Engine mit Editor (`sandbox.exe`) und einem Player ohne
-Editor (`player.exe`). Gebaut ist sie für alles, was schnell durch eine Landschaft fährt
-oder fliegt.
+Editor (`player.exe`). Im Editor baut man ganze Welten (Landschaft, Straßen, Städte, Himmel
+und Wetter), modelliert und animiert Objekte und schreibt das Spiel dazu in Lua;
+„Export Game“ macht daraus ein eigenständiges Spiel. Die Beispiele reichen vom Rennspiel
+über Shoot'em-up, Flipper und Sokoban bis zum Rhythmusspiel. Dazu kommen ein Pfadtracer
+für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Landschaft
 
