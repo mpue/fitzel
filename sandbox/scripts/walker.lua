@@ -18,8 +18,8 @@
 --      two arrows --
 --         Idle   Model animation = the model's idle   -- entry state
 --         Walk   Model animation = the model's walk
---         Idle -> Walk   when `walking` is true
---         Walk -> Idle   when `walking` is false
+--         Idle -> Walk   when `walking` is true,  Fade 0.25 s
+--         Walk -> Idle   when `walking` is false, Fade 0.25 s
 --      Parameter: `walking`, Bool. A model that only brings a walk: give Idle
 --      the walk as well, at Speed 0 -- it holds the walk's first frame.
 --      An Animation component on the figure may stay; in a state that names a

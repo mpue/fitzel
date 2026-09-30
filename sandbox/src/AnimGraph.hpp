@@ -21,13 +21,17 @@
 // skinned figure's walk). The graph itself only ever hands back NAMES; the
 // caller looks them up, because only the caller has the clips and the models.
 //
-// WHAT IT DELIBERATELY IS NOT. There is no blending between states and no layers
-// -- a transition cuts. Blending needs a second clip evaluated alongside the
-// first and a weight, and every one of those decisions is easier to make once
-// there are real graphs to look at. Cutting is honest and it is what a door, a
-// lift, a lamp and a signal all want. Sub-graphs, mirroring and IK are not here
-// either, and this comment is the record that they were left out rather than
-// forgotten.
+// FADES. A transition cuts unless it is given a fade: then, for that many
+// seconds, the state being left keeps playing and hands the pose over to the
+// new one. Only MODEL animations fade -- a skeleton has a pose to mix, a
+// Timeline clip's door rotation or lamp range simply switches, which is what a
+// door, a lift, a lamp and a signal want anyway. The machine only keeps the
+// books (which state is fading out, how far in, how much of it is left); the
+// caller does the mixing, because only the caller has the skeletons.
+//
+// WHAT IT DELIBERATELY IS NOT. No layers, no blend trees (a walk mixed with a
+// run by speed), no sub-graphs, mirroring or IK. This comment is the record
+// that they were left out rather than forgotten.
 namespace animgraph {
 
 // A knob the graph reacts to. The VALUE does not live here -- see Instance --
@@ -79,6 +83,10 @@ struct Transition {
     // the parameter says so, and the walk never finishes a step.
     bool  hasExitTime = false;
     float exitTime    = 1.0f;   // fraction of the clip's length
+    // Seconds over which the state being left hands the pose to the new one
+    // (0 = cut). Short is the norm: a quarter of a second reads as smooth, a
+    // whole second as a figure moving through syrup.
+    float fade        = 0.0f;
 };
 
 struct Graph {
@@ -99,6 +107,13 @@ struct Instance {
     // The state the last step() moved into, for anyone who wants to react to a
     // change (a sound on the door starting to open). -1 when nothing changed.
     int   entered = -1;
+    // A fade in progress: the state being left (-1 = none), its own clock --
+    // it keeps playing while it fades -- and how far through the fade it is.
+    // A new transition mid-fade starts a fresh fade from the state it leaves.
+    int   fadeFrom     = -1;
+    float fadeFromTime = 0.0f;
+    float fadeLength   = 0.0f;
+    float fadeElapsed  = 0.0f;
 };
 
 int findState(const Graph& g, const std::string& name);   // -1 if absent
@@ -126,6 +141,15 @@ void fire(const Graph& g, Instance& in, const std::string& param);
 // which makes exit time pass immediately and looping a no-op).
 void step(const Graph& g, Instance& in, float dt,
           float clipLength, std::string& outClip, float& outTime);
+
+// Where in its clip a state is after `rawTime` seconds in it: scaled by its
+// speed, then looped or held at the end. What step() reports for the current
+// state, and what the caller needs for the one fading out.
+float clipTime(const State& s, float rawTime, float clipLength);
+
+// The fading-out state's share of the pose: 1 on the frame of the transition,
+// falling to 0 over the fade. 0 when no fade is running.
+float fadeWeight(const Instance& in);
 
 // Would this transition be taken right now? Used by step(), and by the editor to
 // draw an arrow that is currently satisfied.

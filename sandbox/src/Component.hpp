@@ -203,6 +203,11 @@ public:
     // `runtime`.
     int   skinClip = -1;
     float skinTime = 0.0f;
+    // A fade in progress: the model animation of the state being left, where
+    // in it, and its share of the pose (1 -> 0 over the fade). -1 = none.
+    int   skinFromClip  = -1;
+    float skinFromTime  = 0.0f;
+    float skinFromShare = 0.0f;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<AnimGraphComponent>(*this);

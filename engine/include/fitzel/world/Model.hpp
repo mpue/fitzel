@@ -124,6 +124,16 @@ struct ModelData {
 // model isn't animated / clip index is out of range. Feed to skinPrimitive.
 std::vector<glm::mat4> sampleSkeleton(const ModelData& model, int clip, float timeSec);
 
+// Two clips of one skeleton blended into one palette -- a crossfade. `w` is
+// clip B's share: 0 = A alone, 1 = B alone. Blended per JOINT (position and
+// scale mixed, rotation along the shorter arc) before the hierarchy is composed,
+// so a limb swinging between two poses keeps its length; mixing two finished
+// palettes instead shrinks it through the middle of the swing. An invalid clip
+// falls back to the other one alone.
+std::vector<glm::mat4> sampleSkeletonBlend(const ModelData& model,
+                                           int clipA, float timeA,
+                                           int clipB, float timeB, float w);
+
 // CPU-skin a primitive's bind vertices with `palette` into `out` (ready for
 // Mesh::update). A static primitive (no skin) is copied through unchanged.
 void skinPrimitive(const ModelPrimitive& prim, const std::vector<glm::mat4>& palette,

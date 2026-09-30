@@ -9266,7 +9266,7 @@ int main(int argc, char** argv) {
                 for (Entity& e : entities) {
                     auto* ag = e.components.get<AnimGraphComponent>();
                     if (!ag) continue;
-                    ag->skinClip = -1;
+                    ag->skinClip = ag->skinFromClip = -1;
                     const int gi = animgraph::findGraph(animGraphs, ag->graph);
                     if (gi < 0) continue;
                     const animgraph::Graph& g = animGraphs[gi];
@@ -9299,6 +9299,22 @@ int main(int argc, char** argv) {
                         ag->skinClip = modelClipOf(
                             e, g.states[ag->runtime.state].modelClip, unusedLen);
                         ag->skinTime = clipTime;
+                    }
+                    // A fade: the state being left keeps playing on its own
+                    // clock and hands over its share of the pose. Only between
+                    // two model animations -- with either side missing there is
+                    // no second pose to mix, and the switch is a cut.
+                    const animgraph::Instance& in = ag->runtime;
+                    if (ag->skinClip >= 0 && in.fadeFrom >= 0 &&
+                        in.fadeFrom < static_cast<int>(g.states.size())) {
+                        const animgraph::State& from = g.states[in.fadeFrom];
+                        float fromLen = 0.0f;
+                        const int fc = modelClipOf(e, from.modelClip, fromLen);
+                        if (fc >= 0) {
+                            ag->skinFromClip  = fc;
+                            ag->skinFromTime  = animgraph::clipTime(from, in.fadeFromTime, fromLen);
+                            ag->skinFromShare = animgraph::fadeWeight(in);
+                        }
                     }
                 }
             }
@@ -10718,9 +10734,19 @@ int main(int argc, char** argv) {
                     if (clips.empty()) continue;
                     int   ci   = 0;
                     float time = 0.0f;
+                    // A graph fade: the pose of the state being left, and its share.
+                    int   fromCi    = -1;
+                    float fromTime  = 0.0f;
+                    float fromShare = 0.0f;
                     if (byGraph) {
                         ci   = glm::clamp(ag->skinClip, 0, static_cast<int>(clips.size()) - 1);
                         time = ag->skinTime;   // looped and scaled by the graph
+                        if (ag->skinFromClip >= 0 && ag->skinFromShare > 0.0f) {
+                            fromCi    = glm::clamp(ag->skinFromClip, 0,
+                                                   static_cast<int>(clips.size()) - 1);
+                            fromTime  = ag->skinFromTime;
+                            fromShare = ag->skinFromShare;
+                        }
                     } else {
                         ci = glm::clamp(ac->clip, 0, static_cast<int>(clips.size()) - 1);
                         const float dur = clips[ci].duration;
@@ -10754,7 +10780,10 @@ int main(int argc, char** argv) {
                         }
                         time = ac->time;
                     }
-                    const auto palette = sampleSkeleton(*lm->animData, ci, time);
+                    const auto palette = fromCi >= 0
+                        ? sampleSkeletonBlend(*lm->animData, fromCi, fromTime,
+                                              ci, time, 1.0f - fromShare)
+                        : sampleSkeleton(*lm->animData, ci, time);
                     if (palette.empty()) continue;
                     const auto& prims = lm->animData->primitives;
                     for (std::size_t p = 0;
