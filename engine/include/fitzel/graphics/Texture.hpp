@@ -80,10 +80,23 @@ public:
     int height() const { return m_height; }
     std::uint32_t id() const { return m_id; }
 
+    // Which way up the picture went onto the GPU. True when it was stored bottom
+    // row first (fromFile with flipVertically -- the library's default, OpenGL's
+    // habit): then v grows UP the picture. False for everything taken top row
+    // first (fromPixels, fromFile(path, false) -- every imported model's maps,
+    // glTF's convention): then v grows DOWN it.
+    //
+    // A colour map does not care: the uvs were made for it. A tangent-space
+    // normal map does. Its green points up the PICTURE, and a shader that builds
+    // its basis from how v runs across the surface has to flip green when v runs
+    // down the picture -- or every ridge on a model is lit from the wrong end.
+    bool bottomUp() const { return m_bottomUp; }
+
 private:
     std::uint32_t m_id     = 0;
     int           m_width  = 0;
     int           m_height = 0;
+    bool          m_bottomUp = false;
 };
 
 } // namespace fitzel

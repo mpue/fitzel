@@ -789,6 +789,7 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
                                  static_cast<float>(m_sceneCopyH)));
         }
         s->setInt("uHasNormalMap", 0);
+        s->setInt("uNormalTopDown", 0);
         s->setInt("uHasOrmMap", 0);   // baseline: roughness/metal from the sliders alone
         s->setInt("uAlphaCutout", 0); // baseline: material re-enables if Cutout
         s->setInt("uShade", m_shadingMode); // viewport shading; 0 = the material

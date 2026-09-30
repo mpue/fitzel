@@ -107,7 +107,8 @@ Texture::~Texture() {
 Texture::Texture(Texture&& other) noexcept
     : m_id(std::exchange(other.m_id, 0)),
       m_width(std::exchange(other.m_width, 0)),
-      m_height(std::exchange(other.m_height, 0)) {}
+      m_height(std::exchange(other.m_height, 0)),
+      m_bottomUp(std::exchange(other.m_bottomUp, false)) {}
 
 Texture& Texture::operator=(Texture&& other) noexcept {
     if (this != &other) {
@@ -117,6 +118,7 @@ Texture& Texture::operator=(Texture&& other) noexcept {
         m_id     = std::exchange(other.m_id, 0);
         m_width  = std::exchange(other.m_width, 0);
         m_height = std::exchange(other.m_height, 0);
+        m_bottomUp = std::exchange(other.m_bottomUp, false);
     }
     return *this;
 }
@@ -234,7 +236,9 @@ Texture Texture::fromFile(const std::string& path, bool flipVertically) {
             }
         }
         std::free(rgba);
-        return fromPixels(px.data(), w, h, 3);
+        Texture tex = fromPixels(px.data(), w, h, 3);
+        tex.m_bottomUp = flipVertically;
+        return tex;
     }
 
     stbi_set_flip_vertically_on_load(flipVertically ? 1 : 0);
@@ -250,6 +254,7 @@ Texture Texture::fromFile(const std::string& path, bool flipVertically) {
     }
 
     Texture tex = fromPixels(data, width, height, channels);
+    tex.m_bottomUp = flipVertically;
     stbi_image_free(data);
     return tex;
 }
