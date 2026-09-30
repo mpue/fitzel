@@ -9248,27 +9248,58 @@ int main(int argc, char** argv) {
             // touches an entity itself, which is what keeps it a machine over
             // clip NAMES and testable without a scene.
             if (playMode || playerMode) {
+                // A state's model animation on this object's own model: its
+                // index there (-1 = the model has no clip of that name) and its
+                // length. By name, so it survives the model's clips reordering.
+                auto modelClipOf = [&](const Entity& e, const std::string& name,
+                                       float& length) -> int {
+                    length = 0.0f;
+                    if (name.empty()) return -1;
+                    const auto* mc = e.components.get<ModelComponent>();
+                    LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+                    if (!lm || !lm->animData) return -1;
+                    const auto& clips = lm->animData->animations;
+                    for (int i = 0; i < static_cast<int>(clips.size()); ++i)
+                        if (clips[i].name == name) { length = clips[i].duration; return i; }
+                    return -1;
+                };
                 for (Entity& e : entities) {
                     auto* ag = e.components.get<AnimGraphComponent>();
                     if (!ag) continue;
+                    ag->skinClip = -1;
                     const int gi = animgraph::findGraph(animGraphs, ag->graph);
                     if (gi < 0) continue;
                     const animgraph::Graph& g = animGraphs[gi];
                     if (ag->runtime.state < 0) animgraph::start(g, ag->runtime);
                     // The length of the clip the CURRENT state names, which is
-                    // what loops it and what exit time is measured against.
+                    // what loops it and what exit time is measured against. A
+                    // model animation's length outranks a Timeline clip's: it
+                    // is the one the eye sees loop, and a one-key clip beside it
+                    // has no length to loop on at all.
                     float len = 0.0f;
                     if (ag->runtime.state >= 0 &&
                         ag->runtime.state < static_cast<int>(g.states.size())) {
-                        const int ci = anim::findClip(
-                            animClips, g.states[ag->runtime.state].clip);
+                        const animgraph::State& cur = g.states[ag->runtime.state];
+                        const int ci = anim::findClip(animClips, cur.clip);
                         if (ci >= 0) len = animClips[ci].lastKeyTime();
+                        float modelLen = 0.0f;
+                        if (modelClipOf(e, cur.modelClip, modelLen) >= 0) len = modelLen;
                     }
                     std::string clipName;
                     float clipTime = 0.0f;
                     animgraph::step(g, ag->runtime, dt, len, clipName, clipTime);
                     const int ci = anim::findClip(animClips, clipName);
                     if (ci >= 0) anim::apply(animClips[ci], entities, clipTime);
+                    // The skeleton: step() may just have changed state, so this
+                    // asks the state it is in NOW. The skinning pass further
+                    // down poses the figure from it.
+                    if (ag->runtime.state >= 0 &&
+                        ag->runtime.state < static_cast<int>(g.states.size())) {
+                        float unusedLen = 0.0f;
+                        ag->skinClip = modelClipOf(
+                            e, g.states[ag->runtime.state].modelClip, unusedLen);
+                        ag->skinTime = clipTime;
+                    }
                 }
             }
             if (animPlay.playing) {
@@ -10041,7 +10072,16 @@ int main(int argc, char** argv) {
             // and it is the only place a graph is authored.
             graphui::drawPanel({showGraphEditor, animGraphs, animEditGraph, animClips,
                                 entities, sel, playMode || playerMode,
-                                [&]{ history.touch(); }});
+                                [&]{ history.touch(); },
+                                [&](const Entity& e) {
+                                    std::vector<std::string> names;
+                                    const auto* mc = e.components.get<ModelComponent>();
+                                    LoadedModel* lm = mc ? models.byId(mc->modelId) : nullptr;
+                                    if (lm && lm->animData)
+                                        for (const auto& c : lm->animData->animations)
+                                            names.push_back(c.name);
+                                    return names;
+                                }});
 
             // Roads + bridges: the whole panel lives in RoadPanel.cpp; main only
             // hands it the state it may touch (see roadui::PanelState).
@@ -10655,7 +10695,8 @@ int main(int argc, char** argv) {
             resolveHierarchy();
 
             // --- Skeletal animation (CPU skinning). For each entity carrying an
-            //     Animation component on an animated model, advance its clock and
+            //     Animation component (or an Animation Graph whose state names a
+            //     model animation) on an animated model, advance its clock and
             //     re-skin the model's meshes so the shared static render path shows
             //     the deformed pose. (Meshes are shared per model: instances of the
             //     same model animate together.)
@@ -10665,43 +10706,55 @@ int main(int argc, char** argv) {
                     if (!e.activeInHierarchy) continue;   // deactivated: don't skin
                     auto* ac = e.components.get<AnimationComponent>();
                     const auto* mc = e.components.get<ModelComponent>();
-                    if (!ac || !mc) continue;
+                    // A graph state that names one of the model's animations
+                    // poses the figure itself -- over the Animation component,
+                    // which only takes over again in a state that names none.
+                    const auto* ag = e.components.get<AnimGraphComponent>();
+                    const bool byGraph = ag && ag->skinClip >= 0;
+                    if ((!ac && !byGraph) || !mc) continue;
                     LoadedModel* lm = models.byId(mc->modelId);
                     if (!lm || !lm->animated || !lm->animData) continue;
                     const auto& clips = lm->animData->animations;
                     if (clips.empty()) continue;
-                    const int ci = glm::clamp(ac->clip, 0,
-                                              static_cast<int>(clips.size()) - 1);
-                    const float dur = clips[ci].duration;
-                    // Playback sub-range [rStart, rEnd] (end <= start -> whole clip).
-                    const float rStart = glm::clamp(ac->start, 0.0f, dur);
-                    float rEnd = (ac->end > ac->start) ? glm::clamp(ac->end, 0.0f, dur) : dur;
-                    if (rEnd <= rStart) rEnd = dur;
-                    const float span = rEnd - rStart;
-                    // First tick this Play: apply autostart; a trigger sets restart.
-                    if (!ac->started) {
-                        ac->started = true;
-                        ac->playing = ac->autostart;
-                        ac->time    = ac->reverse ? rEnd : rStart;
-                    }
-                    if (ac->restart) {
-                        ac->restart = false;
-                        ac->playing = true;
-                        ac->time    = ac->reverse ? rEnd : rStart;
-                    }
-                    if (ac->playing && span > 1e-4f) {
-                        ac->time += dt * ac->speed * (ac->reverse ? -1.0f : 1.0f);
-                        if (ac->loop) {
-                            float rel = ac->time - rStart;
-                            rel -= std::floor(rel / span) * span; // wrap into [0, span)
-                            ac->time = rStart + rel;
-                        } else if (ac->reverse) {
-                            if (ac->time <= rStart) { ac->time = rStart; ac->playing = false; }
-                        } else {
-                            if (ac->time >= rEnd)   { ac->time = rEnd;   ac->playing = false; }
+                    int   ci   = 0;
+                    float time = 0.0f;
+                    if (byGraph) {
+                        ci   = glm::clamp(ag->skinClip, 0, static_cast<int>(clips.size()) - 1);
+                        time = ag->skinTime;   // looped and scaled by the graph
+                    } else {
+                        ci = glm::clamp(ac->clip, 0, static_cast<int>(clips.size()) - 1);
+                        const float dur = clips[ci].duration;
+                        // Playback sub-range [rStart, rEnd] (end <= start -> whole clip).
+                        const float rStart = glm::clamp(ac->start, 0.0f, dur);
+                        float rEnd = (ac->end > ac->start) ? glm::clamp(ac->end, 0.0f, dur) : dur;
+                        if (rEnd <= rStart) rEnd = dur;
+                        const float span = rEnd - rStart;
+                        // First tick this Play: apply autostart; a trigger sets restart.
+                        if (!ac->started) {
+                            ac->started = true;
+                            ac->playing = ac->autostart;
+                            ac->time    = ac->reverse ? rEnd : rStart;
                         }
+                        if (ac->restart) {
+                            ac->restart = false;
+                            ac->playing = true;
+                            ac->time    = ac->reverse ? rEnd : rStart;
+                        }
+                        if (ac->playing && span > 1e-4f) {
+                            ac->time += dt * ac->speed * (ac->reverse ? -1.0f : 1.0f);
+                            if (ac->loop) {
+                                float rel = ac->time - rStart;
+                                rel -= std::floor(rel / span) * span; // wrap into [0, span)
+                                ac->time = rStart + rel;
+                            } else if (ac->reverse) {
+                                if (ac->time <= rStart) { ac->time = rStart; ac->playing = false; }
+                            } else {
+                                if (ac->time >= rEnd)   { ac->time = rEnd;   ac->playing = false; }
+                            }
+                        }
+                        time = ac->time;
                     }
-                    const auto palette = sampleSkeleton(*lm->animData, ci, ac->time);
+                    const auto palette = sampleSkeleton(*lm->animData, ci, time);
                     if (palette.empty()) continue;
                     const auto& prims = lm->animData->primitives;
                     for (std::size_t p = 0;

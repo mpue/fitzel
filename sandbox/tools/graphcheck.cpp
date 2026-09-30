@@ -326,6 +326,7 @@ int main() {
         g.name = "Door";
         g.entry = 0;
         g.states[1].pos = glm::vec2(120.0f, -40.0f);
+        g.states[0].modelClip = "Armature|Idle";
         nlohmann::json j;
         save(j, {g});
         std::vector<Graph> back;
@@ -342,6 +343,10 @@ int main() {
             check(b.params.size() == g.params.size(), "and its parameters",
                   std::to_string(b.params.size()));
             near(b.states[1].pos.x, 120.0f, "node positions come back too");
+            check(b.states[0].modelClip == "Armature|Idle",
+                  "a state keeps the model animation it names", b.states[0].modelClip);
+            check(b.states[1].modelClip.empty(),
+                  "and one that names none still names none", b.states[1].modelClip);
             check(b.transitions[3].from == Transition::kAnyState,
                   "an Any State arrow is still one",
                   std::to_string(b.transitions[3].from));
@@ -356,6 +361,41 @@ int main() {
             steps(b, in, 0.1f, 1.0f, "Opening",
                   "the reloaded graph runs the same");
         }
+    }
+
+    // --- A scene saved before states could name a model animation ------------
+    {
+        Graph g = makeDoor();
+        nlohmann::json j;
+        save(j, {g});
+        for (auto& sj : j["animGraphs"][0]["states"]) sj.erase("modelClip");
+        std::vector<Graph> back;
+        load(j, back);
+        check(!back.empty() && back[0].states.size() == g.states.size() &&
+              back[0].states[0].modelClip.empty() && back[0].states[0].clip == "idle",
+              "an older scene loads with no model animations and its clips intact",
+              back.empty() ? "nothing loaded" : back[0].states[0].clip);
+    }
+
+    // --- A state held at speed 0 --------------------------------------------
+    {
+        // The walk-only figure's Idle: its walk animation at speed 0, which must
+        // hold the first frame rather than run -- and must still be left again.
+        Graph g;
+        g.states = {st("Idle", ""), st("Walk", "")};
+        g.states[0].speed = 0.0f;
+        g.params = {{"walking", Param::Type::Bool, 0.0f}};
+        Transition go; go.from = 0; go.to = 1;
+        go.conditions = {{"walking", Condition::Op::IsTrue, 0.0f}};
+        g.transitions = {go};
+        Instance in;
+        start(g, in);
+        std::string clip;
+        float t = 1.0f;
+        step(g, in, 0.7f, 1.2f, clip, t);
+        near(t, 0.0f, "speed 0 holds the clip's first frame");
+        setBool(g, in, "walking", true);
+        steps(g, in, 0.016f, 1.2f, "Walk", "and the state can still be left");
     }
 
     // --- A scene with no graphs ---------------------------------------------

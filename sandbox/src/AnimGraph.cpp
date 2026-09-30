@@ -209,8 +209,9 @@ void save(nlohmann::json& j, const std::vector<Graph>& graphs) {
 
         nlohmann::json ss = nlohmann::json::array();
         for (const State& s : g.states)
-            ss.push_back({{"name", s.name}, {"clip", s.clip}, {"loop", s.loop},
-                          {"speed", s.speed}, {"x", s.pos.x}, {"y", s.pos.y}});
+            ss.push_back({{"name", s.name}, {"clip", s.clip}, {"modelClip", s.modelClip},
+                          {"loop", s.loop}, {"speed", s.speed},
+                          {"x", s.pos.x}, {"y", s.pos.y}});
         gj["states"] = std::move(ss);
 
         nlohmann::json ts = nlohmann::json::array();
@@ -252,6 +253,7 @@ void load(const nlohmann::json& j, std::vector<Graph>& graphs) {
                 State s;
                 s.name  = sj.value("name", std::string{"State"});
                 s.clip  = sj.value("clip", std::string{});
+                s.modelClip = sj.value("modelClip", std::string{});
                 s.loop  = sj.value("loop", true);
                 s.speed = sj.value("speed", 1.0f);
                 s.pos   = glm::vec2(sj.value("x", 0.0f), sj.value("y", 0.0f));

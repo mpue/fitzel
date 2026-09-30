@@ -372,6 +372,14 @@ Hat ein Objekt eine **Animation Graph**-Komponente, setzt das Skript deren
 Parameter; die Übergänge im Graphen entscheiden, was daraus wird. Objekte ohne
 Graph oder unbekannte Parameter werden stillschweigend übergangen.
 
+Ein Zustand spielt einen Timeline-Clip, eine **Modell-Animation** (die Clips,
+die ein geriggtes .glb mitbringt – Idle, Walk …) oder beides. Mit einer
+Modell-Animation posiert der Graph das Skelett selbst; eine Animation-Komponente
+braucht die Figur dafür nicht. Tempo 0 hält das erste Bild des Clips – so kommt
+auch eine Figur, die nur einen Walk mitbringt, zu einem Idle.
+`sandbox/scripts/walker.lua` ist ein vollständiges Beispiel: eine Figur mit WASD
+steuern und dabei zwischen Idle und Walk umschalten.
+
 | Aufruf | Rückgabe | Beschreibung |
 |--------|----------|--------------|
 | `game.animTrigger(id, name)` | – | Trigger auslösen; bleibt gesetzt, bis ein Übergang ihn verbraucht |

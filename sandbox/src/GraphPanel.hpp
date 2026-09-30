@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "AnimGraph.hpp"
@@ -40,6 +41,10 @@ struct PanelState {
     bool                           playing = false;
 
     std::function<void()> markDirty;
+    // The animations inside an object's model (its glTF clips, by name), for a
+    // state's "Model animation" picker. Empty for an object without an animated
+    // model. A callback because the model library is main's, not the panel's.
+    std::function<std::vector<std::string>(const Entity&)> modelClips;
 };
 
 void drawPanel(const PanelState& s);

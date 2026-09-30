@@ -16,6 +16,11 @@
 // head. That is the whole argument for this file: the behaviour was always
 // expressible, it was just never legible.
 //
+// A state names up to two things to play: a Timeline clip (properties -- a
+// door's rotation, a lamp's range) and one of the object's model animations (a
+// skinned figure's walk). The graph itself only ever hands back NAMES; the
+// caller looks them up, because only the caller has the clips and the models.
+//
 // WHAT IT DELIBERATELY IS NOT. There is no blending between states and no layers
 // -- a transition cuts. Blending needs a second clip evaluated alongside the
 // first and a weight, and every one of those decisions is easier to make once
@@ -48,6 +53,14 @@ struct Condition {
 struct State {
     std::string name = "State";
     std::string clip;                 // an anim::Clip name ("" = hold still)
+    // One of the object's MODEL animations -- a glTF clip, by name: the walk or
+    // idle a rigged figure brings with it. A second slot rather than a second
+    // kind of `clip`, because the two combine: the model clip poses the
+    // skeleton while a Timeline clip may still move something alongside it.
+    // By name and not index, so a re-exported model with its clips in another
+    // order still plays the right one. "" = none, and the object's own
+    // Animation component (if it has one) poses it as before.
+    std::string modelClip;
     bool        loop  = true;
     float       speed = 1.0f;
     glm::vec2   pos{0.0f};            // where its node sits on the editor canvas
