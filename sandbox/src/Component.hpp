@@ -196,6 +196,13 @@ public:
     // it is where the game got to, not something the author wrote, and saving it
     // would mean a scene opened half-way through its own door animation.
     animgraph::Instance runtime;
+    // The model animation the current state wants on the skeleton this frame
+    // (an index into the object's model clips, -1 = none) and where in it. Set
+    // by the graph step, read by the skinning pass, which then poses the figure
+    // from here instead of from its Animation component. Runtime only, like
+    // `runtime`.
+    int   skinClip = -1;
+    float skinTime = 0.0f;
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<AnimGraphComponent>(*this);

@@ -405,7 +405,9 @@ owns an animated number while you are posing it.
 
 The **Animation graph** panel is the state machine over those clips: states that each
 name a clip, arrows between them, and parameters -- triggers, bools and numbers -- that
-the game sets to move it along. Conditions on an arrow are AND; "either" is a second
+the game sets to move it along. A state can also name one of the object's *model*
+animations -- the idle or walk a rigged .glb brings with it -- and then the graph poses
+the skeleton itself; the picker lists the clips of the models that run the graph. Conditions on an arrow are AND; "either" is a second
 arrow, which is also the version you can see. `Any State` exists so "hit" or "die" does
 not need an arrow out of every node. There is no blending: a transition cuts, on
 purpose, and that is written down in `sandbox/src/AnimGraph.hpp` rather than left to be
@@ -421,7 +423,8 @@ game.animState(id)                  -- the state's name, for waiting on it
 ```
 
 `sandbox/scripts/door.lua` is a worked example: a door that opens when you walk up to
-it, with the whole scene-side setup written at the top. For the simple case -- one clip,
+it, with the whole scene-side setup written at the top. `sandbox/scripts/walker.lua` is
+the other one: a figure walked with WASD, its graph switched between Idle and Walk. For the simple case -- one clip,
 played when the game starts -- there is an **Animator** component instead, which is
 three fields and no graph.
 

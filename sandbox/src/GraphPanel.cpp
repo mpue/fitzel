@@ -151,6 +151,26 @@ void autoLayout(Graph& g) {
                       static_cast<float>(i / perRow) * (kNodeH + 90.0f));
 }
 
+// The model animations a state can pick: the clips inside the models of the
+// objects that run this graph, and of the selected object -- so the list is
+// there the moment the graph is hung on a figure. A graph has no model of its
+// own (two figures may share one), so it is the union, in first-seen order.
+std::vector<std::string> modelClipsFor(const PanelState& s, const Graph& g) {
+    std::vector<std::string> out;
+    if (!s.modelClips) return out;
+    auto take = [&](const Entity& e) {
+        for (std::string& n : s.modelClips(e))
+            if (std::find(out.begin(), out.end(), n) == out.end())
+                out.push_back(std::move(n));
+    };
+    for (const Entity& e : s.entities)
+        if (const auto* ag = e.components.get<AnimGraphComponent>();
+            ag && ag->graph == g.name)
+            take(e);
+    if (s.sel.valid()) take(s.entities[s.sel.index()]);
+    return out;
+}
+
 // The machine the selected object is running, if it is running this graph.
 animgraph::Instance* liveInstance(const PanelState& s, const Graph& g) {
     if (!s.sel.valid()) return nullptr;
@@ -174,8 +194,8 @@ void drawPanel(const PanelState& s) {
     // --- Which graph --------------------------------------------------------
     if (s.graphs.empty()) {
         ui::hint("This scene has no animation graphs yet.");
-        ui::hint("A graph is a set of states -- each one a clip from the Timeline -- "
-                 "and the arrows between them.");
+        ui::hint("A graph is a set of states -- each one a clip from the Timeline or "
+                 "an animation inside the object's model -- and the arrows between them.");
         if (ImGui::Button("New graph")) {
             Graph g;
             g.name = "Graph 1";
@@ -546,9 +566,13 @@ void drawPanel(const PanelState& s) {
             }
             dl->AddText(ImVec2(a.x + 10.0f * g_zoom, a.y + 7.0f * g_zoom),
                         col(1.0f, 1.0f, 1.0f), st.name.c_str());
+            // What it plays: the model animation first -- on a figure that is
+            // the one you see -- and a Timeline clip beside it.
+            std::string plays = st.modelClip;
+            if (!st.clip.empty()) plays += (plays.empty() ? "" : " + ") + st.clip;
             dl->AddText(ImVec2(a.x + 10.0f * g_zoom, a.y + 28.0f * g_zoom),
                         col(0.75f, 0.80f, 0.90f, 0.9f),
-                        st.clip.empty() ? "(no clip)" : st.clip.c_str());
+                        plays.empty() ? "(no clip)" : plays.c_str());
         }
 
         // The out port: press it and drag onto another node to draw an arrow.
@@ -625,8 +649,26 @@ void drawPanel(const PanelState& s) {
         if (ImGui::Checkbox("Loop##st", &st.loop)) s.markDirty();
         ImGui::SameLine();
         ImGui::SetNextItemWidth(em * 4.0f);
-        if (ImGui::DragFloat("Speed##st", &st.speed, 0.02f, 0.05f, 8.0f, "%.2fx"))
+        // Down to 0: a state that holds a model animation's first frame is how a
+        // figure that only brings a walk still gets something to stand in.
+        if (ImGui::DragFloat("Speed##st", &st.speed, 0.02f, 0.0f, 8.0f, "%.2fx"))
             s.markDirty();
+
+        // The figure's own animations -- the clips inside its model.
+        const std::vector<std::string> modelClips = modelClipsFor(s, g);
+        ImGui::SetNextItemWidth(em * 10.0f);
+        if (ImGui::BeginCombo("Model animation",
+                              st.modelClip.empty() ? "(none)" : st.modelClip.c_str())) {
+            if (ImGui::Selectable("(none)", st.modelClip.empty()))
+                { st.modelClip.clear(); s.markDirty(); }
+            for (const std::string& n : modelClips)
+                if (ImGui::Selectable(n.c_str(), st.modelClip == n))
+                    { st.modelClip = n; s.markDirty(); }
+            ImGui::EndCombo();
+        }
+        if (modelClips.empty())
+            ui::hint("No animated model runs this graph yet: give the figure an "
+                     "Animation Graph component (or select it) to list its animations.");
 
         ImGui::BeginDisabled(g.entry == g_selState);
         if (ImGui::Button("Make entry state")) { g.entry = g_selState; s.markDirty(); }
