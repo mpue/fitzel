@@ -12,6 +12,7 @@
 #include "Selection.hpp"
 
 namespace fitzel { class AssetDatabase; }
+namespace animgraph { struct Graph; }
 
 // Project / scene persistence, extracted from the sandbox's main(). A project is
 // a folder under projects/: <name>/<name>.fitzel (the scene, JSON schema v3) plus
@@ -69,6 +70,10 @@ struct Context {
     // live here: state that used to be stored outside the entity list and is now
     // an entity gets built from what the file did store.
     std::function<void()>&                      afterSceneLoad;
+    // The open scene's animation graphs. A prefab carries the graphs its objects
+    // run and hands them over when it is loaded (see prefab::load / save). Null
+    // where there is no scene to hand them to -- a check harness, say.
+    std::vector<animgraph::Graph>*              animGraphs = nullptr;
 };
 
 // Editor prefs (last location + recent projects), persisted to prefsPath.
@@ -106,6 +111,19 @@ void saveScene(const Context& ctx, const std::string& path);
 bool saveSceneWithMaterials(const Context& ctx, const std::string& path);
 void writeProjectMaterials(const Context& ctx, const std::string& matsDir);
 void loadProjectMaterials(Context& ctx, const std::string& matsDir);
+// One .fmat file as a library material (its GUID from the .meta sidecar), for
+// adding a material that arrived on its own -- a prefab import -- without
+// reloading the whole library and losing edits not saved yet. False if the file
+// cannot be read.
+bool loadMaterialFile(Context& ctx, const std::string& file, MaterialDef& out);
+// Files something other than the editor just wrote into the project -- a prefab
+// import -- registered with the asset database now, and the materials among them
+// added to the library one by one. Deliberately not a reload: that would drop
+// material edits not saved yet, and a .fmat left out of the library is deleted
+// by the next save (writeProjectMaterials). Returns false when some OTHER
+// material changed on disk meanwhile, which only a full reload picks up; the
+// caller does that then, as the asset poll would have.
+bool adoptNewFiles(Context& ctx);
 bool loadScene(Context& ctx, const std::string& path);
 
 // --- Incremental (non-blocking) scene loading --------------------------------

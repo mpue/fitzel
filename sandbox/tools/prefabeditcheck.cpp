@@ -32,6 +32,7 @@
 
 #include <fitzel/asset/AssetDatabase.hpp>
 
+#include "../src/AnimGraph.hpp"
 #include "../src/Command.hpp"
 #include "../src/Component.hpp"
 #include "../src/Document.hpp"
@@ -399,6 +400,40 @@ int main() {
     }
 
     fs::remove_all(dir, ec);
+    // --- The graphs a prefab's objects run travel inside it -----------------------
+    // A graph belongs to the scene. A figure made into a prefab and dropped into
+    // another scene -- where "Graph 1" is some other machine -- must still run
+    // its own, and must not change the one the scene has.
+    {
+        std::vector<animgraph::Graph> sceneA(1);
+        sceneA[0].name = "Graph 1";
+        sceneA[0].states.resize(2);
+        sceneA[0].states[1].name = "Walk";
+        ctx.animGraphs = &sceneA;
+        std::vector<Entity> src;
+        src.push_back(mk(1, -1, "Figure", glm::vec3(0.0f)));
+        auto ag = std::make_unique<AnimGraphComponent>();
+        ag->graph = "Graph 1";
+        src[0].components.items.push_back(std::move(ag));
+        auto p = prefab::fromSubtree(src, 1, "Figure");
+        check(p && prefab::save(ctx, *p, dir.generic_string()),
+              "a figure running a graph saves as a prefab");
+
+        std::vector<animgraph::Graph> sceneB(1);
+        sceneB[0].name = "Graph 1";          // a different machine of the same name
+        ctx.animGraphs = &sceneB;
+        auto back = p ? prefab::load(ctx, p->path) : std::nullopt;
+        const auto* bag = back ? back->entities[0].components.get<AnimGraphComponent>()
+                               : nullptr;
+        check(sceneB.size() == 2 && animgraph::findGraph(sceneB, "Graph 1 (Figure)") >= 0,
+              "loaded into another scene, it brings its graph along",
+              std::to_string(sceneB.size()) + " graphs");
+        check(bag && bag->graph == "Graph 1 (Figure)",
+              "and runs that one, not the scene's own Graph 1", bag ? bag->graph : "(none)");
+        check(sceneB[0].states.empty(), "the scene's own Graph 1 is untouched");
+        ctx.animGraphs = nullptr;
+    }
+
     std::printf("\n%s\n", failures == 0 ? "prefabeditcheck: all good"
                                         : "prefabeditcheck: FAILURES above");
     return failures == 0 ? 0 : 1;

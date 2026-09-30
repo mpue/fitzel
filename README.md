@@ -201,6 +201,18 @@ terrain sculpt and paint, rivers, water, roads, vegetation, splines, towns, sky,
 weather, environment, materials, prefabs, assets and modelling. A button is lit while
 its window is open.
 
+**Prefabs travel between projects** as one `.zip`: *Prefabs > Export...* packs the prefab
+with everything it needs -- models (with their `.meta`, so GUIDs hold), materials and
+their textures, scripts and what they name, sounds, sprites, synth patches and MIDI, the
+prefabs it spawns by name and the animation graphs its objects run. *Import...* shows
+file by file what it would do before writing anything: an asset the project has is left
+alone, a material it has under another GUID (every project's "Default") is used instead of
+a copy, a file whose name is taken by a different one comes in renamed with the prefab
+pointed at it, and only an older version of the same prefab is replaced (kept as `.bak`).
+The engine's own content, scenes and Timeline clips stay behind, and the export says so.
+A prefab also carries its animation graphs *within* a project now: dropped into a scene
+whose "Graph 1" is some other machine, it brings its own under a new name.
+
 ![The editor: hierarchy, inspector, asset browser and the frame-time panel](images/editor.png)
 
 ### Rendering notes
@@ -740,6 +752,7 @@ one thing.
 | ---- | --------------- |
 | `shadercheck <shaders>` | Does every shader still compile? A broken one costs its effect *silently* -- the Release editor is `/SUBSYSTEM:WINDOWS` and has nowhere to print a compile error to. Exits non-zero. |
 | `animcheck` | Do keyframe tracks hold the value they were given, and find their property again after a save? A track resolves its field by id and string every time it plays: aim it wrong and it writes a plausible number into a plausible place, lose it and it does nothing -- and both look, on screen, like an author who has not keyed anything yet. Sampling, clamping at the ends, discrete properties stepping, the snap grid, and a clip written to JSON and read back binding to the same fields. |
+| `prefabpkgcheck` | Does a prefab exported as a zip arrive in another project with everything it needs -- and leave that project's own files alone? Builds two real projects in a temp folder: the model keeps its GUID, the sound only a script names comes along, the engine's own content stays behind, the project's own "Default" is used rather than twinned, a different file of the same name is not overwritten but brought in renamed with the prefab pointed at it, the same package twice writes nothing, a newer version replaces the old (kept as `.bak`), and a zip that would write outside the project is refused. `--export`/`--plan`/`--apply` look at real projects. |
 | `graphcheck` | Does the animation state machine go where its arrows say? An FSM fails by SITTING somewhere: a trigger never cleared races through every arrow that tests it, an exit time measured against the wrong length holds a door shut forever, and both look like a graph nobody finished drawing. Plays out machines built in code -- triggers fired and consumed, `Any State` outranking a state's own arrow, ordering deciding between two ready arrows, a graph saved and reloaded behaving identically. |
 | `viewcheck <project> [out.png]` | What does the scene actually LOOK like? Loads a project and renders its objects offscreen to a PNG, through `scenesubmit::submit` -- the same code the editor draws through, which is the whole reason that function was lifted out of `main()`. No terrain, sky, water or post chain yet: this is the objects on a flat ground colour, which is the view for a question about a material, a mesh or a stroke of paint. Prints what it drew and what it skipped, with each object's material, because the first question about a surprising picture is always whether the scene is what you think it is. |
 | `skycheck <out> <shaders>` | What does the sky actually look like? Renders `sky.frag` alone, from cameras pointed where the clouds are. |

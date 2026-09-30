@@ -61,8 +61,9 @@ if (dir.empty()) {
     const auto items = prefab::list(dir);
     bool openRename = false, openDelete = false;
     ImGui::BeginDisabled(busy);
+    // Room below the list for the two rows of buttons.
     const float rowsH = ImGui::GetContentRegionAvail().y -
-                        (rowHeight() + ImGui::GetStyle().ItemSpacing.y * 2.0f);
+                        (rowHeight() * 2.0f + ImGui::GetStyle().ItemSpacing.y * 3.0f);
     ImGui::BeginChild("##prefabList", ImVec2(0.0f, glm::max(rowsH, 60.0f)), true);
     for (const auto& it : items) {
         ImGui::PushID(it.second.c_str());
@@ -87,6 +88,9 @@ if (dir.empty()) {
                 openRename = true;
             }
             if (ImGui::MenuItem("Delete...")) openDelete = true;
+            ImGui::Separator();
+            if (ImGui::MenuItem("Export as zip...") && s.exportZip)
+                s.exportZip(it.second, it.first);
             ImGui::EndPopup();
         }
         ImGui::PopID();
@@ -117,13 +121,86 @@ if (dir.empty()) {
     }
     ImGui::SameLine();
     if (ImGui::Button("Delete", bs)) openDelete = true;
+    // To and from another project. Export needs a picked prefab; Import does not.
+    const ImVec2 half((ImGui::GetContentRegionAvail().x - sp) * 0.5f, rowHeight());
+    if (ImGui::Button("Export...", half) && s.exportZip) s.exportZip(s.selPath, s.selName);
+    if (ImGui::IsItemHovered() && picked)
+        ImGui::SetTooltip("Pack \"%s\" and everything it needs into one .zip",
+                          s.selName.c_str());
     ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button("Import...", half) && s.importZip) s.importZip();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Bring a prefab exported from another project into this one");
+    if (s.packageNotes && !s.packageNotes->empty() &&
+        ImGui::TreeNode("##pkgnotes", "What the last export/import left out (%d)",
+                        static_cast<int>(s.packageNotes->size()))) {
+        for (const std::string& n : *s.packageNotes) ImGui::BulletText("%s", n.c_str());
+        ImGui::TreePop();
+    }
 
     // The two questions. At panel level, not inside a row: both can now be asked
     // from three places, and a modal that lived in one row's ID scope would only
     // answer to one of them.
     if (openRename) ImGui::OpenPopup("Rename prefab");
     if (openDelete) ImGui::OpenPopup("Delete prefab");
+    if (s.importPlan && !ImGui::IsPopupOpen("Import prefab")) ImGui::OpenPopup("Import prefab");
+    if (ImGui::BeginPopupModal("Import prefab", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!s.importPlan) {
+            ImGui::CloseCurrentPopup();
+        } else {
+            // What will happen, file by file, before anything is written -- an
+            // import cannot be undone, so it is looked at first.
+            const prefabpkg::Plan& pl = *s.importPlan;
+            int add = 0, have = 0, ren = 0, upd = 0;
+            for (const prefabpkg::Item& it : pl.items)
+                switch (it.action) {
+                    case prefabpkg::Item::Action::Add:     ++add;  break;
+                    case prefabpkg::Item::Action::Present: ++have; break;
+                    case prefabpkg::Item::Action::Rename:  ++ren;  break;
+                    case prefabpkg::Item::Action::Update:  ++upd;  break;
+                }
+            ImGui::Text("Import \"%s\" into this project?", pl.prefabName.c_str());
+            ImGui::TextDisabled("%d new, %d already here, %d renamed, %d replaced", add, have,
+                                ren, upd);
+            ImGui::BeginChild("##planItems", ImVec2(560.0f, 220.0f), true);
+            for (const prefabpkg::Item& it : pl.items) {
+                const char* tag = "new";
+                switch (it.action) {
+                    case prefabpkg::Item::Action::Add:     tag = "new ";    break;
+                    case prefabpkg::Item::Action::Present: tag = "have";    break;
+                    case prefabpkg::Item::Action::Rename:  tag = "rename";  break;
+                    case prefabpkg::Item::Action::Update:  tag = "update";  break;
+                }
+                ImGui::TextDisabled("%-6s", tag);
+                ImGui::SameLine();
+                ImGui::TextUnformatted(it.target.c_str());
+                if (!it.why.empty()) {
+                    ImGui::SameLine();
+                    ImGui::TextDisabled("-- %s", it.why.c_str());
+                }
+            }
+            ImGui::EndChild();
+            if (!pl.notes.empty()) {
+                ImGui::TextDisabled("Worth knowing:");
+                ImGui::BeginChild("##planNotes", ImVec2(560.0f, 90.0f), true);
+                for (const std::string& n : pl.notes) ImGui::TextWrapped("%s", n.c_str());
+                ImGui::EndChild();
+            }
+            ImGui::Separator();
+            // Cancel first, like Delete: the button the hand is on is the safe one.
+            if (ImGui::Button("Cancel", ImVec2(140.0f, rowHeight()))) {
+                if (s.importCancel) s.importCancel();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Import", ImVec2(140.0f, rowHeight()))) {
+                if (s.importConfirm) s.importConfirm();
+                ImGui::CloseCurrentPopup();
+            }
+        }
+        ImGui::EndPopup();
+    }
     if (ImGui::BeginPopupModal("Rename prefab", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Rename \"%s\" to:", s.selName.c_str());

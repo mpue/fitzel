@@ -16,6 +16,7 @@
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/Vfs.hpp>
 
+#include "AnimGraph.hpp"
 #include "Component.hpp"
 
 using fitzel::AssetId;
@@ -156,6 +157,23 @@ bool save(const projectio::Context& ctx, Prefab& p, const std::string& dir) {
         {"guid", p.guid.toString()},
         {"entities", std::move(ents)},
     };
+    // The graphs its objects run go WITH it: a graph lives in the scene, and a
+    // figure dropped into another scene -- or another project -- would stand
+    // there with a machine nobody gave it. load() hands them over.
+    if (ctx.animGraphs) {
+        std::vector<animgraph::Graph> carried;
+        for (const Entity& e : p.entities)
+            if (const auto* ag = e.components.get<AnimGraphComponent>()) {
+                const int gi = animgraph::findGraph(*ctx.animGraphs, ag->graph);
+                if (gi >= 0 && animgraph::findGraph(carried, ag->graph) < 0)
+                    carried.push_back((*ctx.animGraphs)[static_cast<std::size_t>(gi)]);
+            }
+        if (!carried.empty()) {
+            nlohmann::json gj;
+            animgraph::save(gj, carried);
+            j["prefab"]["animGraphs"] = std::move(gj["animGraphs"]);
+        }
+    }
 
     const std::string file = dir + "/" + projectio::safeName(p.name) + "-" +
                              p.guid.toString().substr(0, 8) + ".fprefab";
@@ -183,6 +201,19 @@ std::optional<Prefab> load(projectio::Context& ctx, const std::string& path) {
     for (const auto& ej : pj.value("entities", nlohmann::json::array()))
         p.entities.push_back(projectio::readEntityJson(ctx, ej));
     if (p.entities.empty()) return std::nullopt;
+
+    // The graphs it carries join the scene it is loaded into. A name the scene
+    // already uses for a different graph gets the carried one under a new name,
+    // and this prefab's objects are pointed at that.
+    if (ctx.animGraphs && pj.contains("animGraphs")) {
+        std::vector<animgraph::Graph> carried;
+        animgraph::load(nlohmann::json{{"animGraphs", pj["animGraphs"]}}, carried);
+        const auto moved = animgraph::adopt(*ctx.animGraphs, carried, p.name);
+        for (Entity& e : p.entities)
+            if (auto* ag = e.components.get<AnimGraphComponent>())
+                if (const auto it = moved.find(ag->graph); it != moved.end())
+                    ag->graph = it->second;
+    }
     return p;
 }
 

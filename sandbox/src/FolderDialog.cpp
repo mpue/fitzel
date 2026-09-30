@@ -142,6 +142,63 @@ bool pickFile(std::string& out, const std::string& initialDir,
     return ok;
 }
 
+bool saveFile(std::string& out, const std::string& initialDir,
+              const std::string& defaultName, const std::string& filterName,
+              const std::string& filterSpec, const std::string& defaultExt) {
+    const HRESULT hrInit =
+        CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool weInitialised = (hrInit == S_OK || hrInit == S_FALSE);
+
+    bool ok = false;
+    IFileSaveDialog* dlg = nullptr;
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileSaveDialog, nullptr,
+                                   CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
+        DWORD opts = 0;
+        dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_FORCEFILESYSTEM | FOS_OVERWRITEPROMPT);
+
+        std::wstring fname = toWide(filterName), fspec = toWide(filterSpec);
+        if (!fspec.empty()) {
+            COMDLG_FILTERSPEC specs[1] = {
+                {fname.empty() ? L"Files" : fname.c_str(), fspec.c_str()},
+            };
+            dlg->SetFileTypes(1, specs);
+        }
+        if (!defaultExt.empty()) dlg->SetDefaultExtension(toWide(defaultExt).c_str());
+        if (!defaultName.empty()) dlg->SetFileName(toWide(defaultName).c_str());
+
+        if (!initialDir.empty()) {
+            std::error_code ec;
+            if (std::filesystem::exists(initialDir, ec)) {
+                IShellItem* startItem = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(
+                        toWide(initialDir).c_str(), nullptr,
+                        IID_PPV_ARGS(&startItem)))) {
+                    dlg->SetFolder(startItem);
+                    startItem->Release();
+                }
+            }
+        }
+
+        if (SUCCEEDED(dlg->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    out = std::filesystem::path(fromWide(path)).generic_string();
+                    ok = !out.empty();
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+    }
+
+    if (weInitialised) CoUninitialize();
+    return ok;
+}
+
 } // namespace ed
 
 #elif defined(__APPLE__)
@@ -240,6 +297,43 @@ bool pickFile(std::string& out, const std::string& initialDir,
     return !out.empty();
 }
 
+bool saveFile(std::string& out, const std::string& initialDir,
+              const std::string& defaultName, const std::string& /*filterName*/,
+              const std::string& /*filterSpec*/, const std::string& defaultExt) {
+    // AppleScript's "choose file name" asks about replacing an existing file
+    // itself, like the Windows dialog does.
+    auto esc = [](const std::string& s) {
+        std::string e;
+        for (char c : s) {
+            if (c == '\\' || c == '"') e += '\\';
+            e += c;
+        }
+        return e;
+    };
+    std::string script = "choose file name with prompt \"Save as\"";
+    if (!defaultName.empty()) script += " default name \"" + esc(defaultName) + "\"";
+    std::error_code ec;
+    if (!initialDir.empty() && std::filesystem::exists(initialDir, ec))
+        script += " default location (POSIX file \"" + esc(initialDir) + "\")";
+    script = "POSIX path of (" + script + ")";
+
+    const std::string cmd = "osascript -e " + shellQuote(script) + " 2>/dev/null";
+    FILE* pipe = popen(cmd.c_str(), "r");
+    if (!pipe) return false;
+    std::string result;
+    std::array<char, 512> buf;
+    while (std::fgets(buf.data(), static_cast<int>(buf.size()), pipe))
+        result += buf.data();
+    const int rc = pclose(pipe);
+    while (!result.empty() && (result.back() == '\n' || result.back() == '\r'))
+        result.pop_back();
+    if (rc != 0 || result.empty()) return false;
+    std::filesystem::path p(result);
+    if (!defaultExt.empty() && p.extension().empty()) p += "." + defaultExt;
+    out = p.generic_string();
+    return !out.empty();
+}
+
 } // namespace ed
 
 #else // other platforms: no native dialog (caller falls back to a text field).
@@ -248,6 +342,8 @@ namespace ed {
 bool pickFolder(std::string&, const std::string&) { return false; }
 bool pickFile(std::string&, const std::string&, const std::string&,
               const std::string&) { return false; }
+bool saveFile(std::string&, const std::string&, const std::string&, const std::string&,
+              const std::string&, const std::string&) { return false; }
 } // namespace ed
 
 #endif

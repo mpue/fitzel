@@ -335,4 +335,43 @@ void load(const nlohmann::json& j, std::vector<Graph>& graphs) {
     }
 }
 
+namespace {
+
+// A graph as JSON without what does not make it a different machine: its name
+// (the thing being compared FOR) and where its nodes sit on the canvas.
+nlohmann::json contentOf(const Graph& g) {
+    nlohmann::json j;
+    save(j, {g});
+    nlohmann::json gj = j["animGraphs"][0];
+    gj.erase("name");
+    for (auto& sj : gj["states"]) { sj.erase("x"); sj.erase("y"); }
+    return gj;
+}
+
+} // namespace
+
+bool sameGraph(const Graph& a, const Graph& b) { return contentOf(a) == contentOf(b); }
+
+std::unordered_map<std::string, std::string>
+adopt(std::vector<Graph>& scene, const std::vector<Graph>& incoming, const std::string& owner) {
+    std::unordered_map<std::string, std::string> moved;
+    for (const Graph& in : incoming) {
+        for (int n = 0;; ++n) {
+            std::string name = in.name;
+            if (n >= 1) name += " (" + (owner.empty() ? std::string("prefab") : owner) + ")";
+            if (n >= 2) name += " " + std::to_string(n);
+            const int at = findGraph(scene, name);
+            if (at >= 0 && !sameGraph(scene[static_cast<std::size_t>(at)], in)) continue;
+            if (at < 0) {
+                Graph g = in;
+                g.name = name;
+                scene.push_back(std::move(g));
+            }
+            if (name != in.name) moved[in.name] = name;
+            break;
+        }
+    }
+    return moved;
+}
+
 } // namespace animgraph

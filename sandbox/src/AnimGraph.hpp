@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -177,6 +178,25 @@ bool ready(const Graph& g, const Instance& in, const Transition& t,
 // --- Persistence ------------------------------------------------------------
 void save(nlohmann::json& j, const std::vector<Graph>& graphs);
 void load(const nlohmann::json& j, std::vector<Graph>& graphs);
+
+// --- Graphs that travel with a prefab ----------------------------------------
+// A graph belongs to a SCENE, but the object that runs it can be carried off as
+// a prefab -- into another scene, another project. So a prefab takes the graphs
+// its objects name along, and hands them to whichever scene it lands in.
+//
+// Same graph? Compared by content, not by where the nodes sit on the canvas:
+// dragging a node about is not a different machine.
+bool sameGraph(const Graph& a, const Graph& b);
+
+// Bring `incoming` into `scene`. A graph the scene lacks is added; one it has
+// with the same content is shared; one whose name the scene already uses for a
+// DIFFERENT graph -- every scene starts with a "Graph 1" -- is added as
+// "<name> (<owner>)", then "<name> (<owner>) 2" and so on, so it can never
+// quietly run someone else's machine. Deterministic: bringing the same graph in
+// twice lands on the same name both times. Returns old name -> new name for the
+// graphs that had to move, for the caller to point its objects at.
+std::unordered_map<std::string, std::string>
+adopt(std::vector<Graph>& scene, const std::vector<Graph>& incoming, const std::string& owner);
 
 // Names for the editor's combos, and for reading a saved graph back.
 const char* opName(Condition::Op op);

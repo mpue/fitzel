@@ -577,6 +577,44 @@ int main() {
         near(glm::length(bad - b), 0.0f, "a clip that is not there leaves the other alone");
     }
 
+    // --- Graphs carried by a prefab into another scene -----------------------
+    {
+        Graph g = makeDoor();
+        g.name = "Graph 1";
+        std::vector<Graph> scene;
+        auto moved = adopt(scene, {g}, "Figure");
+        check(scene.size() == 1 && scene[0].name == "Graph 1" && moved.empty(),
+              "a graph the scene lacks is added under its own name", std::to_string(scene.size()));
+
+        Graph dragged = g;
+        dragged.states[0].pos = glm::vec2(500.0f, 300.0f);
+        moved = adopt(scene, {dragged}, "Figure");
+        check(scene.size() == 1 && moved.empty(),
+              "the same graph with its nodes moved about is shared, not copied",
+              std::to_string(scene.size()));
+
+        // Every scene starts with a "Graph 1": a DIFFERENT one of that name must
+        // not be run in its place.
+        Graph other = g;
+        other.states[0].speed = 3.0f;
+        moved = adopt(scene, {other}, "Figure");
+        const std::string got = moved.count("Graph 1") ? moved["Graph 1"] : "(not moved)";
+        check(scene.size() == 2 && got == "Graph 1 (Figure)",
+              "a different graph under a taken name comes in renamed", got);
+        moved = adopt(scene, {other}, "Figure");
+        check(scene.size() == 2 && moved.count("Graph 1") && moved["Graph 1"] == "Graph 1 (Figure)",
+              "and bringing it again lands on the same name, not a third copy",
+              std::to_string(scene.size()));
+        Graph third = g;
+        third.states[0].speed = 5.0f;
+        moved = adopt(scene, {third}, "Figure");
+        check(scene.size() == 3 && moved.count("Graph 1") &&
+                  moved["Graph 1"] == "Graph 1 (Figure) 2",
+              "a third one counts on", moved.count("Graph 1") ? moved["Graph 1"] : "");
+        check(sameGraph(scene[0], g) && sameGraph(scene[1], other),
+              "and nothing already there was touched", "");
+    }
+
     // --- A scene with no graphs ---------------------------------------------
     {
         nlohmann::json j;

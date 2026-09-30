@@ -212,6 +212,9 @@ set(SANDBOX_EDITOR_SOURCES
     # The animation state machine, drawn. Editor-only: the player runs a graph,
     # it does not draw one.
     src/GraphPanel.cpp
+    # Prefabs as .zip packages between projects. Editor-only: the zip code
+    # (miniz, via tinyexr_dep) is linked into the editor alone.
+    src/PrefabPackage.cpp
     src/MeshPaint.cpp
     # The scene tree and the selected entity's fields -- the editor's two
     # always-open panels. Editor-only: the player has no scene to edit.
@@ -822,6 +825,7 @@ add_executable(editorcheck tools/editorcheck.cpp
                            src/TransformGizmo.cpp src/ModelingTools.cpp src/Cursor3D.cpp
                            src/ModelMode.cpp src/ModelingKeys.cpp src/VehicleGizmo.cpp
                            src/ViewportHud.cpp src/GameSettings.cpp src/SceneOps.cpp src/PrefabSystem.cpp src/ProjectIO.cpp
+                           src/AnimGraph.cpp
                            src/IconEmbed.cpp src/InstallerBuild.cpp
                            src/AssetsPanel.cpp src/AssetDrop.cpp src/VideoImport.cpp
                            src/UnityImportPanel.cpp src/FolderDialog.cpp
@@ -837,7 +841,7 @@ if(WIN32)
 endif()
 
 add_executable(prefabeditcheck tools/prefabeditcheck.cpp
-                               src/PrefabEdit.cpp src/PrefabSystem.cpp
+                               src/PrefabEdit.cpp src/PrefabSystem.cpp src/AnimGraph.cpp
                                src/ProjectIO.cpp src/GameSettings.cpp
                                src/SceneGraph.cpp src/Selection.cpp
                                src/ModelLibrary.cpp src/Component.cpp
@@ -856,7 +860,7 @@ target_link_libraries(prefabeditcheck PRIVATE fitzel imgui stb_headers
 add_executable(splineplacecheck tools/splineplacecheck.cpp
                                 src/SplinePlace.cpp src/SplineSystem.cpp
                                 src/SplineGen.cpp src/BridgeGen.cpp src/SandboxMath.cpp
-                                src/RoadPrefab.cpp src/PrefabSystem.cpp
+                                src/RoadPrefab.cpp src/PrefabSystem.cpp src/AnimGraph.cpp
                                 src/ProjectIO.cpp src/GameSettings.cpp
                                 src/SceneGraph.cpp src/Selection.cpp
                                 src/ModelLibrary.cpp src/Component.cpp
@@ -1043,6 +1047,19 @@ target_compile_definitions(animcheck PRIVATE FITZEL_PLAYER)
 # exactly like a graph the author has not finished drawing.
 add_executable(graphcheck tools/graphcheck.cpp src/AnimGraph.cpp)
 target_link_libraries(graphcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+
+# prefabpkgcheck -- a prefab exported as a .zip from one project and imported into
+# another: does everything it needs arrive (models with their GUIDs, materials and
+# their textures, scripts and what they name, sounds, MIDI, the prefabs it spawns,
+# its animation graphs) while the engine's own content stays behind? And on the
+# way in: a material the project already has is used rather than copied, a file
+# whose name is taken comes in renamed with the prefab pointed at it, the same
+# package twice changes nothing, a newer version replaces the old (kept as .bak),
+# and a zip that would write outside the project is refused. Real files in a temp
+# folder, no GL, no window.
+#   build/release/bin/prefabpkgcheck.exe
+add_executable(prefabpkgcheck tools/prefabpkgcheck.cpp src/PrefabPackage.cpp src/AnimGraph.cpp)
+target_link_libraries(prefabpkgcheck PRIVATE fitzel tinyexr_dep glm::glm nlohmann_json::nlohmann_json)
 
 add_executable(sculptcheck tools/sculptcheck.cpp)
 target_link_libraries(sculptcheck PRIVATE fitzel glm::glm)
