@@ -575,8 +575,12 @@ void drawPanel(const PanelState& s) {
                         static const char* kNames[12] = {"C", "C#", "D", "D#", "E", "F",
                                                          "F#", "G", "G#", "A", "A#", "B"};
                         const int n = std::clamp(tr->synthNote, 0, 127);
-                        ImGui::TextDisabled("Gate on %s%d while the player is inside",
-                                            kNames[n % 12], n / 12 - 1);
+                        const char* who = tr->reactsTo == TriggerComponent::Physics ? "a physics object is"
+                                        : tr->reactsTo == TriggerComponent::PlayerAndPhysics
+                                            ? "the player or a physics object is"
+                                            : "the player is";
+                        ImGui::TextDisabled("Gate on %s%d while %s inside",
+                                            kNames[n % 12], n / 12 - 1, who);
                     }
                 } else if (auto* stc = dynamic_cast<SceneTriggerComponent*>(c)) {
                     // Radius/once from metadata; Scene is a picker over the

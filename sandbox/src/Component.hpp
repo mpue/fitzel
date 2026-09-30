@@ -323,9 +323,17 @@ public:
 // leaving closes it again (the note-off) -- the gate is held exactly as long as
 // the player is inside. `once` limits the note-on like every other effect; the
 // note-off always follows, so a note can never be left hanging.
+//
+// `reactsTo` widens "the player" to the dynamic physics bodies in the scene: a
+// ball rolling onto it, a crate dropped into it. Then "inside" means ANYTHING it
+// reacts to is inside -- the entry fires when the first arrives and the gate
+// closes when the last has left (see TriggerReach.hpp for the test).
 class TriggerComponent : public ComponentBase {
 public:
-    float       radius = 2.0f;  // activation distance from the player (metres)
+    enum Reacts { Player = 0, Physics = 1, PlayerAndPhysics = 2 };
+
+    float       radius = 2.0f;  // activation distance (metres)
+    int         reactsTo = Player;
     bool        once   = true;  // fire only once per Play session
     std::string message;        // shown on the HUD on entry ("" = none)
     std::string sound;          // one-shot file under the project's sounds/ ("" = none)
@@ -333,7 +341,7 @@ public:
     int         synthNote     = 60;    // MIDI note the gate plays (60 = C4)
     float       synthVelocity = 1.0f;  // 0..1
 
-    bool insideLast = false;    // runtime: player was inside last frame (edge detect)
+    bool insideLast = false;    // runtime: something was inside last frame (edge detect)
     bool fired      = false;    // runtime: has fired (for `once`)
     bool gateOpen   = false;    // runtime: our note is held on the synth
 

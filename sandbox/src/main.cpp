@@ -193,6 +193,7 @@
 #include "StreetSignPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
+#include "TriggerReach.hpp"
 #include "Modifiers.hpp"
 #include "HalfResSky.hpp"
 #include "CityPanel.hpp"
@@ -8154,6 +8155,10 @@ int main(int argc, char** argv) {
                     if (gliderMode && driveGliderId >= 0) playerC = gliderPos;
                     else if (vehicleMode && driveVehicleId >= 0)
                         if (const Entity* dv = document.find(driveVehicleId)) playerC = dv->center;
+                    // The physics bodies a Trigger may react to, gathered on the
+                    // first trigger that asks -- most scenes have none that do.
+                    std::vector<triggerreach::Body> triggerBodies;
+                    bool triggerBodiesReady = false;
                     for (Entity& e : entities) {
                         if (!e.activeInHierarchy) continue;  // deactivated: inert
                         // Collectible: on reach, award points, play sound, remove
@@ -8232,8 +8237,21 @@ int main(int argc, char** argv) {
                         // sound / open the Synth's gate. `once` latches via the
                         // transient `fired` flag. The gate closes on exit, even
                         // for a `once` trigger, so no note is left hanging.
+                        // "Inside" is the player, the physics bodies, or either,
+                        // as the trigger's `reactsTo` says.
                         if (auto* tr = e.components.get<TriggerComponent>()) {
-                            const bool inside = glm::distance(playerC, e.center) <= tr->radius;
+                            bool inside = tr->reactsTo != TriggerComponent::Physics &&
+                                          glm::distance(playerC, e.center) <= tr->radius;
+                            if (!inside && tr->reactsTo != TriggerComponent::Player) {
+                                if (!triggerBodiesReady) {
+                                    triggerBodies = triggerreach::collect(
+                                        entities, vehicleMode ? driveVehicleId : -1,
+                                        gliderMode ? driveGliderId : -1);
+                                    triggerBodiesReady = true;
+                                }
+                                inside = triggerreach::anyInside(triggerBodies, e.center,
+                                                                 tr->radius, e.id);
+                            }
                             if (inside && !tr->insideLast && !(tr->once && tr->fired)) {
                                 tr->fired = true;
                                 if (!tr->message.empty()) host.hud = tr->message;
