@@ -376,7 +376,10 @@ Ein Zustand spielt einen Timeline-Clip, eine **Modell-Animation** (die Clips,
 die ein geriggtes .glb mitbringt – Idle, Walk …) oder beides. Mit einer
 Modell-Animation posiert der Graph das Skelett selbst; eine Animation-Komponente
 braucht die Figur dafür nicht. Tempo 0 hält das erste Bild des Clips – so kommt
-auch eine Figur, die nur einen Walk mitbringt, zu einem Idle.
+auch eine Figur, die nur einen Walk mitbringt, zu einem Idle. Ein Übergang kann
+eine **Überblendung** (Fade, in Sekunden) haben: Der verlassene Zustand spielt
+weiter und gibt seine Pose in dieser Zeit ab; 0 schneidet hart. Überblendet
+werden nur Modell-Animationen, Timeline-Clips schalten sofort um.
 `sandbox/scripts/walker.lua` ist ein vollständiges Beispiel: eine Figur mit WASD
 steuern und dabei zwischen Idle und Walk umschalten.
 

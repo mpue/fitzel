@@ -409,7 +409,10 @@ the game sets to move it along. A state can also name one of the object's *model
 animations -- the idle or walk a rigged .glb brings with it -- and then the graph poses
 the skeleton itself; the picker lists the clips of the models that run the graph. Conditions on an arrow are AND; "either" is a second
 arrow, which is also the version you can see. `Any State` exists so "hit" or "die" does
-not need an arrow out of every node. There is no blending: a transition cuts, on
+not need an arrow out of every node. A transition cuts unless it is given a **fade**:
+then the state being left keeps playing and hands its pose over for that many seconds,
+mixed per joint so a swinging arm keeps its length. Only model animations fade -- a
+Timeline clip's door or lamp simply switches. Layers and blend trees are left out on
 purpose, and that is written down in `sandbox/src/AnimGraph.hpp` rather than left to be
 rediscovered.
 
@@ -432,7 +435,8 @@ While the game runs, the node the selected object is in lights up and its parame
 be fired by hand from the panel. That is how you find out the graph is wrong, rather
 than reading the arrows and hoping. Both halves are measured by harnesses that need no
 window: `animcheck` (sampling, clamping, step interpolation, save/load) and `graphcheck`
-(triggers consumed, `Any State` outranking a state's own arrow, exit time, ordering).
+(triggers consumed, `Any State` outranking a state's own arrow, exit time, ordering,
+fades and the skeleton mixing behind them).
 
 ### Multishot camera
 

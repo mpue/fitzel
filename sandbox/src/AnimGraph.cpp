@@ -59,6 +59,21 @@ void start(const Graph& g, Instance& in) {
                : std::clamp(g.entry, 0, static_cast<int>(g.states.size()) - 1);
     in.time    = 0.0f;
     in.entered = in.state;
+    in.fadeFrom = -1;
+}
+
+float clipTime(const State& s, float rawTime, float clipLength) {
+    float t = rawTime * s.speed;
+    if (clipLength > 1e-4f) {
+        if (s.loop) t = std::fmod(t, clipLength);
+        else        t = std::min(t, clipLength);
+    }
+    return t;
+}
+
+float fadeWeight(const Instance& in) {
+    if (in.fadeFrom < 0 || in.fadeLength <= 0.0f) return 0.0f;
+    return std::clamp(1.0f - in.fadeElapsed / in.fadeLength, 0.0f, 1.0f);
 }
 
 namespace {
@@ -131,6 +146,14 @@ void step(const Graph& g, Instance& in, float dt,
     if (in.state < 0 || in.state >= static_cast<int>(g.states.size())) start(g, in);
 
     in.time += dt;
+    // The state fading out keeps its own clock running until the fade is over.
+    if (in.fadeFrom >= 0) {
+        in.fadeFromTime += dt;
+        in.fadeElapsed  += dt;
+        if (in.fadeElapsed >= in.fadeLength ||
+            in.fadeFrom >= static_cast<int>(g.states.size()))
+            in.fadeFrom = -1;
+    }
 
     // Transitions are tried IN ORDER, and the first that is ready wins. Order is
     // the author's, so a graph with two arrows that can both fire resolves the
@@ -155,6 +178,18 @@ void step(const Graph& g, Instance& in, float dt,
                     g.params[pi].type == Param::Type::Trigger)
                     in.values[pi] = 0.0f;
             }
+            // The state being left fades out from where it is now. A fade
+            // already running is dropped for it: the newest change is the one
+            // the eye follows, and a chain of half-finished fades is a pose
+            // nobody chose.
+            if (t.fade > 0.0f) {
+                in.fadeFrom     = in.state;
+                in.fadeFromTime = in.time;
+                in.fadeLength   = t.fade;
+                in.fadeElapsed  = 0.0f;
+            } else {
+                in.fadeFrom = -1;
+            }
             in.state   = t.to;
             in.time    = 0.0f;
             in.entered = t.to;
@@ -165,12 +200,7 @@ void step(const Graph& g, Instance& in, float dt,
 
     const State& s = g.states[static_cast<std::size_t>(in.state)];
     outClip = s.clip;
-    float t = in.time * s.speed;
-    if (clipLength > 1e-4f) {
-        if (s.loop) t = std::fmod(t, clipLength);
-        else        t = std::min(t, clipLength);
-    }
-    outTime = t;
+    outTime = clipTime(s, in.time, clipLength);
 }
 
 // --- Persistence ------------------------------------------------------------
@@ -222,7 +252,7 @@ void save(nlohmann::json& j, const std::vector<Graph>& graphs) {
                               {"value", c.value}});
             ts.push_back({{"from", t.from}, {"to", t.to},
                           {"exit", t.hasExitTime}, {"exitTime", t.exitTime},
-                          {"conds", std::move(cs)}});
+                          {"fade", t.fade}, {"conds", std::move(cs)}});
         }
         gj["transitions"] = std::move(ts);
         arr.push_back(std::move(gj));
@@ -267,6 +297,7 @@ void load(const nlohmann::json& j, std::vector<Graph>& graphs) {
                 t.to          = tj.value("to", 0);
                 t.hasExitTime = tj.value("exit", false);
                 t.exitTime    = tj.value("exitTime", 1.0f);
+                t.fade        = std::max(0.0f, tj.value("fade", 0.0f));
                 if (const auto cs = tj.find("conds"); cs != tj.end() && cs->is_array())
                     for (const nlohmann::json& cj : *cs) {
                         Condition c;

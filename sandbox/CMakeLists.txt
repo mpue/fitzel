@@ -1042,7 +1042,7 @@ target_compile_definitions(animcheck PRIVATE FITZEL_PLAYER)
 # reloaded behaving identically. An FSM fails by SITTING somewhere, which looks
 # exactly like a graph the author has not finished drawing.
 add_executable(graphcheck tools/graphcheck.cpp src/AnimGraph.cpp)
-target_link_libraries(graphcheck PRIVATE glm::glm nlohmann_json::nlohmann_json)
+target_link_libraries(graphcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 
 add_executable(sculptcheck tools/sculptcheck.cpp)
 target_link_libraries(sculptcheck PRIVATE fitzel glm::glm)

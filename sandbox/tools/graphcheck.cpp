@@ -13,6 +13,11 @@
 // the clip and then letting go, ordering deciding between two ready arrows, and
 // a graph saved and read back behaving identically.
 //
+// A fade is two halves, and both are measured: the machine's bookkeeping (which
+// state is fading out, on what clock, with how much of the pose left) and the
+// mixing of two skeleton poses, which must keep a limb its length through the
+// swing -- the one thing mixing finished matrices gets wrong.
+//
 // No GL, no window, no scene: this is a machine over clip NAMES, which is
 // exactly why it can be measured without one.
 //
@@ -25,6 +30,10 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+
+#include <glm/gtc/matrix_transform.hpp>
+
+#include <fitzel/world/Model.hpp>
 
 #include "../src/AnimGraph.hpp"
 
@@ -396,6 +405,118 @@ int main() {
         near(t, 0.0f, "speed 0 holds the clip's first frame");
         setBool(g, in, "walking", true);
         steps(g, in, 0.016f, 1.2f, "Walk", "and the state can still be left");
+    }
+
+    // --- Fades: the bookkeeping ---------------------------------------------
+    {
+        Graph g;
+        g.states = {st("Idle", ""), st("Walk", ""), st("Wave", "")};
+        g.params = {{"walking", Param::Type::Bool, 0.0f},
+                    {"wave", Param::Type::Trigger, 0.0f}};
+        Transition go; go.from = 0; go.to = 1; go.fade = 0.4f;
+        go.conditions = {{"walking", Condition::Op::IsTrue, 0.0f}};
+        Transition wave; wave.from = 1; wave.to = 2; wave.fade = 0.2f;
+        wave.conditions = {{"wave", Condition::Op::Fired, 0.0f}};
+        Transition cut; cut.from = 2; cut.to = 0;
+        cut.conditions = {{"walking", Condition::Op::IsFalse, 0.0f}};
+        g.transitions = {go, wave, cut};
+
+        Instance in;
+        start(g, in);
+        near(fadeWeight(in), 0.0f, "no fade before any transition");
+        tick(g, in, 0.5f);                       // half a second of Idle
+        setBool(g, in, "walking", true);
+        steps(g, in, 0.1f, 1.0f, "Walk", "a fading arrow is taken like any other");
+        check(in.fadeFrom == 0, "and Idle is the state fading out",
+              std::to_string(in.fadeFrom));
+        near(fadeWeight(in), 1.0f, "which on the frame of the change is still all of the pose");
+        near(in.fadeFromTime, 0.6f, "on Idle's own clock, not restarted");
+        tick(g, in, 0.1f);
+        near(fadeWeight(in), 0.75f, "a quarter of the way through, it has three quarters left");
+        near(in.fadeFromTime, 0.7f, "and its clock keeps running while it fades");
+        tick(g, in, 0.35f);
+        check(in.fadeFrom == -1, "at the end of the fade it is gone",
+              std::to_string(in.fadeFrom));
+        near(fadeWeight(in), 0.0f, "and has no share left");
+
+        // A change in the middle of a fade fades out of the state it leaves --
+        // the newest change is the one the eye follows.
+        Instance mid;
+        start(g, mid);
+        setBool(g, mid, "walking", true);
+        tick(g, mid, 0.1f);                      // -> Walk, fading out of Idle
+        tick(g, mid, 0.1f);
+        fire(g, mid, "wave");
+        steps(g, mid, 0.1f, 1.0f, "Wave", "a new change mid-fade");
+        check(mid.fadeFrom == 1, "fades out of the state it leaves",
+              std::to_string(mid.fadeFrom));
+        near(mid.fadeLength, 0.2f, "over its own arrow's fade");
+
+        // An arrow without a fade cuts -- and drops a fade still running.
+        setBool(g, mid, "walking", false);
+        steps(g, mid, 0.05f, 1.0f, "Idle", "an arrow with no fade");
+        check(mid.fadeFrom == -1, "cuts, and leaves nothing fading",
+              std::to_string(mid.fadeFrom));
+
+        // The fading state's place in its clip follows its own speed and loop.
+        State s = st("Walk", "");
+        s.speed = 2.0f;
+        near(clipTime(s, 0.7f, 1.0f), 0.4f, "a fading state loops on its own clip");
+        s.loop = false;
+        near(clipTime(s, 0.7f, 1.0f), 1.0f, "and holds at its end if it does not loop");
+
+        // Saved and read back; and a scene from before fades cuts.
+        nlohmann::json j;
+        save(j, {g});
+        std::vector<Graph> back;
+        load(j, back);
+        near(back.empty() ? -1.0f : back[0].transitions[0].fade, 0.4f,
+             "a transition keeps its fade through a save");
+        for (auto& tj : j["animGraphs"][0]["transitions"]) tj.erase("fade");
+        load(j, back);
+        near(back.empty() ? -1.0f : back[0].transitions[0].fade, 0.0f,
+             "one saved before fades existed cuts");
+    }
+
+    // --- Fades: the skeleton ------------------------------------------------
+    {
+        // A two-joint arm: the root at the origin, the elbow a metre up, a
+        // vertex at the tip two metres up bound to the elbow. Clip A holds the
+        // arm upright, clip B swings it 90 degrees about Z.
+        fitzel::ModelData m;
+        fitzel::SkeletonJoint root, elbow;
+        elbow.parent = 0;
+        elbow.restT  = glm::vec3(0.0f, 1.0f, 0.0f);
+        elbow.inverseBind = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, -1.0f, 0.0f));
+        m.skeleton = {root, elbow};
+        auto pose = [&](const char* name, float deg) {
+            fitzel::AnimationClip c;
+            c.name = name;
+            c.duration = 1.0f;
+            c.tracks.resize(2);
+            c.tracks[0].rTimes = {0.0f};
+            c.tracks[0].rVals  = {glm::angleAxis(glm::radians(deg), glm::vec3(0, 0, 1))};
+            return c;
+        };
+        m.animations = {pose("Up", 0.0f), pose("Side", 90.0f)};
+        auto tip = [&](const std::vector<glm::mat4>& pal) {
+            return pal.size() == 2 ? glm::vec3(pal[1] * glm::vec4(0.0f, 2.0f, 0.0f, 1.0f))
+                                   : glm::vec3(0.0f);
+        };
+        const glm::vec3 a = tip(fitzel::sampleSkeleton(m, 0, 0.0f));
+        const glm::vec3 b = tip(fitzel::sampleSkeleton(m, 1, 0.0f));
+        near(a.y, 2.0f, "clip A holds the arm up");
+        near(b.x, -2.0f, "clip B swings it to the side");
+        const glm::vec3 h = tip(fitzel::sampleSkeletonBlend(m, 0, 0.0f, 1, 0.0f, 0.5f));
+        near(glm::length(h), 2.0f, "half way through a fade the arm keeps its length");
+        near(std::atan2(-h.x, h.y), glm::radians(45.0f),
+             "and points half way between the two poses");
+        const glm::vec3 w0 = tip(fitzel::sampleSkeletonBlend(m, 0, 0.0f, 1, 0.0f, 0.0f));
+        const glm::vec3 w1 = tip(fitzel::sampleSkeletonBlend(m, 0, 0.0f, 1, 0.0f, 1.0f));
+        near(glm::length(w0 - a), 0.0f, "a share of 0 is clip A exactly");
+        near(glm::length(w1 - b), 0.0f, "a share of 1 is clip B exactly");
+        const glm::vec3 bad = tip(fitzel::sampleSkeletonBlend(m, 7, 0.0f, 1, 0.0f, 0.5f));
+        near(glm::length(bad - b), 0.0f, "a clip that is not there leaves the other alone");
     }
 
     // --- A scene with no graphs ---------------------------------------------

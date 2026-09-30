@@ -136,6 +136,11 @@ std::string transitionLabel(const Graph& g, const Transition& t) {
             }
         }
     }
+    if (t.fade > 0.0f) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%sfade %.2g s", s.empty() ? "" : ", ", t.fade);
+        s += buf;
+    }
     return s;
 }
 
@@ -749,12 +754,23 @@ void drawPanel(const PanelState& s) {
             if (ImGui::SliderFloat("##exit", &t.exitTime, 0.0f, 1.0f, "%.0f%% through"))
                 s.markDirty();
         }
+        // How long the state being left hands its pose over. In steps, no drag:
+        // a quarter of a second is five clicks, not a steady hand.
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Fade");
+        ImGui::SameLine();
+        if (ui::stepper("fade", t.fade, 0.05f, 0.0f, 2.0f, "%.2f s", em * 7.0f)) {
+            t.fade = std::round(t.fade * 20.0f) / 20.0f;   // no 0.15000001 creeping in
+            s.markDirty();
+        }
         ImGui::SameLine();
         if (ImGui::Button("Delete arrow")) {
             g.transitions.erase(g.transitions.begin() + g_selTrans);
             g_selTrans = -1;
             s.markDirty();
         } else {
+            ui::hint("Fade 0 cuts. A fade mixes the two states' model animations; "
+                     "Timeline clips switch at once.");
             ui::hint("All of these must hold at once. For \"either\", draw a second arrow.");
             for (int ci = 0; ci < static_cast<int>(t.conditions.size()); ++ci) {
                 Condition& c = t.conditions[static_cast<std::size_t>(ci)];

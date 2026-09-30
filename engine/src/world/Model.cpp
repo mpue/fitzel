@@ -1841,28 +1841,47 @@ glm::quat sampleQuat(const std::vector<float>& times,
 
 } // namespace
 
-std::vector<glm::mat4> sampleSkeleton(const ModelData& model, int clip, float timeSec) {
-    std::vector<glm::mat4> palette;
-    if (clip < 0 || clip >= static_cast<int>(model.animations.size()) ||
-        model.skeleton.empty())
-        return palette;
+namespace {
+
+// One joint's local transform, kept apart so two poses can be mixed before
+// they become matrices.
+struct JointPose {
+    glm::vec3 T{0.0f};
+    glm::quat R{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::vec3 S{1.0f};
+};
+
+bool validClip(const ModelData& model, int clip) {
+    return clip >= 0 && clip < static_cast<int>(model.animations.size()) &&
+           !model.skeleton.empty();
+}
+
+// `clip` at `timeSec` as a local pose per joint (rest where a track is absent).
+std::vector<JointPose> sampleLocal(const ModelData& model, int clip, float timeSec) {
     const AnimationClip& c = model.animations[clip];
     const std::size_t J = model.skeleton.size();
-
-    // Animated local transform per joint (rest where a track is absent).
-    std::vector<glm::mat4> local(J);
+    std::vector<JointPose> pose(J);
     for (std::size_t j = 0; j < J; ++j) {
         const SkeletonJoint& sj = model.skeleton[j];
-        glm::vec3 T = sj.restT; glm::quat R = sj.restR; glm::vec3 S = sj.restS;
+        JointPose& p = pose[j];
+        p.T = sj.restT; p.R = sj.restR; p.S = sj.restS;
         if (j < c.tracks.size()) {
             const JointTrack& tr = c.tracks[j];
-            if (!tr.tVals.empty()) T = sampleVec3(tr.tTimes, tr.tVals, timeSec);
-            if (!tr.rVals.empty()) R = sampleQuat(tr.rTimes, tr.rVals, timeSec);
-            if (!tr.sVals.empty()) S = sampleVec3(tr.sTimes, tr.sVals, timeSec);
+            if (!tr.tVals.empty()) p.T = sampleVec3(tr.tTimes, tr.tVals, timeSec);
+            if (!tr.rVals.empty()) p.R = sampleQuat(tr.rTimes, tr.rVals, timeSec);
+            if (!tr.sVals.empty()) p.S = sampleVec3(tr.sTimes, tr.sVals, timeSec);
         }
-        local[j] = glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(R) *
-                   glm::scale(glm::mat4(1.0f), S);
     }
+    return pose;
+}
+
+std::vector<glm::mat4> composePalette(const ModelData& model,
+                                      const std::vector<JointPose>& pose) {
+    const std::size_t J = model.skeleton.size();
+    std::vector<glm::mat4> local(J);
+    for (std::size_t j = 0; j < J; ++j)
+        local[j] = glm::translate(glm::mat4(1.0f), pose[j].T) * glm::mat4_cast(pose[j].R) *
+                   glm::scale(glm::mat4(1.0f), pose[j].S);
 
     // Global transform, resolving parents first (works for any joint order).
     std::vector<glm::mat4> global(J);
@@ -1877,10 +1896,36 @@ std::vector<glm::mat4> sampleSkeleton(const ModelData& model, int clip, float ti
     };
     for (std::size_t j = 0; j < J; ++j) resolve(static_cast<int>(j));
 
-    palette.resize(J);
+    std::vector<glm::mat4> palette(J);
     for (std::size_t j = 0; j < J; ++j)
         palette[j] = global[j] * model.skeleton[j].inverseBind;
     return palette;
+}
+
+} // namespace
+
+std::vector<glm::mat4> sampleSkeleton(const ModelData& model, int clip, float timeSec) {
+    if (!validClip(model, clip)) return {};
+    return composePalette(model, sampleLocal(model, clip, timeSec));
+}
+
+std::vector<glm::mat4> sampleSkeletonBlend(const ModelData& model,
+                                           int clipA, float timeA,
+                                           int clipB, float timeB, float w) {
+    const bool okA = validClip(model, clipA), okB = validClip(model, clipB);
+    if (!okA || !okB || w >= 1.0f) return okB ? sampleSkeleton(model, clipB, timeB)
+                                              : sampleSkeleton(model, clipA, timeA);
+    if (w <= 0.0f) return sampleSkeleton(model, clipA, timeA);
+    std::vector<JointPose> pose = sampleLocal(model, clipA, timeA);
+    const std::vector<JointPose> b = sampleLocal(model, clipB, timeB);
+    for (std::size_t j = 0; j < pose.size(); ++j) {
+        pose[j].T = glm::mix(pose[j].T, b[j].T, w);
+        pose[j].S = glm::mix(pose[j].S, b[j].S, w);
+        glm::quat q = b[j].R;
+        if (glm::dot(pose[j].R, q) < 0.0f) q = -q;                    // shorter arc
+        pose[j].R = glm::normalize(pose[j].R * (1.0f - w) + q * w);   // nlerp
+    }
+    return composePalette(model, pose);
 }
 
 void skinPrimitive(const ModelPrimitive& prim, const std::vector<glm::mat4>& palette,
