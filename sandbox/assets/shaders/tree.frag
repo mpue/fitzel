@@ -14,6 +14,10 @@ uniform float uAlphaCutoff; // ...below this alpha
 uniform int  uHasTex;
 uniform vec3 uBaseColor;
 uniform vec3 uTint;
+// The part's normal map (VegetationSystem: bark only). Unit 1.
+uniform sampler2D uNormalTex;
+uniform int   uHasNormal;
+uniform float uNormalStrength;
 uniform vec3 uViewPos;
 uniform vec3 uLightDir;
 uniform vec3 uLightColor;
@@ -32,6 +36,7 @@ uniform float uHue;        // 0 = unchanged (radians, rotates about the grey axi
 
 #include "sunshadow.glsl"
 #include "treedither.glsl"
+#include "treenormal.glsl"
 
 // Rodrigues rotation of an RGB colour about the achromatic (1,1,1) axis: a cheap
 // hue shift that leaves greys untouched.
@@ -69,6 +74,10 @@ void main() {
 
     vec3 albedo = pow(correct(tex.rgb * uTint), vec3(2.2));
     vec3 N = normalize(vNormal);
+    // Bark relief: the furrows catch the sun and the ridges shade each other,
+    // which is what makes a trunk read as wood up close rather than as a
+    // printed tube.
+    if (uHasNormal == 1) N = treeNormalMap(uNormalTex, N, vWorldPos, vUv, uNormalStrength);
     vec3 L = normalize(uLightDir);
     float ndl = dot(N, L);
     // Foliage is translucent -> soft two-sided; bark is opaque -> one-sided so it

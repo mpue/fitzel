@@ -82,6 +82,7 @@ struct ModelPrimitive {
     SharedPixels               normalPixels; // RGBA tangent-space normal map (opt)
     int   normalWidth  = 0;
     int   normalHeight = 0;
+    float normalScale  = 1.0f;               // glTF normalTexture.scale: the relief's strength
     SharedPixels               emissionPixels; // RGBA emission/_Illum map (opt)
     int   emissionWidth  = 0;
     int   emissionHeight = 0;
