@@ -999,6 +999,28 @@ void VegetationSystem::setLODModel(int s, int lod, const std::string& file) {
     loadTreeMesh(modelPath(file), sp, sp.lods[lod]);
 }
 
+int VegetationSystem::adoptTreeModel(const std::string& file, const std::string& name,
+                                     float height) {
+    scanTreeAssets();   // the file may be new since the project was opened
+    for (int s = 0; s < static_cast<int>(m_species.size()); ++s) {
+        TreeSpecies& sp = m_species[static_cast<std::size_t>(s)];
+        if (!sp.lods.empty() && sp.lods.front().model == file) {
+            setLODModel(s, 0, file);        // reloads; the levels and impostor follow
+            return s;
+        }
+    }
+    const int s = addSpecies();
+    TreeSpecies& sp = m_species[static_cast<std::size_t>(s)];
+    sp.name = name;
+    sp.size = std::max(height, 0.5f);
+    // The stock billboard is a picture of some other tree; the impostors are
+    // baked from this one's own mesh.
+    sp.bbEnabled = false;
+    setLODModel(s, 0, file);
+    treeCenter = glm::vec2(1e9f);
+    return s;
+}
+
 void VegetationSystem::setBillboard(int s, const std::string& file) {
     if (s < 0 || s >= static_cast<int>(m_species.size())) return;
     TreeSpecies& sp = m_species[s];

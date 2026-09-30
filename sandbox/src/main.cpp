@@ -191,6 +191,7 @@
 #include "HouseGen.hpp"
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
+#include "TreeGenPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
 #include "TriggerReach.hpp"
@@ -1617,6 +1618,7 @@ int main(int argc, char** argv) {
         bool showBuildings   = false;
         bool showHouses      = false;
         bool showSigns       = false;
+        bool showTreeGen     = false;
         bool showCity        = false;
         bool showTowns       = false; // the town generator
         int  townSel         = -1;
@@ -2099,7 +2101,18 @@ int main(int argc, char** argv) {
 #endif
         auto safeName             = [&](const std::string& s){ return projectio::safeName(s); };
         auto loadProjectMaterials = [&](const std::string& d){ projectio::loadProjectMaterials(pio, d); };
-        auto saveProjectTo        = [&](const std::string& f){ if (prefabEditBusy("Saving the project")) return; projectio::saveProjectTo(pio, f); noteSaved(); };
+        // A new project and Save As get their folder HERE, not at an open: the
+        // road-surface and tree lists have to scan it too, or whatever is saved
+        // into it afterwards (a generated tree) never appears in their pickers.
+        auto saveProjectTo        = [&](const std::string& f){
+            if (prefabEditBusy("Saving the project")) return;
+            projectio::saveProjectTo(pio, f);
+            const auto norm = [](const std::string& p) {
+                return std::filesystem::path(p).lexically_normal().generic_string();
+            };
+            if (norm(veg.projectDir()) != norm(f)) { roads.refreshTextures(f); veg.refreshTreeAssets(f); }
+            noteSaved();
+        };
         auto saveCurrent          = [&](){ if (prefabEditBusy("Saving the project")) return; projectio::saveCurrent(pio); noteSaved(); };
         auto exportGame           = [&](const std::string& o){ if (prefabEditBusy("Exporting the game")) return; projectio::exportGame(pio, o); };
         auto listProjectsIn       = [&](const std::string& r){ return projectio::listProjectsIn(r); };
@@ -2591,6 +2604,13 @@ int main(int argc, char** argv) {
         // --- Street-name signs (see StreetSignPanel.hpp: owns its actions) -----
         signui::StreetSignTool signTool({document, history, sel, entityCounter, spawnPoint,
                                          exportStatus});
+
+        // --- The tree generator (see TreeGenPanel.hpp: owns its actions) --------
+        treeui::TreeGenTool treeGen({currentProject, exportStatus,
+                                     [&](const std::string& file, const std::string& name, float h) {
+                                         veg.adoptTreeModel(file, name, h);
+                                     },
+                                     [&] { veg.rescanTreeFiles(); }});
 
         // --- Procedural houses (see HouseGen.hpp) -------------------------------
         // The same four actions as the buildings: generate at the spawn point,
@@ -5799,6 +5819,7 @@ int main(int argc, char** argv) {
             {"World",    "Advanced nature",    nullptr, &showNature},
             {"Planting", "Vegetation",         nullptr, &showVegetation},
             {"Planting", "Scatter",            nullptr, &showScatter},
+            {"Planting", "Tree generator",     nullptr, &showTreeGen},
             {"Track",    "Roads",              nullptr, &showRoads},
             {"Track",    "Splines & bridges", nullptr, &showSplines},
             {"Track",    "City",               nullptr, &showCity},
@@ -9968,6 +9989,7 @@ int main(int argc, char** argv) {
             }
 
             if (showSigns) signTool.panel(showSigns);
+            if (showTreeGen) treeGen.panel(showTreeGen);
 
             if (showHouses) {
                 houseui::drawPanel({

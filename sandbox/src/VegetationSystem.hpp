@@ -275,6 +275,18 @@ public:
     void removeLOD(int s, int lod);
     void setLODModel(int s, int lod, const std::string& file);
     void setBillboard(int s, const std::string& file);
+    // Point a species at a tree model that was just written (the tree
+    // generator, TreeGenPanel.cpp): the species already showing `file` as its
+    // first level is reloaded from it -- the same file saved again -- and
+    // otherwise a new species is made for it, `height` metres tall. The file
+    // must lie in the open project or the content dirs. Returns the species.
+    int  adoptTreeModel(const std::string& file, const std::string& name, float height);
+    // The open project's folder, as last handed to refreshTreeAssets.
+    const std::string& projectDir() const { return m_projectDir; }
+    // Re-read the lists of pickable models and images (content + project) without
+    // reloading any species -- for a file just written into the project, so it
+    // shows up in the pickers at once instead of after the next project open.
+    void rescanTreeFiles() { scanTreeAssets(); }
     // The whole Trees + Paint-trees editor panel (keeps main.cpp small).
     // treePaintMode is the tree brush's own switch; which tool has the left
     // button is main's (ViewTool.hpp).
