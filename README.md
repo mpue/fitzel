@@ -412,7 +412,10 @@ arrow, which is also the version you can see. `Any State` exists so "hit" or "di
 not need an arrow out of every node. A transition cuts unless it is given a **fade**:
 then the state being left keeps playing and hands its pose over for that many seconds,
 mixed per joint so a swinging arm keeps its length. Only model animations fade -- a
-Timeline clip's door or lamp simply switches. Layers and blend trees are left out on
+Timeline clip's door or lamp simply switches. A state's speed may be negative -- the clip
+plays backward -- and may be multiplied by a Number parameter, so the game sets the pace
+as it goes: the walk at -0.5 while the figure backs away at half speed. The clip carries
+on from where it is when the pace changes. Layers and blend trees are left out on
 purpose, and that is written down in `sandbox/src/AnimGraph.hpp` rather than left to be
 rediscovered.
 
@@ -427,7 +430,11 @@ game.animState(id)                  -- the state's name, for waiting on it
 
 `sandbox/scripts/door.lua` is a worked example: a door that opens when you walk up to
 it, with the whole scene-side setup written at the top. `sandbox/scripts/walker.lua` is
-the other one: a figure walked with WASD, its graph switched between Idle and Walk. For the simple case -- one clip,
+the other one: a figure walked with WASD, its graph switched between Idle and Walk. Hang a
+Camera on the figure set to *Follow parent* with **Orbit with mouse**, switch the
+script's `CAMERA_RELATIVE` on, and it is a third-person controller: the mouse swings the
+camera round the figure, the keys walk it relative to the view and it turns to face its
+way. For the simple case -- one clip,
 played when the game starts -- there is an **Animator** component instead, which is
 three fields and no graph.
 

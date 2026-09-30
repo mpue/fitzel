@@ -1551,6 +1551,17 @@ public:
     // ...and at 1 it is still a shot OF the craft, taken from behind it. The view
     // FROM it is the Cockpit mode, which has no knobs at all: see below.
 
+    // A third-person camera: while this camera is the view in Play, the mouse
+    // swings it round the object it follows -- left and right all the way round,
+    // up and down within limits -- instead of it trailing that object's heading.
+    // It keeps the distance the authored position gives and opens on the
+    // authored angle, so switching it on changes nothing until the mouse moves.
+    // The object turning no longer turns the camera, and that is the point: you
+    // look where you like, and the figure walks relative to the view (see
+    // walker.lua's CAMERA_RELATIVE). The cursor is held while it is the view.
+    bool  orbitMouse = false;
+    float orbitSpeed = 0.15f; // degrees of swing per pixel of mouse travel
+
     // --- Cockpit ----------------------------------------------------------------
     // Nothing to set, and that is the point. Where the camera sits in its parent's
     // frame is the seat, its own rotation is which way the pilot's head is turned,

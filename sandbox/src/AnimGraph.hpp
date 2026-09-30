@@ -66,7 +66,14 @@ struct State {
     // Animation component (if it has one) poses it as before.
     std::string modelClip;
     bool        loop  = true;
+    // How fast the clip plays; negative plays it BACKWARD -- a walk run in
+    // reverse is what a figure backing up looks like.
     float       speed = 1.0f;
+    // A Number parameter the speed is multiplied by ("" = none), so the game can
+    // set the pace from moment to moment: the walk at the speed the figure
+    // actually moves, and at -0.5 while it backs away at half speed. The clip
+    // carries on from where it is when the value changes -- no jump in the pose.
+    std::string speedParam;
     glm::vec2   pos{0.0f};            // where its node sits on the editor canvas
 };
 
@@ -103,15 +110,21 @@ struct Graph {
 struct Instance {
     int   state = -1;           // -1 = not started
     float time  = 0.0f;         // seconds spent in the current state
+    // How far the current state's clip has played, in clip seconds: speed and
+    // speed parameter applied, negative once it has run backward, not yet
+    // wrapped. ADDED UP frame by frame rather than worked out as time x speed,
+    // because the speed can change mid-state -- and time x a new speed would
+    // throw the pose somewhere else entirely the moment it did.
+    float phase = 0.0f;
     std::vector<float> values;  // one per graph param; a Trigger is 0 or 1
     // The state the last step() moved into, for anyone who wants to react to a
     // change (a sound on the door starting to open). -1 when nothing changed.
     int   entered = -1;
-    // A fade in progress: the state being left (-1 = none), its own clock --
+    // A fade in progress: the state being left (-1 = none), its own phase --
     // it keeps playing while it fades -- and how far through the fade it is.
     // A new transition mid-fade starts a fresh fade from the state it leaves.
-    int   fadeFrom     = -1;
-    float fadeFromTime = 0.0f;
+    int   fadeFrom      = -1;
+    float fadeFromPhase = 0.0f;
     float fadeLength   = 0.0f;
     float fadeElapsed  = 0.0f;
 };
@@ -142,10 +155,15 @@ void fire(const Graph& g, Instance& in, const std::string& param);
 void step(const Graph& g, Instance& in, float dt,
           float clipLength, std::string& outClip, float& outTime);
 
-// Where in its clip a state is after `rawTime` seconds in it: scaled by its
-// speed, then looped or held at the end. What step() reports for the current
-// state, and what the caller needs for the one fading out.
-float clipTime(const State& s, float rawTime, float clipLength);
+// Where in its clip a state is, given how far it has played (a phase, see
+// Instance): looped, or held at the end -- or, played backward, at the start,
+// having begun from the end. What step() reports for the current state, and
+// what the caller needs for the one fading out.
+float clipTime(const State& s, float phase, float clipLength);
+
+// How fast a state's clip is playing right now: its speed times its speed
+// parameter (a parameter that is missing or not a Number counts as 1).
+float playRate(const Graph& g, const Instance& in, const State& s);
 
 // The fading-out state's share of the pose: 1 on the frame of the transition,
 // falling to 0 over the fade. 0 when no fade is running.

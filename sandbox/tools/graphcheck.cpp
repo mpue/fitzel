@@ -430,10 +430,10 @@ int main() {
         check(in.fadeFrom == 0, "and Idle is the state fading out",
               std::to_string(in.fadeFrom));
         near(fadeWeight(in), 1.0f, "which on the frame of the change is still all of the pose");
-        near(in.fadeFromTime, 0.6f, "on Idle's own clock, not restarted");
+        near(in.fadeFromPhase, 0.6f, "on Idle's own clock, not restarted");
         tick(g, in, 0.1f);
         near(fadeWeight(in), 0.75f, "a quarter of the way through, it has three quarters left");
-        near(in.fadeFromTime, 0.7f, "and its clock keeps running while it fades");
+        near(in.fadeFromPhase, 0.7f, "and its clock keeps running while it fades");
         tick(g, in, 0.35f);
         check(in.fadeFrom == -1, "at the end of the fade it is gone",
               std::to_string(in.fadeFrom));
@@ -458,12 +458,11 @@ int main() {
         check(mid.fadeFrom == -1, "cuts, and leaves nothing fading",
               std::to_string(mid.fadeFrom));
 
-        // The fading state's place in its clip follows its own speed and loop.
+        // The fading state's place in its clip follows its own loop.
         State s = st("Walk", "");
-        s.speed = 2.0f;
-        near(clipTime(s, 0.7f, 1.0f), 0.4f, "a fading state loops on its own clip");
+        near(clipTime(s, 1.4f, 1.0f), 0.4f, "a fading state loops on its own clip");
         s.loop = false;
-        near(clipTime(s, 0.7f, 1.0f), 1.0f, "and holds at its end if it does not loop");
+        near(clipTime(s, 1.4f, 1.0f), 1.0f, "and holds at its end if it does not loop");
 
         // Saved and read back; and a scene from before fades cuts.
         nlohmann::json j;
@@ -476,6 +475,65 @@ int main() {
         load(j, back);
         near(back.empty() ? -1.0f : back[0].transitions[0].fade, 0.0f,
              "one saved before fades existed cuts");
+    }
+
+    // --- Speed: backward, and set by the game --------------------------------
+    {
+        // The walk of a figure that can back up: its pace comes from a Number
+        // parameter the script sets from how the figure is moving.
+        Graph g;
+        g.states = {st("Walk", "")};
+        g.params = {{"walkSpeed", Param::Type::Number, 1.0f}};
+        g.states[0].speedParam = "walkSpeed";
+        Instance in;
+        start(g, in);
+        std::string clip;
+        float t = 0.0f;
+        step(g, in, 0.25f, 1.0f, clip, t);
+        near(t, 0.25f, "at the parameter's default of 1 the walk plays forward");
+        setNumber(g, in, "walkSpeed", -1.0f);
+        step(g, in, 0.1f, 1.0f, clip, t);
+        near(t, 0.15f, "set to -1 it turns round where it is -- no jump in the pose");
+        step(g, in, 0.3f, 1.0f, clip, t);
+        near(t, 0.85f, "and runs back through the start into the end of the loop");
+        setNumber(g, in, "walkSpeed", -0.5f);
+        step(g, in, 0.2f, 1.0f, clip, t);
+        near(t, 0.75f, "at -0.5 it backs up at half pace");
+        near(playRate(g, in, g.states[0]), -0.5f, "and playRate says so");
+
+        // A speed parameter that is not a Number, or is gone, multiplies by 1.
+        Graph h = g;
+        h.params[0].type = Param::Type::Bool;
+        near(playRate(h, in, h.states[0]), 1.0f, "a speed parameter that is not a Number is ignored");
+        h.params.clear();
+        near(playRate(h, in, h.states[0]), 1.0f, "and so is one that is missing");
+
+        // Backward without a script: a state at a negative speed.
+        Graph b;
+        b.states = {st("Back", "")};
+        b.states[0].speed = -1.0f;
+        Instance bi;
+        start(b, bi);
+        step(b, bi, 0.25f, 1.0f, clip, t);
+        near(t, 0.75f, "a state at speed -1 plays its clip backward");
+        b.states[0].loop = false;
+        Instance oi;
+        start(b, oi);
+        step(b, oi, 0.5f, 2.0f, clip, t);
+        near(t, 1.5f, "played once backward it starts from the end");
+        step(b, oi, 5.0f, 2.0f, clip, t);
+        near(t, 0.0f, "and holds at the start");
+
+        nlohmann::json j;
+        save(j, {g});
+        std::vector<Graph> back;
+        load(j, back);
+        const std::string got = back.empty() ? "(nothing)" : back[0].states[0].speedParam;
+        check(got == "walkSpeed", "a state keeps its speed parameter through a save", got);
+        for (auto& sj : j["animGraphs"][0]["states"]) sj.erase("speedParam");
+        load(j, back);
+        check(!back.empty() && back[0].states[0].speedParam.empty(),
+              "one saved before speed parameters plays at its own speed", "");
     }
 
     // --- Fades: the skeleton ------------------------------------------------

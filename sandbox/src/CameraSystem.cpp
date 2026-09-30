@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iterator>
 
+#include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
@@ -184,6 +185,12 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
         shot.stiffness  = cc->stiffness;
         shot.rollWith   = cc->rollWith;
         shot.fov        = cc->fov;
+        if (cc->orbitMouse) {
+            m_pose[e.id] = orbit(e.id, *target, shot, cc->orbitSpeed);
+            m_chase.erase(e.id);   // the mouse places it: nothing eased to keep
+            continue;
+        }
+        m_orbit.erase(e.id);       // switched off: the next time opens fresh
         m_pose[e.id] = follow(e.id, *target, shot, dt);
     }
 
@@ -200,6 +207,64 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
     // resume something the viewer never saw the start of.
     for (auto it = m_shots.begin(); it != m_shots.end();)
         it = (m_pose.count(it->first) == 0) ? m_shots.erase(it) : std::next(it);
+    // ...and an orbit camera that went away comes back on its authored angle.
+    for (auto it = m_orbit.begin(); it != m_orbit.end();)
+        it = (m_pose.count(it->first) == 0) ? m_orbit.erase(it) : std::next(it);
+}
+
+void CameraSystem::steer(int id, glm::vec2 mouseDelta) {
+    if (id >= 0) m_orbit[id].pending += mouseDelta;
+}
+
+Pose CameraSystem::orbit(int key, const Entity& target, const FollowShot& shot,
+                         float degPerPixel) {
+    Pose p;
+    p.fov = shot.fov;
+    // It swings round the point it looks at, not round the object's feet: the
+    // head or shoulders stay in the middle of the picture wherever it goes.
+    const glm::vec3 wUp{0.0f, 1.0f, 0.0f};
+    const glm::vec3 pivot = target.center + wUp * shot.lookHeight;
+
+    Orbit& o = m_orbit[key];
+    if (!o.seeded) {
+        // First sight: the authored shot, read the way the follow camera reads
+        // it -- the offset in the object's HEADING frame -- so switching the
+        // orbit on changes nothing until the mouse moves.
+        const float yaw = sceneHeading(target.rotation);
+        const glm::vec3 off = shot.offset;
+        const glm::vec3 offFlat(off.x * std::cos(yaw) + off.z * std::sin(yaw),
+                                off.y,
+                                -off.x * std::sin(yaw) + off.z * std::cos(yaw));
+        glm::vec3 rel = target.center + offFlat - pivot;
+        // An offset on top of the pivot has no direction: stand behind instead.
+        if (glm::length(rel) < 1e-3f) rel = glm::vec3(0.0f, 0.0f, -1.0f);
+        o.dist   = glm::max(glm::length(rel), 0.5f);
+        o.yaw    = std::atan2(rel.x, rel.z);
+        o.pitch  = std::asin(glm::clamp(rel.y / glm::length(rel), -1.0f, 1.0f));
+        o.seeded = true;
+    }
+    // Mouse right turns the VIEW right, so the eye goes the other way round the
+    // pivot; mouse up looks up, so the eye sinks below the pivot's horizon.
+    const float k = glm::radians(glm::max(degPerPixel, 0.0f));
+    o.yaw   -= o.pending.x * k;
+    o.pitch -= o.pending.y * k;
+    o.pending = glm::vec2(0.0f);
+    o.yaw = std::remainder(o.yaw, glm::two_pi<float>());   // no drift to huge angles
+    // Not over the top (the view would flip) and not far underneath (it would
+    // look up through the ground).
+    o.pitch = glm::clamp(o.pitch, glm::radians(-30.0f), glm::radians(75.0f));
+
+    const float cp = std::cos(o.pitch);
+    glm::vec3 eye = pivot + o.dist * glm::vec3(cp * std::sin(o.yaw), std::sin(o.pitch),
+                                               cp * std::cos(o.yaw));
+    // Looking up from low down must not put the eye inside the hill behind.
+    if (m_ground) eye.y = glm::max(eye.y, m_ground(eye.x, eye.z) + 0.3f);
+
+    p.position = eye;
+    const glm::vec3 d = pivot - eye;
+    p.front = glm::length(d) > 1e-4f ? glm::normalize(d) : glm::vec3(0.0f, 0.0f, 1.0f);
+    p.up    = wUp;
+    return p;
 }
 
 Pose CameraSystem::follow(int key, const Entity& target, const FollowShot& shot,
@@ -315,6 +380,7 @@ bool CameraSystem::pose(int id, Pose& out) const {
 
 void CameraSystem::reset() {
     m_chase.clear();
+    m_orbit.clear();
     m_pose.clear();
     m_shots.clear();
 }

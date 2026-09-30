@@ -4846,6 +4846,9 @@ int main(int argc, char** argv) {
         // A script placed the camera this Play (game.setCameraPos): it owns the
         // eye, and the walking player leaves it alone until Play ends.
         bool      scriptOwnsEye = false;
+        // An orbit camera (CameraComponent::orbitMouse) locked the cursor, and
+        // unlocks it again when it stops being the view.
+        bool      orbitHeldCursor = false;
         bool      playPrevEdit = false;
         int       activeCam = -1; // entity id of the active Camera in Play (-1 = player)
         // Whose race you are watching: an opponent's entity id, or -1 for your
@@ -6785,6 +6788,20 @@ int main(int argc, char** argv) {
                     playCue(c.sound, c.gain, c.pitch);
             }
 
+            // An orbit camera as the view owns the mouse (the branch below). When
+            // it stops being the view, the cursor it held is let go again --
+            // unless the walking player holds it for its own look.
+            const bool orbitView = playMode && [&] {
+                const Entity* ce = activeCam >= 0 ? document.find(activeCam) : nullptr;
+                const auto* cc = ce ? ce->components.get<CameraComponent>() : nullptr;
+                return cc && ce->activeInHierarchy && ce->parent >= 0 &&
+                       cc->mode == CameraComponent::Follow && cc->orbitMouse;
+            }();
+            if (!orbitView && orbitHeldCursor) {
+                orbitHeldCursor = false;
+                if (!fpsMode) input.setCursorLocked(false);
+            }
+
             if (gfxUi.open()) {
                 // The graphics menu owns the frame: no look, no walking, no
                 // driving. (The world keeps ticking, like the scene's own menu --
@@ -7064,6 +7081,22 @@ int main(int argc, char** argv) {
                 } else {
                     driveGliderId2 = -1;
                 }
+            } else if (orbitView) {
+                // An orbit camera is the view: the mouse (and the right stick)
+                // swing it round the object it follows. The walking player
+                // stands aside, as it does for a script's eye -- WASD belongs to
+                // the figure now, and a capsule wandering off would drag the
+                // streaming with it -- and the cursor is held, as in any
+                // third-person game. Esc still leaves Play.
+                if (!input.isCursorLocked()) input.setCursorLocked(true);
+                orbitHeldCursor = true;
+                glm::vec2 d = input.mouseDelta();
+                if (input.hasGamepad()) {
+                    const float look = 1200.0f * dt;
+                    d += glm::vec2( input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_X) * look,
+                                   -input.gamepadStick(GLFW_GAMEPAD_AXIS_RIGHT_Y) * look);
+                }
+                cams.steer(activeCam, d);
             } else if (fpsMode && scriptOwnsEye) {
                 // A script flies the eye (see host.setCamPos): the walking player
                 // stands aside rather than pull the camera back to its capsule --
@@ -9312,7 +9345,7 @@ int main(int argc, char** argv) {
                         const int fc = modelClipOf(e, from.modelClip, fromLen);
                         if (fc >= 0) {
                             ag->skinFromClip  = fc;
-                            ag->skinFromTime  = animgraph::clipTime(from, in.fadeFromTime, fromLen);
+                            ag->skinFromTime  = animgraph::clipTime(from, in.fadeFromPhase, fromLen);
                             ag->skinFromShare = animgraph::fadeWeight(in);
                         }
                     }

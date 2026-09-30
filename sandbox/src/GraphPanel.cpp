@@ -575,6 +575,9 @@ void drawPanel(const PanelState& s) {
             // the one you see -- and a Timeline clip beside it.
             std::string plays = st.modelClip;
             if (!st.clip.empty()) plays += (plays.empty() ? "" : " + ") + st.clip;
+            // ...and how, when it is not simply forward at its own pace.
+            if (!st.speedParam.empty())   plays += " x " + st.speedParam;
+            else if (st.speed < 0.0f)     plays += " (backward)";
             dl->AddText(ImVec2(a.x + 10.0f * g_zoom, a.y + 28.0f * g_zoom),
                         col(0.75f, 0.80f, 0.90f, 0.9f),
                         plays.empty() ? "(no clip)" : plays.c_str());
@@ -652,12 +655,6 @@ void drawPanel(const PanelState& s) {
         }
         ImGui::SameLine();
         if (ImGui::Checkbox("Loop##st", &st.loop)) s.markDirty();
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(em * 4.0f);
-        // Down to 0: a state that holds a model animation's first frame is how a
-        // figure that only brings a walk still gets something to stand in.
-        if (ImGui::DragFloat("Speed##st", &st.speed, 0.02f, 0.0f, 8.0f, "%.2fx"))
-            s.markDirty();
 
         // The figure's own animations -- the clips inside its model.
         const std::vector<std::string> modelClips = modelClipsFor(s, g);
@@ -674,6 +671,48 @@ void drawPanel(const PanelState& s) {
         if (modelClips.empty())
             ui::hint("No animated model runs this graph yet: give the figure an "
                      "Animation Graph component (or select it) to list its animations.");
+
+        // How fast it plays. 0 holds the first frame (the Idle of a figure that
+        // only brings a walk); below 0 plays backward. In clicks, no drag.
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Speed");
+        ImGui::SameLine();
+        if (ui::stepper("speed", st.speed, 0.1f, -4.0f, 4.0f, "%.2fx", em * 7.0f)) {
+            st.speed = std::round(st.speed * 20.0f) / 20.0f;
+            s.markDirty();
+        }
+        // ...times a Number parameter, so a script can set the pace as it goes
+        // -- a walk played backward while the figure backs away.
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("times");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(em * 8.0f);
+        if (ImGui::BeginCombo("##speedparam",
+                              st.speedParam.empty() ? "(nothing)" : st.speedParam.c_str())) {
+            if (ImGui::Selectable("(nothing)", st.speedParam.empty()))
+                { st.speedParam.clear(); s.markDirty(); }
+            for (const Param& p : g.params)
+                if (p.type == Param::Type::Number &&
+                    ImGui::Selectable(p.name.c_str(), st.speedParam == p.name))
+                    { st.speedParam = p.name; s.markDirty(); }
+            ImGui::EndCombo();
+        }
+        if (!st.speedParam.empty()) {
+            const int pi = animgraph::findParam(g, st.speedParam);
+            if (pi < 0 || g.params[static_cast<std::size_t>(pi)].type != Param::Type::Number)
+                ui::hint("%s is not a Number parameter of this graph: the speed is not multiplied.",
+                         st.speedParam.c_str());
+            else if (std::fabs(g.params[static_cast<std::size_t>(pi)].def) < 1e-4f) {
+                ui::hint("%s starts at 0, so the clip stands still until a script sets it.",
+                         st.speedParam.c_str());
+                // One click rather than dragging the starting value to exactly 1.
+                if (ImGui::Button("Start it at 1")) {
+                    g.params[static_cast<std::size_t>(pi)].def = 1.0f;
+                    s.markDirty();
+                }
+            }
+        }
 
         ImGui::BeginDisabled(g.entry == g_selState);
         if (ImGui::Button("Make entry state")) { g.entry = g_selState; s.markDirty(); }

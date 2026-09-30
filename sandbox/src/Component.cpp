@@ -634,6 +634,20 @@ const std::vector<Property>& CameraComponent::properties() {
             return &static_cast<CameraComponent*>(o)->rollWith;
         };
         p.push_back(std::move(rollw));
+        Property orbit;
+        orbit.label = "Orbit with mouse"; orbit.key = "orbitMouse"; orbit.kind = PropKind::Bool;
+        orbit.visible = follows;
+        orbit.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->orbitMouse; };
+        p.push_back(std::move(orbit));
+        Property orbitSp;
+        orbitSp.label = "Orbit speed"; orbitSp.key = "orbitSpeed"; orbitSp.kind = PropKind::Float;
+        orbitSp.slider = true; orbitSp.min = 0.02f; orbitSp.max = 0.6f; orbitSp.fmt = "%.2f deg/px";
+        orbitSp.visible = [](const void* o) {
+            const auto* c = static_cast<const CameraComponent*>(o);
+            return c->mode == CameraComponent::Follow && c->orbitMouse;
+        };
+        orbitSp.field = [](void* o) -> void* { return &static_cast<CameraComponent*>(o)->orbitSpeed; };
+        p.push_back(std::move(orbitSp));
         Property fov;
         fov.label = "FOV"; fov.key = "fov"; fov.kind = PropKind::Float;
         fov.slider = true; fov.min = 20.0f; fov.max = 120.0f; fov.fmt = "%.0f deg";
