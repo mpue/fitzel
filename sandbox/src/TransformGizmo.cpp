@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <memory>
+#include <unordered_map>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
@@ -20,6 +21,10 @@
 namespace gizmo {
 
 namespace {
+
+// The smallest half-size a scale drag leaves an object: a millimetre, so a
+// chess piece can still be shrunk -- but never to nothing.
+constexpr float kMinHalf = 1e-3f;
 
 // With a face selected in Modeling, the gizmo drives THAT face rather than the
 // object: the same Move/Rotate/Scale handles (Q/W/E), the same drag, applied to
@@ -107,6 +112,68 @@ void faceDrag(EditorContext& ed, Drag& d, const Settings& s, Entity& b, MeshComp
         d.faceActive = false;
         auto cmd = std::make_unique<ModifyEntityCmd>(d.faceBefore, b);
         if (!cmd->trivial()) ed.history.pushApplied(std::move(cmd));
+    }
+}
+
+// Scale is not part of the hierarchy -- each entity keeps its own size (half)
+// -- so a scale drag carries a root's descendants along by hand: each keeps its
+// place and its size relative to the root. Measured from the drag's start, not
+// stepped per frame, so a long drag does not drift and one that shrinks a part
+// to its minimum and back brings it back whole. Scaling the root of an imported
+// model is what asks for this: its parts are the model.
+void scaleSubtrees(EditorContext& ed, const Drag& d) {
+    std::unordered_map<int, int> slot;             // id -> index in ed.entities
+    for (int i = 0; i < static_cast<int>(ed.entities.size()); ++i) slot[ed.entities[i].id] = i;
+    std::unordered_map<int, const Entity*> was;    // id -> as the drag found it
+    for (const Entity& e : d.before) was[e.id] = &e;
+    std::unordered_map<int, std::vector<int>> kids;
+    for (const Entity& e : ed.entities)
+        if (e.parent >= 0) kids[e.parent].push_back(e.id);
+    auto isRoot = [&](int id) { return std::find(d.roots.begin(), d.roots.end(), id) != d.roots.end(); };
+
+    for (int rootId : d.roots) {
+        const auto rootSlot = slot.find(rootId);
+        const auto rootWas  = was.find(rootId);
+        if (rootSlot == slot.end() || rootWas == was.end()) continue;
+        const Entity& root = ed.entities[rootSlot->second];
+        if (root.type == EntityType::Sun) continue;
+        // The root's scale since the drag began, along its own axes -- what
+        // ImGuizmo scales along, in whichever mode the gizmo is.
+        const glm::vec3 k    = root.half / glm::max(rootWas->second->half, glm::vec3(1e-6f));
+        const glm::mat4 from = glm::inverse(scenegraph::worldOf(*rootWas->second));
+        const glm::mat4 to   = scenegraph::worldOf(root);
+        const glm::mat3 inRoot(from);
+        // Parents before their children: each is written under its parent's
+        // world as this frame has already left it.
+        std::vector<int> queue;
+        if (const auto c = kids.find(rootId); c != kids.end()) queue = c->second;
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            const int id = queue[q];
+            // Selected itself: it scales about its own centre, as a root.
+            if (isRoot(id)) continue;
+            if (const auto c = kids.find(id); c != kids.end())
+                queue.insert(queue.end(), c->second.begin(), c->second.end());
+            const auto partSlot = slot.find(id);
+            const auto partWas  = was.find(id);
+            if (partSlot == slot.end() || partWas == was.end()) continue;
+            Entity&       e    = ed.entities[partSlot->second];
+            const Entity& orig = *partWas->second;
+            const glm::vec3 local = glm::vec3(from * glm::vec4(orig.center, 1.0f));
+            const glm::vec3 pos   = glm::vec3(to * glm::vec4(k * local, 1.0f));
+            // Its own axes seen from the root, stretched as the root is: exact
+            // for a uniform scale and for a part square with the root; a part
+            // turned against a squashed root would need a shear no box can hold,
+            // so it takes the nearest box.
+            const glm::mat3 axes(scenegraph::worldOf(orig));
+            glm::vec3 grow;
+            for (int i = 0; i < 3; ++i) grow[i] = glm::length(k * (inRoot * axes[i]));
+            e.half = glm::max(orig.half * grow, glm::vec3(1e-3f));
+            const auto parentSlot = slot.find(e.parent);
+            const bool hasParent  = parentSlot != slot.end();
+            const glm::mat4 pw = hasParent ? scenegraph::worldOf(ed.entities[parentSlot->second])
+                                           : glm::mat4(1.0f);
+            scenegraph::setWorld(e, pos, orig.rotation, hasParent ? &pw : nullptr);
+        }
     }
 }
 
@@ -198,7 +265,12 @@ void frame(EditorContext& ed, const ViewportFrame& view, Drag& d, const Settings
     const glm::vec3 newT(t[0], t[1], t[2]);
     const glm::vec3 newR(r[0], r[1], r[2]);
     const glm::vec3 newS(sc[0], sc[1], sc[2]);
-    b.half = glm::max(newS * 0.5f, glm::vec3(0.05f));
+    // Only a scale drag sizes the object. A move and a turn hand the size back
+    // through ImGuizmo's matrix as well, and writing that pushed everything under
+    // the old floor of 5 cm up to it: a chess piece 36 mm across and 5 cm tall
+    // came out of a one-square move a hand wide and hardly taller.
+    const bool scaling = s.op == ImGuizmo::SCALE;
+    if (scaling) b.half = glm::max(newS * 0.5f, glm::vec3(kMinHalf));
     // World-space edit -> local (children then follow via resolveHierarchy).
     const glm::mat4 pw = scenegraph::parentWorld(ed.entities, b);
     scenegraph::setWorld(b, newT, newR, b.parent >= 0 ? &pw : nullptr);
@@ -213,12 +285,14 @@ void frame(EditorContext& ed, const ViewportFrame& view, Drag& d, const Settings
             if (rid == selId) continue;
             Entity* re = ed.document.find(rid);
             if (!re || re->type == EntityType::Sun) continue;
-            re->half = glm::max(re->half * ratio, glm::vec3(0.05f));
+            if (scaling) re->half = glm::max(re->half * ratio, glm::vec3(kMinHalf));
             const glm::mat4 rpw = scenegraph::parentWorld(ed.entities, *re);
             scenegraph::setWorld(*re, re->center + dT, re->rotation + dR,
                                  re->parent >= 0 ? &rpw : nullptr);
         }
     }
+    // Children come along with a scale as they do with a move and a turn.
+    if (scaling) scaleSubtrees(ed, d);
     d.prevT = newT; d.prevR = newR; d.prevS = newS;
 }
 

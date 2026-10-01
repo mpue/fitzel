@@ -148,6 +148,9 @@ struct PanelState {
 
     // "Unpack Prefab" on the Prefab Instance card (see HierarchyPanel's).
     std::function<void(int)> unpackPrefab = {};
+
+    // The Procedural card's "Open node graph": the window that edits it.
+    bool* showProcedural = nullptr;
 };
 
 void drawPanel(const PanelState& s);

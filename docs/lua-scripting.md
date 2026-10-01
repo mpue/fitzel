@@ -87,6 +87,9 @@ Alle Engine-Funktionen hängen an der globalen Tabelle `game`.
 | `game.keyPressed(key)` | bool | Taste **in diesem Frame** heruntergegangen (Flanke) |
 | `game.mouseDown(button)` | bool | Maustaste gerade gedrückt (`button` default 0) |
 | `game.mousePressed(button)` | bool | Maustaste in diesem Frame gedrückt (Flanke) |
+| `game.mousePos()` | `x, y, über` | Zeiger in HUD-Leinwand-Einheiten (1080 hoch, Ursprung oben links, wie `game.hud*`); `über` = der Zeiger ist über der Ansicht |
+| `game.mouseRay()` | `ox, oy, oz, dx, dy, dz` oder `nil` | Welt-Strahl von der Kamera durch den Zeiger — zum Anklicken von Dingen in der Szene |
+| `game.showCursor(an)` | – | Mauszeiger im Play freigeben (`true`) oder wieder dem Läufer überlassen (`false`); gilt bis Play endet |
 
 `key` ist ein GLFW-Keycode → benutze die `game.KEY_*`-Konstanten (§3.7).
 `button`: `game.MOUSE_LEFT` (0), `MOUSE_RIGHT` (1), `MOUSE_MIDDLE` (2).
@@ -112,6 +115,7 @@ local dx, dy, dz = game.cameraDir()
 | `game.destroy(id)` | – | Objekt entfernen |
 | `game.getPos(id)` | `x, y, z` oder `nil` | Weltposition; `nil` bei unbekannter ID |
 | `game.setPos(id, x, y, z)` | – | Objekt an Position setzen |
+| `game.clone(id [, name])` | `id` (int) | Kopie eines Objekts **samt Kindern und Komponenten** unter demselben Parent, an derselben Stelle; deferred wie `spawn`, `0` bei unbekannter ID |
 
 **Deferral:** `game.spawn` gibt die neue ID **sofort** zurück, das Objekt erscheint
 aber erst am **Ende des Frames** (die Tick-Schleife iteriert gerade die
@@ -531,6 +535,7 @@ game.setLight(e.id, { intensity = 6 + math.random() * 4 })  -- Flackern
 | `game.saveData(slot, wert)` | bool | Spielstand speichern: Zahlen, Texte, Wahrheitswerte und (verschachtelte) Tabellen, als JSON pro Spiel im Benutzerordner (`%APPDATA%\fitzel\saves\<Projekt>\<slot>.json`); atomar geschrieben |
 | `game.loadData(slot)` | Wert oder `nil` | Spielstand lesen; `nil`, wenn es noch keinen gibt |
 | `game.log(...)` | – | Zeile auf die Konsole (stderr), beliebig viele Argumente wie `print` |
+| `game.rest([fps])` | – | „In diesem Frame bewegt sich nichts von selbst": Play zeichnet dann höchstens `fps` Bilder pro Sekunde (Standard 10) und wartet sonst auf Eingaben. Jeden Frame neu aufrufen, sobald es ausbleibt, läuft wieder die volle Rate |
 
 **Achtung Kamera:** solange eine Camera-Komponente aktiv ist (`game.setCamera(id)`
 oder *Active on start*), überschreibt sie am Frame-Ende `setCameraPos`/`Dir`/`Fov`.
@@ -539,6 +544,16 @@ Ein Skript, das im Play `game.setCameraPos` aufruft, übernimmt das Auge ganz: d
 Läufer (Start „zu Fuss") bewegt die Kamera danach nicht mehr — sonst stünde sie zu
 Beginn jedes Frames wieder bei der Kapsel, und Terrain, Bäume und Gras würden dort
 gestreamt statt unter dem Bild, das das Skript zeigt.
+
+**GPU schonen mit `game.rest`:** Play läuft sonst immer in voller Bildrate, auch wenn
+ein Brettspiel nur auf den nächsten Klick wartet. Ein Skript, das weiss, dass gerade
+nichts gleitet, dreht oder rechnet, ruft in diesem Frame `game.rest()` auf. Nach einer
+Viertelsekunde ohne Unterbrechung (TAA, Bewegungsunschärfe und Belichtung beruhigen
+sich) wartet die Hauptschleife auf Eingaben; jede Mausbewegung, jeder Klick und jede
+Taste weckt sie sofort. Gehaltene Tasten muss das Skript selbst prüfen: eine gedrückte
+Taste meldet sich nur einmal. Der Aufruf gilt für das ganze Spiel, nicht nur für das
+eigene Objekt: Das rufende Skript muss wissen, dass sonst nichts läuft (Physik,
+Animationen anderer Skripte). Rufen mehrere Skripte, gilt die höchste Rate.
 
 ### 3.13 Konstanten
 
@@ -556,6 +571,13 @@ Fläche: mit einem Textur-Material im Alpha-Modus `ALPHA_BLEND` ein Sprite
 **Licht-Typen:** `game.LIGHT_POINT` (0), `game.LIGHT_SPOT` (1)
 
 **Maustasten:** `game.MOUSE_LEFT` (0), `game.MOUSE_RIGHT` (1), `game.MOUSE_MIDDLE` (2)
+
+**Mit der Maus spielen:** Im Play hält der Läufer den Zeiger gefangen (Maus-Blick).
+Ein Spiel, das mit der Maus bedient wird, ruft in `start()` `game.showCursor(true)`
+auf und übernimmt mit `game.setCameraPos` das Auge. `game.mousePos()` passt direkt
+zu den HUD-Knöpfen, `game.mouseRay()` zum Zielen in die Welt — den Schnitt mit
+einer Ebene oder einem Objekt rechnet das Skript selbst (`chess.lua` zeigt beides).
+Klicks über anderen Editor-Fenstern melden `über = false`.
 
 **Tasten (GLFW-Codes):**
 `KEY_SPACE`, `KEY_ENTER`, `KEY_ESCAPE`, `KEY_TAB`, `KEY_BACKSPACE`, `KEY_DELETE`,
@@ -727,6 +749,19 @@ umgeworfene Dosen geben einen Punkt. Zeigt zusammen so ziemlich die ganze API:
 Eingabe, Kamera, `spawn`/`destroy`, Physik-Velocity, Sound, Score/HUD und
 skript-übergreifende Kommunikation. Siehe die Dateien direkt.
 
+### `chess.lua` — Schach gegen eine Engine, mit der Maus
+
+An die Wurzel eines Schachbretts hängen, unter der die Figuren als Kinder liegen.
+Das Skript liest Feldgröße und Ausrichtung aus der Lage der beiden Könige, erkennt
+die Figuren am Namen und klont fehlende (auch bei der Bauernumwandlung). Bedient
+wird per Klick-Klick (`game.showCursor`, `game.mouseRay`, `game.mousePos`), die
+Engine (Alpha-Beta mit Ruhesuche, ~1250 Elo geschätzt) rechnet in einer Coroutine
+in Scheiben von ~10 ms, damit das Bild weiterläuft. Inspector-Felder: Farbe des
+Menschen, Suchtiefe, Zufall, Patzer-Anteil, Denkzeit, Zug-Klang (`move.wav`, spielt
+per `game.playSound`, wenn die gezogene Figur aufsetzt, bei beiden Seiten). Wartet das Spiel auf den
+Menschen und steht alles still, ruft es `game.rest()` — die GPU zeichnet dann nicht
+mehr in voller Rate dasselbe Bild.
+
 ### `sokoban.lua` — Sokoban, ein ganzes Spiel in einer Datei
 Skript auf **ein** Objekt legen — am besten ein **Empty**, denn das Spielbrett
 wird um dessen Position herum gebaut — und Play drücken. Pfeiltasten/WASD laufen
@@ -835,6 +870,10 @@ per `game.saveData("profile", …)` im Benutzerordner.
 - **`game.loadScene` im Editor verwirft ungespeicherte Änderungen** der Szene, die
   man verlässt: Play wird gestoppt, die neue Szene geladen und Play neu gestartet.
   Wer ein Spiel mit Szenenwechsel im Editor testet, speichert vorher.
+- **Unter `game.rest` läuft die Spielzeit langsamer.** `dt` ist auf 0,05 s begrenzt;
+  bei 10 Bildern pro Sekunde vergeht pro Frame also nur die halbe Zeit. Alles, was
+  nach Zeit läuft (Animationen, Timer, Physik, die noch ausrollt), gehört deshalb in
+  Frames ohne `game.rest`.
 
 ---
 

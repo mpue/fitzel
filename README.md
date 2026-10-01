@@ -3,21 +3,23 @@
 Fitzel is a game engine with an editor, written in modern C++20 against OpenGL 3.3
 core -- Windows, Linux and macOS, with every dependency fetched at configure time and
 nothing installed system-wide. You build a world in it (terrain, roads, buildings,
-props, lights, scripts), press Play to drive through that world, and export the result
+props, lights, scripts), press Play to play it, and export the result
 as a standalone game that no longer contains the editor.
 
 ![A race through a generated city at sunset, running in the player](images/race-city.png)
 
-What it is pointed at is things that move through a landscape at speed. Roads are
-splines laid across streamed procedural terrain, with bridges, tunnels, loops, kerbs
-and guard rails *derived* from those splines rather than placed by hand; a district
-generator fills the sides with buildings that keep out of the road; and a race sim, a
-car, a glider, a HUD, opponents and a leaderboard come with it instead of having to be
-written first. Gameplay behaviour is Lua -- any number of scripts per entity, each in
-its own environment, on a fresh VM every time Play starts (see
-[docs/lua-scripting.md](docs/lua-scripting.md)). The tools
-themselves stay C++, deliberately: a broken script must never be able to take an
-editing session with it.
+It is not tied to one kind of game. Most of the work has gone into the world itself:
+streamed procedural terrain that is sculpted and eroded, rivers, forests out to the
+horizon, roads laid as splines with bridges, tunnels, loops, kerbs and guard rails
+*derived* from them rather than placed by hand, and districts along them whose buildings
+keep out of the road. Objects are modelled in the editor itself -- extrude, bevel, loop
+cut -- and animated on a timeline and a state machine. A race sim, a car, a glider, a
+HUD, opponents and a leaderboard come ready-made; everything else is Lua, any number of
+scripts per entity, each in its own environment, on a fresh VM every time Play starts
+(see [docs/lua-scripting.md](docs/lua-scripting.md)). The examples in `sandbox/scripts/`
+run from a shoot-'em-up, pinball and Arkanoid to Sokoban. The tools themselves stay
+C++, deliberately: a broken script must never be able to take an editing session with
+it.
 
 Around the roads, a **town generator** lays whole settlements from a handful of
 numbers: a street grid that becomes real roads (graded, bridged, editable afterwards),

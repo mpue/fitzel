@@ -22,6 +22,7 @@
 #include "MultiShot.hpp"
 #include "ParticleSystem.hpp"
 #include "PrefabSystem.hpp"
+#include "ProcGraph.hpp"
 #include "Pictogram.hpp"
 #include "PropertyMeta.hpp"
 #include "RaceGrid.hpp"
@@ -266,7 +267,20 @@ void drawPanel(const PanelState& s) {
                                        "copies of it.");
                     if (s.unpackPrefab && ImGui::Button("Unpack Prefab")) unpackReq = be.id;
                 }
-                if (auto* msc = dynamic_cast<ModifierStackComponent*>(c)) {
+                if (dynamic_cast<ProcMadeComponent*>(c)) {
+                    ui::hint("Placed here by the procedural graph of its parent (a\n"
+                             "Prefab node). The next change to that graph puts it\n"
+                             "down afresh: changes belong in the graph.");
+                } else if (auto* pgc = dynamic_cast<ProcGraphComponent*>(c)) {
+                    // A graph is edited in its own window; the card only says
+                    // what it is and opens that window.
+                    const proc::Node* out = pgc->graph.find(pgc->graph.output);
+                    ui::hint("A node graph with %zu nodes; the mesh is cooked from\n"
+                             "\"%s\". Removing this keeps the mesh as it is now.",
+                             pgc->graph.nodes.size(), out ? out->name.c_str() : "(nothing)");
+                    if (s.showProcedural && ImGui::Button("Open node graph"))
+                        *s.showProcedural = true;
+                } else if (auto* msc = dynamic_cast<ModifierStackComponent*>(c)) {
                     // The stack is a list, not a property list: its own card.
                     modifierui::card(*msc, be, s.entities);
                 } else if (auto* sc = dynamic_cast<ScriptComponent*>(c)) {

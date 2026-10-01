@@ -83,6 +83,26 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Materialien pro Fläche**. Alle Grundformen lassen sich bearbeiten.
 - **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify.
 - **Mesh-Paint**: Terrain-Layer auf Objekte malen. Dazu 3D-Cursor und Snapping.
+- **Prozedurale Objekte (Mini-Houdini)**: View > Objects > Procedural. Ein Knoten-Graph
+  aus Formen (Box, Tube/Kegel, Kugel, Torus, Grid), Kopien (radial, in Reihe, auf
+  Punkte), Kombinieren (Merge, Transform, Mirror), Details (Panels, Extrude, Lattice,
+  Thicken, Subdivide, Delete faces) und Material pro Flächenauswahl wird bei jeder
+  Änderung in ein normales Mesh gekocht. Vorlagen „Ring station“ und „Modular
+  station“, „Fuel depot“. Dazu 2D-Formen und Kurven (Circle, Rectangle, Curve mit
+  Punktliste, Resample), Sweep (Profil entlang Kurve: Rohre, Gänge), Revolve (Drehkörper:
+  Tanks, Kuppeln) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
+  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points);
+  die Auswahl steuert Copy onto points, Transform und den Flächenfilter. Kurven und
+  ausgewählte Punkte werden im Viewport eingezeichnet.
+  Prefab-Knoten setzen Prefabs des Projekts als echte Objekte unter das prozedurale
+  Objekt (verschieb-, kopier- und auf Punkte setzbar; Undo schließt sie ein).
+  Knoten wählt man per Klick, Shift+Klick oder Rahmen (A alle, Alt+A keine) und
+  verschiebt sie gemeinsam; Entf löscht Knoten, nie Szenen-Objekte; Shift+A bzw.
+  Rechtsklick öffnet das Add-Menü mit Suche an der Mausposition, Rechtsklick auf einen
+  Knoten dessen Menü; mittlere Maustaste schwenkt.
+  Verdrahtet wird von Hand (Ziehen von Punkt zu Punkt oder zwei Klicks);
+  die Knoten ordnen sich selbst an, bis man einen verschiebt (Ziehen mit Raster oder
+  „Move“ + Klick), „Arrange“ ordnet neu. Zahlen per Stepper oder getippt.
 
 ## Animation und Kamera
 
@@ -108,6 +128,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Spielstände.
 - **Beispielspiele**: SKYSTRIKE (Shoot'em-up mit Hangar und High Valley), Sokoban,
   Arkanoid, Invaders, Pinball, Dosenschießen, Rhythmicker-Port.
+- **Schach gegen eine Engine** (`chess.lua`): Brett und Figuren aus der Szene gelesen,
+  per Klick gespielt, Engine um 1250 Elo (geschätzt); dafür neu in Lua: `game.mousePos`,
+  `game.mouseRay`, `game.showCursor`, `game.clone`, `game.rest` (wartet das Spiel nur
+  auf den nächsten Klick, zeichnet Play höchstens 10 Bilder pro Sekunde statt voller Rate).
 
 ## Audio
 
@@ -121,6 +145,8 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Panels**: Hierarchie, Inspector, Asset-Browser mit Drag & Drop in die Szene,
   Materialien, Prefabs (Stufe 1, Vorlagen).
 - **Import**: Unity-FBX und Videos.
+- **Hierarchie im Gizmo**: Kinder folgen dem Elternteil beim Verschieben, Drehen und
+  Skalieren -- ein importiertes Modell wächst an seiner Wurzel als Ganzes.
 - **Komfort**: Undo, Autosave und eine Toolbar mit Piktogrammen.
 - **Bedienung ohne ruhige Hand**: alles lässt sich auch klicken und eintippen statt
   ziehen.

@@ -155,6 +155,13 @@ struct ScriptHost {
     std::function<bool(int)> keyPressed;
     std::function<bool(int)> mouseDown;
     std::function<bool(int)> mousePressed;
+    // The pointer, for a game played with the mouse: where it is in the HUD's
+    // 1080-high canvas (origin top left; false when it is not over the view),
+    // and the world ray from the eye through it.
+    std::function<bool(glm::vec2&)>             mousePos;
+    std::function<bool(glm::vec3&, glm::vec3&)> mouseRay;
+    // Free the pointer during Play (the walking player holds it), or hand it back.
+    std::function<void(bool)>                   showCursor;
 
     // --- Camera ---------------------------------------------------------------
     // Player camera, refreshed each frame (Play mode).
@@ -180,6 +187,10 @@ struct ScriptHost {
     // like spawn -- the whole subtree appears next frame. See game.spawnPrefab.
     std::function<int(const std::string& name, glm::vec3 pos, float yawDeg)> spawnPrefab;
     std::function<void(int)>                        destroy;
+    // Copy an object -- its components and its children -- under the same
+    // parent, as it stands. Deferred like spawn; returns the copy's id (0 for an
+    // unknown id). `name` renames the copy ("" keeps the original's).
+    std::function<int(int, const std::string& name)> clone;
     std::function<bool(int, glm::vec3&)>            getPos;
     std::function<void(int, glm::vec3)>            setPos;
 
@@ -290,6 +301,11 @@ struct ScriptHost {
     // game.setCrosshair: a game that draws its own HUD has no use for the
     // editor's aiming cross. Reset to shown whenever Play starts.
     bool crosshair = true;
+    // game.rest: nothing in this game moves on its own this frame, so the next
+    // one may wait for input -- at most `restFps` frames a second (0 = run
+    // free). Asked for anew every frame; the main loop takes it and clears it,
+    // so a script that stops asking (or stops running) is back at full rate.
+    float restFps = 0.0f;
     // Width/height in HUD units of a line of text at `size` (see ScriptHudCmd).
     std::function<glm::vec2(const std::string&, float size, bool bold)> measureText;
 };

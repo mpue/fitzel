@@ -237,6 +237,30 @@ int l_mousePressed(lua_State* L) {
     lua_pushboolean(L, h && h->mousePressed && h->mousePressed(b));
     return 1;
 }
+// mousePos() -> x, y, over: the pointer in HUD canvas units (1080 high, origin top
+// left) and whether it is over the view at all.
+int l_mousePos(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    glm::vec2 p(0.0f);
+    const bool over = h && h->mousePos && h->mousePos(p);
+    lua_pushnumber(L, p.x); lua_pushnumber(L, p.y); lua_pushboolean(L, over);
+    return 3;
+}
+// mouseRay() -> ox, oy, oz, dx, dy, dz: the world ray under the pointer (nil if
+// there is no view to aim through).
+int l_mouseRay(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    glm::vec3 o, d;
+    if (!h || !h->mouseRay || !h->mouseRay(o, d)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, o.x); lua_pushnumber(L, o.y); lua_pushnumber(L, o.z);
+    lua_pushnumber(L, d.x); lua_pushnumber(L, d.y); lua_pushnumber(L, d.z);
+    return 6;
+}
+int l_showCursor(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->showCursor) h->showCursor(lua_isnone(L, 1) || lua_toboolean(L, 1) != 0);
+    return 0;
+}
 int l_cameraPos(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const glm::vec3 p = h ? h->camPos : glm::vec3(0.0f);
@@ -288,6 +312,13 @@ int l_destroy(lua_State* L) {
     const int id = static_cast<int>(luaL_checkinteger(L, 1));
     if (h && h->destroy) h->destroy(id);
     return 0;
+}
+int l_clone(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* name = luaL_optstring(L, 2, "");
+    lua_pushinteger(L, (h && h->clone) ? h->clone(id, name) : 0);
+    return 1;
 }
 int l_getPos(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -738,6 +769,15 @@ int l_hudSize(lua_State* L) {
 }
 int l_setCrosshair(lua_State* L) {
     if (ScriptHost* h = hostOf(L)) h->crosshair = lua_toboolean(L, 1) != 0;
+    return 0;
+}
+// game.rest([fps]): see ScriptHost::restFps. Two scripts asking: the faster
+// rate wins, the one with something left to show.
+int l_rest(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (!h) return 0;
+    const float fps = std::clamp(static_cast<float>(luaL_optnumber(L, 1, 10.0)), 1.0f, 120.0f);
+    h->restFps = std::max(h->restFps, fps);
     return 0;
 }
 
@@ -1294,9 +1334,11 @@ void ScriptSystem::installApi() {
     };
     fn("keyDown", l_keyDown);         fn("keyPressed", l_keyPressed);
     fn("mouseDown", l_mouseDown);     fn("mousePressed", l_mousePressed);
+    fn("mousePos", l_mousePos);       fn("mouseRay", l_mouseRay);
+    fn("showCursor", l_showCursor);
     fn("cameraPos", l_cameraPos);     fn("cameraDir", l_cameraDir);
     fn("spawn", l_spawn);             fn("destroy", l_destroy);
-    fn("spawnPrefab", l_spawnPrefab);
+    fn("spawnPrefab", l_spawnPrefab); fn("clone", l_clone);
     fn("getPos", l_getPos);           fn("setPos", l_setPos);
     fn("setVelocity", l_setVelocity); fn("applyImpulse", l_applyImpulse);
     fn("playSound", l_playSound);
@@ -1309,6 +1351,7 @@ void ScriptSystem::installApi() {
     fn("hudCircle", l_hudCircle);     fn("hudTri", l_hudTri);
     fn("hudText", l_hudText);         fn("hudTextSize", l_hudTextSize);
     fn("hudSize", l_hudSize);         fn("setCrosshair", l_setCrosshair);
+    fn("rest", l_rest);
     // Assets
     fn("assets", l_assets);           fn("findAsset", l_findAsset);
     fn("assetInfo", l_assetInfo);     fn("assetPath", l_assetPath);

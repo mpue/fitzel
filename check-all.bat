@@ -134,6 +134,13 @@ REM  aussen gewunden, Material und Farbgewichte mitgenommen, die Handrechnungen
 REM  (Catmull-Clark-Wuerfelecke auf 5/18, hohle Box 1 - 0.8^3) exakt -- ein Stack,
 REM  der Flaechen verdreht, sieht von vorn oft noch richtig aus.
 call :run modifiercheck
+REM  proccheck misst die prozeduralen Graphen: jeder Knotentyp geschlossen und
+REM  nach aussen gewunden, Flaechenzahlen von Hand gerechnet, die Regeln des
+REM  Graphen (keine Schleifen, Loeschen schliesst die Kette, Einfuegen spleisst)
+REM  und die Vorlagen ganz gekocht. procpanelcheck bedient das Procedural-Fenster
+REM  mit echten ImGui-Klicks: Stepper, getippter Wert, Add, Verdrahten, Undo.
+call :run proccheck
+call :run procpanelcheck
 REM  synthcheck rendert den modularen Synth OFFLINE und misst ihn. Klang faellt
 REM  aus, ohne zu scheitern: ein Filter, der 6 dB daneben liegt, eine Huellkurve
 REM  in Samples statt Sekunden, ein Delay, dessen Interpolation nie laeuft --
