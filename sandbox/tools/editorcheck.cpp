@@ -758,7 +758,129 @@ int main() {
                   "Ctrl lands a world move on the grid, and leaves the axis it did not move alone",
                   "x " + std::to_string(at.x).substr(0, 5) + ", y " + std::to_string(at.y).substr(0, 5));
             history.undo(document);
+        }        {
+            // The CHILD scaled by the gizmo's centre (uniform, 1 + 0.01 per px),
+            // under a parent that is square with the world and under one turned.
+            for (const float turn : {0.0f, 90.0f, 35.0f}) {
+                entities[0].center = entities[0].localCenter = glm::vec3(0.0f);
+                entities[0].rotation = entities[0].localRotation = glm::vec3(0.0f, turn, 0.0f);
+                entities[1].half = glm::vec3(1.0f);
+                scenegraph::resolve(entities);
+                sel.select(31);
+                gizmo::Settings ss = gs;
+                ss.op = ImGuizmo::SCALE;
+                ss.mode = ImGuizmo::LOCAL;
+                const glm::vec3 was = entities[1].center;
+                const glm::vec2 c = screenOf(was);
+                dragGizmo(c, c + glm::vec2(50.0f, 0.0f), false, ss);
+                const glm::vec3 h = entities[1].half;
+                scenegraph::resolve(entities);
+                check(near(h.x, 1.5f, 0.03f) && near(h.y, 1.5f, 0.03f) && near(h.z, 1.5f, 0.03f) &&
+                          glm::length(entities[1].center - was) < 1e-3f,
+                      "a child scaled by the gizmo's centre grows 1.5x and stays put (parent turned " +
+                          std::to_string(static_cast<int>(turn)) + ")",
+                      "half " + std::to_string(h.x).substr(0, 5) + " " + std::to_string(h.y).substr(0, 5) +
+                          " " + std::to_string(h.z).substr(0, 5) + ", moved " +
+                          std::to_string(glm::length(entities[1].center - was)));
+                history.undo(document);
+            }
+            entities[0].rotation = entities[0].localRotation = glm::vec3(0.0f);
+            scenegraph::resolve(entities);
+            sel.select(30);
         }
+        {
+            // The PARENT scaled: its children and theirs keep their place and
+            // their size relative to it -- an imported model's parts are the model.
+            entities.clear();
+            sel.clear();
+            entities.push_back(makeBox(70, glm::vec3(1.0f, 0.0f, 0.0f)));
+            entities[0].rotation = entities[0].localRotation = glm::vec3(0.0f, 35.0f, 0.0f);
+            {
+                Entity part = makeBox(71, glm::vec3(0.0f));
+                part.parent = 70;
+                part.localCenter   = glm::vec3(2.0f, 1.0f, 0.0f);
+                part.localRotation = glm::vec3(0.0f, 20.0f, 0.0f);
+                part.half          = glm::vec3(0.5f, 0.3f, 0.2f);
+                entities.push_back(part);
+                Entity bolt = makeBox(72, glm::vec3(0.0f));
+                bolt.parent = 71;
+                bolt.localCenter = glm::vec3(0.0f, 1.0f, 0.0f);
+                bolt.half        = glm::vec3(0.1f);
+                entities.push_back(bolt);
+            }
+            scenegraph::resolve(entities);
+            const glm::vec3 root = entities[0].center;
+            const glm::vec3 part0 = entities[1].center, bolt0 = entities[2].center;
+            sel.select(70);
+            gizmo::Settings ss = gs;
+            ss.op = ImGuizmo::SCALE;
+            ss.mode = ImGuizmo::LOCAL;
+            const unsigned rev = history.revision();
+            const glm::vec2 c = screenOf(root);
+            dragGizmo(c, c + glm::vec2(50.0f, 0.0f), false, ss);
+            scenegraph::resolve(entities);   // what the scene makes of the locals written
+            const float f = entities[0].half.x;
+            const glm::vec3 partOff = entities[1].center - root, boltOff = entities[2].center - root;
+            check(near(f, 1.5f, 0.03f) && glm::length(partOff - f * (part0 - root)) < 1e-3f &&
+                      glm::length(boltOff - f * (bolt0 - root)) < 1e-3f,
+                  "scaling a parent carries its child and grandchild out with it, turned parent and all",
+                  "x" + std::to_string(f).substr(0, 5) + ", part off by " +
+                      std::to_string(glm::length(partOff - f * (part0 - root))) + ", bolt off by " +
+                      std::to_string(glm::length(boltOff - f * (bolt0 - root))));
+            check(glm::length(entities[1].half - f * glm::vec3(0.5f, 0.3f, 0.2f)) < 1e-3f &&
+                      glm::length(entities[2].half - f * glm::vec3(0.1f)) < 1e-3f &&
+                      glm::length(entities[1].localRotation - glm::vec3(0.0f, 20.0f, 0.0f)) < 1e-2f,
+                  "...and they grow with it, without turning",
+                  "part half " + std::to_string(entities[1].half.x).substr(0, 5) + ", bolt half " +
+                      std::to_string(entities[2].half.x).substr(0, 5));
+            check(history.revision() == rev + 1, "...as one undo step");
+            history.undo(document);
+            scenegraph::resolve(entities);
+            check(glm::length(entities[1].center - part0) < 1e-4f &&
+                      glm::length(entities[2].center - bolt0) < 1e-4f &&
+                      entities[1].half == glm::vec3(0.5f, 0.3f, 0.2f) && entities[2].half == glm::vec3(0.1f),
+                  "one undo puts the parts back, where they were and as big as they were");
+            // A move does not touch the children's size.
+            dragGizmo(c, c + glm::vec2(50.0f, 0.0f), false, gs);
+            check(entities[1].half == glm::vec3(0.5f, 0.3f, 0.2f) && entities[2].half == glm::vec3(0.1f),
+                  "moving the parent leaves its children's size alone");
+            history.undo(document);
+            {
+                // A chess piece: under the 5 cm the gizmo used to hold every size to.
+                Entity pawn = makeBox(73, glm::vec3(0.0f));
+                pawn.parent      = 70;
+                pawn.localCenter = glm::vec3(-0.5f, 0.2f, 0.3f);
+                pawn.half        = glm::vec3(0.018f, 0.026f, 0.018f);
+                entities.push_back(pawn);
+            }
+            scenegraph::resolve(entities);
+            sel.select(73);
+            const glm::vec3 pawnHalf = entities[3].half, pawnAt = entities[3].center;
+            const glm::vec2 pc = screenOf(pawnAt);
+            dragGizmo(pc, pc + glm::vec2(60.0f, 0.0f), false, gs);
+            check(entities[3].half == pawnHalf && glm::length(entities[3].center - pawnAt) > 1e-3f,
+                  "a piece smaller than 5 cm keeps its size when it is moved",
+                  "half " + std::to_string(entities[3].half.x).substr(0, 6) + " " +
+                      std::to_string(entities[3].half.y).substr(0, 6));
+            history.undo(document);
+            dragGizmo(pc, pc + glm::vec2(50.0f, 0.0f), false, ss);
+            check(glm::length(entities[3].half - 1.5f * pawnHalf) < 5e-4f,
+                  "...and scaled, it grows from its own size",
+                  "half " + std::to_string(entities[3].half.x).substr(0, 6) + " " +
+                      std::to_string(entities[3].half.y).substr(0, 6));
+            history.undo(document);
+            entities.clear();
+            entities.push_back(makeBox(30, glm::vec3(0.0f)));
+            {
+                Entity child = makeBox(31, glm::vec3(0.0f, 2.0f, 0.0f));
+                child.parent = 30;
+                child.localCenter = glm::vec3(0.0f, 2.0f, 0.0f);
+                entities.push_back(child);
+            }
+            scenegraph::resolve(entities);
+            sel.select(30);
+        }
+
         {
             // Two roots selected: the other one takes the same step.
             entities.clear();

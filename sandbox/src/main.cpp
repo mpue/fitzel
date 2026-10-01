@@ -4919,6 +4919,9 @@ int main(int argc, char** argv) {
         // A script placed the camera this Play (game.setCameraPos): it owns the
         // eye, and the walking player leaves it alone until Play ends.
         bool      scriptOwnsEye = false;
+        // A script freed the pointer (game.showCursor): a game played with the
+        // mouse. Whatever locks the cursor for the walking player leaves it free.
+        bool      scriptCursorFree = false;
         // An orbit camera (CameraComponent::orbitMouse) locked the cursor, and
         // unlocks it again when it stops being the view.
         bool      orbitHeldCursor = false;
@@ -4952,6 +4955,58 @@ int main(int argc, char** argv) {
         host.mousePressed = [&](int b){ mouseQ.push_back(b);
                                         return !uiMenuOpen &&
                                                input.isMouseButtonDown(b) && !mousePrev[b]; };
+        // The pointer over the view, for a game played with the mouse. The view
+        // is the rect the script's HUD is drawn into: the whole window when
+        // presenting (and in the player), the Scene panel's image in the editor.
+        auto scriptView = [&](glm::vec2& vmin, glm::vec2& vsize) {
+            if (presentMode || viewportRectSize.x < 1.0f) {
+                vmin  = glm::vec2(0.0f);
+                vsize = glm::vec2(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+            } else {
+                vmin  = viewportRectMin;
+                vsize = viewportRectSize;
+            }
+            return vsize.x >= 1.0f && vsize.y >= 1.0f;
+        };
+        // ImGui forgets the pointer while its window is not in focus (MousePos
+        // goes invalid); presenting, the view is the whole window, and the
+        // window's own cursor position says the same thing in the same units.
+        auto scriptMouse = [&](ImVec2& m) -> bool {
+            m = ImGui::GetIO().MousePos;
+            if (ImGui::IsMousePosValid(&m)) return true;
+            if (!presentMode) return false;
+            const glm::vec2 c = input.mousePosition();
+            m = ImVec2(c.x, c.y);
+            return true;
+        };
+        host.mousePos = [&, scriptView, scriptMouse](glm::vec2& out) -> bool {
+            glm::vec2 vmin, vsize;
+            ImVec2    m;
+            if (!scriptView(vmin, vsize) || !scriptMouse(m)) return false;
+            const glm::vec2 p = glm::vec2(m.x, m.y) - vmin;
+            out = p * (1080.0f / vsize.y);
+            return viewportHovered && !input.isCursorLocked() && p.x >= 0.0f && p.y >= 0.0f &&
+                   p.x < vsize.x && p.y < vsize.y;
+        };
+        host.mouseRay = [&, scriptView, scriptMouse](glm::vec3& origin, glm::vec3& dir) -> bool {
+            glm::vec2 vmin, vsize;
+            ImVec2    m;
+            if (!scriptView(vmin, vsize) || !scriptMouse(m)) return false;
+            const glm::vec2 ndc(2.0f * (m.x - vmin.x) / vsize.x - 1.0f,
+                                1.0f - 2.0f * (m.y - vmin.y) / vsize.y);
+            const glm::mat4 inv = glm::inverse(
+                camera.projectionMatrix(vsize.x / vsize.y) * camera.viewMatrix());
+            glm::vec4 pn = inv * glm::vec4(ndc, -1.0f, 1.0f); pn /= pn.w;
+            glm::vec4 pf = inv * glm::vec4(ndc,  1.0f, 1.0f); pf /= pf.w;
+            origin = glm::vec3(pn);
+            dir    = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
+            return true;
+        };
+        host.showCursor = [&](bool on) {
+            if (!playMode) return;
+            scriptCursorFree = on;
+            input.setCursorLocked(!on && fpsMode);
+        };
         host.spawn = [&](const ScriptSpawn& s) -> int {
             Entity e;
             e.type     = static_cast<EntityType>(s.type);
@@ -5008,6 +5063,24 @@ int main(int argc, char** argv) {
             return e.id;
         };
         host.destroy = [&](int id){ pendingDestroy.push_back(id); };
+        // A copy of an object and everything under it, queued like a spawn: the
+        // root keeps the original's parent, the rest hang off their own copies.
+        host.clone = [&](int id, const std::string& name) -> int {
+            const std::vector<int> ids = scenegraph::subtree(entities, id);
+            if (!document.find(id)) return 0;
+            std::unordered_map<int, int> newId;
+            for (int old : ids) newId[old] = entityCounter++;
+            for (int old : ids) {
+                const Entity* src = document.find(old);
+                if (!src) continue;
+                Entity e = *src;
+                e.id = newId[old];
+                if (old == id) { if (!name.empty()) e.name = name; }
+                else           e.parent = newId[e.parent];
+                pendingSpawns.push_back(std::move(e));
+            }
+            return newId[id];
+        };
         // Instantiate a prefab by name at a world position (yaw degrees). Mirrors
         // game.spawn: the whole subtree is queued into pendingSpawns and appears
         // next frame; returns the new root entity's id (0 on failure). The prefab
@@ -5454,6 +5527,7 @@ int main(int argc, char** argv) {
             scriptCamFov   = 0.0f;
             scriptFocusFar = 0.0f;
             scriptOwnsEye  = false;
+            scriptCursorFree = false;
             // game.saveData keeps a game's saves under its project's name.
             host.saveGame = currentProject.empty()
                 ? std::string()
@@ -5797,6 +5871,7 @@ int main(int argc, char** argv) {
             scriptCamFov     = 0.0f;
             scriptFocusFar   = 0.0f;
             scriptOwnsEye    = false;
+            scriptCursorFree = false;
             entityEditMode = playPrevEdit;
             sel.clear();
         };
@@ -5857,6 +5932,14 @@ int main(int argc, char** argv) {
         const double kIdleGrace  = 0.4;        // s of full-rate after last input
         const double kIdleFrame  = 1.0 / 10.0; // idle cap period
         const double kActiveFrame = 1.0 / 25.0; // active (editing) cap period
+        // Play has a cap of its own, but only on the game's say-so: a script
+        // that calls game.rest() every frame nothing moves (a board game
+        // waiting for its player) lets the loop wait for input instead of
+        // drawing the same picture at the monitor rate. Only after a short
+        // grace of asking without a break: the last moving frames leave TAA,
+        // motion blur and exposure a few frames from settled.
+        double       restSince   = window.time();
+        const double kRestGrace  = 0.25;
 
 #ifndef FITZEL_PLAYER
         // The menu bar's slice of the state above, gathered once (everything it
@@ -6066,8 +6149,21 @@ int main(int argc, char** argv) {
         };
 
         while (window.isOpen()) {
+            // Taken and cleared each frame: a script that stops asking is back
+            // at full rate on the next one.
+            const float restFps = host.restFps;
+            host.restFps = 0.0f;
+            if (restFps <= 0.0f) restSince = window.time();
+            const bool resting = (playMode || playerMode) && restFps > 0.0f &&
+                                 window.time() - restSince >= kRestGrace;
             const bool uncapped = playMode || playerMode || camAnimating;
-            if (uncapped) {
+            if (resting) {
+                // A cap, not a fixed wait: the frame's own time counts, and any
+                // event (the pointer moving onto a square) ends the wait at once.
+                const double budget = 1.0 / restFps - (window.time() - frameStart);
+                if (budget > 0.0) window.waitEventsTimeout(budget);
+                else              window.pollEvents();
+            } else if (uncapped) {
                 window.pollEvents();
             } else if (activeFrame) {
                 // Editing: enforce the active cap with a real sleep (events would
@@ -6519,7 +6615,8 @@ int main(int argc, char** argv) {
                      input.gamepadButton(GLFW_GAMEPAD_BUTTON_START));
                 if (uiKeyDown && !prevUiKey) {
                     uiOverlay.setRuntimeVisible(!uiOverlay.runtimeVisible());
-                    input.setCursorLocked(uiOverlay.runtimeVisible() ? false : fpsMode);
+                    input.setCursorLocked(uiOverlay.runtimeVisible() ? false
+                                                                     : fpsMode && !scriptCursorFree);
                 }
                 prevUiKey = uiKeyDown;
             } else {
@@ -6629,7 +6726,7 @@ int main(int argc, char** argv) {
                     gfxUi.setOpen(!gfxUi.open());
                     // Free the cursor for the menu, and give it back the way it
                     // was found -- locked only if the game had it locked.
-                    input.setCursorLocked(gfxUi.open() ? false : fpsMode);
+                    input.setCursorLocked(gfxUi.open() ? false : fpsMode && !scriptCursorFree);
                 }
                 prevGfxKey = f9;
                 gfxUi.update(dt);
@@ -12551,7 +12648,7 @@ int main(int argc, char** argv) {
                     // exactly like pressing the menu's key again.
                     sink.resume      = [&](){
                         uiOverlay.setRuntimeVisible(false);
-                        input.setCursorLocked(fpsMode);
+                        input.setCursorLocked(fpsMode && !scriptCursorFree);
                     };
                     // Restart: deferred, so the entity list is swapped between
                     // frames rather than underneath this draw call.
@@ -12679,7 +12776,7 @@ int main(int argc, char** argv) {
                     // records what was settled on, and a row stepped through five
                     // values is one decision, not five.
                     gfxmenu::save("graphics.json", gfxSet);
-                    input.setCursorLocked(fpsMode);
+                    input.setCursorLocked(fpsMode && !scriptCursorFree);
                 }
             }
 
