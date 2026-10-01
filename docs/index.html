@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fitzel Engine</title>
-<meta name="description" content="Fitzel is a game engine with an editor, written in C++20 against OpenGL 3.3 core. Build a world of streamed terrain and spline roads, press Play, export it as a standalone game.">
+<meta name="description" content="Fitzel is a game engine with an editor, written in C++20 against OpenGL 3.3 core. Build a world of terrain, roads, towns and your own models, script the game in Lua, press Play, export it as a standalone game.">
 <meta name="color-scheme" content="dark">
 <meta name="theme-color" content="#0A0D0B">
 <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MiA1OCI+PHJlY3Qgd2lkdGg9IjUyIiBoZWlnaHQ9IjU4IiBmaWxsPSIjMEEwRDBCIi8+PHBhdGggZD0iTTI2IDIgNDkgMTUuNXYyN0wyNiA1NiAzIDQyLjV2LTI3eiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjM0ZDRjc0IiBzdHJva2Utd2lkdGg9IjQiLz48cGF0aCBkPSJNMjAgNDRjMC0xMyAyLTIxIDgtMjciIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzNGQ0Y3NCIgc3Ryb2tlLXdpZHRoPSIzLjQiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIvPjxwYXRoIGQ9Ik0zMyA0NmMxLTE0IDMtMjIgNi0zMyIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjQTJBRkE0IiBzdHJva2Utd2lkdGg9IjMiIHN0cm9rZS1kYXNoYXJyYXk9IjQgNSIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIi8+PC9zdmc+">
 <meta property="og:type" content="website">
 <meta property="og:title" content="Fitzel Engine">
-<meta property="og:description" content="Fitzel is a game engine with an editor, written in C++20 against OpenGL 3.3 core. Build a world of streamed terrain and spline roads, press Play, export it as a standalone game.">
+<meta property="og:description" content="Fitzel is a game engine with an editor, written in C++20 against OpenGL 3.3 core. Build a world of terrain, roads, towns and your own models, script the game in Lua, press Play, export it as a standalone game.">
 <meta property="og:image" content="https://mpue.github.io/fitzel/img/hero.jpg">
 <meta property="og:url" content="https://mpue.github.io/fitzel/">
 <meta name="twitter:card" content="summary_large_image">
@@ -446,8 +446,8 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
   <div class="hero-in">
     <p class="eyebrow">C++20 &#183; OpenGL 3.3 core &#183; Windows / Linux / macOS</p>
     <h1>Fitzel<span class="dot">.</span></h1>
-    <p class="lede de">Eine Game-Engine mit Editor f&#252;r alles, was sich <strong>schnell durch eine Landschaft bewegt</strong>. Welt bauen, Play dr&#252;cken, als eigenst&#228;ndiges Spiel exportieren.</p>
-    <p class="lede en">A game engine with an editor, pointed at things that <strong>move through a landscape at speed</strong>. Build the world, press Play, export it as a standalone game.</p>
+    <p class="lede de">Eine Game-Engine mit Editor f&#252;r <strong>ganze Welten und die Spiele darin</strong>: Landschaft, St&#228;dte, Modelle, Skripte. Play dr&#252;cken, als eigenst&#228;ndiges Spiel exportieren.</p>
+    <p class="lede en">A game engine with an editor for <strong>whole worlds and the games in them</strong>: landscape, towns, models, scripts. Press Play, export it as a standalone game.</p>
     <div class="cta">
       <a class="btn btn-primary" href="https://github.com/mpue/fitzel" target="_blank" rel="noopener">
         <span class="de">Quellcode auf GitHub</span><span class="en">Source on GitHub</span> &#8594;
@@ -488,11 +488,11 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <h2 class="en">From an empty scene to a folder somebody double-clicks.</h2>
 
       <div class="prose de">
-        <p class="lede">Fitzel ist kein Renderer-Demo und kein Framework, das erst ein Spiel drumherum braucht. Ein Rennspiel, ein Auto, ein Gleiter, ein HUD, Gegner und eine Bestenliste sind da &#8212; <strong>bevor</strong> die erste Zeile eigener Code geschrieben ist.</p>
+        <p class="lede">Fitzel ist kein Renderer-Demo und kein Framework, das erst ein Spiel drumherum braucht. Ein Rennspiel, ein Auto, ein Gleiter, ein HUD, Gegner und eine Bestenliste sind da &#8212; <strong>bevor</strong> die erste Zeile eigener Code geschrieben ist. Und Spiele ganz anderer Art sind je ein Lua-Skript: Flipper, Sokoban, Arkanoid.</p>
         <p>Geschrieben in modernem C++20 gegen OpenGL 3.3 core. Jede Abh&#228;ngigkeit wird beim Konfigurieren geholt, nichts wird systemweit installiert und nichts liegt kopiert im Repo. Der Editor ist C++, das Spielverhalten ist Lua &#8212; diese Trennung ist Absicht: ein kaputtes Skript darf niemals eine Editor-Sitzung mit sich rei&#223;en.</p>
       </div>
       <div class="prose en">
-        <p class="lede">Fitzel is not a renderer demo, and not a framework that still needs a game written around it. A race sim, a car, a glider, a HUD, opponents and a leaderboard are already there &#8212; <strong>before</strong> the first line of your own code.</p>
+        <p class="lede">Fitzel is not a renderer demo, and not a framework that still needs a game written around it. A race sim, a car, a glider, a HUD, opponents and a leaderboard are already there &#8212; <strong>before</strong> the first line of your own code. Games of a different kind entirely are one Lua script each: pinball, Sokoban, Arkanoid.</p>
         <p>Written in modern C++20 against OpenGL 3.3 core. Every dependency is fetched at configure time, nothing is installed system-wide and nothing is copied into the repo. The editor is C++, gameplay behaviour is Lua &#8212; deliberately so: a broken script must never be able to take an editing session with it.</p>
       </div>
 
