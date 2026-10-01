@@ -192,6 +192,7 @@
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
 #include "TreeGenPanel.hpp"
+#include "ProcGraphPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
 #include "TriggerReach.hpp"
@@ -1636,6 +1637,7 @@ int main(int argc, char** argv) {
         bool showSynth       = false; // the modular synth's patch editor
         bool showMeshPaint   = false; // painting layers onto a modelled mesh
         bool showUv          = false; // where a face's texture sits on it
+        bool showProcedural  = false; // node graphs that cook procedural objects
         // Which face of the selected mesh the modelling operations act on. Reset
         // whenever the selection moves to another object: a face index means
         // nothing on a different mesh.
@@ -2681,6 +2683,13 @@ int main(int argc, char** argv) {
                                          veg.adoptTreeModel(file, name, h);
                                      },
                                      [&] { veg.rescanTreeFiles(); }});
+
+        // --- Procedural objects: node graphs cooked into meshes (ProcGraph.hpp) --
+        procui::Panel procPanel({editorCtx, spawnPoint, [&](glm::vec3& p) {
+            if (!cursor.visible) return false;
+            p = cursor.pos;
+            return true;
+        }});
 
         // --- Procedural houses (see HouseGen.hpp) -------------------------------
         // The same four actions as the buildings: generate at the spawn point,
@@ -4503,6 +4512,21 @@ int main(int argc, char** argv) {
         };
         // The towns' traffic dresses vehicles in prefabs by name, too.
         townTraffic.findPrefab = findPrefab;
+#ifndef FITZEL_PLAYER
+        // ...and the procedural graphs' Prefab node places them.
+        procPanel.prefabNames = [&]() {
+            std::vector<std::string> names;
+            if (currentProject.empty()) return names;
+            for (const auto& np : prefab::list(prefab::prefabsDirIn(
+                     std::filesystem::path(currentProject).parent_path().generic_string())))
+                names.push_back(np.first);
+            return names;
+        };
+        procPanel.spawnPrefab = [&](const std::string& name, int& counter) {
+            const prefab::Prefab* p = findPrefab(name);
+            return p ? prefab::instantiate(*p, counter, glm::vec3(0.0f), 0.0f) : std::vector<Entity>{};
+        };
+#endif
         townTraffic.models     = &models;
         townTraffic.meshCache  = &meshCache;
         // ...and stands its street lamps as prefabs, the same way.
@@ -5999,6 +6023,7 @@ int main(int argc, char** argv) {
             {"Objects",  "Modeling",           nullptr, &showModeling, false},
             {"Objects",  "Mesh paint",         nullptr, &showMeshPaint},
             {"Objects",  "UV",                 nullptr, &showUv},
+            {"Objects",  "Procedural",         nullptr, &showProcedural},
             {"Objects",  nullptr,              nullptr, nullptr},
             {"Objects",  "3D cursor",          nullptr, &showCursor},
             {"Objects",  "Grid",               nullptr, &showGrid, false},
@@ -10063,6 +10088,8 @@ int main(int argc, char** argv) {
                     // The selection's wire boxes and its component gizmos -- after
                     // the gizmo, so they show where it put things this frame.
                     overlay::selection(editorCtx, sceneView);
+                    // The procedural graph's curves and selected points (ProcGraphPanel).
+                    if (!playMode) procPanel.viewport(sceneView);
 
                     // Empties have no mesh: an icon at each (see ViewportOverlay.hpp).
                     if (!playMode) overlay::empties(entities, sceneView);
@@ -10088,7 +10115,10 @@ int main(int argc, char** argv) {
                     viewpick::click(editorCtx, sceneView, scenePick, pickHost);
                     // While modelling, Del is the mesh's (the modelling mode's
                     // delete menu) -- never the whole object.
-                    if (sel.valid() && !modelling && ImGui::IsKeyPressed(ImGuiKey_Delete))
+                    // ...nor while the Procedural window has the keyboard: there,
+                    // the key removes nodes of the graph.
+                    if (sel.valid() && !modelling && !procPanel.ownsKeys() &&
+                        ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
                 }
             } else {
@@ -10240,6 +10270,7 @@ int main(int argc, char** argv) {
 
             if (showSigns) signTool.panel(showSigns);
             if (showTreeGen) treeGen.panel(showTreeGen);
+            procPanel.draw(showProcedural);
 
             if (showHouses) {
                 houseui::drawPanel({
@@ -10467,7 +10498,8 @@ int main(int argc, char** argv) {
                                     showMaterials, showModels, activeCam,
                                     entityNewHalf,
                                     animClips, animEditClip, animPlay, animAutoKey,
-                                    animGraphs, showGraphEditor, &synths, unpackPrefab});
+                                    animGraphs, showGraphEditor, &synths, unpackPrefab,
+                                    &showProcedural});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.

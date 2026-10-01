@@ -59,6 +59,12 @@ set(SANDBOX_RUNTIME_SOURCES
     # has to show the same result the editor does.
     src/EditMeshModifiers.cpp
     src/Modifiers.cpp
+    # Procedural graphs (a small Houdini): the graph, its node kinds and the
+    # component that carries it. Runtime so a scene with one loads in the
+    # player without dropping the component -- the player never cooks; the
+    # mesh it shows is the one the editor cooked and saved.
+    src/ProcGraph.cpp
+    src/ProcNodes.cpp
     # Where the forest stands (shared with ecology.glsl), and the procedural
     # trees streamed from it out to the horizon.
     src/Ecology.cpp
@@ -222,6 +228,9 @@ set(SANDBOX_EDITOR_SOURCES
     src/InspectorPanel.cpp
     # The Modifiers component's card in the Inspector.
     src/ModifierPanel.cpp
+    # The Procedural window (node graph editor) and its ready-made graphs.
+    src/ProcGraphPanel.cpp
+    src/ProcPresets.cpp
     src/MaterialsPanel.cpp
     # The audio mixer's desk. Editor-only, like every other panel --
     # the desk's STATE is a header (MixerPanel.hpp) the player compiles
@@ -570,6 +579,38 @@ add_executable(modifiercheck tools/modifiercheck.cpp
                              src/PropertyMeta.cpp src/MultiShot.cpp)
 target_compile_definitions(modifiercheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(modifiercheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# proccheck (sandbox/tools/proccheck.cpp): the procedural graphs. Every node
+# kind cooked and measured -- closed where it must be, wound outward, the right
+# number of faces -- the graph's wiring rules (no loops, delete closes a chain),
+# the file round trip, and the presets, cooked whole. `--scene <dir>` also
+# writes a small project with each preset as an object, for viewcheck.
+#   build/release/bin/proccheck.exe [--scene <dir>]
+add_executable(proccheck tools/proccheck.cpp
+                         src/ProcGraph.cpp src/ProcNodes.cpp src/ProcPresets.cpp
+                         src/EditMeshModifiers.cpp src/MeshSimplify.cpp
+                         src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                         src/SandboxMath.cpp src/CameraPath.cpp
+                         src/Component.cpp src/Primitives.cpp
+                         src/PropertyMeta.cpp src/MultiShot.cpp)
+target_compile_definitions(proccheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(proccheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# procpanelcheck (sandbox/tools/procpanelcheck.cpp): the Procedural window,
+# driven with real ImGui mouse and key events in a frame nobody draws.
+#   build/release/bin/procpanelcheck.exe
+add_executable(procpanelcheck tools/procpanelcheck.cpp
+                              src/ProcGraphPanel.cpp src/ProcGraph.cpp src/ProcNodes.cpp
+                              src/ProcPresets.cpp src/Modifiers.cpp
+                              src/EditMeshModifiers.cpp src/MeshSimplify.cpp
+                              src/EditorContext.cpp src/SceneGraph.cpp src/Selection.cpp
+                              src/UiStyle.cpp src/ModelLibrary.cpp src/ViewportFrame.cpp
+                              src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                              src/SandboxMath.cpp src/CameraPath.cpp
+                              src/Component.cpp src/Primitives.cpp
+                              src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(procpanelcheck PRIVATE fitzel imgui stb_headers
+                                             nlohmann_json::nlohmann_json)
 
 add_executable(modelcheck tools/modelcheck.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp
