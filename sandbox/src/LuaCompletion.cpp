@@ -43,6 +43,8 @@ const Completion kGameMembers[] = {
     {"setPos", "setPos(id, x, y, z)"},
     {"setVelocity", "setVelocity(id, x, y, z)"},
     {"applyImpulse", "applyImpulse(id, x, y, z)"},
+    {"moveCharacter", "moveCharacter(id, vx, vz [, dt]) -> x, y, z, onGround, onTerrain  (a capsule through the world)"},
+    {"removeCharacter", "removeCharacter(id)  -- drop the figure's capsule"},
     {"playSound", "playSound(name)"},
     {"addScore", "addScore(n)"}, {"getScore", "getScore() -> n"},
     {"setHud", "setHud(text)"},

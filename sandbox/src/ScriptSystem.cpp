@@ -1154,6 +1154,30 @@ int l_raycast(lua_State* L) {
     lua_pushnumber(L, dist);
     return 5;
 }
+// game.moveCharacter(id, vx, vz, dt) -> x, y, z, onGround, onTerrain | nil
+int l_moveCharacter(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec2 vel{static_cast<float>(luaL_checknumber(L, 2)),
+                        static_cast<float>(luaL_checknumber(L, 3))};
+    const float dt = static_cast<float>(luaL_optnumber(L, 4, 1.0 / 60.0));
+    glm::vec3 foot{0.0f};
+    bool onGround = false, onTerrain = false;
+    if (!h || !h->moveCharacter || !h->moveCharacter(id, vel, dt, foot, onGround, onTerrain)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, foot.x); lua_pushnumber(L, foot.y); lua_pushnumber(L, foot.z);
+    lua_pushboolean(L, onGround);
+    lua_pushboolean(L, onTerrain);
+    return 5;
+}
+int l_removeCharacter(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (h && h->removeCharacter) h->removeCharacter(id);
+    return 0;
+}
 int l_log(lua_State* L) {
     ScriptHost* h = hostOf(L);
     std::string line;
@@ -1385,6 +1409,7 @@ void ScriptSystem::installApi() {
     // World / camera / misc
     fn("terrainHeight", l_terrainHeight);
     fn("raycast", l_raycast);         fn("log", l_log);
+    fn("moveCharacter", l_moveCharacter); fn("removeCharacter", l_removeCharacter);
     fn("loadScene", l_loadScene);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);

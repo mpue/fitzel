@@ -59,6 +59,10 @@ FACE_SPEED     = 540         -- degrees per second the figure turns to face its 
 -- backward (or sideways), try 180 (or 90 / -90).
 FACE_OFFSET    = 0
 FOLLOW_GROUND  = true        -- keep the figure's height above the terrain
+-- Walk through the physics world (game.moveCharacter): stand on roads and
+-- bridges, stop at walls, step up kerbs, fall off edges. Off = follow the
+-- terrain only, through everything else.
+COLLIDE        = true
 FOLLOW_CAMERA  = true
 CAM_DIST       = 4.0         -- metres behind the figure
 CAM_HEIGHT     = 1.2         -- metres above the figure's centre
@@ -70,6 +74,7 @@ local _yaw          -- where the figure is heading, without FACE_OFFSET
 local _groundOffset -- the figure's height above the terrain where it started
 local _cx, _cy, _cz -- the camera, smoothed
 local _pace = 1     -- the walk's pace while it last walked (see update)
+local _footOffset   -- the figure's origin above its feet, as placed (COLLIDE)
 
 local function held(a, b)
     return game.keyDown(a) or game.keyDown(b)
@@ -93,6 +98,7 @@ function start(self, dt, t)
     _groundOffset = self.y - game.terrainHeight(self.x + ox, self.z + oz)
     _cx = nil
     _pace = 1
+    _footOffset = nil
 end
 
 -- The keys as a walk: along the heading and turning (tank), or relative to the
@@ -156,12 +162,31 @@ function update(self, dt, t)
     else
         dx, dz, walking, pace = tankWalk(dt)
     end
-    self.x = self.x + dx * WALK_SPEED * dt
-    self.z = self.z + dz * WALK_SPEED * dt
-    self.ry = _yaw + FACE_OFFSET
-    if FOLLOW_GROUND then
-        self.y = game.terrainHeight(self.x + ox, self.z + oz) + _groundOffset
+    -- Through the physics world when it can: a capsule that stands on roads and
+    -- bridges, stops at walls, steps up kerbs and falls off edges. Standing on
+    -- the terrain, the feet go on the terrain as it is DRAWN (the physics only
+    -- samples it every 4 m); on anything else, on what the capsule stands on.
+    local vx, vz = dx * WALK_SPEED, dz * WALK_SPEED
+    local fx, fy, fz, ground, terrain
+    if COLLIDE and game.moveCharacter then
+        fx, fy, fz, ground, terrain = game.moveCharacter(self.id, vx, vz, dt)
     end
+    if fx then
+        if terrain then fy = game.terrainHeight(fx, fz) end
+        if not _footOffset then _footOffset = self.y + oy - fy end
+        -- Held up by a wall, the legs stop too: walking on the spot reads as a
+        -- glitch, standing at the wall as the wall.
+        local moved = math.sqrt((fx - ox - self.x) ^ 2 + (fz - oz - self.z) ^ 2)
+        if (vx ~= 0 or vz ~= 0) and moved < 0.2 * WALK_SPEED * dt then walking = false end
+        self.x, self.y, self.z = fx - ox, fy + _footOffset - oy, fz - oz
+    else
+        self.x = self.x + vx * dt
+        self.z = self.z + vz * dt
+        if FOLLOW_GROUND then
+            self.y = game.terrainHeight(self.x + ox, self.z + oz) + _groundOffset
+        end
+    end
+    self.ry = _yaw + FACE_OFFSET
 
     -- --- Tell the graph -----------------------------------------------------
     -- Every frame rather than only on a change: the machine resets its

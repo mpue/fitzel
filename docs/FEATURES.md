@@ -116,6 +116,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
 ## Gameplay
 
 - **Physik** mit Jolt, dazu Stoff und Softbodies (Vorhang, Flagge).
+- **Figuren mit Kollision**: `game.moveCharacter` lässt eine Figur als Kapsel durch die
+  Welt laufen – auf Straßen und Brücken statt durch sie hindurch, vor Wänden stehen
+  bleibend, Bordsteine hinauf und über Kanten hinab. Auf Gelände stehen die Füße auf
+  dem gezeichneten Boden. `walker.lua` nutzt das.
 - **Fahrzeuge**: ein Auto und ein Gleiter mit festem 120-Hz-Takt, Reifenspuren,
   Kondensstreifen und Gischt.
 - **Renn-Baukasten**: Gegner-KI, Startaufstellung, Checkpoints, Boost-Pads, HUD,
@@ -161,7 +165,6 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Offen oder angefangen
 
-- Orbit-Kamera committen (Stand 2026-09-30 noch im Arbeitsverzeichnis).
 - Prefabs Stufe 2 (verknüpfte Instanzen, Overrides).
 - GPU-Tracer: HDRI und Tiefenschärfe fehlen noch.
 - Schatten: die ferne Kaskade nur jeden zweiten Frame rendern.

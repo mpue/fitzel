@@ -264,6 +264,16 @@ struct ScriptHost {
     // fills the world-space hit point and distance.
     std::function<int(glm::vec3 origin, glm::vec3 dir, float maxDist,
                       glm::vec3& outHit, float& outDist)> raycast;
+    // A figure walked through the physics world (game.moveCharacter): the first
+    // call for an object makes its capsule, standing on whatever is under the
+    // object; each call walks it at the horizontal velocity `vel` (x, z in m/s)
+    // for `dt` and writes where its feet are now (world space), whether it
+    // stands on something, and whether that something is the terrain. False when
+    // there is no physics world (not playing) or no such object.
+    std::function<bool(int id, glm::vec2 vel, float dt, glm::vec3& foot,
+                       bool& onGround, bool& onTerrain)> moveCharacter;
+    // Drop an object's capsule again (a figure getting into a car, say).
+    std::function<void(int id)> removeCharacter;
     // Load another scene of the open project by name (deferred to frame end).
     std::function<void(const std::string&)> loadScene;
     // Whose saves game.saveData / game.loadData keep (SaveData.hpp): the game

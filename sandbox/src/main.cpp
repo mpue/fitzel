@@ -5141,6 +5141,51 @@ int main(int argc, char** argv) {
             auto it = physicsBody.find(id);
             if (physics && it != physicsBody.end()) physics->applyImpulse(it->second, j);
         };
+        // Figures a script walks (game.moveCharacter): one capsule per object in
+        // the physics world, made on the first call. It starts on whatever is
+        // under the object -- the first thing a ray straight down from just above
+        // its middle meets -- so a figure placed on a bridge starts on the
+        // bridge, not on the ground below it. The table empties with the physics
+        // world, at Play start and stop.
+        std::unordered_map<int, int> scriptFigures;   // entity id -> figure handle
+        host.moveCharacter = [&](int id, glm::vec2 vel, float dt, glm::vec3& foot,
+                                 bool& onGround, bool& onTerrain) -> bool {
+            if (!physics) return false;
+            const Entity* fig = nullptr;
+            for (const Entity& e : entities)
+                if (e.id == id) { fig = &e; break; }
+            if (!fig) return false;
+            auto it = scriptFigures.find(id);
+            if (it == scriptFigures.end() || !physics->hasFigure(it->second)) {
+                // As tall as the object, within reason, and a third of a metre
+                // across: a person, whatever arms held out in a T-pose make of
+                // the box.
+                const float height = glm::clamp(2.0f * fig->half.y, 0.8f, 2.6f);
+                const float radius = 0.3f;
+                glm::vec3 base = fig->center;
+                glm::vec3 hit, normal;
+                PhysicsBodyId body = 0;
+                if (physics->castRay(fig->center + glm::vec3(0.0f, 0.5f, 0.0f),
+                                     glm::vec3(0.0f, -1.0f, 0.0f), fig->half.y + 3.5f,
+                                     hit, normal, body))
+                    base.y = hit.y + 0.02f;
+                const int handle = physics->addFigure(radius, 0.5f * height - radius, base);
+                it = scriptFigures.insert_or_assign(id, handle).first;
+            }
+            PhysicsWorld::FigureStep step;
+            if (!physics->moveFigure(it->second, glm::vec3(vel.x, 0.0f, vel.y), dt, step))
+                return false;
+            foot      = step.foot;
+            onGround  = step.onGround;
+            onTerrain = step.onHeightField;
+            return true;
+        };
+        host.removeCharacter = [&](int id) {
+            const auto it = scriptFigures.find(id);
+            if (it == scriptFigures.end()) return;
+            if (physics) physics->removeFigure(it->second);
+            scriptFigures.erase(it);
+        };
         // Resolve a sound filename to a path. Prefer the asset database -- it holds
         // the exact absolute path of every mounted sound (the same assets the
         // picker lists), so a picked sound always resolves to the right file
@@ -5633,6 +5678,7 @@ int main(int argc, char** argv) {
             // Physics: fresh world with the terrain as a static heightfield
             // ground, plus a rigid body per physics-tagged entity.
             physics = std::make_unique<PhysicsWorld>();
+            scriptFigures.clear();   // their capsules were in the old world
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             // Fresh world: the previous collider id is void. Build the terrain
             // heightfield around wherever the game opens -- the PlayerStart when
@@ -5856,6 +5902,7 @@ int main(int argc, char** argv) {
             weapons2.reset();
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
+            scriptFigures.clear();
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
