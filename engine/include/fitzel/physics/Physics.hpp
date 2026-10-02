@@ -183,6 +183,19 @@ public:
     PhysicsBodyId addMesh(const glm::vec3* verts, int vertCount,
                           const std::uint32_t* indices, int indexCount);
 
+    // A static triangle mesh many bodies share: a model placed a hundred times
+    // builds its triangles once. cacheMeshShape keeps the shape under `key` for
+    // the life of this world (`verts` in the model's own space, `indices` a
+    // triangle list) and answers whether one could be built; a known key is
+    // left as it is. addMeshInstance then places a static body of it at
+    // pos/rot, stretched per axis by `scale` in the mesh's own frame -- the
+    // order the renderer applies a model's transform in. 0 for an unknown key.
+    bool hasMeshShape(std::uint64_t key) const;
+    bool cacheMeshShape(std::uint64_t key, const glm::vec3* verts, int vertCount,
+                        const std::uint32_t* indices, int indexCount);
+    PhysicsBodyId addMeshInstance(std::uint64_t key, glm::vec3 pos, glm::quat rot,
+                                  glm::vec3 scale);
+
     // Static terrain collider from a square, row-major grid of `size`x`size`
     // world-space heights. The grid's (0,0) sample sits at `origin`, and adjacent
     // samples are `scaleXZ` metres apart along X and Z. `size` must be a positive

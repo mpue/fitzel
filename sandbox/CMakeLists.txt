@@ -988,7 +988,8 @@ target_compile_definitions(camcheck PRIVATE FITZEL_PLAYER)
 # collidecheck (sandbox/tools/collidecheck.cpp): does a modelled mesh collide as
 # the shape that is drawn? Drops balls on an L-shaped mesh -- one over the notch
 # lands in it only if the collider is the mesh itself, not a hull or a box --
-# plus a made-editable ramp and plane, and a dynamic mesh on a floor. No GL.
+# plus a made-editable ramp and plane, and a dynamic mesh on a floor. Static
+# imported models and model groups the same way (a trough, a doorway). No GL.
 #   build/release/bin/collidecheck.exe
 add_executable(collidecheck tools/collidecheck.cpp src/PhysicsShapes.cpp src/MeshQuery.cpp src/SceneGraph.cpp
                             src/EditMeshModifiers.cpp src/Modifiers.cpp src/MeshSimplify.cpp

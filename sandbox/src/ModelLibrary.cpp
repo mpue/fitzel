@@ -85,13 +85,19 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
     lm->primMaterialId.reserve(md.primitives.size());
     glm::vec3 lo(1e30f), hi(-1e30f);
     int primIdx = 0;
+    const bool skinned = keepAnim && keepAnim->animated();
     for (const ModelPrimitive& p : md.primitives) {
         std::vector<Vertex> verts;
         verts.reserve(p.vertexCount());
+        // The primitives are triangle lists (three vertices per triangle), so
+        // the positions in order ARE the triangles. Same test as the material's
+        // alpha mode below: what is drawn cut out does not collide.
+        const bool collides = !skinned && !(p.alphaCutout && !p.texPixels.empty());
         for (std::size_t i = 0; i + 7 < p.vertices.size(); i += 8) {
             const glm::vec3 pos(p.vertices[i], p.vertices[i + 1], p.vertices[i + 2]);
             lo = glm::min(lo, pos); hi = glm::max(hi, pos);
             lm->hullPoints.push_back(pos); // for the physics convex hull
+            if (collides) lm->meshTris.push_back(pos);
             verts.push_back({pos,
                 {p.vertices[i + 3], p.vertices[i + 4], p.vertices[i + 5]},
                 {p.vertices[i + 6], p.vertices[i + 7]}});

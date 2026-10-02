@@ -243,6 +243,11 @@ struct LoadedModel {
     std::vector<fitzel::Mesh> meshes;
     std::vector<fitzel::AssetId> primMaterialId; // library MaterialDef GUID per mesh
     std::vector<glm::vec3>    hullPoints;     // raw vertex positions (physics hull)
+    // What a STATIC physics body of this model collides with: every triangle,
+    // three corners each, in the space of hullPoints -- except the cut-out ones.
+    // Leaves, grass and decals are drawn through an alpha mask, and walking into
+    // a fern should not stop you. Empty for skinned models (they move).
+    std::vector<glm::vec3>    meshTris;
     glm::vec3                 boundsMin{0.0f};
     glm::vec3                 boundsMax{0.0f};
     // Skinned models keep their CPU data (skeleton + clips + bind verts) so an

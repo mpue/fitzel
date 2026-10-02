@@ -112,6 +112,16 @@ void addEntityBodies(fitzel::PhysicsWorld& physics, const std::vector<Entity>& e
         // A soft body IS this entity's physics; a rigid collider beside it
         // would be a second, differently shaped copy fighting the first.
         if (e.components.get<SoftBodyComponent>()) continue;
+        // Static Physics on an imported model's group root: the parts below it
+        // collide, not a box the size of the whole model (which is what the
+        // root alone would make -- a hall you cannot get into).
+        if (!pc->dynamic && isModelGroup(e)) {
+            addGroupBodies(physics, entities, e, [&](const Entity& part) -> const LoadedModel* {
+                const auto* pm = part.components.get<ModelComponent>();
+                return pm ? models.byId(pm->modelId) : nullptr;
+            });
+            continue;
+        }
         const float m = pc->dynamic ? glm::max(pc->mass, 0.01f) : 0.0f;
         const auto* mdl = e.components.get<ModelComponent>();
         const PhysicsBodyId id = addEntityBody(

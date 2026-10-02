@@ -25,6 +25,7 @@
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/HeightFieldShape.h>
 #include <Jolt/Physics/Collision/Shape/OffsetCenterOfMassShape.h>
+#include <Jolt/Physics/Collision/Shape/ScaledShape.h>
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/SoftBody/SoftBodyCreationSettings.h>
 #include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
@@ -130,6 +131,9 @@ struct PhysicsWorld::Impl {
     int nextFigure = 1;
     // Which bodies are heightfields, so a figure can tell terrain from the rest.
     std::unordered_set<JPH::uint32> heightFields;
+    // Triangle meshes shared by every body placed from them (cacheMeshShape);
+    // null where a mesh could not be built.
+    std::unordered_map<std::uint64_t, JPH::ShapeRefC> meshShapes;
 
     JPH::Ref<JPH::VehicleConstraint>      vehicle;      // the (single) car
     JPH::Ref<JPH::VehicleCollisionTester> vehicleTest;
@@ -439,9 +443,10 @@ PhysicsBodyId PhysicsWorld::addConvexHull(const glm::vec3* points, int count,
     return m_impl->create(res.Get(), pos, rot, mass).GetIndexAndSequenceNumber();
 }
 
-PhysicsBodyId PhysicsWorld::addMesh(const glm::vec3* verts, int vertCount,
-                                    const std::uint32_t* indices, int indexCount) {
-    if (!verts || vertCount < 3 || !indices || indexCount < 3) return 0;
+// A triangle mesh shape, or null where none can be built.
+static JPH::ShapeRefC buildMeshShape(const glm::vec3* verts, int vertCount,
+                                     const std::uint32_t* indices, int indexCount) {
+    if (!verts || vertCount < 3 || !indices || indexCount < 3) return nullptr;
     JPH::VertexList vl;
     vl.reserve(static_cast<std::size_t>(vertCount));
     for (int i = 0; i < vertCount; ++i)
@@ -457,10 +462,52 @@ PhysicsBodyId PhysicsWorld::addMesh(const glm::vec3* verts, int vertCount,
     if (res.HasError()) {
         std::fprintf(stderr, "[Fitzel] mesh shape error: %s\n",
                      res.GetError().c_str());
-        return 0;
+        return nullptr;
     }
-    return m_impl->create(res.Get(), glm::vec3(0.0f), glm::quat(1, 0, 0, 0), 0.0f)
+    return res.Get();
+}
+
+PhysicsBodyId PhysicsWorld::addMesh(const glm::vec3* verts, int vertCount,
+                                    const std::uint32_t* indices, int indexCount) {
+    const JPH::ShapeRefC shape = buildMeshShape(verts, vertCount, indices, indexCount);
+    if (!shape) return 0;
+    return m_impl->create(shape, glm::vec3(0.0f), glm::quat(1, 0, 0, 0), 0.0f)
         .GetIndexAndSequenceNumber();
+}
+
+bool PhysicsWorld::hasMeshShape(std::uint64_t key) const {
+    return m_impl->meshShapes.count(key) != 0;
+}
+
+bool PhysicsWorld::cacheMeshShape(std::uint64_t key, const glm::vec3* verts, int vertCount,
+                                  const std::uint32_t* indices, int indexCount) {
+    auto it = m_impl->meshShapes.find(key);
+    // A failure is remembered too, so a model that cannot collide is tried once
+    // and not once per copy of it.
+    if (it == m_impl->meshShapes.end())
+        it = m_impl->meshShapes.emplace(
+                key, buildMeshShape(verts, vertCount, indices, indexCount)).first;
+    return it->second != nullptr;
+}
+
+PhysicsBodyId PhysicsWorld::addMeshInstance(std::uint64_t key, glm::vec3 pos, glm::quat rot,
+                                            glm::vec3 scale) {
+    auto it = m_impl->meshShapes.find(key);
+    if (it == m_impl->meshShapes.end() || !it->second) return 0;
+    JPH::ShapeRefC shape = it->second;
+    if (glm::any(glm::greaterThan(glm::abs(scale - glm::vec3(1.0f)), glm::vec3(1e-4f)))) {
+        // Jolt refuses a zero scale; an axis that small has no extent to keep.
+        for (int k = 0; k < 3; ++k)
+            if (std::fabs(scale[k]) < 1e-4f) scale[k] = scale[k] < 0.0f ? -1e-4f : 1e-4f;
+        JPH::ScaledShapeSettings ss(shape, toJolt(scale));
+        JPH::Shape::ShapeResult res = ss.Create();
+        if (res.HasError()) {
+            std::fprintf(stderr, "[Fitzel] scaled mesh error: %s\n", res.GetError().c_str());
+            return 0;
+        }
+        shape = res.Get();
+    }
+    return m_impl->create(shape, pos, rot, 0.0f).GetIndexAndSequenceNumber();
 }
 
 PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,

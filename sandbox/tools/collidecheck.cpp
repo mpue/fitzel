@@ -8,6 +8,13 @@
 // ball over the notch lands IN it only if the collider is the real mesh -- a
 // convex hull fills the notch and holds the ball half a metre up.
 //
+// Imported models get the same treatment: a static one collides as its own
+// triangles -- one mesh shared by every copy, placed, turned and stretched the
+// way it is drawn -- a dynamic one as its hull. A trough stands in for the L,
+// and a doorway for the hall a figure has to get into. Physics on a model
+// group (a structured import's root) makes its parts solid, minus the ones
+// that are only leaves and the ones with Physics of their own.
+//
 // The second half walks figures (PhysicsWorld::addFigure) over a small course:
 // flat terrain, a wall, a bridge deck, a ramp built as a mesh and a kerb. What
 // a game's hero needs from the world -- stand on the deck rather than the
@@ -85,6 +92,60 @@ float dropBall(const Entity& e, glm::vec3 from) {
     glm::vec3 p; glm::quat q;
     w.getTransform(ball, p, q);
     return p.y;
+}
+
+// The same, into a world the caller has filled.
+float dropBallIn(fitzel::PhysicsWorld& w, glm::vec3 from) {
+    const fitzel::PhysicsBodyId ball = w.addSphere(0.2f, from, 1.0f);
+    for (int i = 0; i < 180; ++i) w.step(1.0f / 60.0f);
+    glm::vec3 p; glm::quat q;
+    w.getTransform(ball, p, q);
+    w.removeBody(ball);
+    return p.y;
+}
+
+// An imported model as ModelLibrary leaves it, minus the GPU meshes: boxes as
+// a triangle list with every corner repeated per face (what a flat-shaded
+// export looks like), positions in model space.
+LoadedModel boxModel(int id, const std::vector<std::pair<glm::vec3, glm::vec3>>& boxes) {
+    LoadedModel lm;
+    lm.id = id;
+    glm::vec3 lo(1e30f), hi(-1e30f);
+    for (const auto& [a, b] : boxes) {
+        const glm::vec3 c[8] = {{a.x, a.y, a.z}, {b.x, a.y, a.z}, {b.x, b.y, a.z}, {a.x, b.y, a.z},
+                                {a.x, a.y, b.z}, {b.x, a.y, b.z}, {b.x, b.y, b.z}, {a.x, b.y, b.z}};
+        const int f[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                             {3, 7, 6, 2}, {0, 4, 7, 3}, {1, 2, 6, 5}};
+        for (const auto& q : f)
+            for (int t : {0, 1, 2, 0, 2, 3}) lm.meshTris.push_back(c[q[t]]);
+        lo = glm::min(lo, a);
+        hi = glm::max(hi, b);
+    }
+    lm.hullPoints = lm.meshTris;
+    lm.boundsMin = lo;
+    lm.boundsMax = hi;
+    return lm;
+}
+
+// A trough, 2 x 1 x 1: a floor 0.2 thick and a wall 0.4 thick at each end. Its convex
+// hull is a solid block -- a ball dropped in the middle lands on the floor
+// (centre at 0.4) only if the collider is the triangles, at 1.2 on the hull.
+LoadedModel trough(int id) {
+    return boxModel(id, {{{-1, 0, -0.5f}, {1, 0.2f, 0.5f}},
+                         {{-1, 0.2f, -0.5f}, {-0.6f, 1, 0.5f}},
+                         {{0.6f, 0.2f, -0.5f}, {1, 1, 0.5f}}});
+}
+
+Entity modelEntity(const LoadedModel& lm, int id, glm::vec3 center, glm::vec3 half) {
+    Entity e;
+    e.type   = EntityType::Model;
+    e.id     = id;
+    e.center = e.localCenter = center;
+    e.half   = half;
+    auto mc     = std::make_unique<ModelComponent>();
+    mc->modelId = lm.id;
+    e.components.items.push_back(std::move(mc));
+    return e;
 }
 
 // A world for figures to walk in: flat ground (a heightfield, as the terrain
@@ -184,6 +245,146 @@ int main() {
         w.getTransform(id, p, q);
         std::printf("       it came to rest at y = %.3f\n", p.y);
         check(p.y > 0.4f && p.y < 1.2f, "it falls and rests on the floor, not in it");
+    }
+
+    std::printf("imported models: static ones collide as their triangles\n");
+    {
+        const LoadedModel U = trough(1);
+        const Entity e = modelEntity(U, 1, {0, 0.5f, 0}, {1, 0.5f, 0.5f});
+        fitzel::PhysicsWorld w;
+        check(addEntityBody(w, e, 0.0f, &U) != 0, "a static model gets a body");
+        const float in = dropBallIn(w, {0.0f, 3.0f, 0.0f});
+        const float wall = dropBallIn(w, {0.8f, 3.0f, 0.0f});
+        std::printf("       ball in the trough rests at %.3f, on its wall at %.3f\n", in, wall);
+        check(std::fabs(in - 0.4f) < 0.05f, "a ball dropped into the trough lands on its floor (not on a hull)");
+        check(std::fabs(wall - 1.2f) < 0.05f, "one over a wall lands on the wall");
+
+        // The welding. A crate shoved across the floor slides over the diagonal
+        // that splits every quad into two triangles. With the exporter's
+        // corners left unshared, Jolt takes that diagonal for a real edge: the
+        // crate is kicked sideways (measured: 0.38 m off its line at 8 m/s) and
+        // tips. Welded, the diagonal is known to lie inside a flat face.
+        fitzel::PhysicsWorld r;
+        const LoadedModel slab = boxModel(2, {{{-6, 0, -1}, {6, 0.2f, 1}}});
+        const Entity s = modelEntity(slab, 2, {0, 0.1f, 0}, {6, 0.1f, 1});
+        addEntityBody(r, s, 0.0f, &slab);
+        const fitzel::PhysicsBodyId crate =
+            r.addBox({0.3f, 0.2f, 0.3f}, {-5.0f, 0.401f, -0.5f}, glm::quat(1, 0, 0, 0), 1.0f);
+        r.setLinearVelocity(crate, {8.0f, 0.0f, 0.0f});
+        float drift = 0.0f, tip = 0.0f;
+        glm::vec3 p; glm::quat q;
+        for (int i = 0; i < 90; ++i) {
+            r.step(1.0f / 60.0f);
+            r.getTransform(crate, p, q);
+            drift = std::max(drift, std::fabs(p.z + 0.5f));
+            tip   = std::max(tip, std::max(p.y - 0.4f, std::fabs(q.x) + std::fabs(q.z)));
+        }
+        std::printf("       crate slid to x %.2f: off its line %.3f m, tipped/lifted %.4f\n",
+                    p.x, drift, tip);
+        check(p.x > 2.0f && drift < 0.02f && tip < 0.005f,
+              "a crate slides straight over a model's floor (no edges inside its faces)");
+    }
+
+    std::printf("a static model is placed the way it is drawn\n");
+    {
+        // Turned a quarter round Y and stretched to twice its length: local +X
+        // (along which the walls stand) now runs along -Z, the walls at |z| 1.2..2.
+        const LoadedModel U = trough(3);
+        Entity e = modelEntity(U, 3, {5, 0.5f, 0}, {2, 0.5f, 0.5f});
+        e.rotation = {0.0f, 90.0f, 0.0f};
+        fitzel::PhysicsWorld w;
+        addEntityBody(w, e, 0.0f, &U);
+        const float mid  = dropBallIn(w, {5.0f, 3.0f, 0.0f});
+        const float near = dropBallIn(w, {5.0f, 3.0f, 0.8f});
+        const float wall = dropBallIn(w, {5.0f, 3.0f, -1.6f});
+        const float out  = dropBallIn(w, {5.8f, 3.0f, 0.0f});
+        std::printf("       floor %.3f, floor near the end %.3f, wall %.3f, beside %.3f\n",
+                    mid, near, wall, out);
+        check(std::fabs(mid - 0.4f) < 0.05f && std::fabs(near - 0.4f) < 0.05f &&
+                  std::fabs(wall - 1.2f) < 0.05f,
+              "turned and stretched, its floor and walls are where they are drawn");
+        check(out < -1.0f, "and beside it, where nothing is drawn, a ball falls past");
+
+        // A second copy shares the first one's mesh and still stands where IT is.
+        Entity f = modelEntity(U, 4, {-5, 0.5f, 0}, {1, 0.5f, 0.5f});
+        check(addEntityBody(w, f, 0.0f, &U) != 0 &&
+                  std::fabs(dropBallIn(w, {-5.0f, 3.0f, 0.0f}) - 0.4f) < 0.05f,
+              "a second copy of the model collides at its own place");
+    }
+
+    std::printf("a dynamic model is still its hull\n");
+    {
+        fitzel::PhysicsWorld w;
+        w.addBox({20, 0.5f, 20}, {0, -0.5f, 0}, glm::quat(1, 0, 0, 0), 0.0f);
+        const LoadedModel U = trough(5);
+        const Entity e = modelEntity(U, 5, {0, 0.5f, 0}, {1, 0.5f, 0.5f});
+        check(addEntityBody(w, e, 50.0f, &U) != 0, "a dynamic model gets a body");
+        const float y = dropBallIn(w, {0.0f, 3.0f, 0.0f});
+        std::printf("       ball over the dynamic trough rests at %.3f\n", y);
+        check(y > 1.0f, "a ball over it lands on the hull's top -- Jolt cannot move triangles");
+    }
+
+    std::printf("Physics on a model group (an imported building)\n");
+    {
+        // A root with no model of its own, as a structured import makes it, and
+        // three parts: a trough, a part that is only leaves (no triangles that
+        // collide, a hull that would), and a trough with Physics of its own.
+        const LoadedModel U = trough(6);
+        LoadedModel leaves = boxModel(7, {{{-1, 0, -1}, {1, 2, 1}}});
+        leaves.meshTris.clear();
+        std::vector<Entity> ents;
+        Entity root;
+        root.type = EntityType::Model;
+        root.id = 10;
+        root.center = root.localCenter = {0, 1, 20};
+        root.half = {6, 1, 1};
+        root.components.items.push_back(std::make_unique<PhysicsComponent>());
+        static_cast<PhysicsComponent*>(root.components.items.back().get())->dynamic = false;
+        ents.push_back(std::move(root));
+        Entity a = modelEntity(U, 11, {0, 0.5f, 20}, {1, 0.5f, 0.5f});
+        a.parent = 10;
+        Entity b = modelEntity(leaves, 12, {4, 1, 20}, {1, 1, 1});
+        b.parent = 10;
+        Entity c = modelEntity(U, 13, {-4, 0.5f, 20}, {1, 0.5f, 0.5f});
+        c.parent = 10;
+        c.components.items.push_back(std::make_unique<PhysicsComponent>());
+        ents.push_back(std::move(a));
+        ents.push_back(std::move(b));
+        ents.push_back(std::move(c));
+        check(isModelGroup(ents[0]) && !isModelGroup(ents[1]), "the root is recognised as a model group");
+        fitzel::PhysicsWorld w;
+        const int made = addGroupBodies(w, ents, ents[0], [&](const Entity& part) -> const LoadedModel* {
+            return part.id == 12 ? &leaves : &U;
+        });
+        const float part   = dropBallIn(w, {0.0f, 3.0f, 20.0f});
+        const float leafy  = dropBallIn(w, {4.0f, 3.0f, 20.0f});
+        const float own    = dropBallIn(w, {-4.0f, 3.0f, 20.0f});
+        std::printf("       %d bod(ies); ball in the part %.3f, over the leaves %.3f, over the own-physics part %.3f\n",
+                    made, part, leafy, own);
+        check(made == 1 && std::fabs(part - 0.4f) < 0.05f,
+              "its part collides as its own triangles");
+        check(leafy < -1.0f, "a part that is only leaves is left out (no hull around it)");
+        check(own < -1.0f, "a part with its own Physics is left to it");
+    }
+
+    std::printf("a figure walks through a doorway in a static model\n");
+    {
+        // Two pillars and a lintel, 1.2 m wide and 2.2 m high: the hull of it
+        // is a solid wall 4 m wide.
+        const LoadedModel gate = boxModel(8, {{{-2, 0, -0.2f}, {-0.6f, 3, 0.2f}},
+                                              {{0.6f, 0, -0.2f}, {2, 3, 0.2f}},
+                                              {{-0.6f, 2.2f, -0.2f}, {0.6f, 3, 0.2f}}});
+        fitzel::PhysicsWorld w;
+        w.addBox({20, 0.5f, 20}, {0, -0.5f, 0}, glm::quat(1, 0, 0, 0), 0.0f);
+        addEntityBody(w, modelEntity(gate, 20, {0, 1.5f, 0}, {2, 1.5f, 0.2f}), 0.0f, &gate);
+        const glm::vec3 north(0.0f, 0.0f, 1.5f);
+        const int through = w.addFigure(0.3f, 0.6f, {0.0f, 0.0f, -3.0f});
+        const auto st = walk(w, through, north, 4.0f);
+        const int pillar = w.addFigure(0.3f, 0.6f, {1.3f, 0.0f, -3.0f});
+        const auto sp = walk(w, pillar, north, 4.0f);
+        std::printf("       through the door: z %.2f; into the pillar: z %.2f\n", st.foot.z, sp.foot.z);
+        check(st.foot.z > 2.0f, "through the doorway it walks on");
+        check(sp.foot.z < -0.4f && sp.foot.z > -1.0f, "into a pillar it stops in front of it");
     }
 
     // The ground and wall tests outside the physics world (editor walk, glider
