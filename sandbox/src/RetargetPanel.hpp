@@ -57,8 +57,9 @@ public:
     void openCharacter(const std::string& model);
     // Add a motion file to the character, as a drop or the + button would --
     // `take` picks one animation of a file that has several ("" = the main one).
-    void addMotion(const std::string& file, const std::string& take = {});
-    // Add several animations of one file (another character's clips) at once.
+    void addMotion(const std::string& file, const std::string& take = {}, bool exactName = false);
+    // Add several animations of one file (another character's clips) at once,
+    // under their own names.
     void addTakes(const std::string& file, const std::vector<std::string>& takes);
     // The file the Characters tab copies from (for retargetpanelcheck).
     void copyFrom(const std::string& file);

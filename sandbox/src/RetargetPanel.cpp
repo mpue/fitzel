@@ -334,7 +334,7 @@ void RetargetTool::audition(const std::string& file, const std::string& take) {
     sourceFor(file);
 }
 
-void RetargetTool::addMotion(const std::string& file, const std::string& take) {
+void RetargetTool::addMotion(const std::string& file, const std::string& take, bool exactName) {
     if (!m_char.data.rig) {
         m_message = "Choose a character first -- the motions are added to it.";
         m_messageBad = true;
@@ -348,7 +348,10 @@ void RetargetTool::addMotion(const std::string& file, const std::string& take) {
     std::vector<ClipEntry>& clips = m_char.data.recipe.clips;
     ClipEntry e = file == m_audition && take == m_auditionEntry.take ? m_auditionEntry : ClipEntry{};
     e.take = take;
-    const std::string stem = take.empty() ? clipNameFor(file) : clipNameForTake(take);
+    // A clip copied from another character keeps its name exactly: an
+    // animation graph asks for clips by name, and the one graph should play
+    // on both characters. Motion files get a tidy name made of the file's.
+    const std::string stem = take.empty() ? clipNameFor(file) : exactName ? take : clipNameForTake(take);
     std::string name = stem;
     for (int n = 2;; ++n) {
         bool taken = false;
@@ -368,7 +371,7 @@ void RetargetTool::addMotion(const std::string& file, const std::string& take) {
 
 void RetargetTool::addTakes(const std::string& file, const std::vector<std::string>& takes) {
     if (takes.empty()) return;
-    for (const std::string& t : takes) addMotion(file, t);
+    for (const std::string& t : takes) addMotion(file, t, true);
     if (!m_messageBad) {
         m_message = "Added " + std::to_string(takes.size()) + " animation" + (takes.size() == 1 ? "" : "s") + " of " +
                     fileName(file) + ". Write to put them into " + fileName(m_char.path) + ".";
@@ -1029,7 +1032,12 @@ void RetargetTool::drawClipTab() {
         ImGui::InputText("##name", m_nameBuf, sizeof m_nameBuf);
         ImGui::SetItemTooltip("What the clip is called in the model -- the name an Animation or a graph state plays.");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
-            const std::string want = clipNameFor(std::string(m_nameBuf) + ".x");
+            // Any name: it has to match what an animation graph asks for,
+            // dashes and bars included. Only blanks at the ends go.
+            std::string want = m_nameBuf;
+            while (!want.empty() && std::isspace(static_cast<unsigned char>(want.back()))) want.pop_back();
+            while (!want.empty() && std::isspace(static_cast<unsigned char>(want.front()))) want.erase(want.begin());
+            if (want.empty()) want = c->name;
             bool taken = false;
             for (const ClipEntry& o : m_char.data.recipe.clips) taken = taken || (&o != c && o.name == want);
             if (taken) {

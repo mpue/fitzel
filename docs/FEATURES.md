@@ -186,3 +186,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - Dunst und Himmel bei Nacht.
 - Abhängigkeiten auf feste Versionen pinnen.
 - GitHub Pages für `docs/index.html` einschalten.
+
+## Nice to have
+
+- Retargeting: ein Knopf „Replace…“ neben „Add it to the character“ – die angesehene
+  Bewegung ersetzt eine gewählte Animation der Figur, Name und Einstellungen bleiben.
+  Bisher: alten Eintrag entfernen, neue Bewegung hinzufügen, auf den alten Namen umbenennen.
