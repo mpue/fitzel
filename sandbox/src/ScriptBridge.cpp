@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -9,6 +10,7 @@
 
 #include <fitzel/asset/AssetDatabase.hpp>
 #include <fitzel/asset/Vfs.hpp>
+#include <fitzel/graphics/Texture.hpp>
 
 #include "Component.hpp"
 #include "Document.hpp"
@@ -139,6 +141,51 @@ void applyEdit(AssetDatabase& db, MaterialDef& m, const ScriptMaterialEdit& ed) 
     slot(ed.texture,     m.tex,         m.texId);
     slot(ed.normalMap,   m.normalTex,   m.normalTexId);
     slot(ed.emissionMap, m.emissionTex, m.emissionTexId);
+}
+
+// A picture for the script HUD: decoded at most 1024 px on its long side (an
+// inventory icon is drawn a few hundred pixels wide, and a 1920x1080 render kept
+// whole would cost 11 MB of video memory per item), with the box its visible
+// part fills, so an icon rendered with a wide transparent margin can be fitted.
+struct HudPicture {
+    std::shared_ptr<fitzel::Texture> tex;
+    ScriptImage                      info;
+    std::chrono::steady_clock::time_point missed{}; // not found: when we looked
+};
+
+bool loadHudPicture(const std::string& path, HudPicture& out) {
+    const fitzel::ImagePixels px = fitzel::Texture::decodeThumbnail(path, 1024);
+    if (!px.valid()) return false;
+    auto tex = std::make_shared<fitzel::Texture>(fitzel::Texture::fromImagePixels(px));
+    if (!tex->isValid()) return false;
+    out.tex         = tex;
+    out.info.tex    = tex->id();
+    out.info.width  = px.width;
+    out.info.height = px.height;
+    out.info.content = glm::vec4(0.0f, 0.0f, 1.0f, 1.0f);
+    if (px.channels == 4) {
+        int x0 = px.width, y0 = px.height, x1 = -1, y1 = -1;
+        for (int y = 0; y < px.height; ++y)
+            for (int x = 0; x < px.width; ++x)
+                if (px.pixels[(static_cast<std::size_t>(y) * px.width + x) * 4 + 3] > 8) {
+                    x0 = std::min(x0, x); x1 = std::max(x1, x);
+                    y0 = std::min(y0, y); y1 = std::max(y1, y);
+                }
+        if (x1 >= x0 && y1 >= y0)
+            out.info.content = glm::vec4(static_cast<float>(x0) / px.width,
+                                         static_cast<float>(y0) / px.height,
+                                         static_cast<float>(x1 + 1) / px.width,
+                                         static_cast<float>(y1 + 1) / px.height);
+    }
+    return true;
+}
+
+// The object's name without the spaces an author left at its ends ("pistol ").
+std::string trimmed(const std::string& s) {
+    const auto b = s.find_first_not_of(" \t");
+    if (b == std::string::npos) return {};
+    const auto e = s.find_last_not_of(" \t");
+    return s.substr(b, e - b + 1);
 }
 
 // Ray vs. axis-aligned box (slab test). Returns the near hit distance, or -1.
@@ -382,6 +429,57 @@ void install(ScriptHost& host, Deps deps) {
         for (const Entity& e : doc.entities())
             if (e.parent == id) out.push_back(e.id);
         return out;
+    };
+
+    // --- Pickups -------------------------------------------------------------
+    host.collectibles = [&doc] {
+        std::vector<int> out;
+        for (const Entity& e : doc.entities())
+            if (e.activeInHierarchy && e.components.get<CollectibleComponent>())
+                out.push_back(e.id);
+        return out;
+    };
+    host.collectible = [&doc](int id, ScriptCollectible& out) {
+        const Entity* e = doc.find(id);
+        const auto* c = e ? e->components.get<CollectibleComponent>() : nullptr;
+        if (!c) return false;
+        out             = {};
+        out.points      = c->points;
+        out.radius      = c->radius;
+        out.sound       = c->sound;
+        out.inventory   = c->inventory;
+        out.item        = trimmed(c->item).empty() ? trimmed(e->name) : trimmed(c->item);
+        out.icon        = c->icon;
+        out.category    = CollectibleComponent::categoryId(c->category);
+        out.description = c->description;
+        out.count       = std::max(1, c->count);
+        return true;
+    };
+
+    // --- Pictures for the HUD --------------------------------------------------
+    // Kept for the session once loaded: a HUD draws the same few pictures every
+    // frame, and the draw list only holds the GL name, so the texture has to
+    // outlive the frame it was queued in. A name that found nothing is asked
+    // again after a moment -- the asset may simply not have been imported yet.
+    auto pictures = std::make_shared<std::unordered_map<std::string, HudPicture>>();
+    host.hudImage = [&db, pictures](const std::string& ref, ScriptImage& out) {
+        auto it = pictures->find(ref);
+        const auto now = std::chrono::steady_clock::now();
+        if (it != pictures->end()) {
+            if (it->second.tex) { out = it->second.info; return true; }
+            if (now - it->second.missed < std::chrono::seconds(2)) return false;
+        }
+        HudPicture pic;
+        const AssetId gid = resolveAsset(db, ref, AssetType::Texture);
+        const AssetDatabase::Entry* en = gid.valid() ? db.entry(gid) : nullptr;
+        if (!en || !loadHudPicture(en->absPath.string(), pic)) {
+            pic.missed = now;
+            (*pictures)[ref] = std::move(pic);
+            return false;
+        }
+        out = pic.info;
+        (*pictures)[ref] = std::move(pic);
+        return true;
     };
 
     // --- Lights --------------------------------------------------------------

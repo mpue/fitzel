@@ -118,17 +118,46 @@ struct ScriptLightEdit {
 // any window size and in the editor's inset viewport alike. The host scales and
 // offsets them onto the rendered view when it draws the HUD.
 struct ScriptHudCmd {
-    enum class Kind : unsigned char { Rect, Gradient, Frame, Line, Circle, Ring, Tri, Text };
+    enum class Kind : unsigned char { Rect, Gradient, Frame, Line, Circle, Ring, Tri, Text,
+                                      Image };
     Kind        kind = Kind::Rect;
     float       a[6] = {};         // Rect/Frame: x, y, w, h, rounding | Gradient:
                                    // x, y, w, h | Line: x1, y1, x2, y2 | Circle/Ring:
-                                   // cx, cy, r | Tri: three corners | Text: x, y
+                                   // cx, cy, r | Tri: three corners | Text: x, y |
+                                   // Image: x, y, w, h
     float       size    = 0.0f;    // Frame/Line/Ring: thickness | Text: height
     float       align   = 0.0f;    // Text: 0 left .. 0.5 centred .. 1 right
     bool        bold    = false;   // Text: the UI's semibold face
-    unsigned    col     = 0;       // RGBA8 (ImGui's IM_COL32 layout)
+    unsigned    col     = 0;       // RGBA8 (ImGui's IM_COL32 layout) | Image: the tint
     unsigned    col2    = 0;       // Gradient: the bottom colour
+    unsigned    tex     = 0;       // Image: the GL texture (kept alive by the host)
+    float       uv[4]   = {0.0f, 0.0f, 1.0f, 1.0f}; // Image: u0, v0, u1, v1 (v down)
     std::string text;
+};
+
+// A picture as the script HUD holds it (game.hudImage / game.imageSize): the GL
+// texture, its size in pixels as loaded (long side at most 1024), and the box its
+// visible -- not fully transparent -- part fills, in 0..1 with v running down the
+// picture, so an icon rendered with a margin can be fitted to a slot.
+struct ScriptImage {
+    unsigned  tex    = 0;
+    int       width  = 0;
+    int       height = 0;
+    glm::vec4 content{0.0f, 0.0f, 1.0f, 1.0f}; // u0, v0, u1, v1
+};
+
+// A Collectible component as scripts see it (game.collectible). `item` is the
+// name to show -- the component's own, or the object's when it has none.
+struct ScriptCollectible {
+    float       points    = 0.0f;
+    float       radius    = 0.0f;
+    std::string sound;
+    bool        inventory = false;  // picked up by a script, not on contact
+    std::string item;
+    std::string icon;               // Texture asset (file name), "" = none
+    std::string category;           // "misc", "weapon", "ammo", "health", "key", "document"
+    std::string description;
+    int         count     = 1;
 };
 
 // A scene entity as scripts see it (see game.entityInfo).
@@ -206,6 +235,24 @@ struct ScriptHost {
     std::function<void(int, const std::string&)>    setName;
     std::function<void(int, bool)>                  setActive;
     std::function<void(int, int)>                   setParent;    // -1 = detach
+    // The pickups (game.collectibles / game.collectible): every active object
+    // with a Collectible component, and one component's data.
+    std::function<std::vector<int>()>               collectibles;
+    std::function<bool(int, ScriptCollectible&)>    collectible;
+
+    // --- Bones of an animated figure (BoneAttach.hpp) ---------------------------
+    // Where a bone of a skinned model is, as the figure was last drawn: world
+    // position and rotation (scene Euler degrees). False for an unknown object or
+    // bone, or a figure that has not been posed yet.
+    std::function<bool(int, const std::string& bone, glm::vec3& pos, glm::vec3& rotDeg)> boneWorld;
+    std::function<std::vector<std::string>(int)>    boneNames;
+    // Hang `child` on a bone of `figure`: from then on it follows the bone every
+    // frame, after the pose and before the picture. `pos`/`rotDeg` (bone space,
+    // metres / degrees) place it on the bone; null keeps it where it is now,
+    // relative to the bone. False for an unknown object or bone.
+    std::function<bool(int child, int figure, const std::string& bone,
+                       const glm::vec3* pos, const glm::vec3* rotDeg)> attach;
+    std::function<void(int child)>                  detach;
 
     // --- Animation state machines (AnimGraph.hpp) -------------------------
     // Driving an object's graph from a script: this is the point of the graph
@@ -274,6 +321,10 @@ struct ScriptHost {
                        bool& onGround, bool& onTerrain)> moveCharacter;
     // Drop an object's capsule again (a figure getting into a car, say).
     std::function<void(int id)> removeCharacter;
+    // What a thing let go of at `from` comes to rest on, straight down within
+    // `maxDist`: a road, a bridge deck, a floor -- or the terrain as it is
+    // DRAWN (never below it). False when nothing is there.
+    std::function<bool(glm::vec3 from, float maxDist, float& outY)> groundHeight;
     // Load another scene of the open project by name (deferred to frame end).
     std::function<void(const std::string&)> loadScene;
     // Whose saves game.saveData / game.loadData keep (SaveData.hpp): the game
@@ -318,4 +369,8 @@ struct ScriptHost {
     float restFps = 0.0f;
     // Width/height in HUD units of a line of text at `size` (see ScriptHudCmd).
     std::function<glm::vec2(const std::string&, float size, bool bold)> measureText;
+    // A Texture asset (file name or GUID) loaded for the HUD (see ScriptImage).
+    std::function<bool(const std::string&, ScriptImage&)> hudImage;
+    // Where a world point lands on the HUD canvas; false when it is behind the eye.
+    std::function<bool(glm::vec3, glm::vec2&)> worldToHud;
 };

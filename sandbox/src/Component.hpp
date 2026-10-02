@@ -224,11 +224,29 @@ public:
 // optional one-shot `sound` (from the project's sounds/), and removes the
 // entity. Attach it to any solid so an artist builds "collect the coins" with
 // zero code. Ticked in the play loop alongside the other built-in behaviours.
+//
+// An INVENTORY item is the other kind of pickup: a pistol on the floor, a key, a
+// medkit. Nothing happens on contact -- the figure's script offers it within
+// `radius`, picks it up on a key and keeps it (game.collectibles /
+// game.collectible). The rest of the fields say what it is to the player:
+// its name, its picture, what kind of thing it is, a line about it, how many.
 class CollectibleComponent : public ComponentBase {
 public:
+    // The kinds an inventory sorts by, in the order of their labels.
+    enum Category { Misc, Weapon, Ammo, Health, Key, Document };
+
     float       points = 10.0f; // added to the score on pickup (whole number)
     float       radius = 1.5f;  // pickup distance from the player (metres)
     std::string sound;          // one-shot file under the project's sounds/ ("" = none)
+    bool        inventory = false; // picked up by a script into an inventory
+    std::string item;           // name shown in the inventory ("" = the object's)
+    std::string icon;           // Texture asset (file name) for the inventory
+    int         category = Misc;
+    std::string description;    // a line about it, shown with the picture
+    int         count = 1;      // how many it is (a box of rounds)
+
+    // The category as scripts get it: "misc", "weapon", "ammo", ...
+    static const char* categoryId(int c);
 
     std::unique_ptr<ComponentBase> clone() const override {
         return std::make_unique<CollectibleComponent>(*this);

@@ -220,9 +220,50 @@ const std::vector<Property>& CollectibleComponent::properties() {
         sound.label = "Sound"; sound.key = "sound"; sound.kind = PropKind::Text;
         sound.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->sound; };
         p.push_back(std::move(sound));
+        // The inventory item: what the player is told about the thing. Shown
+        // only once the box is ticked, so a coin keeps its three fields.
+        const auto isItem = [](const void* o) {
+            return static_cast<const CollectibleComponent*>(o)->inventory;
+        };
+        Property inv;
+        inv.label = "Inventory item"; inv.key = "inventory"; inv.kind = PropKind::Bool;
+        inv.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->inventory; };
+        p.push_back(std::move(inv));
+        Property item;
+        item.label = "Item name"; item.key = "item"; item.kind = PropKind::Text;
+        item.visible = isItem;
+        item.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->item; };
+        p.push_back(std::move(item));
+        Property cat;
+        cat.label = "Category"; cat.key = "category"; cat.kind = PropKind::EnumInt;
+        cat.enumLabels = {"Misc", "Weapon", "Ammo", "Health", "Key", "Document"};
+        cat.visible = isItem;
+        cat.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->category; };
+        p.push_back(std::move(cat));
+        Property icon;
+        icon.label = "Icon"; icon.key = "icon"; icon.kind = PropKind::Text;
+        icon.visible = isItem;
+        icon.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->icon; };
+        p.push_back(std::move(icon));
+        Property desc;
+        desc.label = "Description"; desc.key = "description"; desc.kind = PropKind::Text;
+        desc.visible = isItem;
+        desc.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->description; };
+        p.push_back(std::move(desc));
+        Property count;
+        count.label = "Count"; count.key = "count"; count.kind = PropKind::Int;
+        count.min = 1.0f; count.max = 999.0f; count.speed = 1.0f;
+        count.visible = isItem;
+        count.field = [](void* o) -> void* { return &static_cast<CollectibleComponent*>(o)->count; };
+        p.push_back(std::move(count));
         return p;
     }();
     return props;
+}
+
+const char* CollectibleComponent::categoryId(int c) {
+    static const char* ids[] = {"misc", "weapon", "ammo", "health", "key", "document"};
+    return (c >= 0 && c < static_cast<int>(sizeof ids / sizeof ids[0])) ? ids[c] : ids[0];
 }
 
 const std::vector<Property>& MissilePickupComponent::properties() {

@@ -60,6 +60,19 @@ public:
     // Most recent script error ("" if none) -- shown in the editor UI.
     const std::string& lastError() const { return m_lastError; }
 
+    // --- The keys held by one script (game.captureInput) ----------------------
+    // A menu a script draws -- an inventory, a map -- wants the keys to itself:
+    // the figure must not walk off while the player picks an item. The script
+    // asks on every frame it wants them, and from then on every OTHER script sees
+    // no keys and no mouse buttons; the host leaves Esc and the mouse look to it
+    // as well (inputCaptured). It lets go by no longer asking: a frame without a
+    // call releases them, so a script that fails or is switched off can never
+    // leave the game deaf. The first to ask holds them until it stops.
+    void beginFrame();          // once per Play frame, before the scripts tick
+    bool inputCaptured() const { return !m_captureKey.empty(); }
+    bool claimInput();          // the running script asks; true = it holds them
+    bool inputBlocked() const;  // somebody else holds them
+
     // Editor introspection: load `path` in a throwaway sandbox, run its chunk,
     // and return one ScriptParam (with its default value) for every module-level
     // global of a supported type -- the fields the inspector then exposes. Runs
@@ -91,4 +104,7 @@ private:
     std::unordered_map<std::string, int> m_env;    // "<id>|<file>" -> env ref
     std::unordered_set<std::string>      m_failed; // scripts disabled by an error
     std::string                          m_lastError;
+    std::string m_current;            // the script running right now ("" = none)
+    std::string m_captureKey;         // the script holding the keys ("" = none)
+    bool        m_captureAsked = false; // ...and it asked again this frame
 };

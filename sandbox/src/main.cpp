@@ -68,6 +68,7 @@
 #include "CameraPath.hpp"
 #include "ScriptSystem.hpp"
 #include "ScriptBridge.hpp"
+#include "BoneAttach.hpp"
 #include "ProjectIO.hpp"
 #include "PrefabSystem.hpp"
 #include "PaintPanel.hpp"
@@ -4189,6 +4190,9 @@ int main(int argc, char** argv) {
         auto soundPickerCombo = [&](const char* label, std::string& field) {
             assetPickerCombo(label, field, listSounds(), "(none)", "sound");
         };
+        auto imagePickerCombo = [&](const char* label, std::string& field) {
+            assetPickerCombo(label, field, listTextures(), "(none)", "texture");
+        };
         std::vector<Entity>      playEntities;
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
@@ -5043,6 +5047,28 @@ int main(int argc, char** argv) {
             dir    = glm::normalize(glm::vec3(pf) - glm::vec3(pn));
             return true;
         };
+        // The other way round: a world point on the HUD canvas -- a prompt over
+        // the thing it is about. False behind the eye.
+        //
+        // Through the eye the last picture was drawn from (hudCamera, taken once
+        // the frame's camera is settled), NOT `camera` as it stands when the
+        // script asks: a script before this one may have moved that (a figure
+        // controller flying its own follow eye), and the view camera or --shots
+        // overrides it again before anything is drawn. A label has to sit on the
+        // picture, wherever the camera went in between.
+        std::optional<Camera> hudCamera; // a copy, rebuilt every frame (no assignment)
+        host.worldToHud = [&, scriptView](glm::vec3 p, glm::vec2& out) -> bool {
+            glm::vec2 vmin, vsize;
+            if (!scriptView(vmin, vsize) || vsize.y < 1.0f) return false;
+            const Camera& eye = hudCamera ? *hudCamera : camera;
+            const glm::vec4 c = eye.projectionMatrix(vsize.x / vsize.y) *
+                                eye.viewMatrix() * glm::vec4(p, 1.0f);
+            if (c.w <= 1e-4f) return false;
+            const float k = 1080.0f / vsize.y;
+            out = glm::vec2((c.x / c.w * 0.5f + 0.5f) * vsize.x * k,
+                            (0.5f - c.y / c.w * 0.5f) * vsize.y * k);
+            return true;
+        };
         host.showCursor = [&](bool on) {
             if (!playMode) return;
             scriptCursorFree = on;
@@ -5203,6 +5229,28 @@ int main(int argc, char** argv) {
             if (physics) physics->removeFigure(it->second);
             scriptFigures.erase(it);
         };
+        // What the figures carry (game.attach): a pistol in a hand follows the
+        // hand as the skinning pass posed it (see BoneAttach.hpp). Emptied at
+        // Play start and stop, with the capsules.
+        boneattach::Attachments boneAttach;
+        host.boneWorld = [&](int id, const std::string& bone, glm::vec3& pos,
+                             glm::vec3& rotDeg) -> bool {
+            glm::mat4 m;
+            if (!boneAttach.boneWorld(entities, models, id, bone, m)) return false;
+            glm::vec3 s;
+            scenegraph::decompose(m, pos, rotDeg, s);
+            return true;
+        };
+        host.boneNames = [&](int id) { return boneAttach.boneNames(entities, models, id); };
+        host.attach = [&](int child, int figure, const std::string& bone,
+                          const glm::vec3* pos, const glm::vec3* rotDeg) -> bool {
+            if (!playMode) return false;
+            if (!pos) return boneAttach.attach(entities, models, child, figure, bone, nullptr);
+            const glm::mat4 off = scenegraph::compose(
+                *pos, rotDeg ? *rotDeg : glm::vec3(0.0f), glm::vec3(1.0f));
+            return boneAttach.attach(entities, models, child, figure, bone, &off);
+        };
+        host.detach = [&](int child) { boneAttach.detach(child); };
         // Resolve a sound filename to a path. Prefer the asset database -- it holds
         // the exact absolute path of every mounted sound (the same assets the
         // picker lists), so a picked sound always resolves to the right file
@@ -5460,6 +5508,36 @@ int main(int argc, char** argv) {
             terrainCollCenter = centerXZ;
         };
 
+        // game.groundHeight: a ray straight down through the physics world. The
+        // terrain's collider is far coarser than the terrain is drawn (a 4 m
+        // grid), so it does not count as an answer: the ray goes on past it to
+        // whatever lies on the ground there -- the road a pistol is dropped on
+        // -- and the result is never below the DRAWN terrain.
+        host.groundHeight = [&](glm::vec3 from, float maxDist, float& outY) -> bool {
+            const float drawn = host.terrainHeight ? host.terrainHeight(from.x, from.z)
+                                                   : -1.0e30f;
+            glm::vec3 o = from;
+            if (physics) {
+                for (int i = 0; i < 4; ++i) {
+                    glm::vec3 hit, normal;
+                    PhysicsBodyId body = 0;
+                    const float left = maxDist - (from.y - o.y);
+                    if (left <= 0.0f ||
+                        !physics->castRay(o, glm::vec3(0.0f, -1.0f, 0.0f), left, hit, normal, body))
+                        break;
+                    if (hit.y < drawn - 0.05f) break;   // below the ground: nothing on it
+                    if (body != terrainCollId) {
+                        outY = std::max(hit.y, drawn);
+                        return true;
+                    }
+                    o = hit - glm::vec3(0.0f, 0.01f, 0.0f);
+                }
+            }
+            if (drawn < -1.0e29f || from.y - drawn > maxDist) return false;
+            outY = drawn;
+            return true;
+        };
+
         // The craft the PLAYER flies, when the scene holds none.
         //
         // A circuit does not have to contain a glider: the one being flown
@@ -5696,6 +5774,7 @@ int main(int argc, char** argv) {
             // ground, plus a rigid body per physics-tagged entity.
             physics = std::make_unique<PhysicsWorld>();
             scriptFigures.clear();   // their capsules were in the old world
+            boneAttach.clear();      // and nothing is carried yet
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             // Fresh world: the previous collider id is void. Build the terrain
             // heightfield around wherever the game opens -- the PlayerStart when
@@ -5920,6 +5999,7 @@ int main(int argc, char** argv) {
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
             scriptFigures.clear();
+            boneAttach.clear();
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -6867,7 +6947,10 @@ int main(int argc, char** argv) {
             // ...and the graphics menu owns it while IT is up, for the same
             // reason: without this the press that closes it would also drop the
             // player out of the game behind it.
-            if (escDown && !prevEsc && !escIsMenuKey && !gfxUi.open()) {
+            // ...and so does a script's own menu while it holds the keys
+            // (game.captureInput): Esc closes the inventory, not the game.
+            if (escDown && !prevEsc && !escIsMenuKey && !gfxUi.open() &&
+                !scripts.inputCaptured()) {
                 if (playerMode)          { window.requestClose(); }
                 else if (presentMode) {
                     presentMode = false;
@@ -7341,6 +7424,10 @@ int main(int argc, char** argv) {
                 } else {
                     driveGliderId2 = -1;
                 }
+            } else if (orbitView && (scriptCursorFree || scripts.inputCaptured())) {
+                // A script's menu has the pointer (game.showCursor) or the keys
+                // (game.captureInput): the orbit camera holds still and leaves
+                // the cursor free, or picking an item would swing the view.
             } else if (orbitView) {
                 // An orbit camera is the view: the mouse (and the right stick)
                 // swing it round the object it follows. The walking player
@@ -8408,6 +8495,7 @@ int main(int argc, char** argv) {
                 host.screen = glm::vec2(static_cast<float>(viewW),
                                         static_cast<float>(viewH));
                 host.hudCmds.clear(); // this frame's HUD is what the scripts draw now
+                scripts.beginFrame(); // a hold on the keys lasts while it is asked for
                 // Scripts and behaviours just write the entity's world transform;
                 // children follow via resolveHierarchy (below), no propagation.
                 // EVERY script component on the object, not the first.
@@ -8476,8 +8564,11 @@ int main(int argc, char** argv) {
                     for (Entity& e : entities) {
                         if (!e.activeInHierarchy) continue;  // deactivated: inert
                         // Collectible: on reach, award points, play sound, remove
-                        // (destroy is deferred to the queue processed below).
-                        if (const auto* col = e.components.get<CollectibleComponent>()) {
+                        // (destroy is deferred to the queue processed below). An
+                        // inventory item waits for the figure's script to pick it
+                        // up instead (game.collectibles).
+                        if (const auto* col = e.components.get<CollectibleComponent>();
+                            col && !col->inventory) {
                             if (glm::distance(playerC, e.center) <= col->radius) {
                                 host.score += static_cast<int>(std::lround(col->points));
                                 if (!col->sound.empty()) host.playSound(col->sound);
@@ -9057,6 +9148,7 @@ int main(int argc, char** argv) {
                     camera, [&](float x, float z) { return streamer.heightAt(x, z); },
                     timeOfDay);
 #endif
+            hudCamera.emplace(camera);   // the eye this frame is drawn from (game.worldToHud)
 
             // One row of the trace, taken HERE: the sim has written the craft's
             // interpolated pose for this frame and applyViewCamera has just
@@ -10565,7 +10657,7 @@ int main(int argc, char** argv) {
                                     entityNewHalf,
                                     animClips, animEditClip, animPlay, animAutoKey,
                                     animGraphs, showGraphEditor, &synths, unpackPrefab,
-                                    &showProcedural});
+                                    &showProcedural, imagePickerCombo});
 
             // Material library: create/edit reusable surface materials. Solids are
             // assigned one via the Inspector; edits here update every mesh using it.
@@ -11091,6 +11183,7 @@ int main(int argc, char** argv) {
                                               ci, time, 1.0f - fromShare)
                         : sampleSkeleton(*lm->animData, ci, time);
                     if (palette.empty()) continue;
+                    if (playMode) boneAttach.storePose(e.id, palette);
                     const auto& prims = lm->animData->primitives;
                     for (std::size_t p = 0;
                          p < lm->meshes.size() && p < prims.size(); ++p) {
@@ -11099,6 +11192,10 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+
+            // Whatever the figures carry, onto the bones they were just posed
+            // with -- before anything is drawn (see BoneAttach.hpp).
+            if (playMode) boneAttach.apply(entities, models);
 
             // --- Scene entities through the renderer (shadows, lighting, water).
             // Fences, walls and track: regenerate whatever an edit dirtied, HERE
@@ -12636,6 +12733,15 @@ int main(int argc, char** argv) {
                         case ScriptHudCmd::Kind::Tri:
                             dl->AddTriangleFilled(P(a[0], a[1]), P(a[2], a[3]),
                                                   P(a[4], a[5]), hc.col);
+                            break;
+                        case ScriptHudCmd::Kind::Image:
+                            // The host keeps the texture alive for the session
+                            // (ScriptBridge), so the name is still good here.
+                            dl->AddImage(static_cast<ImTextureID>(
+                                             static_cast<std::intptr_t>(hc.tex)),
+                                         P(a[0], a[1]), P(a[0] + a[2], a[1] + a[3]),
+                                         ImVec2(hc.uv[0], hc.uv[1]),
+                                         ImVec2(hc.uv[2], hc.uv[3]), hc.col);
                             break;
                         case ScriptHudCmd::Kind::Text: {
                             ImFont* f = (hc.bold && ui::boldFont()) ? ui::boldFont() : font;

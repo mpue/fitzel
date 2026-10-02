@@ -88,6 +88,15 @@ ScriptHost* hostOf(lua_State* L) {
         static_cast<ScriptSystem*>(lua_touserdata(L, lua_upvalueindex(1)));
     return self ? self->host() : nullptr;
 }
+ScriptSystem* systemOf(lua_State* L) {
+    return static_cast<ScriptSystem*>(lua_touserdata(L, lua_upvalueindex(1)));
+}
+// Another script holds the keys (game.captureInput): this one is told nothing
+// is pressed. The host is still asked, so its press detection keeps track.
+bool inputBlocked(lua_State* L) {
+    const ScriptSystem* s = systemOf(L);
+    return s && s->inputBlocked();
+}
 
 // Read table field `key` (a number) from the table at stack index `t`, or
 // `fallback` when absent/non-numeric.
@@ -216,25 +225,35 @@ void pushMaterialInfo(lua_State* L, const ScriptMaterialInfo& m) {
 int l_keyDown(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int k = static_cast<int>(luaL_checkinteger(L, 1));
-    lua_pushboolean(L, h && h->keyDown && h->keyDown(k));
+    const bool v = h && h->keyDown && h->keyDown(k);
+    lua_pushboolean(L, v && !inputBlocked(L));
     return 1;
 }
 int l_keyPressed(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int k = static_cast<int>(luaL_checkinteger(L, 1));
-    lua_pushboolean(L, h && h->keyPressed && h->keyPressed(k));
+    const bool v = h && h->keyPressed && h->keyPressed(k);
+    lua_pushboolean(L, v && !inputBlocked(L));
     return 1;
 }
 int l_mouseDown(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int b = static_cast<int>(luaL_optinteger(L, 1, 0));
-    lua_pushboolean(L, h && h->mouseDown && h->mouseDown(b));
+    const bool v = h && h->mouseDown && h->mouseDown(b);
+    lua_pushboolean(L, v && !inputBlocked(L));
     return 1;
 }
 int l_mousePressed(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int b = static_cast<int>(luaL_optinteger(L, 1, 0));
-    lua_pushboolean(L, h && h->mousePressed && h->mousePressed(b));
+    const bool v = h && h->mousePressed && h->mousePressed(b);
+    lua_pushboolean(L, v && !inputBlocked(L));
+    return 1;
+}
+// captureInput() -> true while this script holds the keys (see ScriptSystem).
+int l_captureInput(lua_State* L) {
+    ScriptSystem* s = systemOf(L);
+    lua_pushboolean(L, s && s->claimInput());
     return 1;
 }
 // mousePos() -> x, y, over: the pointer in HUD canvas units (1080 high, origin top
@@ -771,6 +790,54 @@ int l_setCrosshair(lua_State* L) {
     if (ScriptHost* h = hostOf(L)) h->crosshair = lua_toboolean(L, 1) != 0;
     return 0;
 }
+// hudImage(tex, x, y, w, h, r, g, b, a, u0, v0, u1, v1) -- a Texture asset by
+// file name or GUID, tinted (default white), cropped to the uv box (default the
+// whole picture; v runs down it). An unknown picture draws nothing.
+int l_hudImage(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    ScriptImage img;
+    if (!h || !h->hudImage || !h->hudImage(name, img) || img.tex == 0) return 0;
+    ScriptHudCmd c;
+    c.kind = ScriptHudCmd::Kind::Image;
+    for (int i = 0; i < 4; ++i) c.a[i] = num(L, i + 2);
+    c.col   = hudColour(L, 6);
+    c.tex   = img.tex;
+    c.uv[0] = optNum(L, 10, 0.0f);
+    c.uv[1] = optNum(L, 11, 0.0f);
+    c.uv[2] = optNum(L, 12, 1.0f);
+    c.uv[3] = optNum(L, 13, 1.0f);
+    queueHud(L, std::move(c));
+    return 0;
+}
+// imageSize(tex) -> w, h, u0, v0, u1, v1: the picture's size in pixels as the
+// HUD holds it, and the box its visible part fills (0..1) | nil
+int l_imageSize(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* name = luaL_checkstring(L, 1);
+    ScriptImage img;
+    if (!h || !h->hudImage || !h->hudImage(name, img) || img.tex == 0) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushinteger(L, img.width);
+    lua_pushinteger(L, img.height);
+    for (int i = 0; i < 4; ++i) lua_pushnumber(L, img.content[i]);
+    return 6;
+}
+// worldToHud(x, y, z) -> hx, hy on the HUD canvas | nil when behind the eye
+int l_worldToHud(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 p{num(L, 1), num(L, 2), num(L, 3)};
+    glm::vec2 out(0.0f);
+    if (!h || !h->worldToHud || !h->worldToHud(p, out)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, out.x);
+    lua_pushnumber(L, out.y);
+    return 2;
+}
 // game.rest([fps]): see ScriptHost::restFps. Two scripts asking: the faster
 // rate wins, the one with something left to show.
 int l_rest(lua_State* L) {
@@ -1178,6 +1245,86 @@ int l_removeCharacter(lua_State* L) {
     if (h && h->removeCharacter) h->removeCharacter(id);
     return 0;
 }
+// groundHeight(x, y, z [, maxDist]) -> y of what lies below | nil
+int l_groundHeight(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 from{num(L, 1), num(L, 2), num(L, 3)};
+    const float maxDist = optNum(L, 4, 50.0f);
+    float y = 0.0f;
+    if (!h || !h->groundHeight || !h->groundHeight(from, maxDist, y)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, y);
+    return 1;
+}
+// --- Pickups -------------------------------------------------------------------
+int l_collectibles(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    pushIntArray(L, (h && h->collectibles) ? h->collectibles() : std::vector<int>{});
+    return 1;
+}
+// collectible(id) -> {item, icon, category, description, count, inventory,
+// radius, points, sound} | nil
+int l_collectible(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    ScriptCollectible c;
+    if (!h || !h->collectible || !h->collectible(id, c)) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 9);
+    setStr(L, "item", c.item);            setStr(L, "icon", c.icon);
+    setStr(L, "category", c.category);    setStr(L, "description", c.description);
+    setInt(L, "count", c.count);          setBool(L, "inventory", c.inventory);
+    setNum(L, "radius", c.radius);        setNum(L, "points", c.points);
+    setStr(L, "sound", c.sound);
+    return 1;
+}
+// --- Bones ---------------------------------------------------------------------
+// bonePos(id, bone) -> x, y, z, rx, ry, rz (world, as last drawn) | nil
+int l_bonePos(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const char* bone = luaL_checkstring(L, 2);
+    glm::vec3 p(0.0f), r(0.0f);
+    if (!h || !h->boneWorld || !h->boneWorld(id, bone, p, r)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, p.x); lua_pushnumber(L, p.y); lua_pushnumber(L, p.z);
+    lua_pushnumber(L, r.x); lua_pushnumber(L, r.y); lua_pushnumber(L, r.z);
+    return 6;
+}
+int l_bones(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const std::vector<std::string> names =
+        (h && h->boneNames) ? h->boneNames(id) : std::vector<std::string>{};
+    lua_createtable(L, static_cast<int>(names.size()), 0);
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        lua_pushlstring(L, names[i].c_str(), names[i].size());
+        lua_seti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+// attach(child, figure, bone [, x, y, z [, rx, ry, rz]]) -> ok. Without the
+// numbers the child stays where it is now, relative to the bone.
+int l_attach(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int child  = static_cast<int>(luaL_checkinteger(L, 1));
+    const int figure = static_cast<int>(luaL_checkinteger(L, 2));
+    const char* bone = luaL_checkstring(L, 3);
+    const bool placed = !lua_isnoneornil(L, 4);
+    const glm::vec3 pos{optNum(L, 4, 0.0f), optNum(L, 5, 0.0f), optNum(L, 6, 0.0f)};
+    const glm::vec3 rot{optNum(L, 7, 0.0f), optNum(L, 8, 0.0f), optNum(L, 9, 0.0f)};
+    const bool ok = h && h->attach &&
+                    h->attach(child, figure, bone, placed ? &pos : nullptr,
+                              placed ? &rot : nullptr);
+    lua_pushboolean(L, ok);
+    return 1;
+}
+int l_detach(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int child = static_cast<int>(luaL_checkinteger(L, 1));
+    if (h && h->detach) h->detach(child);
+    return 0;
+}
 int l_log(lua_State* L) {
     ScriptHost* h = hostOf(L);
     std::string line;
@@ -1345,6 +1492,28 @@ void ScriptSystem::reset() {
     m_env.clear();
     m_failed.clear();
     m_lastError.clear();
+    m_current.clear();
+    m_captureKey.clear();
+    m_captureAsked = false;
+}
+
+void ScriptSystem::beginFrame() {
+    // Held for as long as it is asked for: a holder that did not ask during the
+    // last frame has let go.
+    if (!m_captureAsked) m_captureKey.clear();
+    m_captureAsked = false;
+}
+
+bool ScriptSystem::claimInput() {
+    if (m_current.empty()) return false;
+    if (m_captureKey.empty()) m_captureKey = m_current;
+    if (m_captureKey != m_current) return false;
+    m_captureAsked = true;
+    return true;
+}
+
+bool ScriptSystem::inputBlocked() const {
+    return !m_captureKey.empty() && m_captureKey != m_current;
 }
 
 void ScriptSystem::installApi() {
@@ -1375,6 +1544,8 @@ void ScriptSystem::installApi() {
     fn("hudCircle", l_hudCircle);     fn("hudTri", l_hudTri);
     fn("hudText", l_hudText);         fn("hudTextSize", l_hudTextSize);
     fn("hudSize", l_hudSize);         fn("setCrosshair", l_setCrosshair);
+    fn("hudImage", l_hudImage);       fn("imageSize", l_imageSize);
+    fn("worldToHud", l_worldToHud);   fn("captureInput", l_captureInput);
     fn("rest", l_rest);
     // Assets
     fn("assets", l_assets);           fn("findAsset", l_findAsset);
@@ -1410,6 +1581,11 @@ void ScriptSystem::installApi() {
     fn("terrainHeight", l_terrainHeight);
     fn("raycast", l_raycast);         fn("log", l_log);
     fn("moveCharacter", l_moveCharacter); fn("removeCharacter", l_removeCharacter);
+    fn("groundHeight", l_groundHeight);
+    // Pickups and the bones of a figure
+    fn("collectibles", l_collectibles); fn("collectible", l_collectible);
+    fn("bonePos", l_bonePos);         fn("bones", l_bones);
+    fn("attach", l_attach);           fn("detach", l_detach);
     fn("loadScene", l_loadScene);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
@@ -1453,6 +1629,14 @@ void ScriptSystem::installApi() {
     }
 
     lua_setglobal(L, "game");
+
+    // `shared`: one plain table every script sees, for scripts that work
+    // together -- a figure's controller and its inventory, say. Scripts are
+    // otherwise sealed off from each other (each has its own environment);
+    // this is the one door, and what goes through it is up to them. Fresh on
+    // every Play, like everything else in the VM.
+    lua_newtable(L);
+    lua_setglobal(L, "shared");
 
     // The `synth` table: the Synth components, addressed by object id like
     // game.playAudio. Its own table rather than more game.* names, because it
@@ -1504,7 +1688,7 @@ void ScriptSystem::removeEntity(int id) {
 void ScriptSystem::fail(const std::string& key, int id, const char* what) {
     m_failed.insert(key);
     m_lastError = what ? what : "unknown Lua error";
-    std::fprintf(stderr, "[Fitzel] script error (entity %d, %s): %s' + chr(92) + 'n", id,
+    std::fprintf(stderr, "[Fitzel] script error (entity %d, %s): %s\n", id,
                  key.c_str(), m_lastError.c_str());
 }
 
@@ -1615,7 +1799,10 @@ bool ScriptSystem::callFunction(Entity& e, const std::string& key, const char* f
     lua_rawgeti(L, LUA_REGISTRYINDEX, argRef);
     lua_pushnumber(L, dt);
     lua_pushnumber(L, time);
-    if (lua_pcall(L, 3, 0, 0) != LUA_OK) {
+    m_current = key;   // whose game.captureInput / game.keyDown this is
+    const int status = lua_pcall(L, 3, 0, 0);
+    m_current.clear();
+    if (status != LUA_OK) {
         fail(key, e.id, lua_tostring(L, -1));
         lua_pop(L, 2); // error message + env
         luaL_unref(L, LUA_REGISTRYINDEX, argRef);

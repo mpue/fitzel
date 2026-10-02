@@ -759,6 +759,7 @@ ModelData loadGltf(const std::string& path) {
         for (cgltf_size j = 0; j < skin->joints_count; ++j) {
             const cgltf_node* jn = skin->joints[j];
             SkeletonJoint& sj = out.skeleton[j];
+            if (jn->name) sj.name = jn->name;
             auto pit = jn->parent ? jointIndex.find(jn->parent) : jointIndex.end();
             if (pit != jointIndex.end()) {
                 sj.parent = pit->second;
@@ -1469,6 +1470,7 @@ Rig buildRig(const aiScene* scene) {
         rig.index[n] = me;
         rig.joints.emplace_back();
         SkeletonJoint& sj = rig.joints[me];
+        sj.name   = n->mName.C_Str();
         sj.parent = parent;
         // The node's own transform is the pose the joint sits in when no channel
         // drives it -- exactly what restT/R/S mean to sampleSkeleton.

@@ -20,6 +20,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SandboxMath.cpp
     src/CameraPath.cpp
     src/ScriptSystem.cpp
+    # Things a figure carries on its bones (game.attach): runtime, like the
+    # scripts that hang them there.
+    src/BoneAttach.cpp
     # The Synth component's players: runtime, a shipped game plays its music.
     src/SynthSystem.cpp
     src/ScriptBridge.cpp

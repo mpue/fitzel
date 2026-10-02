@@ -90,9 +90,19 @@ Alle Engine-Funktionen hängen an der globalen Tabelle `game`.
 | `game.mousePos()` | `x, y, über` | Zeiger in HUD-Leinwand-Einheiten (1080 hoch, Ursprung oben links, wie `game.hud*`); `über` = der Zeiger ist über der Ansicht |
 | `game.mouseRay()` | `ox, oy, oz, dx, dy, dz` oder `nil` | Welt-Strahl von der Kamera durch den Zeiger — zum Anklicken von Dingen in der Szene |
 | `game.showCursor(an)` | – | Mauszeiger im Play freigeben (`true`) oder wieder dem Läufer überlassen (`false`); gilt bis Play endet |
+| `game.captureInput()` | bool | Tasten und Maustasten für dieses Skript festhalten — **jeden Frame** aufrufen, solange ein Menü offen ist; `true` = dieses Skript hält sie |
 
 `key` ist ein GLFW-Keycode → benutze die `game.KEY_*`-Konstanten (§3.7).
 `button`: `game.MOUSE_LEFT` (0), `MOUSE_RIGHT` (1), `MOUSE_MIDDLE` (2).
+
+**Ein Menü, das die Tasten für sich will** (Inventar, Karte): Solange ein Skript
+in jedem Frame `game.captureInput()` aufruft, sehen **alle anderen** Skripte
+keine Tasten und keine Maustasten — die Figur läuft nicht los, während man im
+Inventar blättert. Esc beendet dann nicht Play, sondern kommt beim Skript an
+(`game.keyDown(game.KEY_ESCAPE)`), und eine Orbit-Kamera hält still. Losgelassen
+wird, indem das Skript nicht mehr fragt: ein Frame ohne Aufruf genügt. Ein
+Skript, das mit einem Fehler ausfällt, kann das Spiel also nie taub hinterlassen.
+Wer zuerst fragt, hält die Tasten, bis er aufhört.
 
 ### 3.2 Kamera (Play-Modus)
 
@@ -161,6 +171,7 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 |--------|----------|--------------|
 | `game.moveCharacter(id, vx, vz [, dt])` | `x, y, z, amBoden, aufGelände` oder `nil` | Figur `id` als Kapsel durch die Physik-Welt laufen lassen: waagrecht mit `vx, vz` m/s, für `dt` Sekunden (Standard 1/60). Gibt zurück, wo ihre Füße jetzt stehen (Welt), ob sie auf etwas steht und ob das das Gelände ist |
 | `game.removeCharacter(id)` | – | Die Kapsel der Figur wieder entfernen (etwa beim Einsteigen ins Auto) |
+| `game.groundHeight(x, y, z [, maxDist])` | `y` oder `nil` | Worauf etwas fiele, das man bei `x, y, z` loslässt: senkrecht nach unten (bis `maxDist`, Standard 50 m) die erste Straße, Brücke, der erste Boden — oder das Gelände, so wie es **gezeichnet** ist (nie darunter). Ausserhalb von Play nur das Gelände |
 
 Beim ersten Aufruf bekommt das Objekt eine Kapsel (so hoch wie das Objekt, 0,3 m
 Radius), die auf dem steht, was unter dem Objekt liegt – eine Figur auf einer Brücke
@@ -342,6 +353,9 @@ oben links, y wächst nach unten. Farben sind vier Zahlen 0..1 (`a` optional, 1)
 | `game.hudTri(x1, y1, x2, y2, x3, y3, r, g, b, a)` | gefülltes Dreieck |
 | `game.hudText(x, y, text, grösse, r, g, b, a [, align, bold])` | Text mit Schatten; `y` = Oberkante, `align` 0 links / 0.5 Mitte / 1 rechts |
 | `game.hudTextSize(text, grösse [, bold])` → `w, h` | Textmasse in Leinwand-Einheiten |
+| `game.hudImage(bild, x, y, w, h [, r, g, b, a [, u0, v0, u1, v1]])` | ein Bild (Texture-Asset, Dateiname oder GUID), getönt mit `r, g, b, a` (Standard weiss), auf den Ausschnitt `u0..u1, v0..v1` beschnitten (Standard ganz; `v` läuft nach unten) |
+| `game.imageSize(bild)` → `w, h, u0, v0, u1, v1` | Bildgrösse in Pixeln (so wie das HUD es hält, lange Seite höchstens 1024) und der Kasten, den sein sichtbarer — nicht ganz durchsichtiger — Teil füllt; `nil` für ein unbekanntes Bild |
+| `game.worldToHud(x, y, z)` → `hx, hy` | wo ein Weltpunkt auf der Leinwand liegt; `nil` hinter der Kamera |
 | `game.setCrosshair(an)` | Fadenkreuz des Players ein/aus (ein Spiel mit eigenem HUD will es meist nicht) |
 
 Gezeichnet wird, was das Skript **in diesem Frame** aufgerufen hat: die Liste wird
@@ -356,12 +370,46 @@ function update(e, dt, t)
 end
 ```
 
-Um etwas an einer Stelle der Welt zu beschriften (Punkte über einem Gegner),
-rechnet das Skript die Weltposition selbst durch die Kamera, die es gesetzt hat —
-`shmup.lua` zeigt das in `project()`.
+Um etwas an einer Stelle der Welt zu beschriften (Punkte über einem Gegner, „E
+Aufheben“ über einer Pistole), gibt `game.worldToHud` den Punkt auf der Leinwand.
+
+Ein **Icon** ist meist mit Rand gerendert (eine Pistole mitten in einem
+1920×1080-Bild). `game.imageSize` liefert den Kasten, den das Sichtbare füllt;
+mit ihm als Ausschnitt füllt die Pistole ihr Feld:
+
+```lua
+local w, h, u0, v0, u1, v1 = game.imageSize("pistol.png")
+local aspect = (u1 - u0) * w / ((v1 - v0) * h)      -- Seitenverhältnis des Sichtbaren
+game.hudImage("pistol.png", x, y, 120, 120 / aspect, 1, 1, 1, 1, u0, v0, u1, v1)
+```
+
+Bilder werden beim ersten Aufruf geladen und für die Sitzung gehalten.
 
 Score/HUD liegen im **Host** (nicht in der isolierten Skript-Umgebung), sind also
 über alle Skripte hinweg geteilt.
+
+#### 3.6.2 Skripte, die zusammenarbeiten: `shared`
+
+Jedes Skript hat seine eigene Umgebung — zwei Skripte sehen ihre Variablen nicht.
+Die eine Tür dazwischen ist die globale Tabelle **`shared`**: eine gewöhnliche
+Tabelle, die alle Skripte sehen und die bei jedem Play-Start leer ist. Was
+hindurchgeht, entscheiden die Skripte. Ein Steuerungs-Skript kann dort zum
+Beispiel Funktionen für andere Skripte ablegen:
+
+```lua
+-- tp_controller.lua (auf der Figur)
+function start(self)
+    shared.figures = shared.figures or {}
+    shared.figures[self.id] = { pickup = function(x, y, z) ... end }
+end
+
+-- inventory.lua (zweites Skript auf derselben Figur)
+local fig = shared.figures and shared.figures[self.id]
+if fig then fig.pickup(x, y, z) end
+```
+
+Felder **in** `shared` setzen (`shared.x = 1`), nie `shared` selbst neu zuweisen —
+`shared = {}` legte nur eine eigene Variable dieses Skripts an.
 
 ### 3.7 Objekte finden, abfragen, umbauen
 
@@ -438,6 +486,49 @@ function update(e, dt, t)
     end
 end
 ```
+
+#### 3.7.3 Gegenstände tragen: Knochen einer Figur
+
+Eine geriggte Figur hat Knochen (`CC_Base_R_Hand`, `mixamorig:Head` …). Ein
+Objekt lässt sich an einen davon hängen und folgt ihm dann in jedem Frame — so,
+wie die Figur gerade posiert ist, nach dem Skinning und vor dem Zeichnen. Das
+Objekt bleibt ein eigenes Objekt (Wurzel, eigene Grösse); nur Ort und Drehung
+kommen vom Knochen. Gilt bis `game.detach` oder bis Play endet.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.bonePos(id, knochen)` | `x, y, z, rx, ry, rz` oder `nil` | Weltposition und -drehung eines Knochens, so wie die Figur zuletzt gezeichnet wurde |
+| `game.bones(id)` | `{ namen }` | alle Knochen der Figur, in Skelett-Reihenfolge |
+| `game.attach(objekt, figur, knochen [, x, y, z [, rx, ry, rz]])` | bool | `objekt` an den Knochen hängen. Mit Zahlen: so weit (m) und so gedreht (Grad) im Raum des Knochens; ohne: bleibt, wo es jetzt ist — relativ zum Knochen |
+| `game.detach(objekt)` | – | wieder loslassen; das Objekt bleibt, wo es zuletzt war |
+
+```lua
+-- Die Pistole in die rechte Hand (CC-Rig: Y entlang der Finger, Z zum Daumen,
+-- die Handfläche schaut nach -X; die Pistole liegt modelliert auf der Seite)
+game.attach(pistole, self.id, "CC_Base_R_Hand", -0.031, 0.112, 0.063, -0.1, -57.5, -90.3)
+-- Aufheben: im Moment des Greifens festhalten, wo sie liegt
+game.attach(pistole, self.id, "CC_Base_L_Hand")
+```
+
+#### 3.7.4 Aufsammelbares: Collectibles und Inventar-Gegenstände
+
+Die **Collectible**-Komponente ist auf zwei Arten ein Aufsammel-Ding. Ohne Haken
+bei *Inventory item* wird es beim Hineinlaufen eingesammelt (Punkte, Klang,
+weg). Mit Haken passiert beim Berühren nichts: Ein Skript (das der Figur) bietet
+es im *Pickup radius* an, hebt es auf und legt es ins Inventar. Dazu trägt es,
+was der Spieler darüber erfährt: Name, Icon (ein Texture-Asset), Kategorie,
+eine Zeile Beschreibung, Anzahl.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.collectibles()` | `{ id, ... }` | alle aktiven Objekte mit Collectible-Komponente |
+| `game.collectible(id)` | Tabelle oder `nil` | `item` (Name, sonst der des Objekts), `icon`, `category` (`"misc"`, `"weapon"`, `"ammo"`, `"health"`, `"key"`, `"document"`), `description`, `count`, `inventory` (bool), `radius`, `points`, `sound` |
+
+Ein aufgehobener Gegenstand wird am besten **deaktiviert** (`game.setActive(id,
+false)`), nicht gelöscht: Beim Wegwerfen kommt dasselbe Objekt mit allen seinen
+Komponenten zurück. `treetest/scripts/inventory.lua` ist ein vollständiges
+Inventar (Hinweis über dem Gegenstand, Aufheben mit Animation, Fenster mit
+Icons, Ausrüsten in die Hand, Wegwerfen).
 
 ### 3.8 Assets
 
@@ -789,6 +880,28 @@ Menschen, Suchtiefe, Zufall, Patzer-Anteil, Denkzeit, Zug-Klang (`move.wav`, spi
 per `game.playSound`, wenn die gezogene Figur aufsetzt, bei beiden Seiten). Wartet das Spiel auf den
 Menschen und steht alles still, ruft es `game.rest()` — die GPU zeichnet dann nicht
 mehr in voller Rate dasselbe Bild.
+
+### `inventory.lua` — ein Inventar für eine Figur
+
+Als **zweites** Skript auf eine Figur hängen, die mit `tp_controller.lua` (Projekt
+treetest) läuft. Aufheben lässt sich jedes Objekt mit **Collectible**-Komponente,
+bei der *Inventory item* angehakt ist (§3.7.4). Im *Pickup radius* erscheint über
+dem Gegenstand ein Hinweis („E Pistole aufheben“, `game.worldToHud`); auf `E` dreht
+sich die Figur, tritt vor oder zurück, bis der Gegenstand dort liegt, wo ihre linke
+Hand den Boden trifft, bückt sich (Graph-Zustand `pickup`) und nimmt ihn — ab dem
+Griff hängt er an `CC_Base_L_Hand` (`game.attach`), dann wandert er in den Beutel.
+Den Ablauf steuert der Controller; das Inventar fragt ihn über `shared.figures[id]`
+(§3.6.2). Ohne Controller geht der Gegenstand sofort in den Beutel.
+
+`I` oder `Tab` öffnet das Inventar (`game.captureInput`: die Figur bleibt stehen,
+Esc schließt nur das Fenster): ein Raster mit Icons (`game.hudImage`, auf den
+sichtbaren Teil des Bildes zugeschnitten), daneben die Karte des gewählten Dings mit
+Name, Kategorie, Beschreibung und den Knöpfen. Waffen lassen sich **ausrüsten** —
+sie hängen dann mit `GRIP_POS`/`GRIP_ROT` in der rechten Hand —, alles lässt sich
+**wegwerfen**: es fliegt im Bogen nach vorn und landet auf dem, was dort liegt
+(`game.groundHeight`: Weg, Brücke, Boden), bereit zum Wiederaufheben. Maus, Pfeile
+oder WASD wählen. Inspector-Felder: Tasten, Anzahl Plätze, Knochen, Griff, Akzentfarbe
+und die Klänge. Die Beschriftungen stehen oben im Skript in `TEXT`.
 
 ### `sokoban.lua` — Sokoban, ein ganzes Spiel in einer Datei
 Skript auf **ein** Objekt legen — am besten ein **Empty**, denn das Spielbrett
