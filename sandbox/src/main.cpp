@@ -192,6 +192,7 @@
 #include "HousePanel.hpp"
 #include "StreetSignPanel.hpp"
 #include "TreeGenPanel.hpp"
+#include "RetargetPanel.hpp"
 #include "ProcGraphPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
@@ -1620,6 +1621,7 @@ int main(int argc, char** argv) {
         bool showHouses      = false;
         bool showSigns       = false;
         bool showTreeGen     = false;
+        bool showRetarget    = false; // motions of other skeletons onto a character
         bool showCity        = false;
         bool showTowns       = false; // the town generator
         int  townSel         = -1;
@@ -2683,6 +2685,21 @@ int main(int argc, char** argv) {
                                          veg.adoptTreeModel(file, name, h);
                                      },
                                      [&] { veg.rescanTreeFiles(); }});
+
+        // --- Retargeting (see RetargetPanel.hpp: owns its actions) ---------------
+        // It takes files dropped on its window, and the selected object's model
+        // as the character on request.
+        retargetui::RetargetTool retargetTool({currentProject, exportStatus,
+                                               &g_fileDrop.paths, &g_fileDrop.x, &g_fileDrop.y,
+                                               [&]() -> std::string {
+                                                   if (!sel.valid()) return {};
+                                                   const auto* mc = entities[sel.index()].components.get<ModelComponent>();
+                                                   if (!mc || mc->modelPath.empty()) return {};
+                                                   std::filesystem::path p(mc->modelPath);
+                                                   if (p.is_relative() && !currentProject.empty())
+                                                       p = std::filesystem::path(currentProject).parent_path() / p;
+                                                   return p.generic_string();
+                                               }});
 
         // --- Procedural objects: node graphs cooked into meshes (ProcGraph.hpp) --
         procui::Panel procPanel({editorCtx, spawnPoint, [&](glm::vec3& p) {
@@ -6076,6 +6093,7 @@ int main(int argc, char** argv) {
             {"Objects",  "Grid",               nullptr, &showGrid, false},
             {"Assets",   "Materials",          nullptr, &showMaterials},
             {"Assets",   "Models",             nullptr, &showModels},
+            {"Assets",   "Retarget animations", nullptr, &showRetarget},
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
             {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
@@ -10317,6 +10335,7 @@ int main(int argc, char** argv) {
 
             if (showSigns) signTool.panel(showSigns);
             if (showTreeGen) treeGen.panel(showTreeGen);
+            if (showRetarget) retargetTool.panel(showRetarget);
             procPanel.draw(showProcedural);
 
             if (showHouses) {

@@ -343,6 +343,14 @@ set(SANDBOX_EDITOR_SOURCES
     src/TreeGlb.cpp
     src/TreePreview.cpp
     src/TreeGenPanel.cpp
+    # Retargeting: motions of other skeletons onto a character (Retarget.hpp),
+    # FBX/BVH/.blend read through an installed Blender (Blender.hpp).
+    src/Retarget.cpp
+    src/RetargetRig.cpp
+    src/RetargetGlb.cpp
+    src/RetargetPreview.cpp
+    src/RetargetPanel.cpp
+    src/Blender.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -390,7 +398,7 @@ add_executable(sandbox ${SANDBOX_RUNTIME_SOURCES} ${SANDBOX_EDITOR_SOURCES})
 # implementation TUs live in the engine (tinyexr) or in PathTracePanel.cpp (stb
 # write); this only puts their include directories on the editor, and the player
 # gets neither.
-target_link_libraries(sandbox PRIVATE stb_headers tinyexr_dep)
+target_link_libraries(sandbox PRIVATE stb_headers tinyexr_dep cgltf_dep) # cgltf: Retarget*.cpp
 
 # The player: the same runtime compiled with FITZEL_PLAYER, which #ifndef's out
 # the editor UI in main.cpp. This is the binary shipped by "Export Game".
@@ -764,6 +772,29 @@ add_executable(treepanelcheck tools/treepanelcheck.cpp src/TreeGenPanel.cpp src/
                               src/TreeGlb.cpp src/TreePreview.cpp src/UiStyle.cpp)
 target_compile_definitions(treepanelcheck PRIVATE FITZEL_CONTENT_DIR="${CMAKE_SOURCE_DIR}/content")
 target_link_libraries(treepanelcheck PRIVATE fitzel imgui stb_headers nlohmann_json::nlohmann_json)
+
+# retargetcheck (sandbox/tools/retargetcheck.cpp): retargeting without a window.
+# Finds Blender and converts a motion with it, maps the motion's skeleton and a
+# character's onto the humanoid template (plus synthetic Mixamo / Unreal / BVH
+# skeletons whose maps are known), compares the transfer bone by bone with a
+# reference clip, bakes it with the rig repairs and loads the result back
+# through the engine's loader.
+#   build/release/bin/retargetcheck.exe [--src motion.fbx] [--target char.glb]
+add_executable(retargetcheck tools/retargetcheck.cpp src/Retarget.cpp src/RetargetRig.cpp
+                             src/RetargetGlb.cpp src/Blender.cpp)
+target_link_libraries(retargetcheck PRIVATE fitzel cgltf_dep nlohmann_json::nlohmann_json)
+
+# retargetpanelcheck (sandbox/tools/retargetpanelcheck.cpp): the Retarget
+# animations window drawn through the editor's own Gui, written to a PNG -- on a
+# copy of a character in the temp folder, never the project's own file.
+#   cd build/release/bin && retargetpanelcheck.exe out.png [--clip 1 --time 6.8 --tab 1]
+add_executable(retargetpanelcheck tools/retargetpanelcheck.cpp src/RetargetPanel.cpp src/RetargetPreview.cpp
+                                  src/Retarget.cpp src/RetargetRig.cpp src/RetargetGlb.cpp src/Blender.cpp
+                                  src/FolderDialog.cpp src/UiStyle.cpp)
+target_link_libraries(retargetpanelcheck PRIVATE fitzel imgui cgltf_dep stb_headers nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(retargetpanelcheck PRIVATE ole32 shell32)
+endif()
 # levelcheck (sandbox/tools/levelcheck.cpp): one seed, one whole race scene.
 # Everything a level generator can get wrong is invisible from a screenshot and
 # expensive to find by driving -- a corner tighter than the craft can hold looks
