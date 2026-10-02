@@ -209,6 +209,38 @@ public:
     glm::vec3 moveCharacter(glm::vec3 horizVel, bool jump, float dt,
                             bool& outOnGround);
 
+    // --- Figures: capsules a game walks (any number of them) ----------------
+    // The capsule above is the walking player's, and there is one. A game has
+    // figures of its own besides -- a third-person hero, townsfolk -- and each
+    // needs the same thing: to stand on whatever the world offers (terrain, a
+    // road, a bridge deck), stop at walls, step up a kerb, and fall when the
+    // ground runs out. A figure is a CharacterVirtual like the player: not a
+    // body, so figures neither block the player nor each other. Handles are
+    // > 0 and die with the world.
+    int  addFigure(float radius, float halfHeight, glm::vec3 footPos);
+    void removeFigure(int handle);
+    bool hasFigure(int handle) const;
+    struct FigureStep {
+        glm::vec3 foot{0.0f};       // bottom of the capsule, world space
+        bool onGround      = false; // standing on something it can walk on
+        // ...and that something is a heightfield -- the terrain, which the
+        // world samples far more coarsely than it is drawn. A caller that wants
+        // the feet on the DRAWN ground puts them at the terrain's own height
+        // while this is true, and at `foot` on everything else.
+        bool onHeightField = false;
+    };
+    // Walk figure `handle` for `dt` at horizontal world velocity `horizVel`
+    // (m/s, its y is ignored). Gravity takes it down whenever nothing holds it;
+    // it slides along walls, climbs steps up to 0.4 m and keeps to a floor that
+    // drops away by up to 0.5 m, so walking down a ramp or a kerb does not turn
+    // into a hop. False on an unknown handle.
+    bool moveFigure(int handle, glm::vec3 horizVel, float dt, FigureStep& out);
+
+    // The nearest body a ray meets within `maxDist` of `origin` along `dir`
+    // (any length but zero): where, the surface normal there, and which body.
+    bool castRay(glm::vec3 origin, glm::vec3 dir, float maxDist, glm::vec3& hitPos,
+                 glm::vec3& hitNormal, PhysicsBodyId& hitBody) const;
+
     // World transform of a body. False if the id is unknown.
     bool getTransform(PhysicsBodyId id, glm::vec3& pos, glm::quat& rot) const;
     // World-space linear velocity (m/s) of a body. False if the id is unknown.

@@ -8,11 +8,18 @@
 // ball over the notch lands IN it only if the collider is the real mesh -- a
 // convex hull fills the notch and holds the ball half a metre up.
 //
+// The second half walks figures (PhysicsWorld::addFigure) over a small course:
+// flat terrain, a wall, a bridge deck, a ramp built as a mesh and a kerb. What
+// a game's hero needs from the world -- stand on the deck rather than the
+// ground under it, stop at the wall, step up the kerb, fall off the end.
+//
 // Console program, no GL, no window, no assets.
 //   build/release/bin/collidecheck.exe
 // Exits non-zero if any check fails.
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <memory>
 #include <vector>
@@ -78,6 +85,40 @@ float dropBall(const Entity& e, glm::vec3 from) {
     glm::vec3 p; glm::quat q;
     w.getTransform(ball, p, q);
     return p.y;
+}
+
+// A world for figures to walk in: flat ground (a heightfield, as the terrain
+// is), a wall, a bridge deck 3 m up, a ramp built as a triangle mesh (as a
+// road is) and a kerb.
+struct Course {
+    fitzel::PhysicsWorld w;
+    fitzel::PhysicsBodyId deck = 0;
+    Course() {
+        std::vector<float> flat(32 * 32, 0.0f);
+        w.addHeightField(flat.data(), 32, {-32.0f, 0.0f, -32.0f}, 2.0f);
+        w.addBox({3.0f, 1.5f, 0.2f}, {-10.0f, 1.5f, 0.0f}, glm::quat(1, 0, 0, 0), 0.0f);
+        deck = w.addBox({1.5f, 0.25f, 8.0f}, {10.0f, 2.75f, 0.0f}, glm::quat(1, 0, 0, 0), 0.0f);
+        const glm::vec3 rv[4] = {{18, 0, 0}, {22, 0, 0}, {22, 1.5f, 10}, {18, 1.5f, 10}};
+        const std::uint32_t ri[6] = {0, 2, 1, 0, 3, 2};
+        w.addMesh(rv, 4, ri, 6);
+        w.addBox({2.0f, 0.075f, 2.0f}, {-20.0f, 0.075f, 10.0f}, glm::quat(1, 0, 0, 0), 0.0f);
+    }
+};
+
+// Walk a figure at `vel` for `seconds` at 60 Hz; `each` sees every step.
+template <class F>
+fitzel::PhysicsWorld::FigureStep walk(fitzel::PhysicsWorld& w, int fig, glm::vec3 vel,
+                                      float seconds, F each) {
+    fitzel::PhysicsWorld::FigureStep s;
+    for (int i = 0; i < static_cast<int>(seconds * 60.0f); ++i) {
+        w.moveFigure(fig, vel, 1.0f / 60.0f, s);
+        each(s);
+    }
+    return s;
+}
+fitzel::PhysicsWorld::FigureStep walk(fitzel::PhysicsWorld& w, int fig, glm::vec3 vel,
+                                      float seconds) {
+    return walk(w, fig, vel, seconds, [](const fitzel::PhysicsWorld::FigureStep&) {});
 }
 
 } // namespace
@@ -183,6 +224,73 @@ int main() {
         check(meshquery::surfaceBelow(ramp, rm, 0.0f, 0.0f, 10.0f, y) &&
                   std::fabs(y - 0.5f) < 1e-3f,
               "half way up a made-editable ramp, the ground is half its height");
+    }
+
+    std::printf("figures: capsules a game walks over the world\n");
+    {
+        Course c;
+        fitzel::PhysicsWorld& w = c.w;
+        const glm::vec3 north(0.0f, 0.0f, 1.5f);   // 1.5 m/s along +Z
+
+        const int a = w.addFigure(0.3f, 0.6f, {-20.0f, 0.0f, -20.0f});
+        const auto s = walk(w, a, north, 2.0f);
+        std::printf("       on flat ground: foot (%.2f, %.3f, %.2f)\n", s.foot.x, s.foot.y, s.foot.z);
+        check(s.onGround && std::fabs(s.foot.y) < 0.05f && std::fabs(s.foot.z + 17.0f) < 0.2f,
+              "on flat ground a figure walks 3 m in 2 s and stays on it");
+        check(s.onHeightField, "...and knows that ground is the terrain");
+
+        const int b = w.addFigure(0.3f, 0.6f, {-10.0f, 0.0f, -3.0f});
+        const auto sw = walk(w, b, north, 3.0f);
+        std::printf("       at the wall: z %.2f (wall face at -0.2)\n", sw.foot.z);
+        check(sw.foot.z < -0.4f && sw.foot.z > -1.0f, "a wall stops it, right in front of the wall");
+
+        const int d = w.addFigure(0.3f, 0.6f, {10.0f, 3.05f, -6.0f});
+        float lowest = 1e9f, highest = -1e9f;
+        bool alwaysOff = true;
+        const auto sd = walk(w, d, north, 3.0f, [&](const fitzel::PhysicsWorld::FigureStep& st) {
+            lowest = std::min(lowest, st.foot.y);
+            highest = std::max(highest, st.foot.y);
+            if (st.onHeightField) alwaysOff = false;
+        });
+        std::printf("       on the deck: foot y %.3f .. %.3f\n", lowest, highest);
+        check(sd.onGround && lowest > 2.95f && highest < 3.05f,
+              "on a bridge deck it walks along the top, not the ground under it");
+        check(alwaysOff, "...and does not take the deck for terrain");
+        const auto off = walk(w, d, north, 8.0f);   // to z = 10.5, the deck ends at 8
+        std::printf("       past the deck's end: foot (%.2f, %.3f, %.2f)\n", off.foot.x, off.foot.y, off.foot.z);
+        check(off.foot.z > 8.5f && std::fabs(off.foot.y) < 0.05f && off.onHeightField,
+              "walking off the end, it falls to the ground below");
+
+        const int r = w.addFigure(0.3f, 0.6f, {20.0f, 0.0f, -1.0f});
+        float worst = 0.0f;
+        int onRamp = 0;
+        walk(w, r, north, 6.0f, [&](const fitzel::PhysicsWorld::FigureStep& st) {
+            if (st.foot.z > 2.0f && st.foot.z < 8.0f) {
+                worst = std::max(worst, std::fabs(st.foot.y - 0.15f * st.foot.z));
+                if (st.onGround && !st.onHeightField) ++onRamp;
+            }
+        });
+        std::printf("       up the ramp: worst height error %.3f m\n", worst);
+        check(worst < 0.1f && onRamp > 100, "up a ramp built as a mesh (a road) it keeps to the surface");
+
+        const int k = w.addFigure(0.3f, 0.6f, {-20.0f, 0.0f, 6.0f});
+        const auto sk = walk(w, k, north, 3.0f);
+        std::printf("       over the kerb: foot (%.2f, %.3f, %.2f)\n", sk.foot.x, sk.foot.y, sk.foot.z);
+        check(sk.foot.z > 9.5f && std::fabs(sk.foot.y - 0.15f) < 0.03f,
+              "it steps up a 15 cm kerb instead of stopping at it");
+
+        glm::vec3 hit, n;
+        fitzel::PhysicsBodyId body = 0;
+        check(w.castRay({10.0f, 10.0f, 0.0f}, {0.0f, -1.0f, 0.0f}, 20.0f, hit, n, body) &&
+                  std::fabs(hit.y - 3.0f) < 1e-3f && n.y > 0.99f && body == c.deck,
+              "a ray straight down finds the deck's top, facing up");
+        check(!w.castRay({0.0f, 10.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, 20.0f, hit, n, body),
+              "...and one pointing at the sky finds nothing");
+
+        w.removeFigure(a);
+        fitzel::PhysicsWorld::FigureStep gone;
+        check(!w.hasFigure(a) && !w.moveFigure(a, north, 1.0f / 60.0f, gone) && w.hasFigure(b),
+              "a removed figure is gone, the others stay");
     }
 
     std::printf("\n%d check(s), %d failure(s)\n", checks, failures);

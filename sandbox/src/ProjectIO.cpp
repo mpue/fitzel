@@ -938,6 +938,20 @@ void exportGame(Context& ctx, const std::string& outDir) {
         fs::copy(ctx.contentRoot, out / "content", rec, ec);
     fs::copy(projDir, out / "project", rec, ec);
 
+    // The retargeting tool's sidecars (Retarget.hpp) -- a character's untouched
+    // original and the recipe of its clips -- are editor material: the game
+    // plays the .glb they were baked into, and an original is as big as it.
+    {
+        std::error_code e2;
+        std::vector<fs::path> editorOnly;
+        for (fs::recursive_directory_iterator it(out / "project", e2), end; it != end; it.increment(e2)) {
+            if (e2) break;
+            const std::string ext = lowerCopy(it->path().extension().string());
+            if ((ext == ".orig" || ext == ".retarget") && it->is_regular_file(e2)) editorOnly.push_back(it->path());
+        }
+        for (const fs::path& p : editorOnly) fs::remove(p, e2);
+    }
+
     // Optional scene filter: with an explicit export list, drop every other
     // .fitzel from the copied project (materials/models/scripts stay shared). An
     // empty list means "all scenes", so nothing is removed.

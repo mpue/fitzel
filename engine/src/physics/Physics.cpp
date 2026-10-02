@@ -6,6 +6,8 @@
 #include <cstdio>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 
 // Jolt: keep its warning macros local to this TU.
 #include <Jolt/Jolt.h>
@@ -28,6 +30,8 @@
 #include <Jolt/Physics/SoftBody/SoftBodyMotionProperties.h>
 #include <Jolt/Physics/SoftBody/SoftBodySharedSettings.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Vehicle/VehicleConstraint.h>
 #include <Jolt/Physics/Vehicle/WheeledVehicleController.h>
 #include <Jolt/Physics/Vehicle/VehicleCollisionTester.h>
@@ -116,6 +120,16 @@ struct PhysicsWorld::Impl {
 
     JPH::Ref<JPH::CharacterVirtual> character;
     float charRadius = 0.3f, charHalfHeight = 0.6f, charVertVel = 0.0f;
+
+    // The figures a game walks (addFigure), by handle.
+    struct Figure {
+        JPH::Ref<JPH::CharacterVirtual> cv;
+        float radius = 0.3f, halfHeight = 0.6f, vertVel = 0.0f;
+    };
+    std::unordered_map<int, Figure> figures;
+    int nextFigure = 1;
+    // Which bodies are heightfields, so a figure can tell terrain from the rest.
+    std::unordered_set<JPH::uint32> heightFields;
 
     JPH::Ref<JPH::VehicleConstraint>      vehicle;      // the (single) car
     JPH::Ref<JPH::VehicleCollisionTester> vehicleTest;
@@ -462,8 +476,9 @@ PhysicsBodyId PhysicsWorld::addHeightField(const float* heights, int size,
                      res.GetError().c_str());
         return 0;
     }
-    return m_impl->create(res.Get(), origin, glm::quat(1, 0, 0, 0), 0.0f)
-        .GetIndexAndSequenceNumber();
+    const JPH::BodyID bid = m_impl->create(res.Get(), origin, glm::quat(1, 0, 0, 0), 0.0f);
+    if (!bid.IsInvalid()) m_impl->heightFields.insert(bid.GetIndexAndSequenceNumber());
+    return bid.GetIndexAndSequenceNumber();
 }
 
 void PhysicsWorld::step(float dt) {
@@ -551,6 +566,7 @@ void PhysicsWorld::applyImpulse(PhysicsBodyId id, glm::vec3 impulse) {
 }
 
 void PhysicsWorld::removeBody(PhysicsBodyId id) {
+    m_impl->heightFields.erase(id);
     JPH::BodyID bid(id);
     JPH::BodyInterface& bi = m_impl->system.GetBodyInterface();
     if (bi.IsAdded(bid)) bi.RemoveBody(bid);
@@ -912,6 +928,86 @@ glm::vec3 PhysicsWorld::moveCharacter(glm::vec3 horizVel, bool jump, float dt,
     const JPH::RVec3 c = d.character->GetPosition();
     const float lift = d.charHalfHeight + d.charRadius;
     return glm::vec3(float(c.GetX()), float(c.GetY()) - lift, float(c.GetZ()));
+}
+
+// --- Figures -------------------------------------------------------------------
+
+int PhysicsWorld::addFigure(float radius, float halfHeight, glm::vec3 footPos) {
+    Impl& d = *m_impl;
+    Impl::Figure f;
+    f.radius     = std::max(radius, 0.05f);
+    f.halfHeight = std::max(halfHeight, 0.05f);
+    JPH::CharacterVirtualSettings s;
+    s.mShape         = new JPH::CapsuleShape(f.halfHeight, f.radius);
+    s.mMaxSlopeAngle = JPH::DegreesToRadians(46.0f);
+    // Only the cylinder (not the bottom cap) counts as standing on something,
+    // the same as the player: an edge under the rounded cap is not a floor.
+    s.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -f.radius);
+    const float lift = f.halfHeight + f.radius;
+    f.cv = new JPH::CharacterVirtual(
+        &s, JPH::RVec3(footPos.x, footPos.y + lift, footPos.z),
+        JPH::Quat::sIdentity(), 0, &d.system);
+    const int handle = d.nextFigure++;
+    d.figures.emplace(handle, std::move(f));
+    return handle;
+}
+
+void PhysicsWorld::removeFigure(int handle) { m_impl->figures.erase(handle); }
+
+bool PhysicsWorld::hasFigure(int handle) const {
+    return m_impl->figures.count(handle) != 0;
+}
+
+bool PhysicsWorld::moveFigure(int handle, glm::vec3 horizVel, float dt, FigureStep& out) {
+    Impl& d = *m_impl;
+    const auto it = d.figures.find(handle);
+    if (it == d.figures.end()) return false;
+    Impl::Figure& f = it->second;
+    if (dt > 0.1f) dt = 0.1f;   // a hitch must not throw it through a wall
+    if (dt > 0.0f) {
+        const JPH::Vec3 g = d.system.GetGravity();
+        // Held by the ground: no fall to carry over. Anything else (in the air,
+        // or on ground too steep to stand on) falls, and slides down the steep.
+        const bool grounded = f.cv->GetGroundState() ==
+                              JPH::CharacterBase::EGroundState::OnGround;
+        if (grounded && f.vertVel < 0.0f) f.vertVel = 0.0f;
+        f.vertVel = std::max(f.vertVel + g.GetY() * dt, -50.0f);
+        f.cv->SetLinearVelocity(JPH::Vec3(horizVel.x, f.vertVel, horizVel.z));
+        // The defaults are what a person does: step up to 0.4 m, keep to a floor
+        // that drops away by up to 0.5 m.
+        JPH::CharacterVirtual::ExtendedUpdateSettings us;
+        f.cv->ExtendedUpdate(dt, g, us,
+                             d.system.GetDefaultBroadPhaseLayerFilter(Layers::MOVING),
+                             d.system.GetDefaultLayerFilter(Layers::MOVING),
+                             JPH::BodyFilter{}, JPH::ShapeFilter{}, d.temp);
+    }
+    out.onGround = f.cv->GetGroundState() == JPH::CharacterBase::EGroundState::OnGround;
+    out.onHeightField =
+        out.onGround &&
+        d.heightFields.count(f.cv->GetGroundBodyID().GetIndexAndSequenceNumber()) != 0;
+    const JPH::RVec3 c = f.cv->GetPosition();
+    out.foot = glm::vec3(float(c.GetX()), float(c.GetY()) - (f.halfHeight + f.radius),
+                         float(c.GetZ()));
+    return true;
+}
+
+bool PhysicsWorld::castRay(glm::vec3 origin, glm::vec3 dir, float maxDist,
+                           glm::vec3& hitPos, glm::vec3& hitNormal,
+                           PhysicsBodyId& hitBody) const {
+    const float len = glm::length(dir);
+    if (len < 1e-6f || maxDist <= 0.0f) return false;
+    const glm::vec3 span = dir / len * maxDist;
+    const JPH::RRayCast ray(JPH::RVec3(origin.x, origin.y, origin.z), toJolt(span));
+    JPH::RayCastResult hit;
+    if (!m_impl->system.GetNarrowPhaseQuery().CastRay(ray, hit)) return false;
+    const JPH::RVec3 p = ray.GetPointOnRay(hit.mFraction);
+    hitPos  = glm::vec3(float(p.GetX()), float(p.GetY()), float(p.GetZ()));
+    hitBody = hit.mBodyID.GetIndexAndSequenceNumber();
+    hitNormal = glm::vec3(0.0f, 1.0f, 0.0f);
+    JPH::BodyLockRead lock(m_impl->system.GetBodyLockInterface(), hit.mBodyID);
+    if (lock.Succeeded())
+        hitNormal = toGlm(lock.GetBody().GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, p));
+    return true;
 }
 
 } // namespace fitzel

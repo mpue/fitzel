@@ -141,6 +141,12 @@ REM  und die Vorlagen ganz gekocht. procpanelcheck bedient das Procedural-Fenste
 REM  mit echten ImGui-Klicks: Stepper, getippter Wert, Add, Verdrahten, Undo.
 call :run proccheck
 call :run procpanelcheck
+REM  retargetcheck misst das Retargeting: die automatische Knochen-Zuordnung an
+REM  Mixamo-, Unreal- und BVH-Skeletten, dann (wo die Testdateien und Blender da
+REM  sind) eine echte FBX-Bewegung auf eine Daz-Figur -- jeder Knochen muss dahin
+REM  zeigen, wohin der Knochen der Bewegung zeigt, und Rezept und Original muessen
+REM  ein Neuschreiben ueberstehen, ohne dass sich etwas anhaeuft.
+call :run retargetcheck
 REM  synthcheck rendert den modularen Synth OFFLINE und misst ihn. Klang faellt
 REM  aus, ohne zu scheitern: ein Filter, der 6 dB daneben liegt, eine Huellkurve
 REM  in Samples statt Sekunden, ein Delay, dessen Interpolation nie laeuft --

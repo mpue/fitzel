@@ -109,6 +109,21 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Timeline**: jedes Feld im Inspector kann Keyframes bekommen.
 - **Animations-Graph** (Zustandsautomat): spielt Modell-Clips, blendet zwischen ihnen
   über, kennt negatives Tempo und wird per Lua gesteuert.
+- **Retargeting** (Assets → Retarget animations): Bewegungen eines fremden Skeletts
+  auf eine eigene Figur übertragen – Mixamo, ActorCore/Character Creator, Daz Genesis,
+  Unreal, Rigify, VRM, BVH. Die Knochen werden automatisch einer Humanoid-Vorlage
+  zugeordnet (Namen plus Aufbau des Skeletts), jede Zuordnung lässt sich per Liste
+  ändern. Eine Vorschau zeigt Quelle (bei reinen Bewegungsdateien als Gliederpuppe)
+  und Figur nebeneinander, mit Knochen, Schatten und Bild-für-Bild-Steuerung. Clips
+  lassen sich zuschneiden und „auf der Stelle“ machen; neue kommen per Dateidialog,
+  Drag & Drop oder Klick in einer Bewegungs-Bibliothek dazu – oder von einer anderen
+  Figur kopiert: deren Animationen ankreuzen, vorher ansehen, übernehmen. Bei Figuren
+  derselben Rig-Familie wandern auch die übrigen Knochen (Twist, Augen, Kiefer) nach
+  Namen mit. FBX, BVH und `.blend`
+  liest ein installiertes Blender im Hintergrund, das der Editor selbst findet.
+  Geschrieben wird in die `.glb` der Figur; das Original bleibt als `.orig`, das
+  Rezept als `.retarget` daneben. Daz-Exporte werden dabei repariert (Kleidung auf
+  dem Körperskelett, Haare und Wimpern am Kopf).
 - **Kameras**: Verfolger, Cockpit, Kamera-Wechsler, Kamerapfade, Split-Screen.
 - **Multishot-Kamera** für Werbe- und Replay-Shots, darunter Dolly Zoom und Fly-by.
 - **Orbit mit der Maus** und `walker.lua` als Third-Person-Steuerung.
@@ -116,6 +131,10 @@ für Standbilder und ein Synthesizer für eigene Musik.
 ## Gameplay
 
 - **Physik** mit Jolt, dazu Stoff und Softbodies (Vorhang, Flagge).
+- **Figuren mit Kollision**: `game.moveCharacter` lässt eine Figur als Kapsel durch die
+  Welt laufen – auf Straßen und Brücken statt durch sie hindurch, vor Wänden stehen
+  bleibend, Bordsteine hinauf und über Kanten hinab. Auf Gelände stehen die Füße auf
+  dem gezeichneten Boden. `walker.lua` nutzt das.
 - **Fahrzeuge**: ein Auto und ein Gleiter mit festem 120-Hz-Takt, Reifenspuren,
   Kondensstreifen und Gischt.
 - **Renn-Baukasten**: Gegner-KI, Startaufstellung, Checkpoints, Boost-Pads, HUD,
@@ -161,7 +180,6 @@ für Standbilder und ein Synthesizer für eigene Musik.
 
 ## Offen oder angefangen
 
-- Orbit-Kamera committen (Stand 2026-09-30 noch im Arbeitsverzeichnis).
 - Prefabs Stufe 2 (verknüpfte Instanzen, Overrides).
 - GPU-Tracer: HDRI und Tiefenschärfe fehlen noch.
 - Schatten: die ferne Kaskade nur jeden zweiten Frame rendern.

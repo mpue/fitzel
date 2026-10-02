@@ -155,6 +155,34 @@ end
 
 No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 
+#### 3.4.1 Figuren durch die Welt laufen lassen
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.moveCharacter(id, vx, vz [, dt])` | `x, y, z, amBoden, aufGelände` oder `nil` | Figur `id` als Kapsel durch die Physik-Welt laufen lassen: waagrecht mit `vx, vz` m/s, für `dt` Sekunden (Standard 1/60). Gibt zurück, wo ihre Füße jetzt stehen (Welt), ob sie auf etwas steht und ob das das Gelände ist |
+| `game.removeCharacter(id)` | – | Die Kapsel der Figur wieder entfernen (etwa beim Einsteigen ins Auto) |
+
+Beim ersten Aufruf bekommt das Objekt eine Kapsel (so hoch wie das Objekt, 0,3 m
+Radius), die auf dem steht, was unter dem Objekt liegt – eine Figur auf einer Brücke
+also auf der Brücke, nicht auf dem Boden darunter. Sie steht auf Gelände, Straßen,
+Brücken, Mauern, Gebäuden und allem mit Physik-Komponente, bleibt an Wänden stehen,
+steigt Stufen und Bordsteine bis 0,4 m hoch, hält sich beim Bergabgehen an den Boden und
+fällt, wenn er aufhört. Bewegt wird das Objekt nicht: das Skript setzt es selbst an die
+zurückgegebene Stelle. Figuren blockieren weder einander noch den Läufer. Nur im Play,
+sonst `nil`.
+
+**Füße aufs Gelände:** Die Physik tastet das Gelände nur alle 4 m ab, gezeichnet ist es
+viel feiner. Steht die Figur auf Gelände (`aufGelände`), gehören die Füße deshalb auf
+`game.terrainHeight(x, z)`, auf allem anderen (Straße, Brücke, Dach) auf `y`:
+
+```lua
+local x, y, z, ground, terrain = game.moveCharacter(self.id, vx, vz, dt)
+if x then
+    if terrain then y = game.terrainHeight(x, z) end
+    self.x, self.y, self.z = x, y, z      -- Wurzelobjekt: lokal = Welt
+end
+```
+
 ### 3.5 Audio
 
 | Aufruf | Beschreibung |
