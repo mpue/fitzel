@@ -142,6 +142,16 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Waffen**: Lock-on-Raketen.
 - **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spawner, Lift, Tür,
   Sammelobjekte, Partikel.
+- **Inventar** (`inventory.lua`): Gegenstände in der Welt (Collectible mit „Inventory
+  item“: Name, Icon, Kategorie, Beschreibung, Anzahl) zeigen im Radius einen Hinweis;
+  auf `E` stellt sich die Figur hin, bückt sich mit einer Mocap-Animation und greift
+  den Gegenstand mit der Hand. `I` öffnet ein Inventar-Fenster mit Icons, Karte und
+  Knöpfen: Waffen ausrüsten (in der rechten Hand), alles wegwerfen (fliegt vor die
+  Füße, auf Weg oder Brücke). Neu in Lua dafür: `game.hudImage`/`imageSize`,
+  `game.worldToHud`, `game.captureInput` (ein Menü hält die Tasten, Esc schließt es
+  statt Play), `game.attach`/`detach`/`bonePos`/`bones` (Dinge an Knochen hängen),
+  `game.collectibles`/`collectible`, `game.groundHeight` und die Tabelle `shared`
+  für Skripte, die zusammenarbeiten.
 - **Lua-Scripting**: mehrere Skripte pro Objekt, bei jedem Play eine frische VM. Dazu ein
   Skript-Editor mit Autovervollständigung, ein UI-Overlay (Text, Buttons, Bilder) und
   Spielstände.

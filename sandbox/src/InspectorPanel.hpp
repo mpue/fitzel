@@ -151,6 +151,11 @@ struct PanelState {
 
     // The Procedural card's "Open node graph": the window that edits it.
     bool* showProcedural = nullptr;
+
+    // A picker over the Texture assets with "(none)" for no picture at all --
+    // texturePickerCombo's empty choice is the particles' soft dot. An
+    // inventory item's Icon.
+    std::function<void(const char*, std::string&)> imagePickerCombo = {};
 };
 
 void drawPanel(const PanelState& s);

@@ -23,8 +23,10 @@ struct VertexSkin {
 // maps a model-space vertex into this joint's bind-pose local space. rest* is the
 // joint's local transform when no animation channel drives it. `baseParent` is
 // the world transform of a root joint's non-joint ancestor (e.g. an armature),
-// so the rest pose reproduces the bind pose exactly.
+// so the rest pose reproduces the bind pose exactly. `name` is the node's name in
+// the file ("CC_Base_R_Hand"), so a script can hang a pistol on a hand.
 struct SkeletonJoint {
+    std::string name;
     int       parent = -1;
     glm::mat4 inverseBind{1.0f};
     glm::mat4 baseParent{1.0f};

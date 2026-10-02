@@ -470,9 +470,15 @@ void drawPanel(const PanelState& s) {
                     }
                 } else if (auto* col = dynamic_cast<CollectibleComponent*>(c)) {
                     // Points + radius from metadata; Sound is a picker
-                    // over the Sound assets (chosen, not typed).
-                    for (const Property& pr : col->props())
-                        if (pr.key != "sound") animProp(s, pr, col, c->typeId());
+                    // over the Sound assets (chosen, not typed), and so is
+                    // an inventory item's Icon over the Texture assets.
+                    for (const Property& pr : col->props()) {
+                        if (pr.visible && !pr.visible(col)) continue;
+                        if (pr.key != "sound" && pr.key != "icon")
+                            animProp(s, pr, col, c->typeId());
+                    }
+                    if (col->inventory && s.imagePickerCombo)
+                        s.imagePickerCombo("Icon", col->icon);
                     s.soundPickerCombo("Sound", col->sound);
                 } else if (auto* mp = dynamic_cast<MissilePickupComponent*>(c)) {
                     // Same deal as the Collectible: rounds, radius and
