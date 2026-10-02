@@ -135,6 +135,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Welt laufen – auf Straßen und Brücken statt durch sie hindurch, vor Wänden stehen
   bleibend, Bordsteine hinauf und über Kanten hinab. Auf Gelände stehen die Füße auf
   dem gezeichneten Boden. `walker.lua` nutzt das.
+- **Mesh-Kollider für Modelle**: ein statisches Modell kollidiert als seine eigenen
+  Dreiecke statt als Hülle – Türen, Durchbrüche und Treppen sind begehbar, Laub, Gras
+  und Decals bleiben außen vor. Physik auf dem Root eines importierten Modells macht
+  alle Teile darunter fest (eine ganze Halle mit einem Klick); jede Kopie eines Modells
+  teilt sich ein Mesh.
 - **Fahrzeuge**: ein Auto und ein Gleiter mit festem 120-Hz-Takt, Reifenspuren,
   Kondensstreifen und Gischt.
 - **Renn-Baukasten**: Gegner-KI, Startaufstellung, Checkpoints, Boost-Pads, HUD,

@@ -985,6 +985,25 @@ void drawPanel(const PanelState& s) {
                         if (pr.key != "clip") animProp(s, pr, am, c->typeId());
                     ui::hint("Keyframe animation from the Timeline panel, not a "
                              "model's own animation.");
+                } else if (auto* ph = dynamic_cast<PhysicsComponent*>(c)) {
+                    for (const Property& pr : ph->props()) animProp(s, pr, ph, c->typeId());
+                    // Which collider Play builds depends on more than this card
+                    // (what kind of object it sits on, the parts below it), so it
+                    // is said here rather than found out by walking into it.
+                    const bool group = be.type == EntityType::Model &&
+                                       !be.components.get<ModelComponent>();
+                    if (ph->dynamic)
+                        ui::hint(group ? "Moves as one box around the whole group."
+                                       : "Collides as its outer shell (convex hull).");
+                    else if (group)
+                        ui::hint("Every part below collides as its own triangles --\n"
+                                 "not parts with their own Physics, and not leaves,\n"
+                                 "grass or decals.");
+                    else if (be.components.get<ModelComponent>())
+                        ui::hint("Collides as its own triangles (leaves, grass and\n"
+                                 "decals left out).");
+                    else if (be.components.get<MeshComponent>())
+                        ui::hint("Collides as its own triangles.");
                 } else {
                     for (const Property& pr : c->props()) animProp(s, pr, c, c->typeId());
                 }
