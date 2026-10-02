@@ -77,6 +77,13 @@ void deleteEntity(EditorContext& ed, int idx) {
 // The offset is in the parent's frame, which is what "beside the original"
 // means for a child. `center` is left alone: it is derived, and
 // resolveHierarchy fills it from the parent this frame.
+// A copy is never the main camera: exactly one camera starts Play (see
+// setMainCamera), and a duplicated one that kept the flag would quietly
+// take over from whichever comes first in the list.
+static void notMainCamera(Entity& e) {
+    if (auto* cc = e.components.get<CameraComponent>()) cc->activeOnStart = false;
+}
+
 void duplicateEntity(EditorContext& ed, int idx) {
     if (!validIndex(ed, idx)) return;
     if (ed.entities[idx].type == EntityType::Sun) return;
@@ -84,6 +91,7 @@ void duplicateEntity(EditorContext& ed, int idx) {
     nb.localCenter.x += nb.half.x * 2.2f;
     nb.id     = ed.entityCounter++;
     nb.name  += " copy";
+    notMainCamera(nb);
     ed.history.push(std::make_unique<AddEntityCmd>(nb), ed.document);
     ed.sel.select(nb.id);
 }
@@ -120,6 +128,7 @@ void duplicateSelection(EditorContext& ed) {
         nb.localCenter.x += nb.half.x * 2.2f;
         nb.id     = ed.entityCounter++;
         nb.name  += " copy";
+        notMainCamera(nb);
         remap[id] = nb.id;
         newIds.push_back(nb.id);
         copies.push_back(std::move(nb));

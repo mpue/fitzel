@@ -12,6 +12,8 @@
 //
 //   retargetcheck [--src motion.fbx] [--target char.glb] [--ref model.glb clip]
 //                 [--noref] [--out dir]
+//   retargetcheck --bake char.glb    -- write a character's recipe into it, as
+//                                       the window's Write button does
 // Exit code 0 when every check passed.
 
 #include <algorithm>
@@ -19,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -177,7 +180,35 @@ void namingTests() {
 }
 
 } // namespace
+// Write `model`'s recipe into it -- the window's Write button without the window.
+int bakeOnly(const std::string& model) {
+    Recipe r;
+    if (!loadRecipe(model, r)) { std::printf("no recipe beside %s\n", model.c_str()); return 1; }
+    std::map<std::string, Rig> rigs;
+    const auto source = [&](const ClipEntry& e) -> const Rig* {
+        const std::string file = sourceFile(model, e.source);
+        auto it = rigs.find(file);
+        if (it == rigs.end()) {
+            std::string glb = file;
+            if (blender::needsBlender(file)) {
+                const blender::Result res = blender::toGlb(file);
+                if (!res.ok) { std::printf("  %s\n", res.message.c_str()); return nullptr; }
+                glb = res.glb;
+            }
+            it = rigs.emplace(file, loadRig(glb)).first;
+        }
+        return &it->second;
+    };
+    std::string msg;
+    const bool ok = bakeAll(model, r, source, msg);
+    std::printf("%s\n", msg.c_str());
+    for (const std::string& c : inspect(model).clips) std::printf("  clip: %s\n", c.c_str());
+    return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
+    for (int i = 1; i + 1 < argc; ++i)
+        if (std::string(argv[i]) == "--bake") return bakeOnly(argv[i + 1]);
     std::string src = "D:/models/Motion/walk_normal_f.fbx";
     std::string target = "D:/fitzel_projects/treetest/models/vicky.glb.vor-claude-backup";
     std::string ref = "D:/fitzel_projects/treetest/models/vicky.glb", refClip = "walk_f";
