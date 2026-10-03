@@ -140,6 +140,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Welt laufen – auf Straßen und Brücken statt durch sie hindurch, vor Wänden stehen
   bleibend, Bordsteine hinauf und über Kanten hinab. Auf Gelände stehen die Füße auf
   dem gezeichneten Boden. `walker.lua` nutzt das.
+- **Inverse Kinematik**: Komponente „Inverse Kinematics“ stellt die Füße einer animierten
+  Figur auf den Boden unter ihnen – Bordstein, Treppe, Hang –, senkt den Körper so weit
+  wie der tiefere Fuß braucht und kippt einen stehenden Fuß mit der Neigung. Hände per
+  `game.reach` an einen Punkt (Türgriff, Lenkrad, zweite Hand an der Waffe). Die Beine
+  und Arme werden am Skelett selbst gefunden (Character Creator, Mixamo, Unreal,
+  Blender, Daz).
 - **Mesh-Kollider für Modelle**: ein statisches Modell kollidiert als seine eigenen
   Dreiecke statt als Hülle – Türen, Durchbrüche und Treppen sind begehbar, Laub, Gras
   und Decals bleiben außen vor. Physik auf dem Root eines importierten Modells macht

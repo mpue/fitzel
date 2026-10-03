@@ -1697,6 +1697,32 @@ public:
     }
 };
 
+// --- Built-in component: Inverse Kinematics (feet on the ground) --------------
+// On an animated figure: after the clip has posed it, each foot is put on the
+// ground under it -- a kerb, a step, a slope -- the body lowered by what the
+// lower foot needs, and a standing foot tilted with the slope (LimbIK.hpp). The
+// limbs are found on the skeleton by themselves; the four chain fields name
+// them for a rig where that goes wrong ("thigh, calf, foot" -- empty = found).
+// Hands are sent by scripts (game.reach) and need no component.
+class IKComponent : public ComponentBase {
+public:
+    bool  feet     = true;    // put the feet on the ground
+    bool  align    = true;    // a standing foot tilts with the slope
+    float maxStep  = 0.5f;    // metres a foot may be raised, or the body lowered
+    float response = 12.0f;   // 1/s: how fast the legs follow the ground
+    std::string leftLeg, rightLeg, leftArm, rightArm;
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<IKComponent>(*this);
+    }
+    const char* typeId() const override { return "ik"; }
+    const char* displayName() const override { return "Inverse Kinematics"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Animation (plays a skinned model's clip) -------------
 // Attach to a Model entity whose glTF has a skeleton + animation clips. Plays
 // `clip` at `speed`, CPU-skinning the mesh each frame (see the tick in main).

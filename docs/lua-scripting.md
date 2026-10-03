@@ -510,6 +510,7 @@ kommen vom Knochen. Gilt bis `game.detach` oder bis Play endet.
 | `game.attach(…, rx, ry, rz, blend)` | bool | wie oben, aber in `blend` Sekunden vom jetzigen Sitz dorthin, statt zu springen (die Pistole dreht sich beim Anlegen in der Hand) |
 | `game.toWorld(id, x, y, z)` | `wx, wy, wz` oder `nil` | ein Punkt im eigenen Raum des Objekts (Meter von seiner Mitte, mitgedreht, nicht skaliert) in der Welt — die Laufmündung einer Pistole in der Hand |
 | `game.emit(id)` | – | den **Burst** der Particle-Komponente des Objekts dort auslösen, wo es gerade steht (Einschlag, Mündungsfeuer). Ein Effekt-Objekt reicht für viele Einschläge: hinsetzen, auslösen, weiter |
+| `game.reach(id, seite, x, y, z [, gewicht])` | – | Eine **Hand** der Figur (`"left"`/`"right"`) **für diesen Frame** an einen Punkt der Welt bringen (inverse Kinematik): Schulter und Ellbogen beugen sich, die Hand behält die Ausrichtung der Animation. `gewicht` 0..1 ist der Anteil des Wegs von dort, wo die Animation die Hand hat (zum Ein- und Ausblenden). Jeden Frame aufrufen; wer aufhört, gibt die Hand der Animation zurück. Türgriff, Lenkrad, die zweite Hand an der Pistole |
 
 ```lua
 -- Die Pistole in die rechte Hand (CC-Rig: Y entlang der Finger, Z zum Daumen,

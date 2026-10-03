@@ -183,6 +183,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/UiStyle.cpp
     src/VideoLibrary.cpp
     src/CameraTexture.cpp
+    src/LimbIK.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
@@ -980,6 +981,14 @@ add_executable(camtexcheck tools/camtexcheck.cpp src/CameraTexture.cpp src/Sandb
                            src/EditMeshSweep.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(camtexcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(camtexcheck PRIVATE FITZEL_PLAYER)
+
+# ikcheck -- inverse kinematics (LimbIK.hpp): the limbs found on four rigs'
+# naming, a two-bone chain reaching its target with its bones' lengths kept,
+# feet put on steps, into holes and onto slopes, hands sent to a point. A made-up
+# skeleton, no GL.
+#   build/release/bin/ikcheck.exe
+add_executable(ikcheck tools/ikcheck.cpp src/LimbIK.cpp)
+target_link_libraries(ikcheck PRIVATE fitzel glm::glm)
 
 # camcheck -- a camera bolted to a craft: does the eye actually sit in the seat?
 # Runs the camera system in the frame ORDER the game runs it (sim writes the

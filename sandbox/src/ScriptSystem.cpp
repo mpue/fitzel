@@ -1270,6 +1270,22 @@ int l_orbitFrame(lua_State* L) {
                       optNum(L, 4, 0.0f), optNum(L, 5, 0.0f));
     return 0;
 }
+// reach(id, side, x, y, z [, weight]) -- a hand to a point, this frame; side is
+// "left" / "right" (or 0 / 1)
+int l_reach(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    int side = -1;
+    if (lua_type(L, 2) == LUA_TSTRING) {
+        const std::string s = lua_tostring(L, 2);
+        side = (s == "left" || s == "l") ? 0 : (s == "right" || s == "r") ? 1 : -1;
+    } else {
+        side = static_cast<int>(luaL_checkinteger(L, 2));
+    }
+    const glm::vec3 target(num(L, 3), num(L, 4), num(L, 5));
+    if (h && h->reach && side >= 0) h->reach(id, side, target, optNum(L, 6, 1.0f));
+    return 0;
+}
 // emit(id) -- replay the object's Particle burst
 int l_emit(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1633,6 +1649,7 @@ void ScriptSystem::installApi() {
     fn("groundHeight", l_groundHeight); fn("castRay", l_castRay);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
     fn("toWorld", l_toWorld);
+    fn("reach", l_reach);
     // Pickups and the bones of a figure
     fn("collectibles", l_collectibles); fn("collectible", l_collectible);
     fn("bonePos", l_bonePos);         fn("bones", l_bones);

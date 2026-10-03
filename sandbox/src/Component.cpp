@@ -1504,6 +1504,41 @@ void AnimationTriggerComponent::load(const nlohmann::json& j) {
     target = j.value("target", -1);
 }
 
+const std::vector<Property>& IKComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addBool = [&](const char* label, const char* key, bool IKComponent::* m) {
+            Property b; b.label = label; b.key = key; b.kind = PropKind::Bool;
+            b.field = [m](void* o) -> void* { return &(static_cast<IKComponent*>(o)->*m); };
+            p.push_back(std::move(b));
+        };
+        auto addFloat = [&](const char* label, const char* key, float IKComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.01f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<IKComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        auto addText = [&](const char* label, const char* key, std::string IKComponent::* m) {
+            Property t; t.label = label; t.key = key; t.kind = PropKind::Text;
+            t.field = [m](void* o) -> void* { return &(static_cast<IKComponent*>(o)->*m); };
+            p.push_back(std::move(t));
+        };
+        addBool ("Feet on the ground", "feet", &IKComponent::feet);
+        addBool ("Tilt with the slope", "align", &IKComponent::align);
+        addFloat("Max step", "maxStep", &IKComponent::maxStep, 0.0f, 1.5f, "%.2f m");
+        addFloat("Response", "response", &IKComponent::response, 1.0f, 40.0f, "%.0f /s");
+        addText ("Left leg (optional)", "leftLeg", &IKComponent::leftLeg);
+        addText ("Right leg (optional)", "rightLeg", &IKComponent::rightLeg);
+        addText ("Left arm (optional)", "leftArm", &IKComponent::leftArm);
+        addText ("Right arm (optional)", "rightArm", &IKComponent::rightArm);
+        return p;
+    }();
+    return props;
+}
+void IKComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
+void IKComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2059,6 +2094,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationComponent>()); }});
         components::registerType({"animation_trigger", "Animation Trigger",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationTriggerComponent>()); }});
+        components::registerType({"ik", "Inverse Kinematics",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<IKComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",
