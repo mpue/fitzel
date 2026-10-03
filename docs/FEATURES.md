@@ -191,6 +191,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Panels**: Hierarchie, Inspector, Asset-Browser mit Drag & Drop in die Szene,
   Materialien, Prefabs (Stufe 1, Vorlagen).
 - **Import**: Unity-FBX und Videos.
+- **Kamera auf Textur**: ein Material zeigt live, was eine Kamera der Szene sieht
+  (Monitor, Überwachungsbildschirm, Spiegel) -- Kamera, Bildgröße und "leuchtet wie
+  ein Bildschirm" im Material-Panel; im Editor, im Play und im exportierten Spiel.
 - **Hierarchie im Gizmo**: Kinder folgen dem Elternteil beim Verschieben, Drehen und
   Skalieren -- ein importiertes Modell wächst an seiner Wurzel als Ganzes.
 - **Komfort**: Undo, Autosave und eine Toolbar mit Piktogrammen.

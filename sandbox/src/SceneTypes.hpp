@@ -143,6 +143,15 @@ struct MaterialDef {
     // surface is moving. Mutually exclusive with `texId`: binding one clears the
     // other, since both feed the same slot.
     fitzel::AssetId videoId;
+    // Optional camera driving the base colour: what the camera of this name in
+    // the scene sees, live, `cameraSize` pixels (CameraTexture.hpp). Like a
+    // video, `tex` is pointed at that picture at run time and nothing
+    // downstream knows; a file keeps the name and the size. The third source
+    // for the same slot: binding one clears the others. `cameraGlow`: the
+    // picture is the emission map too, so the surface shines like a screen.
+    std::string cameraName;
+    glm::ivec2  cameraSize{640, 360};
+    bool        cameraGlow = true;
     // Optional tangent-space normal map (same conventions as `tex`).
     std::shared_ptr<fitzel::Texture> normalTex;
     fitzel::AssetId normalTexId;

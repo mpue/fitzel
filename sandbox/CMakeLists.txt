@@ -182,6 +182,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/UiOverlay.cpp
     src/UiStyle.cpp
     src/VideoLibrary.cpp
+    src/CameraTexture.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
@@ -968,6 +969,17 @@ add_executable(gridcheck tools/gridcheck.cpp src/RaceGrid.cpp src/SandboxMath.cp
 target_link_libraries(gridcheck PRIVATE fitzel glm::glm
                                         nlohmann_json::nlohmann_json)
 target_compile_definitions(gridcheck PRIVATE FITZEL_PLAYER)
+
+# camtexcheck -- what a camera sees, on a material (CameraTexture.hpp): drawn per
+# camera and size, at most 30 a second, into the material's texture, the GL
+# state put back, the link kept in a file. A real GL context; the scene pass is
+# a clear to a known colour.
+#   build/release/bin/camtexcheck.exe
+add_executable(camtexcheck tools/camtexcheck.cpp src/CameraTexture.cpp src/SandboxMath.cpp
+                           src/Component.cpp src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp
+                           src/EditMeshSweep.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(camtexcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
+target_compile_definitions(camtexcheck PRIVATE FITZEL_PLAYER)
 
 # camcheck -- a camera bolted to a craft: does the eye actually sit in the seat?
 # Runs the camera system in the frame ORDER the game runs it (sim writes the

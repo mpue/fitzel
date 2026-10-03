@@ -18,6 +18,7 @@
 #include <fitzel/asset/Pak.hpp>
 #include <fitzel/asset/Vfs.hpp>
 
+#include "CameraTexture.hpp"   // camtex::save / load
 #include "GameSettings.hpp"
 #include "PropertyMeta.hpp"
 
@@ -93,6 +94,7 @@ nlohmann::json materialJson(const MaterialDef& md) {
     }
     if (md.texId.valid())         m["texture"]     = md.texId.toString();
     if (md.videoId.valid())       m["video"]       = md.videoId.toString();
+    camtex::save(md, m);
     if (md.normalTexId.valid())   m["normalMap"]   = md.normalTexId.toString();
     if (md.emissionTexId.valid()) m["emissionMap"] = md.emissionTexId.toString();
     if (md.opacityTexId.valid())  m["opacityMap"]  = md.opacityTexId.toString();
@@ -388,6 +390,7 @@ bool loadMaterialFile(Context& ctx, const std::string& file, MaterialDef& md) {
         // main owns. Its per-frame bind pass picks this up on the next frame.
         if (m.contains("video"))
             md.videoId = AssetId::fromString(m["video"].get<std::string>());
+        camtex::load(m, md);   // likewise only the name: the frame loop draws it
         if (m.contains("normalMap")) {
             md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
             if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
@@ -481,6 +484,7 @@ static void loadInlineMaterials(Context& ctx, const nlohmann::json& j) {
         }
         if (m.contains("video"))
             md.videoId = AssetId::fromString(m["video"].get<std::string>());
+        camtex::load(m, md);
         if (m.contains("normalMap")) {
             md.normalTexId = AssetId::fromString(m["normalMap"].get<std::string>());
             if (md.normalTexId.valid()) md.normalTex = ctx.assetDb.loadTexture(md.normalTexId);
