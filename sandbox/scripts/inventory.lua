@@ -31,6 +31,10 @@ DROP_KEY     = "X"              -- in the bag: throw the chosen thing away
 SLOTS        = 12               -- places in the bag, four to a row
 HAND_BONE    = "CC_Base_R_Hand" -- where a weapon is carried
 GRAB_BONE    = "CC_Base_L_Hand" -- the hand the pickup clip reaches with
+-- An item lying more than this (metres) above or below the figure's feet -- on
+-- a table, a shelf, a ledge -- goes straight into the bag: the pickup clip only
+-- reaches down to the floor.
+FLOOR_REACH  = 0.3
 -- The weapon in the hand, in the bone's space: metres, and its turn in degrees.
 -- Worked out for a CC rig (the hand's Y runs along the fingers, Z to the thumb,
 -- the palm faces -X) and a pistol modelled lying on its side (muzzle +Z, slide
@@ -792,11 +796,17 @@ function update(self, dt, t)
         local rx, ry, rz = game.getRot(offer)
         info.rest = {rx, ry, rz}
         info.restX, info.restY, info.restZ = x, y, z
-        local job = fig and fig.pickup(x, y, z)
+        -- Bent down for only when it lies on the floor the figure stands on.
+        local fx, fy, fz = game.getPos(self.id)
+        local _, fhy = game.getScale(self.id)
+        local _, ohy = game.getScale(offer)
+        local onFloor = math.abs((y - ohy) - (fy - fhy)) <= FLOOR_REACH
+        local job = onFloor and fig and fig.pickup(x, y, z)
         if job then
             _pick = {id = offer, info = info, job = job, attached = false}
         else
-            -- No figure controller to bend down: straight into the bag.
+            -- Not on the floor, or no figure controller to bend down:
+            -- straight into the bag.
             local hx, hy, hz = game.getScale(offer)
             _stow = {id = offer, info = info, t = 0, half = {hx, hy, hz}}
             sound(STOW_SOUND)

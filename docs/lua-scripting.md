@@ -901,7 +901,9 @@ sich die Figur, tritt vor oder zurück, bis der Gegenstand dort liegt, wo ihre l
 Hand den Boden trifft, bückt sich (Graph-Zustand `pickup`) und nimmt ihn — ab dem
 Griff hängt er an `CC_Base_L_Hand` (`game.attach`), dann wandert er in den Beutel.
 Den Ablauf steuert der Controller; das Inventar fragt ihn über `shared.figures[id]`
-(§3.6.2). Ohne Controller geht der Gegenstand sofort in den Beutel.
+(§3.6.2). Ohne Controller geht der Gegenstand sofort in den Beutel – ebenso, wenn er
+nicht auf dem Boden liegt, auf dem die Figur steht (mehr als `FLOOR_REACH`, 0,3 m,
+über oder unter ihren Füßen: Tisch, Regal, Sims).
 
 `I` oder `Tab` öffnet das Inventar (`game.captureInput`: die Figur bleibt stehen,
 Esc schließt nur das Fenster): ein Raster mit Icons (`game.hudImage`, auf den
