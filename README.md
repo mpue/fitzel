@@ -17,7 +17,8 @@ cut -- and animated on a timeline and a state machine. A race sim, a car, a glid
 HUD, opponents and a leaderboard come ready-made; everything else is Lua, any number of
 scripts per entity, each in its own environment, on a fresh VM every time Play starts
 (see [docs/lua-scripting.md](docs/lua-scripting.md)). The examples in `sandbox/scripts/`
-run from a shoot-'em-up, pinball and Arkanoid to Sokoban. The tools themselves stay
+run from a shoot-'em-up, pinball and Arkanoid to Sokoban and a game of chess played with
+the mouse -- and an inventory and a pistol for a figure walked in third person. The tools themselves stay
 C++, deliberately: a broken script must never be able to take an editing session with
 it.
 
@@ -29,6 +30,14 @@ stops -- and life in it: traffic that keeps its distance, stops at red and crash
 hit hard, people walking as prefabs, street lamps that come on at dusk. Modelled
 objects get a Blender-style **modifier stack** (Subdivision Surface, Decimate,
 Wireframe, Array, Solidify) that stays non-destructive until it is applied.
+
+Objects can also be **procedural**: a node graph of shapes, curves, copies and point
+selections -- a small Houdini -- cooked into an ordinary mesh on every change. Figures get
+what a third-person game needs: motion **retargeted** from other skeletons (Mixamo,
+Character Creator, Daz, Unreal, Rigify, VRM, BVH), a capsule that collides with roads,
+bridges and the triangles of static models, **inverse kinematics** that stands the feet
+on steps and slopes and sends a hand to a point, and an orbit camera. A material can show
+what a camera in the scene sees, live -- monitors and mirrors.
 
 Two things in it are not real-time and are not meant to be. A **path tracer** renders
 stills of a scene properly -- bounced light, real penumbrae, a lens that opens -- for
@@ -459,6 +468,58 @@ window: `animcheck` (sampling, clamping, step interpolation, save/load) and `gra
 (triggers consumed, `Any State` outranking a state's own arrow, exit time, ordering,
 fades and the skeleton mixing behind them).
 
+### Characters: retargeting, collision, inverse kinematics
+
+A mocap library is made for a different skeleton from the figure it should move.
+**Assets > Retarget animations** carries motion over from Mixamo, ActorCore/Character
+Creator, Daz Genesis, Unreal, Rigify, VRM and BVH. The bones are matched to a humanoid
+template by their names and the skeleton's shape, and every match can be changed from a
+list; a preview stands the source (a mannequin, for a bare motion file) and the figure side
+by side with bones, shadows and frame-by-frame stepping. Clips can be trimmed and made to
+stay in place, come from a file dialog, a drop or a click in a motion library -- or are
+copied from another figure, ticked and previewed first. FBX, BVH and `.blend` are read by
+an installed Blender in the background, which the editor finds by itself. The result goes
+into the figure's `.glb`; the original stays beside it as `.orig`, the recipe as
+`.retarget`, and Daz exports are repaired on the way (clothing on the body skeleton, hair
+and lashes on the head). Measured by `retargetcheck`.
+
+![The Retarget animations window: the motion on a mannequin and on the figure, side by side](docs/img/retarget.jpg)
+
+`game.moveCharacter(id, vx, vz)` walks a figure through the physics world as a capsule
+(a Jolt `CharacterVirtual`): on roads and bridges rather than through them, stopping at
+walls, up kerbs and down edges, the feet on the terrain as it is drawn. Static models
+collide as their own triangles rather than a hull -- doorways and stairs can be walked,
+foliage and decals are left out -- and Physics on the root of an import holds every part
+under it.
+
+The **Inverse Kinematics** component bends an animated figure after its clip and before
+the skin: each foot is stood on the ground under it, the body lowered as far as the lower
+foot needs, a standing foot tilted with the slope; ground higher than the *max step* is a
+wall, not a step. `game.reach(id, "left", x, y, z [, weight])` sends a hand to a point for
+the frame -- a door handle, a steering wheel, the second hand on a pistol -- and what the
+hand carries follows it. The limbs are two-bone chains solved in the skeleton's own space,
+the knee bending the way the animation bends it; they are found by structure (the foot or
+hand, then its parents, twist bones stepped over), so Character Creator, Mixamo, Unreal,
+Blender and Daz rigs need no setup. `ikcheck` measures it on a made-up skeleton in five
+rigs' naming; `ikcheck --model a.glb ...` shows which joints a real figure's limbs were
+found on.
+
+`sandbox/scripts/inventory.lua` and `weapon.lua` sit on such a figure next to its
+controller: things are picked up with a mocap move (straight into the bag when they lie on
+a table), an inventory of icons equips and throws away, and the pistol is aimed over the
+shoulder, fired and reloaded from the bag.
+
+### Monitors and mirrors
+
+A material's base colour can come from a camera instead of a texture or a video
+(*Materials > Camera*): whatever wears the material shows what that camera sees, live, in
+the editor, in Play and in the exported game -- at the picture size the material asks
+for, glowing like a screen if it should. Each camera is drawn once per size, at most 30
+times a second, into a target of its own and then copied into the texture the materials
+sample, so a screen that sees itself shows the frame before instead of reading the picture
+it is being drawn into. A file keeps the camera's name, never a texture.
+`sandbox/src/CameraTexture.hpp`; measured by `camtexcheck` against a real GL context.
+
 ### Multishot camera
 
 A camera that *shoots* an object rather than riding one. It cuts between the moves a
@@ -574,6 +635,33 @@ public:
 // ...and in the registrar at the bottom of the same file:
 add<MirrorModifier>("Mirror the mesh across one of its axes.");
 ```
+
+### Procedural objects
+
+*View > Objects > Procedural*, or a preset (Ring station, Modular station, Fuel depot):
+an object described by a network of nodes instead of by its faces. Shapes (box, cylinder,
+tube and cone, sphere, torus, grid), curves (circle, rectangle, a point list of your own,
+resample), copies round a hub, in a row and onto points, sweep and revolve, extrude,
+panels, lattice, thicken, subdivide, delete, and a material per set of faces. Points are
+picked and filtered the Houdini way -- by box, sphere, direction, every n-th, at random --
+and the pick drives copy onto points, transform and the face filters. A Prefab node places
+the project's prefabs as real objects under the procedural one.
+
+The graph is cooked into the object's ordinary mesh on every change, so the renderer,
+picking, physics, prefabs, the modifier stack and export know a procedural object without
+hearing of graphs, and the game never cooks. The wiring is the author's: drag from dot to
+dot or click both ends; a free node with one input put down over a wire goes in between.
+The canvas lays the graph out until a node is moved by hand. A curve's points have
+handles in the scene -- a drag moves a point in the plane the curve lies in, the "+" on a
+stretch adds one, the arrow keys move the picked point without any dragging.
+
+![A pipe swept along a curve with a torus on every picked point, and the graph that makes it](docs/img/procedural.jpg)
+
+A node kind is a class with its settings as Property rows and a `cook()`, plus one
+`add<T>` line in the registrar at the bottom of `sandbox/src/ProcNodes.cpp`; the graph,
+the file format and the window know no particular kind. `proccheck` cooks and measures
+every kind and the presets; `procpanelcheck` drives the window with real mouse and key
+events.
 
 ### Offline render (path tracer)
 
@@ -767,6 +855,13 @@ one thing.
 | `pathcheck [out]` | Does the offline path tracer compute light correctly? Renders scenes whose answer is known in advance -- a white furnace that must come back at radiance 1, a shadow whose position is arithmetic, the same frame twice from one seed, and noise that must fall as 1/sqrt(n). Also pins the light-probe bake against answers a spherical harmonic gets exactly: a uniform sky reconstructs at 1 in every direction, a hemisphere at 1 / 0.5 / 0, and moving the sun must change nothing at all. A renderer is the worst thing to judge by eye: every wrong answer still produces a picture. Exits non-zero. |
 | `capturecheck [out] [panorama]` | Is the tracer handed the scene that was actually drawn? Builds a scene through the real engine types, submits it to a real `Renderer` and harvests it exactly as the Render panel does -- then checks where vertices landed, which way normals point under a non-uniform scale, what came back out of a texture, that a texture's alpha channel alone does not make an opaque material transparent, and that each terrain layer coloured the ground its band claims. Given a panorama as well, it writes that HDRI out twice -- straight from the buffer and through the tracer's own direction lookup -- which is the only way to settle "the sky is the wrong colour", since a map is otherwise only ever visible through the tonemap, the grade and whatever the light did on the way. Exits non-zero. |
 | `iconcheck [png] [exe]` | Will Windows really use the icon "Export Game" wrote into the exe? Exits non-zero. |
+| `proccheck [--scene dir]` | Is every procedural node kind closed where it must be, wound outward, with the face count worked out by hand -- and do the graph's rules hold (no loops, deleting a step closes the chain), the file round trip and every preset cooked whole? Exits non-zero. |
+| `procpanelcheck` | Does the Procedural window do what a click promises? Drives it with real ImGui mouse and key events in a frame nobody draws: steppers and typed values, adding and wiring nodes, dragging and boxing them, curve point handles in the scene, a node dropped onto a wire, the Delete key that never reaches the object, undo all the way back to the preset. Exits non-zero. |
+| `retargetcheck` | Does every bone land where it belongs? Maps synthetic Mixamo, Unreal and BVH skeletons onto the humanoid template, and -- where Blender and the test files are there -- converts a real FBX motion, compares the transfer bone by bone with a reference clip and loads the result back through the engine's loader. Exits non-zero. |
+| `collidecheck` | Does a mesh collide as the shape that is drawn? Balls dropped on an L-shaped mesh land in the notch only if the collider is the mesh, not a hull; ramps, planes, a dynamic mesh, static imported models and whole model groups (a trough, a doorway) -- and a figure's capsule at walls, on bridges and up kerbs. Exits non-zero. |
+| `ikcheck [--model a.glb ...]` | Inverse kinematics on a made-up skeleton in five rigs' naming: are the limbs found, does a two-bone chain reach its target with its bones' lengths kept and the knee bending the way it bent, do feet stand on steps, in holes and on slopes, and do hands go where they are sent and come back after the frame? With `--model`, the limbs of real figures. Exits non-zero. |
+| `camtexcheck` | Does a camera's picture land in the material that shows it -- drawn once per camera and size, at most 30 times a second, at the picture's shape, with the framebuffer and viewport put back and the link kept in a file? A real GL context. Exits non-zero. |
+| `treecheck <outDir>` | Does the tree generator grow every preset finite, in range, at the height asked for and the same twice -- and does the `.glb` load back the way a vegetation species reads it? Draws each tree in the generator's studio to a PNG. |
 | `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |
 
 One habit these earned the hard way: **run a new check once against the broken state

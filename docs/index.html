@@ -465,9 +465,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
 
 <div class="stats">
   <div class="stats-in">
-    <div class="stat"><b><span class="de">157.800</span><span class="en">157,800</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
-    <div class="stat"><b>76</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
-    <div class="stat"><b>44</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
+    <div class="stat"><b><span class="de">183.100</span><span class="en">183,100</span></b><span class="de">Zeilen C++</span><span class="en">Lines of C++</span></div>
+    <div class="stat"><b>83</b><span class="de">GLSL-Shader</span><span class="en">GLSL shaders</span></div>
+    <div class="stat"><b>55</b><span class="de">Pr&#252;fprogramme</span><span class="en">Offline checks</span></div>
     <div class="stat"><b>14</b><span class="de">Abh&#228;ngigkeiten &#8212; keine im Repo</span><span class="en">Dependencies &#8212; none vendored</span></div>
     <div class="stat"><b>0</b><span class="de">systemweite Installationen</span><span class="en">System-wide installs</span></div>
   </div>
@@ -623,6 +623,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Klang, der die Uhrzeit kennt</b><b class="en">Sound that knows the hour</b>
           <span class="de">S&#228;nger setzen sich auf B&#228;ume in der N&#228;he und wiederholen ihr Lied; Morgenchor, Mittagsruhe, D&#228;mmerung &#8212; und Regen l&#228;sst sie verstummen.</span>
           <span class="en">Singers settle on nearby trees and repeat their song; dawn chorus, midday lull, dusk &#8212; and rain silences them.</span></li>
+        <li><b class="de">B&#228;ume, selbst gebaut</b><b class="en">Trees, built in the editor</b>
+          <span class="de">Ein Baumgenerator w&#228;chst Stamm, &#196;ste und Laub aus wenigen Zahlen, mit Rindenrelief und eigenem Material je Teil, und legt das Ergebnis als <code>.glb</code> ins Projekt &#8212; danach ist es ein Modell wie jedes andere.</span>
+          <span class="en">A tree generator grows trunk, branches and foliage from a few numbers, with bark relief and a material of its own per part, and puts the result into the project as a <code>.glb</code> &#8212; from then on it is a model like any other.</span></li>
       </ul>
 
       <div class="duo reveal">
@@ -814,6 +817,23 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <img src="img/modifiers.jpg" alt="Sieben Objekte mit Modifiern: gegl&#228;ttete Kugel, Low-Poly-Kugel, Drahtw&#252;rfel, Drahtkugel, Drahtzylinder, eine Pfostenreihe und eine Schale" loading="lazy">
         <figcaption class="de">Vorn von links: Subdivision Surface auf einem W&#252;rfel, Decimate auf einer Kugel, Wireframe, Subdivision und Wireframe &#252;bereinander, ein Wireframe-Zylinder. Dahinter ein Array aus einem einzigen Pfosten und eine halbe Kugel mit Solidify.</figcaption>
         <figcaption class="en">In front, from the left: Subdivision Surface on a cube, Decimate on a sphere, Wireframe, Subdivision and Wireframe stacked, a wireframe cylinder. Behind them an Array made from a single post, and half a sphere with Solidify.</figcaption>
+      </figure>
+
+      <h3 class="de" style="margin-top:14px">Prozedurale Objekte: ein kleines Houdini</h3>
+      <h3 class="en" style="margin-top:14px">Procedural objects: a small Houdini</h3>
+      <div class="prose de">
+        <p>Ein Objekt kann statt aus Fl&#228;chen aus einem <strong>Knotengraphen</strong> bestehen: Formen (Box, Zylinder, Tube und Kegel, Kugel, Torus, Grid), Kurven (Kreis, Rechteck, eine eigene Punktliste, Resample), Kopien radial, in Reihe und auf Punkte, Sweep und Revolve, Extrude, Panels, Lattice und Material pro Fl&#228;chenauswahl. Jede &#196;nderung kocht den Graphen sofort in ein gew&#246;hnliches Mesh &#8212; Renderer, Physik, Prefabs und der Modifier-Stack kennen das Objekt, ohne je von Graphen zu h&#246;ren, und das fertige Spiel kocht nie. Der Ring einer Raumstation ist ein Radius, nicht zweihundert Fl&#228;chen.</p>
+        <p>Punkte werden wie in Houdini ausgew&#228;hlt und gefiltert &#8212; nach Box, Kugel, Richtung, jedem n-ten, Zufall &#8212;, und die Auswahl bestimmt, worauf kopiert, was verschoben und welche Fl&#228;chen dekoriert werden. Ein Prefab-Knoten setzt Prefabs des Projekts als echte Objekte. Verdrahtet wird von Hand, durch Ziehen oder mit zwei Klicks; ein freier Knoten, &#252;ber einem Draht abgelegt, wird genau dazwischen verdrahtet. Die Punkte einer Kurve haben Griffe in der Szene, und die Pfeiltasten schieben sie, ganz ohne zu ziehen.</p>
+      </div>
+      <div class="prose en">
+        <p>An object can be a <strong>node graph</strong> instead of faces: shapes (box, cylinder, tube and cone, sphere, torus, grid), curves (circle, rectangle, a point list of your own, resample), copies round a hub, in a row and onto points, sweep and revolve, extrude, panels, lattice and a material per set of faces. Every change cooks the graph into an ordinary mesh at once &#8212; the renderer, physics, prefabs and the modifier stack know the object without ever hearing of graphs, and the finished game never cooks. A space station's ring is one radius, not two hundred faces.</p>
+        <p>Points are picked and filtered the Houdini way &#8212; by box, sphere, direction, every n-th, at random &#8212; and the pick decides what is copied onto, what moves and which faces are dressed. A Prefab node places the project's prefabs as real objects. The wiring is done by hand, by dragging or with two clicks; a free node put down over a wire is wired in between. A curve's points have handles in the scene, and the arrow keys move them without any dragging at all.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/procedural.jpg" alt="Ein rotes Rohr entlang einer Kurve mit wei&#223;en Ringen, daneben der Knotengraph im Procedural-Fenster" loading="lazy">
+        <figcaption class="de">Ein Rohr entlang einer Kurve (Curve &#8594; Resample &#8594; Sweep, ein Kreis als Profil), auf jedem ausgew&#228;hlten Punkt ein Torus (Select points &#8594; Copy onto points), beide mit eigenem Material in einem Merge. Zw&#246;lf Knoten, 4706 Fl&#228;chen, in 0,8 ms gekocht.</figcaption>
+        <figcaption class="en">A pipe along a curve (Curve &#8594; Resample &#8594; Sweep, a circle for its profile), a torus on every picked point (Select points &#8594; Copy onto points), each with its own material, in one Merge. Twelve nodes, 4706 faces, cooked in 0.8 ms.</figcaption>
       </figure>
     </div>
   </section>
@@ -1138,9 +1158,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <li><b class="de">Ein Trigger klingelt einmal</b><b class="en">A trigger rings once</b>
           <span class="de">Er bleibt gesetzt, bis der Pfeil ihn liest, der ihn pr&#252;ft. Ein Skript darf in einem beliebigen Frame feuern, ohne zu wissen, wann die Maschine das n&#228;chste Mal schrittet.</span>
           <span class="en">It stays set until the arrow that tests it is taken, so a script may fire on any frame without knowing when the machine next steps.</span></li>
-        <li><b class="de">Kein Blending &#8212; mit Absicht</b><b class="en">No blending &#8212; on purpose</b>
-          <span class="de">Ein &#220;bergang schneidet. Das ist ehrlich und es ist das, was eine T&#252;r, ein Aufzug, eine Lampe und ein Signal wollen; die Entscheidung steht im Header, statt sp&#228;ter wiederentdeckt zu werden.</span>
-          <span class="en">A transition cuts. That is honest, and it is what a door, a lift, a lamp and a signal all want; the decision is written in the header rather than left to be rediscovered.</span></li>
+        <li><b class="de">&#220;berblenden, wo es eine Figur ist</b><b class="en">Fades where it is a figure</b>
+          <span class="de">Ein Zustand kann einen Clip des Modells selbst spielen, auch r&#252;ckw&#228;rts; ein &#220;bergang blendet so lange &#252;ber, wie er sagt &#8212; pro Gelenk gemischt, damit kein Glied unterwegs schrumpft. T&#252;ren, Lampen und Signale schneiden weiterhin hart.</span>
+          <span class="en">A state can play one of the model's own clips, backwards too; a transition fades for as long as it says &#8212; mixed per joint, so no limb shrinks on the way. Doors, lamps and signals still cut.</span></li>
         <li><b class="de">Jede Geste hat einen Knopf daneben</b><b class="en">Every gesture has a button beside it</b>
           <span class="de">Keys rasten auf ein Raster, der Abspielkopf l&#228;uft auf Knopfdruck von Key zu Key, Knoten lassen sich ziehen &#8212; oder per &#8222;Lay out" ganz ohne Ziehen anordnen. Ein Pfeil entsteht am Port oder aus zwei Auswahllisten.</span>
           <span class="en">Keys snap to a grid, the playhead steps key to key by button, nodes can be dragged &#8212; or arranged by "Lay out" without dragging at all. An arrow is drawn from a port, or made from two dropdowns.</span></li>
@@ -1152,6 +1172,33 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
       <div class="prose en">
         <p>An object runs a graph through a component; a script moves it along: <code>game.animTrigger(id, "open")</code>, <code>game.animBool</code>, <code>game.animNumber</code>, <code>game.animState(id)</code>. For the simple case &#8212; one clip, played when the game starts &#8212; there is an Animator component instead: three fields, no graph.</p>
       </div>
+
+      <h3 class="de" style="margin-top:14px">Fremde Bewegungen auf die eigene Figur</h3>
+      <h3 class="en" style="margin-top:14px">Other skeletons' motion on your own figure</h3>
+      <div class="prose de">
+        <p>Eine Mocap-Bibliothek ist f&#252;r ein anderes Skelett gemacht als die Figur, die sie bewegen soll. Das <strong>Retargeting</strong> (Assets &#8594; Retarget animations) &#252;bertr&#228;gt Bewegungen von Mixamo, ActorCore/Character Creator, Daz Genesis, Unreal, Rigify, VRM und BVH: Die Knochen werden einer Humanoid-Vorlage zugeordnet, nach Namen und nach dem Aufbau des Skeletts, und jede Zuordnung l&#228;sst sich per Liste &#228;ndern. Quelle und Figur stehen nebeneinander in einer Vorschau, mit Knochen, Schatten und Bild-f&#252;r-Bild-Steuerung; Clips lassen sich zuschneiden und &#8222;auf der Stelle&#8220; machen. FBX, BVH und <code>.blend</code> liest ein installiertes Blender im Hintergrund, das der Editor selbst findet. Geschrieben wird in die <code>.glb</code> der Figur, das Original bleibt daneben.</p>
+      </div>
+      <div class="prose en">
+        <p>A mocap library is made for a different skeleton from the figure it is meant to move. <strong>Retargeting</strong> (Assets &#8594; Retarget animations) carries motion over from Mixamo, ActorCore/Character Creator, Daz Genesis, Unreal, Rigify, VRM and BVH: the bones are matched to a humanoid template by their names and by the skeleton's shape, and every match can be changed from a list. Source and figure stand side by side in a preview, with bones, shadows and frame-by-frame stepping; clips can be trimmed and made to stay in place. FBX, BVH and <code>.blend</code> are read by an installed Blender in the background, which the editor finds by itself. The result is written into the figure's <code>.glb</code>, with the original kept beside it.</p>
+      </div>
+
+      <figure class="shot bleed reveal">
+        <img src="img/retarget.jpg" alt="Das Retargeting-Fenster: links eine Gliederpuppe mit der Mocap-Bewegung, rechts dieselbe Bewegung auf der eigenen Figur" loading="lazy">
+        <figcaption class="de">Eine Sprungrolle aus der Bewegungsbibliothek: links die Quelle als Gliederpuppe, rechts auf der eigenen Figur, beide Skelette eingeblendet. Darunter Anfang, Ende und ob die Bewegung vom Fleck kommt oder auf der Stelle bleibt.</figcaption>
+        <figcaption class="en">A jump roll from the motion library: the source as a mannequin on the left, on your own figure on the right, both skeletons shown. Below, where it starts and ends, and whether the motion travels or stays in place.</figcaption>
+      </figure>
+
+      <ul class="feats">
+        <li><b class="de">Figuren, die ansto&#223;en</b><b class="en">Figures that bump into things</b>
+          <span class="de"><code>game.moveCharacter</code> l&#228;sst eine Figur als Kapsel durch die Welt laufen: auf Stra&#223;en und Br&#252;cken statt durch sie hindurch, vor W&#228;nden stehen bleibend, Bordsteine hinauf. Statische Modelle kollidieren als ihre eigenen Dreiecke &#8212; T&#252;ren und Treppen sind begehbar.</span>
+          <span class="en"><code>game.moveCharacter</code> walks a figure through the world as a capsule: on roads and bridges rather than through them, stopping at walls, up kerbs. Static models collide as their own triangles &#8212; doorways and stairs can be walked.</span></li>
+        <li><b class="de">F&#252;&#223;e auf dem Boden</b><b class="en">Feet on the ground</b>
+          <span class="de">Inverse Kinematik nach der Animation: Jeder Fu&#223; steht auf seinem Boden &#8212; Stufe, Bordstein, Hang &#8212;, der K&#246;rper senkt sich so weit wie der tiefere braucht, ein stehender Fu&#223; kippt mit. H&#228;nde schickt ein Skript mit <code>game.reach</code> an einen Punkt.</span>
+          <span class="en">Inverse kinematics after the animation: each foot stands on its own ground &#8212; a step, a kerb, a slope &#8212;, the body comes down as far as the lower one needs, a standing foot tilts with it. A script sends a hand to a point with <code>game.reach</code>.</span></li>
+        <li><b class="de">Dritte Person</b><b class="en">Third person</b>
+          <span class="de">Die Verfolgerkamera kreist mit der Maus um die Figur, die Figur l&#228;uft relativ zum Blick, auch r&#252;ckw&#228;rts; <code>walker.lua</code> und ein Controller mit Rennen, Springen und Aufheben liegen bei.</span>
+          <span class="en">The follow camera orbits the figure with the mouse, and the figure walks relative to the view, backwards too; <code>walker.lua</code> and a controller that runs, jumps and picks things up come with it.</span></li>
+      </ul>
     </div>
   </section>
 
@@ -1190,8 +1237,14 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
 
       <ul class="feats">
         <li><b class="de">Was gebunden ist</b><b class="en">What is bound</b>
-          <span class="de">Eingabe, Kamera, Spawn/Destroy, Prefabs, Jolt-Physik (Velocity, Impulse), Audio und Synth, Score, ein HUD zum Zeichnen, Spielst&#228;nde, Objekte finden und umh&#228;ngen, Raycast, Terrainh&#246;he.</span>
-          <span class="en">Input, camera, spawn/destroy, prefabs, Jolt physics (velocity, impulses), audio and synth, score, a HUD to draw on, save data, finding and reparenting objects, raycast, terrain height.</span></li>
+          <span class="de">Eingabe und Maus (Strahl unter dem Zeiger), Kamera, Spawn/Destroy, Prefabs, Jolt-Physik (Velocity, Impulse, Strahlen gegen K&#246;rper und Gel&#228;nde), Figuren mit Kollision, Dinge an Knochen h&#228;ngen, Audio und Synth, Score, ein HUD mit Bildern, Spielst&#228;nde, Objekte finden und umh&#228;ngen, Boden- und Terrainh&#246;he.</span>
+          <span class="en">Input and the mouse (the ray under the pointer), camera, spawn/destroy, prefabs, Jolt physics (velocity, impulses, rays against bodies and terrain), figures that collide, things hung on bones, audio and synth, score, a HUD with pictures, save data, finding and reparenting objects, ground and terrain height.</span></li>
+        <li><b class="de">Inventar und Waffe</b><b class="en">An inventory and a weapon</b>
+          <span class="de">Aufheben mit einer Mocap-Bewegung &#8212; oder ohne, wenn es auf einem Tisch liegt &#8212;, ein Inventar mit Icons, eine Pistole in der Hand: &#252;ber die Schulter zielen, schie&#223;en, nachladen aus dem Beutel, mit M&#252;ndungsfeuer, Einschlag und Sto&#223; f&#252;r lose K&#246;rper. Alles als Skript, das man &#228;ndern kann.</span>
+          <span class="en">Picking up with a mocap move &#8212; or without, if it lies on a table &#8212;, an inventory of icons, a pistol in the hand: aim over the shoulder, fire, reload from the bag, with muzzle flash, impact and a push for loose bodies. All of it a script you can change.</span></li>
+        <li><b class="de">Monitore und Spiegel</b><b class="en">Monitors and mirrors</b>
+          <span class="de">Ein Material kann zeigen, was eine Kamera der Szene sieht &#8212; live, im Editor wie im fertigen Spiel. Ein Bildschirm, der sich selbst sieht, zeigt den Gang aus Spiegeln statt einen Fehler.</span>
+          <span class="en">A material can show what a camera in the scene sees &#8212; live, in the editor and in the finished game. A screen that sees itself shows the corridor of mirrors rather than a glitch.</span></li>
         <li><b class="de">Fest getakteter Arcade-Kern</b><b class="en">A fixed-step arcade core</b>
           <span class="de">Auto und Gleiter integrieren bei 1/120 s mit Render-Interpolation &#8212; Fahrverhalten h&#228;ngt nicht an der Bildrate.</span>
           <span class="en">Car and glider integrate at 1/120 s with render interpolation &#8212; handling does not depend on frame rate.</span></li>
@@ -1226,6 +1279,7 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
         <div><b>Pinball</b><span class="de">Eigene 2D-Simulation auf dem Spielfeld bei 720 Hz, damit nichts durchtunnelt; Drop Targets, Saucer, Ball Save, Tilt.</span><span class="en">Its own 2D simulation on the playfield at 720 Hz so nothing tunnels; drop targets, saucer, ball save, tilt.</span></div>
         <div><b>Sokoban</b><span class="de">Zw&#246;lf eigene Level, maschinell auf L&#246;sbarkeit gepr&#252;ft, Undo bis zum Levelstart, eine Ansicht, die sich dreht.</span><span class="en">Twelve original levels, machine-checked for solvability, undo back to the start, a view that turns.</span></div>
         <div><b>Space Invaders</b><span class="de">Die Regeln der Spielhalle: 55 Invader, die schneller werden, je weniger &#252;brig sind, vier Bunker, ein Mystery-Schiff, das Sch&#252;sse z&#228;hlt.</span><span class="en">The arcade's rules: 55 invaders that speed up as they thin out, four bunkers, a mystery ship that counts your shots.</span></div>
+        <div><b>Schach</b><span class="de">Gegen eine Engine um 1250 Elo, Brett und Figuren aus der Szene gelesen, mit der Maus gespielt; wartet das Spiel nur auf den n&#228;chsten Klick, zeichnet Play h&#246;chstens zehn Bilder pro Sekunde.</span><span class="en">Chess against an engine of about 1250 Elo, board and pieces read from the scene, played with the mouse; while the game only waits for the next click, Play draws ten frames a second at most.</span></div>
         <div><b>Arkanoid</b><span class="de">Elf Runden, Kapseln wie im Original, Silber braucht zwei Treffer, Gold keinen &#8212; und dann alles noch einmal, schneller.</span><span class="en">Eleven rounds, capsules as in the original, silver takes two hits, gold none &#8212; and then all of it again, faster.</span></div>
       </div>
 
@@ -1285,6 +1339,9 @@ document.documentElement.setAttribute("data-lang",l);document.documentElement.se
             <tr><td>citycheck</td><td><span class="de">Ragt ein generiertes Haus &#252;ber den Bordstein? Ein Turm &#252;ber der Stra&#223;e ist eine Wand, in die man bei Tempo f&#228;hrt, auf einem Abschnitt, der frei aussah.</span><span class="en">Does any generated building overhang the kerb? A tower over the road is a wall you hit at speed on a stretch that looked clear.</span></td></tr>
             <tr><td>iconcheck</td><td><span class="de">Benutzt Windows wirklich das Icon, das &#8222;Export Game" ins Exe geschrieben hat?</span><span class="en">Will Windows really use the icon "Export Game" wrote into the exe?</span></td></tr>
             <tr><td>audiocheck</td><td><span class="de">Gibt das Ger&#228;t der Engine mehr als einen Ausgabekanal? Ein Mono-Ausgang ist der wahrscheinlichste Grund f&#252;r eine Welt ohne Richtung.</span><span class="en">Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it.</span></td></tr>
+            <tr><td>proccheck &#183; procpanelcheck</td><td><span class="de">Ist jeder Knotentyp des prozeduralen Graphen geschlossen und nach au&#223;en gewunden, stimmen die von Hand gerechneten Fl&#228;chenzahlen &#8212; und tut das Fenster, was ein Klick verspricht? Das zweite bedient es mit echten Maus- und Tastenereignissen: Stepper, Verdrahten, Kurvengriffe, Knoten auf einen Draht, Undo.</span><span class="en">Is every kind of node closed and wound outward, do the hand-worked face counts hold &#8212; and does the window do what a click promises? The second drives it with real mouse and key events: steppers, wiring, curve handles, a node dropped on a wire, undo.</span></td></tr>
+            <tr><td>retargetcheck &#183; collidecheck</td><td><span class="de">Landet beim Retargeting jeder Knochen dort, wo er hingeh&#246;rt &#8212; an Mixamo-, Unreal- und BVH-Skeletten und einer echten FBX-Bewegung auf einer Daz-Figur? Und bleibt eine Figur vor der Wand stehen, auf der Br&#252;cke oben und steigt den Bordstein hinauf?</span><span class="en">Does every bone land where it belongs in a retarget &#8212; on Mixamo, Unreal and BVH skeletons and a real FBX motion on a Daz figure? And does a figure stop at the wall, stay on top of the bridge and climb the kerb?</span></td></tr>
+            <tr><td>ikcheck &#183; camtexcheck</td><td><span class="de">Erreicht eine Zwei-Knochen-Kette ihr Ziel, ohne einen Knochen zu dehnen, und beugt das Knie dahin, wohin es sich beugte? Stehen F&#252;&#223;e auf Stufen, in L&#246;chern und auf H&#228;ngen? Und landet das Bild einer Kamera wirklich in der Textur des Materials &#8212; gegen einen echten GL-Kontext?</span><span class="en">Does a two-bone chain reach its target without stretching a bone, the knee bending the way it bent? Do feet stand on steps, in holes and on slopes? And does a camera's picture really land in the material's texture &#8212; against a real GL context?</span></td></tr>
             <tr><td>skycheck &#183; fogcheck</td><td><span class="de">Keine Tests &#8212; nichts darin besteht oder f&#228;llt durch. Sie sind eine Art zu <em>sehen</em>: der Himmel sitzt hinter den Panels, der Nebel ist halbaufgel&#246;st, verwischt, unter Bloom und Tonemapper und nur von innen sichtbar. Beide wurden vorher durch Nachdenken &#252;ber Noise-Funktionen bearbeitet und Hoffen.</span><span class="en">Not tests &#8212; nothing in them passes or fails. They are a way of <em>seeing</em>: the sky sits behind the panels; the fog is half-res, blurred, under bloom and a tonemapper and only visible from inside. Both had previously been worked on by reasoning about noise functions and hoping.</span></td></tr>
           </tbody>
         </table>
