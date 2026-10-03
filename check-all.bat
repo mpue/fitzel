@@ -141,6 +141,10 @@ REM  und die Vorlagen ganz gekocht. procpanelcheck bedient das Procedural-Fenste
 REM  mit echten ImGui-Klicks: Stepper, getippter Wert, Add, Verdrahten, Undo.
 call :run proccheck
 call :run procpanelcheck
+REM  camtexcheck: was eine Kamera sieht, auf einem Material (Monitor, Spiegel) --
+REM  pro Kamera und Groesse gezeichnet, hoechstens 30-mal pro Sekunde, GL-Zustand
+REM  zurueck, die Verknuepfung in der Datei.
+call :run camtexcheck
 REM  retargetcheck misst das Retargeting: die automatische Knochen-Zuordnung an
 REM  Mixamo-, Unreal- und BVH-Skeletten, dann (wo die Testdateien und Blender da
 REM  sind) eine echte FBX-Bewegung auf eine Daz-Figur -- jeder Knochen muss dahin

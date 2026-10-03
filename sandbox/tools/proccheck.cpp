@@ -126,6 +126,23 @@ void shapes() {
     }
     {
         proc::Graph g;
+        g.output = node(g, "cylinder", {{"radius", 1.5}, {"height", 2.0}, {"segments", 32}});
+        const EditMesh m = cookOut(g);
+        // A 32-gon of circumradius 1.5: 16 sin(11.25 deg) * 2.25 = 7.0225.
+        solid("cylinder", m, 32 + 2, 2.0 * 32.0 * 0.5 * 2.25 * std::sin(2.0 * 3.14159265358979 / 32.0));
+        glm::vec3 mn, mx;
+        m.bounds(mn, mx);
+        check(std::fabs(mn.y + 1.0f) < 1e-4f && std::fabs(mx.y - 1.0f) < 1e-4f && std::fabs(mx.x - 1.5f) < 1e-4f,
+              "cylinder: as tall as its height, centred, as wide as its radius");
+        proc::Graph h;
+        h.output = node(h, "cylinder", {{"radius", 1.0}, {"height", 6.0}, {"axis", 0}, {"caps", false}});
+        const EditMesh o = cookOut(h);
+        o.bounds(mn, mx);
+        check(o.faces.size() == 24 && topo(o).open == 48 && std::fabs(mx.x - 3.0f) < 1e-4f,
+              "cylinder: along X, open at both ends without caps");
+    }
+    {
+        proc::Graph g;
         g.output = node(g, "tube", {{"radius", 1.0}, {"radiusTop", 0.0}, {"length", 3.0},
                                     {"segments", 16}, {"rows", 2}});
         const EditMesh m = cookOut(g);

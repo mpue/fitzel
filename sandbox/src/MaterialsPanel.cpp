@@ -16,7 +16,7 @@
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/graphics/VideoTexture.hpp>
 
-#include "Component.hpp"   // MaterialComponent
+#include "Component.hpp"   // MaterialComponent, CameraComponent
 #include "UiStyle.hpp"
 #include "VideoLibrary.hpp"
 
@@ -334,8 +334,9 @@ void drawPanel(const PanelState& s) {
             mapSlot("Base texture:", "texslot", md.tex, md.texId,
                     md.modelTex);
             // One source per slot: a texture dropped on the base slot
-            // wins over a video that was bound there.
+            // wins over a video or a camera that was bound there.
             if (md.texId.valid() && md.videoId.valid()) md.videoId = {};
+            if (md.texId.valid()) md.cameraName.clear();
             // Video slot: drop a .fvid asset (an mp4 dropped on the
             // Assets panel is transcoded into one). It feeds the same
             // base-colour slot as the texture above, so binding one
@@ -359,6 +360,7 @@ void drawPanel(const PanelState& s) {
                         if (s.assetDb.typeForId(gid) == AssetType::Video) {
                             md.videoId = gid;
                             md.texId   = {};   // same slot, one source
+                            md.cameraName.clear();
                             md.tex.reset();    // rebound next frame
                         }
                     }
@@ -380,6 +382,82 @@ void drawPanel(const PanelState& s) {
                         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
                                            "This video won't open.");
                     }
+                }
+            }
+            // Camera slot: what a camera of the scene sees, live -- a monitor,
+            // a security screen, a mirror (CameraTexture.hpp). The base-colour
+            // slot once more, so picking a camera clears the texture and the
+            // video; the frame loop then points md.tex at the picture.
+            {
+                ImGui::Text("Camera:");
+                ImGui::SameLine(140.0f);
+                ImGui::SetNextItemWidth(220.0f);
+                if (ImGui::BeginCombo("##camslot", md.cameraName.empty() ? "(none)" : md.cameraName.c_str())) {
+                    if (ImGui::Selectable("(none)", md.cameraName.empty()) && !md.cameraName.empty()) {
+                        md.cameraName.clear();
+                        md.tex = md.modelTex;   // what the slot had before: a model's own map, or none
+                        if (!md.emissionTexId.valid()) md.emissionTex = md.modelEmissionTex;
+                    }
+                    for (const Entity& e : s.entities) {
+                        if (!e.components.get<CameraComponent>()) continue;
+                        const bool on = e.name == md.cameraName;
+                        if (ImGui::Selectable((e.name + "##cam" + std::to_string(e.id)).c_str(), on) && !on) {
+                            md.cameraName = e.name;
+                            md.texId      = {};
+                            md.videoId    = {};
+                            md.tex.reset();   // the picture, from the next frame on
+                            // A screen shines: white emission, unless it has a colour already.
+                            if (md.cameraGlow && md.emission == glm::vec3(0.0f)) {
+                                md.emission         = glm::vec3(1.0f);
+                                md.emissionStrength = 1.0f;
+                            }
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                ImGui::SetItemTooltip("Show what this camera sees on everything wearing the\n"
+                                      "material: a monitor, a security screen, a mirror.");
+                if (!md.cameraName.empty()) {
+                    // The picture's size: its shape should be the surface's.
+                    static const glm::ivec2 kSizes[] = {{640, 360}, {1280, 720}, {1920, 1080},
+                                                        {640, 480}, {512, 512}, {1024, 1024}};
+                    static const char* kSizeNames[] = {"640 x 360 (16:9)",  "1280 x 720 (16:9)",
+                                                       "1920 x 1080 (16:9)", "640 x 480 (4:3)",
+                                                       "512 x 512 (square)", "1024 x 1024 (square)"};
+                    char cur[48];
+                    std::snprintf(cur, sizeof cur, "%d x %d", md.cameraSize.x, md.cameraSize.y);
+                    for (int k = 0; k < 6; ++k)
+                        if (kSizes[k] == md.cameraSize) std::snprintf(cur, sizeof cur, "%s", kSizeNames[k]);
+                    ImGui::Text("Picture:");
+                    ImGui::SameLine(140.0f);
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (ImGui::BeginCombo("##camsize", cur)) {
+                        for (int k = 0; k < 6; ++k)
+                            if (ImGui::Selectable(kSizeNames[k], kSizes[k] == md.cameraSize))
+                                md.cameraSize = kSizes[k];
+                        ImGui::EndCombo();
+                    }
+                    ImGui::SetItemTooltip("Pick the shape of the surface (a 16:9 screen, a square\n"
+                                          "mirror); bigger is sharper and costs more.");
+                    bool glow = md.cameraGlow;
+                    if (ImGui::Checkbox("Shines like a screen##camglow", &glow)) {
+                        md.cameraGlow = glow;
+                        if (glow && md.emission == glm::vec3(0.0f)) {
+                            md.emission         = glm::vec3(1.0f);
+                            md.emissionStrength = 1.0f;
+                        }
+                    }
+                    ImGui::SetItemTooltip("The picture lights the surface up (emission), so it\n"
+                                          "is seen in the dark; off, it is lit like paint.");
+                    bool found = false;
+                    for (const Entity& e : s.entities)
+                        if (e.name == md.cameraName && e.components.get<CameraComponent>()) found = true;
+                    if (found)
+                        ui::hint("Live, up to 30 pictures a second. The camera is found by\n"
+                                 "its name, in whichever scene is open.");
+                    else
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.3f, 1.0f),
+                                           "No camera called \"%s\" in this scene.", md.cameraName.c_str());
                 }
             }
             mapSlot("Normal map:", "nrmslot", md.normalTex, md.normalTexId,

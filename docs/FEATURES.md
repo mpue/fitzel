@@ -84,7 +84,7 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify.
 - **Mesh-Paint**: Terrain-Layer auf Objekte malen. Dazu 3D-Cursor und Snapping.
 - **Prozedurale Objekte (Mini-Houdini)**: View > Objects > Procedural. Ein Knoten-Graph
-  aus Formen (Box, Tube/Kegel, Kugel, Torus, Grid), Kopien (radial, in Reihe, auf
+  aus Formen (Box, Zylinder, Tube/Kegel, Kugel, Torus, Grid), Kopien (radial, in Reihe, auf
   Punkte), Kombinieren (Merge, Transform, Mirror), Details (Panels, Extrude, Lattice,
   Thicken, Subdivide, Delete faces) und Material pro Flächenauswahl wird bei jeder
   Änderung in ein normales Mesh gekocht. Vorlagen „Ring station“ und „Modular
@@ -191,6 +191,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Panels**: Hierarchie, Inspector, Asset-Browser mit Drag & Drop in die Szene,
   Materialien, Prefabs (Stufe 1, Vorlagen).
 - **Import**: Unity-FBX und Videos.
+- **Kamera auf Textur**: ein Material zeigt live, was eine Kamera der Szene sieht
+  (Monitor, Überwachungsbildschirm, Spiegel) -- Kamera, Bildgröße und "leuchtet wie
+  ein Bildschirm" im Material-Panel; im Editor, im Play und im exportierten Spiel.
 - **Hierarchie im Gizmo**: Kinder folgen dem Elternteil beim Verschieben, Drehen und
   Skalieren -- ein importiertes Modell wächst an seiner Wurzel als Ganzes.
 - **Komfort**: Undo, Autosave und eine Toolbar mit Piktogrammen.

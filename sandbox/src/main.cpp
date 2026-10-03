@@ -156,6 +156,7 @@
 #include "RaceSim.hpp"
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
+#include "CameraTexture.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
@@ -618,6 +619,9 @@ int main(int argc, char** argv) {
         double       camPreviewNext = 0.0;
         int          camPreviewLast = -1;
 #endif
+        // What cameras see, on the materials that show them (CameraTexture.hpp):
+        // monitors and mirrors, in the editor, in Play and in the player.
+        camtex::CameraTextures camTextures;
         // The target the viewport panel was resized AWAY from, kept alive until
         // the frame it still appears in has been drawn.
         //
@@ -3553,6 +3557,7 @@ int main(int argc, char** argv) {
                     // "emptied" marker: clearing the slot clears videoId, which
                     // then simply isn't written.
                     if (md.videoId.valid()) ov[key]["video"] = md.videoId.toString();
+                    camtex::save(md, ov[key]);   // a camera over the base map, likewise
                     slotJson(md.normalTexId, md.normalTex, md.modelNormalTex,
                              "normalMap", ov[key]);
                     slotJson(md.emissionTexId, md.emissionTex, md.modelEmissionTex,
@@ -3895,6 +3900,7 @@ int main(int argc, char** argv) {
                         if (e.contains("video") && e["video"].is_string())
                             md.videoId =
                                 AssetId::fromString(e["video"].get<std::string>());
+                        camtex::load(e, md);
                         readSlot("normalMap", md.normalTexId, md.normalTex);
                         readSlot("emissionMap", md.emissionTexId, md.emissionTex);
                         readSlot("opacityMap", md.opacityTexId, md.opacityTex);
@@ -12616,6 +12622,41 @@ int main(int argc, char** argv) {
             const glm::vec3 camPos = camera.position();
             const glm::mat4 mainVP = proj * camera.viewMatrix();
 
+            // --- The scene from another eye, finished -----------------------
+            // One more pass over the scene that was already submitted: sky,
+            // terrain, objects and trees, tonemapped into an LDR target that
+            // never reaches the post chain. What the camera preview and the
+            // camera textures draw (see the preview below for what is left out).
+            auto drawViewLDR = [&](const glm::mat4& v, const glm::mat4& p, const camerasys::Pose& pv) {
+                drawBackground(glm::inverse(p * v), pv.position, true);
+                renderer.renderScene(v, p, pv.position, Renderer::kNoClip, true);
+                const FrameContext pctx = makeFrameContext(p * v, pv.position, now, storm, light, fog);
+                veg.drawTrees(pctx);
+                // The billboards' right vector. Taken from the pose's own up
+                // rather than from world up: a camera looking straight down --
+                // which a trackside shot may well be -- has no right axis
+                // against the sky, and normalizing that zero would turn every
+                // distant tree into a NaN.
+                glm::vec3 pRight = glm::cross(pv.front, pv.up);
+                if (glm::length(pRight) < 1e-4f)
+                    pRight = glm::cross(pv.front, glm::vec3(0.0f, 0.0f, 1.0f));
+                if (glm::length(pRight) > 1e-4f)
+                    veg.drawTreeBillboards(pctx, glm::normalize(pRight));
+            };
+
+            // --- What cameras see, on the surfaces that show it -------------
+            // Monitors, security screens, mirrors (CameraTexture.hpp): every
+            // camera a material names, at most 30 times a second each. Shown
+            // by the surfaces from the next frame on, like everything drawn
+            // after the main image.
+            {
+                FZ_ZONE("camera textures");
+                FZ_GPU_ZONE("GPU camera textures");
+                camTextures.update(materials, entities,
+                                   [&](int id, camerasys::Pose& out) { return cams.pose(id, out); },
+                                   camera.nearPlane(), camera.farPlane(), now, drawViewLDR);
+            }
+
 #ifndef FITZEL_PLAYER
             // --- What the selected camera sees ------------------------------
             // One more pass over the scene that was already submitted, from
@@ -12659,23 +12700,7 @@ int main(int argc, char** argv) {
                     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
                     // Tonemapped in the shader: this target is LDR and never
                     // reaches the post chain, so it has to arrive finished.
-                    drawBackground(glm::inverse(pvProj * pvView), pv.position, true);
-                    renderer.renderScene(pvView, pvProj, pv.position,
-                                         Renderer::kNoClip, true);
-                    const FrameContext pctx = makeFrameContext(pvProj * pvView,
-                                                               pv.position, now, storm,
-                                                               light, fog);
-                    veg.drawTrees(pctx);
-                    // The billboards' right vector. Taken from the pose's own up
-                    // rather than from world up: a camera looking straight down --
-                    // which a trackside shot may well be -- has no right axis
-                    // against the sky, and normalizing that zero would turn every
-                    // distant tree into a NaN.
-                    glm::vec3 pRight = glm::cross(pv.front, pv.up);
-                    if (glm::length(pRight) < 1e-4f)
-                        pRight = glm::cross(pv.front, glm::vec3(0.0f, 0.0f, 1.0f));
-                    if (glm::length(pRight) > 1e-4f)
-                        veg.drawTreeBillboards(pctx, glm::normalize(pRight));
+                    drawViewLDR(pvView, pvProj, pv);
                     // ...and back to the image everything after this draws into.
                     viewportRT.bind();
                     int fullW = fbW, fullH = fbH;

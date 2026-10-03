@@ -60,9 +60,9 @@ int coverageChannel(const fitzel::ImagePixels& img) {
 // Rebuilt only when either input changes (MaterialDef::opacityFold).
 const fitzel::Texture* baseColour(const MaterialDef& md) {
     if (!md.opacityTex || !md.opacityTex->isValid()) return md.tex.get();
-    // A playing video rewrites its texture every frame; a folded copy would
-    // stop it on the frame it was taken from.
-    if (md.videoId.valid()) return md.tex.get();
+    // A playing video rewrites its texture every frame, a camera's picture as
+    // well; a folded copy would stop it on the frame it was taken from.
+    if (md.videoId.valid() || !md.cameraName.empty()) return md.tex.get();
     MaterialDef::OpacityFold& f = md.opacityFold;
     if (f.merged && f.opacity.lock() == md.opacityTex && f.hadBase == (md.tex != nullptr) &&
         f.base.lock() == md.tex)
