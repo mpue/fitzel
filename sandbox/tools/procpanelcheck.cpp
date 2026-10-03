@@ -485,15 +485,185 @@ int main(int argc, char** argv) {
     click("out:curve1");
     click("node:selectpoints1");
     click("node:selectpoints1");
-    const proc::Node* selNode = byName("selectpoints1");
+    proc::Node* selNode = byName("selectpoints1");
     check(selNode && selNode->inputs[0] == byName("curve1")->id, "a Select points node wired after the curve");
+    // Against the same curve passed through with nothing selected (the Curve
+    // node itself draws handles over its points, see below).
+    if (selNode) selNode->bypass = true;
+    const int lineDrawn = overlayVerts();
+    if (selNode) selNode->bypass = false;
     const int selDrawn = overlayVerts();
-    check(selDrawn > curveDrawn, "...and its selected points are lit on top of the line",
-          std::to_string(selDrawn) + " vertices");
+    check(selDrawn > lineDrawn, "...and its selected points are lit on top of the line",
+          std::to_string(selDrawn) + " vertices, " + std::to_string(lineDrawn) + " without the selection");
     show = false;
     check(overlayVerts() == 0, "with the window closed, nothing is drawn");
     show = true;
     frame(false);
+
+    // --- The curve's points as handles in the scene ------------------------------------------------
+    {
+        click("node:curve1");
+        // A Scene window below the Procedural one, so a click on a handle
+        // never lands on the canvas.
+        io.DisplaySize = ImVec2(3800.0f, 2400.0f);
+        const ImVec2 sceneAt(0.0f, 1420.0f);
+        bool owned = false, keysOwned = false;
+        // One frame with the pointer at `at`: the handles first (main runs them
+        // ahead of the gizmo, and asks ownsKeys() before the Delete key), the
+        // overlay, then the window.
+        auto sceneFrame = [&](ImVec2 at, bool lmb) {
+            where.clear();
+            mouse = at;
+            io.AddMousePosEvent(at.x, at.y);
+            io.AddMouseButtonEvent(ImGuiMouseButton_Left, lmb);
+            ImGui::NewFrame();
+            ImGui::SetNextWindowPos(sceneAt);
+            ImGui::SetNextWindowSize(ImVec2(1600.0f, 900.0f));
+            // The editor's Scene window never goes away; this one does (between
+            // the clicks on the panel) and must not take the focus on coming back.
+            ImGui::Begin("Scene", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                                               ImGuiWindowFlags_NoFocusOnAppearing);
+            const ViewportFrame v = ViewportFrame::looking(eye, sceneAt, 1600.0f, 900.0f, at, true);
+            owned     = panel.handles(v);
+            keysOwned = panel.ownsKeys();
+            panel.viewport(v);
+            ImGui::End();
+            ImGui::SetWindowSize("Procedural", ImVec2(3700.0f, 1350.0f));
+            ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
+            panel.draw(show);
+            ImGui::Render();
+            scenegraph::resolve(entities);
+        };
+        // Press a key with the pointer at `at`; whether the keyboard was the
+        // point's in the frame it went down.
+        auto sceneKey = [&](ImGuiKey k, ImVec2 at) {
+            io.AddKeyEvent(k, true);
+            sceneFrame(at, false);
+            const bool had = keysOwned;
+            io.AddKeyEvent(k, false);
+            sceneFrame(at, false);
+            sceneFrame(at, false);
+            return had;
+        };
+        // Press at `from`, move to `to` in steps with the button held, let go.
+        auto sceneDrag = [&](ImVec2 from, ImVec2 to) {
+            sceneFrame(from, false);
+            sceneFrame(from, false);
+            sceneFrame(from, true);
+            for (int k = 1; k <= 8; ++k)
+                sceneFrame(ImVec2(from.x + (to.x - from.x) * k / 8.0f, from.y + (to.y - from.y) * k / 8.0f), true);
+            sceneFrame(to, false);
+            sceneFrame(to, false);
+        };
+        auto onTenth = [](float v) { return std::abs(v * 10.0f - std::round(v * 10.0f)) < 1e-3f; };
+        auto str3 = [](const glm::vec3& p) {
+            return std::to_string(p.x) + " " + std::to_string(p.y) + " " + std::to_string(p.z);
+        };
+        const ImVec2 away(1500.0f, 2250.0f);
+        sceneFrame(away, false);
+        sceneFrame(away, false);
+        check(where.count("pt:3") == 1 && where.count("pt:4") == 0 && where.count("plus:2") == 1 &&
+                  where.count("plus:3") == 0,
+              "the picked Curve shows a handle on each point and a + on each stretch");
+        check(!owned, "...and away from them the left button stays the scene's");
+        const std::vector<glm::vec3> pts0 = curvePts();
+        const ImVec2 p1 = centreOf("pt:1");
+        sceneFrame(p1, false);
+        check(owned, "a point under the pointer takes the left button (from the gizmo and click-to-select)");
+
+        // A click with a tremor's two pixels in it: picks, changes nothing.
+        const unsigned revA = history.revision();
+        sceneFrame(p1, true);
+        sceneFrame(ImVec2(p1.x + 2.0f, p1.y + 1.0f), true);
+        sceneFrame(ImVec2(p1.x + 2.0f, p1.y + 1.0f), false);
+        sceneFrame(p1, false);
+        check(curvePts() == pts0 && history.revision() == revA,
+              "a click on a point (a tremor's two pixels included) only picks it");
+
+        // Across: in the curve's plane (it is not flat in any, so the ground's),
+        // onto a tenth of a metre, as one undo step.
+        sceneDrag(p1, ImVec2(p1.x + 120.0f, p1.y));
+        std::vector<glm::vec3> pts1 = curvePts();
+        const glm::vec3 q = pts1.size() == 4 ? pts1[1] : glm::vec3(0.0f);
+        check(pts1.size() == 4 && q.x > 20.0f && q.y == pts0[1].y && std::abs(q.z - pts0[1].z) < 1e-4f &&
+                  onTenth(q.x) && history.revision() == revA + 1,
+              "dragging a point moves it in the plane, snapped, as one undo step", str3(q));
+        check(pts1.size() == 4 && pts1[0] == pts0[0] && pts1[2] == pts0[2] && pts1[3] == pts0[3],
+              "...and nothing else");
+        history.undo(document);
+        sceneFrame(away, false);
+        check(curvePts() == pts0, "...and undo puts it back");
+
+        // Ctrl at the grab: square to the plane, and only that.
+        const ImVec2 p2 = centreOf("pt:2");
+        sceneFrame(p2, false);
+        io.AddKeyEvent(ImGuiMod_Ctrl, true);
+        sceneFrame(p2, true);
+        io.AddKeyEvent(ImGuiMod_Ctrl, false);
+        for (int k = 1; k <= 8; ++k) sceneFrame(ImVec2(p2.x, p2.y - 10.0f * k), true);
+        sceneFrame(ImVec2(p2.x, p2.y - 80.0f), false);
+        sceneFrame(away, false);
+        pts1 = curvePts();
+        const glm::vec3 r2 = pts1.size() == 4 ? pts1[2] : glm::vec3(0.0f);
+        check(pts1.size() == 4 && r2.y > 5.0f && r2.x == pts0[2].x && r2.z == pts0[2].z && onTenth(r2.y),
+              "with Ctrl held at the grab, the point goes square to the plane instead", str3(r2));
+
+        // A click on a +: a new point halfway along that stretch, picked.
+        const std::vector<glm::vec3> before = curvePts();
+        const unsigned revB = history.revision();
+        const ImVec2 plus0 = centreOf("plus:0");
+        sceneFrame(plus0, false);
+        sceneFrame(plus0, true);
+        sceneFrame(plus0, false);
+        sceneFrame(away, false);
+        std::vector<glm::vec3> pts2 = curvePts();
+        const glm::vec3 mid = before.size() == 4 ? 0.5f * (before[0] + before[1]) : glm::vec3(0.0f);
+        check(pts2.size() == 5 && glm::length(pts2[1] - mid) < 1e-3f && history.revision() == revB + 1,
+              "a click on a + puts a new point halfway along that stretch, as one undo step",
+              std::to_string(pts2.size()) + " points");
+
+        // The keys, for the new point: as seen from the camera (looking down -Z,
+        // so Up is away from it), Page Up square to the plane.
+        sceneKey(ImGuiKey_RightArrow, away);
+        sceneKey(ImGuiKey_UpArrow, away);
+        const bool keysThePoints = sceneKey(ImGuiKey_PageUp, away);
+        pts2 = curvePts();
+        const glm::vec3 m2 = pts2.size() == 5 ? pts2[1] : glm::vec3(0.0f);
+        check(glm::length(m2 - (mid + glm::vec3(0.5f, 0.5f, -0.5f))) < 1e-3f,
+              "the arrow keys move the picked point half a metre as seen from the camera, Page Up lifts it",
+              str3(m2));
+        check(keysThePoints, "with a point picked and the pointer on the scene, the keyboard is the point's");
+
+        // The list picks a point too -- and leaves the window in focus, whose
+        // own Delete key takes nodes.
+        io.DisplaySize = ImVec2(3800.0f, 1400.0f);
+        frame(false);
+        click("points.pick.2");
+        io.DisplaySize = ImVec2(3800.0f, 2400.0f);
+        sceneFrame(away, false);
+        check(keysOwned, "picking a point's row in the list picks its handle");
+        const std::size_t nodesNow = graph()->nodes.size();
+        const std::vector<glm::vec3> five = curvePts();
+        sceneKey(ImGuiKey_Delete, away);
+        const std::vector<glm::vec3> four = curvePts();
+        check(four.size() == 4 && five.size() == 5 && four[1] == five[1] && four[2] == five[3] &&
+                  graph()->nodes.size() == nodesNow && byName("curve1") != nullptr,
+              "the Delete key takes the picked point off -- not the node, though the window has the focus");
+        sceneFrame(away, false);
+        check(keysOwned, "...and picks the one before, so the key goes on taking points, never the object");
+        sceneKey(ImGuiKey_Delete, away);
+        sceneKey(ImGuiKey_Delete, away);
+        const bool stillThePoints = sceneKey(ImGuiKey_Delete, away);
+        check(curvePts().size() == 2 && stillThePoints,
+              "a curve keeps two points; the Delete key stays the point's");
+        sceneFrame(away, true);
+        sceneFrame(away, false);
+        sceneFrame(away, false);
+        check(!keysOwned, "a click on the empty scene lets the point go");
+        io.DisplaySize = ImVec2(3800.0f, 1400.0f);
+        frame(false);
+        frame(false);
+    }
 
     // --- Picking nodes: one, several, a box --------------------------------------------------------
     auto key = [&](ImGuiKey k, ImGuiKey mod = ImGuiKey_None) {
@@ -610,6 +780,60 @@ int main(int argc, char** argv) {
         rightClick(centreOf("node:box2"));
         click("menu:delete");
         check(!byName("box2"), "...and so is Delete");
+    }
+
+    // --- A node put down over a wire goes into it ---------------------------------------------------
+    {
+        // The wire from hub into hub_plates: its middle is halfway between its dots.
+        auto wireMid = [&] {
+            const ImVec2 a = centreOf("out:hub"), b = centreOf("in:hub_plates:0");
+            return ImVec2(0.5f * (a.x + b.x), 0.5f * (a.y + b.y));
+        };
+        const int hubId = byName("hub")->id;
+        // Two inputs (Sweep): not a node that goes into a wire.
+        drag(centreOf("node:sweep1"), wireMid());
+        const proc::Node* sw = byName("sweep1");
+        check(byName("hub_plates")->inputs[0] == hubId && sw && (sw->inputs.empty() || sw->inputs[0] < 0),
+              "a node with two inputs dropped on a wire is only moved");
+        history.undo(document);
+        frame(false);
+        // One input, nothing wired: dragged over the wire, it goes in between.
+        mouse = ImVec2(empty.x - 200.0f, empty.y - 320.0f);
+        frame(false);
+        key(ImGuiKey_A, ImGuiMod_Shift);
+        io.AddInputCharactersUTF8("transf");
+        frame(false);
+        key(ImGuiKey_Enter);
+        const proc::Node* t = panel.pickedNodes().empty() ? nullptr : graph()->find(panel.pickedNodes()[0]);
+        const std::string tName = t ? t->name : "";
+        frame(false);
+        const unsigned rev1 = history.revision();
+        const std::size_t faces1 = meshFaces();
+        drag(centreOf("node:" + tName), wireMid());
+        frame(false);
+        const proc::Node* tn = byName(tName);
+        check(tn && tn->inputs.size() == 1 && tn->inputs[0] == hubId &&
+                  byName("hub_plates")->inputs[0] == tn->id && history.revision() == rev1 + 1,
+              "a node with one input dragged onto a wire is wired in between, as one undo step", tName);
+        check(meshFaces() == faces1, "...and the object is cooked through it (a Transform keeps the faces)");
+        history.undo(document);
+        frame(false);
+        tn = byName(tName);
+        check(tn && (tn->inputs.empty() || tn->inputs[0] < 0) && byName("hub_plates")->inputs[0] == hubId,
+              "...and undo takes it out again");
+        // Straight from the Add menu, opened over the wire.
+        mouse = wireMid();
+        frame(false);
+        key(ImGuiKey_A, ImGuiMod_Shift);
+        io.AddInputCharactersUTF8("transf");
+        frame(false);
+        key(ImGuiKey_Enter);
+        const proc::Node* t2 = panel.pickedNodes().empty() ? nullptr : graph()->find(panel.pickedNodes()[0]);
+        check(t2 && t2->name != tName && t2->inputs.size() == 1 && t2->inputs[0] == hubId &&
+                  byName("hub_plates")->inputs[0] == t2->id,
+              "a node added from the menu over a wire goes into it");
+        history.undo(document);
+        frame(false);
     }
 
     // --- The Prefab node ---------------------------------------------------------------------------------
