@@ -1723,6 +1723,30 @@ public:
     void load(const nlohmann::json& j) override;
 };
 
+// --- Built-in component: Swing (hangs from a point, swings when hit) -----------
+// A hook on a chain, a lamp on its cable, a sign, a punch bag: in Play the object
+// -- and whatever hangs below it in the hierarchy -- turns about `pivot` as one
+// rigid pendulum, pushed by game.applyImpulse (a shot), pulled back by gravity,
+// settled by `damping` (Swing.hpp). `pivot` is in the object's own frame; zero
+// means the top of all that hangs -- where the chain meets the ceiling.
+class SwingComponent : public ComponentBase {
+public:
+    glm::vec3 pivot{0.0f};       // where it hangs from (own frame; 0 = the top of what hangs)
+    float     mass     = 5.0f;   // kg: the heavier, the less a shot moves it
+    float     damping  = 0.3f;   // 1/s: how fast the swing dies away
+    float     maxAngle = 75.0f;  // degrees it may lean from hanging straight
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<SwingComponent>(*this);
+    }
+    const char* typeId() const override { return "swing"; }
+    const char* displayName() const override { return "Swing"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Decal (an image laid on what is in the box) -----------
 // The object's box IS the decal: whatever lies in it -- modelled objects,
 // imported models, the terrain -- gets the image of the object's Material laid

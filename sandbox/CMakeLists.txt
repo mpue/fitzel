@@ -185,6 +185,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CameraTexture.cpp
     src/LimbIK.cpp
     src/Decals.cpp
+    src/Swing.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
@@ -982,6 +983,15 @@ add_executable(camtexcheck tools/camtexcheck.cpp src/CameraTexture.cpp src/Sandb
                            src/EditMeshSweep.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(camtexcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(camtexcheck PRIVATE FITZEL_PLAYER)
+
+# swingcheck -- things that hang and swing (Swing.hpp): still when left alone, the
+# period of a pendulum, damping at its rate, a push's swing, the angle limit, the
+# twist of an off-centre hit, the pivot kept. No GL, no physics world.
+#   build/release/bin/swingcheck.exe
+add_executable(swingcheck tools/swingcheck.cpp src/Swing.cpp src/SceneGraph.cpp src/Component.cpp
+                          src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                          src/SandboxMath.cpp src/CameraPath.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(swingcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 
 # decalcheck -- decals cut from the surfaces under them (Decals.hpp): the
 # footprint on a floor, UVs, lift, facing and slope limits, a cut over an edge,

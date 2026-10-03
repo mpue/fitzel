@@ -178,6 +178,9 @@ int addGroupBodies(fitzel::PhysicsWorld& w, const std::vector<Entity>& entities,
             // Its own collider -- the barrel in the hall that is meant to roll --
             // and whatever hangs below it is its own business too.
             if (c->components.get<PhysicsComponent>()) continue;
+            // Something that swings (Swing.hpp) brings its own moving boxes; a
+            // static copy of it would stay hanging where it was.
+            if (c->components.get<SwingComponent>()) continue;
             // A part that is nothing but leaves or decals stays out: on its own it
             // would fall back to its hull, and the grass around a building
             // hulls into a ring round the whole of it.

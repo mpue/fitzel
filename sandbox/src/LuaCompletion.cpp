@@ -44,7 +44,7 @@ const Completion kGameMembers[] = {
     {"getPos", "getPos(id) -> x, y, z"},
     {"setPos", "setPos(id, x, y, z)"},
     {"setVelocity", "setVelocity(id, x, y, z)"},
-    {"applyImpulse", "applyImpulse(id, x, y, z)"},
+    {"applyImpulse", "applyImpulse(id, x, y, z [, px, py, pz])  -- [where it struck: a hanging thing swings]"},
     {"moveCharacter", "moveCharacter(id, vx, vz [, dt]) -> x, y, z, onGround, onTerrain  (a capsule through the world)"},
     {"removeCharacter", "removeCharacter(id)  -- drop the figure's capsule"},
     {"groundHeight", "groundHeight(x, y, z [, maxDist]) -> y  (what lies below: road, deck, drawn terrain)"},
