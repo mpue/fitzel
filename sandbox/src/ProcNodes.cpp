@@ -469,6 +469,49 @@ public:
     }
 };
 
+// The plain cylinder: one radius, a height, closed at both ends unless told
+// otherwise. What a Tube with equal radii already makes -- it is the Tube that
+// makes it -- under the name everyone looks for first.
+class CylinderNode : public proc::NodeOf<CylinderNode> {
+public:
+    float     radius   = 2.0f;
+    float     height   = 4.0f;
+    int       segments = 24;
+    int       rows     = 1;
+    bool      caps     = true;
+    int       axis     = 1;
+    glm::vec3 center{0.0f};
+
+    const char* typeId() const override { return "cylinder"; }
+    const char* displayName() const override { return "Cylinder"; }
+    const std::vector<Property>& props() const override {
+        static const std::vector<Property> p = [] {
+            std::vector<Property> v;
+            v.push_back(number("Radius", "radius", &CylinderNode::radius, 0.25f, 0.001f, 10000.0f));
+            v.push_back(number("Height", "height", &CylinderNode::height, 0.5f, 0.01f, 100000.0f));
+            v.push_back(whole("Segments", "segments", &CylinderNode::segments, 3, 256));
+            v.push_back(whole("Rows", "rows", &CylinderNode::rows, 1, 256));
+            v.push_back(flag("Caps", "caps", &CylinderNode::caps));
+            v.push_back(choice("Axis", "axis", &CylinderNode::axis, axisLabels()));
+            v.push_back(vector3("Center", "center", &CylinderNode::center, 0.5f));
+            return v;
+        }();
+        return p;
+    }
+    std::string cook(const std::vector<const Geo*>& in, Geo& out) const override {
+        TubeNode t;
+        t.radius    = radius;
+        t.radiusTop = radius;
+        t.length    = height;
+        t.segments  = segments;
+        t.rows      = rows;
+        t.caps      = caps;
+        t.axis      = axis;
+        t.center    = center;
+        return t.cook(in, out);
+    }
+};
+
 class SphereNode : public proc::NodeOf<SphereNode> {
 public:
     float     radius   = 3.0f;
@@ -1716,6 +1759,7 @@ struct RegisterNodes {
     }
     RegisterNodes() {
         add<BoxNode>("Shapes", "A box of any size.");
+        add<CylinderNode>("Shapes", "A cylinder: one radius, a height, closed at both ends.");
         add<TubeNode>("Shapes", "A cylinder or a cone: hub, module, spoke, mast.\n"
                                 "Rows give later steps faces to work on.");
         add<SphereNode>("Shapes", "A sphere: tanks, domes, pods.");

@@ -84,7 +84,7 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Modifier-Stack**: Subdivision Surface, Decimate, Wireframe, Array, Solidify.
 - **Mesh-Paint**: Terrain-Layer auf Objekte malen. Dazu 3D-Cursor und Snapping.
 - **Prozedurale Objekte (Mini-Houdini)**: View > Objects > Procedural. Ein Knoten-Graph
-  aus Formen (Box, Tube/Kegel, Kugel, Torus, Grid), Kopien (radial, in Reihe, auf
+  aus Formen (Box, Zylinder, Tube/Kegel, Kugel, Torus, Grid), Kopien (radial, in Reihe, auf
   Punkte), Kombinieren (Merge, Transform, Mirror), Details (Panels, Extrude, Lattice,
   Thicken, Subdivide, Delete faces) und Material pro Flächenauswahl wird bei jeder
   Änderung in ein normales Mesh gekocht. Vorlagen „Ring station“ und „Modular
