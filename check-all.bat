@@ -149,6 +149,9 @@ REM  ikcheck: inverse Kinematik -- Glieder an vier Rig-Benennungen gefunden, Zwe
 REM  Knochen-Kette erreicht ihr Ziel bei gleichen Knochenlaengen, Fuesse auf Stufen,
 REM  in Loecher und auf Haenge, Haende an einen Punkt.
 call :run ikcheck
+REM  decalcheck: Decals aus den Flaechen darunter geschnitten -- Grundflaeche,
+REM  UVs, Abstand, Neigungsgrenze, Kante, Empfaenger aus echten Objekten, Gelaende.
+call :run decalcheck
 REM  retargetcheck misst das Retargeting: die automatische Knochen-Zuordnung an
 REM  Mixamo-, Unreal- und BVH-Skeletten, dann (wo die Testdateien und Blender da
 REM  sind) eine echte FBX-Bewegung auf eine Daz-Figur -- jeder Knochen muss dahin

@@ -1539,6 +1539,32 @@ const std::vector<Property>& IKComponent::properties() {
 void IKComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
 void IKComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
 
+const std::vector<Property>& DecalComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        auto addFloat = [&](const char* label, const char* key, float DecalComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.005f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<DecalComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        auto addBool = [&](const char* label, const char* key, bool DecalComponent::* m) {
+            Property b; b.label = label; b.key = key; b.kind = PropKind::Bool;
+            b.field = [m](void* o) -> void* { return &(static_cast<DecalComponent*>(o)->*m); };
+            p.push_back(std::move(b));
+        };
+        addFloat("Lift", "lift", &DecalComponent::lift, 0.0f, 0.1f, "%.3f m");
+        addFloat("Max angle", "maxAngle", &DecalComponent::maxAngle, 0.0f, 89.0f, "%.0f deg");
+        addBool ("On objects", "onObjects", &DecalComponent::onObjects);
+        addBool ("On terrain", "onTerrain", &DecalComponent::onTerrain);
+        return p;
+    }();
+    return props;
+}
+void DecalComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
+void DecalComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2096,6 +2122,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<AnimationTriggerComponent>()); }});
         components::registerType({"ik", "Inverse Kinematics",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<IKComponent>()); }});
+        components::registerType({"decal", "Decal",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<DecalComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

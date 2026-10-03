@@ -199,6 +199,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   allem, was sie brauchen (Modelle, Materialien, Skripte, Klänge, Animationsgraphen);
   der Import zeigt vorher Datei für Datei, was er tun würde.
 - **Import**: Unity-FBX und Videos.
+- **Decals**: Komponente „Decal“ – der Kasten des Objekts legt das Bild seines Materials
+  auf alles, was darin liegt: modellierte Objekte, importierte Modelle, Gelände (Plakat
+  an der Wand, Riss im Boden, Moos, Brandfleck). Echte Geometrie, aus den Dreiecken
+  darunter geschnitten – beleuchtet, beschattet, im Spiel und im Pathtracer. Dazu
+  `game.decal` für Einschusslöcher zur Laufzeit; `weapon.lua` setzt sie.
 - **Kamera auf Textur**: ein Material zeigt live, was eine Kamera der Szene sieht
   (Monitor, Überwachungsbildschirm, Spiegel) -- Kamera, Bildgröße und "leuchtet wie
   ein Bildschirm" im Material-Panel; im Editor, im Play und im exportierten Spiel.

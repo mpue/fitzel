@@ -345,6 +345,12 @@ struct ScriptHost {
     // frame, `weight` of the way from where the animation has it (game.reach;
     // LimbIK.hpp).
     std::function<void(int id, int side, glm::vec3 target, float weight)> reach;
+    // An image where something hit (game.decal): at `pos` on a surface with
+    // normal `normal`, `size` across, in library material `material` ("" = the
+    // engine's bullet hole), turned `spin` degrees. False when nothing that
+    // stands still is there (Decals.hpp).
+    std::function<bool(glm::vec3 pos, glm::vec3 normal, float size, const std::string& material,
+                       float spin)> decal;
     // Replay an object's Particle burst where it stands now (an impact, a flash).
     std::function<void(int id)> emit;
     // What a thing let go of at `from` comes to rest on, straight down within

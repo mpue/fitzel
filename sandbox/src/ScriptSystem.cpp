@@ -1286,6 +1286,18 @@ int l_reach(lua_State* L) {
     if (h && h->reach && side >= 0) h->reach(id, side, target, optNum(L, 6, 1.0f));
     return 0;
 }
+// decal(x, y, z, nx, ny, nz [, size [, material [, spin]]]) -> bool -- an image
+// laid where something hit: a bullet hole by default
+int l_decal(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 p(num(L, 1), num(L, 2), num(L, 3));
+    const glm::vec3 n(num(L, 4), num(L, 5), num(L, 6));
+    const float size = optNum(L, 7, 0.12f);
+    const std::string mat = lua_type(L, 8) == LUA_TSTRING ? lua_tostring(L, 8) : "";
+    const float spin = optNum(L, 9, 0.0f);
+    lua_pushboolean(L, h && h->decal && h->decal(p, n, size, mat, spin));
+    return 1;
+}
 // emit(id) -- replay the object's Particle burst
 int l_emit(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1650,6 +1662,7 @@ void ScriptSystem::installApi() {
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
     fn("toWorld", l_toWorld);
     fn("reach", l_reach);
+    fn("decal", l_decal);
     // Pickups and the bones of a figure
     fn("collectibles", l_collectibles); fn("collectible", l_collectible);
     fn("bonePos", l_bonePos);         fn("bones", l_bones);

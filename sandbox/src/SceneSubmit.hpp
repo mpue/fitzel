@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <functional>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -68,6 +69,10 @@ struct Context {
 
     float roadWetness = 0.0f;  // the weather, as the materials want it
     bool  playMode    = false; // hides the authoring aids (markers, player starts)
+
+    // The cut of placed decal `id` (Decals.hpp), world space, or null. Unset: a
+    // decal object draws nothing.
+    std::function<const fitzel::Mesh*(int)> decalMesh = nullptr;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is

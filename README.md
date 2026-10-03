@@ -520,6 +520,28 @@ sample, so a screen that sees itself shows the frame before instead of reading t
 it is being drawn into. A file keeps the camera's name, never a texture.
 `sandbox/src/CameraTexture.hpp`; measured by `camtexcheck` against a real GL context.
 
+### Decals
+
+A poster on a wall, a crack in the floor, moss on a rock, a scorch mark: give any object
+a **Decal** component (*Add Component > Decal*) and a Material, and its box becomes the
+decal. Whatever lies in the box -- modelled objects, plain primitives, imported static
+models, the terrain -- gets the material's image laid on it, projected down the box's own
+-Y; move, turn and scale the box like any object, and the box itself is never drawn. A
+material with *Cutout* or *Blend* alpha is what a decal wants.
+
+The decal is real geometry, cut from the receivers' own triangles: every triangle in the
+box that faces the projection is clipped to the box (a surface tilted further than
+*Max angle* stays bare), lifted a centimetre and given the UV of where it lies in the
+box. So it is lit, shadowed and wet like the surface under it, exact on a curved or
+creased one, needs no depth prepass in this forward renderer -- and the game, the exported
+player and the path tracer all draw it without knowing it is a decal. It is cut again
+when the box or anything in it moves; a dynamic physics body never receives one.
+
+Scripts throw decals too: `game.decal(x, y, z, nx, ny, nz [, size, material, spin])`
+puts one where a ray hit -- by default the engine's own bullet hole -- keeping the last
+256 until Play stops. `weapon.lua` leaves a hole wherever a shot lands.
+`sandbox/src/Decals.hpp`; measured by `decalcheck`, and `viewcheck` draws them.
+
 ### Multishot camera
 
 A camera that *shoots* an object rather than riding one. It cuts between the moves a
@@ -860,6 +882,7 @@ one thing.
 | `retargetcheck` | Does every bone land where it belongs? Maps synthetic Mixamo, Unreal and BVH skeletons onto the humanoid template, and -- where Blender and the test files are there -- converts a real FBX motion, compares the transfer bone by bone with a reference clip and loads the result back through the engine's loader. Exits non-zero. |
 | `collidecheck` | Does a mesh collide as the shape that is drawn? Balls dropped on an L-shaped mesh land in the notch only if the collider is the mesh, not a hull; ramps, planes, a dynamic mesh, static imported models and whole model groups (a trough, a doorway) -- and a figure's capsule at walls, on bridges and up kerbs. Exits non-zero. |
 | `ikcheck [--model a.glb ...]` | Inverse kinematics on a made-up skeleton in five rigs' naming: are the limbs found, does a two-bone chain reach its target with its bones' lengths kept and the knee bending the way it bent, do feet stand on steps, in holes and on slopes, and do hands go where they are sent and come back after the frame? With `--model`, the limbs of real figures. Exits non-zero. |
+| `decalcheck` | Is a decal cut where it should be? Its footprint on a floor exactly, U and V 0..1 across it, the lift, nothing on a surface facing away or too steep, cut where a surface ends, receivers gathered from real entities (a crate's lid; a dynamic body and another decal left out; a plain primitive), the terrain's slope, a thrown hole's box on a wall, and the engine's bullet hole. No GL. Exits non-zero. |
 | `camtexcheck` | Does a camera's picture land in the material that shows it -- drawn once per camera and size, at most 30 times a second, at the picture's shape, with the framebuffer and viewport put back and the link kept in a file? A real GL context. Exits non-zero. |
 | `treecheck <outDir>` | Does the tree generator grow every preset finite, in range, at the height asked for and the same twice -- and does the `.glb` load back the way a vegetation species reads it? Draws each tree in the generator's studio to a PNG. |
 | `audiocheck <wav>` | Does the device give the engine more than one output channel? A mono output is the likeliest reason for a world with no direction in it. |

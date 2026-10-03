@@ -201,6 +201,17 @@ void submit(const Context& c, Scratch& scratch) {
     for (const Entity& b : c.entities) {
         if (!b.activeInHierarchy) continue;         // deactivated: hidden
         if (b.type == EntityType::Sun) continue;   // directional, no geometry
+        // A decal draws no box: what it shows is its image cut from whatever is
+        // in its box (Decals.hpp), already in world space, in its material.
+        if (b.components.get<DecalComponent>()) {
+            if (const fitzel::Mesh* dm = c.decalMesh ? c.decalMesh(b.id) : nullptr) {
+                const auto* mc = b.components.get<MaterialComponent>();
+                const int mi = c.document.materialIndex(mc ? mc->material : AssetId{});
+                c.renderer.submit(*dm, scratch.gpuMats[mi], glm::mat4(1.0f), /*castsPointShadow=*/false,
+                                  /*reflective=*/false, c.materials[mi].opacity, isBlended(c.materials[mi]));
+            }
+            continue;
+        }
         if (b.type == EntityType::Empty) continue;  // grouping node, no geometry
         // Player-start markers are authoring aids -- hidden while playing.
         if (c.playMode && b.components.get<PlayerStartComponent>()) continue;

@@ -158,6 +158,7 @@
 #include "RaceGrid.hpp"
 #include "CameraSystem.hpp"
 #include "CameraTexture.hpp"
+#include "Decals.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
@@ -623,6 +624,9 @@ int main(int argc, char** argv) {
         // What cameras see, on the materials that show them (CameraTexture.hpp):
         // monitors and mirrors, in the editor, in Play and in the player.
         camtex::CameraTextures camTextures;
+        // Images laid on whatever is under them: Decal objects, and the bullet
+        // holes scripts throw (Decals.hpp).
+        decals::System decalSys;
         // The target the viewport panel was resized AWAY from, kept alive until
         // the frame it still appears in has been drawn.
         //
@@ -5627,6 +5631,33 @@ int main(int argc, char** argv) {
         host.reach = [&](int id, int side, glm::vec3 target, float weight) {
             limbIk.reach(id, side, target, weight);
         };
+        // game.decal: a bullet hole, a splat (Decals.hpp). Its material is named
+        // from the library -- or, with no name, the engine's own bullet hole, put
+        // into the library the first time it is wanted (the library is put back
+        // as it was when Play stops, so it never reaches a file).
+        host.decal = [&](glm::vec3 p, glm::vec3 n, float size, const std::string& name, float spin) {
+            const std::string want = name.empty() ? std::string("Bullet hole (engine)") : name;
+            fitzel::AssetId mat;
+            for (const MaterialDef& md : materials)
+                if (md.name == want) { mat = md.assetId; break; }
+            if (!mat.valid() && name.empty()) {
+                MaterialDef md;
+                md.assetId      = fitzel::AssetId::generate();
+                md.name         = want;
+                md.tex          = decals::bulletHoleTexture();
+                md.alphaMode    = AlphaMode::Blend;
+                md.reflectivity = 0.0f;
+                md.roughness    = 0.9f;
+                mat = md.assetId;
+                materials.push_back(std::move(md));
+            }
+            if (!mat.valid()) return false;
+            const decals::HeightFn ground =
+                (terrainOn && host.terrainHeight)
+                    ? decals::HeightFn([&](float x, float z) { return host.terrainHeight(x, z); })
+                    : decals::HeightFn{};
+            return decalSys.spawn(mat, p, n, size, spin, entities, models, ground);
+        };
         // game.restart: the overlay's Restart, asked for by a script (a figure
         // that died). Deferred like the button, for the same reason.
         host.restart = [&] { pendingRestart = true; };
@@ -5868,6 +5899,7 @@ int main(int argc, char** argv) {
             physics = std::make_unique<PhysicsWorld>();
             scriptFigures.clear();   // their capsules were in the old world
             boneAttach.clear();      // and nothing is carried yet
+            decalSys.clearThrown();  // no holes yet
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             // Fresh world: the previous collider id is void. Build the terrain
             // heightfield around wherever the game opens -- the PlayerStart when
@@ -6093,6 +6125,7 @@ int main(int argc, char** argv) {
             physics.reset();
             scriptFigures.clear();
             boneAttach.clear();
+            decalSys.clearThrown();   // the holes were the game's
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -11382,12 +11415,21 @@ int main(int argc, char** argv) {
             // see the header there for why that matters the moment anything else
             // has to draw a scene. The scratch lives here because the render
             // queue points into it and is replayed several times per frame.
+            // Decals: every Decal object's image cut from what is in its box,
+            // again wherever the box or what is in it moved (Decals.hpp).
+            decalSys.update(entities, models,
+                            (terrainOn && host.terrainHeight)
+                                ? decals::HeightFn([&](float x, float z) { return host.terrainHeight(x, z); })
+                                : decals::HeightFn{});
             scenesubmit::Scratch submitScratch;
             scenesubmit::submit({entities, materials, document, models, meshCache,
                                  lit, renderer,
                                  carCube, rampMesh, cylMesh, sphereMesh, planeMesh,
-                                 composeModel, roadWetness, playMode},
+                                 composeModel, roadWetness, playMode,
+                                 [&](int id) { return decalSys.meshFor(id); }},
                                 submitScratch);
+            // ...and the holes scripts threw, in the same frame's materials.
+            decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document);
             // One GPU material per library asset -- and the batched geometry
             // below (the roadside city, the side objects, the splines) wears
             // the same library materials the entities do, so it draws from that

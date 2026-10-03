@@ -53,6 +53,7 @@ const Completion kGameMembers[] = {
     {"emit", "emit(id)  -- replay the object's Particle burst where it is"},
     {"toWorld", "toWorld(id, x, y, z) -> wx, wy, wz  (a point in the object's own frame)"},
     {"reach", "reach(id, \"left\"|\"right\", x, y, z [, weight])  -- this frame: a hand to a point (IK)"},
+    {"decal", "decal(x, y, z, nx, ny, nz [, size, material, spin]) -> bool  -- a bullet hole / image where it hit"},
     {"restart", "restart()  -- Play again from how the scene stood when Play began"},
     {"collectibles", "collectibles() -> { id, ... }  (active objects with a Collectible)"},
     {"collectible", "collectible(id) -> {item, icon, category, description, count, inventory, radius, ...}"},

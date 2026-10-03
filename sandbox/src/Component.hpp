@@ -1723,6 +1723,29 @@ public:
     void load(const nlohmann::json& j) override;
 };
 
+// --- Built-in component: Decal (an image laid on what is in the box) -----------
+// The object's box IS the decal: whatever lies in it -- modelled objects,
+// imported models, the terrain -- gets the image of the object's Material laid
+// on it, projected down the box's own -Y (Decals.hpp). The box itself is never
+// drawn. A material with Cutout or Blend alpha is what a decal wants.
+class DecalComponent : public ComponentBase {
+public:
+    float lift      = 0.01f;   // metres off the surface (enough not to flicker)
+    float maxAngle  = 75.0f;   // a surface tilted further from the projection stays bare
+    bool  onObjects = true;    // objects and models in the box receive it
+    bool  onTerrain = true;    // ...and the ground
+
+    std::unique_ptr<ComponentBase> clone() const override {
+        return std::make_unique<DecalComponent>(*this);
+    }
+    const char* typeId() const override { return "decal"; }
+    const char* displayName() const override { return "Decal"; }
+    const std::vector<Property>& props() const override { return properties(); }
+    static const std::vector<Property>& properties();
+    void save(nlohmann::json& j) const override;
+    void load(const nlohmann::json& j) override;
+};
+
 // --- Built-in component: Animation (plays a skinned model's clip) -------------
 // Attach to a Model entity whose glTF has a skeleton + animation clips. Plays
 // `clip` at `speed`, CPU-skinning the mesh each frame (see the tick in main).
