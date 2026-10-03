@@ -201,6 +201,7 @@ void submit(const Context& c, Scratch& scratch) {
     for (const Entity& b : c.entities) {
         if (!b.activeInHierarchy) continue;         // deactivated: hidden
         if (b.type == EntityType::Sun) continue;   // directional, no geometry
+        if (c.vanished && c.vanished(b.id)) continue;   // a pane shot to pieces
         // A decal draws no box: what it shows is its image cut from whatever is
         // in its box (Decals.hpp), already in world space, in its material.
         if (b.components.get<DecalComponent>()) {
@@ -236,7 +237,13 @@ void submit(const Context& c, Scratch& scratch) {
                 glm::translate(glm::mat4(1.0f), -lm->center());
             for (std::size_t i = 0; i < lm->meshes.size(); ++i) {
                 const int mi = c.document.materialIndex(lm->primMaterialId[i]);
-                c.renderer.submit(lm->meshes[i], scratch.gpuMats[mi], mm, true,
+                // Its glass shot out: this copy draws what is left of it.
+                const fitzel::Mesh* mesh = &lm->meshes[i];
+                if (const fitzel::Mesh* left = c.leftOf ? c.leftOf(b.id, i) : nullptr) {
+                    if (left->vertexCount() == 0) continue;
+                    mesh = left;
+                }
+                c.renderer.submit(*mesh, scratch.gpuMats[mi], mm, true,
                                 isMirror(c.materials[mi]),
                                 c.materials[mi].opacity,
                                 isBlended(c.materials[mi]));

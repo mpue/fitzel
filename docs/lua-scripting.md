@@ -511,6 +511,7 @@ kommen vom Knochen. Gilt bis `game.detach` oder bis Play endet.
 | `game.toWorld(id, x, y, z)` | `wx, wy, wz` oder `nil` | ein Punkt im eigenen Raum des Objekts (Meter von seiner Mitte, mitgedreht, nicht skaliert) in der Welt — die Laufmündung einer Pistole in der Hand |
 | `game.emit(id)` | – | den **Burst** der Particle-Komponente des Objekts dort auslösen, wo es gerade steht (Einschlag, Mündungsfeuer). Ein Effekt-Objekt reicht für viele Einschläge: hinsetzen, auslösen, weiter |
 | `game.decal(x, y, z, nx, ny, nz [, größe [, material [, drehung]]])` | bool | Ein **Decal** dort, wo etwas getroffen hat: auf der Fläche bei `x, y, z` mit der Normale `nx, ny, nz` (wie `game.castRay` sie liefert), `größe` Meter breit (Standard 0,12), im Bibliotheks-Material `material` – ohne Namen das Einschussloch der Engine –, um `drehung` Grad gedreht. Geschnitten aus allem, was dort stillsteht (Objekte, Modelle, Gelände; lose Physik-Körper nicht); die letzten 256 bleiben, bis Play endet. `false`, wenn dort nichts ist |
+| `game.shatter(id, x, y, z, dx, dy, dz [, stärke])` | bool | **Glas zerbricht** dort, wo ein Schuss es getroffen hat: Objekt `id` (wie `game.castRay` es meldet; `-1`, die Welt, sucht selbst das Glas an der Stelle – so kommt man an die Scheiben einer importierten Halle) am Punkt `x, y, z`, der Schuss unterwegs in Richtung `dx, dy, dz`, `stärke` 1 für eine Kugel. Glas ist ein Material mit „Glass“ oder eines, das durchsichtig ist (Deckkraft unter 1) und kein Cutout. Die getroffene Scheibe – nur sie, mit Rückseite und Kanten – reißt vom Einschuss aus in Scherben, kleine am Loch, größere am Rahmen; sie fliegen mit dem Schuss, kippeln, fallen und bleiben flach liegen, bis Play endet. Danach geht ein `game.castRay` durch das Loch. Ein ganzes Glas-Objekt (Plane, flache Box mit Physics) zerbricht als Ganzes. `false`, wenn dort kein Glas ist |
 | `game.reach(id, seite, x, y, z [, gewicht])` | – | Eine **Hand** der Figur (`"left"`/`"right"`) **für diesen Frame** an einen Punkt der Welt bringen (inverse Kinematik): Schulter und Ellbogen beugen sich, die Hand behält die Ausrichtung der Animation. `gewicht` 0..1 ist der Anteil des Wegs von dort, wo die Animation die Hand hat (zum Ein- und Ausblenden). Jeden Frame aufrufen; wer aufhört, gibt die Hand der Animation zurück. Türgriff, Lenkrad, die zweite Hand an der Pistole |
 
 ```lua
@@ -939,6 +940,9 @@ mit dem, was das Inventar ausgerüstet hat, und mit dessen Munition
   stillsteht – Wand, Boden, Modell, Gelände. `HOLE_SIZE` ist seine Größe,
   `HOLE_MATERIAL` ein eigenes Bibliotheks-Material (leer: das der Engine),
   `BULLET_HOLES = false` schaltet sie ab.
+- **Glas** zerbricht, wo es getroffen wird (`game.shatter`), klirrt (`GLASS_SOUND`), und
+  der Schuss geht durch das Loch weiter zu dem, was dahinter ist. `GLASS = false`: Glas
+  bekommt Einschusslöcher wie eine Wand.
 
 Inspector-Felder: Tasten, Magazin, Feuerrate, Nachladezeit, Reichweite, Stoß, Griff im
 Anschlag, Mündung, die Schulterkamera (`AIM_DIST`, `AIM_SIDE`, `AIM_UP`, `AIM_FOV`),

@@ -69,6 +69,9 @@ struct Receivers {
     bool objects = true;
     bool terrain = true;
     int  skip    = -1;
+    // Where an object is no longer there although its triangles are: a pane
+    // shot out (Shatter.hpp). Unset: nowhere.
+    std::function<bool(int id, const glm::vec3& p)> hole;
 };
 void gather(const std::vector<Entity>& entities, ModelLibrary& models, const HeightFn& terrain,
             const glm::mat4& boxToWorld, const Receivers& who, std::vector<Tri>& out);
@@ -110,6 +113,9 @@ public:
                       const std::vector<MaterialDef>& materials, const Document& document) const;
     void clearThrown();
     std::size_t thrownCount() const { return m_thrown.size(); }
+    // Where a thrown decal finds nothing although the triangles are there (see
+    // Receivers::hole).
+    void setHoles(std::function<bool(int id, const glm::vec3& p)> hole) { m_hole = std::move(hole); }
 
     static constexpr std::size_t kMaxThrown = 256;
 
@@ -127,6 +133,7 @@ private:
     std::unordered_map<int, Placed> m_placed;
     std::vector<Thrown> m_thrown;
     std::size_t         m_next = 0;   // the oldest, replaced when the ring is full
+    std::function<bool(int id, const glm::vec3& p)> m_hole;
 };
 
 } // namespace decals

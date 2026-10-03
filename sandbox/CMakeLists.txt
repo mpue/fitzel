@@ -186,6 +186,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/LimbIK.cpp
     src/Decals.cpp
     src/Swing.cpp
+    src/Shatter.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
@@ -992,6 +993,18 @@ add_executable(swingcheck tools/swingcheck.cpp src/Swing.cpp src/SceneGraph.cpp 
                           src/Primitives.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
                           src/SandboxMath.cpp src/CameraPath.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(swingcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
+
+# shattercheck -- glass that breaks (Shatter.hpp): the pane found in a model's
+# triangles (its back and edges, not its neighbour), the cracks covering it
+# exactly, shards as solid as the pane, flying with the shot and lying flat
+# where they land. No GL.
+#   build/release/bin/shattercheck.exe
+add_executable(shattercheck tools/shattercheck.cpp src/Shatter.cpp src/Modifiers.cpp
+                            src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
+                            src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                            src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
+                            src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(shattercheck PRIVATE fitzel stb_headers nlohmann_json::nlohmann_json)
 
 # decalcheck -- decals cut from the surfaces under them (Decals.hpp): the
 # footprint on a floor, UVs, lift, facing and slope limits, a cut over an edge,

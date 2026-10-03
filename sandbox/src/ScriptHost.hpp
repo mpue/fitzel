@@ -353,6 +353,10 @@ struct ScriptHost {
     // stands still is there (Decals.hpp).
     std::function<bool(glm::vec3 pos, glm::vec3 normal, float size, const std::string& material,
                        float spin)> decal;
+    // Glass broken where a shot struck it (game.shatter; Shatter.hpp): object
+    // `id` (-1: whatever is there, as castRay reports the world) at `pos`, the
+    // shot going `dir`, `strength` 1 for a bullet. False when there is no glass.
+    std::function<bool(int id, glm::vec3 pos, glm::vec3 dir, float strength)> shatter;
     // Replay an object's Particle burst where it stands now (an impact, a flash).
     std::function<void(int id)> emit;
     // What a thing let go of at `from` comes to rest on, straight down within
