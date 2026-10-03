@@ -157,6 +157,13 @@ für Standbilder und ein Synthesizer für eigene Musik.
   statt Play), `game.attach`/`detach`/`bonePos`/`bones` (Dinge an Knochen hängen),
   `game.collectibles`/`collectible`, `game.groundHeight` und die Tabelle `shared`
   für Skripte, die zusammenarbeiten.
+- **Schießen** (`weapon.lua`): mit der ausgerüsteten Pistole über die Schulter zielen
+  (rechte Maustaste), schießen (linke), nachladen (R) mit Munition aus dem Inventar –
+  Mocap-Anschlag und -Rückstoß, Mündungsfeuer, Rauch und Lichtblitz, Staub und Funken
+  am Einschlag, Stoß für Physik-Körper, Fadenkreuz mit Treffer-Markierung, Magazin-
+  Anzeige. Neu in Lua: `game.orbitFrame` (Schulterkamera), `game.castRay` (Physik und
+  gezeichnetes Gelände), `game.emit` (Partikel-Burst auf Kommando), `game.toWorld`,
+  `game.attach` mit Überblendung.
 - **Lua-Scripting**: mehrere Skripte pro Objekt, bei jedem Play eine frische VM. Dazu ein
   Skript-Editor mit Autovervollständigung, ein UI-Overlay (Text, Buttons, Bilder) und
   Spielstände.

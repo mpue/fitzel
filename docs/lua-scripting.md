@@ -116,6 +116,10 @@ local px, py, pz = game.cameraPos()
 local dx, dy, dz = game.cameraDir()
 ```
 
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.orbitFrame(gewicht, abstand, seite, höhe, fov)` | – | Die Orbit-Kamera **für diesen Frame** anders rahmen — Zielen über die Schulter: `gewicht` 0..1 blendet vom eingestellten Bild dahin, `abstand` m vom Drehpunkt, der Drehpunkt `seite` m nach rechts und `höhe` m nach oben, Sichtfeld `fov` Grad (0 = lassen). Die Maus dreht dabei um so viel langsamer, wie das Bild enger wird. Jeden Frame aufrufen; wer aufhört, gibt das Bild zurück |
+
 ### 3.3 Entities erzeugen & entfernen
 
 | Aufruf | Rückgabe | Beschreibung |
@@ -171,6 +175,8 @@ No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.
 |--------|----------|--------------|
 | `game.moveCharacter(id, vx, vz [, dt])` | `x, y, z, amBoden, aufGelände` oder `nil` | Figur `id` als Kapsel durch die Physik-Welt laufen lassen: waagrecht mit `vx, vz` m/s, für `dt` Sekunden (Standard 1/60). Gibt zurück, wo ihre Füße jetzt stehen (Welt), ob sie auf etwas steht und ob das das Gelände ist |
 | `game.removeCharacter(id)` | – | Die Kapsel der Figur wieder entfernen (etwa beim Einsteigen ins Auto) |
+| `game.restart()` | – | Play noch einmal von vorn, so wie die Szene stand, als Play begann (wie der Restart-Knopf eines Menüs) — ohne die Datei neu zu lesen, ungespeicherte Änderungen im Editor bleiben |
+| `game.castRay(ox, oy, oz, dx, dy, dz [, maxDist])` | `x, y, z, nx, ny, nz, id, dist` oder `nil` | Ein Strahl durch die Physik-Welt **und** das Gelände, wie es gezeichnet ist: das Erste, was er trifft (Standard bis 200 m). `id` ist das getroffene Objekt, `-1` die Welt selbst (Gelände, Straße, Brücke). Für Schüsse und Sichtlinien — genauer als `game.raycast`, der nur Auswahl-Kästen kennt |
 | `game.groundHeight(x, y, z [, maxDist])` | `y` oder `nil` | Worauf etwas fiele, das man bei `x, y, z` loslässt: senkrecht nach unten (bis `maxDist`, Standard 50 m) die erste Straße, Brücke, der erste Boden — oder das Gelände, so wie es **gezeichnet** ist (nie darunter). Ausserhalb von Play nur das Gelände |
 
 Beim ersten Aufruf bekommt das Objekt eine Kapsel (so hoch wie das Objekt, 0,3 m
@@ -501,6 +507,9 @@ kommen vom Knochen. Gilt bis `game.detach` oder bis Play endet.
 | `game.bones(id)` | `{ namen }` | alle Knochen der Figur, in Skelett-Reihenfolge |
 | `game.attach(objekt, figur, knochen [, x, y, z [, rx, ry, rz]])` | bool | `objekt` an den Knochen hängen. Mit Zahlen: so weit (m) und so gedreht (Grad) im Raum des Knochens; ohne: bleibt, wo es jetzt ist — relativ zum Knochen |
 | `game.detach(objekt)` | – | wieder loslassen; das Objekt bleibt, wo es zuletzt war |
+| `game.attach(…, rx, ry, rz, blend)` | bool | wie oben, aber in `blend` Sekunden vom jetzigen Sitz dorthin, statt zu springen (die Pistole dreht sich beim Anlegen in der Hand) |
+| `game.toWorld(id, x, y, z)` | `wx, wy, wz` oder `nil` | ein Punkt im eigenen Raum des Objekts (Meter von seiner Mitte, mitgedreht, nicht skaliert) in der Welt — die Laufmündung einer Pistole in der Hand |
+| `game.emit(id)` | – | den **Burst** der Particle-Komponente des Objekts dort auslösen, wo es gerade steht (Einschlag, Mündungsfeuer). Ein Effekt-Objekt reicht für viele Einschläge: hinsetzen, auslösen, weiter |
 
 ```lua
 -- Die Pistole in die rechte Hand (CC-Rig: Y entlang der Finger, Z zum Daumen,
@@ -901,7 +910,31 @@ sie hängen dann mit `GRIP_POS`/`GRIP_ROT` in der rechten Hand —, alles lässt
 **wegwerfen**: es fliegt im Bogen nach vorn und landet auf dem, was dort liegt
 (`game.groundHeight`: Weg, Brücke, Boden), bereit zum Wiederaufheben. Maus, Pfeile
 oder WASD wählen. Inspector-Felder: Tasten, Anzahl Plätze, Knochen, Griff, Akzentfarbe
-und die Klänge. Die Beschriftungen stehen oben im Skript in `TEXT`.
+und die Klänge. Die Beschriftungen stehen oben im Skript in `TEXT`. Munition stapelt
+sich (eine zweite Schachtel kommt auf die erste), und ein weggeworfener Stapel behält,
+was noch drin war.
+
+### `weapon.lua` — Schießen mit der ausgerüsteten Waffe
+
+Als **drittes** Skript auf dieselbe Figur, nach Controller und Inventar. Es arbeitet
+mit dem, was das Inventar ausgerüstet hat, und mit dessen Munition
+(`shared.inventories[id]`: `equipped`, `ammo`, `takeAmmo`).
+
+- **Rechte Maustaste** zielt: Der Controller bleibt stehen und dreht die Figur mit der
+  Kamera (`shared.figures[id].hold(yaw)`, Graph-Bool `aiming`, Zustand `aim`), die
+  Orbit-Kamera kommt über die rechte Schulter (`game.orbitFrame`), die Waffe dreht sich
+  in der Hand in den Anschlag (`game.attach` mit Überblendung), ein Fadenkreuz erscheint.
+- **Linke Maustaste** schießt (Trigger `shoot`, Zustand `shoot` mit dem Rückstoß): ein
+  Strahl vom Auge durch die Bildmitte (`game.castRay`), Staub und Funken am Einschlag,
+  Mündungsfeuer, Rauch und ein Lichtblitz an der Mündung (`game.toWorld`,
+  `game.emit` auf Effekt-Objekte, `game.setLight`), ein Stoß für lose Physik-Körper,
+  eine Treffer-Markierung, der Einschlag ist mit Schallverzögerung zu hören.
+- **R** lädt nach; ein leeres Magazin klickt und lädt beim nächsten Schuss selbst nach.
+  Unten rechts zeigt eine Karte Waffe, Magazin (eine Marke je Patrone) und Vorrat.
+
+Inspector-Felder: Tasten, Magazin, Feuerrate, Nachladezeit, Reichweite, Stoß, Griff im
+Anschlag, Mündung, die Schulterkamera (`AIM_DIST`, `AIM_SIDE`, `AIM_UP`, `AIM_FOV`),
+die Namen der Effekt-Objekte und die Klänge.
 
 ### `sokoban.lua` — Sokoban, ein ganzes Spiel in einer Datei
 Skript auf **ein** Objekt legen — am besten ein **Empty**, denn das Spielbrett

@@ -132,11 +132,24 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
         // A match needs the same source name, colour, alpha and the same set of
         // maps at the same resolutions -- close enough to be the same material,
         // strict enough that two different maps under a shared name (e.g. the
-        // generic "Material") don't get merged.
+        // generic "Material") don't get merged. The colour map is compared by a
+        // sampled fingerprint too: a retextured copy of a model keeps the name
+        // and the sizes, and must still keep its own pixels.
         auto sameTex = [](const std::shared_ptr<Texture>& t, bool has, int w, int h) {
             if ((t != nullptr) != has) return false;
             return !has || (t->width() == w && t->height() == h);
         };
+        std::uint64_t texSig = 0;
+        if (hasTex) {
+            texSig = 1469598103934665603ull;               // FNV-1a over ~16k texels
+            const std::size_t n    = p.texPixels.size() / 4;
+            const std::size_t step = std::max<std::size_t>(1, n / 16384) | 1;
+            for (std::size_t i = 0; i < n; i += step)
+                for (int c = 0; c < 4; ++c) {
+                    texSig ^= p.texPixels[i * 4 + c];
+                    texSig *= 1099511628211ull;
+                }
+        }
         AssetId matId;
         bool    reused = false;
         if (!p.materialName.empty())
@@ -149,6 +162,7 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
                 // a material whose texture the user overrode in the Materials
                 // panel still stands for the same source material.
                 if (!sameTex(m.modelTex, hasTex, p.texWidth, p.texHeight)) continue;
+                if (m.modelTexSig != texSig) continue;
                 if (!sameTex(m.modelNormalTex, hasNorm, p.normalWidth, p.normalHeight)) continue;
                 if (!sameTex(m.modelEmissionTex, hasEmis, p.emissionWidth, p.emissionHeight)) continue;
                 if (!sameTex(m.ormTex, hasOrm, p.ormWidth, p.ormHeight)) continue;
@@ -212,6 +226,7 @@ int ModelLibrary::buildFromData(const std::string& name, const std::string& path
             def.modelTex         = def.tex;
             def.modelNormalTex   = def.normalTex;
             def.modelEmissionTex = def.emissionTex;
+            def.modelTexSig      = texSig;
             matId = def.assetId;
             materials.push_back(std::move(def));
         }

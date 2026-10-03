@@ -5243,12 +5243,12 @@ int main(int argc, char** argv) {
         };
         host.boneNames = [&](int id) { return boneAttach.boneNames(entities, models, id); };
         host.attach = [&](int child, int figure, const std::string& bone,
-                          const glm::vec3* pos, const glm::vec3* rotDeg) -> bool {
+                          const glm::vec3* pos, const glm::vec3* rotDeg, float blend) -> bool {
             if (!playMode) return false;
             if (!pos) return boneAttach.attach(entities, models, child, figure, bone, nullptr);
             const glm::mat4 off = scenegraph::compose(
                 *pos, rotDeg ? *rotDeg : glm::vec3(0.0f), glm::vec3(1.0f));
-            return boneAttach.attach(entities, models, child, figure, bone, &off);
+            return boneAttach.attach(entities, models, child, figure, bone, &off, blend);
         };
         host.detach = [&](int child) { boneAttach.detach(child); };
         // Resolve a sound filename to a path. Prefer the asset database -- it holds
@@ -5514,8 +5514,8 @@ int main(int argc, char** argv) {
         // whatever lies on the ground there -- the road a pistol is dropped on
         // -- and the result is never below the DRAWN terrain.
         host.groundHeight = [&](glm::vec3 from, float maxDist, float& outY) -> bool {
-            const float drawn = host.terrainHeight ? host.terrainHeight(from.x, from.z)
-                                                   : -1.0e30f;
+            const float drawn = (terrainOn && host.terrainHeight)
+                                    ? host.terrainHeight(from.x, from.z) : -1.0e30f;
             glm::vec3 o = from;
             if (physics) {
                 for (int i = 0; i < 4; ++i) {
@@ -5537,6 +5537,86 @@ int main(int argc, char** argv) {
             outY = drawn;
             return true;
         };
+        // game.castRay: what a shot meets. The bodies of the physics world first
+        // -- passing through the terrain's coarse collider, for the same reason
+        // as groundHeight -- then the terrain as it is drawn, marched in half-
+        // metre steps and halved down to a centimetre. Whichever is nearer wins.
+        host.castRay = [&](glm::vec3 o, glm::vec3 d, float maxDist,
+                           ScriptRayHit& out) -> bool {
+            const float len = glm::length(d);
+            if (len < 1e-6f || maxDist <= 0.0f) return false;
+            d /= len;
+            float best = maxDist;
+            bool  hit  = false;
+            if (physics) {
+                glm::vec3 from = o;
+                float     gone = 0.0f;
+                for (int i = 0; i < 4 && gone < best; ++i) {
+                    glm::vec3 hp, n;
+                    PhysicsBodyId body = 0;
+                    if (!physics->castRay(from, d, best - gone, hp, n, body)) break;
+                    const float t = gone + glm::length(hp - from);
+                    if (body == terrainCollId) {   // the coarse ground: look past it
+                        gone = t + 0.02f;
+                        from = o + d * gone;
+                        continue;
+                    }
+                    best = t;
+                    out.pos = hp;
+                    out.normal = n;
+                    out.id = -1;
+                    for (const auto& [eid, bid] : physicsBody)
+                        if (bid == body) { out.id = eid; break; }
+                    hit = true;
+                    break;
+                }
+            }
+            if (terrainOn && host.terrainHeight) {
+                const auto above = [&](float t) {
+                    const glm::vec3 p = o + d * t;
+                    return p.y - host.terrainHeight(p.x, p.z);
+                };
+                if (above(0.0f) > 0.0f) {
+                    float prev = 0.0f;
+                    for (float t = 0.5f;; t += 0.5f) {
+                        const float tt = std::min(t, best);
+                        if (above(tt) <= 0.0f) {
+                            float lo = prev, hi = tt;
+                            for (int k = 0; k < 12; ++k) {
+                                const float m = 0.5f * (lo + hi);
+                                (above(m) > 0.0f ? lo : hi) = m;
+                            }
+                            const glm::vec3 p = o + d * hi;
+                            const float e = 0.25f;
+                            const float hx = host.terrainHeight(p.x - e, p.z) -
+                                             host.terrainHeight(p.x + e, p.z);
+                            const float hz = host.terrainHeight(p.x, p.z - e) -
+                                             host.terrainHeight(p.x, p.z + e);
+                            best = hi;
+                            out.pos = p;
+                            out.normal = glm::normalize(glm::vec3(hx, 2.0f * e, hz));
+                            out.id = -1;
+                            hit = true;
+                            break;
+                        }
+                        prev = tt;
+                        if (tt >= best) break;
+                    }
+                }
+            }
+            if (!hit) return false;
+            out.dist = best;
+            return true;
+        };
+        host.orbitFrame = [&](float w, float dist, float side, float up, float fov) {
+            camerasys::CameraSystem::OrbitFrame f;
+            f.weight = w; f.dist = dist; f.side = side; f.up = up; f.fov = fov;
+            cams.frameOrbit(f);
+        };
+        host.emit = [&](int id) { particles.restart(id); };
+        // game.restart: the overlay's Restart, asked for by a script (a figure
+        // that died). Deferred like the button, for the same reason.
+        host.restart = [&] { pendingRestart = true; };
 
         // The craft the PLAYER flies, when the scene holds none.
         //
@@ -11195,7 +11275,7 @@ int main(int argc, char** argv) {
 
             // Whatever the figures carry, onto the bones they were just posed
             // with -- before anything is drawn (see BoneAttach.hpp).
-            if (playMode) boneAttach.apply(entities, models);
+            if (playMode) boneAttach.apply(entities, models, dt);
 
             // --- Scene entities through the renderer (shadows, lighting, water).
             // Fences, walls and track: regenerate whatever an edit dirtied, HERE

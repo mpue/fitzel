@@ -18,6 +18,12 @@
 -- GRIP_POS / GRIP_ROT in the bone's space. Something thrown away flies out in
 -- front of the figure and lands where it can be picked up again -- it is the
 -- very object, deactivated while it is in the bag, so nothing about it is lost.
+-- Ammunition stacks: a second box of the same rounds goes onto the first, and
+-- a stack thrown away keeps what was left in it.
+--
+-- For a weapon script (weapon.lua) the bag answers through
+-- shared.inventories[id]: equipped(), ammo(), takeAmmo(n), isOpen(),
+-- carryGrip().
 
 OPEN_KEY     = "I"              -- opens and closes the bag (Tab does as well)
 PICKUP_KEY   = "E"              -- picks up; in the bag: equip / put away
@@ -47,6 +53,8 @@ local TEXT = {
     take       = "%s aufheben",
     full       = "Kein Platz mehr im Inventar",
     stowed     = "ins Inventar gelegt",
+    stowedN    = "%d Stück ins Inventar gelegt",
+    magazine   = "MAGAZIN %d / %d",
     dropped    = "weggeworfen",
     equip      = "AUSRÜSTEN",
     unequip    = "ABLEGEN",
@@ -80,6 +88,8 @@ local _down, _press = {}, {}
 local _mouseWas = false
 local _t = 0
 local _wrapCache = {}
+local _counts = {}   -- entity id -> how many it holds now (a stack thrown away half used)
+local _me            -- the figure's id
 
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function ease(u) u = clamp(u, 0, 1); return u * u * (3 - 2 * u) end
@@ -305,6 +315,7 @@ local function drop(self, index)
     local ground = (game.groundHeight and game.groundHeight(tx, feetY + 0.6, tz))
                    or game.terrainHeight(tx, tz)
     game.setScale(it.id, it.half[1], it.half[2], it.half[3])
+    _counts[it.id] = it.count
     game.setPos(it.id, x0, y0, z0)
     game.setRot(it.id, rot0[1], rot0[2], rot0[3])
     game.setActive(it.id, true)
@@ -327,15 +338,49 @@ local function stowNow(id, info, half)
     local base = (game.groundHeight and game.groundHeight(x0, y0 + 0.3, z0))
                  or game.terrainHeight(x0, z0)
     local lift = clamp(y0 - base, hy, hy + 0.05)
-    _items[#_items + 1] = {
-        id = id, name = info.item, icon = info.icon, category = info.category,
-        description = info.description, count = info.count,
-        half = {hx, hy, hz}, rest = info.rest or {rx, ry, rz}, lift = lift,
-    }
+    local count = _counts[id] or info.count or 1
     game.detach(id)
     game.setActive(id, false)
     game.setScale(id, hx, hy, hz)
-    toast(info.item, TEXT.stowed, info.icon)
+    -- Rounds onto rounds: the same ammunition goes onto the stack already in
+    -- the bag, and the box it came in is used up.
+    if info.category == "ammo" then
+        for _, it in ipairs(_items) do
+            if it.category == "ammo" and it.name == info.item then
+                it.count = it.count + count
+                _counts[id] = 0
+                toast(info.item, string.format(TEXT.stowedN, count), info.icon)
+                return
+            end
+        end
+    end
+    _items[#_items + 1] = {
+        id = id, name = info.item, icon = info.icon, category = info.category,
+        description = info.description, count = count,
+        half = {hx, hy, hz}, rest = info.rest or {rx, ry, rz}, lift = lift,
+    }
+    toast(info.item, count > 1 and string.format(TEXT.stowedN, count) or TEXT.stowed, info.icon)
+end
+
+-- Rounds out of the bag (a weapon reloading): up to `n`, from the stacks, a
+-- stack used up leaves the bag. How many there were.
+local function takeAmmo(n)
+    local got = 0
+    for i = #_items, 1, -1 do
+        if got >= n then break end
+        local it = _items[i]
+        if it.category == "ammo" then
+            local take = math.min(n - got, it.count or 0)
+            it.count = it.count - take
+            got = got + take
+            if it.count <= 0 then
+                table.remove(_items, i)
+                _counts[it.id] = 0
+            end
+        end
+    end
+    _sel = clamp(_sel, 1, math.max(1, #_items))
+    return got
 end
 
 -- What lies within reach right now: the nearest inventory item whose pickup
@@ -369,8 +414,37 @@ function start(self, dt, t)
     _offer, _offerInfo, _offerA = nil, nil, 0
     _equipA, _hintT = 0, 0
     _down, _press, _mouseWas, _t, _wrapCache = {}, {}, false, 0, {}
+    _counts, _me = {}, self.id
     A = {r = ACCENT_COLOR.r or ACCENT_COLOR[1], g = ACCENT_COLOR.g or ACCENT_COLOR[2],
          b = ACCENT_COLOR.b or ACCENT_COLOR[3]}
+    if shared then
+        shared.inventories = shared.inventories or {}
+        shared.inventories[self.id] = {
+            -- The thing in the hand, as the bag holds it (id, name, icon, ...).
+            equipped = function()
+                for _, it in ipairs(_items) do if it.id == _equipped then return it end end
+                return nil
+            end,
+            -- Rounds in the bag, and taking them out.
+            ammo = function()
+                local n = 0
+                for _, it in ipairs(_items) do
+                    if it.category == "ammo" then n = n + (it.count or 0) end
+                end
+                return n
+            end,
+            takeAmmo = takeAmmo,
+            isOpen = function() return _open end,
+            -- How a weapon sits in the hand when it is only carried.
+            carryGrip = function() return GRIP_POS, GRIP_ROT end,
+        }
+    end
+end
+
+-- The weapon script on this figure, if there is one: it draws the weapon in
+-- the hand itself, with its rounds.
+local function weaponScript()
+    return shared and shared.weapons and shared.weapons[_me]
 end
 
 local function setOpen(on)
@@ -494,7 +568,7 @@ local function drawToasts(W, dt)
 end
 
 local function drawEquipped(W, a)
-    if a <= 0.01 then return end
+    if a <= 0.01 or weaponScript() then return end
     local it
     for _, x in ipairs(_items) do if x.id == _equipped then it = x end end
     if not it then return end
@@ -629,8 +703,16 @@ local function drawBag(self, W, a, mx, my, click)
         game.hudText(dx + dw - 32, dy + 274, "×" .. it.count, 28, 0.85, 0.86, 0.9, a, 1, true)
     end
     local cat = TEXT.category[it.category] or TEXT.category.misc
-    local pw = pill(dx + 32, dy + 316, cat, a, A.r, A.g, A.b)
-    if it.id == _equipped then pill(dx + 32 + pw + 10, dy + 316, TEXT.equipped, a, 0.45, 0.86, 0.58) end
+    local px = dx + 32
+    px = px + pill(px, dy + 316, cat, a, A.r, A.g, A.b) + 10
+    if it.id == _equipped then
+        px = px + pill(px, dy + 316, TEXT.equipped, a, 0.45, 0.86, 0.58) + 10
+    end
+    local wpn = weaponScript()
+    if isWeapon(it) and wpn and wpn.magazine then
+        local m, size = wpn.magazine(it.id)
+        if m then pill(px, dy + 316, string.format(TEXT.magazine, m, size), a, 0.82, 0.84, 0.88) end
+    end
     local ly = dy + 358
     for i, line in ipairs(wrap(it.description or "", 22, dw - 64)) do
         if i > 3 then break end

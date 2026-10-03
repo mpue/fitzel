@@ -29,8 +29,19 @@ bool Runner::load(const std::string& file, const std::string& outDir) {
     while (std::getline(in, line)) {
         if (const auto hash = line.find('#'); hash != std::string::npos)
             line.erase(hash);
-        std::istringstream ss(line);
         Shot s;
+        {
+            std::istringstream probe(line);
+            std::string word;
+            if (probe >> s.name >> word && word == "game") {
+                s.gameView = true;
+                probe >> s.hour >> s.settle >> s.frames >> s.every;
+                if (s.frames < 1) s.frames = 1;
+                m_shots.push_back(s);
+                continue;
+            }
+        }
+        std::istringstream ss(line);
         std::string y;
         if (!(ss >> s.name >> s.pos.x >> y >> s.pos.z >> s.yaw >> s.pitch))
             continue;   // blank, comment, or not a view
@@ -52,6 +63,10 @@ void Runner::applyCamera(fitzel::Camera& cam,
                          float& timeOfDay) {
     if (!active()) return;
     const Shot& s = m_shots[static_cast<std::size_t>(m_index < 0 ? 0 : m_index)];
+    if (s.gameView) {               // the game's own view: only the clock, if asked
+        if (s.hour >= 0.0f) timeOfDay = s.hour;
+        return;
+    }
     glm::vec3 p = s.pos;
     if (s.groundRel && groundAt) p.y += groundAt(p.x, p.z);
     cam.setPosition(p);
