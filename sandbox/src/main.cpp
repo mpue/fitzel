@@ -69,6 +69,7 @@
 #include "ScriptSystem.hpp"
 #include "ScriptBridge.hpp"
 #include "BoneAttach.hpp"
+#include "LimbIK.hpp"
 #include "ProjectIO.hpp"
 #include "PrefabSystem.hpp"
 #include "PaintPanel.hpp"
@@ -5239,6 +5240,9 @@ int main(int argc, char** argv) {
         // hand as the skinning pass posed it (see BoneAttach.hpp). Emptied at
         // Play start and stop, with the capsules.
         boneattach::Attachments boneAttach;
+        // Limbs bent after the animation: feet onto the ground (the IK
+        // component), hands where scripts send them (game.reach). LimbIK.hpp.
+        ik::System limbIk;
         host.boneWorld = [&](int id, const std::string& bone, glm::vec3& pos,
                              glm::vec3& rotDeg) -> bool {
             glm::mat4 m;
@@ -5620,6 +5624,9 @@ int main(int argc, char** argv) {
             cams.frameOrbit(f);
         };
         host.emit = [&](int id) { particles.restart(id); };
+        host.reach = [&](int id, int side, glm::vec3 target, float weight) {
+            limbIk.reach(id, side, target, weight);
+        };
         // game.restart: the overlay's Restart, asked for by a script (a figure
         // that died). Deferred like the button, for the same reason.
         host.restart = [&] { pendingRestart = true; };
@@ -11209,6 +11216,19 @@ int main(int argc, char** argv) {
             //     same model animate together.)
             {
                 std::vector<Vertex> skinScratch;
+                // The ground under a foot, for the IK: game.groundHeight's
+                // (roads, bridges, steps, the drawn terrain), with the slope
+                // from two more looks a hand's breadth away.
+                const ik::GroundFn ikGround = [&](const glm::vec3& from, float maxDist, float& y,
+                                                  glm::vec3& n) {
+                    if (!host.groundHeight || !host.groundHeight(from, maxDist, y)) return false;
+                    const float e = 0.12f;
+                    float yx = y, yz = y;
+                    host.groundHeight(from + glm::vec3(e, 0.0f, 0.0f), maxDist, yx);
+                    host.groundHeight(from + glm::vec3(0.0f, 0.0f, e), maxDist, yz);
+                    n = glm::normalize(glm::vec3(y - yx, e, y - yz));
+                    return true;
+                };
                 for (Entity& e : entities) {
                     if (!e.activeInHierarchy) continue;   // deactivated: don't skin
                     auto* ac = e.components.get<AnimationComponent>();
@@ -11271,11 +11291,34 @@ int main(int argc, char** argv) {
                         }
                         time = ac->time;
                     }
-                    const auto palette = fromCi >= 0
+                    auto palette = fromCi >= 0
                         ? sampleSkeletonBlend(*lm->animData, fromCi, fromTime,
                                               ci, time, 1.0f - fromShare)
                         : sampleSkeleton(*lm->animData, ci, time);
                     if (palette.empty()) continue;
+                    // The limbs, bent onto the ground and to where scripts send
+                    // the hands -- after the clip, before the skin (and before
+                    // the pose is stored, so what a hand carries follows it).
+                    const auto* ikc = e.components.get<IKComponent>();
+                    if (ikc || limbIk.reaching(e.id)) {
+                        ik::FeetOptions fo;
+                        if (ikc) {
+                            fo.feet     = ikc->feet;
+                            fo.align    = ikc->align;
+                            fo.maxStep  = ikc->maxStep;
+                            fo.response = ikc->response;
+                            fo.leftLeg  = ikc->leftLeg;  fo.rightLeg = ikc->rightLeg;
+                            fo.leftArm  = ikc->leftArm;  fo.rightArm = ikc->rightArm;
+                        }
+                        // Model space to the world as SceneSubmit draws it (and
+                        // BoneAttach places what a figure carries).
+                        const glm::vec3 sz = glm::max(lm->size(), glm::vec3(1e-4f));
+                        const glm::mat4 toWorld =
+                            scenegraph::compose(e.center, e.rotation, (e.half * 2.0f) / sz) *
+                            glm::translate(glm::mat4(1.0f), -lm->center());
+                        limbIk.apply(e.id, ikc ? &fo : nullptr, *lm->animData, toWorld,
+                                     e.center.y - e.half.y, palette, ikGround, dt);
+                    }
                     if (playMode) boneAttach.storePose(e.id, palette);
                     const auto& prims = lm->animData->primitives;
                     for (std::size_t p = 0;
@@ -11285,6 +11328,8 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+
+            limbIk.endFrame();   // the hands were sent for this frame only
 
             // Whatever the figures carry, onto the bones they were just posed
             // with -- before anything is drawn (see BoneAttach.hpp).

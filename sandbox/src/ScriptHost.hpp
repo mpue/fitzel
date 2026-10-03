@@ -341,6 +341,10 @@ struct ScriptHost {
                        ScriptRayHit& out)> castRay;
     // Frame the orbit camera for this frame (CameraSystem::frameOrbit).
     std::function<void(float weight, float dist, float side, float up, float fov)> orbitFrame;
+    // A hand of figure `id` (0 left, 1 right) to a point in the world, this
+    // frame, `weight` of the way from where the animation has it (game.reach;
+    // LimbIK.hpp).
+    std::function<void(int id, int side, glm::vec3 target, float weight)> reach;
     // Replay an object's Particle burst where it stands now (an impact, a flash).
     std::function<void(int id)> emit;
     // What a thing let go of at `from` comes to rest on, straight down within

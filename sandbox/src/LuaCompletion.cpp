@@ -52,6 +52,7 @@ const Completion kGameMembers[] = {
     {"orbitFrame", "orbitFrame(weight, dist, side, up, fov)  -- this frame: aim over the shoulder"},
     {"emit", "emit(id)  -- replay the object's Particle burst where it is"},
     {"toWorld", "toWorld(id, x, y, z) -> wx, wy, wz  (a point in the object's own frame)"},
+    {"reach", "reach(id, \"left\"|\"right\", x, y, z [, weight])  -- this frame: a hand to a point (IK)"},
     {"restart", "restart()  -- Play again from how the scene stood when Play began"},
     {"collectibles", "collectibles() -> { id, ... }  (active objects with a Collectible)"},
     {"collectible", "collectible(id) -> {item, icon, category, description, count, inventory, radius, ...}"},

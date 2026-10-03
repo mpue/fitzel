@@ -145,6 +145,10 @@ REM  camtexcheck: was eine Kamera sieht, auf einem Material (Monitor, Spiegel) -
 REM  pro Kamera und Groesse gezeichnet, hoechstens 30-mal pro Sekunde, GL-Zustand
 REM  zurueck, die Verknuepfung in der Datei.
 call :run camtexcheck
+REM  ikcheck: inverse Kinematik -- Glieder an vier Rig-Benennungen gefunden, Zwei-
+REM  Knochen-Kette erreicht ihr Ziel bei gleichen Knochenlaengen, Fuesse auf Stufen,
+REM  in Loecher und auf Haenge, Haende an einen Punkt.
+call :run ikcheck
 REM  retargetcheck misst das Retargeting: die automatische Knochen-Zuordnung an
 REM  Mixamo-, Unreal- und BVH-Skeletten, dann (wo die Testdateien und Blender da
 REM  sind) eine echte FBX-Bewegung auf eine Daz-Figur -- jeder Knochen muss dahin
