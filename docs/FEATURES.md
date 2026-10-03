@@ -155,7 +155,7 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Kondensstreifen und Gischt.
 - **Renn-Baukasten**: Gegner-KI, Startaufstellung, Checkpoints, Boost-Pads, HUD,
   Bestenliste, Schwierigkeitsstufen, Showroom als Startmenü.
-- **Waffen**: Lock-on-Raketen.
+- **Waffen**: Lock-on-Raketen für die Fahrzeuge; für Figuren eine Pistole (siehe Schießen).
 - **Fertige Komponenten**: Trigger, Szenenwechsel, Mover, Spawner, Lift, Tür,
   Sammelobjekte, Partikel.
 - **Inventar** (`inventory.lua`): Gegenstände in der Welt (Collectible mit „Inventory
@@ -195,7 +195,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
 ## Editor und Assets
 
 - **Panels**: Hierarchie, Inspector, Asset-Browser mit Drag & Drop in die Szene,
-  Materialien, Prefabs (Stufe 1, Vorlagen).
+  Materialien, Prefabs (Stufe 1, Vorlagen) – auch als `.zip` zwischen Projekten, mit
+  allem, was sie brauchen (Modelle, Materialien, Skripte, Klänge, Animationsgraphen);
+  der Import zeigt vorher Datei für Datei, was er tun würde.
 - **Import**: Unity-FBX und Videos.
 - **Kamera auf Textur**: ein Material zeigt live, was eine Kamera der Szene sieht
   (Monitor, Überwachungsbildschirm, Spiegel) -- Kamera, Bildgröße und "leuchtet wie
