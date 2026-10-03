@@ -29,6 +29,11 @@ namespace fitzel { class Camera; }
 // the scene's clock; otherwise the time of day is held there. `frames` > 1
 // writes name_00.png, name_01.png ... `every` seconds apart. '#' starts a
 // comment.
+//
+//     name  game  [hour]  [settle]  [frames]  [every]
+//
+// takes the picture the game itself shows -- its camera, a script's over the
+// shoulder, whatever is the view -- instead of placing one.
 namespace shotlist {
 
 struct Shot {
@@ -40,6 +45,7 @@ struct Shot {
     float       settle = 3.0f;
     int         frames = 1;
     float       every = 0.25f;
+    bool        gameView = false;    // "game": the game's own camera, untouched
 };
 
 class Runner {

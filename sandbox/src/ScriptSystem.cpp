@@ -1245,6 +1245,48 @@ int l_removeCharacter(lua_State* L) {
     if (h && h->removeCharacter) h->removeCharacter(id);
     return 0;
 }
+// castRay(ox, oy, oz, dx, dy, dz [, maxDist]) -> x, y, z, nx, ny, nz, id, dist | nil
+int l_castRay(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec3 o{num(L, 1), num(L, 2), num(L, 3)};
+    const glm::vec3 d{num(L, 4), num(L, 5), num(L, 6)};
+    const float maxDist = optNum(L, 7, 200.0f);
+    ScriptRayHit hit;
+    if (!h || !h->castRay || !h->castRay(o, d, maxDist, hit)) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_pushnumber(L, hit.pos.x);    lua_pushnumber(L, hit.pos.y);    lua_pushnumber(L, hit.pos.z);
+    lua_pushnumber(L, hit.normal.x); lua_pushnumber(L, hit.normal.y); lua_pushnumber(L, hit.normal.z);
+    lua_pushinteger(L, hit.id);
+    lua_pushnumber(L, hit.dist);
+    return 8;
+}
+// orbitFrame(weight, dist, side, up, fov) -- this frame only; 0 keeps a value
+int l_orbitFrame(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->orbitFrame)
+        h->orbitFrame(num(L, 1), optNum(L, 2, 0.0f), optNum(L, 3, 0.0f),
+                      optNum(L, 4, 0.0f), optNum(L, 5, 0.0f));
+    return 0;
+}
+// emit(id) -- replay the object's Particle burst
+int l_emit(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    if (h && h->emit) h->emit(id);
+    return 0;
+}
+// toWorld(id, x, y, z) -> wx, wy, wz | nil
+int l_toWorld(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 p{num(L, 2), num(L, 3), num(L, 4)};
+    glm::vec3 w(0.0f);
+    if (!h || !h->toWorld || !h->toWorld(id, p, w)) { lua_pushnil(L); return 1; }
+    lua_pushnumber(L, w.x); lua_pushnumber(L, w.y); lua_pushnumber(L, w.z);
+    return 3;
+}
 // groundHeight(x, y, z [, maxDist]) -> y of what lies below | nil
 int l_groundHeight(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1303,8 +1345,9 @@ int l_bones(lua_State* L) {
     }
     return 1;
 }
-// attach(child, figure, bone [, x, y, z [, rx, ry, rz]]) -> ok. Without the
-// numbers the child stays where it is now, relative to the bone.
+// attach(child, figure, bone [, x, y, z [, rx, ry, rz [, blend]]]) -> ok. Without
+// the numbers the child stays where it is now, relative to the bone; `blend`
+// seconds move it there from where it is instead of jumping.
 int l_attach(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const int child  = static_cast<int>(luaL_checkinteger(L, 1));
@@ -1313,9 +1356,10 @@ int l_attach(lua_State* L) {
     const bool placed = !lua_isnoneornil(L, 4);
     const glm::vec3 pos{optNum(L, 4, 0.0f), optNum(L, 5, 0.0f), optNum(L, 6, 0.0f)};
     const glm::vec3 rot{optNum(L, 7, 0.0f), optNum(L, 8, 0.0f), optNum(L, 9, 0.0f)};
+    const float blend = optNum(L, 10, 0.0f);
     const bool ok = h && h->attach &&
                     h->attach(child, figure, bone, placed ? &pos : nullptr,
-                              placed ? &rot : nullptr);
+                              placed ? &rot : nullptr, blend);
     lua_pushboolean(L, ok);
     return 1;
 }
@@ -1427,6 +1471,11 @@ int l_loadData(lua_State* L) {
     return 1;
 }
 
+int l_restart(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    if (h && h->restart) h->restart();
+    return 0;
+}
 int l_loadScene(lua_State* L) {
     ScriptHost* h = hostOf(L);
     const char* name = luaL_checkstring(L, 1);
@@ -1581,12 +1630,14 @@ void ScriptSystem::installApi() {
     fn("terrainHeight", l_terrainHeight);
     fn("raycast", l_raycast);         fn("log", l_log);
     fn("moveCharacter", l_moveCharacter); fn("removeCharacter", l_removeCharacter);
-    fn("groundHeight", l_groundHeight);
+    fn("groundHeight", l_groundHeight); fn("castRay", l_castRay);
+    fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
+    fn("toWorld", l_toWorld);
     // Pickups and the bones of a figure
     fn("collectibles", l_collectibles); fn("collectible", l_collectible);
     fn("bonePos", l_bonePos);         fn("bones", l_bones);
     fn("attach", l_attach);           fn("detach", l_detach);
-    fn("loadScene", l_loadScene);
+    fn("loadScene", l_loadScene);     fn("restart", l_restart);
     fn("saveData", l_saveData);       fn("loadData", l_loadData);
     fn("setCameraPos", l_setCameraPos); fn("setCameraDir", l_setCameraDir);
     fn("setCameraFov", l_setCameraFov); fn("setCamera", l_setCamera);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -191,6 +192,10 @@ struct MaterialDef {
     std::shared_ptr<fitzel::Texture> modelTex;
     std::shared_ptr<fitzel::Texture> modelNormalTex;
     std::shared_ptr<fitzel::Texture> modelEmissionTex;
+    // A fingerprint of the colour map the model shipped (sampled texels), so a
+    // second model whose material only shares the name and the map sizes --
+    // a retextured copy of a character -- is not merged into this one.
+    std::uint64_t modelTexSig = 0;
     // A model's metallic-roughness-occlusion map, glTF layout (R occlusion,
     // G roughness, B metalness). Model-only, re-created by the import like the
     // three above.

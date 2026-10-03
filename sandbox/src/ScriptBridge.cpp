@@ -15,6 +15,7 @@
 #include "Component.hpp"
 #include "Document.hpp"
 #include "ModelLibrary.hpp"
+#include "SceneGraph.hpp"
 #include "SceneTypes.hpp"
 
 using fitzel::AssetDatabase;
@@ -429,6 +430,12 @@ void install(ScriptHost& host, Deps deps) {
         for (const Entity& e : doc.entities())
             if (e.parent == id) out.push_back(e.id);
         return out;
+    };
+    host.toWorld = [&doc](int id, glm::vec3 local, glm::vec3& out) {
+        const Entity* e = doc.find(id);
+        if (!e) return false;
+        out = glm::vec3(scenegraph::worldOf(*e) * glm::vec4(local, 1.0f));
+        return true;
     };
 
     // --- Pickups -------------------------------------------------------------

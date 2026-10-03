@@ -210,6 +210,8 @@ void CameraSystem::update(const std::vector<Entity>& entities, float dt) {
     // ...and an orbit camera that went away comes back on its authored angle.
     for (auto it = m_orbit.begin(); it != m_orbit.end();)
         it = (m_pose.count(it->first) == 0) ? m_orbit.erase(it) : std::next(it);
+    // A script's framing lasts one frame: asked for again, or gone.
+    m_frame = OrbitFrame{};
 }
 
 void CameraSystem::steer(int id, glm::vec2 mouseDelta) {
@@ -219,11 +221,13 @@ void CameraSystem::steer(int id, glm::vec2 mouseDelta) {
 Pose CameraSystem::orbit(int key, const Entity& target, const FollowShot& shot,
                          float degPerPixel) {
     Pose p;
-    p.fov = shot.fov;
+    // A script's framing for this frame (frameOrbit), blended in by its weight.
+    const float w = glm::clamp(m_frame.weight, 0.0f, 1.0f);
+    p.fov = (w > 0.0f && m_frame.fov > 0.0f) ? glm::mix(shot.fov, m_frame.fov, w) : shot.fov;
     // It swings round the point it looks at, not round the object's feet: the
     // head or shoulders stay in the middle of the picture wherever it goes.
     const glm::vec3 wUp{0.0f, 1.0f, 0.0f};
-    const glm::vec3 pivot = target.center + wUp * shot.lookHeight;
+    glm::vec3 pivot = target.center + wUp * shot.lookHeight;
 
     Orbit& o = m_orbit[key];
     if (!o.seeded) {
@@ -245,7 +249,10 @@ Pose CameraSystem::orbit(int key, const Entity& target, const FollowShot& shot,
     }
     // Mouse right turns the VIEW right, so the eye goes the other way round the
     // pivot; mouse up looks up, so the eye sinks below the pivot's horizon.
-    const float k = glm::radians(glm::max(degPerPixel, 0.0f));
+    // A narrowed view turns slower by as much as it narrowed: the same mouse
+    // travel moves the picture by the same share of the screen.
+    const float k = glm::radians(glm::max(degPerPixel, 0.0f)) *
+                    (p.fov / glm::max(shot.fov, 1.0f));
     o.yaw   -= o.pending.x * k;
     o.pitch -= o.pending.y * k;
     o.pending = glm::vec2(0.0f);
@@ -254,9 +261,17 @@ Pose CameraSystem::orbit(int key, const Entity& target, const FollowShot& shot,
     // look up through the ground).
     o.pitch = glm::clamp(o.pitch, glm::radians(-30.0f), glm::radians(75.0f));
 
+    // The script's shoulder: the pivot steps to the camera's right, (cos, -sin)
+    // of the yaw on the ground, and up; the eye comes closer.
+    float dist = o.dist;
+    if (w > 0.0f) {
+        pivot += (glm::vec3(std::cos(o.yaw), 0.0f, -std::sin(o.yaw)) * m_frame.side +
+                  wUp * m_frame.up) * w;
+        if (m_frame.dist > 0.0f) dist = glm::mix(o.dist, m_frame.dist, w);
+    }
     const float cp = std::cos(o.pitch);
-    glm::vec3 eye = pivot + o.dist * glm::vec3(cp * std::sin(o.yaw), std::sin(o.pitch),
-                                               cp * std::cos(o.yaw));
+    glm::vec3 eye = pivot + dist * glm::vec3(cp * std::sin(o.yaw), std::sin(o.pitch),
+                                             cp * std::cos(o.yaw));
     // Looking up from low down must not put the eye inside the hill behind.
     if (m_ground) eye.y = glm::max(eye.y, m_ground(eye.x, eye.z) + 0.3f);
 

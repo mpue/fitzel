@@ -101,6 +101,19 @@ public:
     // caller says which one that is. Ignored by any camera not orbiting.
     void steer(int id, glm::vec2 mouseDelta);
 
+    // A script framing the orbit cameras differently for one frame
+    // (game.orbitFrame) -- aiming over the shoulder. `weight` 0..1 blends from
+    // the authored shot to this one: `dist` metres from the pivot, the pivot
+    // moved `side` metres to the camera's right and `up` metres up, the view
+    // narrowed to `fov` degrees (0 = keep each). The mouse turns slower by the
+    // factor the view narrowed, so aiming is no twitchier than walking. Taken by
+    // the next update() and then forgotten: a script asks every frame, and one
+    // that stops -- or fails -- hands the view straight back.
+    struct OrbitFrame {
+        float weight = 0.0f, dist = 0.0f, side = 0.0f, up = 0.0f, fov = 0.0f;
+    };
+    void frameOrbit(const OrbitFrame& f) { m_frame = f; }
+
     // The shot a follow camera with these settings would give around `target`
     // this frame -- for an object with no camera of its own, which is what
     // watching a rival is. Every camera entity goes through this same routine, so
@@ -160,6 +173,7 @@ private:
     // the whole director into everything that includes a camera.
     std::unordered_map<int, std::unique_ptr<::multishot::Director>> m_shots;
     std::function<float(float, float)> m_ground;
+    OrbitFrame m_frame;   // this frame's script framing (frameOrbit)
 };
 
 } // namespace camerasys

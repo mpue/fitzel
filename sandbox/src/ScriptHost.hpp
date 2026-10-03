@@ -146,6 +146,15 @@ struct ScriptImage {
     glm::vec4 content{0.0f, 0.0f, 1.0f, 1.0f}; // u0, v0, u1, v1
 };
 
+// What game.castRay met: where, the surface normal there, the object it belongs
+// to (-1 = the world itself: terrain, a road, a bridge) and how far along.
+struct ScriptRayHit {
+    glm::vec3 pos{0.0f};
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    int       id   = -1;
+    float     dist = 0.0f;
+};
+
 // A Collectible component as scripts see it (game.collectible). `item` is the
 // name to show -- the component's own, or the object's when it has none.
 struct ScriptCollectible {
@@ -249,10 +258,14 @@ struct ScriptHost {
     // Hang `child` on a bone of `figure`: from then on it follows the bone every
     // frame, after the pose and before the picture. `pos`/`rotDeg` (bone space,
     // metres / degrees) place it on the bone; null keeps it where it is now,
-    // relative to the bone. False for an unknown object or bone.
+    // relative to the bone. `blend` seconds: travel there from where it is now.
+    // False for an unknown object or bone.
     std::function<bool(int child, int figure, const std::string& bone,
-                       const glm::vec3* pos, const glm::vec3* rotDeg)> attach;
+                       const glm::vec3* pos, const glm::vec3* rotDeg, float blend)> attach;
     std::function<void(int child)>                  detach;
+    // A point given in an object's own frame -- metres from its centre, turned
+    // with it, not scaled -- in the world (the muzzle of a pistol in a hand).
+    std::function<bool(int, glm::vec3 local, glm::vec3& world)> toWorld;
 
     // --- Animation state machines (AnimGraph.hpp) -------------------------
     // Driving an object's graph from a script: this is the point of the graph
@@ -321,12 +334,24 @@ struct ScriptHost {
                        bool& onGround, bool& onTerrain)> moveCharacter;
     // Drop an object's capsule again (a figure getting into a car, say).
     std::function<void(int id)> removeCharacter;
+    // A ray through the physics world and the terrain as it is DRAWN (the
+    // terrain's own collider is coarse): the first thing it meets within
+    // `maxDist`. False on a miss.
+    std::function<bool(glm::vec3 origin, glm::vec3 dir, float maxDist,
+                       ScriptRayHit& out)> castRay;
+    // Frame the orbit camera for this frame (CameraSystem::frameOrbit).
+    std::function<void(float weight, float dist, float side, float up, float fov)> orbitFrame;
+    // Replay an object's Particle burst where it stands now (an impact, a flash).
+    std::function<void(int id)> emit;
     // What a thing let go of at `from` comes to rest on, straight down within
     // `maxDist`: a road, a bridge deck, a floor -- or the terrain as it is
     // DRAWN (never below it). False when nothing is there.
     std::function<bool(glm::vec3 from, float maxDist, float& outY)> groundHeight;
     // Load another scene of the open project by name (deferred to frame end).
     std::function<void(const std::string&)> loadScene;
+    // Play again from how the scene stood when Play began (deferred): the
+    // overlay's Restart. Unsaved editor edits survive it, the file is not read.
+    std::function<void()> restart;
     // Whose saves game.saveData / game.loadData keep (SaveData.hpp): the game
     // being played, set by the host when Play starts. Empty = "default".
     std::string saveGame;

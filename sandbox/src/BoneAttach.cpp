@@ -52,6 +52,23 @@ glm::mat4 rigid(const glm::mat4& m) {
 
 } // namespace
 
+Attachments::Seat Attachments::seatOf(const glm::mat4& m) {
+    Seat s;
+    s.pos = glm::vec3(m[3]);
+    s.rot = glm::normalize(glm::quat_cast(glm::mat3(m)));
+    return s;
+}
+
+Attachments::Seat Attachments::current(const Link& l) {
+    if (l.dur <= 0.0f || l.t >= l.dur) return l.to;
+    const float u = glm::clamp(l.t / l.dur, 0.0f, 1.0f);
+    const float e = u * u * (3.0f - 2.0f * u);   // eased in and out
+    Seat s;
+    s.pos = glm::mix(l.from.pos, l.to.pos, e);
+    s.rot = glm::slerp(l.from.rot, l.to.rot, e);
+    return s;
+}
+
 int jointIndex(const fitzel::ModelData& model, const std::string& name) {
     for (std::size_t j = 0; j < model.skeleton.size(); ++j)
         if (model.skeleton[j].name == name) return static_cast<int>(j);
@@ -104,7 +121,8 @@ std::vector<std::string> Attachments::boneNames(const std::vector<Entity>& entit
 }
 
 bool Attachments::attach(std::vector<Entity>& entities, ModelLibrary& models, int child,
-                         int figure, const std::string& bone, const glm::mat4* offset) {
+                         int figure, const std::string& bone, const glm::mat4* offset,
+                         float blend) {
     if (child == figure) return false;
     Entity*       c = findEntity(entities, child);
     const Entity* f = findEntity(entities, figure);
@@ -115,13 +133,20 @@ bool Attachments::attach(std::vector<Entity>& entities, ModelLibrary& models, in
     Link link;
     link.figure = figure;
     link.joint  = joint;
-    if (offset) {
-        link.offset = rigid(*offset);
-    } else {
+    // Where it is now, seen from the bone: the seat to keep, or to blend from.
+    glm::mat4 here(1.0f);
+    const bool needHere = !offset || blend > 0.0f;
+    if (needHere) {
         glm::mat4 b;
         if (!jointWorld(*f, models, joint, b)) return false;
-        link.offset = glm::inverse(b) *
-                      scenegraph::compose(c->center, c->rotation, glm::vec3(1.0f));
+        here = glm::inverse(b) * scenegraph::compose(c->center, c->rotation, glm::vec3(1.0f));
+    }
+    link.to = seatOf(offset ? rigid(*offset) : here);
+    if (offset && blend > 0.0f) {
+        link.from = seatOf(here);
+        // The short way round: the two turns may be the same one, signed apart.
+        if (glm::dot(link.from.rot, link.to.rot) < 0.0f) link.from.rot = -link.from.rot;
+        link.dur = blend;
     }
     // Carried things are roots: the bone is the only parent they follow.
     if (c->parent >= 0) {
@@ -135,14 +160,17 @@ bool Attachments::attach(std::vector<Entity>& entities, ModelLibrary& models, in
 
 void Attachments::detach(int child) { m_links.erase(child); }
 
-void Attachments::apply(std::vector<Entity>& entities, ModelLibrary& models) const {
-    for (const auto& [child, link] : m_links) {
+void Attachments::apply(std::vector<Entity>& entities, ModelLibrary& models, float dt) {
+    for (auto& [child, link] : m_links) {
+        if (link.dur > 0.0f) link.t += dt;
         Entity*       c = findEntity(entities, child);
         const Entity* f = findEntity(entities, link.figure);
         glm::mat4 b;
         if (!c || !f || !jointWorld(*f, models, link.joint, b)) continue;
+        const Seat s0 = current(link);
+        const glm::mat4 seat = glm::translate(glm::mat4(1.0f), s0.pos) * glm::mat4_cast(s0.rot);
         glm::vec3 t, rotDeg, s;
-        scenegraph::decompose(b * link.offset, t, rotDeg, s);
+        scenegraph::decompose(b * seat, t, rotDeg, s);
         c->center   = c->localCenter   = t;
         c->rotation = c->localRotation = rotDeg;
     }
