@@ -1565,6 +1565,30 @@ const std::vector<Property>& DecalComponent::properties() {
 void DecalComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
 void DecalComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
 
+const std::vector<Property>& SwingComponent::properties() {
+    static const std::vector<Property> props = [] {
+        std::vector<Property> p;
+        Property pv; pv.label = "Pivot (0 = top)"; pv.key = "pivot"; pv.kind = PropKind::Vec3;
+        pv.speed = 0.05f; pv.fmt = "%.2f";
+        pv.field = [](void* o) -> void* { return &static_cast<SwingComponent*>(o)->pivot; };
+        p.push_back(std::move(pv));
+        auto addFloat = [&](const char* label, const char* key, float SwingComponent::* m,
+                            float lo, float hi, const char* fmt) {
+            Property f; f.label = label; f.key = key; f.kind = PropKind::Float;
+            f.slider = true; f.min = lo; f.max = hi; f.speed = 0.05f; f.fmt = fmt;
+            f.field = [m](void* o) -> void* { return &(static_cast<SwingComponent*>(o)->*m); };
+            p.push_back(std::move(f));
+        };
+        addFloat("Mass", "mass", &SwingComponent::mass, 0.1f, 200.0f, "%.1f kg");
+        addFloat("Damping", "damping", &SwingComponent::damping, 0.0f, 5.0f, "%.2f /s");
+        addFloat("Max angle", "maxAngle", &SwingComponent::maxAngle, 5.0f, 170.0f, "%.0f deg");
+        return p;
+    }();
+    return props;
+}
+void SwingComponent::save(nlohmann::json& j) const { writeProps(j, props(), this); }
+void SwingComponent::load(const nlohmann::json& j) { readProps(j, props(), this); }
+
 const std::vector<Property>& ScriptComponent::properties() {
     static const std::vector<Property> props = [] {
         std::vector<Property> p;
@@ -2124,6 +2148,8 @@ struct AutoRegister {
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<IKComponent>()); }});
         components::registerType({"decal", "Decal",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<DecalComponent>()); }});
+        components::registerType({"swing", "Swing",
+            [] { return std::unique_ptr<ComponentBase>(std::make_unique<SwingComponent>()); }});
         components::registerType({"script", "Script",
             [] { return std::unique_ptr<ComponentBase>(std::make_unique<ScriptComponent>()); }});
         components::registerType({"light", "Light",

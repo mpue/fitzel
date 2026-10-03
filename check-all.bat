@@ -152,6 +152,9 @@ call :run ikcheck
 REM  decalcheck: Decals aus den Flaechen darunter geschnitten -- Grundflaeche,
 REM  UVs, Abstand, Neigungsgrenze, Kante, Empfaenger aus echten Objekten, Gelaende.
 call :run decalcheck
+REM  swingcheck: Haengendes schaukelt -- Pendelperiode, Daempfung, Stoss, Winkel-
+REM  grenze, Verdrehen bei seitlichem Treffer, der Aufhaengepunkt bleibt.
+call :run swingcheck
 REM  retargetcheck misst das Retargeting: die automatische Knochen-Zuordnung an
 REM  Mixamo-, Unreal- und BVH-Skeletten, dann (wo die Testdateien und Blender da
 REM  sind) eine echte FBX-Bewegung auf eine Daz-Figur -- jeder Knochen muss dahin

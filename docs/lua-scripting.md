@@ -164,7 +164,7 @@ end
 |--------|----------|--------------|
 | `game.setVelocity(id, vx, vy, vz)` | – | Lineare Geschwindigkeit setzen |
 | `game.getVelocity(id)` | `vx, vy, vz` oder `nil` | Aktuelle lineare Geschwindigkeit |
-| `game.applyImpulse(id, jx, jy, jz)` | – | Impuls anwenden |
+| `game.applyImpulse(id, jx, jy, jz [, px, py, pz])` | – | Impuls anwenden; mit `px, py, pz` dort, wo es getroffen hat (Welt). Ein Objekt mit **Swing**-Komponente (oder darunter Hängendes) schaukelt dann, statt geschoben zu werden – getroffen am Rand verdreht es sich auch |
 | `game.setAngularVelocity(id, wx, wy, wz)` | – | Drehgeschwindigkeit (rad/s) setzen |
 
 No-op bei unbekannten IDs oder Objekten ohne dynamischen Physik-Body.

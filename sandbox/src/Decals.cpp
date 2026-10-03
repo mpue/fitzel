@@ -10,7 +10,9 @@
 #include <fitzel/graphics/Texture.hpp>
 #include <fitzel/render/Renderer.hpp>
 
-#include "Component.hpp"   // DecalComponent, MeshComponent, ModelComponent, PhysicsComponent
+#include <unordered_set>
+
+#include "Component.hpp"   // DecalComponent, MeshComponent, ModelComponent, PhysicsComponent, SwingComponent
 #include "Document.hpp"
 #include "EditMesh.hpp"
 #include "ModelLibrary.hpp"
@@ -50,9 +52,19 @@ bool overlaps(const glm::vec3& lo, const glm::vec3& hi, const glm::vec3& c, floa
            c.z + r >= lo.z && c.z - r <= hi.z;
 }
 
+// Everything that swings (Swing.hpp), and all that hangs below it: it moves off,
+// and a decal on it would stay in the air.
+std::unordered_set<int> swinging(const std::vector<Entity>& entities) {
+    std::unordered_set<int> out;
+    for (const Entity& e : entities)
+        if (e.components.get<SwingComponent>())
+            for (int id : scenegraph::subtree(entities, e.id)) out.insert(id);
+    return out;
+}
+
 // May this object receive a decal at all?
-bool receives(const Entity& e, const Receivers& who) {
-    if (!who.objects || !e.activeInHierarchy || e.id == who.skip) return false;
+bool receives(const Entity& e, const Receivers& who, const std::unordered_set<int>& moving) {
+    if (!who.objects || !e.activeInHierarchy || e.id == who.skip || moving.count(e.id)) return false;
     if (e.type == EntityType::Sun || e.type == EntityType::Light || e.type == EntityType::Empty) return false;
     if (e.components.get<DecalComponent>()) return false;
     if (const auto* ph = e.components.get<PhysicsComponent>(); ph && ph->dynamic) return false;
@@ -149,8 +161,9 @@ void gather(const std::vector<Entity>& entities, ModelLibrary& models, const Hei
                 if (inBox(a, b, c)) out.push_back({a, b, c});
             }
     };
+    const std::unordered_set<int> moving = swinging(entities);
     for (const Entity& e : entities) {
-        if (!receives(e, who) || !overlaps(lo, hi, e.center, glm::length(e.half) * 1.01f)) continue;
+        if (!receives(e, who, moving) || !overlaps(lo, hi, e.center, glm::length(e.half) * 1.01f)) continue;
         if (const auto* mc = e.components.get<MeshComponent>()) {
             const modifiers::Shown shown = modifiers::shown(e, *mc);
             if (!shown.mesh) continue;
@@ -202,8 +215,9 @@ std::uint64_t signature(const std::vector<Entity>& entities, ModelLibrary& model
     h = mixIn(h, boxToWorld);
     h = mixIn(h, who.objects);
     h = mixIn(h, who.terrain);
+    const std::unordered_set<int> moving = swinging(entities);
     for (const Entity& e : entities) {
-        if (!receives(e, who) || !overlaps(lo, hi, e.center, glm::length(e.half) * 1.01f)) continue;
+        if (!receives(e, who, moving) || !overlaps(lo, hi, e.center, glm::length(e.half) * 1.01f)) continue;
         h = mixIn(h, e.id);
         h = mixIn(h, e.center);
         h = mixIn(h, e.rotation);

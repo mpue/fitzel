@@ -282,7 +282,9 @@ struct ScriptHost {
 
     // --- Physics on a dynamic body (by entity id). No-ops on unknown ids. ------
     std::function<void(int, glm::vec3)> setVelocity;
-    std::function<void(int, glm::vec3)> applyImpulse;
+    // An impulse on object `id` -- struck at `at` (world), when given: what turns
+    // a hanging thing (Swing.hpp) as well as pushing it.
+    std::function<void(int, glm::vec3, const glm::vec3* at)> applyImpulse;
     std::function<bool(int, glm::vec3&)> getVelocity;
     std::function<void(int, glm::vec3)> setAngularVelocity;
 

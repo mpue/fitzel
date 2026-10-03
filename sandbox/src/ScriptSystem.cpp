@@ -374,7 +374,13 @@ int l_applyImpulse(lua_State* L) {
     const glm::vec3 j{static_cast<float>(luaL_checknumber(L, 2)),
                       static_cast<float>(luaL_checknumber(L, 3)),
                       static_cast<float>(luaL_checknumber(L, 4))};
-    if (h && h->applyImpulse) h->applyImpulse(id, j);
+    // Optionally where it struck: x, y, z after the impulse.
+    glm::vec3 at(0.0f);
+    const bool hasAt = lua_isnumber(L, 5) && lua_isnumber(L, 6) && lua_isnumber(L, 7);
+    if (hasAt)
+        at = glm::vec3(static_cast<float>(lua_tonumber(L, 5)), static_cast<float>(lua_tonumber(L, 6)),
+                       static_cast<float>(lua_tonumber(L, 7)));
+    if (h && h->applyImpulse) h->applyImpulse(id, j, hasAt ? &at : nullptr);
     return 0;
 }
 int l_playSound(lua_State* L) {

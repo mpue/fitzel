@@ -188,7 +188,8 @@ local function shoot(self, weapon)
     end
     if hit >= 0 then
         burst("spark", hx + nx * 0.02, hy + ny * 0.02, hz + nz * 0.02)
-        game.applyImpulse(hit, dx * IMPULSE, dy * IMPULSE, dz * IMPULSE)
+        -- Where it struck, too: a hanging thing (a Swing) swings from it.
+        game.applyImpulse(hit, dx * IMPULSE, dy * IMPULSE, dz * IMPULSE, hx, hy, hz)
         _hitMark = 0.22
     end
     -- The hit is heard when the sound of it gets back, as far as 60 m off.

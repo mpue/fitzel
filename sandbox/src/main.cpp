@@ -159,6 +159,7 @@
 #include "CameraSystem.hpp"
 #include "CameraTexture.hpp"
 #include "Decals.hpp"
+#include "Swing.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
 #include "WeatherPreset.hpp"
@@ -4208,6 +4209,9 @@ int main(int argc, char** argv) {
         std::vector<MaterialDef> playMaterials;
         std::unique_ptr<PhysicsWorld> physics;      // rigid-body world during Play
         std::map<int, PhysicsBodyId>  physicsBody;  // entity id -> body handle
+        // What hangs and swings when hit (Swing.hpp): made with the physics world
+        // at Play start, gone with it.
+        swing::System swingSys;
         // The entities that wobble instead of moving as one piece. Built with the
         // physics world at Play start and thrown away with it (see SoftBodySystem).
         SoftBodySystem                softBodies;
@@ -5191,7 +5195,9 @@ int main(int argc, char** argv) {
             auto it = physicsBody.find(id);
             if (physics && it != physicsBody.end()) physics->setLinearVelocity(it->second, v);
         };
-        host.applyImpulse = [&](int id, glm::vec3 j){
+        host.applyImpulse = [&](int id, glm::vec3 j, const glm::vec3* at){
+            // Something that hangs swings instead (Swing.hpp): the hook on its chain.
+            if (swingSys.kick(entities, id, j, at)) return;
             auto it = physicsBody.find(id);
             if (physics && it != physicsBody.end()) physics->applyImpulse(it->second, j);
         };
@@ -5927,6 +5933,7 @@ int main(int argc, char** argv) {
             race2 = racesim::RaceState{};
             driveGliderId2 = -1;
             playworld::addEntityBodies(*physics, entities, models, physicsBody);
+            swingSys.begin(entities, *physics, physicsBody);   // what hangs, and its moving boxes
             // Jelly, balloons and cloth. After the loop above and after the world's
             // static geometry, so a soft body lands ON the ground rather than being
             // squeezed out of it on its first step.
@@ -6126,6 +6133,7 @@ int main(int argc, char** argv) {
             scriptFigures.clear();
             boneAttach.clear();
             decalSys.clearThrown();   // the holes were the game's
+            swingSys.clear();         // its boxes died with the world
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
             zoneSounds.clear(); // stop + free any looping TriggerSound voices
@@ -8497,6 +8505,8 @@ int main(int argc, char** argv) {
                 // particles before the step that moves them.
                 softWindTime += dt;
                 softBodies.blow(*physics, softWindTime, dt);
+                // What hangs swings on, its boxes led there for the step.
+                swingSys.update(entities, dt, physics.get());
                 physics->step(dt);
                 // Keep the terrain collider centred on the action: once the focus
                 // (camera = player head / chase cam) drifts a quarter-span from the

@@ -199,6 +199,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
   allem, was sie brauchen (Modelle, Materialien, Skripte, Klänge, Animationsgraphen);
   der Import zeigt vorher Datei für Datei, was er tun würde.
 - **Import**: Unity-FBX und Videos.
+- **Schaukeln** (Komponente „Swing“): Hängendes – Haken an der Kette, Lampe am Kabel,
+  Schild, Sandsack – pendelt um seinen Aufhängepunkt, wenn es getroffen wird
+  (`game.applyImpulse` mit Trefferpunkt; `weapon.lua` tut das), die Schwerkraft holt es
+  zurück, die Dämpfung lässt es ausschwingen. Was in der Hierarchie darunter hängt,
+  schwingt mit; bewegte Kollider gehen mit, damit der nächste Schuss es wieder trifft.
 - **Decals**: Komponente „Decal“ – der Kasten des Objekts legt das Bild seines Materials
   auf alles, was darin liegt: modellierte Objekte, importierte Modelle, Gelände (Plakat
   an der Wand, Riss im Boden, Moos, Brandfleck). Echte Geometrie, aus den Dreiecken
