@@ -53,6 +53,11 @@ SHOT_SOUND    = "wpn_shot.wav"
 DRY_SOUND     = "wpn_dry.wav"
 RELOAD_SOUND  = "wpn_reload.wav"
 HIT_SOUND     = "wpn_hit.wav"
+-- Bullet holes (game.decal): how big, and the library material to paint them
+-- with ("" = the engine's own). BULLET_HOLES = false for none.
+BULLET_HOLES  = true
+HOLE_SIZE     = 0.12
+HOLE_MATERIAL = ""
 
 local TEXT = {
     reload  = "NACHLADEN",
@@ -177,6 +182,10 @@ local function shoot(self, weapon)
         game.castRay(cx + dx * ahead, cy + dy * ahead, cz + dz * ahead, dx, dy, dz, RANGE)
     if not hx then return end
     burst("impact", hx + nx * 0.03, hy + ny * 0.03, hz + nz * 0.03)
+    -- A hole where it went in -- on whatever stands still there.
+    if BULLET_HOLES and game.decal then
+        game.decal(hx, hy, hz, nx, ny, nz, HOLE_SIZE, HOLE_MATERIAL, math.random() * 360)
+    end
     if hit >= 0 then
         burst("spark", hx + nx * 0.02, hy + ny * 0.02, hz + nz * 0.02)
         game.applyImpulse(hit, dx * IMPULSE, dy * IMPULSE, dz * IMPULSE)

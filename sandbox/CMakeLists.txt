@@ -184,6 +184,7 @@ set(SANDBOX_RUNTIME_SOURCES
     src/VideoLibrary.cpp
     src/CameraTexture.cpp
     src/LimbIK.cpp
+    src/Decals.cpp
     # Profiler + its window are runtime, not editor-only: measuring the shipped
     # player is the case that matters most, and the editor's own panels are
     # exactly the overhead you want excluded when you do.
@@ -712,7 +713,7 @@ target_link_libraries(softcheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # Links imgui for ImGuizmo alone: the editor composes every object's matrix with
 # it, and a second implementation would be a picture of a slightly different scene.
 #   build/release/bin/viewcheck.exe <projectFolder> [out.png] [--size WxH]
-add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp
+add_executable(viewcheck tools/viewcheck.cpp src/SceneSubmit.cpp src/Decals.cpp
                          src/EditMeshModifiers.cpp src/Modifiers.cpp src/MeshSimplify.cpp
                          src/BuildingGen.cpp
                          src/SceneGraph.cpp
@@ -981,6 +982,18 @@ add_executable(camtexcheck tools/camtexcheck.cpp src/CameraTexture.cpp src/Sandb
                            src/EditMeshSweep.cpp src/PropertyMeta.cpp src/MultiShot.cpp)
 target_link_libraries(camtexcheck PRIVATE fitzel glm::glm nlohmann_json::nlohmann_json)
 target_compile_definitions(camtexcheck PRIVATE FITZEL_PLAYER)
+
+# decalcheck -- decals cut from the surfaces under them (Decals.hpp): the
+# footprint on a floor, UVs, lift, facing and slope limits, a cut over an edge,
+# receivers gathered from real entities (a dynamic body and another decal left
+# out), the terrain's slope, a thrown hole's box, the engine's bullet hole. No GL.
+#   build/release/bin/decalcheck.exe
+add_executable(decalcheck tools/decalcheck.cpp src/Decals.cpp src/Modifiers.cpp
+                          src/EditMeshModifiers.cpp src/MeshSimplify.cpp src/SceneGraph.cpp
+                          src/ModelLibrary.cpp src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp
+                          src/SandboxMath.cpp src/CameraPath.cpp src/Component.cpp src/Primitives.cpp
+                          src/PropertyMeta.cpp src/MultiShot.cpp)
+target_link_libraries(decalcheck PRIVATE fitzel stb_headers nlohmann_json::nlohmann_json)
 
 # ikcheck -- inverse kinematics (LimbIK.hpp): the limbs found on four rigs'
 # naming, a two-bone chain reaching its target with its bones' lengths kept,

@@ -55,6 +55,7 @@
 #include <stb_image_write.h>
 
 #include "../src/BuildingGen.hpp"
+#include "../src/Decals.hpp"
 #include "../src/Component.hpp"
 #include "../src/Document.hpp"
 #include "../src/ModelLibrary.hpp"
@@ -489,11 +490,16 @@ int main(int argc, char** argv) {
     renderer.setViewport(opt.width, opt.height);
     renderer.begin(camera, aspect, light);
 
+    // Decal objects, cut from what is in their boxes as the editor cuts them
+    // (no terrain here, so objects only).
+    decals::System decalSys;
+    decalSys.update(entities, models, {});
     scenesubmit::Scratch scratch;
     scenesubmit::submit({entities, materials, document, models, meshCache,
                          lit, renderer,
                          cube, ramp, cylinder, sphere, plane,
-                         composeModel, /*roadWetness=*/0.0f, /*playMode=*/false},
+                         composeModel, /*roadWetness=*/0.0f, /*playMode=*/false,
+                         [&](int id) { return decalSys.meshFor(id); }},
                         scratch);
     renderer.prepareShadows();
     // A reflective material with nothing captured reads the probe as black, and a
