@@ -13,7 +13,8 @@
 --
 -- A shot goes from the eye through the middle of the picture (game.castRay):
 -- dust and sparks where it lands (game.emit on the FX objects), a push for a
--- loose physics body. The flash and the smoke come out of the muzzle, a point
+-- loose physics body; glass breaks (game.shatter) and lets the shot through.
+-- The flash and the smoke come out of the muzzle, a point
 -- of the weapon in its own frame (MUZZLE), and light up what is near for a
 -- moment. Every number below shows in the Inspector.
 
@@ -53,6 +54,11 @@ SHOT_SOUND    = "wpn_shot.wav"
 DRY_SOUND     = "wpn_dry.wav"
 RELOAD_SOUND  = "wpn_reload.wav"
 HIT_SOUND     = "wpn_hit.wav"
+-- Glass (a see-through material, or one with Glass ticked) breaks where it is
+-- hit (game.shatter) and the shot goes on through the hole. GLASS = false: it
+-- takes holes like a wall.
+GLASS         = true
+GLASS_SOUND   = "glass-shatter.wav"
 -- Bullet holes (game.decal): how big, and the library material to paint them
 -- with ("" = the engine's own). BULLET_HOLES = false for none.
 BULLET_HOLES  = true
@@ -151,6 +157,11 @@ function start(self, dt, t)
     end
 end
 
+-- A sound from `metres` away, heard when it gets back -- as far as 60 m off.
+local function heard(name, metres)
+    if metres < 60 then _later[#_later + 1] = {t = metres / 340, name = name} end
+end
+
 local function burst(key, x, y, z)
     local id = _fx[key]
     if not id then return end
@@ -178,8 +189,16 @@ local function shoot(self, weapon)
     local dx, dy, dz = game.cameraDir()
     local fx, fy, fz = game.getPos(self.id)
     local ahead = math.max(0, (fx - cx) * dx + (fy - cy) * dy + (fz - cz) * dz)
-    local hx, hy, hz, nx, ny, nz, hit, dist =
-        game.castRay(cx + dx * ahead, cy + dy * ahead, cz + dz * ahead, dx, dy, dz, RANGE)
+    local ox, oy, oz = cx + dx * ahead, cy + dy * ahead, cz + dz * ahead
+    local hx, hy, hz, nx, ny, nz, hit, dist = game.castRay(ox, oy, oz, dx, dy, dz, RANGE)
+    -- Glass gives way, and the shot goes on: cast again, the broken pane is no
+    -- longer there to meet.
+    for _ = 1, 4 do
+        if not (GLASS and hx and game.shatter and
+                game.shatter(hit, hx, hy, hz, dx, dy, dz)) then break end
+        heard(GLASS_SOUND, dist + ahead)
+        hx, hy, hz, nx, ny, nz, hit, dist = game.castRay(ox, oy, oz, dx, dy, dz, RANGE)
+    end
     if not hx then return end
     burst("impact", hx + nx * 0.03, hy + ny * 0.03, hz + nz * 0.03)
     -- A hole where it went in -- on whatever stands still there.
@@ -192,8 +211,7 @@ local function shoot(self, weapon)
         game.applyImpulse(hit, dx * IMPULSE, dy * IMPULSE, dz * IMPULSE, hx, hy, hz)
         _hitMark = 0.22
     end
-    -- The hit is heard when the sound of it gets back, as far as 60 m off.
-    if dist + ahead < 60 then _later[#_later + 1] = {t = (dist + ahead) / 340, name = HIT_SOUND} end
+    heard(HIT_SOUND, dist + ahead)
 end
 
 local function startReload(inv, weapon)

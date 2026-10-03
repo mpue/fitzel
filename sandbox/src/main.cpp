@@ -159,6 +159,7 @@
 #include "CameraSystem.hpp"
 #include "CameraTexture.hpp"
 #include "Decals.hpp"
+#include "Shatter.hpp"
 #include "Swing.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
@@ -628,6 +629,9 @@ int main(int argc, char** argv) {
         // Images laid on whatever is under them: Decal objects, and the bullet
         // holes scripts throw (Decals.hpp).
         decals::System decalSys;
+        // Glass shot to pieces, and the shards lying about (Shatter.hpp). Play only.
+        shatter::System shatterSys;
+        decalSys.setHoles([&](int id, const glm::vec3& p) { return shatterSys.gone(id, p); });
         // The target the viewport panel was resized AWAY from, kept alive until
         // the frame it still appears in has been drawn.
         //
@@ -5571,7 +5575,7 @@ int main(int argc, char** argv) {
             if (physics) {
                 glm::vec3 from = o;
                 float     gone = 0.0f;
-                for (int i = 0; i < 4 && gone < best; ++i) {
+                for (int i = 0; i < 8 && gone < best; ++i) {
                     glm::vec3 hp, n;
                     PhysicsBodyId body = 0;
                     if (!physics->castRay(from, d, best - gone, hp, n, body)) break;
@@ -5581,12 +5585,20 @@ int main(int argc, char** argv) {
                         from = o + d * gone;
                         continue;
                     }
+                    int who = -1;
+                    for (const auto& [eid, bid] : physicsBody)
+                        if (bid == body) { who = eid; break; }
+                    // A pane shot out (Shatter.hpp): its collider is still there,
+                    // the glass is not -- look past it, like the coarse ground.
+                    if (shatterSys.gone(who, hp)) {
+                        gone = t + 0.005f;
+                        from = o + d * gone;
+                        continue;
+                    }
                     best = t;
                     out.pos = hp;
                     out.normal = n;
-                    out.id = -1;
-                    for (const auto& [eid, bid] : physicsBody)
-                        if (bid == body) { out.id = eid; break; }
+                    out.id = who;
                     hit = true;
                     break;
                 }
@@ -5663,6 +5675,22 @@ int main(int argc, char** argv) {
                     ? decals::HeightFn([&](float x, float z) { return host.terrainHeight(x, z); })
                     : decals::HeightFn{};
             return decalSys.spawn(mat, p, n, size, spin, entities, models, ground);
+        };
+        // game.shatter: the glass a shot struck breaks (Shatter.hpp). A sheet of
+        // glass that went as a whole takes its collider with it; a model's pane
+        // keeps it, and castRay looks past the hole (above).
+        host.shatter = [&](int id, glm::vec3 p, glm::vec3 d, float strength) {
+            int whole = -1;
+            if (!shatterSys.breakAt(entities, models, materials, document, id, p, d, strength, whole))
+                return false;
+            if (whole >= 0) {
+                auto it = physicsBody.find(whole);
+                if (physics && it != physicsBody.end()) {
+                    physics->removeBody(it->second);
+                    physicsBody.erase(it);
+                }
+            }
+            return true;
         };
         // game.restart: the overlay's Restart, asked for by a script (a figure
         // that died). Deferred like the button, for the same reason.
@@ -5906,6 +5934,7 @@ int main(int argc, char** argv) {
             scriptFigures.clear();   // their capsules were in the old world
             boneAttach.clear();      // and nothing is carried yet
             decalSys.clearThrown();  // no holes yet
+            shatterSys.clear();      // and no glass broken
             physics->setGravity(glm::vec3(0.0f, -9.81f, 0.0f));
             // Fresh world: the previous collider id is void. Build the terrain
             // heightfield around wherever the game opens -- the PlayerStart when
@@ -6133,6 +6162,7 @@ int main(int argc, char** argv) {
             scriptFigures.clear();
             boneAttach.clear();
             decalSys.clearThrown();   // the holes were the game's
+            shatterSys.clear();       // and so was the broken glass
             swingSys.clear();         // its boxes died with the world
             physicsBody.clear();
             softBodies.clear();  // the particles died with the world
@@ -8508,6 +8538,11 @@ int main(int argc, char** argv) {
                 // What hangs swings on, its boxes led there for the step.
                 swingSys.update(entities, dt, physics.get());
                 physics->step(dt);
+                // Shards of broken glass fall, bounce and lie down on what is
+                // under them (Shatter.hpp).
+                shatterSys.update(dt, [&](const glm::vec3& from, float& y) {
+                    return host.groundHeight && host.groundHeight(from, 50.0f, y);
+                });
                 // Keep the terrain collider centred on the action: once the focus
                 // (camera = player head / chase cam) drifts a quarter-span from the
                 // field centre, rebuild it around the focus so far driving/walking
@@ -11436,10 +11471,14 @@ int main(int argc, char** argv) {
                                  lit, renderer,
                                  carCube, rampMesh, cylMesh, sphereMesh, planeMesh,
                                  composeModel, roadWetness, playMode,
-                                 [&](int id) { return decalSys.meshFor(id); }},
+                                 [&](int id) { return decalSys.meshFor(id); },
+                                 [&](int id, std::size_t prim) { return shatterSys.leftOf(id, prim); },
+                                 [&](int id) { return shatterSys.vanished(id); }},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
             decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document);
+            // ...and the shards of the glass that was shot out.
+            shatterSys.submit(renderer, submitScratch.gpuMats, materials, document);
             // One GPU material per library asset -- and the batched geometry
             // below (the roadside city, the side objects, the splines) wears
             // the same library materials the entities do, so it draws from that

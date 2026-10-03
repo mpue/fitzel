@@ -73,6 +73,11 @@ struct Context {
     // The cut of placed decal `id` (Decals.hpp), world space, or null. Unset: a
     // decal object draws nothing.
     std::function<const fitzel::Mesh*(int)> decalMesh = nullptr;
+    // Glass shot out in Play (Shatter.hpp): what is left of model object `id`'s
+    // primitive `prim` (null: all of it, a mesh with nothing in it: none), and
+    // whether object `id` broke as a whole. Unset: nothing is broken.
+    std::function<const fitzel::Mesh*(int id, std::size_t prim)> leftOf = nullptr;
+    std::function<bool(int id)> vanished = nullptr;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is

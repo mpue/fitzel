@@ -1304,6 +1304,16 @@ int l_decal(lua_State* L) {
     lua_pushboolean(L, h && h->decal && h->decal(p, n, size, mat, spin));
     return 1;
 }
+// shatter(id, x, y, z, dx, dy, dz [, strength]) -> bool -- glass breaks where struck
+int l_shatter(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const int id = static_cast<int>(luaL_checkinteger(L, 1));
+    const glm::vec3 p(num(L, 2), num(L, 3), num(L, 4));
+    const glm::vec3 d(num(L, 5), num(L, 6), num(L, 7));
+    const float strength = optNum(L, 8, 1.0f);
+    lua_pushboolean(L, h && h->shatter && h->shatter(id, p, d, strength));
+    return 1;
+}
 // emit(id) -- replay the object's Particle burst
 int l_emit(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1669,6 +1679,7 @@ void ScriptSystem::installApi() {
     fn("toWorld", l_toWorld);
     fn("reach", l_reach);
     fn("decal", l_decal);
+    fn("shatter", l_shatter);
     // Pickups and the bones of a figure
     fn("collectibles", l_collectibles); fn("collectible", l_collectible);
     fn("bonePos", l_bonePos);         fn("bones", l_bones);

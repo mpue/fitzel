@@ -155,6 +155,9 @@ call :run decalcheck
 REM  swingcheck: Haengendes schaukelt -- Pendelperiode, Daempfung, Stoss, Winkel-
 REM  grenze, Verdrehen bei seitlichem Treffer, der Aufhaengepunkt bleibt.
 call :run swingcheck
+REM  shattercheck: Glas zerbricht -- die getroffene Scheibe (mit Rueckseite, ohne
+REM  Nachbarn), Risse decken sie genau, Scherben fliegen mit dem Schuss, liegen flach.
+call :run shattercheck
 REM  retargetcheck misst das Retargeting: die automatische Knochen-Zuordnung an
 REM  Mixamo-, Unreal- und BVH-Skeletten, dann (wo die Testdateien und Blender da
 REM  sind) eine echte FBX-Bewegung auf eine Daz-Figur -- jeder Knochen muss dahin

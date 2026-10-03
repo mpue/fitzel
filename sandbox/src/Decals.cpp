@@ -164,6 +164,8 @@ void gather(const std::vector<Entity>& entities, ModelLibrary& models, const Hei
     const std::unordered_set<int> moving = swinging(entities);
     for (const Entity& e : entities) {
         if (!receives(e, who, moving) || !overlaps(lo, hi, e.center, glm::length(e.half) * 1.01f)) continue;
+        // Gone as a whole (a glass sheet shot out): nothing left to receive.
+        if (who.hole && !e.components.get<ModelComponent>() && who.hole(e.id, e.center)) continue;
         if (const auto* mc = e.components.get<MeshComponent>()) {
             const modifiers::Shown shown = modifiers::shown(e, *mc);
             if (!shown.mesh) continue;
@@ -176,7 +178,9 @@ void gather(const std::vector<Entity>& entities, ModelLibrary& models, const Hei
                 const glm::vec3 a(mm * glm::vec4(lm->meshTris[i], 1.0f));
                 const glm::vec3 b(mm * glm::vec4(lm->meshTris[i + 1], 1.0f));
                 const glm::vec3 c(mm * glm::vec4(lm->meshTris[i + 2], 1.0f));
-                if (inBox(a, b, c)) out.push_back({a, b, c});
+                if (!inBox(a, b, c)) continue;
+                if (who.hole && who.hole(e.id, (a + b + c) / 3.0f)) continue;   // a broken pane
+                out.push_back({a, b, c});
             }
         } else {
             addMesh(primitiveOf(e), scenegraph::compose(e.center, e.rotation, glm::vec3(1.0f)));
@@ -336,6 +340,7 @@ bool System::spawn(const fitzel::AssetId& material, const glm::vec3& pos, const 
     const glm::mat4 box = boxAt(pos, normal, std::max(size, 0.01f), spinDeg);
     Receivers who;
     who.terrain = static_cast<bool>(terrain);
+    who.hole = m_hole;
     std::vector<Tri> tris;
     gather(entities, models, terrain, box, who, tris);
     // A hole lies flat on its surface: anything steeper than this is a corner.

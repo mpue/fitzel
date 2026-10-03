@@ -204,6 +204,12 @@ für Standbilder und ein Synthesizer für eigene Musik.
   (`game.applyImpulse` mit Trefferpunkt; `weapon.lua` tut das), die Schwerkraft holt es
   zurück, die Dämpfung lässt es ausschwingen. Was in der Hierarchie darunter hängt,
   schwingt mit; bewegte Kollider gehen mit, damit der nächste Schuss es wieder trifft.
+- **Zerbrechendes Glas**: Eine getroffene Scheibe (Material mit „Glass“ oder durchsichtig,
+  nicht Cutout) reißt vom Einschuss aus in Scherben – klein am Loch, groß am Rahmen –, die
+  mit dem Schuss fliegen, fallen, abprallen und flach liegen bleiben (`game.shatter`;
+  `weapon.lua` tut das, der Schuss geht durchs Loch weiter). Die Scheibe wird in den
+  Dreiecken gefunden, nicht eingerichtet: ein Fenster aus zwanzig Scheiben in einem
+  importierten Modell verliert genau die getroffene, nur diese eine Kopie des Modells.
 - **Decals**: Komponente „Decal“ – der Kasten des Objekts legt das Bild seines Materials
   auf alles, was darin liegt: modellierte Objekte, importierte Modelle, Gelände (Plakat
   an der Wand, Riss im Boden, Moos, Brandfleck). Echte Geometrie, aus den Dreiecken
