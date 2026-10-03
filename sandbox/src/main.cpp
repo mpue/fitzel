@@ -10307,6 +10307,13 @@ int main(int argc, char** argv) {
                     // Shift+S opens the Blender-style snap menu (Ctrl+S stays Save).
                     cursor3d::snapMenu(editorCtx, sceneView, cursor, !playMode);
 
+                    // The picked Curve's points as handles (ProcGraphPanel), ahead
+                    // of the gizmo: a point under the pointer takes the left
+                    // button from it and from click-to-select.
+                    const bool procHandles = !playMode && !modelling && viewTool == ViewTool::None &&
+                                             !vehGizmoOwnsMouse && !ImGuizmo::IsUsing() &&
+                                             procPanel.handles(sceneView);
+
                     // The transform gizmo: on the selected object, or while
                     // modelling on the picked face (TransformGizmo.hpp).
                     {
@@ -10314,7 +10321,7 @@ int main(int argc, char** argv) {
                         gs.op         = gizmoOp;
                         gs.mode       = gizmoMode;
                         gs.editMode   = entityEditMode;
-                        gs.objectFree = !vehGizmoOwnsMouse && !meshBusy;
+                        gs.objectFree = !vehGizmoOwnsMouse && !meshBusy && !procHandles;
                         gs.faceMode   = showModeling && !meshBusy;
                         gs.modelSel   = &modelSess.sel;
                         gs.grid       = cursor.grid;
@@ -10338,7 +10345,7 @@ int main(int argc, char** argv) {
                     // actions on one click (road points used to drop a primitive
                     // under every waypoint placed in Create mode).
                     const bool toolOwnsClick =
-                        viewTool != ViewTool::None || vehGizmoOwnsMouse || modelling;
+                        viewTool != ViewTool::None || vehGizmoOwnsMouse || modelling || procHandles;
                     viewpick::Host pickHost;
                     pickHost.canPick   = !ImGuizmo::IsOver() && !ImGuizmo::IsUsing() &&
                                          !toolOwnsClick && viewportHovered;

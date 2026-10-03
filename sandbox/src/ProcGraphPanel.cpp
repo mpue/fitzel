@@ -297,6 +297,65 @@ bool draggedLeft() {
     return d.x != 0.0f || d.y != 0.0f;
 }
 
+// --- A curve's points as handles ----------------------------------------------
+// Any node whose settings hold a point list (a "points" text, as the Curve's
+// does) gets handles in the viewport; the handles know no kind.
+const std::string* pointsOf(const proc::Node& n) {
+    for (const Property& pr : n.props())
+        if (pr.kind == PropKind::Text && pr.key == "points")
+            return static_cast<const std::string*>(pr.field(const_cast<proc::Node*>(&n)));
+    return nullptr;
+}
+std::string* pointsOf(proc::Node& n) {
+    return const_cast<std::string*>(pointsOf(static_cast<const proc::Node&>(n)));
+}
+bool closedOf(const proc::Node& n) {
+    for (const Property& pr : n.props())
+        if (pr.kind == PropKind::Bool && pr.key == "closed")
+            return *static_cast<const bool*>(pr.field(const_cast<proc::Node*>(&n)));
+    return false;
+}
+
+// Graph space -> world: back past the pivot the mesh was centred by, then the
+// object's own transform.
+glm::mat4 graphToWorld(const Entity& e, const MeshComponent& mc, const ProcGraphComponent& pg) {
+    return meshModelOf(e, mc) * glm::translate(glm::mat4(1.0f), -pg.pivot);
+}
+
+// The axis a curve's handles do not drag along. A curve lying flat in one of
+// the graph's planes stays in it -- a path on the ground, a profile standing
+// up to be revolved -- and one that bends in all three is dragged across the
+// ground. Ctrl at the grab, and Page Up/Down, move along this axis instead.
+int squareAxis(const std::vector<glm::vec3>& pts) {
+    glm::vec3 lo(1e30f), hi(-1e30f);
+    for (const glm::vec3& p : pts) {
+        lo = glm::min(lo, p);
+        hi = glm::max(hi, p);
+    }
+    const glm::vec3 ext = hi - lo;
+    if (ext.y <= 1e-3f) return 1;
+    if (ext.z <= 1e-3f) return 2;
+    if (ext.x <= 1e-3f) return 0;
+    return 1;
+}
+
+// Is a key that nudges a picked point held? The burst it starts is one undo
+// step, closed once every one of them is up.
+bool nudgeHeld() {
+    return ImGui::IsKeyDown(ImGuiKey_UpArrow) || ImGui::IsKeyDown(ImGuiKey_DownArrow) ||
+           ImGui::IsKeyDown(ImGuiKey_LeftArrow) || ImGui::IsKeyDown(ImGuiKey_RightArrow) ||
+           ImGui::IsKeyDown(ImGuiKey_PageUp) || ImGui::IsKeyDown(ImGuiKey_PageDown);
+}
+
+// How far from a handle (pixels) the pointer still grabs it: well past the dot,
+// for a hand that cannot land on five pixels -- the spline tool's reach. A "+"
+// reaches a little less, so a point beside one wins.
+constexpr float kPointReach = 14.0f;
+constexpr float kPlusReach  = 11.0f;
+// A dragged point lands on a tenth of a metre: what the list shows, and raster
+// enough to swallow a tremor. A nudge moves by whole steps and needs none.
+constexpr float kPointSnap  = 0.1f;
+
 } // namespace
 
 // =============================================================================
@@ -599,6 +658,237 @@ int Panel::create(int preset) {
     return id;
 }
 
+bool Panel::handles(const ViewportFrame& view) {
+    g_probe   = &probe;
+    m_ptHover = m_plusHover = -1;
+    m_ptKeys  = false;
+    Entity* e = m_open ? target() : nullptr;
+    ProcGraphComponent* pg = e ? e->components.get<ProcGraphComponent>() : nullptr;
+    const MeshComponent* mc = e ? e->components.get<MeshComponent>() : nullptr;
+    // Only once the window has shown this object: until then the picked node
+    // is another graph's.
+    proc::Node* node = (pg && mc && m_nodeOf == e->id) ? pg->graph.find(m_node) : nullptr;
+    const std::string* src = node ? pointsOf(*node) : nullptr;
+    if (!src) {
+        m_pt     = -1;
+        m_ptDrag = false;
+        return false;
+    }
+    if (m_ptFor != e->id || m_ptNode != node->id) {
+        // Another curve: nothing of it picked yet.
+        m_ptFor  = e->id;
+        m_ptNode = node->id;
+        m_pt     = -1;
+        m_ptDrag = false;
+    }
+    std::vector<glm::vec3> pts = proc::parsePoints(*src);
+    auto P = [&](int i) -> glm::vec3& { return pts[static_cast<std::size_t>(i)]; };
+    const int  n      = static_cast<int>(pts.size());
+    const bool closed = closedOf(*node) && n >= 3;
+    const int  stretches = n < 2 ? 0 : (closed ? n : n - 1);
+    if (m_pt >= n) m_pt = -1;
+    const int nodeId = node->id;
+    const glm::mat4 model   = graphToWorld(*e, *mc, *pg);
+    const glm::mat4 toGraph = glm::inverse(model);
+    auto screen = [&](const glm::vec3& p, ImVec2& out) {
+        return view.project(glm::vec3(model * glm::vec4(p, 1.0f)), out);
+    };
+    auto midOf = [&](int i) { return 0.5f * (P(i) + P((i + 1) % n)); };
+    // The points written back: one change, cooked. Its undo step stays open
+    // while a drag or a burst of nudges goes on (see draw()).
+    auto write = [&]() {
+        const std::string text = proc::formatPoints(pts);
+        change(*e, [&](proc::Graph& g) {
+            if (proc::Node* nn = g.find(nodeId))
+                if (std::string* s = pointsOf(*nn)) *s = text;
+        });
+    };
+    // Where the pointer's ray meets the plane the grabbed point moves in.
+    auto rayOnPlane = [&](glm::vec3& hit) {
+        glm::vec3 ro, rd;
+        view.mouseRay(ro, rd);
+        const glm::vec3 o(toGraph * glm::vec4(ro, 1.0f));
+        const glm::vec3 d(toGraph * glm::vec4(rd, 0.0f));
+        const int   k   = m_ptAxis;
+        const float len = glm::length(d);
+        // A plane seen edge-on gives no sensible hit: the point holds still.
+        if (len < 1e-9f || std::abs(d[k]) < 0.03f * len) return false;
+        const float t = (m_ptStart[k] - o[k]) / d[k];
+        if (t <= 0.0f) return false;
+        hit = o + d * t;
+        return true;
+    };
+    const ImGuiIO& io = ImGui::GetIO();
+
+    // --- What the pointer is over: a point first, else a stretch's "+" ---------
+    if (view.hovered && !m_ptDrag) {
+        float best = kPointReach;
+        for (int i = 0; i < n; ++i) {
+            ImVec2 s;
+            if (!screen(P(i), s)) continue;
+            const float d = std::hypot(s.x - view.mousePos.x, s.y - view.mousePos.y);
+            if (d < best) { best = d; m_ptHover = i; }
+        }
+        if (m_ptHover < 0) {
+            best = kPlusReach;
+            for (int i = 0; i < stretches; ++i) {
+                ImVec2 s;
+                if (!screen(midOf(i), s)) continue;
+                const float d = std::hypot(s.x - view.mousePos.x, s.y - view.mousePos.y);
+                if (d < best) { best = d; m_plusHover = i; }
+            }
+        }
+    }
+    // The harness clicks handles by name, like the window's own controls.
+    if (g_probe && *g_probe) {
+        for (int i = 0; i < n + stretches; ++i) {
+            ImVec2 s;
+            const bool pt = i < n;
+            if (!screen(pt ? P(i) : midOf(i - n), s)) continue;
+            (*g_probe)((pt ? "pt:" : "plus:") + std::to_string(pt ? i : i - n),
+                       ImVec2(s.x - 3.0f, s.y - 3.0f), ImVec2(s.x + 3.0f, s.y + 3.0f));
+        }
+    }
+
+    // --- A press: grab a point, or put a new one in on a stretch ---------------
+    auto grab = [&](int i) {
+        m_pt       = i;
+        m_ptScroll = true;
+        m_ptDrag   = true;
+        m_ptMoved  = false;
+        m_ptLift   = io.KeyCtrl;
+        m_ptAxis   = squareAxis(pts);
+        m_ptStart  = P(i);
+        m_ptPress  = view.mousePos;
+        m_ptGrab   = glm::vec3(0.0f);
+        glm::vec3 hit;
+        if (!m_ptLift && rayOnPlane(hit)) m_ptGrab = m_ptStart - hit;
+    };
+    if (view.hovered && !m_ptDrag && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (m_ptHover >= 0) {
+            grab(m_ptHover);
+        } else if (m_plusHover >= 0) {
+            // Halfway along the stretch, picked and held: a drag from the "+"
+            // carries the new point straight on.
+            const int at = m_plusHover + 1;
+            const glm::vec3 mid = midOf(m_plusHover);
+            pts.insert(pts.begin() + at, mid);
+            write();
+            grab(at);
+            m_plusHover = -1;
+        } else {
+            m_pt = -1;   // a click anywhere else lets the point go
+        }
+    }
+
+    // --- The drag ----------------------------------------------------------------
+    // Absolute from the press, like every drag here: where the pointer is now
+    // says where the point is -- the gesture, not the journey -- so a hand
+    // that overshoots and comes back leaves the point where it stopped.
+    if (m_ptDrag) {
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left) || m_pt < 0 ||
+            m_pt >= static_cast<int>(pts.size())) {
+            m_ptDrag = false;
+        } else {
+            const ImVec2 mp = view.mousePos;
+            // A press that has not travelled is a click: it picks, and changes nothing.
+            if (std::hypot(mp.x - m_ptPress.x, mp.y - m_ptPress.y) >= io.MouseDragThreshold)
+                m_ptMoved = true;
+            if (m_ptMoved) {
+                const int k  = m_ptAxis;
+                glm::vec3 to = m_ptStart;
+                bool      ok = false;
+                if (m_ptLift) {
+                    // Square to the plane: as far along the axis as the pointer
+                    // went along the axis's picture on screen.
+                    glm::vec3 axis(0.0f);
+                    axis[k] = 1.0f;
+                    ImVec2 a, b;
+                    if (screen(m_ptStart, a) && screen(m_ptStart + axis, b)) {
+                        const glm::vec2 v(b.x - a.x, b.y - a.y);
+                        const float vv = glm::dot(v, v);
+                        if (vv > 1.0f) {   // an axis pointing at the eye moves nothing
+                            const glm::vec2 dm(mp.x - m_ptPress.x, mp.y - m_ptPress.y);
+                            to[k] = snapTo(m_ptStart[k] + glm::dot(dm, v) / vv, kPointSnap);
+                            ok = true;
+                        }
+                    }
+                } else {
+                    glm::vec3 hit;
+                    if (rayOnPlane(hit)) {
+                        to = hit + m_ptGrab;
+                        for (int c = 0; c < 3; ++c) to[c] = c == k ? m_ptStart[k] : snapTo(to[c], kPointSnap);
+                        ok = true;
+                    }
+                }
+                if (ok && to != P(m_pt)) {
+                    P(m_pt) = to;
+                    write();
+                }
+            }
+        }
+    }
+
+    // --- Keys, for the picked point while the pointer is on the scene ----------
+    if (m_pt >= 0 && m_pt < static_cast<int>(pts.size()) && view.hovered && !m_ptDrag &&
+        !io.WantTextInput) {
+        // The Delete key is the point's: never the object's, nor the window's
+        // (picked from the list, the window may still have the focus).
+        m_ptKeys      = true;
+        m_ptKeysFrame = ImGui::GetFrameCount();
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {
+            if (pts.size() > 2) {   // a curve keeps two at least
+                pts.erase(pts.begin() + m_pt);
+                write();
+                // The one before is picked next: a second press -- meant or
+                // not -- takes another point, never the whole object.
+                m_pt = std::max(0, m_pt - 1);
+            }
+        } else {
+            // Camera relative, because "left" means what you see. Of the two
+            // axes in the plane, the one nearer the camera's right is
+            // Left/Right; the other is Up/Down -- up on screen, or away from
+            // the camera for a plane seen flat on. Page Up/Down go square to it.
+            const float step = io.KeyShift ? 2.5f : 0.5f;
+            const int   k = squareAxis(pts);
+            const int   a = (k + 1) % 3, b = (k + 2) % 3;
+            const glm::mat3 m3(model);
+            auto worldDir = [&](int ax) {
+                glm::vec3 u(0.0f);
+                u[ax] = 1.0f;
+                const glm::vec3 w = m3 * u;
+                return glm::length(w) > 1e-9f ? glm::normalize(w) : u;
+            };
+            const glm::vec3 fwd = glm::length(view.cameraFront) > 1e-6f ? glm::normalize(view.cameraFront)
+                                                                       : glm::vec3(0.0f, 0.0f, -1.0f);
+            glm::vec3 right = glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f));
+            right = glm::length(right) > 1e-4f ? glm::normalize(right) : glm::vec3(1.0f, 0.0f, 0.0f);
+            const glm::vec3 up = glm::cross(right, fwd);
+            const glm::vec3 wa = worldDir(a), wb = worldDir(b);
+            const bool  aRight = std::abs(glm::dot(wa, right)) >= std::abs(glm::dot(wb, right));
+            const int   rAx = aRight ? a : b, uAx = aRight ? b : a;
+            const glm::vec3 wr = aRight ? wa : wb, wu = aRight ? wb : wa;
+            const float rSign = glm::dot(wr, right) >= 0.0f ? 1.0f : -1.0f;
+            const float onUp  = glm::dot(wu, up);
+            const float uSign = (std::abs(onUp) > 0.1f ? onUp : glm::dot(wu, fwd)) >= 0.0f ? 1.0f : -1.0f;
+            glm::vec3 d(0.0f);
+            if (ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) d[rAx] += rSign * step;
+            if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow,  true)) d[rAx] -= rSign * step;
+            if (ImGui::IsKeyPressed(ImGuiKey_UpArrow,    true)) d[uAx] += uSign * step;
+            if (ImGui::IsKeyPressed(ImGuiKey_DownArrow,  true)) d[uAx] -= uSign * step;
+            if (ImGui::IsKeyPressed(ImGuiKey_PageUp,     true)) d[k] += step;
+            if (ImGui::IsKeyPressed(ImGuiKey_PageDown,   true)) d[k] -= step;
+            if (d != glm::vec3(0.0f)) {
+                P(m_pt) += d;
+                m_ptNudge = true;
+                write();
+            }
+        }
+    }
+    if (!nudgeHeld()) m_ptNudge = false;
+    return m_ptDrag || m_ptHover >= 0 || m_plusHover >= 0;
+}
+
 void Panel::viewport(const ViewportFrame& view) {
     if (!m_open) return;
     Entity* e = target();
@@ -614,8 +904,7 @@ void Panel::viewport(const ViewportFrame& view) {
         m_overlayNode = node;
         m_overlayHash = h;
     }
-    // Graph space -> world: back past the pivot, then the object's own transform.
-    const glm::mat4 model = meshModelOf(*e, *mc) * glm::translate(glm::mat4(1.0f), -pg->pivot);
+    const glm::mat4 model = graphToWorld(*e, *mc, *pg);
     auto screen = [&](const glm::vec3& p, ImVec2& out) {
         return view.project(glm::vec3(model * glm::vec4(p, 1.0f)), out);
     };
@@ -623,6 +912,21 @@ void Panel::viewport(const ViewportFrame& view) {
     const ImU32 line = IM_COL32(90, 200, 255, 235);
     const ImU32 lit  = IM_COL32(255, 170, 40, 255);
     const ImU32 dim  = IM_COL32(205, 205, 215, 140);
+    // A Curve picked: its own points become handles (handles()), and the dots
+    // of what it made would only crowd them.
+    const proc::Node*  hn   = m_nodeOf == e->id ? pg->graph.find(m_node) : nullptr;
+    const std::string* hsrc = hn ? pointsOf(*hn) : nullptr;
+    const std::vector<glm::vec3> hpts = hsrc ? proc::parsePoints(*hsrc) : std::vector<glm::vec3>{};
+    const int  hcount    = static_cast<int>(hpts.size());
+    const bool hclosed = hn && closedOf(*hn) && hcount >= 3;
+    const int  hstretches = hcount < 2 ? 0 : (hclosed ? hcount : hcount - 1);
+    auto H = [&](int i) { return hpts[static_cast<std::size_t>(i % hcount)]; };
+    // The line through the points as given, faint, under the curve: a smoothed
+    // curve bends near it, not through the middle of each stretch.
+    for (int i = 0; i < hstretches; ++i) {
+        ImVec2 a, b;
+        if (screen(H(i), a) && screen(H(i + 1), b)) dl->AddLine(a, b, IM_COL32(205, 205, 215, 110), 1.0f);
+    }
     const proc::Geo& g = m_overlay;
     for (const proc::Curve& c : g.curves) {
         const int n = static_cast<int>(c.pts.size());
@@ -633,11 +937,55 @@ void Panel::viewport(const ViewportFrame& view) {
                 screen(c.pts[static_cast<std::size_t>((i + 1) % n)], b))
                 dl->AddLine(a, b, line, 2.0f);
         }
+        if (hsrc) continue;
         for (int i = 0; i < n; ++i) {
             ImVec2 s;
             if (!screen(c.pts[static_cast<std::size_t>(i)], s)) continue;
             const bool picked = g.hasSel && proc::Geo::curvePicked(c, i, true);
             dl->AddCircleFilled(s, picked ? 5.5f : 3.0f, picked ? lit : line);
+        }
+    }
+    // The handles: a "+" halfway along each stretch, the points on top -- the
+    // picked one lit, with where it is -- and while a point is lifted square
+    // to its plane, the line it travels on.
+    if (hsrc) {
+        if (m_ptDrag && m_ptMoved && m_ptLift) {
+            glm::vec3 axis(0.0f);
+            axis[m_ptAxis] = 1.0f;
+            ImVec2 a, b;
+            if (screen(m_ptStart - axis * 50.0f, a) && screen(m_ptStart + axis * 50.0f, b))
+                dl->AddLine(a, b, IM_COL32(255, 210, 60, 120), 1.5f);
+        }
+        for (int i = 0; i < hstretches; ++i) {
+            ImVec2 s;
+            if (!screen(0.5f * (H(i) + H(i + 1)), s)) continue;
+            const bool  hover = i == m_plusHover;
+            const float r     = hover ? 6.5f : 4.5f;
+            const ImU32 c     = hover ? IM_COL32(255, 255, 255, 255) : IM_COL32(215, 225, 235, 200);
+            dl->AddCircleFilled(s, r, IM_COL32(20, 24, 30, 170));
+            dl->AddCircle(s, r, c, 0, 1.5f);
+            dl->AddLine(ImVec2(s.x - r * 0.55f, s.y), ImVec2(s.x + r * 0.55f, s.y), c, 1.5f);
+            dl->AddLine(ImVec2(s.x, s.y - r * 0.55f), ImVec2(s.x, s.y + r * 0.55f), c, 1.5f);
+        }
+        for (int i = 0; i < hcount; ++i) {
+            ImVec2 s;
+            if (!screen(H(i), s)) continue;
+            const bool  picked = i == m_pt;
+            const bool  hover  = i == m_ptHover;
+            const float rad    = picked ? 7.0f : (hover ? 6.5f : 5.0f);
+            const ImU32 c      = picked ? IM_COL32(255, 210, 60, 255)
+                               : hover  ? IM_COL32(210, 235, 255, 255)
+                                        : IM_COL32(90, 180, 255, 235);
+            dl->AddCircleFilled(s, rad, c);
+            dl->AddCircle(s, rad, IM_COL32(0, 0, 0, 190), 0, 1.5f);
+            if (picked) {
+                const glm::vec3 p = H(i);
+                char label[64];
+                std::snprintf(label, sizeof label, "%.1f  %.1f  %.1f", p.x, p.y, p.z);
+                const ImVec2 at(s.x + rad + 3.0f, s.y + 2.0f);
+                dl->AddText(ImVec2(at.x + 1.0f, at.y + 1.0f), IM_COL32(0, 0, 0, 200), label);
+                dl->AddText(at, IM_COL32(255, 225, 140, 245), label);
+            }
         }
     }
     // Where prefabs go: a small cross each, so a Prefab node's placements can
@@ -683,6 +1031,10 @@ void Panel::draw(bool& show) {
     g_probe = &probe;
     m_open = false;
     m_keys = false;
+    // A drag or a burst of nudges of the curve handles ends with its button
+    // and its keys, whether or not handles() ran this frame.
+    if (m_ptDrag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) m_ptDrag = false;
+    if (m_ptNudge && !nudgeHeld()) m_ptNudge = false;
     if (!show) { commit(); return; }
     ImGui::SetNextWindowSize(ImVec2(1000.0f, 640.0f), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Procedural", &show)) {
@@ -750,8 +1102,9 @@ void Panel::draw(bool& show) {
         m_pendingCreate = -1;
     }
     // One interaction, one undo step: banked as soon as nothing is held down
-    // (a stepper's click is over, a typed value was entered).
-    if (!ImGui::IsAnyItemActive()) commit();
+    // (a stepper's click is over, a typed value was entered, a curve point's
+    // drag or burst of nudges in the scene has ended).
+    if (!ImGui::IsAnyItemActive() && !m_ptDrag && !m_ptNudge) commit();
     ImGui::End();
 }
 
@@ -960,7 +1313,8 @@ void Panel::canvas(Entity& e, ProcGraphComponent& pg) {
         return glm::vec2((screen.x - origin.x) / em, (screen.y - origin.y) / em);
     };
     const bool canvasHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
-    const bool keys = m_keys && !io.WantTextInput;
+    // ...unless a curve point picked in the scene has them (handles()).
+    const bool keys = m_keys && !io.WantTextInput && !pointKeys();
 
     // The background first: it gives the canvas its extent (the scroll bars)
     // and takes the clicks nothing else takes -- a click puts down a wire in
@@ -993,16 +1347,76 @@ void Panel::canvas(Entity& e, ProcGraphComponent& pg) {
     // Wires first, under the nodes.
     const ImU32 wire    = ImGui::GetColorU32(ImGuiCol_Text, 0.45f);
     const ImU32 wireSel = ImGui::GetColorU32(ImGuiCol_PlotLinesHovered);
+    // A wire's bend: straight down out of the output, straight down into the input.
+    auto bend = [&](ImVec2 a, ImVec2 b) { return std::max(std::fabs(b.y - a.y) * 0.5f, em * 1.5f); };
     auto bezier = [&](ImVec2 a, ImVec2 b, ImU32 c, float thick) {
-        const float dy = std::max(std::fabs(b.y - a.y) * 0.5f, em * 1.5f);
+        const float dy = bend(a, b);
         dl->AddBezierCubic(a, ImVec2(a.x, a.y + dy), ImVec2(b.x, b.y - dy), b, c, thick);
     };
+
+    // A node let go over a wire goes into it: the wire's source feeds the node,
+    // the node feeds what the wire fed -- Houdini's and Blender's drop onto a
+    // link. Only a node free to take it: one input with nothing wired into it,
+    // feeding nothing yet.
+    auto insertable = [&](const proc::Node& n) {
+        if (n.variadic() || n.inputSlots() != 1) return false;
+        if (!n.inputs.empty() && n.inputs.front() >= 0) return false;
+        for (const auto& o : g.nodes)
+            for (int src : o->inputs)
+                if (src == n.id) return false;
+        return true;
+    };
+    // The wire running through a node's box (screen top-left `p`, `w` wide,
+    // the node height tall), the one passing nearest its middle -- the box, not
+    // the pointer, because the box is what the hand puts over the wire, and a
+    // whole box is a generous target. Wires of node `self` don't count.
+    struct WireHit { int consumer = -1, slot = 0, source = -1; };
+    auto wireThrough = [&](ImVec2 p, float w, int self) {
+        WireHit best;
+        float bestD = 1e30f;
+        const ImVec2 mid(p.x + 0.5f * w, p.y + 0.5f * H);
+        const float pad = em * 0.4f;
+        for (const auto& n : g.nodes)
+            for (std::size_t s = 0; s < n->inputs.size(); ++s) {
+                const int src = n->inputs[s];
+                if (src < 0 || !g.find(src) || src == self || n->id == self) continue;
+                const ImVec2 a = outDot(src), b = inDot(n->id, static_cast<int>(s));
+                const float dy = bend(a, b);
+                const ImVec2 c1(a.x, a.y + dy), c2(b.x, b.y - dy);
+                for (int k = 0; k <= 32; ++k) {
+                    const float t = static_cast<float>(k) / 32.0f, u = 1.0f - t;
+                    const float w0 = u * u * u, w1 = 3.0f * u * u * t, w2 = 3.0f * u * t * t, w3 = t * t * t;
+                    const ImVec2 q(w0 * a.x + w1 * c1.x + w2 * c2.x + w3 * b.x,
+                                   w0 * a.y + w1 * c1.y + w2 * c2.y + w3 * b.y);
+                    if (q.x < p.x - pad || q.x > p.x + w + pad || q.y < p.y - pad || q.y > p.y + H + pad) continue;
+                    const float d = std::hypot(q.x - mid.x, q.y - mid.y);
+                    if (d < bestD) {
+                        bestD = d;
+                        best  = {n->id, static_cast<int>(s), src};
+                    }
+                }
+            }
+        return best;
+    };
+    auto insertInto = [](proc::Graph& gg, int id, const WireHit& w) {
+        gg.connect(id, 0, w.source);
+        gg.connect(w.consumer, w.slot, id);
+    };
+    // One node being dragged that could go in: the wire it would go into,
+    // lit while it is over it, so the drop is no surprise.
+    WireHit dropWire;
+    const int dragOne = (m_dragNode >= 0 && m_dragMoved && m_dragFrom.size() == 1) ? m_dragNode : -1;
+    if (const proc::Node* dn = g.find(dragOne); dn && insertable(*dn) && L.pos.count(dragOne))
+        dropWire = wireThrough(at(L.pos[dragOne]), L.w(dragOne), dragOne);
+
     for (const auto& n : g.nodes)
         for (std::size_t s = 0; s < n->inputs.size(); ++s) {
             const int src = n->inputs[s];
             if (src < 0 || !g.find(src)) continue;
-            const bool hot = picked(n->id) || picked(src);
-            bezier(outDot(src), inDot(n->id, static_cast<int>(s)), hot ? wireSel : wire, hot ? 2.6f : 1.8f);
+            const bool hot  = picked(n->id) || picked(src);
+            const bool into = n->id == dropWire.consumer && static_cast<int>(s) == dropWire.slot;
+            bezier(outDot(src), inDot(n->id, static_cast<int>(s)), into ? col(ImGui::GetStyleColorVec4(ImGuiCol_CheckMark)) : hot ? wireSel : wire,
+                   into ? 4.0f : hot ? 2.6f : 1.8f);
         }
 
     const ImVec4 accent = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
@@ -1325,6 +1739,11 @@ void Panel::canvas(Entity& e, ProcGraphComponent& pg) {
                 if (proc::Node* n = gg.find(id))
                     n->pos = glm::vec2(snapTo(n->pos.x, kGrid), snapTo(n->pos.y, kGrid));
         }, false);
+        // ...and over a wire: into it (the same undo step as the move).
+        if (dropWire.consumer >= 0) {
+            const WireHit w = dropWire;
+            change(e, [&](proc::Graph& gg) { insertInto(gg, dragOne, w); });
+        }
     }
 
     // A wire dragged from a dot: drawn to the pointer while the button is
@@ -1387,14 +1806,19 @@ void Panel::canvas(Entity& e, ProcGraphComponent& pg) {
             // "Move" without a drag: the node goes where the click was.
             const int id = m_moveArmed;
             const glm::vec2 to = canvasAt(io.MousePos) - glm::vec2(0.5f * kNodeW, 0.5f * kNodeH);
+            const glm::vec2 put(snapTo(std::max(to.x, 0.0f), kGrid), snapTo(std::max(to.y, 0.0f), kGrid));
+            // Put down over a wire, it goes into it -- as a dragged one does.
+            const proc::Node* mn = g.find(id);
+            const WireHit w = (mn && insertable(*mn))
+                                  ? wireThrough(at(ImVec2(put.x * em, put.y * em)), L.w(id), id) : WireHit{};
             change(e, [&](proc::Graph& gg) {
                 pinAll(gg, L, em);
                 if (proc::Node* n = gg.find(id)) {
-                    n->pos    = glm::vec2(snapTo(std::max(to.x, 0.0f), kGrid),
-                                          snapTo(std::max(to.y, 0.0f), kGrid));
+                    n->pos    = put;
                     n->placed = true;
                 }
-            }, false);
+                if (w.consumer >= 0) insertInto(gg, id, w);
+            }, w.consumer >= 0);
         } else if (!io.KeyShift && m_wireFrom < 0 && m_wireTo < 0) {
             // A click on nothing drops the pick (a wire in the making is put
             // down first, by the same click).
@@ -1448,15 +1872,19 @@ void Panel::canvas(Entity& e, ProcGraphComponent& pg) {
         // where they stand first, so none of them jumps.
         int made = -1;
         const glm::vec2 spot = m_addAt - glm::vec2(0.5f * kNodeW, 0.5f * kNodeH);
+        const glm::vec2 put(snapTo(std::max(spot.x, 0.0f), kGrid), snapTo(std::max(spot.y, 0.0f), kGrid));
+        // Added over a wire, a node that can goes into it.
+        const WireHit w = wireThrough(at(ImVec2(put.x * em, put.y * em)), kNodeW * em, -1);
         change(e, [&](proc::Graph& gg) {
             std::unique_ptr<proc::Node> n = proc::make(addKind);
             if (!n) return;
             pinAll(gg, L, em);
             proc::Node& a = gg.add(std::move(n));
             made     = a.id;
-            a.pos    = glm::vec2(snapTo(std::max(spot.x, 0.0f), kGrid), snapTo(std::max(spot.y, 0.0f), kGrid));
+            a.pos    = put;
             a.placed = true;
             if (!gg.find(gg.output)) gg.output = made;
+            if (w.consumer >= 0 && !a.variadic() && a.inputSlots() == 1) insertInto(gg, made, w);
         });
         if (made >= 0) {
             m_node = made;
@@ -1495,7 +1923,24 @@ bool Panel::drawProps(proc::Node& n) {
             for (int i = 0; i < static_cast<int>(pts.size()); ++i) {
                 ImGui::PushID(i);
                 ImGui::AlignTextToFramePadding();
-                ui::hint("Point %d", i + 1);
+                // The row's name picks the point, as a click on its handle in
+                // the scene does: lit there, where the arrow keys move it.
+                const bool picked = m_drawing && m_ptFor == m_drawing->id && m_ptNode == n.id && m_pt == i;
+                char rowName[24];
+                std::snprintf(rowName, sizeof rowName, "Point %d", i + 1);
+                if (ImGui::Selectable(rowName, picked, 0,
+                                      ImVec2(std::max(full - xw, em * 6.0f) - em * 0.6f, 0.0f))) {
+                    m_pt     = picked ? -1 : i;
+                    m_ptNode = n.id;
+                    m_ptFor  = m_drawing ? m_drawing->id : -1;
+                }
+                tell("points.pick." + std::to_string(i));
+                ImGui::SetItemTooltip("Pick this point: its handle lights up in the scene,\n"
+                                      "where the arrow keys move it (the pointer over the scene).");
+                if (picked && m_ptScroll) {
+                    ImGui::SetScrollHereY(0.35f);
+                    m_ptScroll = false;
+                }
                 ImGui::SameLine(std::max(full - xw, em * 6.0f));
                 ImGui::BeginDisabled(pts.size() <= 2);
                 if (ImGui::Button("X", ImVec2(xw, 0.0f))) removeAt = i;
@@ -1544,6 +1989,9 @@ bool Panel::drawProps(proc::Node& n) {
             tell("points.cursor");
             ImGui::SetItemTooltip("Put the 3D cursor where the point should go (Shift +\n"
                                   "right-click on the ground), then press this.");
+            ui::hint("In the scene: drag a point (Ctrl: square to the curve's plane);\n"
+                     "the + halfway along a stretch adds one; the arrow keys move\n"
+                     "the picked one.");
             if (edited) {
                 s = proc::formatPoints(pts);
                 changed = true;

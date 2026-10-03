@@ -93,11 +93,16 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Tanks, Kuppeln) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
   Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points);
   die Auswahl steuert Copy onto points, Transform und den Flächenfilter. Kurven und
-  ausgewählte Punkte werden im Viewport eingezeichnet.
+  ausgewählte Punkte werden im Viewport eingezeichnet. Die Punkte einer Curve haben
+  dort Griffe: ziehen (in der Ebene, in der die Kurve liegt, mit Strg senkrecht dazu,
+  auf 0,1 m gerastert), „+“ auf einem Teilstück setzt einen Punkt dazwischen, ziehfrei
+  schieben Pfeiltasten und Bild↑/↓ den gewählten Punkt, Entf nimmt ihn heraus.
   Prefab-Knoten setzen Prefabs des Projekts als echte Objekte unter das prozedurale
   Objekt (verschieb-, kopier- und auf Punkte setzbar; Undo schließt sie ein).
   Knoten wählt man per Klick, Shift+Klick oder Rahmen (A alle, Alt+A keine) und
-  verschiebt sie gemeinsam; Entf löscht Knoten, nie Szenen-Objekte; Shift+A bzw.
+  verschiebt sie gemeinsam; ein freier Knoten mit einem Eingang, über einem Draht
+  abgelegt (gezogen, per Move oder aus dem Add-Menü), wird genau dazwischen verdrahtet
+  (der Draht leuchtet vorher auf); Entf löscht Knoten, nie Szenen-Objekte; Shift+A bzw.
   Rechtsklick öffnet das Add-Menü mit Suche an der Mausposition, Rechtsklick auf einen
   Knoten dessen Menü; mittlere Maustaste schwenkt.
   Verdrahtet wird von Hand (Ziehen von Punkt zu Punkt oder zwei Klicks);

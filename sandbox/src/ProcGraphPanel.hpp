@@ -29,7 +29,10 @@ struct ViewportFrame;
 //     other way round); every wire can also be set from a list in the
 //     settings. Pulling an input's wire off onto nothing takes it out.
 //   - a node: drag it (it snaps to the grid when let go) -- or press "Move"
-//     and click where it should go;
+//     and click where it should go. Put down over a wire (dragged, moved, or
+//     added from the menu there), a node with one input that is wired to
+//     nothing yet goes into it: the wire's source feeds it, it feeds what the
+//     wire fed. The wire lights up while a dragged node is over it;
 //   - a number: a stepper, whose middle can be clicked to type a value.
 //
 // Nodes are picked like objects: a click takes one, Shift+click adds or takes
@@ -58,8 +61,24 @@ public:
     // Into the Scene window, after the scene: the picked node's curves and
     // points over the object -- the selected points lit -- while this window
     // is open. Curves are never drawn by the renderer; this is where they are
-    // seen.
+    // seen. A Curve's own points get handles (see handles()).
     void viewport(const ViewportFrame& view);
+    // The picked Curve's points as handles in the Scene window -- the input
+    // half, run ahead of the transform gizmo so that a point under the pointer
+    // takes the click from it. A click picks a point, a drag moves it in the
+    // plane the curve lies in (a path on the ground stays on the ground, a
+    // profile standing up stays standing; with Ctrl held at the grab, square
+    // to that plane instead), snapped to a tenth of a metre. The "+" halfway
+    // along a stretch puts a new point there. Without any drag: the arrow keys
+    // move the picked point half a metre (Shift: 2.5) as seen from the camera,
+    // Page Up/Down square to the plane, the Delete key takes it off (and picks
+    // the one before, so a second press never reaches the object; a curve keeps
+    // two points). A click on the empty scene lets the point go. A drag, or a
+    // burst of key presses, is one undo step; a click that never moved
+    // changes nothing. Returns whether the left button is the handles' this
+    // frame (one under the pointer, or a drag running): main keeps the gizmo
+    // and click-to-select out of it then. The drawing is viewport()'s.
+    bool handles(const ViewportFrame& view);
 
     // A new procedural object made from preset `i` (procpreset::list()),
     // selected, as one undo step. Returns its id. The window's tiles call this;
@@ -79,8 +98,9 @@ public:
     // The picked nodes (the one whose settings show is among them).
     const std::vector<int>& pickedNodes() const { return m_sel; }
     // Does this window own the keyboard this frame -- the pointer over it, or
-    // it in focus? Then the Delete key is its own: main must leave the scene be.
-    bool ownsKeys() const { return m_keys; }
+    // it in focus, or a curve point picked while the pointer is on the scene?
+    // Then the Delete key is its own: main must leave the scene be.
+    bool ownsKeys() const { return m_keys || pointKeys(); }
 
     // The project's prefabs, for the Prefab node: their names (the picker),
     // and a fresh copy of one as scene entities, root first, ids taken from
@@ -95,6 +115,9 @@ public:
     std::function<void(const std::string&, ImVec2, ImVec2)> probe;
 
 private:
+    // Is the keyboard a picked curve point's this frame? Only in a frame
+    // handles() ran and found one picked with the pointer on the scene.
+    bool pointKeys() const { return m_ptKeys && m_ptKeysFrame == ImGui::GetFrameCount(); }
     Entity* target();
     // Every change to a graph goes through here: the object as it was is kept
     // for undo (once per interaction), `fn` changes the graph, and it cooks --
@@ -185,6 +208,22 @@ private:
     proc::Geo   m_overlay;
     std::size_t m_overlayHash = 0;
     int         m_overlayNode = -1, m_overlayFor = -1;
+    // The curve handles (handles()): the picked point -- of which node, of
+    // which object -- and what is under the pointer (a point, or the "+" of
+    // the stretch after point i). A drag: whether it has gone past the drag
+    // threshold yet, whether it lifts (Ctrl at the grab), the axis it does not
+    // move along, where the point was, how far the pointer's hit on the plane
+    // sat from it, and where the press was. A burst of nudges still open.
+    int       m_pt = -1, m_ptNode = -1, m_ptFor = -1;
+    int       m_ptHover = -1, m_plusHover = -1;
+    bool      m_ptDrag = false, m_ptMoved = false, m_ptLift = false;
+    int       m_ptAxis = 1;
+    glm::vec3 m_ptStart{0.0f}, m_ptGrab{0.0f};
+    ImVec2    m_ptPress{0.0f, 0.0f};
+    bool      m_ptNudge = false;
+    bool      m_ptKeys = false;     // a point picked, the pointer on the scene...
+    int       m_ptKeysFrame = -1;   // ...in this frame (see pointKeys())
+    bool      m_ptScroll = false;   // bring the picked point's row into view
     char m_matFilter[64] = {};
 };
 
