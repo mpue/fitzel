@@ -199,6 +199,21 @@ für Standbilder und ein Synthesizer für eigene Musik.
   allem, was sie brauchen (Modelle, Materialien, Skripte, Klänge, Animationsgraphen);
   der Import zeigt vorher Datei für Datei, was er tun würde.
 - **Import**: Unity-FBX und Videos.
+- **Bildeditor** (Assets > Image editor, oder Rechtsklick auf eine Textur im
+  Asset-Browser): ein kleines Photoshop für die Texturen eines Projekts. Mehrere Bilder
+  in Tabs; Ebenen mit Deckkraft und Mischmodi (Multiplizieren, Negativ multiplizieren,
+  Ineinanderkopieren, Weiches Licht, Addieren, Differenz, Farbe …); Pinsel, Radierer,
+  Kopierstempel, Füllen, Verlauf, Formen, Text (Systemschriften), Pipette; Auswahl als
+  Rechteck, Ellipse oder Zauberstab, addieren/abziehen/schneiden, verschieben;
+  Helligkeit/Kontrast, Farbton/Sättigung, Tonwerte, Farbbalance, Belichtung,
+  Weichzeichnen, Schärfen, Rauschen, Verpixeln, Tontrennung, Schwellenwert, Umkehren –
+  und für Spiele: „Make tileable“ (nahtlos kachelbar) und „Normal map from height“.
+  Bildgröße, Arbeitsfläche, Freistellen, Drehen, Spiegeln; Zwischenablage auch mit
+  anderen Programmen (Screenshot einfügen). Speichern als PNG/JPG/TGA/BMP – Materialien,
+  die das Bild benutzen, zeigen es sofort neu. Ohne ruhige Hand bedienbar: ein Strich
+  schreibt absolut (noch mal drübermalen dunkelt nicht nach), der Pinsel hängt an einem
+  Faden (Stabilisator), Linien von Klick zu Klick, Auswahl/Formen/Verläufe per Klick –
+  Klick, Raster zum Einrasten, jeder Schritt im Verlauf zurücknehmbar.
 - **Schaukeln** (Komponente „Swing“): Hängendes – Haken an der Kette, Lampe am Kabel,
   Schild, Sandsack – pendelt um seinen Aufhängepunkt, wenn es getroffen wird
   (`game.applyImpulse` mit Trefferpunkt; `weapon.lua` tut das), die Schwerkraft holt es

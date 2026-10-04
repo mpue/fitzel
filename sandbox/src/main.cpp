@@ -199,6 +199,7 @@
 #include "StreetSignPanel.hpp"
 #include "TreeGenPanel.hpp"
 #include "RetargetPanel.hpp"
+#include "ImageEditPanel.hpp"
 #include "ProcGraphPanel.hpp"
 #include "TownTraffic.hpp"
 #include "TownLamps.hpp"
@@ -1637,6 +1638,7 @@ int main(int argc, char** argv) {
         bool showSigns       = false;
         bool showTreeGen     = false;
         bool showRetarget    = false; // motions of other skeletons onto a character
+        bool showImageEditor = false; // the small Photoshop for textures
         bool showCity        = false;
         bool showTowns       = false; // the town generator
         int  townSel         = -1;
@@ -2715,6 +2717,10 @@ int main(int argc, char** argv) {
                                                        p = std::filesystem::path(currentProject).parent_path() / p;
                                                    return p.generic_string();
                                                }});
+
+        // --- The image editor (see ImageEditPanel.hpp: owns its pictures) ------
+        imageui::ImageEditor imageEditor({currentProject, exportStatus,
+                                          &g_fileDrop.paths, &g_fileDrop.x, &g_fileDrop.y});
 
         // --- Procedural objects: node graphs cooked into meshes (ProcGraph.hpp) --
         procui::Panel procPanel({editorCtx, spawnPoint, [&](glm::vec3& p) {
@@ -6338,6 +6344,7 @@ int main(int argc, char** argv) {
             {"Assets",   "Materials",          nullptr, &showMaterials},
             {"Assets",   "Models",             nullptr, &showModels},
             {"Assets",   "Retarget animations", nullptr, &showRetarget},
+            {"Assets",   "Image editor",       nullptr, &showImageEditor},
             {"Assets",   "Prefabs",            nullptr, &showPrefabs},
             {"Assets",   "Assets",             nullptr, &showAssets},
             {"Assets",   "Scripts",            nullptr, &scriptEditor.visible},
@@ -10451,9 +10458,10 @@ int main(int argc, char** argv) {
                     // While modelling, Del is the mesh's (the modelling mode's
                     // delete menu) -- never the whole object.
                     // ...nor while the Procedural window has the keyboard: there,
-                    // the key removes nodes of the graph.
+                    // the key removes nodes of the graph. The Image editor's Del
+                    // clears what is selected in the picture.
                     if (sel.valid() && !modelling && !procPanel.ownsKeys() &&
-                        ImGui::IsKeyPressed(ImGuiKey_Delete))
+                        !imageEditor.hasKeyboard() && ImGui::IsKeyPressed(ImGuiKey_Delete))
                         deleteSelection();
                 }
             } else {
@@ -10606,6 +10614,7 @@ int main(int argc, char** argv) {
             if (showSigns) signTool.panel(showSigns);
             if (showTreeGen) treeGen.panel(showTreeGen);
             if (showRetarget) retargetTool.panel(showRetarget);
+            if (showImageEditor) imageEditor.panel(showImageEditor);
             procPanel.draw(showProcedural);
 
             if (showHouses) {
@@ -10899,7 +10908,11 @@ int main(int argc, char** argv) {
                                      return onScreen ? thumbFor(id) : 0u;
                                  },
                                  g_fileDrop.paths, g_fileDrop.x, g_fileDrop.y,
-                                 [&] { return spawnPoint(8.0f); }});
+                                 [&] { return spawnPoint(8.0f); },
+                                 [&](const std::string& file) {
+                                     showImageEditor = true;
+                                     imageEditor.open(file);
+                                 }});
             }
 
 

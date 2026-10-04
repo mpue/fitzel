@@ -106,6 +106,10 @@ void panel(EditorContext& ed, State& s, const Host& h) {
                     ImGui::Text("%s  %s", assetTypeName(e->type), e->relPath.c_str());
                     ImGui::EndDragDropSource();
                 }
+                if (isTex && h.editImage && ImGui::BeginPopupContextItem("##tex")) {
+                    if (ImGui::MenuItem("Edit in Image editor")) h.editImage(e->absPath.generic_string());
+                    ImGui::EndPopup();
+                }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s\n%s", assetTypeName(e->type), e->relPath.c_str());
                 if (e->type == AssetType::Model && ImGui::IsItemHovered() &&
