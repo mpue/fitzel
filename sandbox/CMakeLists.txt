@@ -359,6 +359,12 @@ set(SANDBOX_EDITOR_SOURCES
     src/RetargetPreview.cpp
     src/RetargetPanel.cpp
     src/Blender.cpp
+    # The Image editor: a small Photoshop for textures (ImageDoc.hpp is the
+    # picture, layers and undo; ImageOps.cpp the tools; ImageEditPanel the window).
+    src/ImageDoc.cpp
+    src/ImageOps.cpp
+    src/ImageEditPanel.cpp
+    src/ImageCanvas.cpp
     src/CityPanel.cpp
     src/CityPlanPanel.cpp
     # The offline path tracer: the still-image renderer behind the Render panel.
@@ -803,6 +809,22 @@ target_link_libraries(retargetpanelcheck PRIVATE fitzel imgui cgltf_dep stb_head
 if(WIN32)
     target_link_libraries(retargetpanelcheck PRIVATE ole32 shell32)
 endif()
+# imagecheck (sandbox/tools/imagecheck.cpp): the Image editor's core without a
+# window -- strokes, undo, blend modes, selections, transforms, filters, files, text.
+#   build/release/bin/imagecheck.exe [outDir]
+add_executable(imagecheck tools/imagecheck.cpp src/ImageDoc.cpp src/ImageOps.cpp)
+target_link_libraries(imagecheck PRIVATE fitzel stb_headers)
+
+# imagepanelcheck (sandbox/tools/imagepanelcheck.cpp): the Image editor window
+# drawn through the editor's own Gui, on a picture painted with the tools' API.
+#   cd build/release/bin && imagepanelcheck.exe out.png [--tool 3] [--filter 5] [--welcome]
+add_executable(imagepanelcheck tools/imagepanelcheck.cpp src/ImageEditPanel.cpp src/ImageCanvas.cpp
+                               src/ImageDoc.cpp src/ImageOps.cpp src/FolderDialog.cpp src/UiStyle.cpp)
+target_link_libraries(imagepanelcheck PRIVATE fitzel imgui stb_headers)
+if(WIN32)
+    target_link_libraries(imagepanelcheck PRIVATE ole32 shell32)
+endif()
+
 # levelcheck (sandbox/tools/levelcheck.cpp): one seed, one whole race scene.
 # Everything a level generator can get wrong is invisible from a screenshot and
 # expensive to find by driving -- a corner tighter than the craft can hold looks

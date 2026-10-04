@@ -36,6 +36,8 @@ struct Host {
     std::vector<std::string>& droppedFiles;
     float dropX = 0.0f, dropY = 0.0f;
     std::function<glm::vec3()> spawnAt;   // where a double-clicked model lands
+    // Open a picture in the Image editor (a texture tile's right-click menu).
+    std::function<void(const std::string& file)> editImage;
 };
 
 void panel(EditorContext& ed, State& s, const Host& h);
