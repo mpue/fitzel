@@ -89,6 +89,7 @@ Alle Engine-Funktionen hängen an der globalen Tabelle `game`.
 | `game.mousePressed(button)` | bool | Maustaste in diesem Frame gedrückt (Flanke) |
 | `game.mousePos()` | `x, y, über` | Zeiger in HUD-Leinwand-Einheiten (1080 hoch, Ursprung oben links, wie `game.hud*`); `über` = der Zeiger ist über der Ansicht |
 | `game.mouseRay()` | `ox, oy, oz, dx, dy, dz` oder `nil` | Welt-Strahl von der Kamera durch den Zeiger — zum Anklicken von Dingen in der Szene |
+| `game.mouseWheel()` | Zahl | Wie weit das Mausrad in diesem Frame gedreht wurde (Rasten, + = vom Körper weg); 0 außerhalb von Play |
 | `game.showCursor(an)` | – | Mauszeiger im Play freigeben (`true`) oder wieder dem Läufer überlassen (`false`); gilt bis Play endet |
 | `game.captureInput()` | bool | Tasten und Maustasten für dieses Skript festhalten — **jeden Frame** aufrufen, solange ein Menü offen ist; `true` = dieses Skript hält sie |
 
@@ -130,6 +131,11 @@ local dx, dy, dz = game.cameraDir()
 | `game.getPos(id)` | `x, y, z` oder `nil` | Weltposition; `nil` bei unbekannter ID |
 | `game.setPos(id, x, y, z)` | – | Objekt an Position setzen |
 | `game.clone(id [, name])` | `id` (int) | Kopie eines Objekts **samt Kindern und Komponenten** unter demselben Parent, an derselben Stelle; deferred wie `spawn`, `0` bei unbekannter ID |
+| `game.setLocal(id, x, y, z [, rx, ry, rz])` | – | **Lokalen** Transform setzen (relativ zum Parent; bei einem Wurzelobjekt = Welt) — der Turm auf dem Rumpf, das Bein an der Hüfte |
+| `game.setLocals(liste [, schritt])` | – | Viele lokale Transforms auf einmal: flache Liste `id, x, y, z, rx, ry, rz, id, …` (`schritt` 7, Standard) oder `id, x, y, z, …` (`schritt` 4, nur Position). Ein Aufruf pro Frame für eine ganze Armee statt einer pro Teil |
+
+Ein mit `game.spawn{ type = game.LIGHT, r = …, g = …, b = … }` erzeugtes Objekt ist ein
+echtes Punktlicht (Farbe aus `r/g/b`); Helligkeit und Reichweite stellt `game.setLight` ein.
 
 **Deferral:** `game.spawn` gibt die neue ID **sofort** zurück, das Objekt erscheint
 aber erst am **Ende des Frames** (die Tick-Schleife iteriert gerade die
@@ -205,6 +211,7 @@ end
 | Aufruf | Beschreibung |
 |--------|--------------|
 | `game.playSound(name)` | One-shot-Sound aus dem `sounds/`-Ordner abspielen (z. B. `"shot.wav"`) |
+| `game.sound(name [, laut [, tonhöhe [, x, y, z [, nah [, fern]]]]])` | One-shot mit Lautstärke und Tonhöhe; mit `x, y, z` **im Raum**: voll laut bis `nah` m (Standard 15), still ab `fern` m (Standard 400), von der Kamera aus gehört. Pro Datei spielen bis zu 6 Stimmen zugleich, die älteste wird abgeschnitten |
 | `game.playAudio(id)` | AudioSource-Komponente eines Objekts starten |
 | `game.stopAudio(id)` | AudioSource-Komponente eines Objekts stoppen |
 
@@ -656,6 +663,9 @@ game.setLight(e.id, { intensity = 6 + math.random() * 4 })  -- Flackern
 |--------|----------|--------------|
 | `game.terrainHeight(x, z)` | Zahl | Geländehöhe an einer Weltposition |
 | `game.raycast(ox,oy,oz, dx,dy,dz [,maxDist])` | `id, hx, hy, hz, dist` oder `nil` | Strahl gegen die Pick-Boxen der Objekte (achsen-parallel, Rotation wird ignoriert); `maxDist` default 1000 |
+| `game.waterAt(x, z)` | `oberfläche, tiefe` oder `nil` | Wasser an einer Stelle: Oberfläche eines Bachs/Flusses oder des Sees, wenn das Gelände darunter liegt, und wie tief es dort ist; `nil`, wo es trocken ist |
+| `game.trees(x0, z0, x1, z1)` | `{ x, z, größe, … }` | Alle Bäume des prozeduralen Waldes im Rechteck — hier und jetzt erzeugt, auch wo noch nichts gestreamt ist, und auf jedem Rechner mit derselben Szene dieselben (Wegfindung um Wälder) |
+| `game.clearTrees(x, z, r)` | – | Der Wald wächst ab jetzt nicht mehr in dieser Scheibe (ein Gebäude wurde dort gebaut) |
 | `game.setCameraPos(x, y, z)` | – | Spielerkamera setzen |
 | `game.setCameraDir(x, y, z)` | – | Blickrichtung setzen (wird normalisiert) |
 | `game.setCameraFov(grad)` | – | vertikaler Öffnungswinkel der freien Kamera; gilt bis Play endet |
@@ -685,6 +695,45 @@ Taste weckt sie sofort. Gehaltene Tasten muss das Skript selbst prüfen: eine ge
 Taste meldet sich nur einmal. Der Aufruf gilt für das ganze Spiel, nicht nur für das
 eigene Objekt: Das rufende Skript muss wissen, dass sonst nichts läuft (Physik,
 Animationen anderer Skripte). Rufen mehrere Skripte, gilt die höchste Rate.
+
+### 3.12.1 Mehrspieler: die Tabelle `net`
+
+Für Spiele, deren Regeln komplett im Skript laufen (Lockstep): Jeder Rechner rechnet
+dieselbe Simulation aus demselben Startwert, über das Netz gehen nur die **Befehle**.
+Der Relay-Server (`NetRelay`, eingebaut über `net.serve` oder eigenständig als
+`fitzelserver.exe --port 27960`) verwaltet Räume und schickt alle 100 ms einen
+nummerierten `TURN` mit den Befehlen aller Spieler an alle. Alles wird gepollt:
+`net.poll()` einmal pro Frame ist die ganze Netzschleife. Ende von Play schließt alle
+Verbindungen und einen gehosteten Server.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `net.connect(host [, port])` | `true` / `false, warum` | Verbindung zum Relay aufbauen (Port Standard 27960); fertig, sobald `net.status()` `"connected"` meldet |
+| `net.status()` | `zustand, fehler` | `"idle"`, `"connecting"`, `"connected"` oder `"closed"` |
+| `net.send(text)` | bool | Eine Nachricht schicken (siehe Protokoll) |
+| `net.poll()` | `{ text, … }` | Was seit dem letzten Aufruf ankam; treibt auch den Verbindungsaufbau und einen gehosteten Server |
+| `net.close()` | – | Verbindung trennen |
+| `net.serve([port [, turnMs]])` | `true, port` / `false, warum` | Den Relay in diesem Spiel starten (ein Spieler hostet) |
+| `net.stopServer()` | – | Gehosteten Relay beenden |
+| `net.serverInfo()` | `läuft, port, clients, räume` | Zustand des gehosteten Relays |
+| `net.addresses()` | `{ ip, … }` | Die IPv4-Adressen dieses Rechners (was ein Host seinen Mitspielern sagt) |
+| `net.clock()` | Zahl | Monotone Uhr in Sekunden |
+
+Protokoll (Text, Felder durch Tab getrennt): Client → Server `HELLO name\tspiel\tversion`,
+`LIST`, `CREATE max\tname\tconfig`, `JOIN name`, `LEAVE`, `SET daten`, `CONFIG text`
+(nur Host), `START` (nur Host), `CMD befehl`, `HASH turn\twert`, `CHAT text`, `PING x`.
+Server → Client `WELCOME id`, `ROOMS …`, `ROOM …`, `START seed\tturnMs\tslot\tanzahl\tconfig`
+plus eine Zeile pro Spieler, `TURN n` plus `slot\tbefehl` pro Befehl, `LEFT slot\tname`
+(wer geht, gibt auf: der Server legt ein `gg` als dessen Befehl in den nächsten Turn),
+`DESYNC turn` (die `HASH`-Werte der Spieler weichen ab), `CHAT name\ttext`, `ERROR text`.
+`steelwars.lua` (Projekt Steelwars) ist ein vollständiges Beispiel.
+
+### 3.12.2 Module: `require`
+
+Ein Spiel darf aus mehreren Dateien bestehen: `require("sw.units")` lädt
+`scripts/sw/units.lua` des Projekts — auch aus dem Archiv eines exportierten Spiels.
+Module laufen in der globalen Umgebung der VM (sie sehen `game`, `net`, `shared` …),
+werden einmal pro Play geladen und geben üblicherweise eine Tabelle zurück.
 
 ### 3.13 Konstanten
 

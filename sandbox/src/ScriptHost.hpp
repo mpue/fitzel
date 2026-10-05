@@ -184,6 +184,17 @@ struct ScriptEntityInfo {
     bool        dynamic    = false;
 };
 
+// One object's LOCAL transform, set by a script in a batch (game.setLocals):
+// relative to its parent, which for a part of a unit -- a turret on a hull, a
+// leg on a torso -- is exactly the number the script has. `hasRot` false keeps
+// the rotation it has.
+struct ScriptLocal {
+    int       id = 0;
+    glm::vec3 pos{0.0f};
+    glm::vec3 rot{0.0f};
+    bool      hasRot = false;
+};
+
 struct ScriptHost {
     // --- Input ----------------------------------------------------------------
     // `key` is a GLFW key code (see game.KEY_* constants); `button` is
@@ -197,6 +208,8 @@ struct ScriptHost {
     // 1080-high canvas (origin top left; false when it is not over the view),
     // and the world ray from the eye through it.
     std::function<bool(glm::vec2&)>             mousePos;
+    // How far the mouse wheel turned this frame (notches; + = away from you).
+    std::function<float()>                      mouseWheel;
     std::function<bool(glm::vec3&, glm::vec3&)> mouseRay;
     // Free the pointer during Play (the walking player holds it), or hand it back.
     std::function<void(bool)>                   showCursor;
@@ -231,6 +244,10 @@ struct ScriptHost {
     std::function<int(int, const std::string& name)> clone;
     std::function<bool(int, glm::vec3&)>            getPos;
     std::function<void(int, glm::vec3)>            setPos;
+    // Many objects' local transforms at once (game.setLocal / game.setLocals):
+    // one call a frame for a whole army instead of one per part, and one id
+    // lookup table for the batch instead of a scan per object.
+    std::function<void(const std::vector<ScriptLocal>&)> setLocals;
 
     // --- Entities: query & transform ------------------------------------------
     std::function<std::vector<int>()>               allEntities;
@@ -322,6 +339,13 @@ struct ScriptHost {
 
     // --- World ----------------------------------------------------------------
     std::function<float(float, float)> terrainHeight;
+    // Water at a world XZ: a river's surface or the sea/lake level when the
+    // ground is below it. False where it is dry.
+    std::function<bool(float, float, float&)> waterAt;
+    // The procedural forest: trees in a rectangle (x, y, z, scale each), and a
+    // disc the forest stops growing in (a building went up there).
+    std::function<void(glm::vec2 lo, glm::vec2 hi, std::vector<glm::vec4>& out)> trees;
+    std::function<void(float x, float z, float r)> clearTrees;
     // Ray vs. the entity pick boxes. Returns the hit entity id (-1 = miss) and
     // fills the world-space hit point and distance.
     std::function<int(glm::vec3 origin, glm::vec3 dir, float maxDist,
@@ -371,12 +395,19 @@ struct ScriptHost {
     // Whose saves game.saveData / game.loadData keep (SaveData.hpp): the game
     // being played, set by the host when Play starts. Empty = "default".
     std::string saveGame;
+    // Where `require` finds a script's modules: the folder its scripts live in
+    // (the project's scripts/, or the bundled one). Set when Play starts.
+    std::string scriptsDir;
     // Print a line to the console / editor log.
     std::function<void(const std::string&)> log;
 
     // --- Audio ----------------------------------------------------------------
     // Play a one-shot sound file from the project's sounds/ folder.
     std::function<void(const std::string&)> playSound;
+    // game.sound: a one-shot at a volume and pitch, and -- with `pos` -- heard
+    // from a place in the world, full within nearM, silent past farM.
+    std::function<void(const std::string&, float volume, float pitch, const glm::vec3* pos,
+                       float nearM, float farM)> playSoundEx;
 
     // Start / stop an entity's AudioSource component by id (game.playAudio /
     // game.stopAudio). No-ops on ids without an AudioSource.

@@ -398,6 +398,30 @@ void install(ScriptHost& host, Deps deps) {
         }
         return true;
     };
+    host.setLocals = [&doc](const std::vector<ScriptLocal>& list) {
+        // One lookup table for the batch: Document::find scans, and an army is
+        // hundreds of parts a frame.
+        std::unordered_map<int, Entity*> byId;
+        if (list.size() > 4) {
+            byId.reserve(doc.entities().size());
+            for (Entity& e : doc.entities()) byId.emplace(e.id, &e);
+        }
+        for (const ScriptLocal& l : list) {
+            Entity* e = nullptr;
+            if (byId.empty()) e = doc.find(l.id);
+            else if (auto it = byId.find(l.id); it != byId.end()) e = it->second;
+            if (!e) continue;
+            e->localCenter = l.pos;
+            if (l.hasRot) e->localRotation = l.rot;
+            // A root's world IS its local; mirror it now, as setPos does, so a
+            // getPos in the same frame agrees. Children are resolved with the
+            // scene graph at the end of the frame.
+            if (e->parent < 0) {
+                e->center = l.pos;
+                if (l.hasRot) e->rotation = l.rot;
+            }
+        }
+    };
     host.getRot = [&doc](int id, glm::vec3& out) {
         const Entity* e = doc.find(id);
         if (!e) return false;

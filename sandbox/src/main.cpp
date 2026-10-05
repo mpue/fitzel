@@ -219,6 +219,8 @@
 #include "UiStyle.hpp"
 #include "Startup.hpp"
 #include "PostLook.hpp"
+#include "ScriptNet.hpp"
+#include "ScriptSfx.hpp"
 
 using namespace fitzel;
 
@@ -2283,6 +2285,7 @@ int main(int argc, char** argv) {
             };
         auto resolveHierarchy = [&]() {
             std::unordered_set<int> done;
+            done.reserve(entities.size());
             for (Entity& e : entities) resolveOne(e, done);
         };
         // World matrix of an entity's PARENT (identity for a root) -- for setWorld.
@@ -5054,6 +5057,21 @@ int main(int argc, char** argv) {
             m = ImVec2(c.x, c.y);
             return true;
         };
+        host.mouseWheel = [&]() -> float { return playMode ? input.scrollDelta() : 0.0f; };
+        host.trees = [&](glm::vec2 lo, glm::vec2 hi, std::vector<glm::vec4>& out) {
+            std::vector<float> raw;
+            veg.treesIn(lo, hi, raw);
+            for (std::size_t k = 0; k + TreeField::kStride <= raw.size(); k += TreeField::kStride)
+                out.push_back({raw[k], raw[k + 1], raw[k + 2], raw[k + 4]});
+        };
+        host.clearTrees = [&](float x, float z, float r) {
+            veg.treeClearings.push_back({x, z, r});
+        };
+        host.waterAt = [&](float x, float z, float& surf) -> bool {
+            if (rivers.sample(glm::vec2(x, z), surf)) return true;
+            if (streamer.heightAt(x, z) < waterLevel) { surf = waterLevel; return true; }
+            return false;
+        };
         host.mousePos = [&, scriptView, scriptMouse](glm::vec2& out) -> bool {
             glm::vec2 vmin, vsize;
             ImVec2    m;
@@ -5153,6 +5171,14 @@ int main(int argc, char** argv) {
                 auto sc = std::make_unique<ScriptComponent>();
                 sc->file = s.script;
                 e.components.items.push_back(std::move(sc));
+            }
+            // A light spawned as a light shines: without the component it would
+            // be a marker box and nothing else. Colour from r/g/b; game.setLight
+            // tunes the rest.
+            if (e.type == EntityType::Light) {
+                auto lc   = std::make_unique<LightComponent>();
+                lc->color = s.color;
+                e.components.items.push_back(std::move(lc));
             }
             e.id       = entityCounter++;
             pendingSpawnVel[e.id] = s.vel;
@@ -5308,6 +5334,18 @@ int main(int argc, char** argv) {
         host.playSound = [&](const std::string& n){
             audio.playOneShot(resolveSoundPath(n));
             mix.sfx.hit(mix.sfxGain());   // a one-shot the mixer's meter can see
+        };
+        // game.sound: pooled voices with volume, pitch and a place (ScriptSfx).
+        // Names are resolved once: resolveSoundPath walks the whole asset
+        // database, and a battle asks for the same dozen files every frame.
+        ScriptSfx scriptSfx(audio);
+        std::unordered_map<std::string, std::string> scriptSfxPaths;
+        host.playSoundEx = [&](const std::string& n, float vol, float pitch, const glm::vec3* pos,
+                               float nearM, float farM) {
+            auto it = scriptSfxPaths.find(n);
+            if (it == scriptSfxPaths.end()) it = scriptSfxPaths.emplace(n, resolveSoundPath(n)).first;
+            scriptSfx.play(it->second, vol * mix.masterGain() * mix.sfxGain(), pitch, pos, nearM, farM);
+            mix.sfx.hit(mix.sfxGain() * glm::clamp(vol, 0.0f, 1.0f));
         };
         // One-shot SFX voices, cached by sound file: boost punches, the Ready/Set/Go
         // samples, checkpoint gates. CRUCIAL: each file is loaded once and only
@@ -5865,6 +5903,7 @@ int main(int argc, char** argv) {
             host.saveGame = currentProject.empty()
                 ? std::string()
                 : std::filesystem::path(currentProject).parent_path().filename().string();
+            host.scriptsDir = scriptsDir();
             pendingSpawns.clear();
             pendingSpawnVel.clear();
             pendingDestroy.clear();
@@ -6170,6 +6209,9 @@ int main(int argc, char** argv) {
             weapons2.reset();
             terrainCollId = 0;      // the collider dies with the world below
             physics.reset();
+            scriptnet::reset();     // the game's connections and hosted relay end with it
+            scriptSfx.clear();      // and its sound voices
+            scriptSfxPaths.clear();
             scriptFigures.clear();
             boneAttach.clear();
             decalSys.clearThrown();   // the holes were the game's

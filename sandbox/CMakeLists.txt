@@ -20,6 +20,10 @@ set(SANDBOX_RUNTIME_SOURCES
     src/SandboxMath.cpp
     src/CameraPath.cpp
     src/ScriptSystem.cpp
+    # Lockstep multiplayer for scripts (net.*) and the relay a player can host;
+    # pooled, positioned one-shots for game.sound.
+    src/NetSocket.cpp src/NetRelay.cpp src/ScriptNet.cpp
+    src/ScriptSfx.cpp
     # Things a figure carries on its bones (game.attach): runtime, like the
     # scripts that hang them there.
     src/BoneAttach.cpp
@@ -421,6 +425,9 @@ target_compile_definitions(player PRIVATE FITZEL_PLAYER)
 
 foreach(tgt sandbox player)
     target_link_libraries(${tgt} PRIVATE fitzel lua_dep nlohmann_json::nlohmann_json)
+    if(WIN32)
+        target_link_libraries(${tgt} PRIVATE ws2_32)   # net.* (NetSocket.cpp)
+    endif()
 
     # Inject the path to the project's content root (textures, models, sounds) at
     # the repo root, so the app can load the large, git-ignored assets without
@@ -670,11 +677,15 @@ target_link_libraries(musiccheck PRIVATE fitzel)
 #   build/release/bin/synthplaycheck.exe
 add_executable(synthplaycheck tools/synthplaycheck.cpp
                               src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                              src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp
                               src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                               src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
 target_include_directories(synthplaycheck PRIVATE src)
 target_compile_definitions(synthplaycheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(synthplaycheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(synthplaycheck PRIVATE ws2_32)
+endif()
 
 # luadoccheck (sandbox/tools/luadoccheck.cpp): the Lua reference is complete.
 # Builds the script VM as Play does, lists every function and constant in the
@@ -683,11 +694,35 @@ target_link_libraries(synthplaycheck PRIVATE fitzel lua_dep glm::glm nlohmann_js
 #   build/release/bin/luadoccheck.exe [docs/lua-scripting.md]
 add_executable(luadoccheck tools/luadoccheck.cpp
                            src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                           src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp
                            src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                            src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
 target_include_directories(luadoccheck PRIVATE src)
 target_compile_definitions(luadoccheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(luadoccheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(luadoccheck PRIVATE ws2_32)
+endif()
+
+# fitzelserver (sandbox/tools/fitzelserver.cpp): the dedicated lockstep relay
+# for multiplayer games -- the same NetRelay a player hosts from inside the game
+# with net.serve, on its own so the game outlives the host.
+#   build/release/bin/fitzelserver.exe [--port 27960] [--turn-ms 100]
+add_executable(fitzelserver tools/fitzelserver.cpp src/NetRelay.cpp src/NetSocket.cpp)
+target_include_directories(fitzelserver PRIVATE src)
+if(WIN32)
+    target_link_libraries(fitzelserver PRIVATE ws2_32)
+endif()
+
+# netcheck (sandbox/tools/netcheck.cpp): the relay end to end over loopback --
+# rooms, lobby, START, paced TURNs carrying every player's orders in the same
+# order to everyone, HASH mismatch -> DESYNC, a player dropping out -> LEFT.
+#   build/release/bin/netcheck.exe
+add_executable(netcheck tools/netcheck.cpp src/NetRelay.cpp src/NetSocket.cpp)
+target_include_directories(netcheck PRIVATE src)
+if(WIN32)
+    target_link_libraries(netcheck PRIVATE ws2_32)
+endif()
 
 # importcheck (sandbox/tools/importcheck.cpp): a model authored as many objects
 # has to arrive as many objects. This one fails without any symptom at all -- a

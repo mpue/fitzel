@@ -187,6 +187,17 @@ für Standbilder und ein Synthesizer für eigene Musik.
   `game.mouseRay`, `game.showCursor`, `game.clone`, `game.rest` (wartet das Spiel nur
   auf den nächsten Klick, zeichnet Play höchstens 10 Bilder pro Sekunde statt voller Rate).
 
+- **STEELWARS** (Projekt `D:\fitzel_projects\steelwars`): ein Sci-Fi-Echtzeitstrategiespiel
+  mit Roboterarmeen – Baufahrzeug baut die Basis, Harvester ernten Energicum, Raffinerie,
+  Kraftwerk und Strom, 10 Einheiten (u. a. fliegender Terminator, Hypercopter als Transporter,
+  Infiltrator übernimmt Gebäude und Panzer), 12 Gebäude mit Verstärkung/Erweiterung aus dem
+  Forschungslabor, Radar-Minimap, Nebel des Krieges, KI-Gegner in drei Stufen. Die Simulation
+  ist deterministisch und läuft im **Lockstep**: Mehrspieler über einen Relay-Server
+  (`fitzelserver.exe` oder im Spiel gehostet). Dafür neu in Lua: `require` für mehrere
+  Skriptdateien, die Tabelle `net`, `game.setLocals` (eine Armee pro Frame in einem Aufruf),
+  `game.sound` (positionierte One-Shots), `game.mouseWheel`, `game.waterAt`, `game.trees`
+  und `game.clearTrees` (Wald als Hindernis, Lichtung beim Bauen).
+
 ## Audio
 
 - **Grundlage**: 3D-Soundquellen, ein Mixer, Motorsounds für Auto und Gleiter,
