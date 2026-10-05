@@ -123,28 +123,49 @@ glm::mat4 CascadedShadowMap::fitCascade(const Camera& camera, float aspect,
     for (const auto& p : corners) center += p;
     center /= static_cast<float>(corners.size());
 
+    // A stable cascade. The box used to be fitted tightly around the slice in
+    // light space, so every step and every turn of the camera changed its size
+    // and slid it by a fraction of a texel: each frame rasterised the casters
+    // onto a slightly different grid, shadow edges crawled, and a wall in
+    // shadow flickered as its texels flipped between lit and shadowed -- only
+    // ever while moving. Two things hold it still:
+    //  - the box is the slice's bounding SPHERE, whose size depends on the
+    //    lens and the split distances only, never on where the camera looks
+    //    (so the texel size -- and with it the normal offset and the bias the
+    //    lit shader derives from it -- stays constant);
+    //  - its centre is snapped to whole texels in a light space whose origin
+    //    is fixed in the world, so the texel grid stays nailed to the world
+    //    and the camera merely moves across it.
+    // The sphere is larger than the tight box, which costs some resolution;
+    // that is the usual price for shadows that hold still.
+    float radius = 0.0f;
+    for (const auto& p : corners) radius = std::max(radius, glm::length(p - center));
+    radius = std::ceil(radius * 16.0f) / 16.0f;
+
     const glm::vec3 dir = glm::normalize(lightDir);
     const glm::vec3 up  = (std::abs(dir.y) > 0.99f) ? glm::vec3(0, 0, 1)
                                                      : glm::vec3(0, 1, 0);
-    const glm::mat4 lightView = glm::lookAt(center + dir, center, up);
+    // The light's rotation about the world origin; the view below is this
+    // plus a translation, built directly from the snapped centre so no
+    // round trip through an inverse can nudge the grid off its texels.
+    const glm::mat4 lightRot = glm::lookAt(glm::vec3(0.0f), -dir, up);
+    const float texel = 2.0f * radius / static_cast<float>(m_resolution);
+    glm::vec3 lc = glm::vec3(lightRot * glm::vec4(center, 1.0f));
+    lc.x = std::floor(lc.x / texel) * texel;
+    lc.y = std::floor(lc.y / texel) * texel;
+    // Eye one metre towards the light from the centre, as before.
+    const glm::mat4 lightView =
+        glm::translate(glm::mat4(1.0f), -(lc + glm::vec3(0.0f, 0.0f, 1.0f))) * lightRot;
 
-    float minX = std::numeric_limits<float>::max(), maxX = std::numeric_limits<float>::lowest();
-    float minY = minX, maxY = maxX;
-    float minZ = minX, maxZ = maxX;
-    for (const auto& p : corners) {
-        const glm::vec4 ls = lightView * glm::vec4(p, 1.0f);
-        minX = std::min(minX, ls.x); maxX = std::max(maxX, ls.x);
-        minY = std::min(minY, ls.y); maxY = std::max(maxY, ls.y);
-        minZ = std::min(minZ, ls.z); maxZ = std::max(maxZ, ls.z);
-    }
-
-    // Pull the near plane back / push the far plane out so casters outside the
-    // frustum (between the light and the slice) still write depth.
+    // Depth: the sphere as seen from that eye, then pulled back / pushed out
+    // so casters outside the slice (between the light and it) still write
+    // depth. Constant per cascade, like the rest of the box.
     constexpr float zMult = 10.0f;
+    float minZ = -1.0f - radius, maxZ = -1.0f + radius;
     minZ = (minZ < 0.0f) ? minZ * zMult : minZ / zMult;
     maxZ = (maxZ < 0.0f) ? maxZ / zMult : maxZ * zMult;
 
-    const glm::mat4 lightProj = glm::ortho(minX, maxX, minY, maxY, minZ, maxZ);
+    const glm::mat4 lightProj = glm::ortho(-radius, radius, -radius, radius, minZ, maxZ);
     return lightProj * lightView;
 }
 

@@ -27,9 +27,17 @@ const int   kDirections = 6; // screen-space marching directions
 const int   kSteps      = 5; // taps along each direction
 const float kPi         = 3.14159265;
 
+// The view-space point of the depth texel under `uv`, rebuilt at that texel's
+// own centre. The depth is read NEAREST, and this pass runs at half resolution:
+// its pixels sit on texel corners, so pairing a texel's depth with a uv off its
+// centre put the point off the surface -- by a fraction of the texel's depth
+// step, which on a wall seen at a grazing angle is large.
 vec3 viewPos(vec2 uv) {
-    float d = texture(uDepth, uv).r;
-    vec4 clip = vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
+    ivec2 sz = textureSize(uDepth, 0);
+    ivec2 px = clamp(ivec2(floor(uv * vec2(sz))), ivec2(0), sz - 1);
+    float d  = texelFetch(uDepth, px, 0).r;
+    vec2 uvc = (vec2(px) + 0.5) / vec2(sz);
+    vec4 clip = vec4(uvc * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
     vec4 v = uInvProjection * clip;
     return v.xyz / v.w;
 }
@@ -50,12 +58,21 @@ void main() {
 
     // Surface normal from depth, taking the *nearer* neighbour of each pair so the
     // basis stays on the near surface at silhouettes (no edge halos).
+    //
+    // Three texels apart, not one. The depth buffer holds the surface in steps
+    // (float depth near 1.0), and across a single texel one step tilts the
+    // normal by more than uBias forgives: the flat surface then sees its own
+    // plane as a horizon and occludes itself. On a wall seen at an angle the
+    // steps run along lines of equal depth -- vertical -- so it came out as
+    // vertical stripes that crawled over the wall as the camera moved. Over
+    // three texels the same step tilts the normal a third as much.
     vec2 size  = vec2(textureSize(uDepth, 0));
     vec2 texel = 1.0 / size;
-    vec3 Pr = viewPos(uv + vec2(texel.x, 0.0));
-    vec3 Pl = viewPos(uv - vec2(texel.x, 0.0));
-    vec3 Pu = viewPos(uv + vec2(0.0, texel.y));
-    vec3 Pd = viewPos(uv - vec2(0.0, texel.y));
+    vec2 nb    = 3.0 * texel;
+    vec3 Pr = viewPos(uv + vec2(nb.x, 0.0));
+    vec3 Pl = viewPos(uv - vec2(nb.x, 0.0));
+    vec3 Pu = viewPos(uv + vec2(0.0, nb.y));
+    vec3 Pd = viewPos(uv - vec2(0.0, nb.y));
     vec3 ddx = (abs(Pr.z - P.z) < abs(P.z - Pl.z)) ? (Pr - P) : (P - Pl);
     vec3 ddy = (abs(Pu.z - P.z) < abs(P.z - Pd.z)) ? (Pu - P) : (P - Pd);
     vec3 N = normalize(cross(ddx, ddy));

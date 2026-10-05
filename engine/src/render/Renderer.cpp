@@ -808,6 +808,13 @@ void Renderer::renderScene(const glm::mat4& view, const glm::mat4& proj,
         r.material->apply(); // binds shader + material params/textures
 
         s->setMat4("uModel", r.model);
+        // From this frame's pose back to last frame's, for the traces that march
+        // through last frame's depth (lit.frag, lastFramePos). Set on every draw:
+        // the programs are shared, and a moving car's value left standing would
+        // be applied to whatever is drawn next.
+        s->setMat4("uPrevFromCur", (r.model == r.prevModel)
+                                       ? glm::mat4(1.0f)
+                                       : r.prevModel * glm::inverse(r.model));
         s->setMat4("uView", view);
         s->setMat4("uViewProj", viewProj);
         s->setVec3("uViewPos", eye);

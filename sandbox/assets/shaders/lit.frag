@@ -234,9 +234,29 @@ float ssrSceneDepth(vec2 uv) {
     return (2.0 * n * f) / (f + n - z * (f - n));   // distance along the view axis
 }
 
+// Where this point of the surface stood LAST frame. The screen-space traces
+// below march through last frame's depth, which is right for anything that stood
+// still -- but a car driving away from the camera had its rear a few decimetres
+// nearer last frame, so a ray from where the rear is NOW starts behind its own old
+// picture, finds itself in the way and the whole hatch went black, on and off
+// with the frame time. Starting from the old pose, the object meets its old self
+// where it should. Renderer sets prevModel * inverse(model) per draw; a program
+// that never set it holds zeros, and that means "stood still".
+uniform mat4 uPrevFromCur;
+vec3 lastFramePos(vec3 P) {
+    if (uPrevFromCur[3][3] == 0.0) return P;
+    return (uPrevFromCur * vec4(P, 1.0)).xyz;
+}
+vec3 lastFrameDir(vec3 D) {
+    if (uPrevFromCur[3][3] == 0.0) return D;
+    return normalize(mat3(uPrevFromCur) * D);
+}
+
 // Radiance along R from `P` found on screen (rgb) and how much to trust it (a).
 vec4 ssrTrace(vec3 P, vec3 R, float rough) {
     if (uSsr == 0 || rough > 0.45) return vec4(0.0);
+    P = lastFramePos(P);
+    R = lastFrameDir(R);
     const int STEPS = 24;
     // A different start per pixel; TAA averages the banding it would leave.
     float t    = 0.12 + 0.3 * fract(52.9829189 * fract(dot(gl_FragCoord.xy,
@@ -297,6 +317,10 @@ float contactShadow(vec3 P, vec3 N, vec3 L) {
     if (uContactShadows == 0) return 0.0;
     float viewDist = length(uViewPos - P);
     if (viewDist > 60.0) return 0.0;
+    // The sun stays where it is (L is the world's); the surface goes back to
+    // where it stood when the depth being marched was drawn.
+    P = lastFramePos(P);
+    N = lastFrameDir(N);
     const int STEPS = 12;
     float reach = 0.35 + 0.012 * viewDist;          // metres towards the sun
     float step  = reach / float(STEPS);
