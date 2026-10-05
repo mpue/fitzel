@@ -23,7 +23,9 @@
 //     keeping the height the animation lifts it by, so a stride is still a
 //     stride -- and a foot that stands tilts with the slope.
 //   - Hands (game.reach): a point in the world for the left or the right hand,
-//     this frame, with a weight to blend in and out by.
+//     this frame, with a weight to blend in and out by. Feet the same way, for
+//     a figure that is not standing on anything -- one sitting in a car puts
+//     them in the footwell, which no clip made on a chair knows about.
 //
 // Each limb is a two-bone chain -- hip, knee, ankle; shoulder, elbow, wrist --
 // solved in the skeleton's own space, so bone lengths never change. The knee
@@ -86,8 +88,9 @@ using GroundFn = std::function<bool(const glm::vec3& from, float maxDist, float&
 // ground smoothly, not in jumps), and the hands sent somewhere this frame.
 class System {
 public:
-    // Hand `side` (0 left, 1 right) of figure `id` to `target` (world) this
-    // frame, `weight` 0..1 of the way from where the animation has it.
+    // Hand `side` (0 left, 1 right; 2 left foot, 3 right foot) of figure `id`
+    // to `target` (world) this frame, `weight` 0..1 of the way from where the
+    // animation has it. A foot sent somewhere goes there after the ground.
     void reach(int id, int side, const glm::vec3& target, float weight);
     bool reaching(int id) const { return m_reach.count(id) != 0; }
 
@@ -115,7 +118,7 @@ private:
         bool      fresh = true;
     };
     const Rig& rigOf(const fitzel::ModelData& model, const FeetOptions* o);
-    std::unordered_map<int, std::array<Reach, 2>> m_reach;
+    std::unordered_map<int, std::array<Reach, 4>> m_reach;   // hands, then feet
     std::unordered_map<int, State> m_state;
     // Found once per skeleton (and set of overrides).
     std::unordered_map<std::string, Rig> m_rigs;

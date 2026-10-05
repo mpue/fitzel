@@ -155,6 +155,16 @@ für Standbilder und ein Synthesizer für eigene Musik.
   teilt sich ein Mesh.
 - **Fahrzeuge**: ein Auto und ein Gleiter mit festem 120-Hz-Takt, Reifenspuren,
   Kondensstreifen und Gischt.
+- **Ein- und Aussteigen** (`car_driver.lua`): eine Figur geht auf `F` hinter das Ende
+  der Fahrertür, fasst den Griff, zieht sie auf und steigt mit einer Mocap-Animation
+  ein; innen zieht sie die Tür an der Verkleidung zu, setzt die Füße in den Fußraum
+  und die Hände ans Lenkrad, das sich mit einschlägt – und fährt das Auto. Wieder `F`:
+  anhalten, Tür von innen aufstoßen, aussteigen, am Griff zudrücken, zu Fuß weiter.
+  Was vom Körper zwischen Tür und Auto ist, drückt die Tür auf statt durch sie zu
+  gehen; Schnapp- und Zuschlag-Geräusch kommen von der Tür. Ein stehendes Auto ohne
+  Gas hält mit der Handbremse; der Stadtverkehr hält für Figuren zu Fuß auf der
+  Fahrbahn. Neu in Lua dafür: `game.spawnVehicle`/`driveVehicle`/`leaveVehicle`/
+  `drivenVehicle`, Füße in `game.reach`, `takeover` im Figuren-Controller.
 - **Renn-Baukasten**: Gegner-KI, Startaufstellung, Checkpoints, Boost-Pads, HUD,
   Bestenliste, Schwierigkeitsstufen, Showroom als Startmenü.
 - **Waffen**: Lock-on-Raketen für die Fahrzeuge; für Figuren eine Pistole (siehe Schießen).

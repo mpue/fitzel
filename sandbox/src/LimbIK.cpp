@@ -228,7 +228,7 @@ bool solveTwoBone(std::vector<glm::mat4>& G, const std::vector<fitzel::SkeletonJ
 }
 
 void System::reach(int id, int side, const glm::vec3& target, float weight) {
-    if (side < 0 || side > 1) return;
+    if (side < 0 || side > 3) return;
     Reach& r = m_reach[id][static_cast<std::size_t>(side)];
     r.target = target;
     r.weight = std::clamp(weight, 0.0f, 1.0f);
@@ -332,14 +332,18 @@ void System::apply(int id, const FeetOptions* feet, const fitzel::ModelData& mod
     }
 
     if (reachIt != m_reach.end()) {
-        for (int s = 0; s < 2; ++s) {
+        for (int s = 0; s < 4; ++s) {
             const Reach& r = reachIt->second[static_cast<std::size_t>(s)];
-            const Chain& c = rig.arm[static_cast<std::size_t>(s)];
+            const bool foot = s >= 2;
+            const Chain& c = foot ? rig.leg[static_cast<std::size_t>(s - 2)]
+                                  : rig.arm[static_cast<std::size_t>(s)];
             if (!r.on || r.weight <= 0.0f || !c.ok()) continue;
-            const glm::vec3 hand = posOf(G[static_cast<std::size_t>(c.end)]);
-            const glm::vec3 target = glm::mix(hand, model3(r.target), r.weight);
-            // A straight arm bends its elbow down and back.
-            solveTwoBone(G, skel, c, target, glm::vec3(0.0f, -1.0f, -1.0f), true);
+            const glm::vec3 end = posOf(G[static_cast<std::size_t>(c.end)]);
+            const glm::vec3 target = glm::mix(end, model3(r.target), r.weight);
+            // A straight arm bends its elbow down and back, a straight leg its
+            // knee forward.
+            solveTwoBone(G, skel, c, target,
+                         foot ? kneeHint : glm::vec3(0.0f, -1.0f, -1.0f), true);
         }
     }
     pal = palette(G, skel);

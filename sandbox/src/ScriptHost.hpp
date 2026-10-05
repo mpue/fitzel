@@ -360,6 +360,25 @@ struct ScriptHost {
                        bool& onGround, bool& onTerrain)> moveCharacter;
     // Drop an object's capsule again (a figure getting into a car, say).
     std::function<void(int id)> removeCharacter;
+    // Scene vehicles from a script: a figure getting into a car and out again.
+    // spawnVehicle puts the object's Vehicle into the physics world without
+    // driving it (parked, handbrake on) -- true when it is there now; there is
+    // one physics car per world, so asking for a second one is false.
+    // driveVehicle does the same and hands the player's controls to it (what V
+    // does with the nearest one); leaveVehicle takes them back and leaves the
+    // car braking where it is. drivenVehicle: the object being driven (-1 none)
+    // with its speed (m/s, + forward), steering (-1 left .. 1 right) and
+    // throttle (-1 .. 1), for a steering wheel and pedals that move.
+    struct DrivenVehicle {
+        int   id       = -1;
+        float speed    = 0.0f;
+        float steer    = 0.0f;
+        float throttle = 0.0f;
+    };
+    std::function<bool(int id)>      spawnVehicle;
+    std::function<bool(int id)>      driveVehicle;
+    std::function<void()>            leaveVehicle;
+    std::function<DrivenVehicle()>   drivenVehicle;
     // A ray through the physics world and the terrain as it is DRAWN (the
     // terrain's own collider is coarse): the first thing it meets within
     // `maxDist`. False on a miss.
@@ -367,9 +386,9 @@ struct ScriptHost {
                        ScriptRayHit& out)> castRay;
     // Frame the orbit camera for this frame (CameraSystem::frameOrbit).
     std::function<void(float weight, float dist, float side, float up, float fov)> orbitFrame;
-    // A hand of figure `id` (0 left, 1 right) to a point in the world, this
-    // frame, `weight` of the way from where the animation has it (game.reach;
-    // LimbIK.hpp).
+    // A hand of figure `id` (0 left, 1 right) -- or a foot (2 left, 3 right) --
+    // to a point in the world, this frame, `weight` of the way from where the
+    // animation has it (game.reach; LimbIK.hpp).
     std::function<void(int id, int side, glm::vec3 target, float weight)> reach;
     // An image where something hit (game.decal): at `pos` on a surface with
     // normal `normal`, `size` across, in library material `material` ("" = the

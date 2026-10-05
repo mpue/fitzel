@@ -1158,6 +1158,7 @@ int main(int argc, char** argv) {
         float&     wheelSpin  = race.wheelSpin;   // rolling angle (radians)
         float&     steerAngle = race.steerAngle;  // front-wheel steer (radians, arcade)
         float physSteer  = 0.0f;   // smoothed steer input -1..1 (Jolt car)
+        float physThrottle = 0.0f; // its pedal: -1 reverse .. 1 full (game.drivenVehicle)
         // Engine-sound feed, refreshed each frame by whichever drive block runs
         // (physics or arcade); consumed in the audio mix block.
         bool&  engineDriving  = race.engineDriving;
@@ -5287,6 +5288,63 @@ int main(int argc, char** argv) {
             if (physics) physics->removeFigure(it->second);
             scriptFigures.erase(it);
         };
+        // Scene vehicles from a script: the figure that walks up to a car, gets
+        // in, drives and gets out again (game.spawnVehicle and friends). The car
+        // itself is the one V drives -- spawnSceneVehicle, the same per-frame
+        // sync and camera -- only WHICH car and WHEN are the script's. There is
+        // one physics car per world, so a second one is refused rather than
+        // swapped: the first is still standing where it was left.
+        //
+        // Taking the wheel lets go of the walking player the way V does; what it
+        // was is kept and given back on leaving, so a scripted figure's game
+        // carries on exactly as it stood.
+        bool fpsBeforeScriptDrive = false;
+        host.spawnVehicle = [&](int id) -> bool {
+            if (!playMode || !physics) return false;
+            if (physics->hasVehicle()) return driveVehicleId == id;
+            if (!spawnSceneVehicle(id)) return false;
+            // Parked: it stands where it was put instead of rolling off the
+            // slope it was put on.
+            physics->setVehicleInput(0.0f, 0.0f, 1.0f, 1.0f);
+            return true;
+        };
+        host.driveVehicle = [&](int id) -> bool {
+            if (gliderMode || !host.spawnVehicle(id)) return false;
+            if (!vehicleMode) fpsBeforeScriptDrive = fpsMode;
+            vehicleMode = true;
+            fpsMode     = false;
+            boatMode    = false;   // every drive session starts on wheels
+            physSteer   = 0.0f;
+            physThrottle = 0.0f;
+            input.setCursorLocked(false);
+            return true;
+        };
+        host.leaveVehicle = [&] {
+            // Nothing feeds the car once it is not driven, so the last input
+            // would stay on: brake it to a stand where it was left. Even when V
+            // already let go of it -- that leaves the pedal where it was.
+            if (physics && physics->hasVehicle())
+                physics->setVehicleInput(0.0f, 0.0f, 1.0f, 1.0f);
+            if (!vehicleMode) return;
+            vehicleMode = false;
+            physSteer = physThrottle = 0.0f;
+            fpsMode = fpsBeforeScriptDrive;
+            input.setCursorLocked(fpsMode);
+        };
+        host.drivenVehicle = [&]() -> ScriptHost::DrivenVehicle {
+            ScriptHost::DrivenVehicle v;
+            if (!vehicleMode || !physics || !physics->hasVehicle() || driveVehicleId < 0)
+                return v;
+            v.id       = driveVehicleId;
+            v.steer    = physSteer;
+            v.throttle = physThrottle;
+            glm::vec3 cp(0.0f), vel(0.0f);
+            glm::quat cq(1.0f, 0.0f, 0.0f, 0.0f);
+            physics->getTransform(physCarId, cp, cq);
+            physics->getLinearVelocity(physCarId, vel);
+            v.speed = glm::dot(vel, cq * glm::vec3(0.0f, 0.0f, 1.0f));
+            return v;
+        };
         // What the figures carry (game.attach): a pistol in a hand follows the
         // hand as the skinning pass posed it (see BoneAttach.hpp). Emptied at
         // Play start and stop, with the capsules.
@@ -7478,9 +7536,16 @@ int main(int argc, char** argv) {
                     physics->applyImpulse(physCarId, fwdFlat  * (-fwdSpeed * 0.5f * mass * dt));
                     engineThrottle = std::abs(fwdIn);
                 } else {
+                    // Standing (or all but) with no pedal pressed, the car holds
+                    // where it is instead of creeping off down whatever slope it
+                    // stopped on -- with nobody's foot on anything, a parked car
+                    // rolled away while its driver was still getting out.
+                    if (std::abs(fwdIn) < 0.05f && glm::length(glm::vec2(vel.x, vel.z)) < 1.0f)
+                        handBrake = 1.0f;
                     physics->setVehicleInput(fwdIn, physSteer, brake, handBrake);
                     engineThrottle = std::abs(fwdIn);
                 }
+                physThrottle = fwdIn;
 
                 // Feed the engine sound from the chassis' horizontal speed.
                 engineDriving  = true;
@@ -8706,6 +8771,16 @@ int main(int argc, char** argv) {
             if (playMode) {
                 townTraffic.setPlayerCar(physics && physics->hasVehicle() ? physCarId : 0,
                                          physCarHalf);
+                {
+                    // The figures scripts walk (game.moveCharacter): the traffic
+                    // stops for them. Only those with a capsule -- one sitting in
+                    // a car has given it up, and the car is the obstacle then.
+                    std::vector<glm::vec3> people;
+                    for (const auto& [fid, handle] : scriptFigures)
+                        if (const Entity* fe = document.find(fid))
+                            people.push_back(fe->center - glm::vec3(0.0f, fe->half.y, 0.0f));
+                    townTraffic.setPeople(std::move(people));
+                }
                 townTraffic.playTick(entities, physics.get(), dt,
                     [&](Entity& e, const glm::vec3& p, const glm::vec3& r) {
                         const glm::mat4 pw = parentWorldMat(e);

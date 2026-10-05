@@ -131,6 +131,11 @@ public:
     // The player's car (its chassis body, 0 = none, and the box's half size):
     // the traffic brakes for it, and follows it, instead of driving into it.
     void setPlayerCar(std::uint32_t body, const glm::vec3& half) { m_playerBody = body; m_playerHalf = half; }
+    // People on foot who are not the town's own walkers -- figures a script
+    // walks, where their feet are: the traffic stops for one standing in its
+    // lane the same way, instead of shoving it down the street. (Someone
+    // getting out of a parked car on the driver's side stands exactly there.)
+    void setPeople(std::vector<glm::vec3> feet) { m_people = std::move(feet); }
 
     // Motion vectors for the moving crowd, into the bound motion target.
     void drawMotion(const glm::mat4& viewProj, const glm::mat4& curVP, const glm::mat4& prevVP);
@@ -312,6 +317,7 @@ private:
     bool                        m_playing = false;
     std::uint32_t               m_playerBody = 0;
     glm::vec3                   m_playerHalf{1.0f};
+    std::vector<glm::vec3>      m_people;       // feet of the script figures
     std::vector<Proxy>          m_proxies;
     std::vector<Wreck>          m_wrecks;
     bool                        m_crashedTown = false;   // rebuild after Play: bring them back

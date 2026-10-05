@@ -1188,6 +1188,16 @@ void TownTraffic::playTick(std::vector<Entity>& entities, fitzel::PhysicsWorld* 
             if (obstacleOf(*physics, w.body, w.half, o)) obstacles.push_back(o);
         if (obstacleOf(*physics, m_playerBody, m_playerHalf, o)) obstacles.push_back(o);
     }
+    // A person: a box as wide as one with arms at the sides and some room to
+    // spare, from the feet up, standing still as far as the traffic knows.
+    for (const glm::vec3& f : m_people) {
+        Obstacle o;
+        o.center  = f + glm::vec3(0.0f, 0.9f, 0.0f);
+        o.axes[0] = glm::vec3(0.45f, 0.0f, 0.0f);
+        o.axes[1] = glm::vec3(0.0f, 0.9f, 0.0f);
+        o.axes[2] = glm::vec3(0.0f, 0.0f, 0.45f);
+        obstacles.push_back(o);
+    }
     m_sim.setObstacles(obstacles);
 }
 
