@@ -40,10 +40,23 @@ namespace proc {
 // are not drawn in the game -- they are what faces are made FROM (swept into a
 // pipe, turned into a dome, filled, copied onto) -- and the editor draws them
 // over the scene while the graph is open.
+//
+// A `loose` curve is no line at all but a set of points -- what Mesh to points
+// makes of a surface: copied onto, selected and deleted like a curve's points,
+// but never swept, turned or resampled, and drawn as dots. Its `nrm` keeps
+// which way the surface faced at each point, so a copy can still stand on it.
 struct Curve {
     std::vector<glm::vec3> pts;
     std::vector<char>      sel;   // per point, parallel to pts (see Geo::hasSel)
+    std::vector<glm::vec3> nrm;   // per point, parallel to pts; empty = straight up
     bool                   closed = false;
+    bool                   loose  = false;
+
+    // Which way is up at point `i`: the surface it came from, else +Y.
+    glm::vec3 normalAt(int i) const {
+        return (i >= 0 && i < static_cast<int>(nrm.size())) ? nrm[static_cast<std::size_t>(i)]
+                                                           : glm::vec3(0.0f, 1.0f, 0.0f);
+    }
 };
 
 // The geometry a node makes: faces (the EditMesh -- the only part the object

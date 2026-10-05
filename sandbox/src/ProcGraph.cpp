@@ -352,7 +352,9 @@ struct Cooker {
         if (info) {
             info->faces[id]   = out.mesh.faces.size();
             info->corners[id] = out.pointCount();
-            info->curves[id]  = out.curves.size();
+            // Loose points are points, not curves: a Mesh to points node reads "pt".
+            info->curves[id]  = static_cast<std::size_t>(std::count_if(
+                out.curves.begin(), out.curves.end(), [](const Curve& c) { return !c.loose; }));
             if (out.hasSel) info->selected[id] = out.selectedCount();
             else            info->selected.erase(id);
             info->prefabs[id] = out.instances.size();

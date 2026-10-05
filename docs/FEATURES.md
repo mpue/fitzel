@@ -91,7 +91,9 @@ für Standbilder und ein Synthesizer für eigene Musik.
   station“, „Fuel depot“. Dazu 2D-Formen und Kurven (Circle, Rectangle, Curve mit
   Punktliste, Resample), Sweep (Profil entlang Kurve: Rohre, Gänge), Revolve (Drehkörper:
   Tanks, Kuppeln) sowie Punktauswahl als Filterkette (Select points nach Box, Kugel,
-  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points);
+  Richtung, jedem n-ten, Zufall; ersetzen/hinzufügen/abziehen/schneiden; Delete points;
+  Mesh to points macht aus Flächen lose Punkte: Ecken, Flächenmitten oder gleichmäßig
+  über die Fläche gestreut, jeweils mit der Flächennormale zum Aufstellen der Kopien);
   die Auswahl steuert Copy onto points, Transform und den Flächenfilter. Kurven und
   ausgewählte Punkte werden im Viewport eingezeichnet. Die Punkte einer Curve haben
   dort Griffe: ziehen (in der Ebene, in der die Kurve liegt, mit Strg senkrecht dazu,

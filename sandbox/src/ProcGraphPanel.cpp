@@ -930,7 +930,7 @@ void Panel::viewport(const ViewportFrame& view) {
     const proc::Geo& g = m_overlay;
     for (const proc::Curve& c : g.curves) {
         const int n = static_cast<int>(c.pts.size());
-        const int segs = c.closed ? n : n - 1;
+        const int segs = c.loose ? 0 : c.closed ? n : n - 1;
         for (int i = 0; i < segs; ++i) {
             ImVec2 a, b;
             if (screen(c.pts[static_cast<std::size_t>(i)], a) &&
