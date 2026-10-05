@@ -7,6 +7,10 @@
 # does not run looks exactly like one that passed.
 *.bat   text eol=crlf
 
+# Shell scripts and Dockerfiles run inside Linux, where a CR breaks the shebang.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+
 # Sources and assets are always LF.
 *.cpp   text eol=lf
 *.hpp   text eol=lf
