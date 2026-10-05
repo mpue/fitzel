@@ -155,6 +155,16 @@ struct ScriptRayHit {
     float     dist = 0.0f;
 };
 
+// A place in a town as scripts see it (game.townPlaces; TownNav.hpp): `pos` is
+// on the pavement in front of it, `at` the place itself (x, z).
+struct ScriptPlace {
+    std::string name, kind, street;
+    int         number = 0;
+    glm::vec3   pos{0.0f};
+    glm::vec2   at{0.0f};
+    int         town = 0;
+};
+
 // A Collectible component as scripts see it (game.collectible). `item` is the
 // name to show -- the component's own, or the object's when it has none.
 struct ScriptCollectible {
@@ -202,6 +212,9 @@ struct ScriptHost {
     // the key/button goes down.
     std::function<bool(int)> keyDown;
     std::function<bool(int)> keyPressed;
+    // What was typed since the last call, as UTF-8 (letters, digits, umlauts,
+    // punctuation -- not Backspace or Enter, which are keys). game.textInput.
+    std::function<std::string()> textInput;
     std::function<bool(int)> mouseDown;
     std::function<bool(int)> mousePressed;
     // The pointer, for a game played with the mouse: where it is in the HUD's
@@ -406,6 +419,12 @@ struct ScriptHost {
     // `maxDist`: a road, a bridge deck, a floor -- or the terrain as it is
     // DRAWN (never below it). False when nothing is there.
     std::function<bool(glm::vec3 from, float maxDist, float& outY)> groundHeight;
+    // The towns as somewhere to go (TownNav.hpp): every named place, a way on
+    // foot over the pavements and crossings, and the street nearest a point
+    // ("" when none is named within maxDist).
+    std::function<std::vector<ScriptPlace>()>                          townPlaces;
+    std::function<std::vector<glm::vec3>(glm::vec2 from, glm::vec2 to)> townPath;
+    std::function<std::string(glm::vec2 p, float maxDist, float& dist)> streetAt;
     // Load another scene of the open project by name (deferred to frame end).
     std::function<void(const std::string&)> loadScene;
     // Play again from how the scene stood when Play began (deferred): the

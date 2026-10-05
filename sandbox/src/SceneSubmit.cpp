@@ -239,6 +239,9 @@ void submit(const Context& c, Scratch& scratch) {
                 const int mi = c.document.materialIndex(lm->primMaterialId[i]);
                 // Its glass shot out: this copy draws what is left of it.
                 const fitzel::Mesh* mesh = &lm->meshes[i];
+                // A second figure of the same model: posed in its own copy.
+                if (const fitzel::Mesh* own = c.skinnedOf ? c.skinnedOf(b.id, i) : nullptr)
+                    mesh = own;
                 if (const fitzel::Mesh* left = c.leftOf ? c.leftOf(b.id, i) : nullptr) {
                     if (left->vertexCount() == 0) continue;
                     mesh = left;

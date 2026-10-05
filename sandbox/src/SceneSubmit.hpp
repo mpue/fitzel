@@ -78,6 +78,9 @@ struct Context {
     // whether object `id` broke as a whole. Unset: nothing is broken.
     std::function<const fitzel::Mesh*(int id, std::size_t prim)> leftOf = nullptr;
     std::function<bool(int id)> vanished = nullptr;
+    // A figure posed in meshes of its own (SkinCopies.hpp): its primitive `prim`,
+    // or null for the model's shared meshes. Unset: every figure draws those.
+    std::function<const fitzel::Mesh*(int id, std::size_t prim)> skinnedOf = nullptr;
 };
 
 // The materials the render queue points INTO, and therefore the reason this is

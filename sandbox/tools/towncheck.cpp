@@ -14,6 +14,9 @@
 //   6. Determinism and save/load: the same rule builds the same town, and a
 //      rule survives the scene file.
 //   7. Cost: buildings, vertices, draws and milliseconds per preset.
+//   8. On foot (TownNav): the pavements join into one network, crossings go
+//      straight over one street at a time, every block reaches every other,
+//      and the places carry names and house numbers that make sense.
 //
 // Console program like citycheck:
 //   build/release/bin/towncheck.exe
@@ -26,6 +29,8 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#include <map>
+#include <set>
 
 #include <glm/glm.hpp>
 #include <nlohmann/json.hpp>
@@ -34,6 +39,7 @@
 #include "../src/Component.hpp"
 #include "../src/EditMesh.hpp"
 #include "../src/SceneTypes.hpp"
+#include "../src/TownNav.hpp"
 
 namespace {
 
@@ -767,6 +773,102 @@ void checkLamps() {
           "lamp settings survive save and load");
 }
 
+void checkWalking() {
+    using namespace cityplan;
+    std::printf("\n== On foot ==\n");
+    Rule r;
+    applyPreset(r, Preset::SmallTown);
+    r.grid.center   = {200.0f, -150.0f};
+    r.grid.rotation = 17.0f;
+    r.grid.organic  = 0.3f;
+    const Layout L = layout(r);
+    std::vector<MaterialDef> mats;
+    const Palettes pal = ensurePalettes(mats, r);
+    Context ctx;
+    ctx.groundAt = [](float x, float z) { return 0.02f * x + 0.5f * std::sin(z * 0.01f); };
+    for (const Street& s : L.streets) ctx.roads.push_back({s.pts, s.width * 0.5f, s.name});
+    const Town T = derive(r, pal, ctx);
+
+    townnav::Nav nav;
+    const auto t0 = std::chrono::steady_clock::now();
+    nav.build(T.walks, ctx.roads);
+    const double ms = std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - t0).count();
+    std::printf("  %zu walks -> %d points, %d crossings, %.1f ms\n", T.walks.size(),
+                nav.nodeCount(), nav.crossingCount(), ms);
+    check(!nav.empty() && nav.crossingCount() > 0, "the pavements join into a network");
+
+    // Every block reaches every other, and no way crosses two streets in one
+    // stride (a diagonal over a junction) or steps off the pavement mid-block.
+    auto overStreets = [&](glm::vec2 a, glm::vec2 b) {
+        int n = 0;
+        for (const RoadLine& rl : ctx.roads)
+            for (std::size_t i = 0; i + 1 < rl.pts.size(); ++i) {
+                const glm::vec2 p = rl.pts[i], q = rl.pts[i + 1];
+                const glm::vec2 r1 = b - a, s1 = q - p;
+                const float den = r1.x * s1.y - r1.y * s1.x;
+                if (std::abs(den) < 1e-6f) continue;
+                const float t = ((p - a).x * s1.y - (p - a).y * s1.x) / den;
+                const float u = ((p - a).x * r1.y - (p - a).y * r1.x) / den;
+                if (t >= 0 && t <= 1 && u >= 0 && u <= 1) ++n;
+            }
+        return n;
+    };
+    int unreachable = 0, diagonal = 0, longStride = 0;
+    float worstDetour = 0.0f;
+    const glm::vec3 home = T.walks.front().front();
+    for (const auto& w : T.walks) {
+        const glm::vec2 from(home.x, home.z), to(w.front().x, w.front().z);
+        const std::vector<glm::vec3> p = nav.path(from, to);
+        if (p.empty()) { ++unreachable; continue; }
+        float len = 0.0f;
+        for (std::size_t i = 0; i + 1 < p.size(); ++i) {
+            const glm::vec2 a(p[i].x, p[i].z), b(p[i + 1].x, p[i + 1].z);
+            len += glm::length(b - a);
+            if (overStreets(a, b) > 1) ++diagonal;
+            if (glm::length(b - a) > 30.0f) ++longStride;
+        }
+        const float straight = glm::length(to - from);
+        if (straight > 150.0f) worstDetour = std::max(worstDetour, len / straight);
+    }
+    check(unreachable == 0, "every block can be walked to from every other",
+          std::to_string(unreachable) + " of " + std::to_string(T.walks.size()) + " cut off");
+    check(diagonal == 0, "no stride crosses two streets at once", std::to_string(diagonal));
+    check(longStride == 0, "no stride longer than a crossing", std::to_string(longStride));
+    check(worstDetour > 0.0f && worstDetour < 1.7f, "the way round is a grid's, not a maze's",
+          "worst " + std::to_string(worstDetour).substr(0, 4) + " x straight");
+
+    // The places: names, streets, house numbers.
+    const std::vector<townnav::Place> pl = townnav::places(0, r, T, ctx.roads, nav);
+    int homes = 0, stops = 0, civic = 0, named = 0, offPavement = 0;
+    std::map<std::string, std::set<int>> numbers;
+    bool unique = true;
+    for (const townnav::Place& p : pl) {
+        if (p.kind == "home" || p.kind == "flat" || p.kind == "office" || p.kind == "works") {
+            ++homes;
+            if (p.number > 0 && !numbers[p.street].insert(p.number).second) unique = false;
+        } else if (p.kind == "stop") {
+            ++stops;
+        } else {
+            ++civic;
+        }
+        named += !p.name.empty() && !p.street.empty() ? 1 : 0;
+        if (streetClear(L, glm::vec2(p.pos.x, p.pos.z)) < 0.0f) ++offPavement;
+    }
+    std::printf("  %zu places: %d buildings, %d stops, %d civic and parks\n", pl.size(), homes,
+                stops, civic);
+    for (std::size_t i = 0; i < pl.size() && i < 400; i += 97)
+        std::printf("    %-34s %-12s (%.0f, %.0f)\n", pl[i].name.c_str(), pl[i].kind.c_str(),
+                    pl[i].pos.x, pl[i].pos.z);
+    check(homes > 0 && stops == static_cast<int>(T.stops.size()) && civic > 0,
+          "buildings, every stop, and the civic blocks are places");
+    check(named == static_cast<int>(pl.size()), "every place has a name and a street",
+          std::to_string(named) + " of " + std::to_string(pl.size()));
+    check(unique, "no house number twice on a street");
+    check(offPavement == 0, "every place's spot is on the pavement, not the road",
+          std::to_string(offPavement));
+}
+
 int main(int argc, char** argv) {
     if (argc > 1 && std::string(argv[1]) == "--parts") { partCosts(); return 0; }
     if (argc > 5 && std::string(argv[1]) == "--scene")
@@ -781,6 +883,7 @@ int main(int argc, char** argv) {
     checkCivicModels();
     checkPavementLevel();
     checkLamps();
+    checkWalking();
     std::printf("\n%s (%d failure%s)\n", g_fail ? "FAILED" : "all good", g_fail,
                 g_fail == 1 ? "" : "s");
     return g_fail ? 1 : 0;

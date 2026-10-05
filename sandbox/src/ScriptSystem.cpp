@@ -17,8 +17,10 @@ extern "C" {
 
 #include <fitzel/asset/Vfs.hpp>
 
+#include "LuaJson.hpp"
 #include "SaveData.hpp"
 #include "MusicSystem.hpp"
+#include "ScriptLlm.hpp"
 #include "ScriptNet.hpp"
 #include "SynthSystem.hpp"
 
@@ -1506,6 +1508,68 @@ int l_groundHeight(lua_State* L) {
     lua_pushnumber(L, y);
     return 1;
 }
+// textInput() -> what was typed since the last call (UTF-8, "" = nothing)
+int l_textInput(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const std::string s = (h && h->textInput) ? h->textInput() : std::string();
+    lua_pushlstring(L, s.data(), s.size());
+    return 1;
+}
+// --- Towns -----------------------------------------------------------------------
+// townPlaces([kind]) -> { {name, kind, street, number, x, y, z, ax, az, town}, ... }
+int l_townPlaces(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const char* want = luaL_optstring(L, 1, nullptr);
+    std::vector<ScriptPlace> all;
+    if (h && h->townPlaces) all = h->townPlaces();
+    lua_newtable(L);
+    lua_Integer n = 0;
+    for (const ScriptPlace& p : all) {
+        if (want && p.kind != want) continue;
+        lua_createtable(L, 0, 10);
+        lua_pushstring(L, p.name.c_str());   lua_setfield(L, -2, "name");
+        lua_pushstring(L, p.kind.c_str());   lua_setfield(L, -2, "kind");
+        lua_pushstring(L, p.street.c_str()); lua_setfield(L, -2, "street");
+        lua_pushinteger(L, p.number);        lua_setfield(L, -2, "number");
+        lua_pushnumber(L, p.pos.x);          lua_setfield(L, -2, "x");
+        lua_pushnumber(L, p.pos.y);          lua_setfield(L, -2, "y");
+        lua_pushnumber(L, p.pos.z);          lua_setfield(L, -2, "z");
+        lua_pushnumber(L, p.at.x);           lua_setfield(L, -2, "ax");
+        lua_pushnumber(L, p.at.y);           lua_setfield(L, -2, "az");
+        lua_pushinteger(L, p.town + 1);      lua_setfield(L, -2, "town");
+        lua_seti(L, -2, ++n);
+    }
+    return 1;
+}
+// townPath(x0, z0, x1, z1) -> { {x=, y=, z=}, ... } | nil
+int l_townPath(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec2 from{num(L, 1), num(L, 2)}, to{num(L, 3), num(L, 4)};
+    const std::vector<glm::vec3> pts =
+        (h && h->townPath) ? h->townPath(from, to) : std::vector<glm::vec3>{};
+    if (pts.empty()) { lua_pushnil(L); return 1; }
+    lua_createtable(L, static_cast<int>(pts.size()), 0);
+    for (std::size_t i = 0; i < pts.size(); ++i) {
+        lua_createtable(L, 0, 3);
+        lua_pushnumber(L, pts[i].x); lua_setfield(L, -2, "x");
+        lua_pushnumber(L, pts[i].y); lua_setfield(L, -2, "y");
+        lua_pushnumber(L, pts[i].z); lua_setfield(L, -2, "z");
+        lua_seti(L, -2, static_cast<lua_Integer>(i + 1));
+    }
+    return 1;
+}
+// streetAt(x, z [, maxDist]) -> name, dist | nil
+int l_streetAt(lua_State* L) {
+    ScriptHost* h = hostOf(L);
+    const glm::vec2 p{num(L, 1), num(L, 2)};
+    float dist = 0.0f;
+    const std::string name =
+        (h && h->streetAt) ? h->streetAt(p, optNum(L, 3, 40.0f), dist) : std::string();
+    if (name.empty()) { lua_pushnil(L); return 1; }
+    lua_pushstring(L, name.c_str());
+    lua_pushnumber(L, dist);
+    return 2;
+}
 // --- Pickups -------------------------------------------------------------------
 int l_collectibles(lua_State* L) {
     ScriptHost* h = hostOf(L);
@@ -1733,6 +1797,11 @@ int l_screenSize(lua_State* L) {
 
 } // namespace
 
+namespace luajson {
+nlohmann::json toJson(lua_State* L, int idx, int depth) { return luaToJson(L, idx, depth); }
+void push(lua_State* L, const nlohmann::json& j) { jsonToLua(L, j); }
+} // namespace luajson
+
 ScriptSystem::ScriptSystem() { reset(); }
 
 ScriptSystem::~ScriptSystem() {
@@ -1744,6 +1813,7 @@ void ScriptSystem::reset() {
     // A fresh game is a fresh network: whatever the last one connected to or
     // hosted is closed with its VM.
     scriptnet::reset();
+    scriptllm::reset();
     m_lua = luaL_newstate();
     luaL_openlibs(m_lua);
     installApi();
@@ -1787,6 +1857,7 @@ void ScriptSystem::installApi() {
     fn("mouseDown", l_mouseDown);     fn("mousePressed", l_mousePressed);
     fn("mousePos", l_mousePos);       fn("mouseRay", l_mouseRay);
     fn("mouseWheel", l_mouseWheel);
+    fn("textInput", l_textInput);
     fn("showCursor", l_showCursor);
     fn("cameraPos", l_cameraPos);     fn("cameraDir", l_cameraDir);
     fn("spawn", l_spawn);             fn("destroy", l_destroy);
@@ -1847,6 +1918,8 @@ void ScriptSystem::installApi() {
     fn("spawnVehicle", l_spawnVehicle); fn("driveVehicle", l_driveVehicle);
     fn("leaveVehicle", l_leaveVehicle); fn("drivenVehicle", l_drivenVehicle);
     fn("groundHeight", l_groundHeight); fn("castRay", l_castRay);
+    fn("townPlaces", l_townPlaces);   fn("townPath", l_townPath);
+    fn("streetAt", l_streetAt);
     fn("orbitFrame", l_orbitFrame);   fn("emit", l_emit);
     fn("toWorld", l_toWorld);
     fn("reach", l_reach);
@@ -1911,6 +1984,10 @@ void ScriptSystem::installApi() {
 
     // The `net` table: lockstep multiplayer (ScriptNet.hpp).
     scriptnet::install(L);
+
+    // The `llm` and `json` tables: a language model on this machine, asked
+    // without blocking the frame (ScriptLlm.hpp).
+    scriptllm::install(L);
 
     // `shared`: one plain table every script sees, for scripts that work
     // together -- a figure's controller and its inventory, say. Scripts are

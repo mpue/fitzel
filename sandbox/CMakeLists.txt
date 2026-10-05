@@ -23,6 +23,9 @@ set(SANDBOX_RUNTIME_SOURCES
     # Lockstep multiplayer for scripts (net.*) and the relay a player can host;
     # pooled, positioned one-shots for game.sound.
     src/NetSocket.cpp src/NetRelay.cpp src/ScriptNet.cpp
+    # A language model on this machine (Ollama) for characters that think:
+    # llm.* and json.*, asked on a worker thread, polled by the script.
+    src/ScriptLlm.cpp
     src/ScriptSfx.cpp
     # Things a figure carries on its bones (game.attach): runtime, like the
     # scripts that hang them there.
@@ -147,6 +150,9 @@ set(SANDBOX_RUNTIME_SOURCES
     src/CityPlan.cpp
     src/CivicGen.cpp
     src/CitySystem.cpp
+    # The towns as somewhere to go: named places and a way on foot over the
+    # pavements (game.townPlaces / townPath / streetAt).
+    src/TownNav.cpp
     # Street-name signs: the town letters its crossings, and a placed sign keeps
     # its parameters on the root (StreetSignComponent), which the player must load.
     src/StreetSign.cpp
@@ -507,6 +513,7 @@ target_link_libraries(housecheck PRIVATE fitzel nlohmann_json::nlohmann_json)
 # cost (buildings, vertices, draws, ms). Pure geometry, no GL.
 #   build/release/bin/towncheck.exe
 add_executable(towncheck tools/towncheck.cpp src/CityPlan.cpp src/CivicGen.cpp src/CityGen.cpp
+                         src/TownNav.cpp
                          src/StreetSign.cpp
                          src/BuildingGen.cpp src/HouseGen.cpp
                          src/Component.cpp src/Primitives.cpp src/EditMesh.cpp
@@ -677,7 +684,7 @@ target_link_libraries(musiccheck PRIVATE fitzel)
 #   build/release/bin/synthplaycheck.exe
 add_executable(synthplaycheck tools/synthplaycheck.cpp
                               src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
-                              src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp
+                              src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                               src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                               src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
 target_include_directories(synthplaycheck PRIVATE src)
@@ -694,7 +701,7 @@ endif()
 #   build/release/bin/luadoccheck.exe [docs/lua-scripting.md]
 add_executable(luadoccheck tools/luadoccheck.cpp
                            src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
-                           src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp
+                           src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
                            src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
                            src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
 target_include_directories(luadoccheck PRIVATE src)
@@ -702,6 +709,40 @@ target_compile_definitions(luadoccheck PRIVATE FITZEL_PLAYER)
 target_link_libraries(luadoccheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(luadoccheck PRIVATE ws2_32)
+endif()
+
+# llmcheck (sandbox/tools/llmcheck.cpp): llm.* and json.* from a real script --
+# JSON round trip, a dead server answering with an error instead of a hang,
+# llm.chat not blocking the frame, and (when Ollama runs here) a real answer
+# decoded from JSON. Without Ollama that last part is skipped, not failed.
+#   build/release/bin/llmcheck.exe
+add_executable(llmcheck tools/llmcheck.cpp
+                        src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                        src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                        src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                        src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
+target_include_directories(llmcheck PRIVATE src)
+target_compile_definitions(llmcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(llmcheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(llmcheck PRIVATE ws2_32)
+endif()
+
+# agentcheck (sandbox/tools/agentcheck.cpp): town_agents.lua headless -- a
+# pretend grid town answers game.townPlaces / townPath, figures walk straight
+# along what it hands out, the real model decides. Fails on a script error, no
+# figure walking, a frame waiting for the model, or (with Ollama) no decision.
+#   build/release/bin/agentcheck.exe [script.lua] [wall seconds]
+add_executable(agentcheck tools/agentcheck.cpp
+                          src/ScriptSystem.cpp src/SaveData.cpp src/SynthSystem.cpp
+                          src/ScriptNet.cpp src/NetRelay.cpp src/NetSocket.cpp src/ScriptLlm.cpp
+                          src/Component.cpp src/PropertyMeta.cpp src/Primitives.cpp
+                          src/EditMesh.cpp src/EditMeshTools.cpp src/EditMeshSweep.cpp src/MultiShot.cpp src/SandboxMath.cpp)
+target_include_directories(agentcheck PRIVATE src)
+target_compile_definitions(agentcheck PRIVATE FITZEL_PLAYER)
+target_link_libraries(agentcheck PRIVATE fitzel lua_dep glm::glm nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(agentcheck PRIVATE ws2_32)
 endif()
 
 # fitzelserver (sandbox/tools/fitzelserver.cpp): the dedicated lockstep relay

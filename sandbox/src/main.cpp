@@ -160,6 +160,7 @@
 #include "CameraTexture.hpp"
 #include "Decals.hpp"
 #include "Shatter.hpp"
+#include "SkinCopies.hpp"
 #include "Swing.hpp"
 #include "PostChain.hpp"
 #include "VolumetricFog.hpp"
@@ -202,6 +203,7 @@
 #include "ImageEditPanel.hpp"
 #include "ProcGraphPanel.hpp"
 #include "TownTraffic.hpp"
+#include "TownNav.hpp"
 #include "TownLamps.hpp"
 #include "TriggerReach.hpp"
 #include "Modifiers.hpp"
@@ -5030,6 +5032,16 @@ int main(int argc, char** argv) {
         host.keyPressed   = [&](int kc){ keyQ.push_back(kc);
                                          return !uiMenuOpen &&
                                                 input.isKeyDown(kc) && !keyPrev[kc]; };
+        // Typed text for a script's own text field (game.textInput): gathered
+        // from ImGui's character queue once a frame, after its beginFrame, and
+        // handed out to the scripts of the frame after -- then dropped, so a
+        // line nobody asked for does not turn up in the next one that asks.
+        std::string scriptTyped;
+        host.textInput = [&] {
+            std::string s;
+            if (!uiMenuOpen) s.swap(scriptTyped);
+            return s;
+        };
         host.mouseDown    = [&](int b){ return !uiMenuOpen && input.isMouseButtonDown(b); };
         host.mousePressed = [&](int b){ mouseQ.push_back(b);
                                         return !uiMenuOpen &&
@@ -5352,6 +5364,9 @@ int main(int argc, char** argv) {
         // Limbs bent after the animation: feet onto the ground (the IK
         // component), hands where scripts send them (game.reach). LimbIK.hpp.
         ik::System limbIk;
+        // Figures of the same animated model, each in its own pose (the skinning
+        // pass below; SceneSubmit draws the copies).
+        SkinCopies skinCopies;
         host.boneWorld = [&](int id, const std::string& bone, glm::vec3& pos,
                              glm::vec3& rotDeg) -> bool {
             glm::mat4 m;
@@ -5667,6 +5682,48 @@ int main(int argc, char** argv) {
             if (drawn < -1.0e29f || from.y - drawn > maxDist) return false;
             outY = drawn;
             return true;
+        };
+        // The towns as somewhere to go (TownNav.hpp): the pavements joined at
+        // their crossings and every named place, derived anew the first time a
+        // script asks after a town was.
+        struct TownNavCache {
+            int                             revision = -1;
+            townnav::Nav                    nav;
+            std::vector<cityplan::RoadLine> lines;
+            std::vector<townnav::Place>     places;
+        } townNav;
+        auto freshTownNav = [&]() -> const TownNavCache& {
+            if (townNav.revision == towns.revision()) return townNav;
+            townNav.revision = towns.revision();
+            townNav.lines = towns.roadLines ? towns.roadLines() : std::vector<cityplan::RoadLine>{};
+            const auto& built = towns.built();
+            std::vector<std::vector<glm::vec3>> walks;
+            for (const auto& b : built)
+                walks.insert(walks.end(), b.town.walks.begin(), b.town.walks.end());
+            townNav.nav.build(walks, townNav.lines);
+            townNav.places.clear();
+            for (int i = 0; i < towns.count() && i < static_cast<int>(built.size()); ++i) {
+                std::vector<townnav::Place> p = townnav::places(
+                    i, towns.towns[static_cast<std::size_t>(i)],
+                    built[static_cast<std::size_t>(i)].town, townNav.lines, townNav.nav);
+                townNav.places.insert(townNav.places.end(), p.begin(), p.end());
+            }
+            std::fprintf(stderr, "[Fitzel] town paths: %d points, %d crossings, %zu places\n",
+                         townNav.nav.nodeCount(), townNav.nav.crossingCount(),
+                         townNav.places.size());
+            return townNav;
+        };
+        host.townPlaces = [&] {
+            std::vector<ScriptPlace> out;
+            for (const townnav::Place& p : freshTownNav().places)
+                out.push_back({p.name, p.kind, p.street, p.number, p.pos, p.at, p.town});
+            return out;
+        };
+        host.townPath = [&](glm::vec2 from, glm::vec2 to) {
+            return freshTownNav().nav.path(from, to);
+        };
+        host.streetAt = [&](glm::vec2 p, float maxDist, float& dist) {
+            return townnav::streetAt(freshTownNav().lines, p, maxDist, &dist);
         };
         // game.castRay: what a shot meets. The bodies of the physics world first
         // -- passing through the terrain's coarse collider, for the same reason
@@ -9403,6 +9460,7 @@ int main(int argc, char** argv) {
                 for (int kc : keyQ)  keyPrev[kc]  = input.isKeyDown(kc) ? 1 : 0;
                 for (int b  : mouseQ) mousePrev[b] = input.isMouseButtonDown(b) ? 1 : 0;
                 keyQ.clear(); mouseQ.clear();
+                scriptTyped.clear();
 
                 // A finished race goes into the circuit records. Edge-detected
                 // on raceFinished so the flag writes one row rather than one per
@@ -10014,6 +10072,24 @@ int main(int argc, char** argv) {
             const long long fzUiMark = prof::mark();
             gui.beginFrame();
             ImGuizmo::BeginFrame();
+            if (playMode) {
+                // The characters typed this frame, for game.textInput (UTF-8).
+                const ImGuiIO& tio = ImGui::GetIO();
+                for (int i = 0; i < tio.InputQueueCharacters.Size && scriptTyped.size() < 512; ++i) {
+                    const unsigned c = static_cast<unsigned>(tio.InputQueueCharacters[i]);
+                    if (c < 0x20 || c == 0x7f) continue;
+                    if (c < 0x80) {
+                        scriptTyped += static_cast<char>(c);
+                    } else if (c < 0x800) {
+                        scriptTyped += static_cast<char>(0xC0 | (c >> 6));
+                        scriptTyped += static_cast<char>(0x80 | (c & 0x3F));
+                    } else {
+                        scriptTyped += static_cast<char>(0xE0 | (c >> 12));
+                        scriptTyped += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+                        scriptTyped += static_cast<char>(0x80 | (c & 0x3F));
+                    }
+                }
+            }
             if (presentMode) {
                 // Presentation: hide the editor UI, render the scene full-window.
                 window.framebufferSize(viewW, viewH);
@@ -11425,10 +11501,11 @@ int main(int argc, char** argv) {
             //     Animation component (or an Animation Graph whose state names a
             //     model animation) on an animated model, advance its clock and
             //     re-skin the model's meshes so the shared static render path shows
-            //     the deformed pose. (Meshes are shared per model: instances of the
-            //     same model animate together.)
+            //     the deformed pose. (Meshes are shared per model; a second
+            //     figure of the same model is posed in its own copy, SkinCopies.)
             {
                 std::vector<Vertex> skinScratch;
+                skinCopies.beginFrame();
                 // The ground under a foot, for the IK: game.groundHeight's
                 // (roads, bridges, steps, the drawn terrain), with the slope
                 // from two more looks a hand's breadth away.
@@ -11534,12 +11611,15 @@ int main(int argc, char** argv) {
                     }
                     if (playMode) boneAttach.storePose(e.id, palette);
                     const auto& prims = lm->animData->primitives;
+                    std::vector<fitzel::Mesh>* own = skinCopies.target(e.id, lm);
                     for (std::size_t p = 0;
                          p < lm->meshes.size() && p < prims.size(); ++p) {
                         skinPrimitive(prims[p], palette, skinScratch);
-                        lm->meshes[p].update(skinScratch);
+                        if (own) SkinCopies::put(*own, p, skinScratch);
+                        else     lm->meshes[p].update(skinScratch);
                     }
                 }
+                skinCopies.endFrame();
             }
 
             limbIk.endFrame();   // the hands were sent for this frame only
@@ -11608,7 +11688,8 @@ int main(int argc, char** argv) {
                                  composeModel, roadWetness, playMode,
                                  [&](int id) { return decalSys.meshFor(id); },
                                  [&](int id, std::size_t prim) { return shatterSys.leftOf(id, prim); },
-                                 [&](int id) { return shatterSys.vanished(id); }},
+                                 [&](int id) { return shatterSys.vanished(id); },
+                                 [&](int id, std::size_t prim) { return skinCopies.meshOf(id, prim); }},
                                 submitScratch);
             // ...and the holes scripts threw, in the same frame's materials.
             decalSys.submitThrown(renderer, submitScratch.gpuMats, materials, document);

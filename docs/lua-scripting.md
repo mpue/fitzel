@@ -92,6 +92,7 @@ Alle Engine-Funktionen hängen an der globalen Tabelle `game`.
 | `game.mouseWheel()` | Zahl | Wie weit das Mausrad in diesem Frame gedreht wurde (Rasten, + = vom Körper weg); 0 außerhalb von Play |
 | `game.showCursor(an)` | – | Mauszeiger im Play freigeben (`true`) oder wieder dem Läufer überlassen (`false`); gilt bis Play endet |
 | `game.captureInput()` | bool | Tasten und Maustasten für dieses Skript festhalten — **jeden Frame** aufrufen, solange ein Menü offen ist; `true` = dieses Skript hält sie |
+| `game.textInput()` | Text | Was seit dem letzten Aufruf getippt wurde (UTF-8, mit Umlauten; ohne Backspace/Enter — die sind Tasten). Für ein eigenes Eingabefeld, zusammen mit `game.captureInput()` |
 
 `key` ist ein GLFW-Keycode → benutze die `game.KEY_*`-Konstanten (§3.7).
 `button`: `game.MOUSE_LEFT` (0), `MOUSE_RIGHT` (1), `MOUSE_MIDDLE` (2).
@@ -738,6 +739,84 @@ Ein Spiel darf aus mehreren Dateien bestehen: `require("sw.units")` lädt
 `scripts/sw/units.lua` des Projekts — auch aus dem Archiv eines exportierten Spiels.
 Module laufen in der globalen Umgebung der VM (sie sehen `game`, `net`, `shared` …),
 werden einmal pro Play geladen und geben üblicherweise eine Tabelle zurück.
+
+### 3.12.3 Städte: Orte und Wege zu Fuß
+
+Die Städte des Stadtgenerators als Ziel für Figuren. Abgeleitet aus dem, was die Stadt
+ohnehin baut: die Gehwege rund um jeden Block, an den Blockecken über die Straße
+verbunden (nur gerade hinüber, nie diagonal über eine Kreuzung, nie mitten im Block),
+und die benannten Orte. Verkehr hält für Figuren, die mit `game.moveCharacter` laufen,
+auch auf dem Überweg.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `game.townPlaces([art])` | `{ ort, … }` | Alle Orte aller Städte, wahlweise nur einer Art. Ein Ort: `name` („Rathaus“, „Bushaltestelle Lindenstraße“, „Lindenstraße 12“), `kind`, `street`, `number` (Hausnummer, 0 = keine), `x, y, z` (auf dem Gehweg davor — dort bleibt eine Figur stehen), `ax, az` (der Ort selbst, zum Hinsehen), `town` (1-basiert) |
+| `game.townPath(x0, z0, x1, z1)` | `{ {x=, y=, z=}, … }` oder `nil` | Fußweg vom Gehweg nächst Start zum Gehweg nächst Ziel, als Punkte in Gehreihenfolge; `nil`, wenn keine Verbindung besteht |
+| `game.streetAt(x, z [, maxDist])` | `name, abstand` oder `nil` | Die nächste benannte Straße (Standard: höchstens 40 m entfernt) |
+
+Arten (`kind`): `home` (Haus, Reihenhaus), `flat` (Wohnblock), `office` (Hochhaus),
+`works` (Gewerbe), `park`, `stop` (Bushaltestelle) und die öffentlichen Gebäude
+`townhall`, `school`, `kindergarten`, `church`, `police`, `firestation`, `hospital`,
+`library`, `museum`, `theatre`, `pool`, `petrol`, `station`, `industry`, `powerplant`,
+`landfill`. Hausnummern laufen jede Straße entlang ab ihrem Anfang, ungerade links,
+gerade rechts. Gibt es eine Art mehrmals, steht die Straße im Namen
+(„Schule (Goethestraße)“). Die Liste wird neu abgeleitet, sobald sich eine Stadt
+ändert — einmal in `start` holen genügt.
+
+```lua
+local schulen = game.townPlaces("school")
+local p = game.townPath(self.x, self.z, schulen[1].x, schulen[1].z)
+-- p[1] … p[#p] ablaufen, z. B. mit game.moveCharacter
+```
+
+### 3.12.4 Sprachmodell: die Tabellen `llm` und `json`
+
+Figuren, die selbst entscheiden und reden: ein Sprachmodell auf diesem Rechner über
+die HTTP-API von [Ollama](https://ollama.com) (Standard `http://127.0.0.1:11434`,
+Modell `qwen3:4b`). Ein Modell braucht Sekunden, ein Frame Millisekunden — deshalb
+blockiert nichts: `llm.chat` stellt eine Anfrage in die Warteschlange und gibt sofort
+ihre Nummer zurück, ein Hintergrund-Thread schickt die Anfragen der Reihe nach, und
+`llm.poll()` liefert, was seitdem zurückkam. Ende von Play verwirft Warteschlange und
+ausstehende Antworten.
+
+| Aufruf | Rückgabe | Beschreibung |
+|--------|----------|--------------|
+| `llm.chat(anfrage)` | `id` | Anfrage einreihen (siehe unten) |
+| `llm.poll()` | `{ antwort, … }` | Was seit dem letzten Aufruf fertig wurde. Eine Antwort: `id`, `ok`, `text` (ohne `<think>`-Teil), `data` (der Text als Lua-Wert, wenn `format` gesetzt war und gültiges JSON kam), `error`, `ms`, `tokens` |
+| `llm.pending()` | Zahl | Anfragen in der Schlange plus die gerade laufende |
+| `llm.clear()` | – | Wartende Anfragen verwerfen (die laufende nicht) |
+| `llm.setHost(host [, port])` | – | Anderer Server, z. B. ein Rechner im LAN |
+| `llm.setModel(name)` | – | Standardmodell für Anfragen ohne `model` |
+| `llm.model()` | Text | Das Standardmodell |
+| `json.encode(wert [, hübsch])` | Text | Lua-Wert als JSON (Regeln wie `game.saveData`) |
+| `json.decode(text)` | Wert oder `nil, fehler` | JSON als Lua-Wert |
+
+Die Anfrage ist eine Tabelle im Format von Ollamas `/api/chat`: `messages`
+(`{ {role="user", content="…"}, … }`) oder kurz `prompt` (eine Nutzer-Nachricht),
+dazu `system` (wird vorangestellt), `model`, `format` (`"json"` oder ein JSON-Schema als
+Tabelle — dann kommt die Antwort auch als `data`), `options` (`{temperature=0.8,
+num_predict=120}`), `priority = true` (vor alle wartenden Anfragen — für einen Spieler,
+der auf eine Antwort wartet) und alles Weitere, das Ollama kennt. `think` steht auf `false`,
+wenn nicht anders gesetzt: Ein denkendes Modell grübelt sonst Sekunden vor jedem Satz.
+
+```lua
+local frage
+function update(self, dt)
+    if not frage then
+        frage = llm.chat{ system = "Du bist Bäckerin in einer Kleinstadt.",
+                          prompt = "Was rufst du einem Kunden zu? Ein Satz.",
+                          options = { temperature = 0.9 } }
+    end
+    for _, a in ipairs(llm.poll()) do
+        if a.id == frage then game.log(a.ok and a.text or a.error) end
+    end
+end
+```
+
+Läuft kein Server, kommt die Antwort mit `ok = false` und einem `error`, der es sagt.
+Der erste Aufruf nach dem Start von Ollama lädt das Modell (bei 4B rund 30 s); danach
+dauert ein kurzer Satz etwa eine Sekunde. `town_agents.lua` (Projekt scaper) lässt
+damit Leute durch die Stadt gehen, die selbst entscheiden, wohin, und miteinander reden.
 
 ### 3.13 Konstanten
 

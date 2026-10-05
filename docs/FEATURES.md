@@ -52,6 +52,11 @@ für Standbilder und ein Synthesizer für eigene Musik.
 - **Verkehr**: Autos fahren nach dem Intelligent Driver Model, halten an Ampeln, Busse
   halten an den Stationen, Fußgänger laufen als Prefabs. Nahe beim Spieler bekommen die
   Autos echte Physik, es gibt Unfälle, und Wracks blockieren die Spur.
+- **Zu Fuß durch die Stadt**: Die Gehwege aller Blöcke sind an den Ecken über Überwege
+  zu einem Netz verbunden (immer gerade über eine Straße, nie diagonal über eine
+  Kreuzung). Jeder Ort hat einen Namen: öffentliche Gebäude, Parks, Bushaltestellen und
+  jedes Haus mit Straße und Hausnummer (ungerade links, gerade rechts). In Lua:
+  `game.townPlaces`, `game.townPath`, `game.streetAt`.
 
 ## Himmel, Wetter, Licht
 
@@ -207,6 +212,30 @@ für Standbilder und ein Synthesizer für eigene Musik.
   Skriptdateien, die Tabelle `net`, `game.setLocals` (eine Armee pro Frame in einem Aufruf),
   `game.sound` (positionierte One-Shots), `game.mouseWheel`, `game.waterAt`, `game.trees`
   und `game.clearTrees` (Wald als Hindernis, Lichtung beim Bauen).
+
+- **Leute mit eigenem Kopf** (`town_agents.lua`): Figuren, die ein Sprachmodell auf
+  diesem Rechner steuert (Ollama, im Skript `qwen3:8b`). Jede hat Namen, Alter, Beruf,
+  Arbeitszeiten und eine Wohnung in der Stadt. Sie entscheidet selbst, wohin sie geht und
+  was sie dort tut, und läuft über Gehwege und Überwege hin. Wer länger in einem Gebäude
+  bleibt, geht hinein. Begegnen sich zwei, bleiben sie vielleicht stehen und reden; das
+  Gespräch erscheint in Sprechblasen, und beide erinnern sich daran. `H` zeigt die Liste
+  aller Leute. **Chat** (`T`): Fragen an die Stadt (ein Erzähler, der weiß, wer gerade wo
+  ist) oder an eine Person (`Tab`, `@Name`) – wer nah steht, bleibt stehen und antwortet
+  laut, wer weiter weg ist, wie per Handy; um einen Ort gebeten, geht sie vielleicht hin.
+  **Markierungen** (`M`): farbiger Pfeil mit Nummer, Name und Entfernung über jeder
+  Person, am Bildrand ein Pfeil in Richtung derer, die nicht im Bild sind. **Freie
+  Kamera** (`K`): fliegen mit WASD/Leertaste/Strg, umsehen mit Pfeiltasten oder rechter
+  Maustaste, `1`–`8` fliegt zu einer Person und folgt ihr, `0` zur eigenen Figur.
+  **Verhalten für alle**: der Skript-Parameter `CONTEXT` oder im Chat `/alle <Text>`
+  („Heute ist Stadtfest im Stadtpark“) steht in jedem Prompt; alle überlegen sofort neu,
+  und dort genannte Orte stehen jedem zur Wahl.
+  Ohne Ollama laufen sie zu zufälligen Zielen. Dafür neu in Lua: die Tabellen `llm`
+  (Anfragen an das Modell, ohne den Frame aufzuhalten; Antworten als JSON nach Schema;
+  `priority` für Wartende) und `json`, dazu `game.textInput` für eigene Eingabefelder.
+  Geprüft mit `llmcheck` und `agentcheck`.
+- **Mehrere Figuren desselben Modells** bewegen sich unabhängig: Die erste skinnt wie
+  bisher in die Meshes des Modells, jede weitere in eine eigene Kopie (`SkinCopies`).
+  Vorher übernahmen alle die Pose der zuletzt gerechneten.
 
 ## Audio
 
